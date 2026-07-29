@@ -182,6 +182,14 @@ function errorResponse(error: unknown): Response {
 	return Response.json({ error: message }, { status });
 }
 
+function requiredSessionId(url: URL): string | Response {
+	const sessionId = url.searchParams.get("session_id")?.trim();
+	return (
+		sessionId ||
+		Response.json({ error: "session_id is required" }, { status: 400 })
+	);
+}
+
 async function inspectPreview(sessionId: string, previewId?: string) {
 	try {
 		return projectPreviewManager.inspect(sessionId, previewId);
@@ -242,13 +250,8 @@ export async function handleProjectPreviewRoute(
 			url.pathname === "/api/project-previews/session" &&
 			req.method === "GET"
 		) {
-			const sessionId = url.searchParams.get("session_id")?.trim();
-			if (!sessionId) {
-				return Response.json(
-					{ error: "session_id is required" },
-					{ status: 400 },
-				);
-			}
+			const sessionId = requiredSessionId(url);
+			if (sessionId instanceof Response) return sessionId;
 			return Response.json(await inspectPreview(sessionId));
 		}
 		if (
@@ -377,13 +380,8 @@ export async function handleProjectPreviewRoute(
 			/^\/api\/project-previews\/([^/]+)\/agent-frame$/,
 		);
 		if (frameMatch && req.method === "GET") {
-			const sessionId = url.searchParams.get("session_id")?.trim();
-			if (!sessionId) {
-				return Response.json(
-					{ error: "session_id is required" },
-					{ status: 400 },
-				);
-			}
+			const sessionId = requiredSessionId(url);
+			if (sessionId instanceof Response) return sessionId;
 			const previewId = decodeURIComponent(frameMatch[1]);
 			await inspectPreview(sessionId, previewId);
 			const frameId = url.searchParams.get("frame_id")?.trim();
@@ -415,13 +413,8 @@ export async function handleProjectPreviewRoute(
 		const previewId = decodeURIComponent(match[1]);
 		const action = match[2];
 		if (!action && req.method === "GET") {
-			const sessionId = url.searchParams.get("session_id")?.trim();
-			if (!sessionId) {
-				return Response.json(
-					{ error: "session_id is required" },
-					{ status: 400 },
-				);
-			}
+			const sessionId = requiredSessionId(url);
+			if (sessionId instanceof Response) return sessionId;
 			return Response.json(await inspectPreview(sessionId, previewId));
 		}
 		if (req.method !== "POST" || !action) {

@@ -1,14 +1,13 @@
-import type { ServerWebSocket } from "bun";
 import { init, parse } from "es-module-lexer";
 import { readRequestBodyLimited } from "./requestLimits";
+import {
+	createWebSocketBridgeHandlers,
+	type WebSocketBridgeData,
+} from "./webSocketBridge";
 
-export type ProjectPreviewRelayWsData = {
+export type ProjectPreviewRelayWsData = WebSocketBridgeData & {
 	isProjectPreviewRelay: true;
-	wsTarget: string;
-	back: WebSocket | null;
-	queue: Array<string | ArrayBuffer>;
 	upstreamHeaders: Record<string, string>;
-	protocols?: string[];
 };
 
 type RelayTarget = {
@@ -17,7 +16,6 @@ type RelayTarget = {
 
 const MAX_RELAY_REQUEST_BYTES = 10 * 1024 * 1024;
 const MAX_TRANSFORM_BYTES = 20 * 1024 * 1024;
-const MAX_WS_QUEUE = 100;
 const RELAY_UPSTREAM_TIMEOUT_MS = 10_000;
 const MAX_TRANSFORM_CACHE_ENTRIES = 128;
 const MAX_TRANSFORM_CACHE_BYTES = 32 * 1024 * 1024;
@@ -574,66 +572,7 @@ export async function handleProjectPreviewRelayRequest(
 }
 
 export function createProjectPreviewRelayWsHandlers() {
-	return {
-		open(ws: ServerWebSocket<ProjectPreviewRelayWsData>) {
-			const BunWebSocket = WebSocket as unknown as new (
-				url: string,
-				options?: {
-					headers: Record<string, string>;
-					protocols?: string[];
-				},
-			) => WebSocket;
-			const back = new BunWebSocket(ws.data.wsTarget, {
-				headers: ws.data.upstreamHeaders,
-				protocols: ws.data.protocols,
-			});
-			ws.data.back = back;
-			const timeout = setTimeout(() => {
-				if (back.readyState === WebSocket.CONNECTING) {
-					ws.data.queue = [];
-					back.close();
-					ws.close();
-				}
-			}, 10_000);
-			back.onopen = () => {
-				clearTimeout(timeout);
-				for (const message of ws.data.queue) back.send(message);
-				ws.data.queue = [];
-			};
-			back.onmessage = (event) => {
-				if (ws.readyState === WebSocket.OPEN) ws.send(event.data);
-			};
-			back.onclose = () => {
-				clearTimeout(timeout);
-				ws.close();
-			};
-			back.onerror = () => {
-				clearTimeout(timeout);
-				ws.close();
-			};
-		},
-		message(
-			ws: ServerWebSocket<ProjectPreviewRelayWsData>,
-			data: string | Buffer,
-		) {
-			const payload: string | ArrayBuffer =
-				typeof data === "string"
-					? data
-					: (data.buffer.slice(
-							data.byteOffset,
-							data.byteOffset + data.byteLength,
-						) as ArrayBuffer);
-			if (ws.data.back?.readyState === WebSocket.OPEN) {
-				ws.data.back.send(payload);
-			} else if (ws.data.back?.readyState === WebSocket.CONNECTING) {
-				if (ws.data.queue.length >= MAX_WS_QUEUE) ws.data.queue.shift();
-				ws.data.queue.push(payload);
-			} else {
-				ws.close();
-			}
-		},
-		close(ws: ServerWebSocket<ProjectPreviewRelayWsData>) {
-			ws.data.back?.close();
-		},
-	};
+	return createWebSocketBridgeHandlers<ProjectPreviewRelayWsData>({
+		headers: (data) => data.upstreamHeaders,
+	});
 }

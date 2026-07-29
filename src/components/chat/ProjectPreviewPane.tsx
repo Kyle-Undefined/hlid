@@ -14,16 +14,14 @@ import {
 import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { ProjectPreviewFeedbackModal } from "#/components/chat/ProjectPreviewFeedbackModal";
 import { ClickableImage } from "#/components/ImageViewerModal";
-import { applyProjectPreview } from "#/hooks/projectPreviewStore";
+import { useProjectPreviewActions } from "#/hooks/useProjectPreviewActions";
 import { enqueueChat } from "#/hooks/wsStore";
 import {
 	captureProjectPreviewFeedbackFn,
 	getProjectPreviewAgentFrameFn,
 	type ProjectPreviewAgentFrame,
 	type ProjectPreviewSnapshot,
-	restartProjectPreviewFn,
 	saveProjectPreviewFeedbackFn,
-	stopProjectPreviewFn,
 } from "#/lib/serverFns/projectPreviews";
 import { uid } from "#/lib/utils";
 
@@ -83,10 +81,13 @@ export function ProjectPreviewPane({
 	const [viewport, setViewport] = useState<
 		"fit" | "desktop" | "tablet" | "mobile"
 	>("fit");
-	const [pendingAction, setPendingAction] = useState<"restart" | "stop" | null>(
-		null,
-	);
-	const [error, setError] = useState<string | null>(null);
+	const {
+		clearError,
+		error,
+		pendingAction,
+		reportError,
+		runAction: act,
+	} = useProjectPreviewActions(preview);
 	const [feedbackFrame, setFeedbackFrame] =
 		useState<ProjectPreviewAgentFrame | null>(null);
 	const [feedbackCapturing, setFeedbackCapturing] = useState(false);
@@ -205,36 +206,10 @@ export function ProjectPreviewPane({
 		return () => window.removeEventListener("message", receiveState);
 	}, [preview.id, previewUrl]);
 
-	const act = async (action: "restart" | "stop") => {
-		setPendingAction(action);
-		setError(null);
-		try {
-			const next =
-				action === "restart"
-					? await restartProjectPreviewFn({
-							data: {
-								sessionId: preview.session_id,
-								previewId: preview.id,
-							},
-						})
-					: await stopProjectPreviewFn({
-							data: {
-								sessionId: preview.session_id,
-								previewId: preview.id,
-							},
-						});
-			applyProjectPreview(next);
-		} catch (cause) {
-			setError(cause instanceof Error ? cause.message : String(cause));
-		} finally {
-			setPendingAction(null);
-		}
-	};
-
 	const captureFeedback = async () => {
 		setFeedbackCapturing(true);
 		setFeedbackError(null);
-		setError(null);
+		clearError();
 		try {
 			const iframe = iframeRef.current;
 			let expectedOrigin = "*";
@@ -276,7 +251,7 @@ export function ProjectPreviewPane({
 			});
 			setFeedbackFrame(frame);
 		} catch (cause) {
-			setError(cause instanceof Error ? cause.message : String(cause));
+			reportError(cause);
 		} finally {
 			setFeedbackCapturing(false);
 		}

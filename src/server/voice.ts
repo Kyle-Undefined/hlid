@@ -12,6 +12,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { HlidConfig } from "../config";
+import { captureBoundedBunStderr } from "../lib/process";
 import { createCachedList } from "./providerCatalog";
 
 export type VoiceModelInfo = {
@@ -126,26 +127,9 @@ export function parseVoiceRuntimeDiagnostics(log: string): {
 }
 
 function drainRuntimeLog(process: ReturnType<typeof Bun.spawn>): () => string {
-	let captured = "";
-	const stderr = process.stderr;
-	if (!(stderr instanceof ReadableStream)) return () => captured;
-	const reader = stderr.getReader();
-	const decoder = new TextDecoder();
-	void (async () => {
-		try {
-			while (true) {
-				const { done, value } = await reader.read();
-				if (done) break;
-				captured = (captured + decoder.decode(value, { stream: true })).slice(
-					-MAX_RUNTIME_LOG_CHARS,
-				);
-			}
-			captured = (captured + decoder.decode()).slice(-MAX_RUNTIME_LOG_CHARS);
-		} catch {
-			// The process can close its pipe while a load is being cancelled.
-		}
-	})();
-	return () => captured;
+	return captureBoundedBunStderr(process, {
+		maxChars: MAX_RUNTIME_LOG_CHARS,
+	});
 }
 
 function voiceRuntimeEnvironment(

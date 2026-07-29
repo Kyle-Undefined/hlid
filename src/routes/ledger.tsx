@@ -69,6 +69,7 @@ import {
 	setSessionArchivedFn,
 } from "#/lib/serverFns/sessions";
 import { buildSessionExport, downloadContent } from "#/lib/sessionExport";
+import { patchSession } from "#/lib/sessionMutationClient";
 import type { ServerMessage } from "#/server/protocol";
 
 // ─── server fns ──────────────────────────────────────────────────────────────
@@ -137,17 +138,13 @@ const deleteSessionFn = createServerFn({ method: "POST" })
 
 const pinSessionFn = createServerFn({ method: "POST" })
 	.validator((raw) => sessionPinSchema.parse(raw))
-	.handler(async ({ data }) => {
-		await requireDbOk(
-			await dbFetch(`/db/session?id=${encodeURIComponent(data.id)}`, {
-				method: "PATCH",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ pinned: data.pinned }),
-			}),
+	.handler(({ data }) =>
+		patchSession(
+			data.id,
+			{ pinned: data.pinned },
 			data.pinned ? "pin session" : "unpin session",
-		);
-		return { ok: true };
-	});
+		),
+	);
 
 const cleanupSessionsFn = createServerFn({ method: "POST" })
 	.validator((raw) => sessionCleanupSchema.parse(raw))

@@ -6,22 +6,30 @@ import type {
 	UmbodAnalyticsWorkerRequest,
 	UmbodAnalyticsWorkerResponse,
 } from "./umbodAnalyticsWorkerProtocol";
+import { WorkerRpcClient } from "./workerRpcClient";
 
 const WORKER_TIMEOUT_MS = 30_000;
 const ANALYTICS_MAX_AGE_MS = 60 * 60_000;
 
-type PendingRequest = {
-	resolve: (result: unknown) => void;
-	reject: (error: Error) => void;
-	timeout: ReturnType<typeof setTimeout>;
-};
 type WorkerRequestWithoutId =
 	| Omit<Extract<UmbodAnalyticsWorkerRequest, { kind: "snapshot" }>, "id">
 	| Omit<Extract<UmbodAnalyticsWorkerRequest, { kind: "calls" }>, "id">;
 
-let worker: Worker | null = null;
-let workerUrl: string | null = null;
-const pending = new Map<string, PendingRequest>();
+const analyticsWorker = new WorkerRpcClient<
+	WorkerRequestWithoutId,
+	UmbodAnalyticsWorkerRequest,
+	UmbodAnalyticsWorkerResponse,
+	unknown
+>({
+	label: "Umbod analytics",
+	source: UMBOD_ANALYTICS_WORKER_SOURCE,
+	timeoutMs: WORKER_TIMEOUT_MS,
+	buildRequest: (id, request) => ({ ...request, id }),
+	adaptResponse: (response) =>
+		response.error
+			? { ok: false, error: response.error }
+			: { ok: true, result: response.result },
+});
 let cached:
 	| {
 			key: string;
@@ -36,71 +44,8 @@ let inFlight:
 	  }
 	| undefined;
 
-function rejectPending(message: string): void {
-	for (const request of pending.values()) {
-		clearTimeout(request.timeout);
-		request.reject(new Error(message));
-	}
-	pending.clear();
-}
-
-function closeWorker(message: string): void {
-	const active = worker;
-	worker = null;
-	rejectPending(message);
-	active?.terminate();
-}
-
-function getWorker(): Worker {
-	if (worker) return worker;
-	workerUrl ??= URL.createObjectURL(
-		new Blob([UMBOD_ANALYTICS_WORKER_SOURCE], { type: "text/javascript" }),
-	);
-	const next = new Worker(workerUrl, {
-		type: "module",
-		smol: true,
-		ref: false,
-	});
-	next.addEventListener(
-		"message",
-		(event: MessageEvent<UmbodAnalyticsWorkerResponse>) => {
-			const response = event.data;
-			const request = pending.get(response.id);
-			if (!request) return;
-			pending.delete(response.id);
-			clearTimeout(request.timeout);
-			if (response.error) request.reject(new Error(response.error));
-			else request.resolve(response.result);
-		},
-	);
-	next.addEventListener("error", (event) => {
-		if (worker !== next) return;
-		const detail = event.message?.trim();
-		closeWorker(
-			`Umbod analytics worker failed${detail ? `: ${detail.slice(0, 300)}` : ""}`,
-		);
-	});
-	next.addEventListener("close", () => {
-		if (worker !== next) return;
-		worker = null;
-		rejectPending("Umbod analytics worker closed unexpectedly");
-	});
-	worker = next;
-	return next;
-}
-
 function runWorker(request: WorkerRequestWithoutId): Promise<unknown> {
-	const id = crypto.randomUUID();
-	return new Promise((resolve, reject) => {
-		const timeout = setTimeout(() => {
-			if (!pending.has(id)) return;
-			closeWorker(
-				`Umbod analytics worker timed out after ${WORKER_TIMEOUT_MS}ms`,
-			);
-		}, WORKER_TIMEOUT_MS);
-		pending.set(id, { resolve, reject, timeout });
-		getWorker().postMessage({ ...request, id });
-	});
+	return analyticsWorker.run(request);
 }
 
 async function fileFingerprint(path: string): Promise<string> {
@@ -173,5 +118,5 @@ export function readUmbodCalls(
 export function invalidateUmbodAnalytics(): void {
 	cached = undefined;
 	inFlight = undefined;
-	closeWorker("Umbod analytics invalidated");
+	analyticsWorker.close("Umbod analytics invalidated");
 }

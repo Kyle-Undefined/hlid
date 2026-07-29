@@ -38,6 +38,31 @@ export function parseWslUncSyntax(
 	return { distro, posixPath: `/${rest}` };
 }
 
+/** Classify only explicit path syntax; callers retain their own host/WSL fallback policy. */
+export function explicitPathEnvironment(
+	path: string,
+	options: { platform: string; allowWindowsUnc?: boolean },
+):
+	| { environment: "wsl"; environmentLabel: string }
+	| { environment: "windows"; environmentLabel: "Windows" }
+	| null {
+	const wsl = parseWslUncSyntax(path);
+	if (wsl) {
+		return {
+			environment: "wsl",
+			environmentLabel: `WSL · ${wsl.distro}`,
+		};
+	}
+	if (
+		options.platform === "win32" ||
+		/^[A-Za-z]:[\\/]/.test(path) ||
+		(options.allowWindowsUnc && /^\\\\/.test(path))
+	) {
+		return { environment: "windows", environmentLabel: "Windows" };
+	}
+	return null;
+}
+
 export function expandTilde(p: string): string {
 	if (p === "~") return homedir();
 	if (p.startsWith("~/") || p.startsWith("~\\"))

@@ -25,7 +25,7 @@ import type { CommandDescriptor } from "#/lib/commands";
 import { composerKeyAction, runComposerPickerAction } from "#/lib/composer";
 import type { getAgentListFn } from "#/lib/serverFns/agents";
 import type { getConfig } from "#/lib/serverFns/config";
-import { displayVoiceHotkey } from "#/lib/voiceHotkey";
+import { voiceInputPresentation } from "#/lib/voiceInputPresentation";
 
 export type ActiveCockpitSkill = CommandDescriptor;
 
@@ -251,17 +251,14 @@ function VoiceButton({
 	isConnected,
 }: Pick<PromptProps, "config" | "voice" | "isConnected">) {
 	const recording = voice.phase === "recording";
-	const actionLabel =
-		voice.engine === "codex" ? "Talk to Codex" : "Dictate with Whisper";
-	const title = !config.voice.enabled
-		? "Enable voice in Forge"
-		: voice.engine === "codex" && !voice.ready
-			? (voice.unavailableReason ?? "Talk to Codex is unavailable")
-			: voice.engine === "local" && voice.status.state !== "ready"
-				? `Voice ${voice.status.state}`
-				: config.voice.hotkey
-					? `${actionLabel} (${displayVoiceHotkey(config.voice.hotkey)})`
-					: actionLabel;
+	const { actionLabel, title } = voiceInputPresentation({
+		enabled: config.voice.enabled,
+		engine: voice.engine,
+		ready: voice.ready,
+		unavailableReason: voice.unavailableReason,
+		localState: voice.status.state,
+		hotkey: config.voice.hotkey,
+	});
 	return (
 		<>
 			<button

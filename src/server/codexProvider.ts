@@ -10,6 +10,7 @@ import {
 	estimateCodexCost,
 } from "../lib/codexPricing";
 import {
+	buildHlidToolLoadingSummary,
 	describeHlidToolLoading,
 	HLID_WINDOWS_COMPUTER_USE_TOOL,
 } from "../lib/hlidContext";
@@ -3524,20 +3525,8 @@ export class CodexProvider implements AgentProvider {
 			true,
 		);
 		return [
-			{
-				namespace: "hlid" as const,
-				total: hlidTools.length,
-				deferred: hlidTools.filter((tool) => tool.delivery === "deferred")
-					.length,
-				tools: hlidTools,
-			},
-			{
-				namespace: "hlid_obsidian" as const,
-				total: obsidianTools.length,
-				deferred: obsidianTools.filter((tool) => tool.delivery === "deferred")
-					.length,
-				tools: obsidianTools,
-			},
+			buildHlidToolLoadingSummary("hlid", hlidTools),
+			buildHlidToolLoadingSummary("hlid_obsidian", obsidianTools),
 		];
 	}
 	readonly forkCapability = {

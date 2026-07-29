@@ -32,6 +32,18 @@ type Tool = Mark["kind"] | "pan";
 const RED = "#ef4444";
 const YELLOW = "#fde047";
 
+function markBounds(
+	start: Point,
+	end: Point,
+): [number, number, number, number] {
+	return [
+		Math.min(start.x, end.x),
+		Math.min(start.y, end.y),
+		Math.abs(end.x - start.x),
+		Math.abs(end.y - start.y),
+	];
+}
+
 function drawArrow(
 	context: CanvasRenderingContext2D,
 	start: Point,
@@ -70,21 +82,11 @@ function drawMark(context: CanvasRenderingContext2D, mark: Mark) {
 		context.stroke();
 	} else if (mark.kind === "highlight") {
 		context.fillStyle = `${YELLOW}66`;
-		context.fillRect(
-			Math.min(mark.start.x, mark.end.x),
-			Math.min(mark.start.y, mark.end.y),
-			Math.abs(mark.end.x - mark.start.x),
-			Math.abs(mark.end.y - mark.start.y),
-		);
+		context.fillRect(...markBounds(mark.start, mark.end));
 	} else if (mark.kind === "rectangle") {
 		context.strokeStyle = RED;
 		context.lineWidth = 5;
-		context.strokeRect(
-			Math.min(mark.start.x, mark.end.x),
-			Math.min(mark.start.y, mark.end.y),
-			Math.abs(mark.end.x - mark.start.x),
-			Math.abs(mark.end.y - mark.start.y),
-		);
+		context.strokeRect(...markBounds(mark.start, mark.end));
 	} else if (mark.kind === "arrow") {
 		context.strokeStyle = RED;
 		context.lineWidth = 5;

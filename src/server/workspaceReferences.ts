@@ -1,16 +1,15 @@
 import { createHash } from "node:crypto";
 import type { Dirent } from "node:fs";
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
-import { basename, relative, resolve, sep } from "node:path";
+import { basename, resolve } from "node:path";
 import type { HlidConfig } from "#/config";
 import {
 	expandTilde,
+	explicitPathEnvironment,
 	isPathAccessibleFromRuntime,
-	parseWslUncSyntax,
 	pathStartsWith,
 	samePath,
 } from "#/lib/paths";
-import { normalizeSearchText } from "#/lib/search";
 import {
 	MAX_WORKSPACE_REFERENCES,
 	type WorkspaceReferenceEnvironment,
@@ -20,6 +19,14 @@ import {
 	type WorkspaceReferenceSearchResult,
 	type WorkspaceReferenceSelection,
 } from "#/lib/vaultReferences";
+import {
+	createReferenceIndexItem,
+	finalizeReferenceIndex,
+	isSafeRelativeReference,
+	portableRelativePath,
+	referenceIndexTruncationAtLimit,
+	searchReferenceIndex,
+} from "./referencePrimitives";
 
 const INDEX_TTL_MS = 30_000;
 const MAX_INDEX_FILES = 20_000;
@@ -82,10 +89,6 @@ type WorkspaceReferenceIndex = {
 const cachedIndexes = new Map<string, WorkspaceReferenceIndex>();
 const inflightIndexes = new Map<string, Promise<WorkspaceReferenceIndex>>();
 
-function portableRelativePath(root: string, path: string): string {
-	return relative(root, path).split(sep).join("/");
-}
-
 function isKnownSecret(relativePath: string): boolean {
 	const name = basename(relativePath).toLowerCase();
 	if (
@@ -101,29 +104,15 @@ function isKnownSecret(relativePath: string): boolean {
 	return SECRET_EXTENSIONS.some((extension) => name.endsWith(extension));
 }
 
-function validRelativeReference(path: string): boolean {
-	if (
-		!path ||
-		path.includes("\0") ||
-		path.startsWith("/") ||
-		/^[A-Za-z]:/.test(path)
-	) {
-		return false;
-	}
-	return !path.split(/[\\/]+/).some((segment) => segment === ".." || !segment);
-}
-
 function environmentForPath(path: string): {
 	environment: WorkspaceReferenceEnvironment;
 	environmentLabel: string;
 } {
-	const wsl = parseWslUncSyntax(path);
-	if (wsl) {
-		return { environment: "wsl", environmentLabel: `WSL · ${wsl.distro}` };
-	}
-	if (process.platform === "win32" || /^(?:[A-Za-z]:[\\/]|\\\\)/.test(path)) {
-		return { environment: "windows", environmentLabel: "Windows" };
-	}
+	const explicit = explicitPathEnvironment(path, {
+		platform: process.platform,
+		allowWindowsUnc: true,
+	});
+	if (explicit) return explicit;
 	const distro = process.env.WSL_DISTRO_NAME;
 	return distro
 		? { environment: "wsl", environmentLabel: `WSL · ${distro}` }
@@ -190,28 +179,25 @@ async function buildIndex(root: string): Promise<WorkspaceReferenceIndex> {
 				continue;
 			}
 			if (!entry.isFile()) continue;
-			const relativePath = portableRelativePath(root, fullPath);
-			if (isKnownSecret(relativePath)) continue;
-			items.push({
-				relativePath,
-				name: entry.name,
-				directory: portableRelativePath(root, current.directory),
-			});
-			if (items.length >= MAX_INDEX_FILES) {
-				truncated = pending.length > 0 || index > 0;
-				break;
+			const item = createReferenceIndexItem(
+				root,
+				fullPath,
+				current.directory,
+				entry.name,
+			);
+			if (isKnownSecret(item.relativePath)) continue;
+			items.push(item);
+			const limitTruncation = referenceIndexTruncationAtLimit(
+				items.length,
+				MAX_INDEX_FILES,
+				pending.length > 0 || index > 0,
+			);
+			if (limitTruncation !== null) {
+				return finalizeReferenceIndex(root, items, limitTruncation, Date.now());
 			}
 		}
 	}
-	items.sort((left, right) => {
-		const leftDepth = left.relativePath.split("/").length;
-		const rightDepth = right.relativePath.split("/").length;
-		return (
-			leftDepth - rightDepth ||
-			left.relativePath.localeCompare(right.relativePath)
-		);
-	});
-	return { root, builtAt: Date.now(), items, truncated };
+	return finalizeReferenceIndex(root, items, truncated, Date.now());
 }
 
 async function getIndex(root: string): Promise<WorkspaceReferenceIndex> {
@@ -235,27 +221,12 @@ async function getIndex(root: string): Promise<WorkspaceReferenceIndex> {
 	return promise;
 }
 
-function matchRank(
-	item: WorkspaceReferenceItem,
-	normalizedQuery: string,
-): number {
-	if (!normalizedQuery) return 0;
-	const path = normalizeSearchText(item.relativePath);
-	const name = normalizeSearchText(item.name);
-	const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
-	if (!tokens.every((token) => path.includes(token))) return -1;
-	if (name.startsWith(normalizedQuery)) return 0;
-	if (name.includes(normalizedQuery)) return 1;
-	if (path.startsWith(normalizedQuery)) return 2;
-	return 3;
-}
-
 async function resolveWorkspaceFile(
 	allowedRoots: readonly string[],
 	agentCwd: string,
 	relativePath: string,
 ): Promise<{ root: string; path: string }> {
-	if (!validRelativeReference(relativePath) || isKnownSecret(relativePath)) {
+	if (!isSafeRelativeReference(relativePath) || isKnownSecret(relativePath)) {
 		throw new Error("That workspace file cannot be referenced.");
 	}
 	const root = await authorizedWorkspaceRoot(agentCwd, allowedRoots);
@@ -349,27 +320,18 @@ export async function searchWorkspaceReferences(options: {
 		configuredWorkspaceRoots(options.config),
 	);
 	const index = await getIndex(root);
-	const query = normalizeSearchText(options.query?.trim() ?? "");
-	const limit = Math.max(
-		1,
-		Math.min(options.limit ?? DEFAULT_RESULT_LIMIT, MAX_RESULT_LIMIT),
-	);
-	const matches = index.items
-		.map((item, ordinal) => ({ item, ordinal, rank: matchRank(item, query) }))
-		.filter((entry) => entry.rank >= 0)
-		.sort(
-			(left, right) =>
-				left.rank - right.rank ||
-				(query
-					? left.item.relativePath.localeCompare(right.item.relativePath)
-					: left.ordinal - right.ordinal),
-		);
+	const matches = searchReferenceIndex(index.items, {
+		query: options.query,
+		limit: options.limit,
+		defaultLimit: DEFAULT_RESULT_LIMIT,
+		maxLimit: MAX_RESULT_LIMIT,
+	});
 	return {
 		rootLabel: basename(root) || "Workspace",
 		...environmentForPath(root),
-		items: matches.slice(0, limit).map((entry) => entry.item),
-		total: matches.length,
-		truncated: index.truncated || matches.length > limit,
+		items: matches.items,
+		total: matches.total,
+		truncated: index.truncated || matches.truncated,
 	};
 }
 

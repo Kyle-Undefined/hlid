@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	buildHlidToolLoadingSummary,
 	describeHlidToolLoading,
 	HLID_AGENT_TOOL_COUNT,
 	HLID_OBSIDIAN_TOOL_COUNT,
@@ -39,6 +40,23 @@ describe("Hlid context manifest", () => {
 			{ name: "hlid_help", delivery: "deferred" },
 			{ name: "windows_computer_use", delivery: "loaded" },
 		]);
+	});
+
+	it("builds an exact namespace summary from a provider tool inventory", () => {
+		expect(
+			buildHlidToolLoadingSummary("hlid", [
+				{ name: "hlid_help", delivery: "deferred" },
+				{ name: "windows_computer_use", delivery: "loaded" },
+			]),
+		).toEqual({
+			namespace: "hlid",
+			total: 2,
+			deferred: 1,
+			tools: [
+				{ name: "hlid_help", delivery: "deferred" },
+				{ name: "windows_computer_use", delivery: "loaded" },
+			],
+		});
 	});
 
 	it.each([

@@ -25,6 +25,7 @@ import {
 	subscribeSessionsStatus,
 } from "#/hooks/wsSessionStatusStore";
 import {
+	compactDelegationDuration,
 	liveDelegationUsageLabel,
 	liveSessionReasonLabel,
 } from "#/lib/liveSessionSwitcher";
@@ -123,19 +124,6 @@ function StatusIcon({ presentation }: { presentation: StatusPresentation }) {
 	return <AlertTriangle className="h-2.5 w-2.5" />;
 }
 
-function compactDuration(seconds: number): string {
-	const totalSeconds = Math.max(0, Math.floor(seconds));
-	if (totalSeconds < 60) return `${totalSeconds}s`;
-	const totalMinutes = Math.floor(totalSeconds / 60);
-	const remainderSeconds = totalSeconds % 60;
-	if (totalMinutes < 60) {
-		return `${totalMinutes}m${remainderSeconds ? ` ${remainderSeconds}s` : ""}`;
-	}
-	const totalHours = Math.floor(totalMinutes / 60);
-	const remainderMinutes = totalMinutes % 60;
-	return `${totalHours}h${remainderMinutes ? ` ${remainderMinutes}m` : ""}`;
-}
-
 function compactCount(value: number): string {
 	if (value < 1_000) return `${Math.floor(value)}`;
 	if (value < 1_000_000) {
@@ -189,7 +177,7 @@ function directChildUsageSummary(
 	);
 	const cost = children.reduce((total, child) => total + child.cost_used, 0);
 	const elapsed = childElapsedSpanSeconds(children, now);
-	return `${compactCount(tokens)} tokens · ${compactCost(cost)} · ${compactDuration(elapsed)} elapsed`;
+	return `${compactCount(tokens)} tokens · ${compactCost(cost)} · ${compactDelegationDuration(elapsed)} elapsed`;
 }
 
 function attentionNeeded(status: SessionStatusEntry | undefined): boolean {
@@ -241,7 +229,7 @@ function ChildRow({
 		sessionStatus && attentionNeeded(sessionStatus)
 			? liveSessionReasonLabel(sessionStatus)
 			: null;
-	const duration = compactDuration(childDurationSeconds(child, now));
+	const duration = compactDelegationDuration(childDurationSeconds(child, now));
 	const openUrl = `/raven?session=${encodeURIComponent(child.child_session_id)}`;
 
 	return (

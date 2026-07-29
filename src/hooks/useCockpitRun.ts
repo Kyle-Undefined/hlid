@@ -99,6 +99,17 @@ type CockpitRunOptions = {
 	navigateToRaven: (sessionId: string, agentPath?: string) => void;
 };
 
+type CockpitRunSubmission = {
+	sessionId: string;
+	text: string;
+	skillContexts?: string[];
+	commandAction?: "review" | "computer-use" | "compact";
+	attachments: Attachment[];
+	vaultReferences: string[];
+	workspaceReferences: WorkspaceReferenceRequest[];
+	preserveComposer?: boolean;
+};
+
 function matchingLiveSession(
 	sessionId: string,
 	sessions: SessionStatusEntry[],
@@ -178,21 +189,11 @@ function navigateAfterRun(
 	options.navigateToRaven(sessionId, options.selectedAgentPath || undefined);
 }
 
-function enqueueRun(
+function runChatPayload(
 	options: CockpitRunOptions,
-	params: {
-		sessionId: string;
-		text: string;
-		skillContexts?: string[];
-		commandAction?: "review" | "computer-use" | "compact";
-		attachments: Attachment[];
-		vaultReferences: string[];
-		workspaceReferences: WorkspaceReferenceRequest[];
-		preserveComposer?: boolean;
-	},
-): void {
-	wsStore.enqueueChat({
-		id: uid(),
+	params: CockpitRunSubmission,
+) {
+	return {
 		text: params.text,
 		session_id: params.sessionId,
 		skill_contexts: params.skillContexts,
@@ -207,6 +208,16 @@ function enqueueRun(
 				: undefined,
 		plan_mode: options.planMode || undefined,
 		plan_html: (options.planMode && options.planHtml) || undefined,
+	};
+}
+
+function enqueueRun(
+	options: CockpitRunOptions,
+	params: CockpitRunSubmission,
+): void {
+	wsStore.enqueueChat({
+		id: uid(),
+		...runChatPayload(options, params),
 	});
 	if (!params.preserveComposer) clearComposer(options);
 	navigateAfterRun(options, params.sessionId);
@@ -214,34 +225,12 @@ function enqueueRun(
 
 function startRun(
 	options: CockpitRunOptions,
-	params: {
-		sessionId: string;
-		text: string;
-		skillContexts?: string[];
-		commandAction?: "review" | "computer-use" | "compact";
-		attachments: Attachment[];
-		vaultReferences: string[];
-		workspaceReferences: WorkspaceReferenceRequest[];
-		preserveComposer?: boolean;
-	},
+	params: CockpitRunSubmission,
 ): void {
 	if (!options.sameSession) resetLiveStats();
 	options.send({
 		type: "chat",
-		text: params.text,
-		session_id: params.sessionId,
-		skill_contexts: params.skillContexts,
-		command_action: params.commandAction,
-		agent_cwd: options.selectedAgentPath || undefined,
-		attachments: params.attachments.length > 0 ? params.attachments : undefined,
-		vault_references:
-			params.vaultReferences.length > 0 ? params.vaultReferences : undefined,
-		workspace_references:
-			params.workspaceReferences.length > 0
-				? params.workspaceReferences
-				: undefined,
-		plan_mode: options.planMode || undefined,
-		plan_html: (options.planMode && options.planHtml) || undefined,
+		...runChatPayload(options, params),
 	});
 	if (!options.sameSession) {
 		const activityText =

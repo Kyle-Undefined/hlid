@@ -782,6 +782,25 @@ const captureResultSchema = z.object({
 
 type CaptureResult = z.infer<typeof captureResultSchema>;
 
+async function requestProjectPreviewAction(
+	action: "capture" | "control",
+	errorLabel: string,
+	sessionId: string,
+	previewId: string | undefined,
+	body: Record<string, unknown>,
+): Promise<CaptureResult> {
+	const previewPath = previewId
+		? `/api/project-previews/${encodeURIComponent(previewId)}`
+		: "/api/project-previews/session";
+	const response = await dbFetch(`${previewPath}/${action}`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ session_id: sessionId, ...body }),
+	});
+	await requireDbOk(response, errorLabel);
+	return captureResultSchema.parse(await response.json());
+}
+
 async function requestProjectPreviewCapture(
 	input: unknown,
 	context: HlidAgentToolContext,
@@ -790,23 +809,19 @@ async function requestProjectPreviewCapture(
 		throw new Error("Hlid could not resolve the active session.");
 	}
 	const parsed = hlidAgentSchemas.capture_project_preview.parse(input);
-	const previewPath = parsed.preview_id
-		? `/api/project-previews/${encodeURIComponent(parsed.preview_id)}`
-		: "/api/project-previews/session";
-	const response = await dbFetch(`${previewPath}/capture`, {
-		method: "POST",
-		headers: { "content-type": "application/json" },
-		body: JSON.stringify({
-			session_id: context.sessionId,
+	return requestProjectPreviewAction(
+		"capture",
+		"Capture Project Preview",
+		context.sessionId,
+		parsed.preview_id,
+		{
 			...(parsed.path ? { path: parsed.path } : {}),
 			...(parsed.viewport ? { viewport: parsed.viewport } : {}),
 			...(parsed.full_page !== undefined
 				? { full_page: parsed.full_page }
 				: {}),
-		}),
-	});
-	await requireDbOk(response, "Capture Project Preview");
-	return captureResultSchema.parse(await response.json());
+		},
+	);
 }
 
 async function requestProjectPreviewControl(
@@ -817,20 +832,14 @@ async function requestProjectPreviewControl(
 		throw new Error("Hlid could not resolve the active session.");
 	}
 	const parsed = hlidAgentSchemas.control_project_preview.parse(input);
-	const previewPath = parsed.preview_id
-		? `/api/project-previews/${encodeURIComponent(parsed.preview_id)}`
-		: "/api/project-previews/session";
-	const response = await dbFetch(`${previewPath}/control`, {
-		method: "POST",
-		headers: { "content-type": "application/json" },
-		body: JSON.stringify({
-			session_id: context.sessionId,
-			...parsed,
-			preview_id: undefined,
-		}),
-	});
-	await requireDbOk(response, "Control Project Preview");
-	return captureResultSchema.parse(await response.json());
+	const { preview_id: previewId, ...body } = parsed;
+	return requestProjectPreviewAction(
+		"control",
+		"Control Project Preview",
+		context.sessionId,
+		previewId,
+		body,
+	);
 }
 
 function captureMetadata(

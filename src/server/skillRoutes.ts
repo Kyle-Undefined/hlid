@@ -39,6 +39,27 @@ async function readPostJson<T>(
 	}
 }
 
+function readSkillContentRequest(
+	url: URL,
+	request: Request,
+	invalidIdError: string,
+): { ok: true; id: string } | { ok: false; response: Response } {
+	if (request.method !== "GET") {
+		return {
+			ok: false,
+			response: new Response("Method Not Allowed", { status: 405 }),
+		};
+	}
+	const id = url.searchParams.get("id");
+	if (!id || !/^[0-9a-f]{24}$/.test(id)) {
+		return {
+			ok: false,
+			response: Response.json({ error: invalidIdError }, { status: 400 }),
+		};
+	}
+	return { ok: true, id };
+}
+
 export async function handleSkillRoute(
 	url: URL,
 	request: Request,
@@ -91,14 +112,13 @@ export async function handleSkillRoute(
 		}
 	}
 	if (url.pathname === "/skills/managed/content") {
-		if (request.method !== "GET") {
-			return new Response("Method Not Allowed", { status: 405 });
-		}
-		const id = url.searchParams.get("id");
-		if (!id || !/^[0-9a-f]{24}$/.test(id)) {
-			return Response.json({ error: "invalid_managed_skill" }, { status: 400 });
-		}
-		const document = await readManagedSkillDocument(id);
+		const parsed = readSkillContentRequest(
+			url,
+			request,
+			"invalid_managed_skill",
+		);
+		if (!parsed.ok) return parsed.response;
+		const document = await readManagedSkillDocument(parsed.id);
 		return document
 			? Response.json(document)
 			: Response.json({ error: "managed_skill_not_found" }, { status: 404 });
@@ -196,16 +216,11 @@ export async function handleSkillRoute(
 		}
 	}
 	if (url.pathname === "/skills/content") {
-		if (request.method !== "GET") {
-			return new Response("Method Not Allowed", { status: 405 });
-		}
-		const id = url.searchParams.get("id");
-		if (!id || !/^[0-9a-f]{24}$/.test(id)) {
-			return Response.json({ error: "invalid_skill_id" }, { status: 400 });
-		}
+		const parsed = readSkillContentRequest(url, request, "invalid_skill_id");
+		if (!parsed.ok) return parsed.response;
 		try {
 			const document = await readDiscoveredSkillDocument({
-				id,
+				id: parsed.id,
 				config,
 				providers,
 			});

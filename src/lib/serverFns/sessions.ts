@@ -22,6 +22,7 @@ import {
 	sessionToolEventSchema,
 	terminalSessionSchema,
 } from "#/lib/serverFnSchemas";
+import { patchSession } from "#/lib/sessionMutationClient";
 import type { SessionStatusEntry } from "#/server/protocol";
 
 // These reads enrich an already-readable transcript. A transient internal
@@ -68,31 +69,19 @@ export const getLiveSessionsFn = createServerFn({ method: "GET" }).handler(() =>
 
 export const renameSessionFn = createServerFn({ method: "POST" })
 	.validator((raw) => sessionRenameSchema.parse(raw))
-	.handler(async ({ data }) => {
-		await requireDbOk(
-			await dbFetch(`/db/session?id=${encodeURIComponent(data.id)}`, {
-				method: "PATCH",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ label: data.label }),
-			}),
-			"rename session",
-		);
-		return { ok: true };
-	});
+	.handler(({ data }) =>
+		patchSession(data.id, { label: data.label }, "rename session"),
+	);
 
 export const setSessionArchivedFn = createServerFn({ method: "POST" })
 	.validator((raw) => sessionArchiveSchema.parse(raw))
-	.handler(async ({ data }) => {
-		await requireDbOk(
-			await dbFetch(`/db/session?id=${encodeURIComponent(data.id)}`, {
-				method: "PATCH",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ archived: data.archived }),
-			}),
+	.handler(({ data }) =>
+		patchSession(
+			data.id,
+			{ archived: data.archived },
 			data.archived ? "archive session" : "restore session",
-		);
-		return { ok: true };
-	});
+		),
+	);
 
 const sessionIdsSchema = z.array(sessionIdSchema).max(64);
 

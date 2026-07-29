@@ -398,6 +398,18 @@ export class ProjectPreviewManager {
 		this.schedulePersist(entry);
 	}
 
+	private requireSessionEntry(
+		sessionId: string,
+		previewId?: string,
+	): PreviewEntry {
+		const id = previewId ?? this.bySession.get(sessionId);
+		const entry = id ? this.entries.get(id) : undefined;
+		if (!entry || entry.snapshot.session_id !== sessionId) {
+			throw new Error("Project preview not found for this session.");
+		}
+		return entry;
+	}
+
 	async start(
 		input: StartProjectPreviewInput,
 	): Promise<ProjectPreviewSnapshot> {
@@ -540,11 +552,7 @@ export class ProjectPreviewManager {
 	}
 
 	inspect(sessionId: string, previewId?: string): ProjectPreviewSnapshot {
-		const id = previewId ?? this.bySession.get(sessionId);
-		const entry = id ? this.entries.get(id) : undefined;
-		if (!entry || entry.snapshot.session_id !== sessionId) {
-			throw new Error("Project preview not found for this session.");
-		}
+		const entry = this.requireSessionEntry(sessionId, previewId);
 		return { ...entry.snapshot, logs: [...entry.snapshot.logs] };
 	}
 
@@ -561,11 +569,7 @@ export class ProjectPreviewManager {
 		previewId?: string,
 		reason = "explicit",
 	): Promise<ProjectPreviewSnapshot> {
-		const id = previewId ?? this.bySession.get(sessionId);
-		const entry = id ? this.entries.get(id) : undefined;
-		if (!entry || entry.snapshot.session_id !== sessionId) {
-			throw new Error("Project preview not found for this session.");
-		}
+		const entry = this.requireSessionEntry(sessionId, previewId);
 		entry.stopping = true;
 		entry.snapshot.stop_reason = reason;
 		disposeProjectPreviewRelay(entry.snapshot.id);

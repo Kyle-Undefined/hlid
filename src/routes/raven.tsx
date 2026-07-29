@@ -153,7 +153,7 @@ import {
 } from "#/lib/serverFns/sessions";
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import { uid } from "#/lib/utils";
-import { displayVoiceHotkey } from "#/lib/voiceHotkey";
+import { voiceInputPresentation } from "#/lib/voiceInputPresentation";
 import {
 	type ChatAttachment,
 	decisionFromScope,
@@ -3916,8 +3916,14 @@ function ChatVoiceControls(props: ChatVoiceControlsProps) {
 	const { wsStatus, isRunning } = runtime;
 	const processing =
 		voice.phase === "transcribing" || voice.phase === "submitting";
-	const actionLabel =
-		voice.engine === "codex" ? "Talk to Codex" : "Dictate with Whisper";
+	const { actionLabel, title } = voiceInputPresentation({
+		enabled: config.voice.enabled,
+		engine: voice.engine,
+		ready: voice.ready,
+		unavailableReason: voice.unavailableReason,
+		localState: voice.status.state,
+		hotkey: config.voice.hotkey,
+	});
 	const liveActive =
 		voice.livePhase === "starting" || voice.livePhase === "connected";
 	return (
@@ -3938,17 +3944,7 @@ function ChatVoiceControls(props: ChatVoiceControlsProps) {
 				aria-label={
 					voice.phase === "recording" ? "Stop recording" : actionLabel
 				}
-				title={
-					!config.voice.enabled
-						? "Enable voice in Forge"
-						: voice.engine === "codex" && !voice.ready
-							? (voice.unavailableReason ?? "Talk to Codex is unavailable")
-							: voice.engine === "local" && voice.status.state !== "ready"
-								? `Voice ${voice.status.state}`
-								: config.voice.hotkey
-									? `${actionLabel} (${displayVoiceHotkey(config.voice.hotkey)})`
-									: actionLabel
-				}
+				title={title}
 			>
 				{voice.phase === "recording" ? (
 					<Square className="w-3.5 h-3.5 fill-current" />

@@ -14,18 +14,19 @@ import { type ReactNode, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { ImageViewerModal } from "#/components/ImageViewerModal";
 import {
-	applyProjectPreview,
 	requestProjectPreviewPresentation,
 	useProjectPreview,
 	useProjectPreviewUnavailable,
 } from "#/hooks/projectPreviewStore";
 import { loadToolEventDetail } from "#/hooks/toolEventDetailStore";
 import {
+	type ProjectPreviewAction,
+	useProjectPreviewActions,
+} from "#/hooks/useProjectPreviewActions";
+import {
 	getProjectPreviewAgentFrameFn,
 	type ProjectPreviewAgentFrame,
 	type ProjectPreviewSnapshot,
-	restartProjectPreviewFn,
-	stopProjectPreviewFn,
 } from "#/lib/serverFns/projectPreviews";
 import type { ToolEventMessage } from "#/server/protocol";
 
@@ -571,6 +572,58 @@ function ProjectPreviewActivityEvent({
 
 const projectPreviewOpenOverrides = new Map<string, boolean>();
 
+function ProjectPreviewInlineActions({
+	sessionId,
+	pendingAction,
+	runAction,
+}: {
+	sessionId: string;
+	pendingAction: ProjectPreviewAction | null;
+	runAction: (action: ProjectPreviewAction) => Promise<void>;
+}) {
+	return (
+		<>
+			<button
+				type="button"
+				onClick={() => requestProjectPreviewPresentation(sessionId)}
+				className="p-1.5 text-muted-foreground/60 hover:text-primary"
+				title="Show preview"
+				aria-label="Show preview"
+			>
+				<Eye className="h-3.5 w-3.5" />
+			</button>
+			<button
+				type="button"
+				onClick={() => void runAction("restart")}
+				disabled={pendingAction !== null}
+				className="p-1.5 text-muted-foreground/60 hover:text-primary disabled:opacity-30"
+				title="Restart preview"
+				aria-label="Restart preview"
+			>
+				{pendingAction === "restart" ? (
+					<LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+				) : (
+					<RotateCcw className="h-3.5 w-3.5" />
+				)}
+			</button>
+			<button
+				type="button"
+				onClick={() => void runAction("stop")}
+				disabled={pendingAction !== null}
+				className="p-1.5 text-muted-foreground/60 hover:text-destructive disabled:opacity-30"
+				title="Stop preview"
+				aria-label="Stop preview"
+			>
+				{pendingAction === "stop" ? (
+					<LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+				) : (
+					<Square className="h-3.5 w-3.5" />
+				)}
+			</button>
+		</>
+	);
+}
+
 export function ProjectPreviewActivityCard({
 	events,
 	permissionLabels,
@@ -632,8 +685,11 @@ export function ProjectPreviewActivityCard({
 	);
 	const open = openOverride ?? Boolean(active || ready);
 	const [activityOpen, setActivityOpen] = useState(false);
-	const [pending, setPending] = useState<"restart" | "stop" | null>(null);
-	const [error, setError] = useState<string | null>(null);
+	const {
+		error,
+		pendingAction: pending,
+		runAction: act,
+	} = useProjectPreviewActions(preview);
 
 	useEffect(() => {
 		setOpenOverride(projectPreviewOpenOverrides.get(stateKey) ?? null);
@@ -643,27 +699,6 @@ export function ProjectPreviewActivityCard({
 		const next = !open;
 		projectPreviewOpenOverrides.set(stateKey, next);
 		setOpenOverride(next);
-	};
-
-	const act = async (action: "restart" | "stop") => {
-		if (!preview) return;
-		setPending(action);
-		setError(null);
-		try {
-			const next =
-				action === "restart"
-					? await restartProjectPreviewFn({
-							data: { sessionId: preview.session_id, previewId: preview.id },
-						})
-					: await stopProjectPreviewFn({
-							data: { sessionId: preview.session_id, previewId: preview.id },
-						});
-			applyProjectPreview(next);
-		} catch (cause) {
-			setError(cause instanceof Error ? cause.message : String(cause));
-		} finally {
-			setPending(null);
-		}
 	};
 
 	const state =
@@ -725,47 +760,11 @@ export function ProjectPreviewActivityCard({
 					</span>
 				</button>
 				{preview && state !== "stopped" && (
-					<>
-						<button
-							type="button"
-							onClick={() =>
-								requestProjectPreviewPresentation(preview.session_id)
-							}
-							className="p-1.5 text-muted-foreground/60 hover:text-primary"
-							title="Show preview"
-							aria-label="Show preview"
-						>
-							<Eye className="h-3.5 w-3.5" />
-						</button>
-						<button
-							type="button"
-							onClick={() => void act("restart")}
-							disabled={pending !== null}
-							className="p-1.5 text-muted-foreground/60 hover:text-primary disabled:opacity-30"
-							title="Restart preview"
-							aria-label="Restart preview"
-						>
-							{pending === "restart" ? (
-								<LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-							) : (
-								<RotateCcw className="h-3.5 w-3.5" />
-							)}
-						</button>
-						<button
-							type="button"
-							onClick={() => void act("stop")}
-							disabled={pending !== null}
-							className="p-1.5 text-muted-foreground/60 hover:text-destructive disabled:opacity-30"
-							title="Stop preview"
-							aria-label="Stop preview"
-						>
-							{pending === "stop" ? (
-								<LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-							) : (
-								<Square className="h-3.5 w-3.5" />
-							)}
-						</button>
-					</>
+					<ProjectPreviewInlineActions
+						sessionId={preview.session_id}
+						pendingAction={pending}
+						runAction={act}
+					/>
 				)}
 			</div>
 			{open && (
@@ -826,30 +825,12 @@ export function ProjectPreviewToolBlock({
 					error: "This preview is no longer running.",
 				}
 			: historical);
-	const [pending, setPending] = useState<"restart" | "stop" | null>(null);
-	const [error, setError] = useState<string | null>(null);
+	const {
+		error,
+		pendingAction: pending,
+		runAction: act,
+	} = useProjectPreviewActions(preview);
 	const isStart = event.name.endsWith("start_project_preview");
-
-	const act = async (action: "restart" | "stop") => {
-		if (!preview) return;
-		setPending(action);
-		setError(null);
-		try {
-			const next =
-				action === "restart"
-					? await restartProjectPreviewFn({
-							data: { sessionId: preview.session_id, previewId: preview.id },
-						})
-					: await stopProjectPreviewFn({
-							data: { sessionId: preview.session_id, previewId: preview.id },
-						});
-			applyProjectPreview(next);
-		} catch (cause) {
-			setError(cause instanceof Error ? cause.message : String(cause));
-		} finally {
-			setPending(null);
-		}
-	};
 
 	const state = preview?.state ?? (event.isError ? "failed" : "starting");
 	const statusTone =
@@ -881,47 +862,11 @@ export function ProjectPreviewToolBlock({
 					</div>
 				</div>
 				{preview && state !== "stopped" && (
-					<>
-						<button
-							type="button"
-							onClick={() =>
-								requestProjectPreviewPresentation(preview.session_id)
-							}
-							className="p-1.5 text-muted-foreground/60 hover:text-primary"
-							title="Show preview"
-							aria-label="Show preview"
-						>
-							<Eye className="h-3.5 w-3.5" />
-						</button>
-						<button
-							type="button"
-							onClick={() => void act("restart")}
-							disabled={pending !== null}
-							className="p-1.5 text-muted-foreground/60 hover:text-primary disabled:opacity-30"
-							title="Restart preview"
-							aria-label="Restart preview"
-						>
-							{pending === "restart" ? (
-								<LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-							) : (
-								<RotateCcw className="h-3.5 w-3.5" />
-							)}
-						</button>
-						<button
-							type="button"
-							onClick={() => void act("stop")}
-							disabled={pending !== null}
-							className="p-1.5 text-muted-foreground/60 hover:text-destructive disabled:opacity-30"
-							title="Stop preview"
-							aria-label="Stop preview"
-						>
-							{pending === "stop" ? (
-								<LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-							) : (
-								<Square className="h-3.5 w-3.5" />
-							)}
-						</button>
-					</>
+					<ProjectPreviewInlineActions
+						sessionId={preview.session_id}
+						pendingAction={pending}
+						runAction={act}
+					/>
 				)}
 			</div>
 			{permissionLabel && (

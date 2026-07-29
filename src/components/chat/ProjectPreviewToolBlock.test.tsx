@@ -1,5 +1,11 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("#/hooks/projectPreviewStore", () => ({
@@ -17,25 +23,62 @@ vi.mock("#/lib/serverFns/projectPreviews", () => ({
 	stopProjectPreviewFn: vi.fn(),
 }));
 
+import {
+	applyProjectPreview,
+	requestProjectPreviewPresentation,
+} from "#/hooks/projectPreviewStore";
 import { loadToolEventDetail } from "#/hooks/toolEventDetailStore";
 import {
 	getProjectPreviewAgentFrameFn,
 	type ProjectPreviewAgentFrame,
 	type ProjectPreviewSnapshot,
+	restartProjectPreviewFn,
+	stopProjectPreviewFn,
 } from "#/lib/serverFns/projectPreviews";
 import {
 	groupProjectPreviewEventLifecycles,
 	ProjectPreviewActivityCard,
 	ProjectPreviewCaptureToolBlock,
+	ProjectPreviewToolBlock,
 	selectActiveProjectPreviewEvents,
 } from "./ProjectPreviewToolBlock";
 
 afterEach(() => {
 	cleanup();
+	vi.clearAllMocks();
 	vi.mocked(getProjectPreviewAgentFrameFn).mockReset();
 	vi.mocked(getProjectPreviewAgentFrameFn).mockResolvedValue(null);
 	vi.mocked(loadToolEventDetail).mockReset();
 });
+
+function snapshotEvent(
+	id: string,
+	previewId: string,
+	state: "ready" | "stopped",
+) {
+	return {
+		type: "tool_event" as const,
+		id,
+		name: "mcp__hlid__start_project_preview",
+		input: {},
+		result: JSON.stringify({
+			id: previewId,
+			session_id: "lifecycle-session",
+			label: previewId,
+			command: "bun run dev",
+			cwd: "/work",
+			port: 4173,
+			path: "/",
+			url: "http://127.0.0.1:4173/",
+			relay_url: `/api/project-previews/${previewId}/relay/`,
+			state,
+			present: true,
+			started_at: "2026-07-24T10:00:00.000Z",
+			expires_at: "2026-07-24T14:00:00.000Z",
+			logs: [],
+		}),
+	};
+}
 
 describe("ProjectPreviewCaptureToolBlock", () => {
 	it("shows capture provenance without presenting it as a Relic", () => {
@@ -198,6 +241,52 @@ describe("ProjectPreviewActivityCard", () => {
 		expect(screen.getByText("Start")).toBeTruthy();
 		expect(screen.getByText("Capture")).toBeTruthy();
 		expect(screen.getByText(/mobile · 390×844 · \/settings/i)).toBeTruthy();
+	});
+
+	it("shares lifecycle controls across grouped and standalone displays", async () => {
+		const event = snapshotEvent("start-actions", "preview-actions", "ready");
+		const current = JSON.parse(event.result) as ProjectPreviewSnapshot;
+		const restarted = {
+			...current,
+			id: "preview-restarted",
+		};
+		const stopped = {
+			...current,
+			state: "stopped" as const,
+		};
+		vi.mocked(restartProjectPreviewFn).mockResolvedValueOnce(restarted);
+		vi.mocked(stopProjectPreviewFn).mockResolvedValueOnce(stopped);
+
+		const grouped = render(
+			<ProjectPreviewActivityCard events={[event]} active />,
+		);
+		fireEvent.click(screen.getByLabelText("Show preview"));
+		expect(requestProjectPreviewPresentation).toHaveBeenCalledWith(
+			current.session_id,
+		);
+		fireEvent.click(screen.getByLabelText("Restart preview"));
+		await waitFor(() =>
+			expect(restartProjectPreviewFn).toHaveBeenCalledWith({
+				data: {
+					sessionId: current.session_id,
+					previewId: current.id,
+				},
+			}),
+		);
+		expect(applyProjectPreview).toHaveBeenCalledWith(restarted);
+
+		grouped.unmount();
+		render(<ProjectPreviewToolBlock event={event} />);
+		fireEvent.click(screen.getByLabelText("Stop preview"));
+		await waitFor(() =>
+			expect(stopProjectPreviewFn).toHaveBeenCalledWith({
+				data: {
+					sessionId: current.session_id,
+					previewId: current.id,
+				},
+			}),
+		);
+		expect(applyProjectPreview).toHaveBeenLastCalledWith(stopped);
 	});
 
 	it("opens the exact agent capture from its activity action", async () => {
@@ -558,35 +647,6 @@ describe("ProjectPreviewActivityCard", () => {
 });
 
 describe("selectActiveProjectPreviewEvents", () => {
-	function snapshotEvent(
-		id: string,
-		previewId: string,
-		state: "ready" | "stopped",
-	) {
-		return {
-			type: "tool_event" as const,
-			id,
-			name: "mcp__hlid__start_project_preview",
-			input: {},
-			result: JSON.stringify({
-				id: previewId,
-				session_id: "lifecycle-session",
-				label: previewId,
-				command: "bun run dev",
-				cwd: "/work",
-				port: 4173,
-				path: "/",
-				url: "http://127.0.0.1:4173/",
-				relay_url: `/api/project-previews/${previewId}/relay/`,
-				state,
-				present: true,
-				started_at: "2026-07-24T10:00:00.000Z",
-				expires_at: "2026-07-24T14:00:00.000Z",
-				logs: [],
-			}),
-		};
-	}
-
 	it("groups only the latest active lifecycle", () => {
 		const oldStart = snapshotEvent("old-start", "old-preview", "ready");
 		const oldStop = {

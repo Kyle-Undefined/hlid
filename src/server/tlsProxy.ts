@@ -1,6 +1,5 @@
 import { createHash, X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
-import type { ServerWebSocket } from "bun";
 import { isAllowedOrigin, isAllowedOriginHeader } from "../lib/allowedOrigin";
 import { registerBunServer } from "../lib/lifecycle";
 import { isPublicPath } from "../lib/publicPath";
@@ -17,16 +16,15 @@ import {
 import { createRequestObserver } from "./requestDiagnostics";
 import { createConcurrencyGate, readRequestBodyLimited } from "./requestLimits";
 import type { UiForward } from "./uiServer";
+import {
+	createWebSocketBridgeHandlers,
+	type WebSocketBridgeData,
+} from "./webSocketBridge";
 
-type WsData = {
-	wsTarget: string;
-	back: WebSocket | null;
-	queue: (string | ArrayBuffer)[];
+type WsData = WebSocketBridgeData & {
 	forwardHeaders?: Record<string, string>;
-	protocols?: string[];
 };
 
-const MAX_WS_QUEUE = 100;
 const MAX_BUFFERED_FORWARDS = 16;
 export const MAX_TLS_PUBLIC_BODY_BYTES = 2 * 1024;
 const DEFAULT_FORWARD_TIMEOUT_MS = 30_000;
@@ -273,69 +271,12 @@ export type TlsProxyOptions = {
 };
 
 function createTlsWebSocketHandlers(internalToken: string) {
-	return {
-		open(ws: ServerWebSocket<WsData>) {
-			ws.data.queue = [];
-			const BunWebSocket = WebSocket as unknown as new (
-				url: string,
-				options: {
-					headers: Record<string, string>;
-					protocols?: string[];
-				},
-			) => WebSocket;
-			const back = new BunWebSocket(ws.data.wsTarget, {
-				headers: {
-					"x-hlid-internal": internalToken,
-					...(ws.data.forwardHeaders ?? {}),
-				},
-				protocols: ws.data.protocols,
-			});
-			ws.data.back = back;
-			const connectTimeout = setTimeout(() => {
-				if (back.readyState === WebSocket.CONNECTING) {
-					ws.data.queue = [];
-					back.close();
-					ws.close();
-				}
-			}, 10_000);
-			back.onopen = () => {
-				clearTimeout(connectTimeout);
-				for (const message of ws.data.queue) ws.data.back?.send(message);
-				ws.data.queue = [];
-			};
-			back.onmessage = (event) => {
-				if (ws.readyState === WebSocket.OPEN) ws.send(event.data);
-			};
-			back.onclose = () => {
-				clearTimeout(connectTimeout);
-				ws.close();
-			};
-			back.onerror = () => {
-				clearTimeout(connectTimeout);
-				ws.close();
-			};
-		},
-		message(ws: ServerWebSocket<WsData>, data: string | Buffer) {
-			const payload: string | ArrayBuffer =
-				typeof data === "string"
-					? data
-					: (data.buffer.slice(
-							data.byteOffset,
-							data.byteOffset + data.byteLength,
-						) as ArrayBuffer);
-			if (ws.data.back?.readyState === WebSocket.OPEN) {
-				ws.data.back.send(payload);
-			} else if (ws.data.back?.readyState === WebSocket.CONNECTING) {
-				if (ws.data.queue.length >= MAX_WS_QUEUE) ws.data.queue.shift();
-				ws.data.queue.push(payload);
-			} else {
-				ws.close();
-			}
-		},
-		close(ws: ServerWebSocket<WsData>) {
-			ws.data.back?.close();
-		},
-	};
+	return createWebSocketBridgeHandlers<WsData>({
+		headers: (data) => ({
+			"x-hlid-internal": internalToken,
+			...(data.forwardHeaders ?? {}),
+		}),
+	});
 }
 
 export function startTlsProxy({

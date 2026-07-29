@@ -7,6 +7,7 @@ import {
 	canonical,
 	declaredPathKey,
 	expandTilde,
+	explicitPathEnvironment,
 	isPathAccessibleFromRuntime,
 	LIBRARY_DIR,
 	PRICING_OVERRIDES_PATH,
@@ -86,6 +87,43 @@ describe("declaredPathKey", () => {
 		expect(
 			declaredPathKey("\\\\wsl.localhost\\Ubuntu\\home\\kyle\\Other"),
 		).not.toBe(declaredPathKey("\\\\wsl$\\Ubuntu\\home\\kyle\\other"));
+	});
+});
+
+describe("explicitPathEnvironment", () => {
+	it("classifies WSL shares and Windows drive paths from explicit inputs", () => {
+		expect(
+			explicitPathEnvironment("\\\\wsl$\\Ubuntu\\home\\kyle", {
+				platform: "linux",
+			}),
+		).toEqual({
+			environment: "wsl",
+			environmentLabel: "WSL · Ubuntu",
+		});
+		expect(
+			explicitPathEnvironment("C:\\Users\\Kyle", { platform: "linux" }),
+		).toEqual({
+			environment: "windows",
+			environmentLabel: "Windows",
+		});
+	});
+
+	it("leaves fallback policy to callers, including ordinary UNC paths", () => {
+		expect(
+			explicitPathEnvironment("/home/kyle", { platform: "linux" }),
+		).toBeNull();
+		expect(
+			explicitPathEnvironment("\\\\server\\share", { platform: "linux" }),
+		).toBeNull();
+		expect(
+			explicitPathEnvironment("\\\\server\\share", {
+				platform: "linux",
+				allowWindowsUnc: true,
+			}),
+		).toEqual({
+			environment: "windows",
+			environmentLabel: "Windows",
+		});
 	});
 });
 

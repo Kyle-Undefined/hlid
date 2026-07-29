@@ -48,6 +48,7 @@ type CapturedServerOptions = {
 		},
 	) => Promise<Response | undefined>;
 	websocket: {
+		open: (ws: TestClientSocket) => void;
 		message: (ws: TestClientSocket, data: string | Uint8Array) => void;
 		close: (ws: TestClientSocket) => void;
 	};
@@ -61,8 +62,11 @@ type TestBackendSocket = {
 
 type TestClientSocket = {
 	data: {
+		wsTarget?: string;
 		back: TestBackendSocket | null;
 		queue: (string | ArrayBuffer)[];
+		forwardHeaders?: Record<string, string>;
+		protocols?: string[];
 	};
 	close: ReturnType<typeof vi.fn>;
 };
@@ -134,6 +138,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.useRealTimers();
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 });
@@ -264,6 +269,94 @@ describe("TLS proxy server boundary", () => {
 
 		mainServer().websocket.close(client);
 		expect(client.data.back.close).toHaveBeenCalledOnce();
+	});
+
+	it("opens the WebSocket bridge with internal headers and times out a stalled backend", () => {
+		vi.useFakeTimers();
+		const backends: Array<{
+			url: string;
+			options: {
+				headers: Record<string, string>;
+				protocols?: string[];
+			};
+			readyState: number;
+			send: ReturnType<typeof vi.fn>;
+			close: ReturnType<typeof vi.fn>;
+			onopen: (() => void) | null;
+		}> = [];
+		class FakeWebSocket {
+			static readonly CONNECTING = 0;
+			static readonly OPEN = 1;
+			static readonly CLOSING = 2;
+			static readonly CLOSED = 3;
+			readonly url: string;
+			readonly options: {
+				headers: Record<string, string>;
+				protocols?: string[];
+			};
+			readyState = FakeWebSocket.CONNECTING;
+			send = vi.fn();
+			close = vi.fn();
+			onopen: (() => void) | null = null;
+			onmessage: ((event: MessageEvent) => void) | null = null;
+			onclose: (() => void) | null = null;
+			onerror: (() => void) | null = null;
+
+			constructor(
+				url: string,
+				options: {
+					headers: Record<string, string>;
+					protocols?: string[];
+				},
+			) {
+				this.url = url;
+				this.options = options;
+				backends.push(this);
+			}
+		}
+		vi.stubGlobal("WebSocket", FakeWebSocket);
+		start();
+
+		const connectedClient: TestClientSocket = {
+			data: {
+				wsTarget: "ws://127.0.0.1:3001/ws/connected",
+				back: null,
+				queue: ["queued"],
+				forwardHeaders: { cookie: "hlid_session=preview" },
+				protocols: ["vite-hmr"],
+			},
+			close: vi.fn(),
+		};
+		mainServer().websocket.open(connectedClient);
+		const connectedBackend = backends[0];
+		expect(connectedBackend).toMatchObject({
+			url: "ws://127.0.0.1:3001/ws/connected",
+			options: {
+				headers: {
+					"x-hlid-internal": "internal-secret",
+					cookie: "hlid_session=preview",
+				},
+				protocols: ["vite-hmr"],
+			},
+		});
+		connectedBackend?.onopen?.();
+		expect(connectedBackend?.send).toHaveBeenCalledWith("queued");
+		expect(connectedClient.data.queue).toEqual([]);
+
+		const stalledClient: TestClientSocket = {
+			data: {
+				wsTarget: "ws://127.0.0.1:3001/ws/stalled",
+				back: null,
+				queue: ["stale"],
+			},
+			close: vi.fn(),
+		};
+		mainServer().websocket.open(stalledClient);
+		const stalledBackend = backends[1];
+		vi.advanceTimersByTime(10_000);
+		expect(stalledClient.data.queue).toEqual([]);
+		expect(stalledBackend?.close).toHaveBeenCalledOnce();
+		expect(stalledClient.close).toHaveBeenCalledOnce();
 	});
 
 	it("isolates authenticated preview relay traffic on the adjacent TLS port", async () => {

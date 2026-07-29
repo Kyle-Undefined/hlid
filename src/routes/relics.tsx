@@ -129,6 +129,18 @@ type SkillRemoveResult = {
 	removed: { id: string; name: string };
 };
 
+async function loadSkillDocument(
+	path: string,
+	operation: string,
+	timeoutMs?: number,
+): Promise<SkillDocumentResult> {
+	const response = await dbFetch(path, {
+		...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
+	});
+	await requireDbOk(response, operation);
+	return response.json() as Promise<SkillDocumentResult>;
+}
+
 const discoverSkillsFn = createServerFn({ method: "GET" }).handler(async () => {
 	const response = await dbFetch("/skills/catalog", {
 		signal: AbortSignal.timeout(15_000),
@@ -139,14 +151,13 @@ const discoverSkillsFn = createServerFn({ method: "GET" }).handler(async () => {
 
 const readSkillDocumentFn = createServerFn({ method: "GET" })
 	.validator((data: { id: string }) => data)
-	.handler(async ({ data }) => {
-		const response = await dbFetch(
+	.handler(({ data }) =>
+		loadSkillDocument(
 			`/skills/content?id=${encodeURIComponent(data.id)}`,
-			{ signal: AbortSignal.timeout(15_000) },
-		);
-		await requireDbOk(response, "Read SKILL.md");
-		return response.json() as Promise<SkillDocumentResult>;
-	});
+			"Read SKILL.md",
+			15_000,
+		),
+	);
 
 const importSkillsFn = createServerFn({ method: "POST" })
 	.validator((data: { ids: string[] }) => data)
@@ -246,13 +257,12 @@ const discardStagedSkillFn = createServerFn({ method: "POST" })
 
 const readManagedSkillFn = createServerFn({ method: "GET" })
 	.validator((data: { id: string }) => data)
-	.handler(async ({ data }) => {
-		const response = await dbFetch(
+	.handler(({ data }) =>
+		loadSkillDocument(
 			`/skills/managed/content?id=${encodeURIComponent(data.id)}`,
-		);
-		await requireDbOk(response, "Read managed SKILL.md");
-		return response.json() as Promise<SkillDocumentResult>;
-	});
+			"Read managed SKILL.md",
+		),
+	);
 
 export const Route = createFileRoute("/relics")({
 	loader: async () => {

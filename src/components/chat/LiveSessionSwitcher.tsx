@@ -32,6 +32,17 @@ import { displayHotkey, matchesHotkey } from "#/lib/voiceHotkey";
 
 const MOBILE_HISTORY_KEY = "__hlidLiveSessionSwitcher";
 
+function clearMobileHistoryMarker(marker: { current: boolean }): void {
+	if (!marker.current) return;
+	const current = window.history.state as Record<string, unknown> | null;
+	if (current?.[MOBILE_HISTORY_KEY]) {
+		const next = { ...current };
+		delete next[MOBILE_HISTORY_KEY];
+		window.history.replaceState(next, "");
+	}
+	marker.current = false;
+}
+
 type LiveSessionSwitcherProps = {
 	children: ReactNode;
 	currentSessionId: string;
@@ -398,17 +409,6 @@ export function LiveSessionSwitcher({
 	const [open, setOpen] = useState(false);
 	const mobileHistoryPushedRef = useRef(false);
 
-	function clearMobileHistoryMarker(): void {
-		if (!mobileHistoryPushedRef.current) return;
-		const current = window.history.state as Record<string, unknown> | null;
-		if (current?.[MOBILE_HISTORY_KEY]) {
-			const next = { ...current };
-			delete next[MOBILE_HISTORY_KEY];
-			window.history.replaceState(next, "");
-		}
-		mobileHistoryPushedRef.current = false;
-	}
-
 	function openDrawer(): void {
 		if (document.activeElement instanceof HTMLElement) {
 			document.activeElement.blur();
@@ -433,7 +433,7 @@ export function LiveSessionSwitcher({
 
 	function leaveDrawer(action: (replace: boolean) => void): void {
 		const replace = !isDesktop && mobileHistoryPushedRef.current;
-		if (replace) clearMobileHistoryMarker();
+		if (replace) clearMobileHistoryMarker(mobileHistoryPushedRef);
 		setOpen(false);
 		action(replace);
 	}
@@ -474,19 +474,7 @@ export function LiveSessionSwitcher({
 		return () => window.removeEventListener("popstate", onPopState);
 	}, [isDesktop, open]);
 
-	useEffect(
-		() => () => {
-			if (!mobileHistoryPushedRef.current) return;
-			const current = window.history.state as Record<string, unknown> | null;
-			if (current?.[MOBILE_HISTORY_KEY]) {
-				const next = { ...current };
-				delete next[MOBILE_HISTORY_KEY];
-				window.history.replaceState(next, "");
-			}
-			mobileHistoryPushedRef.current = false;
-		},
-		[],
-	);
+	useEffect(() => () => clearMobileHistoryMarker(mobileHistoryPushedRef), []);
 
 	return (
 		<LiveSessionSwitcherContext.Provider

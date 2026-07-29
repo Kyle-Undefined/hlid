@@ -802,6 +802,23 @@ type ServerRouteHandler = (
 	request: Request,
 ) => Response | Promise<Response>;
 
+async function handleConflictRoute(
+	handlers: Record<string, ServerRouteHandler>,
+	url: URL,
+	request: Request,
+): Promise<Response | null> {
+	const handler = handlers[`${request.method} ${url.pathname}`];
+	if (!handler) return null;
+	try {
+		return await handler(url, request);
+	} catch (error) {
+		return Response.json(
+			{ error: error instanceof Error ? error.message : String(error) },
+			{ status: 409 },
+		);
+	}
+}
+
 async function syncCliProxyRuntime(): Promise<void> {
 	const latest = loadConfig();
 	await cliProxy.syncConfig(latest.cliproxy);
@@ -930,16 +947,7 @@ const CLIPROXY_ROUTE_HANDLERS: Record<string, ServerRouteHandler> = {
 };
 
 async function handleCliProxyRoute(url: URL, req: Request) {
-	const handler = CLIPROXY_ROUTE_HANDLERS[`${req.method} ${url.pathname}`];
-	if (!handler) return null;
-	try {
-		return await handler(url, req);
-	} catch (error) {
-		return Response.json(
-			{ error: error instanceof Error ? error.message : String(error) },
-			{ status: 409 },
-		);
-	}
+	return handleConflictRoute(CLIPROXY_ROUTE_HANDLERS, url, req);
 }
 
 const VOICE_ROUTE_HANDLERS: Record<string, ServerRouteHandler> = {
@@ -987,16 +995,7 @@ const TTS_ROUTE_HANDLERS: Record<string, ServerRouteHandler> = {
 };
 
 async function handleTtsRoute(url: URL, req: Request) {
-	const handler = TTS_ROUTE_HANDLERS[`${req.method} ${url.pathname}`];
-	if (!handler) return null;
-	try {
-		return await handler(url, req);
-	} catch (error) {
-		return Response.json(
-			{ error: error instanceof Error ? error.message : String(error) },
-			{ status: 409 },
-		);
-	}
+	return handleConflictRoute(TTS_ROUTE_HANDLERS, url, req);
 }
 
 async function handleAccountRoute(url: URL, req: Request) {

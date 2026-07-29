@@ -11,7 +11,12 @@ import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import type { HlidConfig } from "../config";
 import { resolveCodexExecutable } from "../lib/codexPath";
-import { expandTilde, parseWslUncSyntax, pathStartsWith } from "../lib/paths";
+import {
+	expandTilde,
+	explicitPathEnvironment,
+	parseWslUncSyntax,
+	pathStartsWith,
+} from "../lib/paths";
 import { runBoundedProcess } from "../lib/process";
 import { writeWrapper } from "./wrappers";
 
@@ -266,16 +271,10 @@ function availableExtensionId(
 function runtimeForPath(
 	path: string,
 ): Pick<ProviderExtensionHome, "environment" | "environmentLabel"> {
-	const wsl = parseWslUncSyntax(path);
-	if (wsl) {
-		return {
-			environment: "wsl",
-			environmentLabel: `WSL · ${wsl.distro}`,
-		};
-	}
-	if (process.platform === "win32" || /^[A-Za-z]:[\\/]/.test(path)) {
-		return { environment: "windows", environmentLabel: "Windows" };
-	}
+	const explicit = explicitPathEnvironment(path, {
+		platform: process.platform,
+	});
+	if (explicit) return explicit;
 	if (process.platform === "linux" && process.env.WSL_DISTRO_NAME) {
 		return {
 			environment: "wsl",

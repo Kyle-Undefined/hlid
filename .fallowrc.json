@@ -24,10 +24,6 @@
 	"ignoreUnresolvedImports": ["../../dist/server/server.js"],
 	"ignoreExports": [
 		{
-			"file": "src/hooks/wsStore.ts",
-			"exports": ["EMPTY_STATS"]
-		},
-		{
 			"file": "src/lib/codexPath.ts",
 			"exports": ["__resetCacheForTesting"]
 		},
@@ -48,20 +44,12 @@
 			"exports": ["setSessionClaudeId"]
 		},
 		{
-			"file": "src/hooks/updateStore.ts",
-			"exports": ["setUpdateStatus"]
-		},
-		{
 			"file": "src/lib/updates.ts",
 			"exports": ["cleanupStagingDir"]
 		},
 		{
 			"file": "src/lib/usageWindows.ts",
 			"exports": ["applyRateLimitToWindowData", "mergeUsageWindows"]
-		},
-		{
-			"file": "src/lib/vault.ts",
-			"exports": ["scanFolderGroups"]
 		},
 		{
 			"file": "src/server/codexAppServer.ts",
@@ -91,11 +79,7 @@
 			"src/server/fixtures/**",
 			"public/sw.js",
 			"src/hooks/wsStore.test-utils.ts",
-			"src/lib/claudePath.ts",
-			"src/components/wizard/FolderBrowser.tsx",
-			"src/lib/providerOptions.ts",
-			"src/lib/originGate.ts",
-			"src/lib/utils.ts"
+			"src/components/wizard/FolderBrowser.tsx"
 		]
 	},
 	"duplicates": {

@@ -16,6 +16,7 @@ import { isAbsolute, join, relative, win32 } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { HlidConfig } from "../config";
+import { captureBoundedBunStderr, runCapturedProcess } from "../lib/process";
 import { replaceRuntimeDirectory } from "./embeddedRuntime";
 import { INTERNAL_TTS_RUNTIME_FLAG } from "./tts-runtime";
 import {
@@ -233,17 +234,10 @@ export function ttsTarExecutable(
 }
 
 async function tarOutput(args: string[], cwd: string): Promise<string> {
-	const process = Bun.spawn([ttsTarExecutable(), ...args], {
-		cwd,
-		stdout: "pipe",
-		stderr: "pipe",
-		windowsHide: true,
-	});
-	const [stdout, stderr, code] = await Promise.all([
-		new Response(process.stdout).text(),
-		new Response(process.stderr).text(),
-		process.exited,
-	]);
+	const { stdout, stderr, code } = await runCapturedProcess(
+		[ttsTarExecutable(), ...args],
+		{ cwd },
+	);
 	if (code !== 0)
 		throw new Error(
 			`TTS archive command failed${stderr.trim() ? `: ${stderr.trim()}` : ""}`,
@@ -265,25 +259,10 @@ function runtimeEnvironment(directory: string): Record<string, string> {
 }
 
 function drainRuntimeLog(process: ReturnType<typeof Bun.spawn>): () => string {
-	let captured = "";
-	const stderr = process.stderr;
-	if (!(stderr instanceof ReadableStream)) return () => captured;
-	const reader = stderr.getReader();
-	const decoder = new TextDecoder();
-	void (async () => {
-		try {
-			while (true) {
-				const { done, value } = await reader.read();
-				if (done) break;
-				captured = (captured + decoder.decode(value, { stream: true })).slice(
-					-MAX_RUNTIME_LOG_CHARS,
-				);
-			}
-		} catch {
-			// The child can close its pipe while Hlid is stopping it.
-		}
-	})();
-	return () => captured;
+	return captureBoundedBunStderr(process, {
+		maxChars: MAX_RUNTIME_LOG_CHARS,
+		flushDecoderAtEnd: false,
+	});
 }
 
 function defaultRuntimeCommand(args: readonly string[]): string[] {

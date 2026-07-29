@@ -331,7 +331,7 @@ function compactDelegationCost(value: number): string {
 	return `$${safeValue.toFixed(2)}`;
 }
 
-function compactDelegationDuration(seconds: number): string {
+export function compactDelegationDuration(seconds: number): string {
 	const totalSeconds = Math.max(0, Math.floor(seconds));
 	if (totalSeconds < 60) return `${totalSeconds}s`;
 	const totalMinutes = Math.floor(totalSeconds / 60);

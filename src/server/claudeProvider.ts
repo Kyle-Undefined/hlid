@@ -15,7 +15,10 @@ import {
 	tool,
 } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeExecutable } from "../lib/claudePath";
-import { describeHlidToolLoading } from "../lib/hlidContext";
+import {
+	buildHlidToolLoadingSummary,
+	describeHlidToolLoading,
+} from "../lib/hlidContext";
 import { parseWslUnc, toHostRuntimePath } from "../lib/paths";
 import type {
 	AgentEvent,
@@ -2757,20 +2760,8 @@ export class ClaudeProvider implements AgentProvider {
 			true,
 		);
 		return [
-			{
-				namespace: "hlid" as const,
-				total: hlidTools.length,
-				deferred: hlidTools.filter((tool) => tool.delivery === "deferred")
-					.length,
-				tools: hlidTools,
-			},
-			{
-				namespace: "hlid_obsidian" as const,
-				total: obsidianTools.length,
-				deferred: obsidianTools.filter((tool) => tool.delivery === "deferred")
-					.length,
-				tools: obsidianTools,
-			},
+			buildHlidToolLoadingSummary("hlid", hlidTools),
+			buildHlidToolLoadingSummary("hlid_obsidian", obsidianTools),
 		];
 	}
 	readonly forkCapability = {

@@ -7,13 +7,19 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { applyProjectPreview } from "#/hooks/projectPreviewStore";
 import {
 	captureProjectPreviewFeedbackFn,
 	type ProjectPreviewAgentFrame,
+	restartProjectPreviewFn,
+	stopProjectPreviewFn,
 } from "#/lib/serverFns/projectPreviews";
 import type { ProjectPreviewSnapshot } from "#/server/protocol";
 import { ProjectPreviewPane } from "./ProjectPreviewPane";
 
+vi.mock("#/hooks/projectPreviewStore", () => ({
+	applyProjectPreview: vi.fn(),
+}));
 vi.mock("#/lib/serverFns/projectPreviews", async (importOriginal) => {
 	const actual =
 		await importOriginal<typeof import("#/lib/serverFns/projectPreviews")>();
@@ -148,6 +154,39 @@ describe("ProjectPreviewPane", () => {
 		fireEvent.click(screen.getByLabelText("Show preview logs"));
 		expect(screen.getAllByText("ready")).toHaveLength(2);
 		expect(screen.getByLabelText("Show preview")).not.toBeNull();
+	});
+
+	it("runs shared lifecycle actions and preserves action errors", async () => {
+		const current = preview();
+		const restarted = {
+			...current,
+			id: "223e4567-e89b-42d3-a456-426614174001",
+		};
+		vi.mocked(restartProjectPreviewFn).mockResolvedValueOnce(restarted);
+		vi.mocked(stopProjectPreviewFn).mockRejectedValueOnce(
+			new Error("Stop failed"),
+		);
+		render(<ProjectPreviewPane preview={current} />);
+
+		fireEvent.click(screen.getByLabelText("Restart preview"));
+		await waitFor(() =>
+			expect(restartProjectPreviewFn).toHaveBeenCalledWith({
+				data: {
+					sessionId: current.session_id,
+					previewId: current.id,
+				},
+			}),
+		);
+		expect(applyProjectPreview).toHaveBeenCalledWith(restarted);
+
+		fireEvent.click(screen.getByLabelText("Stop preview"));
+		expect(await screen.findByText("Stop failed")).not.toBeNull();
+		expect(stopProjectPreviewFn).toHaveBeenCalledWith({
+			data: {
+				sessionId: current.session_id,
+				previewId: current.id,
+			},
+		});
 	});
 
 	it("keeps the live iframe mounted while viewing an agent frame", () => {

@@ -97,6 +97,18 @@ export function describeHlidToolLoading(
 	}));
 }
 
+export function buildHlidToolLoadingSummary(
+	namespace: HlidToolLoadingSummary["namespace"],
+	tools: readonly HlidToolLoadingItem[],
+): HlidToolLoadingSummary {
+	return {
+		namespace,
+		total: tools.length,
+		deferred: tools.filter((tool) => tool.delivery === "deferred").length,
+		tools: [...tools],
+	};
+}
+
 export type HlidTurnContextManifest = HlidPromptContextManifest & {
 	recordedAt: number;
 	delivery: "chat" | "provider-command" | "steer";

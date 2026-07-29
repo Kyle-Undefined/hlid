@@ -368,6 +368,31 @@ function providerCommandContextManifest(
 	};
 }
 
+function appendProviderCommandReferences<T>(
+	commandArgs: string,
+	heading: string,
+	references: readonly T[],
+	kind: HlidContextBlock["kind"],
+	formatReference: (reference: T) => string,
+): {
+	commandArgs: string;
+	addedChars: number;
+	block: HlidContextBlock;
+} {
+	const next =
+		`${commandArgs}\n\n${heading}:\n${references.map(formatReference).join("\n")}`.trim();
+	const addedChars = Math.max(0, next.length - commandArgs.length);
+	return {
+		commandArgs: next,
+		addedChars,
+		block: {
+			kind,
+			chars: addedChars,
+			count: references.length,
+		},
+	};
+}
+
 type AgentSettings = {
 	model?: string;
 	effort?: string;
@@ -897,8 +922,20 @@ export class SessionManager {
 		this.permissionModeOverride = null;
 		this.applyConfig(config);
 		this.state = "idle";
-		this.currentSessionId = null;
-		this.currentSessionLabel = null;
+		this.clearCurrentSessionIdentity();
+		this.providerSessionId = null;
+		this.providerSessionProviderId = null;
+		this.historyResumeMode = "none";
+		this.providerHandoffPending = false;
+		this.operatingBriefProviderKey = null;
+		this.messageSeq = 0;
+		this.sessionAllowedTools.clear();
+		db.clearCurrentSessionId().catch((e) =>
+			logDbError("clearCurrentSessionId", e),
+		);
+	}
+
+	private clearSessionProvenance(): void {
 		this.currentSessionPinned = false;
 		this.currentForkParentSessionId = null;
 		this.currentForkParentLabel = null;
@@ -910,16 +947,12 @@ export class SessionManager {
 		this.currentTurnPermissionMode = null;
 		this.currentDelegationHandoff = null;
 		this.currentGoal = null;
-		this.providerSessionId = null;
-		this.providerSessionProviderId = null;
-		this.historyResumeMode = "none";
-		this.providerHandoffPending = false;
-		this.operatingBriefProviderKey = null;
-		this.messageSeq = 0;
-		this.sessionAllowedTools.clear();
-		db.clearCurrentSessionId().catch((e) =>
-			logDbError("clearCurrentSessionId", e),
-		);
+	}
+
+	private clearCurrentSessionIdentity(): void {
+		this.currentSessionId = null;
+		this.currentSessionLabel = null;
+		this.clearSessionProvenance();
 	}
 
 	// Lightweight config refresh — updates runtime settings without resetting
@@ -2071,19 +2104,7 @@ export class SessionManager {
 	clearHistory(): void {
 		this.unregisterUmbodApprovalSession?.();
 		this.unregisterUmbodApprovalSession = null;
-		this.currentSessionId = null;
-		this.currentSessionLabel = null;
-		this.currentSessionPinned = false;
-		this.currentForkParentSessionId = null;
-		this.currentForkParentLabel = null;
-		this.currentForkKind = null;
-		this.currentDelegationParentSessionId = null;
-		this.currentDelegationParentLabel = null;
-		this.currentDelegationParentTurnId = null;
-		this.currentDelegationDepth = null;
-		this.currentTurnPermissionMode = null;
-		this.currentDelegationHandoff = null;
-		this.currentGoal = null;
+		this.clearCurrentSessionIdentity();
 		this.providerSessionId = null;
 		this.providerSessionProviderId = null;
 		this.historyResumeMode = "none";
@@ -2112,17 +2133,7 @@ export class SessionManager {
 		sessionId: string,
 		updateGlobalFocus = true,
 	): Promise<boolean> {
-		this.currentGoal = null;
-		this.currentSessionPinned = false;
-		this.currentForkParentSessionId = null;
-		this.currentForkParentLabel = null;
-		this.currentForkKind = null;
-		this.currentDelegationParentSessionId = null;
-		this.currentDelegationParentLabel = null;
-		this.currentDelegationParentTurnId = null;
-		this.currentDelegationDepth = null;
-		this.currentTurnPermissionMode = null;
-		this.currentDelegationHandoff = null;
+		this.clearSessionProvenance();
 		const [
 			savedSession,
 			prior,
@@ -4971,43 +4982,35 @@ export class SessionManager {
 				if (commandAction === "computer-use" && !commandArgs) {
 					throw new Error("/computer-use requires a Windows desktop task");
 				}
+				const commandReferencePath = (path: string) =>
+					commandAction === "computer-use"
+						? path
+						: toProviderRuntimePath(runtimeCwd, path);
 				if (safeVaultReferences.length > 0) {
-					const referenceLines = safeVaultReferences.map((reference) => {
-						const path =
-							commandAction === "computer-use"
-								? reference.path
-								: toProviderRuntimePath(runtimeCwd, reference.path);
-						return `- ${path} (Vault: ${reference.relativePath})`;
-					});
-					const next =
-						`${commandArgs}\n\nVault references:\n${referenceLines.join("\n")}`.trim();
-					const addedChars = Math.max(0, next.length - commandArgs.length);
-					commandArgs = next;
-					commandHlidAddedChars += addedChars;
-					commandBlocks.push({
-						kind: "vault_references",
-						chars: addedChars,
-						count: safeVaultReferences.length,
-					});
+					const appended = appendProviderCommandReferences(
+						commandArgs,
+						"Vault references",
+						safeVaultReferences,
+						"vault_references",
+						(reference) =>
+							`- ${commandReferencePath(reference.path)} (Vault: ${reference.relativePath})`,
+					);
+					commandArgs = appended.commandArgs;
+					commandHlidAddedChars += appended.addedChars;
+					commandBlocks.push(appended.block);
 				}
 				if (safeWorkspaceReferences.length > 0) {
-					const referenceLines = safeWorkspaceReferences.map((reference) => {
-						const path =
-							commandAction === "computer-use"
-								? reference.path
-								: toProviderRuntimePath(runtimeCwd, reference.path);
-						return `- ${path} (Workspace: ${reference.relativePath}, ${reference.mime}, sha256:${reference.sha256})`;
-					});
-					const next =
-						`${commandArgs}\n\nWorkspace references:\n${referenceLines.join("\n")}`.trim();
-					const addedChars = Math.max(0, next.length - commandArgs.length);
-					commandArgs = next;
-					commandHlidAddedChars += addedChars;
-					commandBlocks.push({
-						kind: "workspace_references",
-						chars: addedChars,
-						count: safeWorkspaceReferences.length,
-					});
+					const appended = appendProviderCommandReferences(
+						commandArgs,
+						"Workspace references",
+						safeWorkspaceReferences,
+						"workspace_references",
+						(reference) =>
+							`- ${commandReferencePath(reference.path)} (Workspace: ${reference.relativePath}, ${reference.mime}, sha256:${reference.sha256})`,
+					);
+					commandArgs = appended.commandArgs;
+					commandHlidAddedChars += appended.addedChars;
+					commandBlocks.push(appended.block);
 				}
 			}
 			const deliveredContextManifest = commandAction

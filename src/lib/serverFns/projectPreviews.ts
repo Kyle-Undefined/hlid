@@ -32,6 +32,24 @@ const saveFeedbackSchema = previewActionSchema.extend({
 	comment: z.string().max(10_000).optional(),
 });
 
+async function postProjectPreviewJson<T>(
+	previewId: string,
+	action: "capture" | "feedback" | "restart" | "stop",
+	body: Record<string, unknown>,
+	operation: string,
+): Promise<T> {
+	const response = await dbFetch(
+		`/api/project-previews/${encodeURIComponent(previewId)}/${action}`,
+		{
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		},
+	);
+	await requireDbOk(response, operation);
+	return (await response.json()) as T;
+}
+
 export const getProjectPreviewFn = createServerFn({ method: "GET" })
 	.validator((raw) => sessionIdSchema.parse(raw))
 	.handler(async ({ data }) => {
@@ -62,74 +80,58 @@ export const captureProjectPreviewFeedbackFn = createServerFn({
 	method: "POST",
 })
 	.validator((raw) => captureFeedbackSchema.parse(raw))
-	.handler(async ({ data }) => {
-		const response = await dbFetch(
-			`/api/project-previews/${encodeURIComponent(data.previewId)}/capture`,
+	.handler(({ data }) =>
+		postProjectPreviewJson<ProjectPreviewAgentFrame>(
+			data.previewId,
+			"capture",
 			{
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({
-					session_id: data.sessionId,
-					path: data.path,
-					viewport: data.viewport,
-					width: data.width,
-					height: data.height,
-					scroll_x: data.scrollX,
-					scroll_y: data.scrollY,
-					full_page: false,
-				}),
+				session_id: data.sessionId,
+				path: data.path,
+				viewport: data.viewport,
+				width: data.width,
+				height: data.height,
+				scroll_x: data.scrollX,
+				scroll_y: data.scrollY,
+				full_page: false,
 			},
-		);
-		await requireDbOk(response, "Capture Project Preview feedback");
-		return (await response.json()) as ProjectPreviewAgentFrame;
-	});
+			"Capture Project Preview feedback",
+		),
+	);
 
 export const saveProjectPreviewFeedbackFn = createServerFn({ method: "POST" })
 	.validator((raw) => saveFeedbackSchema.parse(raw))
-	.handler(async ({ data }) => {
-		const response = await dbFetch(
-			`/api/project-previews/${encodeURIComponent(data.previewId)}/feedback`,
+	.handler(({ data }) =>
+		postProjectPreviewJson<ProjectPreviewFeedbackResult>(
+			data.previewId,
+			"feedback",
 			{
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({
-					session_id: data.sessionId,
-					frame_id: data.frameId,
-					attachment_id: data.attachmentId,
-					comment: data.comment,
-				}),
+				session_id: data.sessionId,
+				frame_id: data.frameId,
+				attachment_id: data.attachmentId,
+				comment: data.comment,
 			},
-		);
-		await requireDbOk(response, "Save Project Preview feedback");
-		return (await response.json()) as ProjectPreviewFeedbackResult;
-	});
+			"Save Project Preview feedback",
+		),
+	);
 
 export const stopProjectPreviewFn = createServerFn({ method: "POST" })
 	.validator((raw) => previewActionSchema.parse(raw))
-	.handler(async ({ data }) => {
-		const response = await dbFetch(
-			`/api/project-previews/${encodeURIComponent(data.previewId)}/stop`,
-			{
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ session_id: data.sessionId }),
-			},
-		);
-		await requireDbOk(response, "Stop Project Preview");
-		return (await response.json()) as ProjectPreviewSnapshot;
-	});
+	.handler(({ data }) =>
+		postProjectPreviewJson<ProjectPreviewSnapshot>(
+			data.previewId,
+			"stop",
+			{ session_id: data.sessionId },
+			"Stop Project Preview",
+		),
+	);
 
 export const restartProjectPreviewFn = createServerFn({ method: "POST" })
 	.validator((raw) => previewActionSchema.parse(raw))
-	.handler(async ({ data }) => {
-		const response = await dbFetch(
-			`/api/project-previews/${encodeURIComponent(data.previewId)}/restart`,
-			{
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ session_id: data.sessionId }),
-			},
-		);
-		await requireDbOk(response, "Restart Project Preview");
-		return (await response.json()) as ProjectPreviewSnapshot;
-	});
+	.handler(({ data }) =>
+		postProjectPreviewJson<ProjectPreviewSnapshot>(
+			data.previewId,
+			"restart",
+			{ session_id: data.sessionId },
+			"Restart Project Preview",
+		),
+	);

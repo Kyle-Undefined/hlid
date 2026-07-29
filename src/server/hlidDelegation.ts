@@ -4,6 +4,7 @@ import type { ProviderInfo } from "../lib/providerTypes";
 import type { RoutinePermissionContext } from "../lib/routinePermissions";
 import { SESSION_LABEL_LENGTH } from "../lib/utils";
 import type { WorkspaceReferenceRequest } from "../lib/vaultReferences";
+import type { AgentProvider } from "./agentProvider";
 import {
 	type DelegateHlidAgentInput,
 	HLID_DELEGATION_MAX_ACTIVE_GLOBAL,
@@ -149,6 +150,18 @@ function timeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 	});
 }
 
+async function assertProviderAvailable(provider: AgentProvider): Promise<void> {
+	const availability = provider.check
+		? await timeout(provider.check(), PROVIDER_CHECK_TIMEOUT_MS)
+		: { available: true };
+	if (!availability.available) {
+		throw new Error(
+			availability.reason ??
+				`Provider ${provider.label ?? provider.providerId} is unavailable.`,
+		);
+	}
+}
+
 async function settleAfterAbort(promise: Promise<void>): Promise<void> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let settled = false;
@@ -213,6 +226,24 @@ function reportedQueryCost(event: ServerMessage): number | null {
 			: null;
 	}
 	return null;
+}
+
+function queueDelegationPersistence(
+	pending: Promise<void>,
+	delegationId: string,
+	kind: "progress" | "token" | "cost",
+	persist: () => Promise<unknown>,
+	onPersisted: () => void,
+): Promise<void> {
+	return pending
+		.then(() => persist())
+		.then(() => onPersisted())
+		.catch((error) => {
+			console.error(
+				`[delegation ${delegationId}] ${kind} persistence failed:`,
+				error instanceof Error ? error.message : String(error),
+			);
+		});
 }
 
 export function childPermissionModeAllowed(
@@ -541,15 +572,7 @@ export class HlidDelegationManager {
 		if (!provider) {
 			throw new Error(`Provider ${input.provider} is not registered.`);
 		}
-		const availability = provider.check
-			? await timeout(provider.check(), PROVIDER_CHECK_TIMEOUT_MS)
-			: { available: true };
-		if (!availability.available) {
-			throw new Error(
-				availability.reason ??
-					`Provider ${provider.label ?? provider.providerId} is unavailable.`,
-			);
-		}
+		await assertProviderAvailable(provider);
 
 		const parentPermissionMode =
 			parent.manager.getCurrentTurnPermissionMode() ??
@@ -1055,15 +1078,7 @@ export class HlidDelegationManager {
 			},
 			permissionMode,
 		);
-		const availability = provider.check
-			? await timeout(provider.check(), PROVIDER_CHECK_TIMEOUT_MS)
-			: { available: true };
-		if (!availability.available) {
-			throw new Error(
-				availability.reason ??
-					`Provider ${provider.label ?? provider.providerId} is unavailable.`,
-			);
-		}
+		await assertProviderAvailable(provider);
 		const childCwd = await db.getSessionAgentCwd(current.child_session_id);
 		const workspace = this.pool.resolveDelegationWorkspace(current.workspace);
 		const childWorkspace = childCwd
@@ -1333,15 +1348,13 @@ export class HlidDelegationManager {
 		const recordProgress = (text: string | null) => {
 			if (!text || text === lastProgressText) return;
 			lastProgressText = text;
-			progressWrite = progressWrite
-				.then(() => db.updateHlidDelegationProgress(delegation.id, text))
-				.then(() => this.notifyStatusChange())
-				.catch((error) => {
-					console.error(
-						`[delegation ${delegation.id}] progress persistence failed:`,
-						error instanceof Error ? error.message : String(error),
-					);
-				});
+			progressWrite = queueDelegationPersistence(
+				progressWrite,
+				delegation.id,
+				"progress",
+				() => db.updateHlidDelegationProgress(delegation.id, text),
+				() => this.notifyStatusChange(),
+			);
 		};
 		try {
 			startSequence = await db.getSessionNextMessageSeq(
@@ -1360,33 +1373,26 @@ export class HlidDelegationManager {
 					reportedAttemptTokens = reportedTokens;
 					const cumulativeTokens =
 						delegation.tokens_used + reportedAttemptTokens;
-					tokenWrite = tokenWrite
-						.then(() =>
+					tokenWrite = queueDelegationPersistence(
+						tokenWrite,
+						delegation.id,
+						"token",
+						() =>
 							db.updateHlidDelegationTokens(delegation.id, cumulativeTokens),
-						)
-						.then(() => this.notifyStatusChange())
-						.catch((error) => {
-							console.error(
-								`[delegation ${delegation.id}] token persistence failed:`,
-								error instanceof Error ? error.message : String(error),
-							);
-						});
+						() => this.notifyStatusChange(),
+					);
 				}
 				const reportedCost = reportedQueryCost(event);
 				if (reportedCost !== null && reportedCost > reportedAttemptCost) {
 					reportedAttemptCost = reportedCost;
 					const cumulativeCost = delegation.cost_used + reportedAttemptCost;
-					costWrite = costWrite
-						.then(() =>
-							db.updateHlidDelegationCost(delegation.id, cumulativeCost),
-						)
-						.then(() => this.notifyStatusChange())
-						.catch((error) => {
-							console.error(
-								`[delegation ${delegation.id}] cost persistence failed:`,
-								error instanceof Error ? error.message : String(error),
-							);
-						});
+					costWrite = queueDelegationPersistence(
+						costWrite,
+						delegation.id,
+						"cost",
+						() => db.updateHlidDelegationCost(delegation.id, cumulativeCost),
+						() => this.notifyStatusChange(),
+					);
 				}
 			};
 			const runQuery = entry.manager.runQuery(

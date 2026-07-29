@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { runBoundedProcess } from "./process";
+import { describe, expect, it, vi } from "vitest";
+import { captureBoundedBunStderr, runBoundedProcess } from "./process";
 
 describe("runBoundedProcess", () => {
 	it("captures combined output and preserves the exit code", async () => {
@@ -47,5 +47,22 @@ describe("runBoundedProcess", () => {
 				timeoutError: "timed out",
 			}),
 		).rejects.toThrow();
+	});
+
+	it("captures the bounded tail of a Bun child stderr stream", async () => {
+		const encoder = new TextEncoder();
+		const stderr = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(encoder.encode("prefix-"));
+				controller.enqueue(encoder.encode("tail"));
+				controller.close();
+			},
+		});
+		const captured = captureBoundedBunStderr(
+			{ stderr } as ReturnType<typeof Bun.spawn>,
+			{ maxChars: 6 },
+		);
+
+		await vi.waitFor(() => expect(captured()).toBe("x-tail"));
 	});
 });

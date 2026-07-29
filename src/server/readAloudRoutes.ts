@@ -17,6 +17,22 @@ type ReadAloudRouteOptions = {
 	getNeuralSettings?: () => { voiceId: string; rate: number };
 };
 
+function wavResponse(
+	audio: Uint8Array,
+	additionalHeaders: Record<string, string> = {},
+): Response {
+	const body = new ArrayBuffer(audio.byteLength);
+	new Uint8Array(body).set(audio);
+	return new Response(body, {
+		headers: {
+			"cache-control": "private, no-store",
+			"content-length": String(audio.byteLength),
+			"content-type": "audio/wav",
+			...additionalHeaders,
+		},
+	});
+}
+
 export function createReadAloudRouteHandler({
 	speech,
 	tts,
@@ -57,15 +73,7 @@ export function createReadAloudRouteHandler({
 					settings.voiceId,
 					settings.rate,
 				);
-				const body = new ArrayBuffer(result.audio.byteLength);
-				new Uint8Array(body).set(result.audio);
-				return new Response(body, {
-					headers: {
-						"cache-control": "private, no-store",
-						"content-length": String(result.audio.byteLength),
-						"content-type": "audio/wav",
-					},
-				});
+				return wavResponse(result.audio);
 			} catch (error) {
 				return Response.json(
 					{ error: error instanceof Error ? error.message : String(error) },
@@ -116,23 +124,16 @@ export function createReadAloudRouteHandler({
 					settings.voiceId,
 					settings.rate,
 				);
-				const body = new ArrayBuffer(result.audio.byteLength);
-				new Uint8Array(body).set(result.audio);
-				return new Response(body, {
-					headers: {
-						"cache-control": "private, no-store",
-						"content-length": String(result.audio.byteLength),
-						"content-type": "audio/wav",
-						"x-hlid-chunk-count": String(chunks.length),
-						"x-hlid-chunk-index": String(chunkIndex),
-						"x-hlid-has-next-chunk": chunkIndex + 1 < chunks.length ? "1" : "0",
-						...(result.synthesisMs
-							? { "x-hlid-synthesis-ms": String(result.synthesisMs) }
-							: {}),
-						...(result.durationMs
-							? { "x-hlid-audio-duration-ms": String(result.durationMs) }
-							: {}),
-					},
+				return wavResponse(result.audio, {
+					"x-hlid-chunk-count": String(chunks.length),
+					"x-hlid-chunk-index": String(chunkIndex),
+					"x-hlid-has-next-chunk": chunkIndex + 1 < chunks.length ? "1" : "0",
+					...(result.synthesisMs
+						? { "x-hlid-synthesis-ms": String(result.synthesisMs) }
+						: {}),
+					...(result.durationMs
+						? { "x-hlid-audio-duration-ms": String(result.durationMs) }
+						: {}),
 				});
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
@@ -157,15 +158,7 @@ export function createReadAloudRouteHandler({
 				text,
 				url.searchParams.get("voice_id") ?? "",
 			);
-			const body = new ArrayBuffer(audio.byteLength);
-			new Uint8Array(body).set(audio);
-			return new Response(body, {
-				headers: {
-					"cache-control": "private, no-store",
-					"content-length": String(audio.byteLength),
-					"content-type": "audio/wav",
-				},
-			});
+			return wavResponse(audio);
 		} catch (error) {
 			return Response.json(
 				{ error: error instanceof Error ? error.message : String(error) },

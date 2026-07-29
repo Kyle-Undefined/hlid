@@ -1,13 +1,20 @@
 import type { Dirent } from "node:fs";
 import { readdir, realpath, stat } from "node:fs/promises";
-import { basename, relative, resolve, sep } from "node:path";
+import { basename, resolve } from "node:path";
 import { isPathAccessibleFromRuntime, pathStartsWith } from "#/lib/paths";
-import { normalizeSearchText } from "#/lib/search";
 import type {
 	VaultReferenceItem,
 	VaultReferenceSearchResult,
 } from "#/lib/vaultReferences";
 import { MAX_VAULT_REFERENCES } from "#/lib/vaultReferences";
+import {
+	createReferenceIndexItem,
+	finalizeReferenceIndex,
+	isSafeRelativeReference,
+	portableRelativePath,
+	referenceIndexTruncationAtLimit,
+	searchReferenceIndex,
+} from "./referencePrimitives";
 
 const INDEX_TTL_MS = 30_000;
 const MAX_INDEX_FILES = 20_000;
@@ -34,10 +41,6 @@ let inflightIndex: {
 	promise: Promise<VaultReferenceIndex>;
 } | null = null;
 
-function portableRelativePath(root: string, path: string): string {
-	return relative(root, path).split(sep).join("/");
-}
-
 function directoryEntries(entries: Dirent[]): Dirent[] {
 	return entries
 		.filter((entry) => !entry.isSymbolicLink())
@@ -47,7 +50,7 @@ function directoryEntries(entries: Dirent[]): Dirent[] {
 async function buildIndex(root: string): Promise<VaultReferenceIndex> {
 	const items: VaultReferenceItem[] = [];
 	const pending = [root];
-	let truncated = false;
+	const truncated = false;
 
 	while (pending.length > 0 && items.length < MAX_INDEX_FILES) {
 		const directory = pending.pop();
@@ -69,28 +72,21 @@ async function buildIndex(root: string): Promise<VaultReferenceIndex> {
 				continue;
 			}
 			if (!entry.isFile()) continue;
-			const relativePath = portableRelativePath(root, fullPath);
-			items.push({
-				relativePath,
-				name: entry.name,
-				directory: portableRelativePath(root, directory),
-			});
-			if (items.length >= MAX_INDEX_FILES) {
-				truncated = pending.length > 0 || index > 0;
-				break;
+			items.push(
+				createReferenceIndexItem(root, fullPath, directory, entry.name),
+			);
+			const limitTruncation = referenceIndexTruncationAtLimit(
+				items.length,
+				MAX_INDEX_FILES,
+				pending.length > 0 || index > 0,
+			);
+			if (limitTruncation !== null) {
+				return finalizeReferenceIndex(root, items, limitTruncation, Date.now());
 			}
 		}
 	}
 
-	items.sort((left, right) => {
-		const leftDepth = left.relativePath.split("/").length;
-		const rightDepth = right.relativePath.split("/").length;
-		return (
-			leftDepth - rightDepth ||
-			left.relativePath.localeCompare(right.relativePath)
-		);
-	});
-	return { root, builtAt: Date.now(), items, truncated };
+	return finalizeReferenceIndex(root, items, truncated, Date.now());
 }
 
 async function getIndex(root: string): Promise<VaultReferenceIndex> {
@@ -113,18 +109,6 @@ async function getIndex(root: string): Promise<VaultReferenceIndex> {
 	return promise;
 }
 
-function matchRank(item: VaultReferenceItem, normalizedQuery: string): number {
-	if (!normalizedQuery) return 0;
-	const path = normalizeSearchText(item.relativePath);
-	const name = normalizeSearchText(item.name);
-	const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
-	if (!tokens.every((token) => path.includes(token))) return -1;
-	if (name.startsWith(normalizedQuery)) return 0;
-	if (name.includes(normalizedQuery)) return 1;
-	if (path.startsWith(normalizedQuery)) return 2;
-	return 3;
-}
-
 // fallow-ignore-next-line unused-export -- Loaded dynamically by the vault-reference server function to keep Node filesystem code out of the client bundle.
 export async function searchVaultReferences(options: {
 	vaultPath: string;
@@ -139,43 +123,23 @@ export async function searchVaultReferences(options: {
 		return { rootLabel, items: [], total: 0, truncated: false };
 	}
 	const index = await getIndex(root);
-	const query = normalizeSearchText(options.query?.trim() ?? "");
-	const limit = Math.max(
-		1,
-		Math.min(options.limit ?? DEFAULT_RESULT_LIMIT, MAX_RESULT_LIMIT),
-	);
 	const sourceItems = options.notesOnly
 		? index.items.filter((item) =>
 				item.relativePath.toLowerCase().endsWith(".md"),
 			)
 		: index.items;
-	const matches = sourceItems
-		.map((item, ordinal) => ({ item, ordinal, rank: matchRank(item, query) }))
-		.filter((entry) => entry.rank >= 0)
-		.sort(
-			(left, right) =>
-				left.rank - right.rank ||
-				(query
-					? left.item.relativePath.localeCompare(right.item.relativePath)
-					: left.ordinal - right.ordinal),
-		);
+	const matches = searchReferenceIndex(sourceItems, {
+		query: options.query,
+		limit: options.limit,
+		defaultLimit: DEFAULT_RESULT_LIMIT,
+		maxLimit: MAX_RESULT_LIMIT,
+	});
 	return {
 		rootLabel,
-		items: matches.slice(0, limit).map((entry) => entry.item),
-		total: matches.length,
-		truncated: index.truncated || matches.length > limit,
+		items: matches.items,
+		total: matches.total,
+		truncated: index.truncated || matches.truncated,
 	};
-}
-
-function validRelativeReference(path: string): boolean {
-	if (
-		!path ||
-		path.includes("\0") ||
-		path.startsWith("/") ||
-		/^[A-Za-z]:/.test(path)
-	)
-		return false;
-	return !path.split(/[\\/]+/).some((segment) => segment === ".." || !segment);
 }
 
 export type ResolvedVaultReference = {
@@ -198,7 +162,7 @@ export async function resolveVaultReferences(options: {
 	const rootReal = await realpath(root).catch(() => root);
 	const resolved = await Promise.all(
 		requested.map(async (relativePath) => {
-			if (!validRelativeReference(relativePath)) return null;
+			if (!isSafeRelativeReference(relativePath)) return null;
 			const candidate = resolve(root, ...relativePath.split(/[\\/]+/));
 			const canonical = await realpath(candidate).catch(() => null);
 			if (!canonical || !pathStartsWith(rootReal, canonical)) return null;

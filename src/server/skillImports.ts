@@ -16,6 +16,7 @@ import type { HlidConfig } from "../config";
 import { parseFrontmatter } from "../lib/frontmatter";
 import {
 	expandTilde,
+	explicitPathEnvironment,
 	parseWslUncSyntax,
 	pathStartsWith,
 	samePath,
@@ -112,17 +113,12 @@ function addRoot(roots: SkillRoot[], root: SkillRoot): void {
 function runtimeForPath(
 	path: string,
 ): Pick<SkillRoot, "environment" | "environmentLabel"> {
-	const wsl = parseWslUncSyntax(path);
-	if (wsl) {
-		return {
-			environment: "wsl",
-			environmentLabel: `WSL · ${wsl.distro}`,
-		};
-	}
-	if (process.platform === "win32" || /^[A-Za-z]:[\\/]/.test(path)) {
-		return { environment: "windows", environmentLabel: "Windows" };
-	}
-	return { environment: "host", environmentLabel: "Host" };
+	return (
+		explicitPathEnvironment(path, { platform: process.platform }) ?? {
+			environment: "host",
+			environmentLabel: "Host",
+		}
+	);
 }
 
 function installedClaudePluginRoots(home: string): SkillRoot[] {

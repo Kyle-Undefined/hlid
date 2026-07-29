@@ -6,6 +6,10 @@ export type CapturedProcessResult = {
 	code: number;
 };
 
+export type CapturedProcessOptions = {
+	cwd?: string;
+};
+
 export type BoundedProcessResult = {
 	output: string;
 	code: number | null;
@@ -59,8 +63,10 @@ export function runBoundedProcess(
 
 export async function runCapturedProcess(
 	command: string[],
+	options: CapturedProcessOptions = {},
 ): Promise<CapturedProcessResult> {
 	const process = Bun.spawn(command, {
+		cwd: options.cwd,
 		stdout: "pipe",
 		stderr: "pipe",
 		windowsHide: true,
@@ -72,4 +78,35 @@ export async function runCapturedProcess(
 		process.exited,
 	]);
 	return { stdout, stderr, code };
+}
+
+export function captureBoundedBunStderr(
+	process: ReturnType<typeof Bun.spawn>,
+	options: {
+		maxChars: number;
+		flushDecoderAtEnd?: boolean;
+	},
+): () => string {
+	let captured = "";
+	const stderr = process.stderr;
+	if (!(stderr instanceof ReadableStream)) return () => captured;
+	const reader = stderr.getReader();
+	const decoder = new TextDecoder();
+	void (async () => {
+		try {
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				captured = (captured + decoder.decode(value, { stream: true })).slice(
+					-options.maxChars,
+				);
+			}
+			if (options.flushDecoderAtEnd !== false) {
+				captured = (captured + decoder.decode()).slice(-options.maxChars);
+			}
+		} catch {
+			// A child can close its pipe while Hlid is stopping it.
+		}
+	})();
+	return () => captured;
 }
