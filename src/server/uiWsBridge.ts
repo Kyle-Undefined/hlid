@@ -19,8 +19,8 @@ export type UiWsUpgradeServer = {
  * Authenticate and bridge a same-origin `/ws*` upgrade on the UI port to the
  * WS/API server. Keeping chat/terminal/shell WebSockets same-origin means the
  * browser never opens a cross-port `ws://` connection — which content filters
- * (adblockers) are known to kill silently. Mirrors the TLS proxy's `/ws`
- * handling; the API server re-authorizes the bridged connection via
+ * (adblockers) are known to kill silently. The UI and TLS listeners share this
+ * `/ws` handling; the API server re-authorizes the bridged connection via
  * loopback + internal token.
  *
  * Returns `null` for non-WebSocket requests (caller continues normal HTTP

@@ -1,3 +1,4 @@
+// fallow-ignore-file unused-file
 /** Shared helpers for Bun-runtime db tests (bun:sqlite). */
 import { Database } from "bun:sqlite";
 import { setDbForTest } from "./schema";

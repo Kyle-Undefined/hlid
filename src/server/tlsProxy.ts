@@ -16,6 +16,7 @@ import {
 import { createRequestObserver } from "./requestDiagnostics";
 import { createConcurrencyGate, readRequestBodyLimited } from "./requestLimits";
 import type { UiForward } from "./uiServer";
+import { handleUiWsUpgrade } from "./uiWsBridge";
 import {
 	createWebSocketBridgeHandlers,
 	type WebSocketBridgeData,
@@ -325,33 +326,12 @@ export function startTlsProxy({
 				}
 
 				const url = new URL(req.url);
-
-				if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
-					if (url.pathname === "/ws" || url.pathname.startsWith("/ws/")) {
-						if (
-							!isAllowedOriginHeader(
-								req.headers.get("origin"),
-								localNetworkAccess,
-							)
-						) {
-							return new Response("Forbidden", { status: 403 });
-						}
-						if (!(await authenticateRequest(req))) {
-							return new Response("Unauthorized", { status: 401 });
-						}
-						const upgraded = server.upgrade(req, {
-							data: {
-								wsTarget: `ws://127.0.0.1:${wsPort}${url.pathname}${url.search}`,
-								back: null,
-								queue: [],
-							},
-						});
-						if (!upgraded)
-							return new Response("WebSocket upgrade failed", { status: 500 });
-						return undefined;
-					}
-					return new Response("Bad Request", { status: 400 });
-				}
+				const wsResponse = await handleUiWsUpgrade(req, server, url, {
+					wsPort,
+					internalToken,
+					localNetworkAccess,
+				});
+				if (wsResponse !== null) return wsResponse;
 				if (PREVIEW_RELAY_PATH.test(url.pathname)) {
 					return new Response("Use the isolated Project Preview origin.", {
 						status: 421,

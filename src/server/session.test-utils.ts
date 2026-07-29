@@ -1,3 +1,4 @@
+// fallow-ignore-file unused-file
 /**
  * Shared mocks and provider builders for the SessionManager test suite
  * (session.*.test.ts). Each test file registers the module mocks with

@@ -610,6 +610,7 @@ async function fetchNeuralChunk(
 		provider: "neural",
 		chunk_index: String(index),
 	});
+	// fallow-ignore-next-line code-duplication -- Client fetch handling intentionally mirrors the server response contract across the bundle boundary.
 	const response = await fetch(`/api/read-aloud/audio?${query}`, {
 		cache: "no-store",
 		signal: reading.controller.signal,

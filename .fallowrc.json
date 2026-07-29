@@ -83,7 +83,7 @@
 		]
 	},
 	"duplicates": {
-		"ignore": ["src/db/schema.ts"]
+		"ignore": ["src/db/schema.ts", "src/server/session.test-utils.ts"]
 	},
 	"production": true,
 	"usedClassMembers": [

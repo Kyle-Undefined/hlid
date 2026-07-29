@@ -13,6 +13,18 @@ const VALID_PERMISSION_MODES: string[] = [
 	"bypassPermissions",
 	"plan",
 ];
+const AGENT_NAME_COLLATOR = new Intl.Collator("en", {
+	sensitivity: "base",
+});
+
+export function sortAgentEntries(agents: AgentEntry[]): AgentEntry[] {
+	return [...agents].sort((left, right) => {
+		const byName = AGENT_NAME_COLLATOR.compare(left.name, right.name);
+		return byName !== 0
+			? byName
+			: AGENT_NAME_COLLATOR.compare(left.path, right.path);
+	});
+}
 
 function agentEntryToConfig(a: AgentEntry): Agent {
 	return {
@@ -57,7 +69,9 @@ export function useAgentRoster({
 	getAgentsFn: () => Promise<AgentEntry[]>;
 }) {
 	const router = useRouter();
-	const [agents, setAgents] = useState<AgentEntry[]>(initialAgents);
+	const [agents, setAgents] = useState<AgentEntry[]>(() =>
+		sortAgentEntries(initialAgents),
+	);
 
 	async function handleRemove(path: string) {
 		const next = agents.filter((a) => a.path !== path);
@@ -86,8 +100,12 @@ export function useAgentRoster({
 		settings: AgentProviderSettings,
 	) {
 		const prevAgents = agents;
-		const next = agents.map((a) =>
-			a.path === originalPath ? { ...a, name, mode, provider, ...settings } : a,
+		const next = sortAgentEntries(
+			agents.map((a) =>
+				a.path === originalPath
+					? { ...a, name, mode, provider, ...settings }
+					: a,
+			),
 		);
 		setAgents(next);
 		try {
@@ -128,14 +146,13 @@ export function useAgentRoster({
 			dirExists: true,
 			...settings,
 		};
-		const next: Agent[] = [
-			...agents.map(agentEntryToConfig),
-			agentEntryToConfig(newEntry),
-		];
+		const next = sortAgentEntries([...agents, newEntry]).map(
+			agentEntryToConfig,
+		);
 		await saveAgentsFn({ data: next });
 		await router.invalidate();
 		const refreshed = await getAgentsFn();
-		setAgents(refreshed);
+		setAgents(sortAgentEntries(refreshed));
 	}
 
 	return { agents, handleRemove, handleModeChange, handleSaveEdit, handleAdd };

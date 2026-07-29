@@ -147,6 +147,39 @@ describe("SubagentToolBlock", () => {
 		).toContain("break-words");
 	});
 
+	it("keeps mobile child heights stable across step preview lengths", () => {
+		const longStep =
+			'Running /bin/bash -lc "gh run view --job 123456789 --log"';
+		render(
+			<>
+				<SubagentToolBlock
+					subagent={snapshot({
+						agentId: "short-step",
+						currentStep: "Reasoning",
+					})}
+					nested
+				/>
+				<SubagentToolBlock
+					subagent={snapshot({
+						agentId: "long-step",
+						currentStep: longStep,
+					})}
+					nested
+				/>
+			</>,
+		);
+
+		for (const preview of [
+			screen.getByText("Reasoning"),
+			screen.getByText(longStep),
+		]) {
+			const classes = preview.className.split(/\s+/);
+			expect(classes).toContain("truncate");
+			expect(classes).not.toContain("break-words");
+			expect(classes).toContain("sm:truncate");
+		}
+	});
+
 	it("can collapse while running and continues advancing elapsed time", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(6_000);

@@ -73,6 +73,7 @@ export class SessionRunState {
 		this.sessionId = sessionId;
 	}
 
+	// fallow-ignore-next-line unused-class-member -- Read by WebSocket sync/subscription handlers in wsHandlers.
 	get lastError(): string | null {
 		return this.replay.lastError;
 	}
