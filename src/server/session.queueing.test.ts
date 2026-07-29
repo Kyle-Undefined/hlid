@@ -99,6 +99,12 @@ describe("SessionManager — runQuery queueing", () => {
 								done: false,
 							};
 						}
+						if (step === 3) {
+							return {
+								value: { type: "text_delta", text: "Partial child result." },
+								done: false,
+							};
+						}
 						pending = true;
 						return new Promise<IteratorResult<AgentEvent>>((_, reject) => {
 							rejectPending = reject;
@@ -116,6 +122,7 @@ describe("SessionManager — runQuery queueing", () => {
 			},
 		};
 		vi.mocked(dbMock.recordQuery).mockClear();
+		vi.mocked(dbMock.setMessageQueryId).mockClear();
 		const emitted: ServerMessage[] = [];
 		const sm = new SessionManager(makeConfig(), makeProviders(provider));
 		const turn = sm.runQuery(
@@ -146,6 +153,11 @@ describe("SessionManager — runQuery queueing", () => {
 				stop_reason: null,
 			}),
 			"claude",
+		);
+		expect(dbMock.setMessageQueryId).toHaveBeenCalledWith(
+			"child-session",
+			expect.any(Number),
+			1,
 		);
 	});
 

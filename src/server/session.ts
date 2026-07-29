@@ -2667,6 +2667,9 @@ export class SessionManager {
 					turn,
 				);
 				turn.lastAssistantSeq = assistantSeq;
+				if (recorded?.queryId != null) {
+					await db.setMessageQueryId(sessionId, assistantSeq, recorded.queryId);
+				}
 				this.persistPendingToolEvents(
 					sessionId,
 					assistantSeq,
@@ -2721,6 +2724,7 @@ export class SessionManager {
 		sessionId: string,
 		turn: TurnState,
 		provider: AgentProvider,
+		assistantSeq: number | null,
 	): Promise<void> {
 		if (turn.queryRecorded || !turn.receivedUsage) return;
 		const usage = turn.liveQueryUsage;
@@ -2730,7 +2734,7 @@ export class SessionManager {
 			model,
 			usage,
 		);
-		await db.recordQuery(
+		const recorded = await db.recordQuery(
 			sessionId,
 			{
 				cost: 0,
@@ -2751,6 +2755,9 @@ export class SessionManager {
 			},
 			provider.providerId,
 		);
+		if (assistantSeq !== null) {
+			await db.setMessageQueryId(sessionId, assistantSeq, recorded.queryId);
+		}
 		turn.queryRecorded = true;
 		bumpDataRevision("stats", "sessions");
 	}
@@ -5370,12 +5377,14 @@ export class SessionManager {
 			this.restartAgentSessionForEffort = false;
 		} finally {
 			// Persist any remaining assistant text (the success path clears it).
+			let incompleteAssistantSeq: number | null = null;
 			if (turn.assistantText && sessionId) {
 				try {
 					const assistantSeq = await this.persistAssistantMessage(
 						sessionId,
 						turn,
 					);
+					incompleteAssistantSeq = assistantSeq;
 					this.persistPendingToolEvents(
 						sessionId,
 						assistantSeq,
@@ -5393,6 +5402,7 @@ export class SessionManager {
 						sessionId,
 						turn,
 						currentProvider,
+						incompleteAssistantSeq,
 					);
 				} catch (error) {
 					logDbError("recordQuery (background incomplete)", error);

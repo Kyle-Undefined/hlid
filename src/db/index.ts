@@ -82,6 +82,7 @@ export {
 	insertForkedMessages,
 	setAskUserQuestionResolution,
 	setMessageProviderTurnId,
+	setMessageQueryId,
 	setMessageRecap,
 	setMessageSdkUuid,
 	setMessageSteerTargetSeq,

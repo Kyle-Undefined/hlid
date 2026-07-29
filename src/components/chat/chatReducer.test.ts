@@ -1202,6 +1202,56 @@ describe("LOAD_HISTORY", () => {
 		});
 	});
 
+	it("restores exact, estimated, zero, and unknown assistant costs", () => {
+		const state = reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [
+				{
+					kind: "message",
+					id: "actual",
+					role: "assistant",
+					text: "actual",
+					cost: 0.1234,
+					costEstimated: false,
+				},
+				{
+					kind: "message",
+					id: "estimated",
+					role: "assistant",
+					text: "estimated",
+					cost: 0.2345,
+					costEstimated: true,
+				},
+				{
+					kind: "message",
+					id: "zero",
+					role: "assistant",
+					text: "zero",
+					cost: 0,
+					costEstimated: false,
+				},
+				{
+					kind: "message",
+					id: "unknown",
+					role: "assistant",
+					text: "unknown",
+					cost: null,
+					costEstimated: false,
+				},
+			],
+		});
+
+		expect(state).toMatchObject([
+			{ role: "assistant", cost: 0.1234 },
+			{ role: "assistant", cost: 0.2345, costEstimated: true },
+			{ role: "assistant", cost: 0 },
+			{ role: "assistant", cost: null },
+		]);
+		expect(state[0]).not.toHaveProperty("costEstimated");
+		expect(state[2]).not.toHaveProperty("costEstimated");
+		expect(state[3]).not.toHaveProperty("costEstimated");
+	});
+
 	it("prepends an older cursor page without replacing live rows or duplicating overlap", () => {
 		const current = reducer(empty(), {
 			type: "LOAD_HISTORY",

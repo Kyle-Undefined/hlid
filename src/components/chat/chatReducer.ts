@@ -117,6 +117,9 @@ export type HistoryItem =
 			hasContextReceipt?: boolean;
 			steerTargetSeq?: number | null;
 			steerToolEventIndex?: number | null;
+			/** Resolved display cost restored from the linked usage query. */
+			cost?: number | null;
+			costEstimated?: boolean;
 			toolEvents?: ToolEventMessage[];
 			attachments?: ChatAttachment[];
 			recap?: string | null;
@@ -575,7 +578,8 @@ function historyItemToMessage(item: HistoryItem): ChatMessage {
 			text: item.text,
 			toolEvents: item.toolEvents ?? [],
 			streaming: false,
-			cost: null,
+			cost: item.cost ?? null,
+			...(item.costEstimated ? { costEstimated: true } : {}),
 			recap: item.recap ?? undefined,
 			dbId: item.dbId,
 			...(item.seq !== undefined ? { transcriptSeq: item.seq } : {}),

@@ -43,6 +43,7 @@ import {
 	getSessionToolEventSummaries,
 	setAskUserQuestionResolution,
 	setMessageProviderTurnId,
+	setMessageQueryId,
 	setMessageRecap,
 	setMessageSteerTargetSeq,
 	setToolEventResult,
@@ -1120,6 +1121,67 @@ describe("messages", () => {
 		expect(rows[2].steer_tool_event_index).toBe(2);
 	});
 
+	it("joins exact, estimated, and known-zero query costs onto assistant messages", async () => {
+		await createSession("s1", "L", "model");
+		await appendMessage("s1", 0, "assistant", "exact");
+		await appendMessage("s1", 1, "assistant", "estimated");
+		await appendMessage("s1", 2, "assistant", "known zero");
+
+		const exact = await recordQuery(
+			"s1",
+			baseQuery({ cost: 0.25, estimated_cost: null }),
+			"acp:test",
+		);
+		const estimated = await recordQuery(
+			"s1",
+			baseQuery({ cost: 0, estimated_cost: 0.125 }),
+			"acp:test",
+		);
+		const knownZero = await recordQuery(
+			"s1",
+			baseQuery({ cost: 0, cost_known: true, estimated_cost: null }),
+			"acp:test",
+		);
+
+		await setMessageQueryId("s1", 0, exact.queryId);
+		await setMessageQueryId("s1", 1, estimated.queryId);
+		await setMessageQueryId("s1", 2, knownZero.queryId);
+
+		expect(await getSessionMessages("s1")).toMatchObject([
+			{
+				role: "assistant",
+				query_id: exact.queryId,
+				query_cost: 0.25,
+				query_cost_known: 1,
+				query_estimated_cost: null,
+			},
+			{
+				role: "assistant",
+				query_id: estimated.queryId,
+				query_cost: 0,
+				query_cost_known: 1,
+				query_estimated_cost: 0.125,
+			},
+			{
+				role: "assistant",
+				query_id: knownZero.queryId,
+				query_cost: 0,
+				query_cost_known: 1,
+				query_estimated_cost: null,
+			},
+		]);
+
+		await createSession("other", "Other", "model");
+		const otherQuery = await recordQuery(
+			"other",
+			baseQuery({ cost: 9 }),
+			"acp:test",
+		);
+		await expect(
+			setMessageQueryId("s1", 0, otherQuery.queryId),
+		).rejects.toThrow("no matching assistant/query");
+	});
+
 	it("backfills the assistant target for a steer persisted before its response", async () => {
 		await createSession("s1", "L", "m");
 		await appendMessage(
@@ -1335,6 +1397,12 @@ describe("messages", () => {
 			"First answer",
 			"turn-1",
 		);
+		const recorded = await recordQuery(
+			"source",
+			baseQuery({ cost: 0.02, estimated_cost: null }),
+			"codex",
+		);
+		await setMessageQueryId("source", 1, recorded.queryId);
 		await setMessageProviderTurnId("source", 1, "provider-turn-1");
 		await appendToolEvent(
 			"source",
@@ -1387,6 +1455,12 @@ describe("messages", () => {
 			"Steered direction",
 		]);
 		expect(messages[1].provider_turn_id).toBe("provider-turn-1");
+		expect(messages[1]).toMatchObject({
+			query_id: null,
+			query_cost: null,
+			query_cost_known: null,
+			query_estimated_cost: null,
+		});
 		expect(messages[2].steer_target_seq).toBe(1);
 		expect(messages[2].steer_tool_event_index).toBe(1);
 		expect(messages[0].context_manifest_json).toBe(contextManifest);

@@ -1594,6 +1594,60 @@ describe("SessionManager — assistant_message_id capture", () => {
 		expect(calls.at(-1)?.[2]).toBe("sdk-msg-uuid-3");
 	});
 
+	it("links the completed assistant row to its recorded query before emitting done", async () => {
+		vi.mocked(dbMock.appendMessage).mockClear();
+		vi.mocked(dbMock.recordQuery).mockResolvedValueOnce({
+			estimatedCost: 0.125,
+			queryId: 4242,
+		});
+		vi.mocked(dbMock.setMessageQueryId).mockClear();
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(_params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "text_delta", text: "Linked." };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 10,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		let linksObservedAtDone = -1;
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery(
+			"hello",
+			(message) => {
+				if (message.type === "done") {
+					linksObservedAtDone = vi.mocked(dbMock.setMessageQueryId).mock.calls
+						.length;
+				}
+			},
+			{ sessionId: "sess-query-link" },
+		);
+
+		const assistantAppend = vi
+			.mocked(dbMock.appendMessage)
+			.mock.calls.find((call) => call[2] === "assistant");
+		expect(assistantAppend).toBeDefined();
+		expect(dbMock.setMessageQueryId).toHaveBeenCalledWith(
+			"sess-query-link",
+			assistantAppend?.[1],
+			4242,
+		);
+		expect(linksObservedAtDone).toBe(1);
+	});
+
 	it("includes db_id in the 'done' message once the assistant row is persisted, so a live message can be branched from without a reload", async () => {
 		// appendMessage also fires once for the user turn before the assistant
 		// placeholder row — key off `role` so 777 lands on the row we're

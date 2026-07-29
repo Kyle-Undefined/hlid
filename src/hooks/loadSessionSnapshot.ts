@@ -59,6 +59,10 @@ function mapSessionRows(
 		hasContextReceipt: Boolean(r.context_manifest_json),
 		steerTargetSeq: r.steer_target_seq,
 		steerToolEventIndex: r.steer_tool_event_index,
+		cost:
+			r.query_estimated_cost ??
+			(r.query_cost_known === 1 ? (r.query_cost ?? 0) : null),
+		costEstimated: r.query_estimated_cost != null,
 		toolEvents: r.toolEvents?.map((te) => ({
 			type: "tool_event" as const,
 			id: te.tool_id,

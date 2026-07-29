@@ -334,7 +334,7 @@ export async function recordQuery(
 	sessionId: string,
 	data: QueryData,
 	providerId = "claude",
-): Promise<{ estimatedCost: number | null }> {
+): Promise<{ estimatedCost: number | null; queryId: number }> {
 	const database = await getDb();
 	const sessionDimensions = database
 		.query<{ model: string | null; agent_cwd: string | null }, [string]>(
@@ -368,8 +368,8 @@ export async function recordQuery(
 		data.agent_cwd === undefined
 			? (sessionDimensions?.agent_cwd ?? null)
 			: data.agent_cwd;
-	database.transaction(() => {
-		database.run(
+	const queryId = database.transaction(() => {
+		const queryResult = database.run(
 			`INSERT INTO queries (session_id, timestamp, cost, cost_known, estimated_cost, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, duration_ms, turns, context_window, stop_reason, tokens_in_context, provider_id, model, agent_cwd)
 			 VALUES (?, unixepoch(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
@@ -460,9 +460,10 @@ export async function recordQuery(
 				queryAgentCwd,
 			],
 		);
+		return Number(queryResult.lastInsertRowid);
 	})();
 	markAnalyticsChanged(undefined, "query_recorded");
-	return { estimatedCost };
+	return { estimatedCost, queryId };
 }
 
 export async function getSessionLastQueryContext(sessionId: string): Promise<{

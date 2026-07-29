@@ -714,6 +714,44 @@ describe("AssistantMsg", () => {
 			).toBeNull();
 		});
 
+		it.each([
+			{
+				label: "provider-reported",
+				message: makeMsg({ cost: 0.1234, costEstimated: false }),
+				display: "$0.1234",
+			},
+			{
+				label: "estimated",
+				message: makeMsg({ cost: 0.1234, costEstimated: true }),
+				display: "~$0.1234",
+			},
+			{
+				label: "provider-reported zero",
+				message: makeMsg({ cost: 0, costEstimated: false }),
+				display: "$0.0000",
+			},
+		])("shows $label cost beside the completed actions", ({
+			message,
+			display,
+		}) => {
+			render(<AssistantMsg message={message} />);
+			const actions = screen.getByRole("button", {
+				name: /copy/i,
+			}).parentElement;
+			const cost = screen.getByText(display);
+
+			expect(actions?.contains(cost)).toBe(true);
+		});
+
+		it("does not invent a cost beside completed actions when pricing is unknown", () => {
+			render(<AssistantMsg message={makeMsg({ cost: null })} />);
+			const actions = screen.getByRole("button", {
+				name: /copy/i,
+			}).parentElement;
+
+			expect(actions?.textContent).not.toContain("$");
+		});
+
 		it("offers read aloud beside copy for completed responses", () => {
 			render(<AssistantMsg message={makeMsg()} />);
 			expect(screen.getByRole("button", { name: "Read aloud" })).toBeTruthy();

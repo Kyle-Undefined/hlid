@@ -85,6 +85,28 @@ export async function setMessageText(
 	}
 }
 
+export async function setMessageQueryId(
+	sessionId: string,
+	seq: number,
+	queryId: number,
+): Promise<void> {
+	const db = await getDb();
+	const { changes } = db.run(
+		`UPDATE messages
+		 SET query_id = ?
+		 WHERE session_id = ? AND seq = ? AND role = 'assistant'
+		   AND EXISTS (
+			   SELECT 1 FROM queries WHERE id = ? AND session_id = ?
+		   )`,
+		[queryId, sessionId, seq, queryId, sessionId],
+	);
+	if (changes === 0) {
+		throw new Error(
+			`setMessageQueryId: no matching assistant/query found for session=${sessionId} seq=${seq} query=${queryId}`,
+		);
+	}
+}
+
 export async function setMessageRecap(
 	sessionId: string,
 	seq: number,
@@ -193,6 +215,8 @@ export async function copyForkedSessionTranscript(
 	const db = await getDb();
 	let copied = 0;
 	db.transaction(() => {
+		// query_id is intentionally omitted. A fork copies visible transcript
+		// history, not the source session's accounting ownership.
 		const messageFilter =
 			throughSeq === undefined
 				? ""
@@ -547,20 +571,29 @@ export async function getSessionMessages(
 	minId?: number,
 ): Promise<MessageRow[]> {
 	const db = await getDb();
+	const selectMessages = `SELECT m.*,
+		q.cost AS query_cost,
+		q.cost_known AS query_cost_known,
+		q.estimated_cost AS query_estimated_cost
+		FROM messages AS m
+		LEFT JOIN queries AS q
+			ON q.id = m.query_id AND q.session_id = m.session_id`;
 	if (minSeq !== undefined) {
 		if (minId !== undefined) {
 			return db
 				.query<MessageRow, [string, number, number]>(
-					`SELECT * FROM messages
-					 WHERE session_id = ?
-					   AND (seq, id) >= (?, ?)
-					 ORDER BY seq ASC, id ASC`,
+					`${selectMessages}
+					 WHERE m.session_id = ?
+					   AND (m.seq, m.id) >= (?, ?)
+					 ORDER BY m.seq ASC, m.id ASC`,
 				)
 				.all(sessionId, minSeq, minId);
 		}
 		return db
 			.query<MessageRow, [string, number]>(
-				`SELECT * FROM messages WHERE session_id = ? AND seq >= ? ORDER BY seq ASC, id ASC`,
+				`${selectMessages}
+				 WHERE m.session_id = ? AND m.seq >= ?
+				 ORDER BY m.seq ASC, m.id ASC`,
 			)
 			.all(sessionId, minSeq);
 	}
@@ -570,10 +603,10 @@ export async function getSessionMessages(
 				return db
 					.query<MessageRow, [string, number, number, number]>(
 						`SELECT * FROM (
-							SELECT * FROM messages
-							WHERE session_id = ?
-							  AND (seq, id) < (?, ?)
-							ORDER BY seq DESC, id DESC LIMIT ?
+							${selectMessages}
+							WHERE m.session_id = ?
+							  AND (m.seq, m.id) < (?, ?)
+							ORDER BY m.seq DESC, m.id DESC LIMIT ?
 						) ORDER BY seq ASC, id ASC`,
 					)
 					.all(sessionId, beforeSeq, beforeId, limit);
@@ -581,9 +614,9 @@ export async function getSessionMessages(
 			return db
 				.query<MessageRow, [string, number, number]>(
 					`SELECT * FROM (
-						SELECT * FROM messages
-						WHERE session_id = ? AND seq < ?
-						ORDER BY seq DESC, id DESC LIMIT ?
+						${selectMessages}
+						WHERE m.session_id = ? AND m.seq < ?
+						ORDER BY m.seq DESC, m.id DESC LIMIT ?
 					) ORDER BY seq ASC, id ASC`,
 				)
 				.all(sessionId, beforeSeq, limit);
@@ -591,16 +624,18 @@ export async function getSessionMessages(
 		return db
 			.query<MessageRow, [string, number]>(
 				`SELECT * FROM (
-					SELECT * FROM messages
-					WHERE session_id = ?
-					ORDER BY seq DESC, id DESC LIMIT ?
+					${selectMessages}
+					WHERE m.session_id = ?
+					ORDER BY m.seq DESC, m.id DESC LIMIT ?
 				) ORDER BY seq ASC, id ASC`,
 			)
 			.all(sessionId, limit);
 	}
 	return db
 		.query<MessageRow, [string]>(
-			`SELECT * FROM messages WHERE session_id = ? ORDER BY seq ASC, id ASC`,
+			`${selectMessages}
+			 WHERE m.session_id = ?
+			 ORDER BY m.seq ASC, m.id ASC`,
 		)
 		.all(sessionId);
 }

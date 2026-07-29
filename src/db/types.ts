@@ -82,6 +82,12 @@ export type MessageRow = {
 	steer_tool_event_index?: number | null;
 	/** Hlid-owned context provenance for this user turn. Never sent to providers. */
 	context_manifest_json?: string | null;
+	/** Durable usage query owned by this completed assistant response. */
+	query_id?: number | null;
+	/** Joined query fields projected only by getSessionMessages(). */
+	query_cost?: number | null;
+	query_cost_known?: number | null;
+	query_estimated_cost?: number | null;
 };
 
 type ToolEventRow = {

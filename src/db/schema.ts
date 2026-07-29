@@ -467,6 +467,15 @@ function applyMigrations(db: Db): void {
 		db.run(`ALTER TABLE messages ADD COLUMN context_manifest_json TEXT`);
 	});
 
+	// Associate a completed assistant transcript row with the query that owns
+	// its durable usage. History can then render the same cost as the live done
+	// event while keeping Ledger repricing and repair authoritative. Legacy rows
+	// stay unlinked because recap, import, fork, and cancellation paths make an
+	// ordinal message-to-query backfill unsafe.
+	runMigration(db, "_migrated_messages_query_id", (db) => {
+		db.run(`ALTER TABLE messages ADD COLUMN query_id INTEGER`);
+	});
+
 	// Durable provenance lets Raven and Ledger link an exact fork back to its
 	// source even after both provider processes and Hlid itself restart.
 	runMigration(db, "_migrated_sessions_fork_provenance", (db) => {

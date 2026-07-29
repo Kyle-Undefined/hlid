@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../db", () => ({
 	setMessageRecap: vi.fn().mockResolvedValue(undefined),
-	recordQuery: vi.fn().mockResolvedValue({ estimatedCost: null }),
+	recordQuery: vi.fn().mockResolvedValue({ estimatedCost: null, queryId: 1 }),
 }));
 
 import * as db from "../db";
@@ -600,7 +600,7 @@ describe("generateTurnRecap — usage accounting", () => {
 	it("lets a duplicate done retry after a transient record failure", async () => {
 		mockRecordQuery
 			.mockRejectedValueOnce(new Error("database busy"))
-			.mockResolvedValueOnce({ estimatedCost: null });
+			.mockResolvedValueOnce({ estimatedCost: null, queryId: 2 });
 		const completion: Extract<AgentEvent, { type: "done" }> = {
 			type: "done",
 			turns: 1,

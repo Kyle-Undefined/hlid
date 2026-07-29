@@ -195,6 +195,75 @@ describe("useLoadChatHistory — initial load", () => {
 		).toBe(true);
 	});
 
+	it("maps persisted exact, estimated, zero, and unknown query costs into history", async () => {
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			{
+				...makeRow("assistant", "provider cost", 1000),
+				query_cost: 0.1234,
+				query_cost_known: 1,
+				query_estimated_cost: null,
+			},
+			{
+				...makeRow("assistant", "estimated cost", 2000),
+				query_cost: 0,
+				query_cost_known: 1,
+				query_estimated_cost: 0.2345,
+			},
+			{
+				...makeRow("assistant", "free", 3000),
+				query_cost: 0,
+				query_cost_known: 1,
+				query_estimated_cost: null,
+			},
+			{
+				...makeRow("assistant", "unpriced", 4000),
+				query_cost: 0,
+				query_cost_known: 0,
+				query_estimated_cost: null,
+			},
+		]);
+		const dispatch = vi.fn();
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+
+		await act(async () => {});
+
+		const load = dispatch.mock.calls.find(
+			([action]) => action.type === "LOAD_HISTORY",
+		)?.[0];
+		expect(load.items).toEqual([
+			expect.objectContaining({
+				text: "provider cost",
+				cost: 0.1234,
+				costEstimated: false,
+			}),
+			expect.objectContaining({
+				text: "estimated cost",
+				cost: 0.2345,
+				costEstimated: true,
+			}),
+			expect.objectContaining({
+				text: "free",
+				cost: 0,
+				costEstimated: false,
+			}),
+			expect.objectContaining({
+				text: "unpriced",
+				cost: null,
+				costEstimated: false,
+			}),
+		]);
+	});
+
 	it("refetches when completion lands during the initial DB snapshot", async () => {
 		const staleUser = makeRow("user", "still running", 1000);
 		const finalAssistant = makeRow("assistant", "completed response", 2000);
