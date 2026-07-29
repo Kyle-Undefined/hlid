@@ -950,55 +950,58 @@ async function inspectComponents(
 		if (count > 0) components.push({ kind, label, count, names });
 	};
 
-	const skills =
-		agentPluginSchemaStatus(manifest) === "supported"
-			? await countDirectChildSkills(root)
-			: await countFiles(resolve(root, "skills"), (name) =>
-					/^skill\.md$/i.test(name),
-				);
-	add("skills", "Skills", skills.count, skills.names);
-
-	const agents = await countFiles(resolve(root, "agents"), (name) =>
-		/\.md$/i.test(name),
-	);
-	add("agents", "Agents", agents.count, agents.names);
-
-	const commands = await countFiles(resolve(root, "commands"), (name) =>
-		/\.md$/i.test(name),
-	);
-	add("commands", "Commands", commands.count, commands.names);
-
-	const hookFiles = ["hooks/hooks.json", "hooks.json"];
-	let hookNames: string[] = [];
-	for (const hookFile of hookFiles) {
-		hookNames = await namedJsonEntries(root, hookFile, "hooks");
-		if (hookNames.length > 0) break;
+	async function loadHookNames(): Promise<string[]> {
+		const [nested, flat] = await Promise.all(
+			["hooks/hooks.json", "hooks.json"].map((hookFile) =>
+				namedJsonEntries(root, hookFile, "hooks"),
+			),
+		);
+		if (nested.length > 0) return nested;
+		if (flat.length > 0) return flat;
+		if (manifest.hooks !== undefined) {
+			const names = Object.keys(recordValue(manifest.hooks));
+			return names.length > 0 ? names : ["configured"];
+		}
+		return [];
 	}
-	if (hookNames.length === 0 && manifest.hooks !== undefined) {
-		hookNames = Object.keys(recordValue(manifest.hooks));
-		if (hookNames.length === 0) hookNames = ["configured"];
-	}
-	add("hooks", "Hooks", hookNames.length, hookNames);
-
-	const lspNames = Object.keys(recordValue(manifest.lspServers)).slice(0, 50);
-	add("lsp", "Language servers", lspNames.length, lspNames);
 
 	const mcpPath =
 		manifestPathValue(manifest, "mcpServers") ||
 		manifestPathValue(manifest, "mcp_servers") ||
 		".mcp.json";
-	const mcpNames = await namedJsonEntries(root, mcpPath, "mcpServers");
+	const appsPath = manifestPathValue(manifest, "apps") || ".app.json";
+
+	const [skills, agents, commands, hookNames, mcpNames, appManifest, scripts] =
+		await Promise.all([
+			agentPluginSchemaStatus(manifest) === "supported"
+				? countDirectChildSkills(root)
+				: countFiles(resolve(root, "skills"), (name) =>
+						/^skill\.md$/i.test(name),
+					),
+			countFiles(resolve(root, "agents"), (name) => /\.md$/i.test(name)),
+			countFiles(resolve(root, "commands"), (name) => /\.md$/i.test(name)),
+			loadHookNames(),
+			namedJsonEntries(root, mcpPath, "mcpServers"),
+			safeJsonFile(root, appsPath),
+			countFiles(resolve(root, "scripts"), () => true),
+		]);
+
+	add("skills", "Skills", skills.count, skills.names);
+	add("agents", "Agents", agents.count, agents.names);
+	add("commands", "Commands", commands.count, commands.names);
+	add("hooks", "Hooks", hookNames.length, hookNames);
+
+	const lspNames = Object.keys(recordValue(manifest.lspServers)).slice(0, 50);
+	add("lsp", "Language servers", lspNames.length, lspNames);
+
 	add("mcp", "MCP servers", mcpNames.length, mcpNames);
 
-	const appsPath = manifestPathValue(manifest, "apps") || ".app.json";
-	const appManifest = await safeJsonFile(root, appsPath);
 	const appNames = appManifest
 		? Object.keys(recordValue(recordValue(appManifest.value).apps)).slice(0, 50)
 		: [];
 	const hasAppManifest = appManifest !== null;
 	add("apps", "Apps", appNames.length || (hasAppManifest ? 1 : 0), appNames);
 
-	const scripts = await countFiles(resolve(root, "scripts"), () => true);
 	add("scripts", "Scripts", scripts.count, scripts.names);
 	return components;
 }

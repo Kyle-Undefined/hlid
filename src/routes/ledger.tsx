@@ -38,7 +38,7 @@ import {
 import {
 	costDisplayNote,
 	formatDisplayCost,
-	totalDisplayCost,
+	formatPerQueryCost,
 } from "#/lib/costDisplay";
 import { dbFetch, dbJson, requireDbOk } from "#/lib/dbClient";
 import { fmt } from "#/lib/formatters";
@@ -384,13 +384,12 @@ function openCostStat(totals: OpenSessionTotals, ready: boolean): ActiveStat {
 		estimated_cost: totals.estimatedCost,
 		unpriced_queries: totals.unpricedQueries,
 	};
+	const perQueryCost = formatPerQueryCost(cost, pricedQueries);
 	return {
 		value: formatDisplayCost(cost),
 		sub:
 			costDisplayNote(cost) ??
-			(pricedQueries > 0
-				? `$${(totalDisplayCost(cost) / pricedQueries).toFixed(4)}/query`
-				: undefined),
+			(perQueryCost ? `${perQueryCost}/query` : undefined),
 	};
 }
 
@@ -1470,9 +1469,7 @@ function StatsTab({
 		? Math.max(0, selected.queries - (selected.unpriced_queries ?? 0))
 		: 0;
 	const avgCost =
-		selected && pricedQueries > 0
-			? `$${(totalDisplayCost(selected) / pricedQueries).toFixed(4)}`
-			: "--";
+		(selected && formatPerQueryCost(selected, pricedQueries)) ?? "--";
 	const pricedCoverage =
 		selected && selected.queries > 0
 			? `${((pricedQueries / selected.queries) * 100).toFixed(1)}%`

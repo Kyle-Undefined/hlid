@@ -13,7 +13,7 @@ import {
 import { basename, dirname, resolve } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import type { HlidConfig } from "../config";
-import { parseFrontmatter } from "../lib/frontmatter";
+import { mapWithConcurrency } from "../lib/asyncPool";
 import {
 	expandTilde,
 	explicitPathEnvironment,
@@ -27,12 +27,15 @@ import {
 	prepareLibrary,
 	safeLibrarySegment,
 } from "./libraryStore";
+import {
+	MAX_SKILL_DOCUMENT_BYTES,
+	MAX_SKILL_PACKAGE_BYTES,
+	MAX_SKILL_PACKAGE_FILES,
+	skillDocumentMetadata,
+} from "./skillPackage";
 
 export type SkillImportSource = "claude" | "codex" | "acp" | "agent";
 
-const MAX_IMPORT_FILES = 2_000;
-const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
-const MAX_SKILL_DOCUMENT_BYTES = 1024 * 1024;
 const MAX_DISCOVERY_DEPTH = 8;
 
 export type DiscoveredSkillPackage = {
@@ -88,7 +91,7 @@ export async function validatePackageTree(
 				throw new Error("Skill package contains an unsupported file");
 			files++;
 			bytes += info.size;
-			if (files > MAX_IMPORT_FILES || bytes > MAX_IMPORT_BYTES) {
+			if (files > MAX_SKILL_PACKAGE_FILES || bytes > MAX_SKILL_PACKAGE_BYTES) {
 				throw new Error("Skill package exceeds the import limit");
 			}
 		}
@@ -383,10 +386,16 @@ async function discoverSkillPackagesInternal(
 			skill,
 		]),
 	);
+	const packageRealPaths = await mapWithConcurrency(
+		discoveredFiles,
+		8,
+		(item) => realpath(dirname(item.file)).catch(() => null),
+	);
+
 	const seen = new Set<string>();
 	const result: InternalDiscoveredSkill[] = [];
-	for (const item of discoveredFiles) {
-		const packageReal = await realpath(dirname(item.file)).catch(() => null);
+	for (const [index, item] of discoveredFiles.entries()) {
+		const packageReal = packageRealPaths[index];
 		if (!packageReal) continue;
 		const key = `${item.root.source}\0${packageReal}`;
 		if (seen.has(key)) continue;
@@ -395,20 +404,8 @@ async function discoverSkillPackagesInternal(
 			() => null,
 		);
 		if (raw === null) continue;
-		const parsed = parseFrontmatter(raw);
 		const fallbackName = basename(packageReal);
-		const frontmatterName =
-			typeof parsed.data.name === "string" ? parsed.data.name.trim() : "";
-		const name = frontmatterName || fallbackName;
-		const firstLine =
-			parsed.content
-				.trim()
-				.split("\n")
-				.find((line) => line.trim()) ?? "";
-		const description =
-			typeof parsed.data.description === "string"
-				? parsed.data.description
-				: firstLine.replace(/^#+\s*/, "");
+		const { name, description } = skillDocumentMetadata(raw, fallbackName);
 		let summary: { fileCount: number; bytes: number };
 		try {
 			summary = await validatePackageTree(packageReal);

@@ -1,4 +1,5 @@
 import { ZodError } from "zod";
+import { escapeRegExp } from "../lib/utils";
 import type { HlidDelegationManager } from "./hlidDelegation";
 import {
 	cancelHlidAgentSchema,
@@ -18,7 +19,7 @@ function errorResponse(error: unknown, status = 409): Response {
 }
 
 function delegationId(pathname: string, suffix = ""): string | null {
-	const escapedSuffix = suffix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const escapedSuffix = escapeRegExp(suffix);
 	const match = pathname.match(
 		new RegExp(`^/hlid-agents/([^/]+)${escapedSuffix}$`),
 	);

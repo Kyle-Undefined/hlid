@@ -1,18 +1,15 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
 	lstat,
-	mkdir,
 	readdir,
 	readFile,
 	realpath,
-	rename,
-	rm,
 	stat,
 	unlink,
-	writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
+import { writeFileAtomic } from "../lib/atomicFile";
 import {
 	expandTilde,
 	parseWslUnc,
@@ -472,18 +469,6 @@ async function authorizeDestination(
 	return target;
 }
 
-async function writeAtomic(path: string, content: string): Promise<void> {
-	await mkdir(dirname(path), { recursive: true });
-	const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
-	try {
-		await writeFile(temporary, content, { encoding: "utf8", mode: 0o600 });
-		await rename(temporary, path);
-	} catch (error) {
-		await rm(temporary, { force: true }).catch(() => {});
-		throw error;
-	}
-}
-
 export async function saveClaudeWorkflow(
 	input: ProviderWorkflowSaveInput,
 	explicitConfigDir?: string,
@@ -497,7 +482,7 @@ export async function saveClaudeWorkflow(
 		meta.name,
 		input.overwrite === true,
 	);
-	await writeAtomic(target, content);
+	await writeFileAtomic(target, content, { mode: 0o600 });
 	const targetProviderPath = toProviderRuntimePath(input.cwd, target);
 	const catalog = await listClaudeWorkflows(input.cwd, explicitConfigDir);
 	const saved = catalog.workflows.find(

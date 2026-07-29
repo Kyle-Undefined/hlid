@@ -1,17 +1,9 @@
-import { createHash, randomUUID } from "node:crypto";
-import {
-	lstat,
-	mkdir,
-	readFile,
-	realpath,
-	rename,
-	rm,
-	stat,
-	writeFile,
-} from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { lstat, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, relative, resolve, win32 } from "node:path";
 import type { HlidConfig } from "../config";
+import { writeFileAtomic } from "../lib/atomicFile";
 import type {
 	InstructionFileDocument,
 	InstructionFileEnvironment,
@@ -375,25 +367,6 @@ async function authorizedWritePath(
 	}
 }
 
-async function writeAtomic(
-	path: string,
-	content: string,
-	mode?: number,
-): Promise<void> {
-	await mkdir(dirname(path), { recursive: true });
-	const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
-	try {
-		await writeFile(temporary, content, {
-			encoding: "utf8",
-			...(mode === undefined ? {} : { mode }),
-		});
-		await rename(temporary, path);
-	} catch (error) {
-		await rm(temporary, { force: true }).catch(() => {});
-		throw error;
-	}
-}
-
 export async function writeInstructionFile(
 	config: HlidConfig,
 	input: { id: string; content: string; expectedRevision: string | null },
@@ -413,6 +386,8 @@ export async function writeInstructionFile(
 		);
 	}
 	const authorized = await authorizedWritePath(definition);
-	await writeAtomic(authorized.path, input.content, authorized.mode);
+	await writeFileAtomic(authorized.path, input.content, {
+		mode: authorized.mode,
+	});
 	return readInstructionFile(config, input.id, options);
 }

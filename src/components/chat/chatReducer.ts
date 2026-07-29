@@ -657,39 +657,50 @@ function hydrateHistory(
 	items: HistoryItem[],
 ): ChatMessage[] {
 	const hydrated = items.map(historyItemToMessage);
+	const hydratedKeys = hydrated.map(messageKey);
 	const merged = [...state];
+
+	// key -> index in `merged`, kept in sync as items are spliced in so lookups
+	// stay O(1) instead of rescanning `merged` (and recomputing keys) per item.
+	const keyIndex = new Map<string, number>();
+	merged.forEach((candidate, i) => {
+		keyIndex.set(messageKey(candidate), i);
+	});
+	const reindexFrom = (from: number) => {
+		for (let i = from; i < merged.length; i++) {
+			keyIndex.set(messageKey(merged[i] as ChatMessage), i);
+		}
+	};
+
 	let previousHydratedKey: string | null = null;
 
 	for (let index = 0; index < hydrated.length; index++) {
-		const message = hydrated[index];
-		const key = messageKey(message);
-		if (merged.some((candidate) => messageKey(candidate) === key)) {
+		const message = hydrated[index] as ChatMessage;
+		const key = hydratedKeys[index] as string;
+		if (keyIndex.has(key)) {
 			previousHydratedKey = key;
 			continue;
 		}
 
 		let insertAt = 0;
 		if (previousHydratedKey !== null) {
-			const previousIndex = merged.findIndex(
-				(candidate) => messageKey(candidate) === previousHydratedKey,
-			);
-			insertAt = previousIndex === -1 ? merged.length : previousIndex + 1;
+			const previousIndex = keyIndex.get(previousHydratedKey);
+			insertAt =
+				previousIndex === undefined ? merged.length : previousIndex + 1;
 		} else {
-			const nextHydratedKey = hydrated
-				.slice(index + 1)
-				.map(messageKey)
-				.find((candidateKey) =>
-					merged.some((candidate) => messageKey(candidate) === candidateKey),
-				);
-			const nextIndex =
-				nextHydratedKey === undefined
-					? -1
-					: merged.findIndex(
-							(candidate) => messageKey(candidate) === nextHydratedKey,
-						);
+			let nextIndex = -1;
+			for (let j = index + 1; j < hydratedKeys.length; j++) {
+				const candidateIndex = keyIndex.get(hydratedKeys[j] as string);
+				if (candidateIndex !== undefined) {
+					nextIndex = candidateIndex;
+					break;
+				}
+			}
 			insertAt = nextIndex === -1 ? 0 : nextIndex;
 		}
 		merged.splice(insertAt, 0, message);
+		keyIndex.set(key, insertAt);
+		reindexFrom(insertAt + 1);
 		previousHydratedKey = key;
 	}
 

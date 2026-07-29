@@ -13,7 +13,7 @@ import {
 	X,
 } from "lucide-react";
 import type { ComponentType, RefObject } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { HydrationSafeText } from "#/components/HydrationSafeText";
 import { LedgerPaginationBar } from "#/components/ledger/LedgerPagination";
@@ -1013,26 +1013,34 @@ export function SessionsLedger({
 		onPageChange,
 		onPageSizeChange,
 	};
-	const runningSessionIds = new Set(
-		(sessionsStatus ?? []).flatMap((session) =>
-			session.state === "running" && session.db_session_id
-				? [session.db_session_id]
-				: [],
-		),
+	const runningSessionIds = useMemo(
+		() =>
+			new Set(
+				(sessionsStatus ?? []).flatMap((session) =>
+					session.state === "running" && session.db_session_id
+						? [session.db_session_id]
+						: [],
+				),
+			),
+		[sessionsStatus],
 	);
-	const displayedSessions = data.sessions
-		.map((session, index) => ({ session, index }))
-		.sort((a, b) => {
-			const pinnedOrder =
-				Number(b.session.pinned === 1) - Number(a.session.pinned === 1);
-			const runningOrder =
-				sort === "recent"
-					? Number(runningSessionIds.has(b.session.id)) -
-						Number(runningSessionIds.has(a.session.id))
-					: 0;
-			return pinnedOrder || runningOrder || a.index - b.index;
-		})
-		.map(({ session }) => session);
+	const displayedSessions = useMemo(
+		() =>
+			data.sessions
+				.map((session, index) => ({ session, index }))
+				.sort((a, b) => {
+					const pinnedOrder =
+						Number(b.session.pinned === 1) - Number(a.session.pinned === 1);
+					const runningOrder =
+						sort === "recent"
+							? Number(runningSessionIds.has(b.session.id)) -
+								Number(runningSessionIds.has(a.session.id))
+							: 0;
+					return pinnedOrder || runningOrder || a.index - b.index;
+				})
+				.map(({ session }) => session),
+		[data.sessions, sort, runningSessionIds],
+	);
 
 	return (
 		<div className="border border-border bg-card">

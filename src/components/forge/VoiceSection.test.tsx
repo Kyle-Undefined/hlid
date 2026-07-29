@@ -102,6 +102,7 @@ describe("VoiceSection", () => {
 				initialInfo={info}
 			/>,
 		);
+		expect(screen.getByText("142 MiB · multilingual")).toBeTruthy();
 		expect(
 			(screen.getByRole("button", { name: "DELETE" }) as HTMLButtonElement)
 				.disabled,

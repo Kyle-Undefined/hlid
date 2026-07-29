@@ -5,6 +5,7 @@ import {
 	readFileSync,
 	rmSync,
 	statSync,
+	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -213,5 +214,23 @@ describe("GitHub skill staging", () => {
 		expect(await discardStagedSkill(staged.id)).toBe(true);
 		expect(await discardStagedSkill(staged.id)).toBe(false);
 		expect(existsSync(join(root, "managed", "demo"))).toBe(false);
+	});
+
+	it("keeps an installed skill's name tied to its managed directory", async () => {
+		const staged = await stageGitHubSkill(
+			"https://github.com/openai/skills/tree/main/skills/demo",
+		);
+		await installStagedSkill(staged.id);
+		writeFileSync(
+			join(root, "managed", "demo", "SKILL.md"),
+			"---\nname: Renamed in frontmatter\ndescription: Updated description\n---\n",
+		);
+
+		expect(await listManagedSkills()).toEqual([
+			expect.objectContaining({
+				name: "demo",
+				description: "Updated description",
+			}),
+		]);
 	});
 });

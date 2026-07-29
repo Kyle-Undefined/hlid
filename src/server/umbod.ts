@@ -1,6 +1,7 @@
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ApprovalDecision, ToolCall, Umbod } from "@umbod/core";
+import { writeFileAtomic } from "#/lib/atomicFile";
 import { APP_DIR } from "#/lib/paths";
 import { loadConfig } from "#/server/config";
 import {
@@ -388,21 +389,16 @@ export async function saveUmbodManifest(source: string): Promise<void> {
 	const { loadManifest } = await import("@umbod/core");
 	const config = loadConfig()?.umbod;
 	const path = resolveUmbodManifestPath(config?.manifest_path ?? "umbod.toml");
-	const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
-	await writeFile(temporary, source, { encoding: "utf8", mode: 0o600 });
-	try {
-		await loadManifest(temporary);
-		await rename(temporary, path);
-		// Hlid-authored saves replace only the policy engine. Keep the embedded
-		// HTTP listener and audit store alive.
-		if (config?.enabled) await performUmbodReload(path);
-		invalidateUmbodAnalytics();
-	} catch (error) {
-		await Bun.file(temporary)
-			.delete()
-			.catch(() => {});
-		throw error;
-	}
+	await writeFileAtomic(path, source, {
+		mode: 0o600,
+		validate: async (temporary) => {
+			await loadManifest(temporary);
+		},
+	});
+	// Hlid-authored saves replace only the policy engine. Keep the embedded
+	// HTTP listener and audit store alive.
+	if (config?.enabled) await performUmbodReload(path);
+	invalidateUmbodAnalytics();
 }
 
 export function closeUmbod(): void {

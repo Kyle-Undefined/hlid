@@ -1,11 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import {
-	createWriteStream,
-	lstatSync,
-	mkdirSync,
-	readFileSync,
-	realpathSync,
-} from "node:fs";
+import { createWriteStream, mkdirSync } from "node:fs";
 import {
 	mkdir as mkdirAsync,
 	rm as rmAsync,
@@ -17,7 +11,10 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { HlidConfig } from "../config";
 import { captureBoundedBunStderr, runCapturedProcess } from "../lib/process";
-import { replaceRuntimeDirectory } from "./embeddedRuntime";
+import {
+	replaceRuntimeDirectory,
+	verifyRuntimeDirectory,
+} from "./embeddedRuntime";
 import { INTERNAL_TTS_RUNTIME_FLAG } from "./tts-runtime";
 import {
 	getTtsModelDefinition,
@@ -165,20 +162,9 @@ function installedDirectory(
 	hash: string,
 	requiredFiles: readonly string[],
 ): string | null {
-	try {
-		if (readFileSync(join(directory, ".hash"), "utf8").trim() !== hash)
-			return null;
-		for (const name of requiredFiles) {
-			const candidate = join(directory, name);
-			if (!lstatSync(candidate).isFile()) return null;
-			const canonical = realpathSync(candidate);
-			const rel = relative(realpathSync(directory), canonical);
-			if (rel.startsWith("..") || isAbsolute(rel)) return null;
-		}
-		return realpathSync(directory);
-	} catch {
-		return null;
-	}
+	return verifyRuntimeDirectory(directory, hash, requiredFiles, {
+		requireContainedRegularFiles: true,
+	});
 }
 
 export function validateTtsArchiveEntries(

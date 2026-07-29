@@ -128,12 +128,12 @@ describe("CliProxySection", () => {
 					oauthUrl: "https://login.example.test/device",
 					oauthCode: "ABCD-EFGH",
 					oauthBrowserOpened: false,
-					download: { received: 1024, total: 2048 },
+					download: { received: 1024, total: 2 * 1024 * 1024 },
 				})}
 			/>,
 		);
 
-		expect(screen.getByText("Downloaded 1 KB of 2 KB")).toBeTruthy();
+		expect(screen.getByText("Downloaded 1 KB of 2.0 MB")).toBeTruthy();
 		expect(screen.getByText(/Browser launch failed/)).toBeTruthy();
 		expect(
 			screen

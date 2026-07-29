@@ -1,12 +1,10 @@
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { replaceRuntimeDirectory } from "./embeddedRuntime";
+import {
+	materializeEmbeddedFile,
+	stageRuntimeDirectory,
+	verifyRuntimeDirectory,
+} from "./embeddedRuntime";
 import { WHISPER_ASSETS, WHISPER_ASSETS_HASH } from "./voice-assets";
 
 const RUNTIME_LAYOUT_VERSION = "wav-shim-v3-vulkan";
@@ -37,25 +35,17 @@ if not defined output exit /b 2
 copy /Y "%input%" "%output%" >nul
 `;
 
-async function materializeEmbeddedFile(
-	source: string,
-	destination: string,
-): Promise<void> {
-	await Bun.write(destination, Bun.file(source));
-}
-
 export function existingVoiceRuntime(
 	directory: string,
 	runtimeHash: string,
 	requiredFiles: readonly string[],
 ): string | null {
 	const executable = join(directory, "whisper-server.exe");
-	const hashFile = join(directory, ".hash");
-	if (!existsSync(hashFile)) return null;
-	return readFileSync(hashFile, "utf8").trim() === runtimeHash &&
-		existsSync(executable) &&
-		existsSync(join(directory, "ffmpeg.cmd")) &&
-		requiredFiles.every((name) => existsSync(join(directory, name)))
+	return verifyRuntimeDirectory(directory, runtimeHash, [
+		"whisper-server.exe",
+		"ffmpeg.cmd",
+		...requiredFiles,
+	])
 		? executable
 		: null;
 }
@@ -63,24 +53,22 @@ export function existingVoiceRuntime(
 export async function bootstrapVoiceRuntime(): Promise<string | null> {
 	const override = process.env.HLID_WHISPER_SERVER;
 	if (override) return override;
-	if (!WHISPER_ASSETS) return null;
+	const assets = WHISPER_ASSETS;
+	if (!assets) return null;
 	const local =
 		process.env.LOCALAPPDATA ?? "C:\\Users\\Default\\AppData\\Local";
 	const dir = join(local, "hlid", "whisper-rt");
 	const runtimeHash = `${WHISPER_ASSETS_HASH}-${RUNTIME_LAYOUT_VERSION}`;
-	const requiredFiles = Object.keys(WHISPER_ASSETS);
+	const requiredFiles = Object.keys(assets);
 	const existingRuntime = existingVoiceRuntime(dir, runtimeHash, requiredFiles);
 	if (existingRuntime) return existingRuntime;
-	const tempDir = `${dir}.tmp`;
-	rmSync(tempDir, { recursive: true, force: true });
-	mkdirSync(tempDir, { recursive: true });
-	for (const [name, source] of Object.entries(WHISPER_ASSETS)) {
-		const destination = join(tempDir, name);
-		mkdirSync(dirname(destination), { recursive: true });
-		await materializeEmbeddedFile(source, destination);
-	}
-	writeFileSync(join(tempDir, "ffmpeg.cmd"), FFMPEG_WAV_SHIM, "utf8");
-	writeFileSync(join(tempDir, ".hash"), runtimeHash, "utf8");
-	replaceRuntimeDirectory(tempDir, dir);
+	await stageRuntimeDirectory(dir, runtimeHash, async (tempDir) => {
+		for (const [name, source] of Object.entries(assets)) {
+			const destination = join(tempDir, name);
+			mkdirSync(dirname(destination), { recursive: true });
+			await materializeEmbeddedFile(source, destination);
+		}
+		writeFileSync(join(tempDir, "ffmpeg.cmd"), FFMPEG_WAV_SHIM, "utf8");
+	});
 	return join(dir, "whisper-server.exe");
 }

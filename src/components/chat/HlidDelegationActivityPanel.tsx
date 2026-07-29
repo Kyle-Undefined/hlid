@@ -25,6 +25,8 @@ import {
 	subscribeSessionsStatus,
 } from "#/hooks/wsSessionStatusStore";
 import {
+	compactDelegationCost,
+	compactDelegationCount,
 	compactDelegationDuration,
 	liveDelegationUsageLabel,
 	liveSessionReasonLabel,
@@ -124,21 +126,6 @@ function StatusIcon({ presentation }: { presentation: StatusPresentation }) {
 	return <AlertTriangle className="h-2.5 w-2.5" />;
 }
 
-function compactCount(value: number): string {
-	if (value < 1_000) return `${Math.floor(value)}`;
-	if (value < 1_000_000) {
-		return `${Number((value / 1_000).toFixed(1))}k`;
-	}
-	return `${Number((value / 1_000_000).toFixed(1))}m`;
-}
-
-function compactCost(value: number): string {
-	if (value === 0) return "$0";
-	if (value < 0.01) return `$${value.toFixed(4)}`;
-	if (value < 1) return `$${value.toFixed(3)}`;
-	return `$${value.toFixed(2)}`;
-}
-
 function active(child: HlidDelegationListItem): boolean {
 	return child.status === "pending" || child.status === "running";
 }
@@ -177,7 +164,7 @@ function directChildUsageSummary(
 	);
 	const cost = children.reduce((total, child) => total + child.cost_used, 0);
 	const elapsed = childElapsedSpanSeconds(children, now);
-	return `${compactCount(tokens)} tokens · ${compactCost(cost)} · ${compactDelegationDuration(elapsed)} elapsed`;
+	return `${compactDelegationCount(tokens)} tokens · ${compactDelegationCost(cost)} · ${compactDelegationDuration(elapsed)} elapsed`;
 }
 
 function attentionNeeded(status: SessionStatusEntry | undefined): boolean {
@@ -291,18 +278,18 @@ function ChildRow({
 				{/* Non-null caps occur only on historical delegation snapshots. */}
 				{(child.tokens_used > 0 || child.token_budget !== null) && (
 					<span>
-						{compactCount(child.tokens_used)}
+						{compactDelegationCount(child.tokens_used)}
 						{child.token_budget !== null
-							? ` / ${compactCount(child.token_budget)}`
+							? ` / ${compactDelegationCount(child.token_budget)}`
 							: ""}{" "}
 						tokens
 					</span>
 				)}
 				{(child.cost_used > 0 || child.cost_budget !== null) && (
 					<span>
-						{compactCost(child.cost_used)}
+						{compactDelegationCost(child.cost_used)}
 						{child.cost_budget !== null
-							? ` / ${compactCost(child.cost_budget)}`
+							? ` / ${compactDelegationCost(child.cost_budget)}`
 							: ""}
 					</span>
 				)}

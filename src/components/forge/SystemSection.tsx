@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmAction } from "#/components/ConfirmAction";
+import { fmtBytes } from "#/lib/formatters";
 import {
 	getStorageStatsFn,
 	optimizeStorageFn,
@@ -21,18 +22,6 @@ type LifecycleState = {
 	path?: string;
 	install?: InstallPaths;
 };
-
-function formatBytes(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	const units = ["KiB", "MiB", "GiB", "TiB"];
-	let value = bytes / 1024;
-	let unit = units[0];
-	for (let i = 1; i < units.length && value >= 1024; i++) {
-		value /= 1024;
-		unit = units[i];
-	}
-	return `${value.toFixed(value >= 10 ? 1 : 2)} ${unit}`;
-}
 
 function OptimizeStorageAction({
 	busy,
@@ -328,19 +317,19 @@ function StorageSummary({
 				}
 			>
 				<span className="text-xs tabular-nums text-muted-foreground">
-					{storage ? formatBytes(storage.databaseBytes) : "—"}
+					{storage ? fmtBytes(storage.databaseBytes) : "—"}
 				</span>
 			</Field>
 			<Field
 				label="Write-ahead log"
 				hint={
 					storage?.reclaimableBytes
-						? `${formatBytes(storage.reclaimableBytes)} reusable inside database`
+						? `${fmtBytes(storage.reclaimableBytes)} reusable inside database`
 						: "SQLite WAL and reusable page space"
 				}
 			>
 				<span className="text-xs tabular-nums text-muted-foreground">
-					{storage ? formatBytes(storage.walBytes) : "—"}
+					{storage ? fmtBytes(storage.walBytes) : "—"}
 				</span>
 			</Field>
 			<Field
@@ -353,9 +342,7 @@ function StorageSummary({
 			>
 				<span className="text-xs tabular-nums text-muted-foreground">
 					{storage
-						? formatBytes(
-								storage.libraryBytes ?? storage.trackedAttachmentBytes,
-							)
+						? fmtBytes(storage.libraryBytes ?? storage.trackedAttachmentBytes)
 						: "—"}
 				</span>
 			</Field>

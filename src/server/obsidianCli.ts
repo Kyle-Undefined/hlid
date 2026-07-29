@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { runBoundedProcess } from "#/lib/process";
+import { escapeRegExp } from "#/lib/utils";
 
 const DETECTION_TIMEOUT_MS = 5_000;
 const COMMAND_TIMEOUT_MS = 20_000;
@@ -1517,7 +1518,7 @@ function resolveCreatedObsidianNotePath(
 	const parent = directVaultParent(requestedPath);
 	const requestedName = requestedPath.slice(parent ? parent.length + 1 : 0);
 	const stem = requestedName.replace(/\.md$/i, "");
-	const escapedStem = stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const escapedStem = escapeRegExp(stem);
 	const collisionName = new RegExp(`^${escapedStem}(?: \\d+)?\\.md$`, "i");
 	const candidates = Array.from(after.entries())
 		.filter(([key]) => !before.has(key))

@@ -58,6 +58,34 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("InstructionFilesPanel", () => {
+	it("keeps exact byte and KiB size labels", () => {
+		render(
+			<InstructionFilesPanel
+				targets={[
+					target({ id: "bytes", filename: "AGENTS.md", size: 1023 }),
+					target({ id: "small-kib", filename: "CLAUDE.md", size: 1536 }),
+					target({
+						id: "rounded-kib",
+						filename: "AGENTS.md",
+						size: 10 * 1024,
+					}),
+					target({
+						id: "missing",
+						filename: "CLAUDE.md",
+						exists: false,
+						size: null,
+						revision: null,
+					}),
+				]}
+			/>,
+		);
+
+		expect(screen.getByText("1023 B")).toBeTruthy();
+		expect(screen.getByText("1.5 KiB")).toBeTruthy();
+		expect(screen.getByText("10 KiB")).toBeTruthy();
+		expect(screen.getByText("missing")).toBeTruthy();
+	});
+
 	it("previews and explicitly saves an existing file", async () => {
 		const current = target();
 		mockRead.mockResolvedValue(document(current));

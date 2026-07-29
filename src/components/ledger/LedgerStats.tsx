@@ -1,7 +1,7 @@
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { PrivacyMask } from "#/components/PrivacyMask";
-import { formatDisplayCost, totalDisplayCost } from "#/lib/costDisplay";
+import { formatDisplayCost, formatPerQueryCost } from "#/lib/costDisplay";
 import { fmt } from "#/lib/formatters";
 
 // ─── StatCell ─────────────────────────────────────────────────────────────────
@@ -92,12 +92,7 @@ export function cacheHitPct(
 // fallow-ignore-next-line unused-export -- directly exercised by component tests
 export function StatRows({ s }: { s: StatBundle }) {
 	const pricedQueries = Math.max(0, s.queries - (s.unpriced_queries ?? 0));
-	const avgCost =
-		pricedQueries > 0
-			? `${(s.estimated_cost ?? 0) > 0 ? "~" : ""}$${(
-					totalDisplayCost(s) / pricedQueries
-				).toFixed(4)}`
-			: "--";
+	const avgCost = formatPerQueryCost(s, pricedQueries) ?? "--";
 	const avgTurns = s.queries > 0 ? (s.turns / s.queries).toFixed(1) : "--";
 	const hit = cacheHitPct(
 		s.input_tokens,

@@ -314,7 +314,7 @@ export function liveDelegationRollupLabel(
 		.join(" · ");
 }
 
-function compactDelegationCount(value: number): string {
+export function compactDelegationCount(value: number): string {
 	const safeValue = Math.max(0, value);
 	if (safeValue < 1_000) return `${Math.floor(safeValue)}`;
 	if (safeValue < 1_000_000) {
@@ -323,7 +323,7 @@ function compactDelegationCount(value: number): string {
 	return `${Number((safeValue / 1_000_000).toFixed(1))}m`;
 }
 
-function compactDelegationCost(value: number): string {
+export function compactDelegationCost(value: number): string {
 	const safeValue = Math.max(0, value);
 	if (safeValue === 0) return "$0";
 	if (safeValue < 0.01) return `$${safeValue.toFixed(4)}`;

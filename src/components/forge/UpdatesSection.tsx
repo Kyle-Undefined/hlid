@@ -23,6 +23,7 @@ import {
 	unregisterHlidFromClaudeDesktopFn,
 } from "#/lib/serverFns/claudeDesktop";
 import type { ReleaseNotes } from "#/lib/updates";
+import { uid } from "#/lib/utils";
 import { CliUpdateTerminalModal } from "./CliUpdateTerminalModal";
 import { Field, Section } from "./fields";
 
@@ -601,7 +602,7 @@ export function UpdatesSection() {
 				label: update.label,
 				command,
 				cwd: terminalCwd,
-				sessionId: `cli-update-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+				sessionId: `cli-update-${uid()}`,
 				initiallyCopied,
 			});
 		}

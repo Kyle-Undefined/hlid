@@ -96,6 +96,8 @@ export function ProjectPreviewPane({
 	const iframeRef = useRef<HTMLIFrameElement>(null);
 	const previewViewStateRef = useRef<PreviewViewState | null>(null);
 	const isReady = preview.state === "ready";
+	const agentFrameIdRef = useRef<string | null>(null);
+	agentFrameIdRef.current = agentFrame?.frame_id ?? null;
 	useEffect(() => {
 		if (!isReady || surface !== "agent") return;
 		let cancelled = false;
@@ -104,8 +106,8 @@ export function ProjectPreviewPane({
 				data: {
 					sessionId: preview.session_id,
 					previewId: preview.id,
-					...(agentFrame?.frame_id
-						? { afterFrameId: agentFrame.frame_id }
+					...(agentFrameIdRef.current
+						? { afterFrameId: agentFrameIdRef.current }
 						: {}),
 				},
 			})
@@ -127,7 +129,7 @@ export function ProjectPreviewPane({
 			cancelled = true;
 			window.clearInterval(timer);
 		};
-	}, [agentFrame?.frame_id, isReady, preview.id, preview.session_id, surface]);
+	}, [isReady, preview.id, preview.session_id, surface]);
 	const previewUrl = (() => {
 		if (typeof window === "undefined") return preview.url;
 		try {

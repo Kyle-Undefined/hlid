@@ -85,6 +85,43 @@ describe("TtsModelsSection", () => {
 		await waitFor(() => expect(onInfoChange).toHaveBeenCalledWith(info));
 	});
 
+	it("keeps model and progress sizes in rounded MiB and GiB", () => {
+		render(
+			<TtsModelsSection
+				voice={DEFAULT_VOICE_CONFIG}
+				onChange={vi.fn()}
+				info={{
+					status: {
+						state: "unconfigured",
+						model: "",
+						download: {
+							model: model.id,
+							item: "model",
+							received: 31_220_690,
+							total: 1.5 * 1024 ** 3,
+						},
+					},
+					models: [
+						{
+							...model,
+							sizeBytes: 1.5 * 1024 ** 3,
+						},
+					],
+				}}
+				onInfoChange={vi.fn()}
+				busy={null}
+				onBusyChange={vi.fn()}
+				error={null}
+				onError={vi.fn()}
+			/>,
+		);
+
+		expect(
+			screen.getByText("1.5 GiB model · 8 MiB runtime · English · quantized"),
+		).toBeTruthy();
+		expect(screen.getByText("Model: 30 MiB / 1.5 GiB")).toBeTruthy();
+	});
+
 	it("selects an installed model and protects a loaded model", () => {
 		const onChange = vi.fn();
 		render(

@@ -11,6 +11,7 @@ import {
 	type BoundedProcessResult,
 	runBoundedProcess,
 } from "../lib/process";
+import { escapeRegExp } from "../lib/utils";
 import {
 	discoverExtensionInventory,
 	type ExtensionProviderId,
@@ -170,7 +171,7 @@ export function setCodexPluginEnabled(
 		);
 	}
 
-	const escapedPluginId = pluginId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const escapedPluginId = escapeRegExp(pluginId);
 	const headerPattern = new RegExp(
 		`^\\s*\\[plugins\\."${escapedPluginId}"\\]\\s*(?:#.*)?$`,
 		"m",

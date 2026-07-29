@@ -13,6 +13,11 @@ export function uid(): string {
 	return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
+/** Escape a string for literal use inside a RegExp pattern. */
+export function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /** Max chars for an auto-generated session label (server + client must agree). */
 export const SESSION_LABEL_LENGTH = 40;
 

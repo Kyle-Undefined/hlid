@@ -11,7 +11,6 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { basename, dirname, posix, resolve } from "node:path";
-import { parseFrontmatter } from "../lib/frontmatter";
 import { pathStartsWith } from "../lib/paths";
 import {
 	managedSkillsDirectory,
@@ -21,11 +20,14 @@ import {
 	stagedSkillDirectory,
 } from "./libraryStore";
 import { managedSkillPackages, validatePackageTree } from "./skillImports";
+import {
+	MAX_SKILL_DOCUMENT_BYTES,
+	MAX_SKILL_PACKAGE_BYTES,
+	MAX_SKILL_PACKAGE_FILES,
+	skillDocumentMetadata,
+} from "./skillPackage";
 
 const GITHUB_API = "https://api.github.com";
-const MAX_SKILL_DOCUMENT_BYTES = 1024 * 1024;
-const MAX_IMPORT_FILES = 2_000;
-const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
 const STAGE_TTL_MS = 24 * 60 * 60 * 1000;
 const STAGE_ID = /^[0-9a-f]{24}$/;
 
@@ -477,12 +479,12 @@ async function downloadSkillPackage(
 			const size = typeof item.size === "number" ? item.size : 0;
 			if (
 				size < 0 ||
-				size > MAX_IMPORT_BYTES ||
-				bytes + size > MAX_IMPORT_BYTES
+				size > MAX_SKILL_PACKAGE_BYTES ||
+				bytes + size > MAX_SKILL_PACKAGE_BYTES
 			) {
 				throw new Error("Skill package exceeds the import limit");
 			}
-			if (files.length + 1 > MAX_IMPORT_FILES) {
+			if (files.length + 1 > MAX_SKILL_PACKAGE_FILES) {
 				throw new Error("Skill package exceeds the import limit");
 			}
 			const detail = await githubJson<GitHubContentItem>(
@@ -493,8 +495,8 @@ async function downloadSkillPackage(
 			}
 			const content = Buffer.from(detail.content.replace(/\s/g, ""), "base64");
 			if (
-				content.length > MAX_IMPORT_BYTES ||
-				bytes + content.length > MAX_IMPORT_BYTES
+				content.length > MAX_SKILL_PACKAGE_BYTES ||
+				bytes + content.length > MAX_SKILL_PACKAGE_BYTES
 			) {
 				throw new Error("Skill package exceeds the import limit");
 			}
@@ -531,20 +533,6 @@ async function cleanupExpiredStages(): Promise<void> {
 				await rm(path, { recursive: true, force: true });
 			}
 		}),
-	);
-}
-
-function descriptionFromSkillDocument(content: string): string {
-	const parsed = parseFrontmatter(content);
-	if (typeof parsed.data.description === "string") {
-		return parsed.data.description;
-	}
-	return (
-		parsed.content
-			.trim()
-			.split("\n")
-			.find((line) => line.trim())
-			?.replace(/^#+\s*/, "") ?? ""
 	);
 }
 
@@ -614,13 +602,11 @@ export async function stageGitHubSkill(
 		) {
 			throw new Error(`Skill ${packageName} is already in Hlid`);
 		}
-		const parsed = parseFrontmatter(skillDocument);
-		const frontmatterName =
-			typeof parsed.data.name === "string" ? parsed.data.name.trim() : "";
+		const documentMetadata = skillDocumentMetadata(skillDocument, packageName);
 		const review: StageMetadata = {
 			id,
-			name: frontmatterName || packageName,
-			description: descriptionFromSkillDocument(skillDocument),
+			name: documentMetadata.name,
+			description: documentMetadata.description,
 			sourceUrl: githubSkillUrl(source, resolvedSha, source.path),
 			repository: `${source.owner}/${source.repo}`,
 			requestedRef: source.ref,
@@ -732,10 +718,11 @@ export async function listManagedSkills(): Promise<ManagedSkillSummary[]> {
 						? "GitHub"
 						: provenance.source
 					: "Hlid";
+			const documentMetadata = skillDocumentMetadata(skillDocument, skill.name);
 			return {
 				id: skill.id,
 				name: skill.name,
-				description: descriptionFromSkillDocument(skillDocument),
+				description: documentMetadata.description,
 				source,
 				sourceUrl:
 					typeof provenance.sourceUrl === "string"

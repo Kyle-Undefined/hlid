@@ -1,4 +1,10 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -106,6 +112,27 @@ describe("saveUmbodManifest", () => {
 		expect(createUmbod).toHaveBeenCalledTimes(engineCount + 1);
 		expect(originalEngine.close).not.toHaveBeenCalled();
 		expect(replacement.auditLog).toBe(originalEngine.auditLog);
+	});
+
+	it("keeps the existing manifest and removes the candidate when validation fails", async () => {
+		mkdirSync(testState.root, { recursive: true });
+		const path = join(testState.root, "umbod.toml");
+		const original = manifest("allow");
+		writeFileSync(path, original);
+		vi.mocked(loadManifest).mockRejectedValueOnce(
+			new Error("invalid Umbod manifest"),
+		);
+
+		await expect(saveUmbodManifest(manifest("block"))).rejects.toThrow(
+			"invalid Umbod manifest",
+		);
+
+		expect(readFileSync(path, "utf8")).toBe(original);
+		expect(
+			readdirSync(testState.root).filter(
+				(entry) => entry.startsWith("umbod.toml.") && entry.endsWith(".tmp"),
+			),
+		).toEqual([]);
 	});
 
 	it("keeps external manifest edits cached until Hlid saves", async () => {

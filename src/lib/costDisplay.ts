@@ -15,6 +15,18 @@ export function formatDisplayCost(summary: CostSummary, digits = 4): string {
 	return `${estimated > 0 ? "~" : ""}$${total.toFixed(digits)}`;
 }
 
+export function formatPerQueryCost(
+	summary: CostSummary,
+	pricedQueries: number,
+	digits = 4,
+): string | null {
+	if (pricedQueries <= 0) return null;
+	const estimated = summary.estimated_cost ?? 0;
+	return `${estimated > 0 ? "~" : ""}$${(
+		totalDisplayCost(summary) / pricedQueries
+	).toFixed(digits)}`;
+}
+
 export function costDisplayNote(summary: CostSummary): string | undefined {
 	const estimated = summary.estimated_cost ?? 0;
 	const unpriced = summary.unpriced_queries ?? 0;

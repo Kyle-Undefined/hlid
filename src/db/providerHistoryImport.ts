@@ -3,6 +3,7 @@ import { realpathSync } from "node:fs";
 import { readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { mapWithConcurrency } from "../lib/asyncPool";
 import { estimateClaudeCost } from "../lib/claudePricing";
 import { estimateCodexCost } from "../lib/codexPricing";
 import { normalizeSearchText } from "../lib/search";
@@ -1927,14 +1928,14 @@ export async function planProviderHistoryImport(args: {
 async function verifyManifestSources(
 	manifest: ProviderHistoryImportManifest,
 ): Promise<void> {
-	for (const source of manifest.sourceFiles) {
+	await mapWithConcurrency(manifest.sourceFiles, 8, async (source) => {
 		const current = await fileHash(source.path).catch(() => null);
 		if (current !== source.sha256) {
 			throw new Error(
 				`History source changed after planning: ${source.path}; no rows were imported`,
 			);
 		}
-	}
+	});
 }
 
 function insertDynamic(
@@ -2049,18 +2050,31 @@ function normalizedTranscriptMessages(
 async function loadManifestTranscripts(
 	manifest: ProviderHistoryImportManifest,
 ): Promise<Map<string, LoadedHistoryTranscript[]>> {
-	const loaded = new Map<string, LoadedHistoryTranscript[]>();
-	for (const session of manifest.sessions) {
-		const files: LoadedHistoryTranscript[] = [];
-		for (const source of session.transcriptFiles) {
-			const { records } = await readJsonlObjects(source.path);
-			files.push({
-				...source,
+	const flatSources = manifest.sessions.flatMap((session) =>
+		session.transcriptFiles.map((source) => ({
+			importedSessionId: session.importedSessionId,
+			source,
+		})),
+	);
+	const flatFiles = await mapWithConcurrency(flatSources, 8, async (entry) => {
+		const { records } = await readJsonlObjects(entry.source.path);
+		return {
+			importedSessionId: entry.importedSessionId,
+			file: {
+				...entry.source,
 				records,
 				payloadJson: JSON.stringify(records),
-			});
+			},
+		};
+	});
+	const loaded = new Map<string, LoadedHistoryTranscript[]>();
+	for (const { importedSessionId, file } of flatFiles) {
+		const files = loaded.get(importedSessionId);
+		if (files) {
+			files.push(file);
+		} else {
+			loaded.set(importedSessionId, [file]);
 		}
-		loaded.set(session.importedSessionId, files);
 	}
 	return loaded;
 }

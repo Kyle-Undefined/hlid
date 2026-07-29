@@ -1,14 +1,61 @@
-import { renameSync, rmSync } from "node:fs";
+import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { replaceRuntimeDirectory } from "./embeddedRuntime";
+import {
+	replaceRuntimeDirectory,
+	stageRuntimeDirectory,
+} from "./embeddedRuntime";
 
-vi.mock("node:fs", () => ({ renameSync: vi.fn(), rmSync: vi.fn() }));
+vi.mock("node:fs", () => ({
+	existsSync: vi.fn(),
+	lstatSync: vi.fn(),
+	mkdirSync: vi.fn(),
+	readFileSync: vi.fn(),
+	realpathSync: vi.fn(),
+	renameSync: vi.fn(),
+	rmSync: vi.fn(),
+	writeFileSync: vi.fn(),
+}));
 
 function fsError(code: string): NodeJS.ErrnoException {
 	return Object.assign(new Error(code), { code });
 }
 
 afterEach(() => vi.clearAllMocks());
+
+describe("stageRuntimeDirectory", () => {
+	it("populates a clean sibling directory before writing its hash and swapping", async () => {
+		const populate = vi.fn(async () => {});
+
+		await stageRuntimeDirectory("runtime", "runtime-hash", populate);
+
+		expect(rmSync).toHaveBeenCalledWith("runtime.tmp", {
+			recursive: true,
+			force: true,
+		});
+		expect(mkdirSync).toHaveBeenCalledWith("runtime.tmp", { recursive: true });
+		expect(populate).toHaveBeenCalledWith("runtime.tmp");
+		expect(writeFileSync).toHaveBeenCalledWith(
+			join("runtime.tmp", ".hash"),
+			"runtime-hash",
+			"utf8",
+		);
+		expect(renameSync).toHaveBeenCalledWith("runtime.tmp", "runtime");
+	});
+
+	it("does not mark or swap a partially populated runtime", async () => {
+		const error = new Error("population failed");
+
+		await expect(
+			stageRuntimeDirectory("runtime", "runtime-hash", async () => {
+				throw error;
+			}),
+		).rejects.toThrow(error);
+
+		expect(writeFileSync).not.toHaveBeenCalled();
+		expect(renameSync).not.toHaveBeenCalled();
+	});
+});
 
 describe("replaceRuntimeDirectory", () => {
 	it("installs directly when no runtime exists", () => {

@@ -371,7 +371,10 @@ export async function readElectronAsarPackageVersion(
 	}
 }
 
-async function readInstalledCodexDesktopVersions(): Promise<{
+async function readInstalledAppxDesktopVersions(
+	appxName: string,
+	label: string,
+): Promise<{
 	packageVersion: string;
 	appVersion: string | null;
 } | null> {
@@ -381,54 +384,11 @@ async function readInstalledCodexDesktopVersions(): Promise<{
 			"-NoProfile",
 			"-NonInteractive",
 			"-Command",
-			"$package = Get-AppxPackage -Name OpenAI.Codex -ErrorAction SilentlyContinue; if ($package) { [pscustomobject]@{ packageVersion = $package.Version.ToString(); installLocation = $package.InstallLocation } | ConvertTo-Json -Compress }",
+			`$package = Get-AppxPackage -Name ${appxName} -ErrorAction SilentlyContinue; if ($package) { [pscustomobject]@{ packageVersion = $package.Version.ToString(); installLocation = $package.InstallLocation } | ConvertTo-Json -Compress }`,
 		],
 		{
 			timeoutMs: COMMAND_TIMEOUT_MS,
-			timeoutError: "Codex desktop version check timed out",
-		},
-	);
-	if (result.code !== 0) {
-		throw new Error(`PowerShell version check exited ${result.code}`);
-	}
-	if (!result.output.trim()) return null;
-	let installed: { packageVersion?: unknown; installLocation?: unknown };
-	try {
-		installed = JSON.parse(result.output.trim()) as typeof installed;
-	} catch {
-		throw new Error("PowerShell version output was not recognized");
-	}
-	const packageVersion =
-		typeof installed.packageVersion === "string"
-			? parseCliVersion(installed.packageVersion)
-			: null;
-	if (!packageVersion) {
-		throw new Error("PowerShell package version was not recognized");
-	}
-	const appVersion =
-		typeof installed.installLocation === "string"
-			? await readElectronAsarPackageVersion(
-					join(installed.installLocation, "app", "resources", "app.asar"),
-				)
-			: null;
-	return { packageVersion, appVersion };
-}
-
-async function readInstalledClaudeDesktopVersions(): Promise<{
-	packageVersion: string;
-	appVersion: string | null;
-} | null> {
-	const result = await runBoundedProcess(
-		"powershell.exe",
-		[
-			"-NoProfile",
-			"-NonInteractive",
-			"-Command",
-			"$package = Get-AppxPackage -Name Claude -ErrorAction SilentlyContinue; if ($package) { [pscustomobject]@{ packageVersion = $package.Version.ToString(); installLocation = $package.InstallLocation } | ConvertTo-Json -Compress }",
-		],
-		{
-			timeoutMs: COMMAND_TIMEOUT_MS,
-			timeoutError: "Claude desktop version check timed out",
+			timeoutError: `${label} desktop version check timed out`,
 		},
 	);
 	if (result.code !== 0) {
@@ -576,14 +536,16 @@ async function readCodexDesktopStoreVersions(): Promise<{
 
 const defaultWindowsDesktopDependencies: WindowsDesktopUpdateDependencies = {
 	isWindows: () => process.platform === "win32",
-	readInstalledVersions: readInstalledCodexDesktopVersions,
+	readInstalledVersions: () =>
+		readInstalledAppxDesktopVersions("OpenAI.Codex", "Codex"),
 	readStoreVersions: readCodexDesktopStoreVersions,
 	now: Date.now,
 };
 
 const defaultClaudeDesktopDependencies: WindowsDesktopUpdateDependencies = {
 	isWindows: () => process.platform === "win32",
-	readInstalledVersions: readInstalledClaudeDesktopVersions,
+	readInstalledVersions: () =>
+		readInstalledAppxDesktopVersions("Claude", "Claude"),
 	readStoreVersions: async () => ({
 		...(await readWingetClaudeDesktopVersions()),
 		automaticUpdateAvailable: true,

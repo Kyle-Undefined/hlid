@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	costDisplayNote,
 	formatDisplayCost,
+	formatPerQueryCost,
 	totalDisplayCost,
 } from "./costDisplay";
 
@@ -17,5 +18,16 @@ describe("cost display", () => {
 		const summary = { cost: 0, estimated_cost: 0, unpriced_queries: 1 };
 		expect(formatDisplayCost(summary)).toBe("--");
 		expect(costDisplayNote(summary)).toBe("1 unpriced query");
+	});
+
+	it("formats exact and estimated cost per priced query", () => {
+		expect(formatPerQueryCost({ cost: 1.5 }, 10)).toBe("$0.1500");
+		expect(formatPerQueryCost({ cost: 1.5, estimated_cost: 0.5 }, 10)).toBe(
+			"~$0.2000",
+		);
+	});
+
+	it("returns null when there are no priced queries", () => {
+		expect(formatPerQueryCost({ cost: 1.5 }, 0)).toBeNull();
 	});
 });

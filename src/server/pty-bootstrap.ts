@@ -10,38 +10,21 @@
  * The swap is performed atomically (write to tmp dir, rename).
  */
 
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { replaceRuntimeDirectory } from "./embeddedRuntime";
+import {
+	materializeEmbeddedFile,
+	stageRuntimeDirectory,
+	verifyRuntimeDirectory,
+} from "./embeddedRuntime";
 import { PTY_ASSETS, PTY_ASSETS_HASH } from "./pty-assets";
-
-/** Return the path to pty-worker.cjs to use for spawning the PTY worker. */
-async function materializeEmbeddedFile(
-	source: string,
-	destination: string,
-): Promise<void> {
-	await Bun.write(destination, Bun.file(source));
-}
 
 function existingPtyRuntime(rtDir: string): string | null {
 	const workerPath = join(rtDir, "pty-worker.cjs");
-	const hashFile = join(rtDir, ".hash");
-	if (!existsSync(hashFile)) return null;
-	try {
-		const current = readFileSync(hashFile, "utf8").trim();
-		return current === PTY_ASSETS_HASH && existsSync(workerPath)
-			? workerPath
-			: null;
-	} catch {
-		return null;
-	}
+	return verifyRuntimeDirectory(rtDir, PTY_ASSETS_HASH, ["pty-worker.cjs"])
+		? workerPath
+		: null;
 }
 
 async function materializeAssetMap(
@@ -57,7 +40,8 @@ async function materializeAssetMap(
 
 export async function bootstrapPtyRuntime(): Promise<string> {
 	// Dev mode or non-Windows stub: PTY_ASSETS is null, use on-disk file.
-	if (PTY_ASSETS === null) {
+	const assets = PTY_ASSETS;
+	if (assets === null) {
 		const __filename = fileURLToPath(import.meta.url);
 		return join(dirname(__filename), "pty-worker.cjs");
 	}
@@ -69,41 +53,25 @@ export async function bootstrapPtyRuntime(): Promise<string> {
 	const existingRuntime = existingPtyRuntime(rtDir);
 	if (existingRuntime) return existingRuntime;
 
-	// Extract atomically to a temp dir, then rename into place.
-	const tmpDir = `${rtDir}.tmp`;
+	await stageRuntimeDirectory(rtDir, PTY_ASSETS_HASH, async (tmpDir) => {
+		mkdirSync(join(tmpDir, "node_modules", "node-pty"), { recursive: true });
 
-	// Remove any stale temp dir from a prior interrupted extraction.
-	if (existsSync(tmpDir)) {
-		rmSync(tmpDir, { recursive: true, force: true });
-	}
+		// ── pty-worker.cjs ─────────────────────────────────────────────────────
+		await materializeEmbeddedFile(
+			assets.workerCjs,
+			join(tmpDir, "pty-worker.cjs"),
+		);
 
-	// Create directory structure.
-	mkdirSync(tmpDir, { recursive: true });
-	mkdirSync(join(tmpDir, "node_modules", "node-pty"), { recursive: true });
+		// ── node-pty package.json ──────────────────────────────────────────────
+		await materializeEmbeddedFile(
+			assets.packageJson,
+			join(tmpDir, "node_modules", "node-pty", "package.json"),
+		);
 
-	// ── pty-worker.cjs ───────────────────────────────────────────────────────
-	await materializeEmbeddedFile(
-		PTY_ASSETS.workerCjs,
-		join(tmpDir, "pty-worker.cjs"),
-	);
-
-	// ── node-pty package.json ────────────────────────────────────────────────
-	await materializeEmbeddedFile(
-		PTY_ASSETS.packageJson,
-		join(tmpDir, "node_modules", "node-pty", "package.json"),
-	);
-
-	const nodePtyDir = join(tmpDir, "node_modules", "node-pty");
-	await materializeAssetMap(PTY_ASSETS.natives, nodePtyDir);
-	await materializeAssetMap(PTY_ASSETS.lib, nodePtyDir);
-
-	// ── Write hash sentinel ───────────────────────────────────────────────────
-	writeFileSync(join(tmpDir, ".hash"), PTY_ASSETS_HASH, "utf8");
-
-	// ── Atomic swap: rename tmpDir → rtDir ───────────────────────────────────
-	// Windows does not support atomic rename over an existing directory,
-	// so we remove rtDir first if it exists.
-	replaceRuntimeDirectory(tmpDir, rtDir);
+		const nodePtyDir = join(tmpDir, "node_modules", "node-pty");
+		await materializeAssetMap(assets.natives, nodePtyDir);
+		await materializeAssetMap(assets.lib, nodePtyDir);
+	});
 
 	return join(rtDir, "pty-worker.cjs");
 }

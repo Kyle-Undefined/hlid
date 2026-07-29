@@ -25,6 +25,13 @@ export const HLID_AGENT_NAMESPACE_DESCRIPTION =
 	"Curated Hlid host capabilities. Discover the active operating contract and HTTP API, create durable Raven child sessions, publish deliverables to Relics, or run and inspect a session-scoped Project Preview.";
 export const MAX_HLID_INLINE_RELIC_CHARS = 2_000_000;
 
+/** Fields shared by every preview tool: which preview to address. */
+const previewTarget = z.object({
+	preview_id: z.string().uuid().optional(),
+});
+const previewPath = z.string().trim().max(2_048).optional();
+const previewViewport = z.enum(["desktop", "tablet", "mobile"]).optional();
+
 export const hlidAgentSchemas = {
 	hlid_help: z.object({
 		topic: z.enum(HLID_HELP_TOPICS).optional(),
@@ -52,24 +59,20 @@ export const hlidAgentSchemas = {
 	start_project_preview: z.object({
 		command: z.string().trim().min(1).max(4_096),
 		port: z.number().int().min(1).max(65_535),
-		path: z.string().trim().max(2_048).optional(),
+		path: previewPath,
 		working_directory: z.string().trim().max(1_024).optional(),
 		label: z.string().trim().min(1).max(100).optional(),
 		present: z.boolean().optional(),
 		replace_existing: z.boolean().optional(),
 		readiness_timeout_seconds: z.number().int().min(1).max(120).optional(),
 	}),
-	inspect_project_preview: z.object({
-		preview_id: z.string().uuid().optional(),
-	}),
-	capture_project_preview: z.object({
-		preview_id: z.string().uuid().optional(),
-		path: z.string().trim().max(2_048).optional(),
-		viewport: z.enum(["desktop", "tablet", "mobile"]).optional(),
+	inspect_project_preview: previewTarget,
+	capture_project_preview: previewTarget.extend({
+		path: previewPath,
+		viewport: previewViewport,
 		full_page: z.boolean().optional(),
 	}),
-	control_project_preview: z.object({
-		preview_id: z.string().uuid().optional(),
+	control_project_preview: previewTarget.extend({
 		action: z.enum([
 			"click",
 			"type",
@@ -90,12 +93,10 @@ export const hlidAgentSchemas = {
 		key: z.string().trim().min(1).max(100).optional(),
 		delta_x: z.number().finite().min(-5_000).max(5_000).optional(),
 		delta_y: z.number().finite().min(-5_000).max(5_000).optional(),
-		path: z.string().trim().max(2_048).optional(),
-		viewport: z.enum(["desktop", "tablet", "mobile"]).optional(),
+		path: previewPath,
+		viewport: previewViewport,
 	}),
-	stop_project_preview: z.object({
-		preview_id: z.string().uuid().optional(),
-	}),
+	stop_project_preview: previewTarget,
 } as const;
 
 export type HlidAgentToolName = keyof typeof hlidAgentSchemas;
