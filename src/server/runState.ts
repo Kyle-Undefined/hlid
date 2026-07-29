@@ -2,9 +2,52 @@ import type { ServerWebSocket } from "bun";
 import * as db from "../db";
 import type { ServerMessage } from "./protocol";
 
-// ── SessionRunState ───────────────────────────────────────────────────────────
+// ── Shared replay-buffer transition ──────────────────────────────────────────
 
-const SESSION_RUN_BUFFER_MAX = 500;
+// Cap replay buffers at 500 messages. On overflow drop oldest so reconnecting
+// clients always see the most recent stream rather than stale early chunks.
+export const REPLAY_BUFFER_MAX = 500;
+
+export interface ReplayState {
+	buffer: ServerMessage[];
+	lastError: string | null;
+}
+
+/**
+ * Replay-buffer + error-state transition applied on every broadcast. Shared by
+ * the module-level singleton (legacy single-session path) and the per-session
+ * SessionRunState so their semantics cannot drift:
+ *
+ * - chunk / tool_event / permission_request / permission_resolved accumulate,
+ *   capped at REPLAY_BUFFER_MAX (drop oldest)
+ * - status/running clears the error and the buffer (new run starting)
+ * - done clears the buffer
+ * - error records the message and clears the buffer
+ */
+export function applyReplayTransition(
+	state: ReplayState,
+	msg: ServerMessage,
+): void {
+	if (msg.type === "error") {
+		state.lastError = msg.message;
+		state.buffer.length = 0;
+	} else if (msg.type === "status" && msg.state === "running") {
+		state.lastError = null;
+		state.buffer.length = 0;
+	} else if (msg.type === "done") {
+		state.buffer.length = 0;
+	} else if (
+		msg.type === "chunk" ||
+		msg.type === "tool_event" ||
+		msg.type === "permission_request" ||
+		msg.type === "permission_resolved"
+	) {
+		state.buffer.push(msg);
+		if (state.buffer.length > REPLAY_BUFFER_MAX) state.buffer.shift();
+	}
+}
+
+// ── SessionRunState ───────────────────────────────────────────────────────────
 
 type WsType = ServerWebSocket<unknown>;
 
@@ -18,17 +61,20 @@ type WsType = ServerWebSocket<unknown>;
 export class SessionRunState {
 	readonly sessionId: string;
 	private subscribers: Set<WsType> = new Set();
-	private _replayBuffer: ServerMessage[] = [];
+	private replay: ReplayState = { buffer: [], lastError: null };
 	private latestContextSnapshot: Extract<
 		ServerMessage,
 		{ type: "context_update" }
 	> | null = null;
-	lastError: string | null = null;
 	ownerWs: WsType | null = null;
 	inFlightChatCount: Map<WsType, number> = new Map();
 
 	constructor(sessionId: string) {
 		this.sessionId = sessionId;
+	}
+
+	get lastError(): string | null {
+		return this.replay.lastError;
 	}
 
 	addSubscriber(ws: WsType): void {
@@ -70,26 +116,8 @@ export class SessionRunState {
 				context_window: msg.context_window,
 			};
 		}
-		// Buffer management (mirrors module-level _runBuffer logic)
-		if (msg.type === "error") {
-			this.lastError = msg.message;
-			this._replayBuffer = [];
-		} else if (msg.type === "status" && msg.state === "running") {
-			this.lastError = null;
-			this._replayBuffer = [];
-		} else if (msg.type === "done") {
-			this._replayBuffer = [];
-		} else if (
-			msg.type === "chunk" ||
-			msg.type === "tool_event" ||
-			msg.type === "permission_request" ||
-			msg.type === "permission_resolved"
-		) {
-			this._replayBuffer.push(msg);
-			if (this._replayBuffer.length > SESSION_RUN_BUFFER_MAX) {
-				this._replayBuffer.shift();
-			}
-		}
+
+		applyReplayTransition(this.replay, msg);
 
 		// Tag with session_id so clients can route to the right conversation
 		const tagged = { ...msg, session_id: this.sessionId };
@@ -113,7 +141,7 @@ export class SessionRunState {
 	}
 
 	getReplayBuffer(): readonly ServerMessage[] {
-		return this._replayBuffer;
+		return this.replay.buffer;
 	}
 
 	// fallow-ignore-next-line unused-class-member -- Replayed by WebSocket sync/subscription handlers in wsHandlers.
@@ -125,47 +153,37 @@ export class SessionRunState {
 	}
 
 	clearError(): void {
-		this.lastError = null;
+		this.replay.lastError = null;
 	}
 }
 
+// ── Module-level singleton (legacy single-session path) ──────────────────────
+
+const moduleReplay: ReplayState = { buffer: [], lastError: null };
+
 export const wsState = {
 	clients: new Set<ServerWebSocket<unknown>>(),
-	lastSessionError: null as string | null,
+	get lastSessionError(): string | null {
+		return moduleReplay.lastError;
+	},
+	set lastSessionError(value: string | null) {
+		moduleReplay.lastError = value;
+	},
 };
 
-let _runBuffer: ServerMessage[] = [];
-// Cap replay buffer at 500 messages. On overflow drop oldest so reconnecting
-// clients always see the most recent stream rather than stale early chunks.
-const RUN_BUFFER_MAX = 500;
-
 export function getRunBuffer(): readonly ServerMessage[] {
-	return _runBuffer;
+	return moduleReplay.buffer;
 }
 
 export function broadcast(msg: ServerMessage): void {
-	if (msg.type === "error") wsState.lastSessionError = msg.message;
-	else if (msg.type === "status" && msg.state === "running") {
-		wsState.lastSessionError = null;
-		_runBuffer = [];
-	} else if (msg.type === "mcp_status")
+	if (msg.type === "mcp_status")
 		void db
 			.saveSetting("mcp_status_cache", JSON.stringify(msg.servers))
 			.catch((e) =>
 				console.error("[runState] saveSetting mcp_status_cache failed:", e),
 			);
 
-	if (
-		msg.type === "chunk" ||
-		msg.type === "tool_event" ||
-		msg.type === "permission_request" ||
-		msg.type === "permission_resolved"
-	) {
-		_runBuffer.push(msg);
-		if (_runBuffer.length > RUN_BUFFER_MAX) _runBuffer.shift();
-	} else if (msg.type === "done" || msg.type === "error") {
-		_runBuffer = [];
-	}
+	applyReplayTransition(moduleReplay, msg);
 
 	const data = JSON.stringify(msg);
 	for (const ws of wsState.clients) {

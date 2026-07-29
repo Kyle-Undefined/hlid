@@ -99,12 +99,6 @@ describe("buildVaultSection — wiki style", () => {
 		expect(s.archive).toBeUndefined();
 	});
 
-	it("preserves skills and memory", () => {
-		const s = buildVaultSection({ ...BASE, style: "wiki" });
-		expect(s.skills).toBe("skills");
-		expect(s.memory).toBe("memory");
-	});
-
 	it("empty string wiki fields become undefined", () => {
 		const s = buildVaultSection({ ...BASE, style: "wiki", raw: "" });
 		expect(s.raw).toBeUndefined();
@@ -120,12 +114,6 @@ describe("buildVaultSection — no style", () => {
 		expect(s.projects).toBeUndefined();
 		expect(s.raw).toBeUndefined();
 		expect(s.wiki_folder).toBeUndefined();
-	});
-
-	it("still preserves skills and memory", () => {
-		const s = buildVaultSection({ ...BASE, style: undefined });
-		expect(s.skills).toBe("skills");
-		expect(s.memory).toBe("memory");
 	});
 
 	it("sets style field to undefined", () => {

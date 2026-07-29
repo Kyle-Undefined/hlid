@@ -71,7 +71,13 @@ type WindowReading = {
 	resetsAt: number | null;
 };
 
-function preferredWindowReading(
+/**
+ * Core merge rule shared by mergeUsageWindows and mergeProviderSnapshot:
+ * prefer the fresh reading unless it carries no utilization for a still-valid
+ * previous window (anti-flicker), in which case keep the previous reading.
+ * Exported for direct unit testing.
+ */
+export function preferredWindowReading(
 	fresh: WindowReading,
 	previous: WindowReading | null | undefined,
 	now: number,

@@ -7,6 +7,7 @@ import {
 	mergeFreshProviderSnapshots,
 	mergeProviderSnapshot,
 	mergeUsageWindows,
+	preferredWindowReading,
 	providerWindowUsage,
 } from "#/lib/usageWindows";
 
@@ -44,58 +45,74 @@ const NOW = Math.floor(Date.now() / 1000);
 const FUTURE_NEAR = NOW + 2 * 24 * 3600; // 2 days out (old window, still valid)
 const FUTURE_FAR = NOW + 7 * 24 * 3600; // 7 days out (new window after reset)
 
-describe("mergeUsageWindows", () => {
+// Core merge rule tested once here; mergeUsageWindows / mergeProviderSnapshot
+// both delegate to it, so their suites below only cover wrapper wiring.
+describe("preferredWindowReading", () => {
 	it("uses fresh utilization within same window (external reset)", () => {
 		// Anthropic can reset usage without changing resetsAt — downward moves are valid.
-		const prev = makeWindows(0.25, FUTURE_NEAR);
-		const fresh = makeWindows(0.03, FUTURE_NEAR); // same resetsAt, lower = reset
-		const result = mergeUsageWindows(fresh, prev);
-		expect(result.weekly.utilization).toBe(0.03);
-		expect(result.weekly.resetsAt).toBe(FUTURE_NEAR);
+		const result = preferredWindowReading(
+			{ utilization: 0.03, resetsAt: FUTURE_NEAR }, // same resetsAt, lower = reset
+			{ utilization: 0.25, resetsAt: FUTURE_NEAR },
+			NOW,
+		);
+		expect(result).toEqual({ utilization: 0.03, resetsAt: FUTURE_NEAR });
 	});
 
 	it("keeps prev when fresh.utilization is null (anti-flicker)", () => {
 		// Server has no mark data — keep the client's cached value to avoid blank flash.
-		const prev = makeWindows(0.25, FUTURE_NEAR);
-		const fresh = makeWindows(null, FUTURE_NEAR); // server returned no utilization
-		const result = mergeUsageWindows(fresh, prev);
-		expect(result.weekly.utilization).toBe(0.25);
-		expect(result.weekly.resetsAt).toBe(FUTURE_NEAR);
+		const result = preferredWindowReading(
+			{ utilization: null, resetsAt: FUTURE_NEAR },
+			{ utilization: 0.25, resetsAt: FUTURE_NEAR },
+			NOW,
+		);
+		expect(result).toEqual({ utilization: 0.25, resetsAt: FUTURE_NEAR });
 	});
 
 	it("uses fresh utilization when resetsAt changed (early reset)", () => {
-		const prev = makeWindows(0.25, FUTURE_NEAR);
-		const fresh = makeWindows(0.01, FUTURE_FAR); // new resetsAt = new window
-		const result = mergeUsageWindows(fresh, prev);
-		expect(result.weekly.utilization).toBe(0.01);
-		expect(result.weekly.resetsAt).toBe(FUTURE_FAR);
+		const result = preferredWindowReading(
+			{ utilization: 0.01, resetsAt: FUTURE_FAR }, // new resetsAt = new window
+			{ utilization: 0.25, resetsAt: FUTURE_NEAR },
+			NOW,
+		);
+		expect(result).toEqual({ utilization: 0.01, resetsAt: FUTURE_FAR });
 	});
 
-	it("uses fresh utilization when resetsAt changed (natural rollover)", () => {
-		const pastResetsAt = NOW - 1; // old window expired
-		const prev = makeWindows(0.8, pastResetsAt);
-		const fresh = makeWindows(0.02, FUTURE_FAR);
-		const result = mergeUsageWindows(fresh, prev);
-		expect(result.weekly.utilization).toBe(0.02);
-		expect(result.weekly.resetsAt).toBe(FUTURE_FAR);
+	it("uses fresh when the previous window expired (natural rollover)", () => {
+		const result = preferredWindowReading(
+			{ utilization: null, resetsAt: FUTURE_FAR },
+			{ utilization: 0.8, resetsAt: NOW - 1 }, // old window expired
+			NOW,
+		);
+		expect(result).toEqual({ utilization: null, resetsAt: FUTURE_FAR });
 	});
 
 	it("keeps prev when fresh has no resetsAt (no new header data)", () => {
-		const prev = makeWindows(0.25, FUTURE_NEAR);
-		const fresh = makeWindows(null, null);
-		const result = mergeUsageWindows(fresh, prev);
-		expect(result.weekly.utilization).toBe(0.25);
-		expect(result.weekly.resetsAt).toBe(FUTURE_NEAR);
+		const result = preferredWindowReading(
+			{ utilization: null, resetsAt: null },
+			{ utilization: 0.25, resetsAt: FUTURE_NEAR },
+			NOW,
+		);
+		expect(result).toEqual({ utilization: 0.25, resetsAt: FUTURE_NEAR });
 	});
 
+	it("uses fresh when prev is missing", () => {
+		const result = preferredWindowReading(
+			{ utilization: null, resetsAt: FUTURE_FAR },
+			undefined,
+			NOW,
+		);
+		expect(result).toEqual({ utilization: null, resetsAt: FUTURE_FAR });
+	});
+});
+
+describe("mergeUsageWindows", () => {
 	it("uses fresh when prev is null", () => {
 		const fresh = makeWindows(0.1, FUTURE_FAR);
 		const result = mergeUsageWindows(fresh, null);
 		expect(result.weekly.utilization).toBe(0.1);
 	});
 
-	// Sonnet window
-	it("uses fresh sonnet when resetsAt changed (early reset)", () => {
+	it("applies the preferred reading per window, including weeklySonnet", () => {
 		const win: UsageWindow = {
 			tokens: 0,
 			queries: 0,
@@ -106,69 +123,19 @@ describe("mergeUsageWindows", () => {
 			rateLimitType: null,
 		};
 		const prev: UsageWindows = {
-			fiveHour: win,
-			weekly: win,
-			weeklySonnet: { utilization: 0.32, resetsAt: FUTURE_NEAR },
-		};
-		const freshWin = { ...win, utilization: 0.01, resetsAt: FUTURE_FAR };
-		const fresh: UsageWindows = {
-			fiveHour: freshWin,
-			weekly: freshWin,
-			weeklySonnet: { utilization: 0.01, resetsAt: FUTURE_FAR },
-		};
-		const result = mergeUsageWindows(fresh, prev);
-		expect(result.weeklySonnet?.utilization).toBe(0.01);
-		expect(result.weeklySonnet?.resetsAt).toBe(FUTURE_FAR);
-	});
-
-	it("uses fresh sonnet utilization within same window (external reset)", () => {
-		const win: UsageWindow = {
-			tokens: 0,
-			queries: 0,
-			sessions: 0,
-			cost: 0,
-			utilization: 0.0,
-			resetsAt: FUTURE_NEAR,
-			rateLimitType: null,
-		};
-		const prev: UsageWindows = {
-			fiveHour: win,
-			weekly: win,
+			fiveHour: { ...win, utilization: 0.5 },
+			weekly: { ...win, utilization: 0.25 },
 			weeklySonnet: { utilization: 0.31, resetsAt: FUTURE_NEAR },
 		};
 		const fresh: UsageWindows = {
-			fiveHour: win,
-			weekly: win,
-			weeklySonnet: { utilization: 0.04, resetsAt: FUTURE_NEAR },
-		};
-		const result = mergeUsageWindows(fresh, prev);
-		expect(result.weeklySonnet?.utilization).toBe(0.04);
-		expect(result.weeklySonnet?.resetsAt).toBe(FUTURE_NEAR);
-	});
-
-	it("keeps prev sonnet when fresh.utilization is null (anti-flicker)", () => {
-		const win: UsageWindow = {
-			tokens: 0,
-			queries: 0,
-			sessions: 0,
-			cost: 0,
-			utilization: 0.0,
-			resetsAt: FUTURE_NEAR,
-			rateLimitType: null,
-		};
-		const prev: UsageWindows = {
-			fiveHour: win,
-			weekly: win,
-			weeklySonnet: { utilization: 0.31, resetsAt: FUTURE_NEAR },
-		};
-		const fresh: UsageWindows = {
-			fiveHour: win,
-			weekly: win,
+			fiveHour: { ...win, utilization: 0.6 },
+			weekly: { ...win, utilization: null }, // anti-flicker path
 			weeklySonnet: { utilization: null, resetsAt: FUTURE_NEAR },
 		};
 		const result = mergeUsageWindows(fresh, prev);
+		expect(result.fiveHour.utilization).toBe(0.6);
+		expect(result.weekly.utilization).toBe(0.25);
 		expect(result.weeklySonnet?.utilization).toBe(0.31);
-		expect(result.weeklySonnet?.resetsAt).toBe(FUTURE_NEAR);
 	});
 });
 
@@ -267,28 +234,14 @@ describe("mergeProviderSnapshot", () => {
 		};
 	}
 
-	it("uses fresh utilization within same window (external reset)", () => {
-		const prev = makeSnapshot(0.24, FUTURE_NEAR);
-		const fresh = makeSnapshot(0.03, FUTURE_NEAR); // same resetsAt, lower = reset
-		const result = mergeProviderSnapshot(fresh, prev, null);
-		expect(result.windows[0].utilization).toBe(0.03);
-		expect(result.windows[0].resetsAt).toBe(FUTURE_NEAR);
-	});
-
-	it("keeps prev when fresh has null utilization (anti-flicker)", () => {
+	it("applies the preferred reading against the previous window matched by windowId", () => {
+		// Merge semantics live in preferredWindowReading (tested above); this
+		// covers the windowId lookup wiring via the anti-flicker path.
 		const prev = makeSnapshot(0.24, FUTURE_NEAR);
 		const fresh = makeSnapshot(null, FUTURE_NEAR); // server returned no utilization
 		const result = mergeProviderSnapshot(fresh, prev, null);
 		expect(result.windows[0].utilization).toBe(0.24);
 		expect(result.windows[0].resetsAt).toBe(FUTURE_NEAR);
-	});
-
-	it("uses fresh on resetsAt change (window rollover)", () => {
-		const prev = makeSnapshot(0.24, FUTURE_NEAR);
-		const fresh = makeSnapshot(0.02, FUTURE_FAR); // new resetsAt = new window
-		const result = mergeProviderSnapshot(fresh, prev, null);
-		expect(result.windows[0].utilization).toBe(0.02);
-		expect(result.windows[0].resetsAt).toBe(FUTURE_FAR);
 	});
 
 	it("returns fresh directly when prev is undefined", () => {
