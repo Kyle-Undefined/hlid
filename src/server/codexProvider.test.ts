@@ -1381,13 +1381,10 @@ describe("CodexAgentSession — commands", () => {
 				expect(threadStartParams(child.writes)).toHaveLength(1),
 			);
 
-			emitSessionNotification(child.proc, "item/completed", {
+			emitSessionNotification(child.proc, "item/agentMessage/delta", {
 				threadId: "thread-1",
-				item: {
-					id: "computer-use-result",
-					type: "agentMessage",
-					text: "Calculator opened.",
-				},
+				itemId: "computer-use-result",
+				delta: "Calculator op.",
 			});
 			emitSessionNotification(child.proc, "thread/tokenUsage/updated", {
 				threadId: "thread-1",
@@ -2008,14 +2005,34 @@ describe("CodexAgentSession — commands", () => {
 			});
 			emitSessionNotification(child.proc, "turn/completed", {
 				threadId: "thread-1",
-				turn: { id: "turn-2", status: "completed" },
+				turn: {
+					id: "turn-2",
+					status: "completed",
+					itemsView: "summary",
+					items: [
+						{
+							id: "computer-use-result",
+							type: "agentMessage",
+							text: "Calculator opened.",
+							phase: "final_answer",
+						},
+					],
+				},
 			});
 
 			await vi.waitFor(() => {
 				const response = parent.writes
 					.map((line) => JSON.parse(line))
 					.find((message) => message.id === 82);
-				expect(response?.result).toMatchObject({ success: true });
+				expect(response?.result).toMatchObject({
+					success: true,
+					contentItems: [
+						{
+							type: "inputText",
+							text: expect.stringMatching(/Calculator opened\.$/),
+						},
+					],
+				});
 			});
 			emitSessionNotification(parent.proc, "thread/tokenUsage/updated", {
 				threadId: "thread-1",
@@ -2681,6 +2698,218 @@ describe("CodexAgentSession — notifications", () => {
 			},
 		});
 		expect(await events.next()).toEqual({ value: undefined, done: true });
+	});
+
+	it("repairs a dropped streamed suffix from the completed-turn summary", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		await session.send("hello");
+		await nextSessionEvent(events); // session_start
+
+		emitSessionNotification(proc, "turn/started", {
+			threadId: "thread-1",
+			turn: { id: "turn-1" },
+		});
+		emitSessionNotification(proc, "item/agentMessage/delta", {
+			threadId: "thread-1",
+			itemId: "message-1",
+			delta: "The transport kept this.",
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: {
+				id: "turn-1",
+				status: "completed",
+				itemsView: "summary",
+				items: [
+					{
+						id: "message-1",
+						type: "agentMessage",
+						text: "The transport kept this. And recovered this.",
+						phase: "final_answer",
+					},
+				],
+			},
+		});
+
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "provider_turn_id",
+			id: "turn-1",
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "text_delta",
+			text: "The transport kept this.",
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "text_delta",
+			text: " And recovered this.",
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "done",
+			stopReason: "completed",
+		});
+		session.cancel();
+	});
+
+	it("replaces corrupted streamed text from the completed-turn summary", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		await session.send("hello");
+		await nextSessionEvent(events); // session_start
+
+		emitSessionNotification(proc, "turn/started", {
+			threadId: "thread-1",
+			turn: { id: "turn-1" },
+		});
+		emitSessionNotification(proc, "item/agentMessage/delta", {
+			threadId: "thread-1",
+			itemId: "message-1",
+			delta: "The transport kept this.",
+		});
+		emitSessionNotification(proc, "item/agentMessage/delta", {
+			threadId: "thread-1",
+			itemId: "message-1",
+			delta: " And this ending.",
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: {
+				id: "turn-1",
+				status: "completed",
+				itemsView: "summary",
+				items: [
+					{
+						id: "message-1",
+						type: "agentMessage",
+						text: "The transport kept this. Restored the middle. And this ending.",
+						phase: "final_answer",
+					},
+				],
+			},
+		});
+
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "provider_turn_id",
+			id: "turn-1",
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "text_delta",
+			text: "The transport kept this.",
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "text_delta",
+			text: " And this ending.",
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "text_replace",
+			text: "The transport kept this. Restored the middle. And this ending.",
+			previousText: "The transport kept this. And this ending.",
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "done",
+			stopReason: "completed",
+		});
+		session.cancel();
+	});
+
+	it("does not duplicate a complete message repeated in turn/completed", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		await session.send("hello");
+		await nextSessionEvent(events); // session_start
+
+		emitSessionNotification(proc, "turn/started", {
+			threadId: "thread-1",
+			turn: { id: "turn-1" },
+		});
+		emitSessionNotification(proc, "item/agentMessage/delta", {
+			threadId: "thread-1",
+			itemId: "message-1",
+			delta: "Complete response.",
+		});
+		emitSessionNotification(proc, "item/completed", {
+			threadId: "thread-1",
+			item: {
+				id: "message-1",
+				type: "agentMessage",
+				text: "Complete response.",
+			},
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: {
+				id: "turn-1",
+				status: "completed",
+				itemsView: "summary",
+				items: [
+					{
+						id: "message-1",
+						type: "agentMessage",
+						text: "Complete response.",
+						phase: null,
+					},
+				],
+			},
+		});
+
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "provider_turn_id",
+			id: "turn-1",
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "text_delta",
+			text: "Complete response.",
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "done",
+			stopReason: "completed",
+		});
+		session.cancel();
+	});
+
+	it("preserves plugin command provenance in the generic tool event", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		await session.send("run the plugin command");
+		await nextSessionEvent(events); // session_start
+
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			item: {
+				id: "command-1",
+				type: "commandExecution",
+				command: "node scripts/review.js",
+				cwd: "/tmp/project",
+				pluginId: "reviewer@official",
+				scriptPath: "scripts/review.js",
+			},
+		});
+
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "tool_start",
+			toolId: "command-1",
+			input: {
+				pluginId: "reviewer@official",
+				scriptPath: "scripts/review.js",
+			},
+		});
+		session.cancel();
 	});
 
 	it("marks failed completed tool items as errors", async () => {

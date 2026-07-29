@@ -7,7 +7,7 @@ import {
 	realpath,
 	stat,
 } from "node:fs/promises";
-import { basename, dirname, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import type { HlidConfig } from "../config";
 import { resolveCodexExecutable } from "../lib/codexPath";
@@ -24,6 +24,11 @@ const MAX_PACKAGE_FILE_BYTES = 64 * 1024;
 const MAX_PACKAGE_TOTAL_BYTES = 1024 * 1024;
 const MARKETPLACE_LIST_TIMEOUT_MS = 10_000;
 const MAX_MARKETPLACE_LIST_OUTPUT_CHARS = 256 * 1024;
+const AGENT_PLUGIN_SCHEMA_URI =
+	"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json";
+const AGENT_PLUGIN_SCHEMA_PREFIX = "https://agent-plugins.org/schemas/";
+const AGENT_PLUGIN_MANIFEST_RELATIVE_PATH = "plugin.json";
+const CODEX_PLUGIN_MANIFEST_RELATIVE_PATH = ".codex-plugin/plugin.json";
 
 export type ExtensionProviderId = "claude" | "codex";
 export type ExtensionEnvironment = "windows" | "wsl" | "host";
@@ -170,6 +175,13 @@ export type ExtensionInventoryDependencies = {
 };
 
 type JsonRecord = Record<string, unknown>;
+
+type ManifestRead = {
+	path: string;
+	raw: string;
+	value: JsonRecord;
+	error: string | null;
+};
 
 type ExtensionReviewTarget = {
 	available: AvailableExtension;
@@ -464,12 +476,7 @@ async function safeManifest(
 	root: string,
 	relativePath: string,
 	boundary: string,
-): Promise<{
-	path: string;
-	raw: string;
-	value: JsonRecord;
-	error: string | null;
-}> {
+): Promise<ManifestRead> {
 	const path = resolve(root, relativePath);
 	try {
 		const [realBoundary, realPath] = await Promise.all([
@@ -530,6 +537,228 @@ async function safeManifest(
 	}
 }
 
+function agentPluginSchemaStatus(
+	manifest: JsonRecord,
+): "supported" | "unsupported" | "unrelated" {
+	const schema = stringValue(manifest.$schema);
+	if (schema === AGENT_PLUGIN_SCHEMA_URI) return "supported";
+	return schema.startsWith(AGENT_PLUGIN_SCHEMA_PREFIX)
+		? "unsupported"
+		: "unrelated";
+}
+
+function validAgentPluginName(name: string): boolean {
+	return (
+		name.length > 0 &&
+		name.length <= 64 &&
+		!name.includes("--") &&
+		!name.includes("..") &&
+		/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(name)
+	);
+}
+
+function portableManifestError(manifest: JsonRecord): string | null {
+	const name = manifest.name;
+	if (typeof name !== "string" || !validAgentPluginName(name)) {
+		return "Agent Plugins name must use 1-64 lowercase letters, numbers, dots, or hyphens";
+	}
+	for (const key of [
+		"version",
+		"description",
+		"homepage",
+		"repository",
+		"license",
+	]) {
+		if (Object.hasOwn(manifest, key) && typeof manifest[key] !== "string") {
+			return `Agent Plugins ${key} must be a string`;
+		}
+	}
+	if (
+		Object.hasOwn(manifest, "keywords") &&
+		(!Array.isArray(manifest.keywords) ||
+			manifest.keywords.some((value) => typeof value !== "string"))
+	) {
+		return "Agent Plugins keywords must be an array of strings";
+	}
+	if (Object.hasOwn(manifest, "author")) {
+		if (!isRecord(manifest.author)) {
+			return "Agent Plugins author must be an object";
+		}
+		const allowedAuthorFields = new Set(["name", "email", "url"]);
+		for (const [key, value] of Object.entries(manifest.author)) {
+			if (!allowedAuthorFields.has(key)) {
+				return `Agent Plugins author contains unsupported field ${key}`;
+			}
+			if (typeof value !== "string") {
+				return `Agent Plugins author.${key} must be a string`;
+			}
+		}
+	}
+	return null;
+}
+
+function codexExtensionError(extension: JsonRecord): string | null {
+	if (Object.hasOwn(extension, "apps") && typeof extension.apps !== "string") {
+		return "Codex plugin apps must be a string path";
+	}
+	if (!Object.hasOwn(extension, "interface")) return null;
+	if (!isRecord(extension.interface)) {
+		return "Codex plugin interface must be an object";
+	}
+	const interfaceValue = extension.interface;
+	for (const key of [
+		"displayName",
+		"shortDescription",
+		"longDescription",
+		"developerName",
+		"category",
+		"websiteUrl",
+		"websiteURL",
+		"privacyPolicyUrl",
+		"privacyPolicyURL",
+		"termsOfServiceUrl",
+		"termsOfServiceURL",
+		"brandColor",
+		"composerIcon",
+		"logo",
+		"logoDark",
+	]) {
+		if (
+			Object.hasOwn(interfaceValue, key) &&
+			typeof interfaceValue[key] !== "string"
+		) {
+			return `Codex plugin interface.${key} must be a string`;
+		}
+	}
+	for (const key of ["capabilities", "screenshots"]) {
+		const value = interfaceValue[key];
+		if (
+			Object.hasOwn(interfaceValue, key) &&
+			(!Array.isArray(value) ||
+				value.some((entry) => typeof entry !== "string"))
+		) {
+			return `Codex plugin interface.${key} must be an array of strings`;
+		}
+	}
+	return null;
+}
+
+function portableCodexManifest(
+	manifest: JsonRecord,
+	extension: JsonRecord | null,
+): JsonRecord {
+	const value: JsonRecord = {};
+	for (const key of [
+		"$schema",
+		"name",
+		"version",
+		"description",
+		"author",
+		"homepage",
+		"repository",
+		"license",
+		"keywords",
+	]) {
+		if (Object.hasOwn(manifest, key)) value[key] = manifest[key];
+	}
+	value.skills = "./skills";
+	value.mcpServers = "./mcp.json";
+	if (extension) {
+		for (const key of ["apps", "hooks", "interface"]) {
+			if (Object.hasOwn(extension, key)) value[key] = extension[key];
+		}
+	}
+	return value;
+}
+
+async function safeCodexManifest(
+	root: string,
+	boundary: string,
+): Promise<ManifestRead> {
+	const portable = await safeManifest(
+		root,
+		AGENT_PLUGIN_MANIFEST_RELATIVE_PATH,
+		boundary,
+	);
+	const schemaStatus =
+		portable.error === null
+			? agentPluginSchemaStatus(portable.value)
+			: "unrelated";
+	if (schemaStatus === "unrelated") {
+		return safeManifest(root, CODEX_PLUGIN_MANIFEST_RELATIVE_PATH, boundary);
+	}
+	if (schemaStatus === "unsupported") {
+		return {
+			...portable,
+			error: `Unsupported Agent Plugins schema: ${stringValue(portable.value.$schema)}`,
+		};
+	}
+	const manifestError = portableManifestError(portable.value);
+	if (manifestError) return { ...portable, error: manifestError };
+
+	const extensions = recordValue(portable.value.extensions);
+	const inlineExtension = isRecord(extensions["com.openai"])
+		? extensions["com.openai"]
+		: null;
+	let fallbackOverlay: ManifestRead | null = null;
+	if (inlineExtension === null) {
+		const candidate = await safeManifest(
+			root,
+			CODEX_PLUGIN_MANIFEST_RELATIVE_PATH,
+			boundary,
+		);
+		if (candidate.error !== "Plugin manifest is missing") {
+			fallbackOverlay = candidate;
+		}
+	}
+	const extension = inlineExtension ?? fallbackOverlay?.value ?? null;
+	const extensionError = extension ? codexExtensionError(extension) : null;
+	const value = portableCodexManifest(portable.value, extension);
+	if (fallbackOverlay?.error || extensionError) {
+		return {
+			path: fallbackOverlay
+				? `${portable.path} · ${fallbackOverlay.path}`
+				: portable.path,
+			raw: [portable.raw, fallbackOverlay?.raw].filter(Boolean).join("\n\n"),
+			value,
+			error: `Codex manifest extension is invalid: ${
+				fallbackOverlay?.error ?? extensionError
+			}`,
+		};
+	}
+	return {
+		path: fallbackOverlay
+			? `${portable.path} · ${fallbackOverlay.path}`
+			: portable.path,
+		raw: fallbackOverlay
+			? `${portable.raw}\n\nFallback Codex overlay:\n${fallbackOverlay.raw}`
+			: portable.raw,
+		value,
+		error: null,
+	};
+}
+
+async function codexManifestModified(
+	root: string,
+	boundary: string,
+): Promise<number | null> {
+	const portable = await safeManifest(
+		root,
+		AGENT_PLUGIN_MANIFEST_RELATIVE_PATH,
+		boundary,
+	);
+	const schemaStatus =
+		portable.error === null
+			? agentPluginSchemaStatus(portable.value)
+			: "unrelated";
+	const path =
+		schemaStatus === "unrelated"
+			? resolve(root, CODEX_PLUGIN_MANIFEST_RELATIVE_PATH)
+			: portable.path;
+	const info = await stat(path).catch(() => null);
+	return info?.isFile() ? info.mtimeMs : null;
+}
+
 async function rootWithinBoundary(
 	root: string,
 	boundary: string,
@@ -570,6 +799,31 @@ async function countFiles(
 		if (!info.isFile() || !predicate(entry.name)) continue;
 		count++;
 		if (names.length < 8) names.push(basename(dirname(path)));
+	}
+	return { count, names };
+}
+
+async function countDirectChildSkills(
+	root: string,
+): Promise<{ count: number; names: string[] }> {
+	const skillsRoot = resolve(root, "skills");
+	const realRoot = await realpath(root).catch(() => "");
+	if (!realRoot) return { count: 0, names: [] };
+	const entries = await readdir(skillsRoot, { withFileTypes: true }).catch(
+		() => [],
+	);
+	let count = 0;
+	const names: string[] = [];
+	for (const entry of entries) {
+		if (count >= MAX_COMPONENT_FILES) break;
+		if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+		const path = resolve(skillsRoot, entry.name, "SKILL.md");
+		const info = await lstat(path).catch(() => null);
+		if (!info?.isFile() || info.isSymbolicLink()) continue;
+		const realFile = await realpath(path).catch(() => "");
+		if (!realFile || !pathStartsWith(realRoot, realFile)) continue;
+		count++;
+		if (names.length < 8) names.push(entry.name);
 	}
 	return { count, names };
 }
@@ -647,19 +901,40 @@ async function inspectSkillFiles(
 	return files;
 }
 
-async function namedJsonEntries(path: string, key?: string): Promise<string[]> {
+async function safeJsonFile(
+	root: string,
+	relativePath: string,
+): Promise<{ path: string; value: unknown } | null> {
 	try {
-		const value = await readJson(path);
-		const target = key ? recordValue(value)[key] : value;
-		return Object.keys(recordValue(target)).slice(0, 50);
+		if (!relativePath || isAbsolute(relativePath)) return null;
+		const path = resolve(root, relativePath);
+		const info = await lstat(path);
+		if (!info.isFile() || info.isSymbolicLink()) return null;
+		const [realRoot, realPath] = await Promise.all([
+			realpath(root),
+			realpath(path),
+		]);
+		if (!pathStartsWith(realRoot, realPath)) return null;
+		return { path, value: await readJson(path) };
 	} catch {
-		return [];
+		return null;
 	}
+}
+
+async function namedJsonEntries(
+	root: string,
+	relativePath: string,
+	key?: string,
+): Promise<string[]> {
+	const file = await safeJsonFile(root, relativePath);
+	if (!file) return [];
+	const target = key ? recordValue(file.value)[key] : file.value;
+	return Object.keys(recordValue(target)).slice(0, 50);
 }
 
 function manifestPathValue(manifest: JsonRecord, key: string): string {
 	const value = manifest[key];
-	return typeof value === "string" ? value : "";
+	return typeof value === "string" && value.startsWith("./") ? value : "";
 }
 
 async function inspectComponents(
@@ -676,9 +951,12 @@ async function inspectComponents(
 		if (count > 0) components.push({ kind, label, count, names });
 	};
 
-	const skills = await countFiles(resolve(root, "skills"), (name) =>
-		/^skill\.md$/i.test(name),
-	);
+	const skills =
+		agentPluginSchemaStatus(manifest) === "supported"
+			? await countDirectChildSkills(root)
+			: await countFiles(resolve(root, "skills"), (name) =>
+					/^skill\.md$/i.test(name),
+				);
 	add("skills", "Skills", skills.count, skills.names);
 
 	const agents = await countFiles(resolve(root, "agents"), (name) =>
@@ -691,13 +969,10 @@ async function inspectComponents(
 	);
 	add("commands", "Commands", commands.count, commands.names);
 
-	const hookFiles = [
-		resolve(root, "hooks", "hooks.json"),
-		resolve(root, "hooks.json"),
-	];
+	const hookFiles = ["hooks/hooks.json", "hooks.json"];
 	let hookNames: string[] = [];
 	for (const hookFile of hookFiles) {
-		hookNames = await namedJsonEntries(hookFile, "hooks");
+		hookNames = await namedJsonEntries(root, hookFile, "hooks");
 		if (hookNames.length > 0) break;
 	}
 	if (hookNames.length === 0 && manifest.hooks !== undefined) {
@@ -713,14 +988,15 @@ async function inspectComponents(
 		manifestPathValue(manifest, "mcpServers") ||
 		manifestPathValue(manifest, "mcp_servers") ||
 		".mcp.json";
-	const mcpNames = await namedJsonEntries(resolve(root, mcpPath), "mcpServers");
+	const mcpNames = await namedJsonEntries(root, mcpPath, "mcpServers");
 	add("mcp", "MCP servers", mcpNames.length, mcpNames);
 
 	const appsPath = manifestPathValue(manifest, "apps") || ".app.json";
-	const appNames = await namedJsonEntries(resolve(root, appsPath), "apps");
-	const hasAppManifest = await stat(resolve(root, appsPath))
-		.then((info) => info.isFile())
-		.catch(() => false);
+	const appManifest = await safeJsonFile(root, appsPath);
+	const appNames = appManifest
+		? Object.keys(recordValue(recordValue(appManifest.value).apps)).slice(0, 50)
+		: [];
+	const hasAppManifest = appManifest !== null;
 	add("apps", "Apps", appNames.length || (hasAppManifest ? 1 : 0), appNames);
 
 	const scripts = await countFiles(resolve(root, "scripts"), () => true);
@@ -1069,25 +1345,15 @@ async function codexPluginRoot(
 	name: string,
 ): Promise<string | null> {
 	const root = resolve(cacheRoot, marketplace, name);
-	const rootManifest = resolve(root, ".codex-plugin", "plugin.json");
-	if (
-		await stat(rootManifest)
-			.then((info) => info.isFile())
-			.catch(() => false)
-	) {
-		return root;
-	}
+	if ((await codexManifestModified(root, cacheRoot)) !== null) return root;
 	const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
 	const candidates = (
 		await Promise.all(
 			entries.map(async (entry) => {
 				if (!entry.isDirectory() || entry.isSymbolicLink()) return null;
 				const candidate = resolve(root, entry.name);
-				const manifest = resolve(candidate, ".codex-plugin", "plugin.json");
-				const info = await stat(manifest).catch(() => null);
-				return info?.isFile()
-					? { path: candidate, modified: info.mtimeMs }
-					: null;
+				const modified = await codexManifestModified(candidate, cacheRoot);
+				return modified === null ? null : { path: candidate, modified };
 			}),
 		)
 	)
@@ -1158,11 +1424,7 @@ async function inspectCodexHome(
 			identity.name,
 		);
 		const installPath = discoveredRoot ?? safeFallback;
-		const manifest = await safeManifest(
-			installPath,
-			".codex-plugin/plugin.json",
-			cacheRoot,
-		);
+		const manifest = await safeCodexManifest(installPath, cacheRoot);
 		const pluginErrors = manifest.error ? [manifest.error] : [];
 		const extension: ProviderExtension = {
 			id: extensionId(providerId, home, pluginId, installPath),
@@ -1277,8 +1539,7 @@ async function inspectCodexHome(
 				const boundary = localRoot ? snapshotRoot : cacheRoot;
 				const hasLocalPackage =
 					Boolean(root) &&
-					(await safeManifest(root, ".codex-plugin/plugin.json", boundary))
-						.error === null;
+					(await safeCodexManifest(root, boundary)).error === null;
 				const summary = availableFromEntry(
 					providerId,
 					home,
@@ -1293,7 +1554,7 @@ async function inspectCodexHome(
 					available: summary,
 					root,
 					boundary,
-					manifestRelativePath: ".codex-plugin/plugin.json",
+					manifestRelativePath: CODEX_PLUGIN_MANIFEST_RELATIVE_PATH,
 					marketplaceEntry: plugin,
 					marketplaceEntryPath: `${snapshotPath} · plugins[${pluginName}]`,
 				});
@@ -1413,11 +1674,18 @@ export async function reviewAvailableExtension(
 			extension.installPath,
 			installedTarget.boundary,
 		);
+		const manifest =
+			extension.providerId === "codex"
+				? await safeCodexManifest(
+						extension.installPath,
+						installedTarget.boundary,
+					)
+				: null;
 		const [components, skillFiles] = rootIsSafe
 			? await Promise.all([
 					inspectComponents(
 						extension.installPath,
-						parseJsonRecord(extension.manifestText),
+						manifest?.value ?? parseJsonRecord(extension.manifestText),
 					),
 					inspectSkillFiles(extension.installPath, installedTarget.boundary),
 				])
@@ -1475,11 +1743,14 @@ export async function reviewAvailableExtension(
 	let reviewLevel: ExtensionReview["reviewLevel"] = "marketplace";
 
 	if (target.root) {
-		const manifest = await safeManifest(
-			target.root,
-			target.manifestRelativePath,
-			target.boundary,
-		);
+		const manifest =
+			target.available.providerId === "codex"
+				? await safeCodexManifest(target.root, target.boundary)
+				: await safeManifest(
+						target.root,
+						target.manifestRelativePath,
+						target.boundary,
+					);
 		if (manifest.error) {
 			errors.push(manifest.error);
 		} else {

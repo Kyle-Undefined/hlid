@@ -41,6 +41,11 @@ export type ChunkMessage = {
 	type: "chunk";
 	text: string;
 	/**
+	 * `text` is the authoritative full assistant turn, replacing any streamed
+	 * text currently shown for that turn.
+	 */
+	replace?: boolean;
+	/**
 	 * UTF-16 offset of this delta within the current assistant turn. Replayed
 	 * chunks keep the same offset so clients can apply them idempotently after
 	 * a remount or WebSocket reconnect.

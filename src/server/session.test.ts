@@ -5054,6 +5054,104 @@ describe("SessionManager — live tool_event persistence", () => {
 		}
 	});
 
+	it("replaces an arbitrary streamed tail with authoritative completed text", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "sdk-live-replace" },
+				{ type: "text_delta", text: "Earlier note. " },
+				{ type: "text_delta", text: "Broken ending." },
+				{
+					type: "text_replace",
+					previousText: "Broken ending.",
+					text: "Restored ending.",
+				},
+			],
+			gate,
+		);
+
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const emitted: ServerMessage[] = [];
+		const runPromise = sm.runQuery(
+			"repair the stream",
+			(message) => emitted.push(message),
+			"sess-live-replace",
+		);
+		try {
+			await gateReached;
+			expect(emitted.filter((message) => message.type === "chunk")).toEqual([
+				{ type: "chunk", text: "Earlier note. ", offset: 0 },
+				{ type: "chunk", text: "Broken ending.", offset: 14 },
+				{
+					type: "chunk",
+					text: "Earlier note. Restored ending.",
+					offset: 0,
+					replace: true,
+				},
+			]);
+
+			release();
+			await runPromise;
+			expect(dbMock.setMessageText).toHaveBeenCalledWith(
+				"sess-live-replace",
+				expect.any(Number),
+				"Earlier note. Restored ending.",
+			);
+		} finally {
+			release();
+			await runPromise;
+		}
+	});
+
+	it("does not erase earlier text when a replacement tail cannot be matched", async () => {
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(_params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-replace-mismatch" };
+					yield { type: "text_delta", text: "Earlier commentary." };
+					yield {
+						type: "text_replace",
+						previousText: "a different tail",
+						text: "Authoritative final.",
+					};
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const emitted: ServerMessage[] = [];
+		await sm.runQuery(
+			"keep prior text",
+			(message) => emitted.push(message),
+			"sess-replace-mismatch",
+		);
+
+		expect(emitted.filter((message) => message.type === "chunk")).toEqual([
+			{ type: "chunk", text: "Earlier commentary.", offset: 0 },
+		]);
+		expect(dbMock.setMessageText).toHaveBeenCalledWith(
+			"sess-replace-mismatch",
+			expect.any(Number),
+			"Earlier commentary.",
+		);
+	});
+
 	it("only one setMessageText is scheduled when many chunks arrive in quick succession", async () => {
 		vi.useFakeTimers();
 		let release!: () => void;

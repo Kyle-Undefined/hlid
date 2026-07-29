@@ -1203,9 +1203,9 @@ class CodexAgentSession implements AgentSession {
 	private activeTurnId: string | null = null;
 	private canceled = false;
 	private endAfterTurn = false;
-	private streamedAgentMessageIds = new Set<string>();
+	private emittedAgentMessageText = new Map<string, string>();
 	private emittedReasoningIds = new Set<string>();
-	private sawUnidentifiedAgentMessageDelta = false;
+	private emittedUnidentifiedAgentMessageText = "";
 	private startedItems = new Map<string, Record<string, unknown>>();
 	private attachedThreadIds = new Set<string>();
 	private subagentByThread = new Map<string, string>();
@@ -2170,6 +2170,12 @@ class CodexAgentSession implements AgentSession {
 					this.emitSubagentUpdate(toolId, snapshot);
 				} else if (event.type === "text_delta") {
 					text += event.text;
+				} else if (
+					event.type === "text_replace" &&
+					text.endsWith(event.previousText)
+				) {
+					text =
+						text.slice(0, text.length - event.previousText.length) + event.text;
 				} else if (event.type === "local_command_output") {
 					text += `${text ? "\n" : ""}${event.content}`;
 				} else if (event.type === "tool_start") {
@@ -2633,9 +2639,9 @@ class CodexAgentSession implements AgentSession {
 	}
 
 	private resetTurnTracking(): void {
-		this.streamedAgentMessageIds.clear();
+		this.emittedAgentMessageText.clear();
 		this.emittedReasoningIds.clear();
-		this.sawUnidentifiedAgentMessageDelta = false;
+		this.emittedUnidentifiedAgentMessageText = "";
 		this.startedItems.clear();
 		this.approvedHtmlPlanItemId = null;
 		this.htmlPlanReady = false;
@@ -2841,8 +2847,14 @@ class CodexAgentSession implements AgentSession {
 		const text = textFromUnknown(obj.delta ?? obj.text ?? obj.content);
 		if (!text) return;
 		const itemId = String(obj.itemId ?? obj.id ?? "");
-		if (itemId) this.streamedAgentMessageIds.add(itemId);
-		else this.sawUnidentifiedAgentMessageDelta = true;
+		if (itemId) {
+			this.emittedAgentMessageText.set(
+				itemId,
+				(this.emittedAgentMessageText.get(itemId) ?? "") + text,
+			);
+		} else {
+			this.emittedUnidentifiedAgentMessageText += text;
+		}
 		this.events.push({ type: "text_delta", text });
 	}
 
@@ -3079,12 +3091,43 @@ class CodexAgentSession implements AgentSession {
 
 	private handleCompletedAgentMessage(item: Record<string, unknown>): void {
 		const itemId = String(item.id ?? "");
-		const alreadyStreamed = itemId
-			? this.streamedAgentMessageIds.has(itemId)
-			: this.sawUnidentifiedAgentMessageDelta;
-		if (alreadyStreamed) return;
 		const text = textFromUnknown(item.text ?? item.content);
-		if (text) this.events.push({ type: "text_delta", text });
+		if (!text) return;
+		const emittedText = itemId
+			? (this.emittedAgentMessageText.get(itemId) ?? "")
+			: this.emittedUnidentifiedAgentMessageText;
+		if (text === emittedText) return;
+
+		// Completed message content is authoritative in Codex 0.146. AgentEvent
+		// text remains append-only for the common dropped-suffix case. If an
+		// earlier delta was dropped or corrupted, replace the emitted tail so the
+		// completed message wins without duplicating streamed text.
+		if (text.startsWith(emittedText)) {
+			const suffix = text.slice(emittedText.length);
+			if (suffix) this.events.push({ type: "text_delta", text: suffix });
+		} else {
+			this.events.push({
+				type: "text_replace",
+				text,
+				previousText: emittedText,
+			});
+		}
+		if (itemId) this.emittedAgentMessageText.set(itemId, text);
+		else this.emittedUnidentifiedAgentMessageText = text;
+	}
+
+	private handleCompletedTurnAgentMessage(turn: Record<string, unknown>): void {
+		if (turn.status !== "completed" || !Array.isArray(turn.items)) return;
+		for (let index = turn.items.length - 1; index >= 0; index -= 1) {
+			const item = asObj(turn.items[index]);
+			if (
+				item.type === "agentMessage" &&
+				(item.phase == null || item.phase === "final_answer")
+			) {
+				this.handleCompletedAgentMessage(item);
+				return;
+			}
+		}
 	}
 
 	private completedItemIsError(item: Record<string, unknown>): boolean {
@@ -3228,6 +3271,7 @@ class CodexAgentSession implements AgentSession {
 		params: unknown,
 	): Promise<void> {
 		const turn = asObj(obj.turn);
+		this.handleCompletedTurnAgentMessage(turn);
 		this.recordUsage(maybeUsage(turn) ?? maybeUsage(params));
 		const threadId = this.threadId ?? String(obj.threadId ?? "");
 		const capturedFinalTotal =

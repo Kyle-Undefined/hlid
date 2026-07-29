@@ -1,6 +1,6 @@
 // AUTO-GENERATED — vendored from codex-cli's `codex app-server generate-ts`.
-// CLI version: codex-cli 0.145.0 (pinned to 0.145.0 in scripts/generate-codex-types.ts)
-// Generated: 2026-07-23
+// CLI version: codex-cli 0.146.0 (pinned to 0.146.0 in scripts/generate-codex-types.ts)
+// Generated: 2026-07-29
 // Regenerate via `bun scripts/generate-codex-types.ts`; version bumps are
 // deliberate manual updates, not run automatically on every build.
 
@@ -45,6 +45,10 @@ preview: string,
  * Whether the thread is ephemeral and should not be materialized on disk.
  */
 ephemeral: boolean,
+/**
+ * Whether the thread has been pinned by the user.
+ */
+isPinned: boolean,
 /**
  * Persisted thread history contract selected when this thread was created.
  */

@@ -149,6 +149,13 @@ export async function generateTurnRecap({
 		for await (const event of session) {
 			if (event.type === "text_delta") {
 				summary += event.text;
+			} else if (
+				event.type === "text_replace" &&
+				summary.endsWith(event.previousText)
+			) {
+				summary =
+					summary.slice(0, summary.length - event.previousText.length) +
+					event.text;
 			} else if (event.type === "usage") {
 				if (event.model) actualModel = event.model;
 				if (event.contextWindow) contextWindow = event.contextWindow;

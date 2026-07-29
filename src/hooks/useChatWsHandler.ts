@@ -144,6 +144,14 @@ function dispatchActiveMessage(
 	const { dispatch, pendingIdRef, lastAssistantIdRef } = context;
 	switch (msg.type) {
 		case "chunk":
+			if (msg.replace) {
+				dispatch({
+					type: "REPLACE_TEXT",
+					id: activeId,
+					text: msg.text,
+				});
+				break;
+			}
 			dispatch({
 				type: "APPEND_CHUNK",
 				id: activeId,

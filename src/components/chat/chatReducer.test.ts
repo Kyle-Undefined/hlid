@@ -260,6 +260,30 @@ describe("APPEND_CHUNK", () => {
 	});
 });
 
+describe("REPLACE_TEXT", () => {
+	it("replaces arbitrary streamed text exactly and is idempotent", () => {
+		let state = reducer(withAssistant("a1"), {
+			type: "APPEND_CHUNK",
+			id: "a1",
+			text: "The start. Broken end.",
+		});
+		state = reducer(state, {
+			type: "REPLACE_TEXT",
+			id: "a1",
+			text: "The start. Restored middle and end.",
+		});
+		state = reducer(state, {
+			type: "REPLACE_TEXT",
+			id: "a1",
+			text: "The start. Restored middle and end.",
+		});
+		const msg = state[0];
+		if (msg.role === "assistant") {
+			expect(msg.text).toBe("The start. Restored middle and end.");
+		}
+	});
+});
+
 // ── ADD_TOOL_EVENT ────────────────────────────────────────────────────────────
 
 describe("ADD_TOOL_EVENT", () => {

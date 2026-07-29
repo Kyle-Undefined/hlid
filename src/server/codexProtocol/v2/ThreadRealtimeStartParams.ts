@@ -1,6 +1,6 @@
 // AUTO-GENERATED — vendored from codex-cli's `codex app-server generate-ts`.
-// CLI version: codex-cli 0.145.0 (pinned to 0.145.0 in scripts/generate-codex-types.ts)
-// Generated: 2026-07-23
+// CLI version: codex-cli 0.146.0 (pinned to 0.146.0 in scripts/generate-codex-types.ts)
+// Generated: 2026-07-29
 // Regenerate via `bun scripts/generate-codex-types.ts`; version bumps are
 // deliberate manual updates, not run automatically on every build.
 
@@ -41,6 +41,11 @@ codexResponseItemPrefix?: string | null,
  * default to `thinking`. Realtime V1 and V2 ignore this setting.
  */
 codexResponseHandoffMode?: CodexResponseHandoffMode | null,
+/**
+ * Overrides BEM channel prefixes by `analysis`, `commentary`, or `final`.
+ * Omitted channels retain their default uppercase bracketed prefixes.
+ */
+codexResponseHandoffChannelPrefixes?: { [key in string]?: Array<string> } | null,
 /**
  * Overrides the configured realtime model for this session only.
  */

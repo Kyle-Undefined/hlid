@@ -2772,6 +2772,45 @@ export class SessionManager {
 		turn.lastBlockType = "text";
 	}
 
+	private handleTextReplacement(
+		event: Extract<AgentEvent, { type: "text_replace" }>,
+		turn: TurnState,
+		sessionId: string | undefined,
+		emit: (msg: ServerMessage) => void,
+	): void {
+		const previousOffset = event.previousText
+			? turn.assistantText.lastIndexOf(event.previousText)
+			: turn.assistantText.length;
+		const replacesCurrentTail =
+			previousOffset >= 0 &&
+			previousOffset + event.previousText.length === turn.assistantText.length;
+		// The provider and SessionManager consume the same ordered AgentEvent
+		// stream, so this should always identify the current tail. Preserve the
+		// accumulated turn rather than erasing earlier commentary if that
+		// invariant is ever violated.
+		if (!replacesCurrentTail) return;
+		const prefix = turn.assistantText.slice(0, previousOffset);
+		const text =
+			event.previousText.length === 0 &&
+			turn.lastBlockType === "tool_use" &&
+			event.text &&
+			!event.text.startsWith("\n")
+				? `\n\n${event.text}`
+				: event.text;
+		turn.assistantText = prefix + text;
+		emit({
+			type: "chunk",
+			text: turn.assistantText,
+			offset: 0,
+			replace: true,
+		});
+		if (sessionId) {
+			this.ensureAssistantRow(turn, sessionId);
+			this.scheduleTextWrite(turn, sessionId);
+		}
+		turn.lastBlockType = "text";
+	}
+
 	/**
 	 * Stamps the current turn's row with the native transcript id of whichever
 	 * raw SDK message is contributing right now. Fires once per incoming SDK
@@ -3074,6 +3113,9 @@ export class SessionManager {
 				break;
 			case "text_delta":
 				this.handleTextDelta(event, turn, sessionId, emit);
+				break;
+			case "text_replace":
+				this.handleTextReplacement(event, turn, sessionId, emit);
 				break;
 			case "assistant_message_id":
 				this.handleAssistantMessageId(event, turn, sessionId);

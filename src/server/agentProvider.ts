@@ -273,6 +273,15 @@ export type AgentEvent =
 	| { type: "commands_changed"; commands: SlashCommand[] }
 	| { type: "transport_error"; message: string }
 	| { type: "text_delta"; text: string }
+	| {
+			/**
+			 * Replace the most recently emitted assistant-message tail with the
+			 * provider's authoritative completed text.
+			 */
+			type: "text_replace";
+			text: string;
+			previousText: string;
+	  }
 	/**
 	 * Native transcript id of the raw provider message currently contributing
 	 * to this turn. Claude-only today (SDKAssistantMessage.uuid) — used to

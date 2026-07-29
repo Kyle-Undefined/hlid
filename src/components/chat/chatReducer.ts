@@ -172,6 +172,7 @@ export type Action =
 	  }
 	| { type: "RESUME_ASSISTANT"; id: string }
 	| { type: "APPEND_CHUNK"; id: string; text: string; offset?: number }
+	| { type: "REPLACE_TEXT"; id: string; text: string }
 	| { type: "ADD_TOOL_EVENT"; id: string; event: ToolEventMessage }
 	| {
 			type: "UPDATE_TOOL_EVENT";
@@ -599,6 +600,10 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				const suffix = action.text.slice(Math.max(0, consumed));
 				return { ...m, text: m.text + suffix };
 			});
+		case "REPLACE_TEXT":
+			return patchMessage(state, action.id, "assistant", (m) =>
+				m.text === action.text ? m : { ...m, text: action.text },
+			);
 		case "ADD_TOOL_EVENT":
 			return patchMessage(state, action.id, "assistant", (m) =>
 				m.toolEvents.some((event) => event.id === action.event.id)

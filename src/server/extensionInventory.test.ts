@@ -19,6 +19,8 @@ import {
 
 let root: string;
 let home: ProviderExtensionHome;
+const AGENT_PLUGIN_SCHEMA =
+	"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json";
 
 function config(): HlidConfig {
 	return {
@@ -171,6 +173,363 @@ source = "example/team-tools"
 				pluginId: "team-review@team-tools",
 				manifestText: expect.stringContaining('"version": "2.0.0"'),
 			}),
+		);
+	});
+
+	it("reviews root-only Agent Plugins packages from Codex marketplaces", async () => {
+		const marketplaceRoot = join(root, "portable-marketplace");
+		const pluginRoot = join(marketplaceRoot, "plugins", "portable-review");
+		writeJson(join(marketplaceRoot, ".agents", "plugins", "marketplace.json"), {
+			name: "portable-tools",
+			plugins: [
+				{
+					name: "portable-review",
+					source: { source: "local", path: "./plugins/portable-review" },
+				},
+			],
+		});
+		writeJson(join(pluginRoot, "plugin.json"), {
+			$schema: AGENT_PLUGIN_SCHEMA,
+			name: "portable-review",
+			version: "1.2.0",
+			description: "Portable review tools",
+			author: { name: "Example" },
+		});
+		writeJson(join(pluginRoot, "mcp.json"), {
+			mcpServers: { portableApi: { command: "portable-api" } },
+		});
+		mkdirSync(join(pluginRoot, "skills", "review"), { recursive: true });
+		writeFileSync(
+			join(pluginRoot, "skills", "review", "SKILL.md"),
+			"# Portable review",
+		);
+		mkdirSync(join(pluginRoot, "skills", "group", "nested"), {
+			recursive: true,
+		});
+		writeFileSync(
+			join(pluginRoot, "skills", "group", "nested", "SKILL.md"),
+			"# Nested skill Codex does not load",
+		);
+		const listCodexMarketplaces = vi.fn().mockResolvedValue([
+			{
+				name: "portable-tools",
+				root: marketplaceRoot,
+				source: "git · example/portable-tools",
+			},
+		]);
+
+		const inventory = await discoverExtensionInventory(config(), [home], {
+			listCodexMarketplaces,
+		});
+		const available = inventory.available.find(
+			(item) => item.pluginId === "portable-review@portable-tools",
+		);
+		expect(available).toMatchObject({
+			displayName: "portable-review",
+			reviewLevel: "package",
+		});
+
+		const review = await reviewAvailableExtension(
+			config(),
+			available?.id ?? "",
+			[home],
+			{ listCodexMarketplaces },
+		);
+		expect(review).toMatchObject({
+			reviewLevel: "package",
+			manifestPath: join(pluginRoot, "plugin.json"),
+			version: "1.2.0",
+			description: "Portable review tools",
+			author: "Example",
+			components: expect.arrayContaining([
+				expect.objectContaining({ kind: "skills", count: 1 }),
+				expect.objectContaining({
+					kind: "mcp",
+					count: 1,
+					names: ["portableApi"],
+				}),
+			]),
+			skillFiles: expect.arrayContaining([
+				expect.objectContaining({
+					path: "skills/review/SKILL.md",
+					content: "# Portable review",
+				}),
+			]),
+			errors: [],
+		});
+		expect(review?.manifestText).toContain(AGENT_PLUGIN_SCHEMA);
+	});
+
+	it("surfaces Agent Plugins manifests that Codex rejects", async () => {
+		const cacheRoot = join(root, ".codex", "plugins", "cache", "team-tools");
+		const invalid = [
+			{
+				name: "invalid-name",
+				manifest: {
+					$schema: AGENT_PLUGIN_SCHEMA,
+					name: "Invalid Name",
+				},
+				error: "Agent Plugins name must use",
+			},
+			{
+				name: "invalid-metadata",
+				manifest: {
+					$schema: AGENT_PLUGIN_SCHEMA,
+					name: "invalid-metadata",
+					description: null,
+				},
+				error: "Agent Plugins description must be a string",
+			},
+			{
+				name: "invalid-extension",
+				manifest: {
+					$schema: AGENT_PLUGIN_SCHEMA,
+					name: "invalid-extension",
+					extensions: { "com.openai": { apps: [] } },
+				},
+				error: "Codex plugin apps must be a string path",
+			},
+		];
+		for (const item of invalid) {
+			writeJson(join(cacheRoot, item.name, "v1", "plugin.json"), item.manifest);
+		}
+		mkdirSync(join(root, ".codex"), { recursive: true });
+		writeFileSync(
+			join(root, ".codex", "config.toml"),
+			invalid
+				.map((item) => `[plugins."${item.name}@team-tools"]\nenabled = true\n`)
+				.join(""),
+		);
+
+		const inventory = await discoverExtensionInventory(config(), [home], {
+			listCodexMarketplaces: vi.fn().mockResolvedValue([]),
+		});
+		for (const item of invalid) {
+			expect(
+				inventory.extensions.find((extension) => extension.name === item.name)
+					?.errors,
+			).toEqual([expect.stringContaining(item.error)]);
+		}
+	});
+
+	it("keeps portable component inspection inside the plugin root", async () => {
+		const outside = join(root, "outside-app.json");
+		writeJson(outside, { apps: { outsideSecret: {} } });
+		const cacheRoot = join(root, ".codex", "plugins", "cache", "team-tools");
+		const cases = [
+			{ name: "traversal", apps: "../../../../outside-app.json" },
+			{ name: "absolute", apps: outside },
+			{ name: "symlink", apps: "./linked-app.json" },
+		];
+		for (const item of cases) {
+			const pluginRoot = join(cacheRoot, item.name, "v1");
+			writeJson(join(pluginRoot, "plugin.json"), {
+				$schema: AGENT_PLUGIN_SCHEMA,
+				name: item.name,
+				extensions: { "com.openai": { apps: item.apps } },
+			});
+			if (item.name === "symlink") {
+				symlinkSync(outside, join(pluginRoot, "linked-app.json"));
+			}
+		}
+		mkdirSync(join(root, ".codex"), { recursive: true });
+		writeFileSync(
+			join(root, ".codex", "config.toml"),
+			cases
+				.map((item) => `[plugins."${item.name}@team-tools"]\nenabled = true\n`)
+				.join(""),
+		);
+		const dependencies = {
+			listCodexMarketplaces: vi.fn().mockResolvedValue([]),
+		};
+
+		const inventory = await discoverExtensionInventory(
+			config(),
+			[home],
+			dependencies,
+		);
+		for (const item of cases) {
+			const extension = inventory.extensions.find(
+				(candidate) => candidate.name === item.name,
+			);
+			const review = await reviewAvailableExtension(
+				config(),
+				extension?.id ?? "",
+				[home],
+				dependencies,
+			);
+			expect(review?.components).not.toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						kind: "apps",
+						names: expect.arrayContaining(["outsideSecret"]),
+					}),
+				]),
+			);
+		}
+	});
+
+	it("uses a legacy Codex manifest only as the portable fallback overlay", async () => {
+		const pluginRoot = join(
+			root,
+			".codex",
+			"plugins",
+			"cache",
+			"team-tools",
+			"portable-installed",
+			"cache-v1",
+		);
+		writeJson(join(pluginRoot, "plugin.json"), {
+			$schema: AGENT_PLUGIN_SCHEMA,
+			name: "portable-installed",
+			version: "2.3.0",
+			description: "Portable metadata wins",
+			author: { name: "Portable Author" },
+		});
+		writeJson(join(pluginRoot, ".codex-plugin", "plugin.json"), {
+			name: "legacy-name",
+			version: "9.9.9",
+			description: "Legacy metadata must not replace portable metadata",
+			author: "Legacy Author",
+			interface: {
+				displayName: "Codex Portable",
+				capabilities: ["Write"],
+			},
+			hooks: "./hooks/hooks.json",
+		});
+		writeJson(join(pluginRoot, "hooks", "hooks.json"), {
+			hooks: { PreToolUse: [] },
+		});
+		mkdirSync(join(root, ".codex"), { recursive: true });
+		writeFileSync(
+			join(root, ".codex", "config.toml"),
+			'[plugins."portable-installed@team-tools"]\nenabled = true\n',
+		);
+		const dependencies = {
+			listCodexMarketplaces: vi.fn().mockResolvedValue([]),
+		};
+
+		const inventory = await discoverExtensionInventory(
+			config(),
+			[home],
+			dependencies,
+		);
+		const extension = inventory.extensions.find(
+			(item) => item.pluginId === "portable-installed@team-tools",
+		);
+		expect(extension).toMatchObject({
+			displayName: "Codex Portable",
+			version: "2.3.0",
+			description: "Portable metadata wins",
+			author: "Portable Author",
+			capabilities: ["Write"],
+			enabled: true,
+			errors: [],
+		});
+		expect(extension?.manifestPath).toContain(join(pluginRoot, "plugin.json"));
+		expect(extension?.manifestPath).toContain(
+			join(pluginRoot, ".codex-plugin", "plugin.json"),
+		);
+		expect(extension?.manifestText).toContain("Fallback Codex overlay");
+
+		const review = await reviewAvailableExtension(
+			config(),
+			extension?.id ?? "",
+			[home],
+			dependencies,
+		);
+		expect(review).toMatchObject({
+			displayName: "Codex Portable",
+			version: "2.3.0",
+			components: expect.arrayContaining([
+				expect.objectContaining({
+					kind: "hooks",
+					count: 1,
+					names: ["PreToolUse"],
+				}),
+			]),
+			errors: [],
+		});
+	});
+
+	it("matches Codex precedence for inline, unrelated, and unsupported root manifests", async () => {
+		const cacheRoot = join(root, ".codex", "plugins", "cache", "team-tools");
+		const inlineRoot = join(cacheRoot, "inline", "v1");
+		writeJson(join(inlineRoot, "plugin.json"), {
+			$schema: AGENT_PLUGIN_SCHEMA,
+			name: "inline",
+			extensions: {
+				"com.openai": {
+					interface: { displayName: "Inline Codex settings" },
+				},
+			},
+		});
+		writeJson(join(inlineRoot, ".codex-plugin", "plugin.json"), {
+			name: "inline",
+			interface: { displayName: "Ignored fallback overlay" },
+		});
+
+		const unrelatedRoot = join(cacheRoot, "unrelated", "v1");
+		writeJson(join(unrelatedRoot, "plugin.json"), {
+			name: "unrelated-package-file",
+		});
+		writeJson(join(unrelatedRoot, ".codex-plugin", "plugin.json"), {
+			name: "unrelated",
+			version: "4.0.0",
+			interface: { displayName: "Legacy Codex manifest" },
+		});
+
+		const unsupportedRoot = join(cacheRoot, "unsupported", "v1");
+		writeJson(join(unsupportedRoot, "plugin.json"), {
+			$schema: "https://agent-plugins.org/schemas/2.0.0/plugin.schema.json",
+			name: "unsupported",
+		});
+		writeJson(join(unsupportedRoot, ".codex-plugin", "plugin.json"), {
+			name: "unsupported",
+			interface: { displayName: "Must not mask unsupported schema" },
+		});
+
+		mkdirSync(join(root, ".codex"), { recursive: true });
+		writeFileSync(
+			join(root, ".codex", "config.toml"),
+			`[plugins."inline@team-tools"]
+enabled = true
+[plugins."unrelated@team-tools"]
+enabled = true
+[plugins."unsupported@team-tools"]
+enabled = true
+`,
+		);
+
+		const inventory = await discoverExtensionInventory(config(), [home], {
+			listCodexMarketplaces: vi.fn().mockResolvedValue([]),
+		});
+		const byName = new Map(
+			inventory.extensions.map((extension) => [extension.name, extension]),
+		);
+		expect(byName.get("inline")).toMatchObject({
+			displayName: "Inline Codex settings",
+			errors: [],
+		});
+		expect(byName.get("inline")?.manifestText).not.toContain(
+			"Ignored fallback overlay",
+		);
+		expect(byName.get("unrelated")).toMatchObject({
+			displayName: "Legacy Codex manifest",
+			version: "4.0.0",
+			errors: [],
+		});
+		expect(byName.get("unrelated")?.manifestPath).toBe(
+			join(unrelatedRoot, ".codex-plugin", "plugin.json"),
+		);
+		expect(byName.get("unsupported")).toMatchObject({
+			displayName: "unsupported",
+			errors: [
+				"Unsupported Agent Plugins schema: https://agent-plugins.org/schemas/2.0.0/plugin.schema.json",
+			],
+		});
+		expect(byName.get("unsupported")?.manifestText).not.toContain(
+			"Must not mask unsupported schema",
 		);
 	});
 

@@ -463,6 +463,27 @@ describe("useChatWsHandler — assistant lifecycle", () => {
 		]);
 	});
 
+	it("dispatches an authoritative chunk as a full text replacement", () => {
+		const { handler, dispatch, refs } = renderHandler();
+		handler({
+			type: "chunk",
+			text: "Complete authoritative response.",
+			offset: 0,
+			replace: true,
+		});
+		expect(refs.pendingIdRef.current).toBe("test-uid");
+		expect(dispatch.mock.calls).toEqual([
+			[{ type: "ADD_ASSISTANT", id: "test-uid" }],
+			[
+				{
+					type: "REPLACE_TEXT",
+					id: "test-uid",
+					text: "Complete authoritative response.",
+				},
+			],
+		]);
+	});
+
 	it("anchors a running status to its turn id", () => {
 		const { handler, dispatch, refs } = renderHandler();
 		handler({
