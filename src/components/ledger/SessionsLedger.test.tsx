@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import {
+	act,
 	cleanup,
 	fireEvent,
 	render,
@@ -32,6 +33,37 @@ function setMobileViewport(): void {
 			dispatchEvent: vi.fn(() => true),
 		})),
 	);
+}
+
+function setResponsiveViewport(initiallyDesktop: boolean) {
+	let desktop = initiallyDesktop;
+	const listeners = new Set<() => void>();
+	const mediaQuery = {
+		get matches() {
+			return desktop;
+		},
+		media: "(min-width: 768px)",
+		onchange: null,
+		addEventListener: vi.fn((_event: string, listener: () => void) => {
+			listeners.add(listener);
+		}),
+		removeEventListener: vi.fn((_event: string, listener: () => void) => {
+			listeners.delete(listener);
+		}),
+		addListener: vi.fn(),
+		removeListener: vi.fn(),
+		dispatchEvent: vi.fn(() => true),
+	};
+	vi.stubGlobal(
+		"matchMedia",
+		vi.fn(() => mediaQuery),
+	);
+	return {
+		setDesktop(value: boolean) {
+			desktop = value;
+			for (const listener of listeners) listener();
+		},
+	};
 }
 
 const session: SessionRow = {
@@ -438,6 +470,21 @@ describe("SessionsLedger session actions", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Save" }));
 		expect(props.onRename).toHaveBeenCalledWith("session-1", "Mobile name");
 		expect(screen.queryByRole("dialog", { name: "Rename session" })).toBeNull();
+	});
+
+	it("leaves mobile rename mode when the viewport becomes desktop", () => {
+		const viewport = setResponsiveViewport(false);
+		renderLedger();
+		openSessionActions();
+		fireEvent.click(screen.getByRole("button", { name: /rename/i }));
+		expect(screen.getByRole("dialog", { name: "Rename session" })).toBeTruthy();
+
+		act(() => viewport.setDesktop(true));
+
+		expect(screen.queryByLabelText("Session name")).toBeNull();
+		expect(
+			screen.getByRole("dialog", { name: "Session actions" }),
+		).toBeTruthy();
 	});
 
 	it("trims and commits a changed session name", () => {

@@ -785,4 +785,122 @@ describe("ExtensionsSection", () => {
 			}),
 		);
 	});
+
+	it("keeps an unfinished marketplace draft while switching views", async () => {
+		mocks.getExtensionInventory.mockResolvedValue(inventory);
+		render(<ExtensionsSection />);
+		await waitFor(() => expect(screen.getByText("Reviewer")).toBeTruthy());
+
+		fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+		fireEvent.click(screen.getByRole("tab", { name: "marketplace" }));
+		fireEvent.change(screen.getByLabelText("Marketplace source"), {
+			target: { value: "example/team-tools" },
+		});
+		fireEvent.change(screen.getByLabelText("Marketplace Git ref"), {
+			target: { value: "release-1" },
+		});
+		fireEvent.change(screen.getByLabelText("Marketplace sparse paths"), {
+			target: { value: "plugins/github" },
+		});
+
+		fireEvent.click(screen.getByRole("tab", { name: "installed" }));
+		expect(screen.queryByLabelText("Marketplace source")).toBeNull();
+		fireEvent.click(screen.getByRole("tab", { name: "marketplace" }));
+
+		expect(
+			(screen.getByLabelText("Marketplace source") as HTMLInputElement).value,
+		).toBe("example/team-tools");
+		expect(
+			(screen.getByLabelText("Marketplace Git ref") as HTMLInputElement).value,
+		).toBe("release-1");
+		expect(
+			(screen.getByLabelText("Marketplace sparse paths") as HTMLInputElement)
+				.value,
+		).toBe("plugins/github");
+	});
+
+	it("refreshes inventory and releases the action after a native mutation failure", async () => {
+		mocks.getExtensionInventory.mockResolvedValue(inventory);
+		mocks.mutateExtension.mockRejectedValue(
+			new Error("Native plugin command failed"),
+		);
+		render(<ExtensionsSection />);
+		await waitFor(() => expect(screen.getByText("Reviewer")).toBeTruthy());
+
+		fireEvent.click(screen.getByText("Reviewer"));
+		fireEvent.click(screen.getByRole("button", { name: "Disable" }));
+
+		await waitFor(() =>
+			expect(mocks.mutateExtension).toHaveBeenCalledWith({
+				action: "set_enabled",
+				id: "claude-extension",
+				expectedVersion: "1.2.3",
+				expectedEnabled: true,
+				enabled: false,
+			}),
+		);
+		expect(
+			await screen.findByText("Native plugin command failed"),
+		).toBeTruthy();
+		await waitFor(() =>
+			expect(mocks.getExtensionInventory).toHaveBeenCalledTimes(2),
+		);
+		expect(
+			screen.getByRole("button", { name: "Disable" }).hasAttribute("disabled"),
+		).toBe(false);
+	});
+
+	it("keeps the Codex marketplace source payload native and clears it after success", async () => {
+		mocks.getExtensionInventory.mockResolvedValue(inventory);
+		mocks.mutateExtension.mockResolvedValue({
+			ok: true,
+			result: {
+				action: "add_marketplace",
+				providerId: "codex",
+				subject: "example/team-tools",
+				environmentLabel: "Windows",
+				output: "added",
+			},
+		});
+		render(<ExtensionsSection />);
+		await waitFor(() => expect(screen.getByText("Reviewer")).toBeTruthy());
+
+		fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+		fireEvent.click(screen.getByRole("tab", { name: "marketplace" }));
+		fireEvent.click(screen.getByText("Add marketplace source"));
+		fireEvent.change(screen.getByLabelText("Marketplace source"), {
+			target: { value: "  example/team-tools  " },
+		});
+		fireEvent.change(screen.getByLabelText("Marketplace Git ref"), {
+			target: { value: "  release-1  " },
+		});
+		fireEvent.change(screen.getByLabelText("Marketplace sparse paths"), {
+			target: { value: "plugins/github,\nplugins/issues" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Add source" }));
+		fireEvent.click(screen.getByRole("button", { name: "add source" }));
+
+		await waitFor(() =>
+			expect(mocks.mutateExtension).toHaveBeenCalledWith({
+				action: "add_marketplace",
+				providerId: "codex",
+				environmentId: "222222222222222222222222",
+				source: "example/team-tools",
+				ref: "release-1",
+				sparse: ["plugins/github", "plugins/issues"],
+			}),
+		);
+		await waitFor(() =>
+			expect(
+				(screen.getByLabelText("Marketplace source") as HTMLInputElement).value,
+			).toBe(""),
+		);
+		expect(
+			(screen.getByLabelText("Marketplace Git ref") as HTMLInputElement).value,
+		).toBe("");
+		expect(
+			(screen.getByLabelText("Marketplace sparse paths") as HTMLInputElement)
+				.value,
+		).toBe("");
+	});
 });
