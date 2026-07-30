@@ -20,6 +20,9 @@ export function LoginForm({
 	onConfirmChange: (value: string) => void;
 	onSubmit: (event: React.FormEvent) => void;
 }) {
+	const setupPasswordIncomplete =
+		state === "setup-required" && (confirm.length < 12 || password !== confirm);
+
 	return (
 		<form onSubmit={onSubmit} className="space-y-4">
 			<div>
@@ -93,7 +96,7 @@ export function LoginForm({
 			)}
 			<button
 				type="submit"
-				disabled={working || password.length < 12}
+				disabled={working || password.length < 12 || setupPasswordIncomplete}
 				className="w-full border border-primary bg-primary text-primary-foreground py-2 text-[10px] tracking-widest uppercase disabled:opacity-40"
 			>
 				{working

@@ -840,6 +840,28 @@ describe("Raven composed submission behavior", () => {
 		expect(modelBadge?.parentElement?.className).toContain("-top-5");
 	});
 
+	it("keeps the desktop Enter shortcut hint off mobile and coarse pointers", () => {
+		render(<ChatPage />);
+
+		const hint = screen.getByText("↵ send · ⇧↵ newline");
+		expect(hint.className).toContain("hidden");
+		expect(hint.className).toContain("md:block");
+		expect(hint.className).toContain("[@media(pointer:coarse)]:hidden");
+	});
+
+	it("does not advertise Enter submission when the setting is off", () => {
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as Record<string, unknown>),
+				ui: { enter_to_submit: false },
+			},
+		};
+		render(<ChatPage />);
+
+		expect(screen.queryByText("↵ send · ⇧↵ newline")).toBeNull();
+	});
+
 	it("keeps composer controls in DOM order inside the mobile grid", () => {
 		render(<ChatPage />);
 
@@ -858,6 +880,12 @@ describe("Raven composed submission behavior", () => {
 		expect(controlGrid?.className).toContain("md:contents");
 		expect(attach.className).toContain("py-2");
 		expect(voice.className).toContain("py-2");
+		for (const control of [attach, activeNote, voice]) {
+			expect(control.className).toContain("min-h-11");
+			expect(control.className).toContain("min-w-11");
+			expect(control.className).toContain("md:min-h-0");
+			expect(control.className).toContain("md:min-w-0");
+		}
 		expect(attach.className).not.toContain("md:order");
 		expect(voice.className).not.toContain("md:order");
 		expect(activeNoteContainer?.className).not.toContain("md:order");
@@ -869,6 +897,21 @@ describe("Raven composed submission behavior", () => {
 			activeNoteContainer.compareDocumentPosition(voice) &
 				Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
+	});
+
+	it("uses mobile-height touch targets for Raven composer actions", () => {
+		render(<ChatPage />);
+
+		const controls = [
+			screen.getByRole("button", { name: "MCP server status" }),
+			screen.getByRole("button", { name: "plan" }),
+			screen.getByRole("button", { name: "terminal" }),
+			screen.getByRole("button", { name: "Send" }),
+		];
+		for (const control of controls) {
+			expect(control.className).toContain("min-h-11");
+			expect(control.className).toContain("md:min-h-0");
+		}
 	});
 
 	it("places Fork in the left control cluster next to voice", () => {
@@ -889,6 +932,10 @@ describe("Raven composed submission behavior", () => {
 			voice.compareDocumentPosition(fork) & Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
 		expect(fork.className).toContain("px-2");
+		expect(fork.className).toContain("min-h-11");
+		expect(fork.className).toContain("min-w-11");
+		expect(newChat.className).toContain("min-h-11");
+		expect(newChat.className).toContain("min-w-11");
 		expect(fork.className).not.toContain("w-full");
 	});
 

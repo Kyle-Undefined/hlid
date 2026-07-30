@@ -5,6 +5,7 @@ import { isAllowedOrigin, isAllowedOriginHeader } from "../lib/allowedOrigin";
 import { resolveClaudeExecutable } from "../lib/claudePath";
 import { resolveCodexExecutable } from "../lib/codexPath";
 import { writeConfig } from "../lib/config-writer";
+import { resolveDevServerPort } from "../lib/devServerPort";
 import {
 	registerInternalApiBase,
 	registerInternalApiHandler,
@@ -205,7 +206,15 @@ if (restartParentArg && process.platform !== "win32") {
 	}
 }
 
-const config = loadConfig();
+const loadedConfig = loadConfig();
+const resolvedDevPort = resolveDevServerPort(loadedConfig.server.port);
+const config =
+	resolvedDevPort === loadedConfig.server.port
+		? loadedConfig
+		: {
+				...loadedConfig,
+				server: { ...loadedConfig.server, port: resolvedDevPort },
+			};
 registerInternalApiBase(`http://127.0.0.1:${config.server.port + 1}`);
 
 // Bind localhost-only by default. Opt-in to LAN/Tailscale exposure via

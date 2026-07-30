@@ -3327,8 +3327,8 @@ function RavenMessagePane({
 											? "CONNECTING"
 											: "THE WATCHER LISTENS"}
 									</div>
-									{wsStatus === "connected" && (
-										<div className="text-[9px] tracking-[0.35em] text-muted-foreground/35">
+									{wsStatus === "connected" && config.ui.enter_to_submit && (
+										<div className="hidden text-[9px] tracking-[0.35em] text-muted-foreground/35 md:block [@media(pointer:coarse)]:hidden">
 											↵ send · ⇧↵ newline
 										</div>
 									)}
@@ -3684,7 +3684,7 @@ function ChatInputArea(props: ChatComposerProps) {
 						type="button"
 						onClick={props.handleSteerDelegatedChild}
 						disabled={!props.canSteerDelegatedChild}
-						className="self-start shrink-0 px-4 py-2 text-[10px] font-bold tracking-widest text-primary/70 uppercase transition-colors hover:text-primary disabled:text-muted-foreground/35 md:py-3"
+						className="min-h-11 self-start shrink-0 px-4 py-2 text-[10px] font-bold tracking-widest text-primary/70 uppercase transition-colors hover:text-primary disabled:text-muted-foreground/35 md:min-h-0 md:py-3"
 						aria-label="Steer current child"
 						title={
 							props.delegatedNativeSteeringAvailable
@@ -3837,7 +3837,7 @@ function ChatInputNotices({
 						(voice.livePhase === "starting" ? "connecting…" : "listening…")}
 				</output>
 			)}
-			<div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-1.5 border-b border-border/40">
+			<div className="flex flex-wrap items-center gap-x-1 gap-y-1.5 px-4 py-1.5 border-b border-border/40 md:gap-x-3">
 				{messages.length === 0 && agentList.length > 0 && (
 					<div className="flex min-w-0 w-full items-center gap-3 md:w-auto md:flex-1">
 						<AgentSelect
@@ -3855,6 +3855,7 @@ function ChatInputNotices({
 						servers={runtime.mcpServers}
 						align="mobile-left"
 						openSignal={runtime.mcpOpenSignal}
+						buttonClassName="min-h-11 px-2 md:min-h-0 md:px-0"
 						label={`MCP runtime · ${
 							agentList.find((agent) => agent.path === agentSkillContext)
 								?.name ??
@@ -3890,7 +3891,7 @@ function ChatInputNotices({
 								? "Enable plan mode — Codex plans at up to X-High effort"
 								: "Enable plan mode — the agent plans before acting"
 						}
-						className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors shrink-0 ${
+						className={`flex min-h-11 items-center gap-1.5 px-2 text-[9px] tracking-widest uppercase transition-colors shrink-0 md:min-h-0 md:px-0 ${
 							planMode
 								? "text-primary border-b border-primary/50"
 								: "text-muted-foreground/40 hover:text-muted-foreground/70"
@@ -3904,7 +3905,7 @@ function ChatInputNotices({
 							type="button"
 							onClick={() => setPlanHtml((v) => !v)}
 							title="Render the plan as a styled HTML page shown in a modal"
-							className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors shrink-0 ${
+							className={`flex min-h-11 items-center gap-1.5 px-2 text-[9px] tracking-widest uppercase transition-colors shrink-0 md:min-h-0 md:px-0 ${
 								planHtml
 									? "text-primary border-b border-primary/50"
 									: "text-muted-foreground/40 hover:text-muted-foreground/70"
@@ -3918,7 +3919,7 @@ function ChatInputNotices({
 						type="button"
 						onClick={onToggleTerminal}
 						title="Open a real terminal in this project — for running dev servers or recovering from things the agent can't fix"
-						className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors shrink-0 ${
+						className={`flex min-h-11 items-center gap-1.5 px-2 text-[9px] tracking-widest uppercase transition-colors shrink-0 md:min-h-0 md:px-0 ${
 							terminalOpen
 								? "text-primary border-b border-primary/50"
 								: "text-muted-foreground/40 hover:text-muted-foreground/70"
@@ -3957,7 +3958,7 @@ function ChatInputControls(props: ChatComposerProps) {
 					type="button"
 					onClick={() => fileInputRef.current?.click()}
 					disabled={wsStatus !== "connected"}
-					className="px-2 py-2 md:py-3 text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0 disabled:opacity-30"
+					className="flex min-h-11 min-w-11 shrink-0 items-center justify-center px-2 py-2 text-muted-foreground/45 transition-colors hover:text-muted-foreground disabled:opacity-30 md:min-h-0 md:min-w-0 md:py-3"
 					aria-label="Attach file"
 					title="Attach file"
 				>
@@ -3965,7 +3966,7 @@ function ChatInputControls(props: ChatComposerProps) {
 				</button>
 				<ObsidianActiveNoteButton
 					onAdd={props.vaultPicker.addVaultReference}
-					className="px-2 py-2 md:py-3"
+					className="flex min-h-11 min-w-11 items-center justify-center px-2 py-2 md:min-h-0 md:min-w-0 md:py-3"
 				/>
 				<ChatVoiceControls {...props} />
 				{sessionFork.canFork && (
@@ -3973,7 +3974,7 @@ function ChatInputControls(props: ChatComposerProps) {
 						type="button"
 						onClick={() => sessionFork.fork()}
 						disabled={sessionFork.forking}
-						className="px-2 py-2 md:py-3 text-muted-foreground/45 hover:text-muted-foreground disabled:opacity-40 transition-colors shrink-0"
+						className="flex min-h-11 min-w-11 shrink-0 items-center justify-center px-2 py-2 text-muted-foreground/45 transition-colors hover:text-muted-foreground disabled:opacity-40 md:min-h-0 md:min-w-0 md:py-3"
 						aria-label="Fork session"
 						title="Fork this session into a new one"
 					>
@@ -4020,7 +4021,7 @@ function ChatVoiceControls(props: ChatVoiceControlsProps) {
 					(!voice.ready && voice.phase !== "recording") ||
 					processing
 				}
-				className={`px-2 py-2 md:py-3 transition-colors shrink-0 disabled:opacity-30 ${voice.phase === "recording" ? "text-destructive" : "text-muted-foreground/45 hover:text-muted-foreground"}`}
+				className={`flex min-h-11 min-w-11 shrink-0 items-center justify-center px-2 py-2 transition-colors disabled:opacity-30 md:min-h-0 md:min-w-0 md:py-3 ${voice.phase === "recording" ? "text-destructive" : "text-muted-foreground/45 hover:text-muted-foreground"}`}
 				aria-label={
 					voice.phase === "recording" ? "Stop recording" : actionLabel
 				}
@@ -4036,7 +4037,7 @@ function ChatVoiceControls(props: ChatVoiceControlsProps) {
 				<button
 					type="button"
 					onClick={voice.cancel}
-					className="px-2 py-2 md:py-3 text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0"
+					className="flex min-h-11 min-w-11 shrink-0 items-center justify-center px-2 py-2 text-muted-foreground/45 transition-colors hover:text-muted-foreground md:min-h-0 md:min-w-0 md:py-3"
 					aria-label="Cancel recording"
 					title="Cancel recording"
 				>
@@ -4055,7 +4056,7 @@ function ChatVoiceControls(props: ChatVoiceControlsProps) {
 						isRunning ||
 						voice.liveUnavailable !== null
 					}
-					className={`px-2 py-2 md:py-3 transition-colors shrink-0 disabled:opacity-30 ${
+					className={`flex min-h-11 min-w-11 shrink-0 items-center justify-center px-2 py-2 transition-colors disabled:opacity-30 md:min-h-0 md:min-w-0 md:py-3 ${
 						liveActive
 							? "text-primary"
 							: "text-muted-foreground/45 hover:text-muted-foreground"
@@ -4355,7 +4356,7 @@ function ChatActionButtons({
 					<button
 						type="button"
 						onClick={() => send({ type: "abort" })}
-						className="order-7 w-full px-2 md:w-auto md:px-4 py-2 md:py-3 text-[10px] tracking-widest text-destructive/70 hover:text-destructive transition-colors shrink-0 uppercase font-bold"
+						className="order-7 min-h-11 w-full shrink-0 px-2 py-2 text-[10px] font-bold tracking-widest text-destructive/70 uppercase transition-colors hover:text-destructive md:min-h-0 md:w-auto md:px-4 md:py-3"
 						aria-label="Abort"
 					>
 						STOP
@@ -4364,7 +4365,7 @@ function ChatActionButtons({
 						type="button"
 						onClick={() => handleSend()}
 						disabled={!canQueue}
-						className="order-8 w-full px-2 md:w-auto md:px-4 py-2 md:py-3 text-[10px] tracking-widest text-primary/70 hover:text-primary disabled:text-muted-foreground/35 transition-colors shrink-0 uppercase font-bold"
+						className="order-8 min-h-11 w-full shrink-0 px-2 py-2 text-[10px] font-bold tracking-widest text-primary/70 uppercase transition-colors hover:text-primary disabled:text-muted-foreground/35 md:min-h-0 md:w-auto md:px-4 md:py-3"
 						aria-label={
 							nativeGoalCommand ? "Run goal command" : "Queue message"
 						}
@@ -4377,7 +4378,7 @@ function ChatActionButtons({
 					type="button"
 					onClick={() => handleSend()}
 					disabled={!canSend}
-					className="order-8 self-start px-4 py-2 md:py-3 text-[10px] tracking-widest text-primary/70 hover:text-primary disabled:text-muted-foreground/35 transition-colors shrink-0 uppercase font-bold"
+					className="order-8 min-h-11 self-start shrink-0 px-4 py-2 text-[10px] font-bold tracking-widest text-primary/70 uppercase transition-colors hover:text-primary disabled:text-muted-foreground/35 md:min-h-0 md:py-3"
 					aria-label="Send"
 				>
 					RUN
@@ -4387,7 +4388,7 @@ function ChatActionButtons({
 				<button
 					type="button"
 					onClick={handleClear}
-					className="order-9 px-3 py-2 md:py-3 text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0"
+					className="order-9 flex min-h-11 min-w-11 shrink-0 items-center justify-center px-3 py-2 text-muted-foreground/45 transition-colors hover:text-muted-foreground md:min-h-0 md:min-w-0 md:py-3"
 					aria-label="New chat"
 				>
 					<SquarePen className="w-3.5 h-3.5" />

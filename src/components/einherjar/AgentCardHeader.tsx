@@ -80,7 +80,8 @@ export function AgentCardHeader({
 						type="button"
 						onClick={() => onModeChange("cwd")}
 						title="Run in agent's directory"
-						className={`text-[9px] tracking-widest px-2.5 py-1.5 sm:px-1.5 sm:py-0.5 uppercase transition-colors ${
+						aria-pressed={agent.mode === "cwd"}
+						className={`min-h-11 px-2.5 py-1.5 text-[9px] tracking-widest uppercase transition-colors sm:min-h-0 sm:px-1.5 sm:py-0.5 ${
 							agent.mode === "cwd"
 								? "bg-primary/10 text-primary"
 								: "text-muted-foreground/40 hover:text-foreground"
@@ -92,7 +93,8 @@ export function AgentCardHeader({
 						type="button"
 						onClick={() => onModeChange("context")}
 						title="Stay in vault, load AGENTS.md or CLAUDE.md as persona"
-						className={`text-[9px] tracking-widest px-2.5 py-1.5 sm:px-1.5 sm:py-0.5 uppercase transition-colors border-l border-border/50 ${
+						aria-pressed={agent.mode === "context"}
+						className={`min-h-11 border-l border-border/50 px-2.5 py-1.5 text-[9px] tracking-widest uppercase transition-colors sm:min-h-0 sm:px-1.5 sm:py-0.5 ${
 							agent.mode === "context"
 								? "bg-primary/10 text-primary"
 								: "text-muted-foreground/40 hover:text-foreground"
@@ -105,7 +107,8 @@ export function AgentCardHeader({
 					type="button"
 					onClick={onChat}
 					title="Chat with agent"
-					className="w-9 h-9 flex items-center justify-center text-muted-foreground/40 hover:text-primary transition-colors"
+					aria-label="Chat with agent"
+					className="flex h-11 w-11 items-center justify-center text-muted-foreground/40 transition-colors hover:text-primary sm:h-9 sm:w-9"
 				>
 					<MessageSquare className="w-3.5 h-3.5" />
 				</button>
@@ -113,7 +116,8 @@ export function AgentCardHeader({
 					type="button"
 					onClick={onEdit}
 					title="Edit agent"
-					className="w-9 h-9 flex items-center justify-center text-muted-foreground/40 hover:text-primary transition-colors"
+					aria-label="Edit agent"
+					className="flex h-11 w-11 items-center justify-center text-muted-foreground/40 transition-colors hover:text-primary sm:h-9 sm:w-9"
 				>
 					<Pencil className="w-3.5 h-3.5" />
 				</button>
@@ -127,7 +131,8 @@ export function AgentCardHeader({
 						aria-label={
 							showMcp ? "Hide agent MCP servers" : "Show agent MCP servers"
 						}
-						className={`w-9 h-9 flex items-center justify-center transition-colors ${
+						aria-pressed={showMcp}
+						className={`flex h-11 w-11 items-center justify-center transition-colors sm:h-9 sm:w-9 ${
 							showMcp
 								? "text-primary"
 								: "text-muted-foreground/40 hover:text-primary"
@@ -143,7 +148,9 @@ export function AgentCardHeader({
 						<button
 							type="button"
 							onClick={open}
-							className="w-9 h-9 flex items-center justify-center text-muted-foreground/30 hover:text-destructive transition-colors text-base leading-none"
+							aria-label={`Remove ${agent.name}`}
+							title={`Remove ${agent.name}`}
+							className="flex h-11 w-11 items-center justify-center text-base leading-none text-muted-foreground/30 transition-colors hover:text-destructive sm:h-9 sm:w-9"
 						>
 							×
 						</button>

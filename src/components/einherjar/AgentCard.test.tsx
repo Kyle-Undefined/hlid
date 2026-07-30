@@ -206,7 +206,7 @@ describe("AgentCard edit options", () => {
 		const onRemove = vi.fn();
 		renderCard(makeAgent(), [claudeProvider], { onRemove });
 
-		fireEvent.click(screen.getByText("×"));
+		fireEvent.click(screen.getByRole("button", { name: "Remove Foo" }));
 		expect(onRemove).not.toHaveBeenCalled();
 		fireEvent.click(screen.getByText("confirm"));
 		expect(onRemove).toHaveBeenCalledOnce();
@@ -249,7 +249,7 @@ describe("AgentCard edit options", () => {
 		expect(screen.getByTitle("Run in agent's directory")).not.toBeNull();
 		expect(screen.queryByTitle(/Run claude/i)).toBeNull();
 		fireEvent.click(screen.getByText("CTX"));
-		fireEvent.click(screen.getByTitle("Chat with agent"));
+		fireEvent.click(screen.getByRole("button", { name: "Chat with agent" }));
 
 		expect(onModeChange).toHaveBeenCalledWith("context");
 		expect(onChat).toHaveBeenCalledOnce();

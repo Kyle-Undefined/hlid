@@ -30,6 +30,7 @@ function forwarder(
 		authenticate?: (request: Request) => Promise<boolean>;
 		forward?: (input: string, init: RequestInit) => Promise<Response>;
 		apiForward?: (input: string, init: RequestInit) => Promise<Response>;
+		devPort?: string | null;
 	} = {},
 ) {
 	return createTlsHttpForwarder({
@@ -40,6 +41,7 @@ function forwarder(
 		authenticate: overrides.authenticate ?? (async () => true),
 		forward: overrides.forward ?? (async () => new Response("ok")),
 		apiForward: overrides.apiForward,
+		devPort: overrides.devPort ?? null,
 	});
 }
 
@@ -74,6 +76,81 @@ describe("TLS HTTP proxy limits", () => {
 
 		expect(response.status).toBe(401);
 		expect(await response.json()).toEqual({ error: "Unauthorized" });
+	});
+
+	it("allows only Vite's GET/HEAD development module graph without a session", async () => {
+		const authenticate = vi.fn(async () => false);
+		const forward = vi.fn(async () => new Response("module"));
+		const handle = forwarder({
+			authenticate,
+			forward,
+			devPort: "4197",
+		});
+		const paths = [
+			"/src/styles.css",
+			"/@id/virtual:tanstack-start-dev-client-entry",
+			"/@tanstack-start/styles.css?routes=__root__%2C%2Flogin",
+			"/@vite/client",
+			"/@react-refresh",
+			"/node_modules/.vite/deps/react.js?v=1",
+			"/node_modules/@tanstack/react-start/dist/esm/client.js?v=1",
+			"/fonts/JetBrainsMono.woff2",
+			"/package.json",
+		];
+
+		for (const path of paths) {
+			const response = await handle(new Request(`https://hlid.test${path}`));
+			expect(response.status, path).toBe(200);
+		}
+		const headResponse = await handle(
+			new Request("https://hlid.test/src/styles.css", { method: "HEAD" }),
+		);
+
+		expect(headResponse.status).toBe(200);
+		expect(authenticate).not.toHaveBeenCalled();
+		expect(forward).toHaveBeenCalledTimes(paths.length + 1);
+	});
+
+	it("keeps dev assets authenticated when HLID_DEV_PORT is absent", async () => {
+		const forward = vi.fn(async () => new Response("unexpected"));
+		const response = await forwarder({
+			authenticate: async () => false,
+			forward,
+			devPort: null,
+		})(new Request("https://hlid.test/src/styles.css"));
+
+		expect(response.status).toBe(401);
+		expect(forward).not.toHaveBeenCalled();
+	});
+
+	it("does not expose private, mutation, or unrelated virtual routes in dev", async () => {
+		const forward = vi.fn(async () => new Response("unexpected"));
+		const handle = forwarder({
+			authenticate: async () => false,
+			forward,
+			devPort: "4197",
+		});
+		const responses = await Promise.all([
+			handle(new Request("https://hlid.test/api/config")),
+			handle(
+				new Request("https://hlid.test/_serverFn/private", {
+					method: "POST",
+					body: "{}",
+				}),
+			),
+			handle(
+				new Request("https://hlid.test/src/styles.css", {
+					method: "POST",
+					body: "mutation",
+				}),
+			),
+			handle(new Request("https://hlid.test/@id/virtual:private-module")),
+		]);
+
+		expect(responses.map((response) => response.status)).toEqual([
+			401, 401, 401, 401,
+		]);
+		expect(forward).not.toHaveBeenCalled();
 	});
 
 	it("authenticates private paths before reading or forwarding their bodies", async () => {

@@ -37,6 +37,18 @@ const PREVIEW_SELECTION_TTL_MS = 4 * 60 * 60 * 1_000;
 const MAX_REMEMBERED_PREVIEW_CLIENTS = 64;
 const PREVIEW_RELAY_PATH =
 	/^\/api\/project-previews\/[0-9a-f-]+\/relay(?:\/|$)/i;
+const VITE_DEV_ASSET_PREFIXES = [
+	"/@vite/",
+	"/src/",
+	"/node_modules/",
+	"/fonts/",
+] as const;
+const VITE_DEV_ASSET_PATHS = new Set([
+	"/@id/virtual:tanstack-start-dev-client-entry",
+	"/@react-refresh",
+	"/@tanstack-start/styles.css",
+	"/package.json",
+]);
 const observeTlsForward = createRequestObserver({
 	scope: "tls-proxy",
 	requestName: (request) => {
@@ -73,7 +85,26 @@ type HttpForwarderOptions = {
 	forward?: (input: string, init: RequestInit) => Promise<Response>;
 	apiForward?: (input: string, init: RequestInit) => Promise<Response>;
 	forwardHeaders?: Record<string, string>;
+	/** Test override; production derives this exclusively from HLID_DEV_PORT. */
+	devPort?: string | null;
 };
+
+function isPublicViteDevAssetRequest(
+	request: Request,
+	pathname: string,
+	devPort: string | null | undefined,
+): boolean {
+	if (
+		!devPort?.trim() ||
+		(request.method !== "GET" && request.method !== "HEAD")
+	) {
+		return false;
+	}
+	return (
+		VITE_DEV_ASSET_PATHS.has(pathname) ||
+		VITE_DEV_ASSET_PREFIXES.some((prefix) => pathname.startsWith(prefix))
+	);
+}
 
 function buildForwardHeaders(
 	request: Request,
@@ -190,12 +221,16 @@ export function createTlsHttpForwarder({
 	forward = fetch,
 	apiForward = fetch,
 	forwardHeaders,
+	devPort = process.env.HLID_DEV_PORT,
 }: HttpForwarderOptions): (req: Request, peerIp?: string) => Promise<Response> {
 	const gate = createConcurrencyGate(maxConcurrent);
 
 	return async (req, peerIp) => {
 		const url = new URL(req.url);
-		if (!isPublicPath(url.pathname) && !(await authenticate(req))) {
+		const publicRequest =
+			isPublicPath(url.pathname) ||
+			isPublicViteDevAssetRequest(req, url.pathname, devPort);
+		if (!publicRequest && !(await authenticate(req))) {
 			return unauthenticatedResponse(req);
 		}
 
@@ -280,6 +315,16 @@ function createTlsWebSocketHandlers(internalToken: string) {
 	});
 }
 
+function isHlidUiWebSocketPath(pathname: string): boolean {
+	return pathname === "/ws" || pathname.startsWith("/ws/");
+}
+
+function viteHmrProtocols(request: Request): ["vite-hmr"] | null {
+	return request.headers.get("sec-websocket-protocol")?.trim() === "vite-hmr"
+		? ["vite-hmr"]
+		: null;
+}
+
 export function startTlsProxy({
 	tlsPort,
 	uiPort,
@@ -298,6 +343,7 @@ export function startTlsProxy({
 	const san = x509.subjectAltName ?? "";
 	const dnsSan = san.split(/,\s*/).find((s) => s.startsWith("DNS:"));
 	const tlsHostname = dnsSan ? dnsSan.slice(4) : "localhost";
+	const viteDevEnabled = Boolean(process.env.HLID_DEV_PORT?.trim());
 	const forwardHttp = createTlsHttpForwarder({
 		uiPort,
 		apiPort,
@@ -326,6 +372,34 @@ export function startTlsProxy({
 				}
 
 				const url = new URL(req.url);
+				const viteProtocols =
+					viteDevEnabled &&
+					req.headers.get("upgrade")?.toLowerCase() === "websocket" &&
+					!isHlidUiWebSocketPath(url.pathname)
+						? viteHmrProtocols(req)
+						: null;
+				if (viteProtocols) {
+					if (
+						!isAllowedOriginHeader(
+							req.headers.get("origin"),
+							localNetworkAccess,
+						)
+					) {
+						return new Response("Forbidden", { status: 403 });
+					}
+					const upgraded = server.upgrade(req, {
+						data: {
+							wsTarget: `ws://127.0.0.1:${uiPort}${url.pathname}${url.search}`,
+							back: null,
+							queue: [],
+							protocols: viteProtocols,
+						},
+					});
+					if (!upgraded) {
+						return new Response("WebSocket upgrade failed", { status: 500 });
+					}
+					return undefined;
+				}
 				const wsResponse = await handleUiWsUpgrade(req, server, url, {
 					wsPort,
 					internalToken,

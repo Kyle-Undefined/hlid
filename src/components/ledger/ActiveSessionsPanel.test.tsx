@@ -107,7 +107,12 @@ describe("ActiveSessionsPanel", () => {
 		render(
 			<ActiveSessionsPanel sessions={[]} onStop={vi.fn()} onClose={vi.fn()} />,
 		);
-		expect(screen.getByText(/no active sessions|all quiet/i)).toBeDefined();
+		const status = screen.getByRole("status", {
+			name: "No active sessions",
+		});
+		expect(status.textContent).toMatch(/live sessions.*all quiet/i);
+		expect(status.className).toContain("min-h-10");
+		expect(status.className).not.toContain("py-16");
 	});
 
 	it("does NOT show empty-state when sessions exist", () => {

@@ -136,7 +136,11 @@ describe("vault route", () => {
 		renderVault();
 
 		expect(screen.getByRole("heading", { name: "Inbox" })).toBeTruthy();
-		expect(screen.getByText("notes:1::inbox is empty")).toBeTruthy();
+		expect(
+			screen.getByText(
+				"notes:1::Inbox is empty. Add notes to the configured Inbox folder in Obsidian.",
+			),
+		).toBeTruthy();
 		expect(
 			screen
 				.getByRole("button", { name: "INBOX1" })
@@ -146,14 +150,42 @@ describe("vault route", () => {
 
 	it.each([
 		["projects", "Projects", "projects:1::default"],
-		["wiki_folder", "Wiki", "projects:1::wiki is empty"],
+		[
+			"wiki_folder",
+			"Wiki",
+			"projects:1::Wiki is empty. Add pages to the configured Wiki folder in Obsidian.",
+		],
 		["skills", "Skills", "skills:1:"],
-		["memory", "Memory", "notes:1::nothing in memory yet"],
-		["raw", "Raw", "notes:1::raw folder is empty"],
-		["areas", "Areas", "groups:1::no areas found"],
-		["resources", "Resources", "groups:1::no resources found"],
-		["archive", "Archive", "projects:1::archive is empty"],
-		["outputs", "Outputs", "notes:1::no outputs yet"],
+		[
+			"memory",
+			"Memory",
+			"notes:1::Nothing in memory yet. Saved memory notes will appear here.",
+		],
+		[
+			"raw",
+			"Raw",
+			"notes:1::Raw is empty. Add unprocessed source notes to the configured Raw folder in Obsidian.",
+		],
+		[
+			"areas",
+			"Areas",
+			"groups:1::No areas found. Add notes to the configured Areas folder in Obsidian.",
+		],
+		[
+			"resources",
+			"Resources",
+			"groups:1::No resources found. Add reference notes to the configured Resources folder in Obsidian.",
+		],
+		[
+			"archive",
+			"Archive",
+			"projects:1::Archive is empty. Finished or inactive notes moved there will appear here.",
+		],
+		[
+			"outputs",
+			"Outputs",
+			"notes:1::No outputs yet. Generated documents saved to Outputs will appear here.",
+		],
 	])("renders the %s tab with its configured data", (tab, heading, content) => {
 		testState.search = { tab };
 		renderVault();
@@ -169,7 +201,9 @@ describe("vault route", () => {
 			target: { value: "architecture" },
 		});
 		expect(
-			screen.getByText("notes:1:architecture:nothing in memory yet"),
+			screen.getByText(
+				"notes:1:architecture:Nothing in memory yet. Saved memory notes will appear here.",
+			),
 		).toBeTruthy();
 
 		fireEvent.change(screen.getByRole("combobox", { name: "Vault category" }), {
@@ -178,7 +212,11 @@ describe("vault route", () => {
 		expect(testState.navigate).toHaveBeenCalledWith({
 			search: { tab: "projects" },
 		});
-		expect(screen.getByText("notes:1::nothing in memory yet")).toBeTruthy();
+		expect(
+			screen.getByText(
+				"notes:1::Nothing in memory yet. Saved memory notes will appear here.",
+			),
+		).toBeTruthy();
 	});
 
 	it("starts a selected skill in Raven with the same queued and sent prompt", () => {

@@ -13,6 +13,7 @@ import {
 	resetDbClientForTesting,
 } from "./dbClient";
 import {
+	getSsrDevInternalApiBase,
 	registerInternalApiBase,
 	registerInternalApiHandler,
 	resetInternalApiBaseForTesting,
@@ -33,6 +34,7 @@ describe("internal API client", () => {
 	afterEach(() => {
 		resetInternalApiBaseForTesting();
 		resetInternalApiHandlerForTesting();
+		vi.unstubAllEnvs();
 		vi.unstubAllGlobals();
 		vi.restoreAllMocks();
 	});
@@ -61,6 +63,25 @@ describe("internal API client", () => {
 		expect(fetchMock).toHaveBeenCalledWith(
 			"http://127.0.0.1:4311/db/value",
 			expect.any(Object),
+		);
+	});
+
+	it("uses the adjacent API port during standalone Vite SSR", async () => {
+		vi.stubEnv("HLID_DEV_PORT", "4187");
+		fetchMock.mockResolvedValueOnce(Response.json({ ok: true }));
+
+		await dbFetch("/db/value");
+
+		expect(fetchMock).toHaveBeenCalledWith(
+			"http://127.0.0.1:4188/db/value",
+			expect.any(Object),
+		);
+	});
+
+	it("never applies the preview port override in browser code", () => {
+		expect(getSsrDevInternalApiBase(false, "4187")).toBeNull();
+		expect(getSsrDevInternalApiBase(true, "4187")).toBe(
+			"http://127.0.0.1:4188",
 		);
 	});
 

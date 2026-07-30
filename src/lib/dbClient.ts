@@ -3,6 +3,7 @@ import { safeRequestPath } from "./httpDiagnostics";
 import {
 	getInternalApiBase,
 	getInternalApiHandler,
+	getSsrDevInternalApiBase,
 } from "./internalApiTransport";
 
 let _base: string | null = null;
@@ -72,8 +73,13 @@ async function getBase(): Promise<string> {
 		if (registeredBase) {
 			_base = registeredBase;
 		} else {
-			const { server } = await getConfig();
-			_base = `http://127.0.0.1:${server.port + 1}`;
+			const ssrDevBase = getSsrDevInternalApiBase(import.meta.env.SSR);
+			if (ssrDevBase) {
+				_base = ssrDevBase;
+			} else {
+				const { server } = await getConfig();
+				_base = `http://127.0.0.1:${server.port + 1}`;
+			}
 		}
 	}
 	return _base;

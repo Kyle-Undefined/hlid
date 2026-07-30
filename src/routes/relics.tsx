@@ -342,6 +342,14 @@ function filtersActive(filters: Filters): boolean {
 	);
 }
 
+function hiddenFilterCount(filters: Filters): number {
+	return (
+		Number(filters.type !== "all") +
+		Number(filters.category !== "all") +
+		Number(filters.session !== null)
+	);
+}
+
 export async function deleteRelicRows(
 	ids: Iterable<string>,
 	rows: AttachmentRow[],
@@ -563,7 +571,7 @@ function useRelicObsidianActions(list: RelicsList, request: typeof fetch) {
 function RelicsSearchBox({ list }: { list: RelicsList }) {
 	const { searchText, setSearchText, applyFilters, filters } = list;
 	return (
-		<div className="flex items-center border border-border">
+		<div className="flex min-h-11 min-w-0 flex-1 items-center border border-border md:min-h-0 md:flex-none">
 			<Search className="w-3 h-3 mx-2 text-muted-foreground/60" />
 			<input
 				type="text"
@@ -575,7 +583,7 @@ function RelicsSearchBox({ list }: { list: RelicsList }) {
 				}}
 				placeholder="filename…"
 				title="Filters as you type"
-				className="bg-transparent text-[11px] py-1.5 pr-1 w-28 md:w-44 focus:outline-none"
+				className="min-w-0 flex-1 bg-transparent py-1.5 pr-1 text-[11px] focus:outline-none md:w-44 md:flex-none"
 			/>
 			{(searchText || filters.search) && (
 				<button
@@ -594,9 +602,162 @@ function RelicsSearchBox({ list }: { list: RelicsList }) {
 	);
 }
 
-function RelicsHeader({ list }: { list: RelicsList }) {
-	const { total, totalBytes, busy, error, reload, filters, applyFilters } =
-		list;
+function SessionFilter({
+	filters,
+	applyFilters,
+	mobile = false,
+}: {
+	filters: Filters;
+	applyFilters: (patch: Partial<Filters>) => void;
+	mobile?: boolean;
+}) {
+	if (!filters.session) return null;
+	return (
+		<span
+			className={`inline-flex items-center gap-1.5 border border-primary/50 text-[9px] tracking-widest text-primary uppercase ${
+				mobile ? "min-h-11 px-3" : "px-2.5 py-1"
+			}`}
+		>
+			session
+			<span className="font-mono normal-case tracking-normal">
+				{filters.session.slice(0, 12)}
+			</span>
+			<button
+				type="button"
+				onClick={() => applyFilters({ session: null })}
+				aria-label="Clear session filter"
+				className="inline-flex min-h-7 min-w-7 items-center justify-center hover:text-foreground"
+			>
+				<X className="w-3 h-3" />
+			</button>
+		</span>
+	);
+}
+
+function DesktopRelicsFilters({ list }: { list: RelicsList }) {
+	const { filters, applyFilters } = list;
+	return (
+		<div className="mt-3 hidden items-center gap-1.5 md:flex md:flex-wrap">
+			{TYPE_FILTERS.map(({ value, label }) => (
+				<button
+					key={value}
+					type="button"
+					onClick={() => applyFilters({ type: value })}
+					aria-pressed={filters.type === value}
+					className={`px-2.5 py-1 text-[9px] tracking-widest uppercase border transition-colors ${
+						filters.type === value
+							? "border-primary text-primary"
+							: "border-border text-muted-foreground hover:text-foreground"
+					}`}
+				>
+					{label}
+				</button>
+			))}
+			<span className="mx-1 h-4 border-l border-border" aria-hidden="true" />
+			{CATEGORY_FILTERS.map(({ value, label }) => (
+				<button
+					key={value}
+					type="button"
+					onClick={() => applyFilters({ category: value })}
+					aria-pressed={filters.category === value}
+					className={`px-2.5 py-1 text-[9px] tracking-widest uppercase border transition-colors ${
+						filters.category === value
+							? "border-primary text-primary"
+							: "border-border text-muted-foreground hover:text-foreground"
+					}`}
+				>
+					{label}
+				</button>
+			))}
+			<SessionFilter filters={filters} applyFilters={applyFilters} />
+		</div>
+	);
+}
+
+function MobileRelicsFilters({
+	list,
+	open,
+}: {
+	list: RelicsList;
+	open: boolean;
+}) {
+	const { filters, applyFilters, clearFilters } = list;
+	if (!open) return null;
+	const optionClass = (selected: boolean) =>
+		`inline-flex min-h-11 items-center justify-center border px-3 text-[9px] tracking-widest uppercase transition-colors ${
+			selected
+				? "border-primary text-primary"
+				: "border-border text-muted-foreground hover:text-foreground"
+		}`;
+	return (
+		<div
+			id="mobile-relic-filters"
+			className="mt-3 border border-border bg-secondary/10 p-3 md:hidden"
+		>
+			<fieldset>
+				<legend className="mb-2 text-[9px] tracking-widest text-muted-foreground uppercase">
+					File type
+				</legend>
+				<div className="flex flex-wrap gap-2">
+					{TYPE_FILTERS.map(({ value, label }) => (
+						<button
+							key={value}
+							type="button"
+							onClick={() => applyFilters({ type: value })}
+							aria-pressed={filters.type === value}
+							className={optionClass(filters.type === value)}
+						>
+							{label}
+						</button>
+					))}
+				</div>
+			</fieldset>
+			<fieldset className="mt-3">
+				<legend className="mb-2 text-[9px] tracking-widest text-muted-foreground uppercase">
+					Origin
+				</legend>
+				<div className="flex flex-wrap gap-2">
+					{CATEGORY_FILTERS.map(({ value, label }) => (
+						<button
+							key={value}
+							type="button"
+							onClick={() => applyFilters({ category: value })}
+							aria-pressed={filters.category === value}
+							className={optionClass(filters.category === value)}
+						>
+							{label}
+						</button>
+					))}
+				</div>
+			</fieldset>
+			{filters.session && (
+				<div className="mt-3">
+					<SessionFilter filters={filters} applyFilters={applyFilters} mobile />
+				</div>
+			)}
+			{filtersActive(filters) && (
+				<button
+					type="button"
+					onClick={clearFilters}
+					className="mt-3 min-h-11 border border-border px-3 text-[9px] tracking-widest text-muted-foreground uppercase hover:text-foreground"
+				>
+					Clear all filters
+				</button>
+			)}
+		</div>
+	);
+}
+
+function RelicsHeader({
+	list,
+	isDesktop,
+}: {
+	list: RelicsList;
+	isDesktop: boolean;
+}) {
+	const { total, totalBytes, busy, error, reload, filters } = list;
+	const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+	const mobileFilterCount = hiddenFilterCount(filters);
 	return (
 		<div className="px-5 py-4 border-b border-border">
 			<div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -608,67 +769,45 @@ function RelicsHeader({ list }: { list: RelicsList }) {
 						{total} {total === 1 ? "file" : "files"} · {fmtBytes(totalBytes)}
 					</PrivacyMask>
 				</div>
-				<div className="flex items-center gap-2 flex-wrap">
+				<div className="flex min-w-0 items-center gap-2">
 					<RelicsSearchBox list={list} />
+					{!isDesktop && (
+						<button
+							type="button"
+							onClick={() => setMobileFiltersOpen((open) => !open)}
+							aria-label={
+								mobileFilterCount > 0
+									? `Filters, ${mobileFilterCount} active`
+									: "Filters"
+							}
+							aria-expanded={mobileFiltersOpen}
+							aria-controls="mobile-relic-filters"
+							className={`inline-flex min-h-11 shrink-0 items-center gap-1.5 border px-3 text-[9px] tracking-widest uppercase ${
+								mobileFilterCount > 0
+									? "border-primary text-primary"
+									: "border-border text-muted-foreground"
+							}`}
+						>
+							<ListFilter className="h-3.5 w-3.5" />
+							Filters
+							{mobileFilterCount > 0 && <span>{mobileFilterCount}</span>}
+						</button>
+					)}
 					<button
 						type="button"
 						onClick={() => void reload(1)}
 						disabled={busy}
-						className="px-3 py-1.5 text-[10px] tracking-widest text-muted-foreground hover:text-foreground border border-border uppercase disabled:opacity-30"
+						className="min-h-11 shrink-0 px-3 text-[10px] tracking-widest text-muted-foreground hover:text-foreground border border-border uppercase disabled:opacity-30 md:min-h-0 md:py-1.5"
 					>
 						Refresh
 					</button>
 				</div>
 			</div>
-			<div className="mt-3 flex items-center gap-1.5 flex-wrap">
-				{TYPE_FILTERS.map(({ value, label }) => (
-					<button
-						key={value}
-						type="button"
-						onClick={() => applyFilters({ type: value })}
-						aria-pressed={filters.type === value}
-						className={`px-2.5 py-1 text-[9px] tracking-widest uppercase border transition-colors ${
-							filters.type === value
-								? "border-primary text-primary"
-								: "border-border text-muted-foreground hover:text-foreground"
-						}`}
-					>
-						{label}
-					</button>
-				))}
-				<span className="mx-1 h-4 border-l border-border" aria-hidden="true" />
-				{CATEGORY_FILTERS.map(({ value, label }) => (
-					<button
-						key={value}
-						type="button"
-						onClick={() => applyFilters({ category: value })}
-						aria-pressed={filters.category === value}
-						className={`px-2.5 py-1 text-[9px] tracking-widest uppercase border transition-colors ${
-							filters.category === value
-								? "border-primary text-primary"
-								: "border-border text-muted-foreground hover:text-foreground"
-						}`}
-					>
-						{label}
-					</button>
-				))}
-				{filters.session && (
-					<span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[9px] tracking-widest uppercase border border-primary/50 text-primary">
-						session
-						<span className="font-mono normal-case tracking-normal">
-							{filters.session.slice(0, 12)}
-						</span>
-						<button
-							type="button"
-							onClick={() => applyFilters({ session: null })}
-							aria-label="Clear session filter"
-							className="hover:text-foreground"
-						>
-							<X className="w-3 h-3" />
-						</button>
-					</span>
-				)}
-			</div>
+			{isDesktop ? (
+				<DesktopRelicsFilters list={list} />
+			) : (
+				<MobileRelicsFilters list={list} open={mobileFiltersOpen} />
+			)}
 			{error && (
 				<div className="mt-2 text-[11px] text-destructive/80">{error}</div>
 			)}
@@ -1422,11 +1561,23 @@ function RelicRow({
 			</td>
 			<td className="px-3 py-2">
 				<div className="flex items-center gap-1.5">
-					{expanded ? (
-						<ChevronDown className="w-3 h-3 shrink-0 text-muted-foreground/50" />
-					) : (
-						<ChevronRight className="w-3 h-3 shrink-0 text-muted-foreground/50" />
-					)}
+					<button
+						type="button"
+						onClick={(event) => {
+							event.stopPropagation();
+							onToggleExpand();
+						}}
+						aria-expanded={expanded}
+						aria-controls={`relic-preview-${row.id}`}
+						aria-label={`${expanded ? "Hide" : "Show"} preview for ${row.filename}`}
+						className="inline-flex h-7 w-7 shrink-0 items-center justify-center text-muted-foreground/50 hover:text-foreground"
+					>
+						{expanded ? (
+							<ChevronDown className="w-3 h-3" />
+						) : (
+							<ChevronRight className="w-3 h-3" />
+						)}
+					</button>
 					<RelicThumb row={row} onView={onView} />
 					<RelicName row={row} onView={onView} variant="table" />
 					{row.category && (
@@ -1502,19 +1653,26 @@ function SortHeader({
 
 function EmptyState({ list }: { list: RelicsList }) {
 	if (!filtersActive(list.filters)) {
-		return <span className="text-muted-foreground/50">no relics</span>;
+		return (
+			<div className="space-y-1">
+				<p className="text-foreground/70">No relics yet.</p>
+				<p className="text-muted-foreground/50">
+					Artifacts from sessions and uploads will appear here.
+				</p>
+			</div>
+		);
 	}
 	return (
-		<span className="text-muted-foreground/50">
-			no relics match filters ·{" "}
+		<div className="space-y-2 text-muted-foreground/50">
+			<p>No relics match filters.</p>
 			<button
 				type="button"
 				onClick={list.clearFilters}
 				className="text-primary hover:text-primary/80 underline underline-offset-2"
 			>
-				clear filters
+				Clear filters
 			</button>
-		</span>
+		</div>
 	);
 }
 
@@ -1585,7 +1743,10 @@ function RelicsTable({
 								})}
 							/>
 							{expandedId === r.id && (
-								<tr className="border-b border-border/40 bg-secondary/20">
+								<tr
+									id={`relic-preview-${r.id}`}
+									className="border-b border-border/40 bg-secondary/20"
+								>
 									<td />
 									<td colSpan={6} className="px-4 py-4">
 										<PrivacyMask>
@@ -1763,7 +1924,7 @@ export function AttachmentsPage({
 
 	return (
 		<div className="h-full flex flex-col">
-			<RelicsHeader list={list} />
+			<RelicsHeader list={list} isDesktop={isDesktop} />
 			<NewRelicsPill list={list} />
 			{list.selected.size > 0 && (
 				<SelectionBar

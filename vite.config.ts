@@ -7,6 +7,7 @@ import viteReact from "@vitejs/plugin-react";
 import { parse } from "smol-toml";
 import { defineConfig, type Plugin } from "vite";
 import { isAllowedOrigin } from "./src/lib/allowedOrigin";
+import { resolveDevServerPort } from "./src/lib/devServerPort";
 
 type ServerConfig = {
 	tls_cert_path?: string;
@@ -44,7 +45,10 @@ function loadServerConfig(): ServerConfig {
 	}
 }
 
-function loadTls(server: ServerConfig): {
+function loadTls(
+	server: ServerConfig,
+	uiPort: number,
+): {
 	cert: Buffer;
 	key: Buffer;
 	wsPort: number;
@@ -54,7 +58,7 @@ function loadTls(server: ServerConfig): {
 	const keyPath = server.tls_key_path;
 	if (!certPath || !keyPath) return null;
 	try {
-		const wsPort = (server.port ?? 3000) + 1;
+		const wsPort = uiPort + 1;
 		const cert = readFileSync(resolve(certPath));
 		const key = readFileSync(resolve(keyPath));
 		// Extract hostname from cert SAN so Vite HMR knows the external host.
@@ -160,8 +164,9 @@ function swStampPlugin(): Plugin {
 
 // TLS only when HLID_TLS=1. Cert is valid for Tailscale host, not localhost.
 const serverCfg = loadServerConfig();
+const uiPort = resolveDevServerPort(serverCfg.port ?? 3000);
 const tls = /^1|true$/i.test(process.env.HLID_TLS ?? "")
-	? loadTls(serverCfg)
+	? loadTls(serverCfg, uiPort)
 	: null;
 
 const config = defineConfig({
@@ -220,6 +225,8 @@ const config = defineConfig({
 	],
 	server: {
 		host: bindHost(serverCfg.local_network_access ?? false),
+		port: uiPort,
+		strictPort: true,
 		allowedHosts: true,
 		// Plans and attachment relics are runtime data. Watching their short-lived
 		// create/move/delete cycle reloads Raven while the HTML modal is opening.
@@ -227,7 +234,7 @@ const config = defineConfig({
 		...(tls
 			? {
 					https: { cert: tls.cert, key: tls.key, ALPNProtocols: ["http/1.1"] },
-					hmr: { protocol: "wss", host: tls.hostname, clientPort: 3000 },
+					hmr: { protocol: "wss", host: tls.hostname, clientPort: uiPort },
 					// Proxy /ws to the plain-HTTP Bun server so WSS works without
 					// giving Bun a TLS cert (SSR server functions call localhost HTTP).
 					proxy: {

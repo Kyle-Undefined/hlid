@@ -74,12 +74,14 @@ export function McpIndicator({
 	align = "right",
 	label = "MCP runtime · active provider",
 	openSignal,
+	buttonClassName = "",
 }: {
 	servers: McpServerEntry[];
 	align?: "left" | "right" | "mobile-left";
 	label?: string;
 	/** Increment to open the scoped MCP popover from a command surface. */
 	openSignal?: number;
+	buttonClassName?: string;
 }) {
 	const [open, setOpen] = useState(false);
 	const [popoverPosition, setPopoverPosition] = useState<{
@@ -166,7 +168,7 @@ export function McpIndicator({
 			<button
 				type="button"
 				onClick={() => setOpen((value) => !value)}
-				className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors ${open ? "text-primary" : "text-muted-foreground/50 hover:text-foreground/75"}`}
+				className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors ${open ? "text-primary" : "text-muted-foreground/50 hover:text-foreground/75"} ${buttonClassName}`}
 				aria-expanded={open}
 				aria-pressed={open}
 				aria-label="MCP server status"

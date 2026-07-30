@@ -99,7 +99,10 @@ export function FolderGroupsTab({
 
 	if (groups.length === 0) {
 		return (
-			<VaultEmptyState>{emptyLabel ?? "nothing here yet"}</VaultEmptyState>
+			<VaultEmptyState>
+				{emptyLabel ??
+					"Nothing here yet. Notes added to the configured folder will appear here."}
+			</VaultEmptyState>
 		);
 	}
 
@@ -153,7 +156,10 @@ export function NotesTab({
 
 	if (notes.length === 0) {
 		return (
-			<VaultEmptyState>{emptyLabel ?? "nothing here yet"}</VaultEmptyState>
+			<VaultEmptyState>
+				{emptyLabel ??
+					"Nothing here yet. Notes added to the configured folder will appear here."}
+			</VaultEmptyState>
 		);
 	}
 

@@ -185,6 +185,16 @@ bun run dev:all
 `dev:all` starts the `Vite` UI and the `Bun` API/WebSocket server. The `TLS`
 proxy joins in when certificate paths exist in `hlid.config.toml`.
 
+For an isolated Hlid Project Preview, choose a free UI port. The API/WebSocket
+server uses the following port automatically:
+
+```bash
+bun run dev:preview -- --port 4177
+```
+
+Pass the same UI port to Project Preview. This avoids contending with an
+installed Hlid or another source checkout on port `3000`.
+
 The useful checks are pretty straightforward:
 
 ```bash

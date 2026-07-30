@@ -229,7 +229,8 @@ export function ProjectsTab({
 	if (initial.length === 0) {
 		return (
 			<VaultEmptyState>
-				{emptyLabel ?? "no projects found, set a projects folder in config"}
+				{emptyLabel ??
+					"No projects found. Add project notes to the configured Projects folder in Obsidian."}
 			</VaultEmptyState>
 		);
 	}

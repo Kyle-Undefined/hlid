@@ -102,11 +102,21 @@ export function ActiveSessionsPanel({
 
 	if (ordered.length === 0) {
 		return (
-			<div className="flex flex-col items-center justify-center py-16 gap-2">
-				<p className="text-[10px] tracking-widest text-muted-foreground/40 uppercase">
-					No active sessions — all quiet.
-				</p>
-			</div>
+			<output
+				aria-label="No active sessions"
+				className="flex min-h-10 items-center gap-3 border-b border-border bg-background/95 px-4"
+			>
+				<span className="text-[9px] tracking-widest text-foreground/80 uppercase">
+					Live sessions
+				</span>
+				<span
+					className="h-1.5 w-1.5 rounded-full bg-muted-foreground/25"
+					aria-hidden="true"
+				/>
+				<span className="text-[9px] tracking-widest text-muted-foreground/50 uppercase">
+					All quiet
+				</span>
+			</output>
 		);
 	}
 	if (!isDesktop) {

@@ -190,7 +190,7 @@ function VaultPage() {
 						{tab === "wiki_folder" && (
 							<ProjectsTab
 								initial={wikiPages}
-								emptyLabel="wiki is empty"
+								emptyLabel="Wiki is empty. Add pages to the configured Wiki folder in Obsidian."
 								query={query}
 							/>
 						)}
@@ -205,49 +205,49 @@ function VaultPage() {
 						{tab === "memory" && (
 							<NotesTab
 								notes={memory}
-								emptyLabel="nothing in memory yet"
+								emptyLabel="Nothing in memory yet. Saved memory notes will appear here."
 								query={query}
 							/>
 						)}
 						{tab === "inbox" && (
 							<NotesTab
 								notes={inbox}
-								emptyLabel="inbox is empty"
+								emptyLabel="Inbox is empty. Add notes to the configured Inbox folder in Obsidian."
 								query={query}
 							/>
 						)}
 						{tab === "raw" && (
 							<NotesTab
 								notes={raw}
-								emptyLabel="raw folder is empty"
+								emptyLabel="Raw is empty. Add unprocessed source notes to the configured Raw folder in Obsidian."
 								query={query}
 							/>
 						)}
 						{tab === "areas" && (
 							<FolderGroupsTab
 								groups={areas}
-								emptyLabel="no areas found"
+								emptyLabel="No areas found. Add notes to the configured Areas folder in Obsidian."
 								query={query}
 							/>
 						)}
 						{tab === "resources" && (
 							<FolderGroupsTab
 								groups={resources}
-								emptyLabel="no resources found"
+								emptyLabel="No resources found. Add reference notes to the configured Resources folder in Obsidian."
 								query={query}
 							/>
 						)}
 						{tab === "archive" && (
 							<ProjectsTab
 								initial={archive}
-								emptyLabel="archive is empty"
+								emptyLabel="Archive is empty. Finished or inactive notes moved there will appear here."
 								query={query}
 							/>
 						)}
 						{tab === "outputs" && (
 							<NotesTab
 								notes={outputs}
-								emptyLabel="no outputs yet"
+								emptyLabel="No outputs yet. Generated documents saved to Outputs will appear here."
 								query={query}
 							/>
 						)}

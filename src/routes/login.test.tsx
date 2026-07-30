@@ -64,11 +64,29 @@ describe("first-run password setup", () => {
 		fireEvent.change(screen.getByLabelText("Confirm password"), {
 			target: { value: "different-password" },
 		});
-		fireEvent.click(screen.getByRole("button", { name: "Set password" }));
+		const button = screen.getByRole("button", { name: "Set password" });
+		expect((button as HTMLButtonElement).disabled).toBe(true);
+		fireEvent.submit(button.closest("form") as HTMLFormElement);
 		expect((await screen.findByRole("alert")).textContent).toBe(
 			"Passwords do not match",
 		);
 		expect(fetch).toHaveBeenCalledTimes(1);
+	});
+
+	it("enables setup only after the confirmation exactly matches", async () => {
+		render(<LoginPage />);
+		await screen.findByRole("heading", { name: "Create app password" });
+		const button = screen.getByRole("button", { name: "Set password" });
+		const password = screen.getByLabelText("Password");
+		const confirm = screen.getByLabelText("Confirm password");
+
+		expect((button as HTMLButtonElement).disabled).toBe(true);
+		fireEvent.change(password, { target: { value: "long-enough-password" } });
+		expect((button as HTMLButtonElement).disabled).toBe(true);
+		fireEvent.change(confirm, { target: { value: "different-password" } });
+		expect((button as HTMLButtonElement).disabled).toBe(true);
+		fireEvent.change(confirm, { target: { value: "long-enough-password" } });
+		expect((button as HTMLButtonElement).disabled).toBe(false);
 	});
 });
 

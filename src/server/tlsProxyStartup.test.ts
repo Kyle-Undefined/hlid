@@ -107,16 +107,22 @@ function requestServer(address = "127.0.0.1", upgraded = true) {
 	};
 }
 
-function websocketRequest(path: string, origin?: string): Request {
+function websocketRequest(
+	path: string,
+	origin?: string,
+	protocol?: string,
+): Request {
 	return new Request(`https://hlid.test${path}`, {
 		headers: {
 			upgrade: "websocket",
 			...(origin ? { origin } : {}),
+			...(protocol ? { "sec-websocket-protocol": protocol } : {}),
 		},
 	});
 }
 
 beforeEach(() => {
+	vi.stubEnv("HLID_DEV_PORT", "");
 	captured = [];
 	upstreamFetch = vi.fn(async () => new Response("forwarded"));
 	vi.stubGlobal("fetch", upstreamFetch);
@@ -133,13 +139,14 @@ beforeEach(() => {
 			return { stop: vi.fn() };
 		}),
 	});
-	vi.mocked(authenticateRequest).mockResolvedValue(true);
+	vi.mocked(authenticateRequest).mockReset().mockResolvedValue(true);
 	vi.spyOn(console, "log").mockImplementation(() => {});
 });
 
 afterEach(() => {
 	vi.useRealTimers();
 	vi.restoreAllMocks();
+	vi.unstubAllEnvs();
 	vi.unstubAllGlobals();
 });
 
@@ -212,6 +219,84 @@ describe("TLS proxy server boundary", () => {
 				queue: [],
 			},
 		});
+	});
+
+	it("bridges the exact Vite HMR protocol to the dev UI port", async () => {
+		vi.stubEnv("HLID_DEV_PORT", "4197");
+		start();
+		const upgradeServer = requestServer();
+		const upgraded = await mainServer().fetch(
+			websocketRequest(
+				"/?token=hmr-token",
+				"https://undefined-labs-1.tail3e2f28.ts.net:3443",
+				"vite-hmr",
+			),
+			upgradeServer,
+		);
+
+		expect(upgraded).toBeUndefined();
+		expect(upgradeServer.upgrade).toHaveBeenCalledWith(expect.any(Request), {
+			data: {
+				wsTarget: "ws://127.0.0.1:3000/?token=hmr-token",
+				back: null,
+				queue: [],
+				protocols: ["vite-hmr"],
+			},
+		});
+		expect(authenticateRequest).not.toHaveBeenCalled();
+	});
+
+	it("keeps Vite HMR upgrades closed outside the explicit dev boundary", async () => {
+		start();
+		const disabledServer = requestServer();
+		const disabled = await mainServer().fetch(
+			websocketRequest("/?token=hmr-token", "https://localhost", "vite-hmr"),
+			disabledServer,
+		);
+
+		expect(disabled?.status).toBe(400);
+		expect(disabledServer.upgrade).not.toHaveBeenCalled();
+	});
+
+	it("rejects invalid HMR protocols, origins, and peers in dev", async () => {
+		vi.stubEnv("HLID_DEV_PORT", "4197");
+		start();
+		const main = mainServer();
+
+		const wrongProtocol = await main.fetch(
+			websocketRequest(
+				"/?token=hmr-token",
+				"https://localhost",
+				"vite-hmr, other",
+			),
+			requestServer(),
+		);
+		const forbiddenOrigin = await main.fetch(
+			websocketRequest("/?token=hmr-token", "https://evil.example", "vite-hmr"),
+			requestServer(),
+		);
+		const forbiddenPeer = await main.fetch(
+			websocketRequest("/?token=hmr-token", "https://localhost", "vite-hmr"),
+			requestServer("203.0.113.4"),
+		);
+
+		expect(wrongProtocol?.status).toBe(400);
+		expect(forbiddenOrigin?.status).toBe(403);
+		expect(forbiddenPeer?.status).toBe(403);
+	});
+
+	it("keeps normal Hlid WebSockets on their authenticated route in dev", async () => {
+		vi.stubEnv("HLID_DEV_PORT", "4197");
+		vi.mocked(authenticateRequest).mockResolvedValue(false);
+		start();
+		const upgradeServer = requestServer();
+		const response = await mainServer().fetch(
+			websocketRequest("/ws?session_id=s1", "https://localhost", "vite-hmr"),
+			upgradeServer,
+		);
+
+		expect(response?.status).toBe(401);
+		expect(upgradeServer.upgrade).not.toHaveBeenCalled();
 	});
 
 	it("forwards an allowed HTTP request with trusted proxy metadata", async () => {

@@ -45,7 +45,24 @@ afterEach(() => {
 	cleanup();
 	vi.restoreAllMocks();
 	ws.handler.mockReset();
+	vi.unstubAllGlobals();
 });
+
+function setMobileViewport(): void {
+	vi.stubGlobal(
+		"matchMedia",
+		vi.fn().mockImplementation((query: string) => ({
+			matches: false,
+			media: query,
+			onchange: null,
+			addEventListener: vi.fn(),
+			removeEventListener: vi.fn(),
+			addListener: vi.fn(),
+			removeListener: vi.fn(),
+			dispatchEvent: vi.fn(() => true),
+		})),
+	);
+}
 
 describe("AttachmentsPage", () => {
 	it("promotes Relics to the configured capture folder and opens vault artifacts", async () => {
@@ -266,6 +283,59 @@ describe("AttachmentsPage", () => {
 		);
 	});
 
+	it("keeps mobile filters behind a touch-friendly disclosure", async () => {
+		setMobileViewport();
+		const listAttachments = vi.fn().mockResolvedValue({
+			rows: [rows[1]],
+			total: 1,
+			total_bytes: 4,
+		});
+		render(
+			<AttachmentsPage
+				initial={{ rows, total: 2, total_bytes: 7 }}
+				listAttachments={listAttachments}
+			/>,
+		);
+
+		const disclosure = screen.getByRole("button", { name: "Filters" });
+		expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+		expect(screen.queryByRole("button", { name: "PDF" })).toBeNull();
+
+		fireEvent.click(disclosure);
+		expect(disclosure.getAttribute("aria-expanded")).toBe("true");
+		const pdf = screen.getByRole("button", { name: "PDF" });
+		expect(pdf.className).toContain("min-h-11");
+		fireEvent.click(pdf);
+
+		await waitFor(() =>
+			expect(listAttachments).toHaveBeenCalledWith({
+				data: { search: undefined, type: "pdf", limit: 50, offset: 0 },
+			}),
+		);
+		expect(
+			screen.getByRole("button", { name: /filters, 1 active/i }),
+		).toBeDefined();
+	});
+
+	it("uses a semantic desktop control to expand a relic preview", () => {
+		render(<AttachmentsPage initial={{ rows, total: 2, total_bytes: 7 }} />);
+
+		const toggle = screen.getByRole("button", {
+			name: "Show preview for one.txt",
+		});
+		expect(toggle.tagName).toBe("BUTTON");
+		expect(toggle.getAttribute("aria-expanded")).toBe("false");
+		fireEvent.click(toggle);
+
+		const expandedToggle = screen.getByRole("button", {
+			name: "Hide preview for one.txt",
+		});
+		expect(expandedToggle.getAttribute("aria-expanded")).toBe("true");
+		const previewId = expandedToggle.getAttribute("aria-controls");
+		expect(previewId).toBe("relic-preview-one");
+		expect(document.getElementById(previewId ?? "")).not.toBeNull();
+	});
+
 	it("sorts by size and toggles direction on repeat clicks", async () => {
 		const listAttachments = vi.fn().mockResolvedValue({
 			rows,
@@ -355,8 +425,8 @@ describe("AttachmentsPage", () => {
 		fireEvent.keyDown(screen.getByPlaceholderText("filename…"), {
 			key: "Enter",
 		});
-		expect(await screen.findByText(/no relics match filters/)).toBeDefined();
-		fireEvent.click(screen.getByRole("button", { name: "clear filters" }));
+		expect(await screen.findByText(/no relics match filters/i)).toBeDefined();
+		fireEvent.click(screen.getByRole("button", { name: /clear filters/i }));
 		await waitFor(() =>
 			expect(listAttachments).toHaveBeenLastCalledWith({
 				data: { search: undefined, limit: 50, offset: 0 },
@@ -365,6 +435,16 @@ describe("AttachmentsPage", () => {
 		expect(
 			(screen.getByPlaceholderText("filename…") as HTMLInputElement).value,
 		).toBe("");
+	});
+
+	it("explains where relics will come from in the empty state", () => {
+		render(
+			<AttachmentsPage initial={{ rows: [], total: 0, total_bytes: 0 }} />,
+		);
+		expect(screen.getByText("No relics yet.")).toBeDefined();
+		expect(
+			screen.getByText("Artifacts from sessions and uploads will appear here."),
+		).toBeDefined();
 	});
 });
 
