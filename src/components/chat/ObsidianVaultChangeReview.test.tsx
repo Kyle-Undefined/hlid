@@ -243,6 +243,101 @@ describe("ObsidianVaultChangeReview", () => {
 		]);
 	});
 
+	it("keeps operation-specific path fallbacks bounded to their contracts", () => {
+		const changes = obsidianVaultChanges([
+			event(
+				"prepend",
+				"prepend_note",
+				{
+					target: "path",
+					path: "Projects/Hlid.md",
+					content: "Opening context",
+				},
+				'{"truncated":',
+			),
+			event(
+				"rename",
+				"rename_file",
+				{ path: "Notes/Old.md", name: "New.md" },
+				'{"truncated":',
+			),
+			event(
+				"create",
+				"create_note",
+				{ path: "Notes/New.md", content: "Body" },
+				'{"truncated":',
+			),
+			event(
+				"capture-without-result-path",
+				"capture_note",
+				{ path: "Notes/Not-authoritative.md", content: "Body" },
+				'{"truncated":',
+			),
+			event(
+				"daily-append-without-result-path",
+				"append_note",
+				{ target: "daily", path: "Notes/Not-authoritative.md" },
+				'{"truncated":',
+			),
+			event("command-without-id", "run_command", {}, '{"ok":true}'),
+			event(
+				"empty-patch",
+				"patch_note",
+				{ path: "Notes/New.md", replacements: [] },
+				'{"path":"Notes/New.md"}',
+			),
+		]);
+
+		expect(changes).toEqual([
+			{
+				id: "prepend",
+				kind: "prepended",
+				path: "Projects/Hlid.md",
+				content: "Opening context",
+			},
+			{
+				id: "rename",
+				kind: "renamed",
+				path: "Notes/New.md",
+				from: "Notes/Old.md",
+			},
+			{
+				id: "create",
+				kind: "created",
+				path: "Notes/New.md",
+				content: "Body",
+			},
+		]);
+	});
+
+	it("unwraps provider content envelopes before choosing the result path", () => {
+		const changes = obsidianVaultChanges([
+			event(
+				"wrapped-append",
+				"mcp__hlid_obsidian__append_note",
+				{ target: "daily", content: "Wrapped update" },
+				JSON.stringify({
+					type: "dynamicToolCall",
+					content: [
+						{
+							type: "inputText",
+							text: JSON.stringify({ path: "Journal/2026-07-30.md" }),
+						},
+					],
+				}),
+			),
+		]);
+
+		expect(changes).toEqual([
+			{
+				id: "wrapped-append",
+				kind: "appended",
+				path: "Journal/2026-07-30.md",
+				content: "Wrapped update",
+			},
+		]);
+	});
+
 	it("renders task, property, and Base activity without verification claims", () => {
 		render(
 			<ObsidianVaultChangeReview
@@ -415,6 +510,30 @@ describe("ObsidianVaultChangeReview", () => {
 		expect(screen.getByText("Active after")).toBeTruthy();
 		expect(screen.getByText("0 Inbox/2026-07-20.md")).toBeTruthy();
 		expect(screen.queryByText(/affected files unknown/i)).toBeNull();
+	});
+
+	it("keeps command uncertainty explicit when active-note context is absent", () => {
+		render(
+			<ObsidianVaultChangeReview
+				toolEvents={[
+					event(
+						"command",
+						"run_command",
+						{ id: "workspace:toggle-pin" },
+						'{"ok":true,"id":"workspace:toggle-pin"}',
+					),
+				]}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: /vault activity.*1/i }));
+		expect(screen.getByText("Active-note context unavailable")).toBeTruthy();
+		expect(
+			screen.getByText("Commands may affect other vault files."),
+		).toBeTruthy();
+		expect(
+			screen.queryByRole("button", { name: /open .* in obsidian/i }),
+		).toBeNull();
 	});
 
 	it("does not render when the turn made no successful vault changes", () => {

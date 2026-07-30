@@ -80,15 +80,7 @@ export function looksLikeMarkdown(text: string): boolean {
 	return false;
 }
 
-export const ToolBlock = memo(function ToolBlock({
-	event,
-	permissionLabel,
-	sessionId,
-	providerId,
-	childSubagents,
-	pendingPermissions,
-	onDecidePermission,
-}: {
+type ToolBlockProps = {
 	event: ToolEventMessage;
 	permissionLabel?: string;
 	sessionId?: string;
@@ -96,8 +88,102 @@ export const ToolBlock = memo(function ToolBlock({
 	childSubagents?: ReadonlyArray<SubagentSnapshot>;
 	pendingPermissions?: ReadonlyArray<PermissionMessage>;
 	onDecidePermission?: PermissionDecisionHandler;
-}) {
-	const [open, setOpen] = useState(false);
+};
+
+type SpecializedToolEventKind =
+	| "subagent"
+	| "project-preview-capture"
+	| "project-preview-lifecycle";
+
+function specializedToolEventKind(
+	event: ToolEventMessage,
+): SpecializedToolEventKind | null {
+	if (event.subagent) return "subagent";
+	if (
+		event.name.endsWith("capture_project_preview") ||
+		event.name.endsWith("control_project_preview")
+	) {
+		return "project-preview-capture";
+	}
+	if (
+		event.name.endsWith("start_project_preview") ||
+		event.name.endsWith("inspect_project_preview") ||
+		event.name.endsWith("stop_project_preview")
+	) {
+		return "project-preview-lifecycle";
+	}
+	return null;
+}
+
+function SpecializedToolEvent({
+	kind,
+	event,
+	permissionLabel,
+	sessionId,
+	providerId,
+	childSubagents,
+	pendingPermissions,
+	onDecidePermission,
+}: ToolBlockProps & { kind: SpecializedToolEventKind }) {
+	if (kind === "project-preview-capture") {
+		return (
+			<ProjectPreviewCaptureToolBlock
+				event={event}
+				permissionLabel={permissionLabel}
+			/>
+		);
+	}
+	if (kind === "project-preview-lifecycle") {
+		return (
+			<ProjectPreviewToolBlock
+				event={event}
+				permissionLabel={permissionLabel}
+			/>
+		);
+	}
+
+	const subagent = event.subagent;
+	if (!subagent) return null;
+	const workflow = subagent.kind === "workflow";
+	const ownsCurrentProvider =
+		providerId === undefined || providerId === subagent.provider;
+	const resumeSessionId =
+		workflow && ownsCurrentProvider && subagent.workflowRunId
+			? sessionId
+			: undefined;
+	return (
+		<SubagentToolBlock
+			subagent={subagent}
+			childSubagents={childSubagents}
+			pendingPermissions={pendingPermissions}
+			onDecidePermission={onDecidePermission}
+			onStop={
+				workflow && ownsCurrentProvider && sessionId && subagent.taskId
+					? () => stopNativeWorkflow(sessionId, subagent.taskId ?? "")
+					: undefined
+			}
+			onResume={
+				resumeSessionId
+					? () => resumeNativeWorkflow(resumeSessionId, subagent)
+					: undefined
+			}
+		/>
+	);
+}
+
+type HistoricalToolDetailState = {
+	needsDetail: boolean;
+	detail: HistoricalToolEventDetail | null;
+	loading: boolean;
+	error: string | null;
+	retry: () => void;
+	release: () => void;
+};
+
+function useHistoricalToolEventDetail(
+	event: ToolEventMessage,
+	open: boolean,
+): HistoricalToolDetailState {
 	const [detail, setDetail] = useState<HistoricalToolEventDetail | null>(null);
 	const [detailLoading, setDetailLoading] = useState(false);
 	const [detailError, setDetailError] = useState<string | null>(null);
@@ -137,117 +223,234 @@ export const ToolBlock = memo(function ToolBlock({
 		};
 	}, [open, needsDetail, event.detailSessionId, event.id, detail, detailError]);
 
-	if (event.subagent) {
-		const subagent = event.subagent;
-		const workflow = subagent.kind === "workflow";
-		const ownsCurrentProvider =
-			providerId === undefined || providerId === subagent.provider;
-		const resumeSessionId =
-			workflow && ownsCurrentProvider && subagent.workflowRunId
-				? sessionId
-				: undefined;
-		return (
-			<SubagentToolBlock
-				subagent={subagent}
-				childSubagents={childSubagents}
-				pendingPermissions={pendingPermissions}
-				onDecidePermission={onDecidePermission}
-				onStop={
-					workflow && ownsCurrentProvider && sessionId && subagent.taskId
-						? () => stopNativeWorkflow(sessionId, subagent.taskId ?? "")
-						: undefined
-				}
-				onResume={
-					resumeSessionId
-						? () => resumeNativeWorkflow(resumeSessionId, subagent)
-						: undefined
-				}
-			/>
-		);
+	return {
+		needsDetail,
+		detail,
+		loading: detailLoading,
+		error: detailError,
+		retry: () => setDetailError(null),
+		// The shared detail cache is byte-bounded. Drop this component's
+		// additional reference when it closes so evicted results can be GC'd.
+		release: () => {
+			if (needsDetail) setDetail(null);
+		},
+	};
+}
+
+type ToolEventPresentation = {
+	inputEntries: [string, unknown][];
+	pills: [string, unknown][];
+	isReasoning: boolean;
+	isError: boolean;
+	hasResult: boolean;
+	renderResultAsMarkdown: boolean;
+	strippedResult: string;
+	resultPreview: string | null;
+};
+
+type ToolResultState = {
+	isError: boolean;
+	hasResult: boolean;
+	text: string;
+	preview: string | null;
+};
+
+function hasToolResult(
+	event: ToolEventMessage,
+	hydratedDetail: HistoricalToolEventDetail | null,
+): boolean {
+	if (typeof event.result === "string") return true;
+	if (hydratedDetail?.result !== undefined && hydratedDetail.result !== null) {
+		return true;
 	}
-	if (
-		event.name.endsWith("capture_project_preview") ||
-		event.name.endsWith("control_project_preview")
-	) {
-		return (
-			<ProjectPreviewCaptureToolBlock
-				event={event}
-				permissionLabel={permissionLabel}
-			/>
-		);
-	}
-	if (
-		event.name.endsWith("start_project_preview") ||
-		event.name.endsWith("inspect_project_preview") ||
-		event.name.endsWith("stop_project_preview")
-	) {
-		return (
-			<ProjectPreviewToolBlock
-				event={event}
-				permissionLabel={permissionLabel}
-			/>
-		);
-	}
+	return event.resultLength !== undefined && event.resultLength !== null;
+}
+
+function toolResultState(
+	event: ToolEventMessage,
+	historical: HistoricalToolDetailState,
+): ToolResultState {
+	const hydratedDetail = historical.needsDetail ? historical.detail : null;
+	const isError = Boolean(hydratedDetail?.isError ?? event.isError);
+	const hasResult = hasToolResult(event, hydratedDetail);
+	const text = hydratedDetail?.result ?? event.result ?? "";
+	const preview = hasResult
+		? firstLine(event.result ?? text).slice(0, RESULT_PREVIEW_CHARS)
+		: null;
+	return { isError, hasResult, text, preview };
+}
+
+function toolEventPresentation(
+	event: ToolEventMessage,
+	open: boolean,
+	historical: HistoricalToolDetailState,
+): ToolEventPresentation {
 	const inputEntries = Object.entries(event.input ?? {});
 	const pills = inputEntries.slice(0, 3);
 	const isReasoning = event.name === "Reasoning";
-	const hydratedDetail = needsDetail ? detail : null;
-	const isError = hydratedDetail?.isError ?? event.isError;
-	const hasResult =
-		typeof event.result === "string" ||
-		(hydratedDetail?.result !== undefined && hydratedDetail.result !== null) ||
-		(event.resultLength !== undefined && event.resultLength !== null);
-	const resultText = hydratedDetail?.result ?? event.result ?? "";
-	const canProcessResult = open && (!needsDetail || detail !== null);
+	const result = toolResultState(event, historical);
+	const canProcessResult =
+		open && (!historical.needsDetail || historical.detail !== null);
 	const strippedResult = canProcessResult
-		? stripReadLineNumbers(resultText)
+		? stripReadLineNumbers(result.text)
 		: "";
 	const renderResultAsMarkdown =
 		canProcessResult &&
-		hasResult &&
-		!isError &&
+		result.hasResult &&
+		!result.isError &&
 		(isReasoning || looksLikeMarkdown(strippedResult));
-	const resultPreview = hasResult
-		? firstLine(event.result ?? resultText).slice(0, RESULT_PREVIEW_CHARS)
-		: null;
+
+	return {
+		inputEntries,
+		pills,
+		isReasoning,
+		isError: result.isError,
+		hasResult: result.hasResult,
+		renderResultAsMarkdown,
+		strippedResult,
+		resultPreview: result.preview,
+	};
+}
+
+function ToolDetailPanel({
+	open,
+	historical,
+	presentation,
+}: {
+	open: boolean;
+	historical: HistoricalToolDetailState;
+	presentation: ToolEventPresentation;
+}) {
+	if (!open) return null;
+	if (historical.needsDetail && !historical.detail) {
+		return (
+			<div className="mx-3 mb-1.5 min-w-0 max-w-[calc(100%_-_1.5rem)] border border-[var(--tool-panel-border)] bg-[var(--tool-panel)] px-3 py-2 text-[11px] text-muted-foreground/70">
+				{historical.error ? (
+					<div className="flex items-center justify-between gap-3">
+						<span>{historical.error}</span>
+						<button
+							type="button"
+							onClick={historical.retry}
+							className="shrink-0 text-primary/75 underline underline-offset-2 hover:text-primary"
+						>
+							Retry
+						</button>
+					</div>
+				) : (
+					<span>
+						{historical.loading ? "Loading full result…" : "Loading…"}
+					</span>
+				)}
+			</div>
+		);
+	}
+	return (
+		<ToolBlockExpandedPanel
+			inputEntries={presentation.inputEntries}
+			hasResult={presentation.hasResult}
+			isError={presentation.isError}
+			isReasoning={presentation.isReasoning}
+			renderResultAsMarkdown={presentation.renderResultAsMarkdown}
+			strippedResult={presentation.strippedResult}
+		/>
+	);
+}
+
+function ToolEventSummary({
+	event,
+	permissionLabel,
+	open,
+	onToggle,
+	presentation,
+}: {
+	event: ToolEventMessage;
+	permissionLabel?: string;
+	open: boolean;
+	onToggle: () => void;
+	presentation: ToolEventPresentation;
+}) {
+	return (
+		<>
+			<button
+				type="button"
+				onClick={onToggle}
+				aria-expanded={open}
+				className="flex items-center gap-2.5 w-full min-w-0 max-w-full overflow-hidden px-3 py-1.5 group hover:bg-primary/[0.03] transition-colors text-left"
+			>
+				<ChevronRight
+					className={`w-3 h-3 shrink-0 text-primary/50 group-hover:text-primary/80 transition-transform duration-150 ${open ? "rotate-90" : ""}`}
+				/>
+				<PrivacyMask
+					inline
+					className="text-[11px] font-medium tracking-wider text-primary/70 group-hover:text-primary/90 shrink-0"
+				>
+					{event.name}
+				</PrivacyMask>
+				<PrivacyMask className="flex flex-1 min-w-0 max-w-full gap-1.5 flex-nowrap overflow-hidden">
+					{presentation.pills.map(([key, value]) => (
+						<span
+							key={key}
+							className="block min-w-0 max-w-full truncate whitespace-nowrap text-[9px] tracking-wide border border-primary/20 text-primary/50 px-1.5 py-0.5 font-mono overflow-hidden"
+						>
+							{key}: {inputPreview(value)}
+						</span>
+					))}
+				</PrivacyMask>
+			</button>
+			{permissionLabel && (
+				<div className="flex items-center gap-1.5 pl-8 pr-3 pb-1 -mt-0.5 text-[9px] tracking-widest text-muted-foreground/55 uppercase">
+					<Check className="w-2.5 h-2.5 text-status-success/55" />
+					<span>{permissionLabel}</span>
+				</div>
+			)}
+			{!open && presentation.hasResult && (
+				<div
+					className={`flex items-center gap-1.5 pl-8 pr-3 pb-1 text-[10px] font-mono leading-tight ${
+						presentation.isError
+							? "text-destructive/70"
+							: "text-muted-foreground/55"
+					}`}
+				>
+					{presentation.isError && (
+						<AlertTriangle
+							className="w-2.5 h-2.5 shrink-0 text-destructive/70"
+							aria-label="Error"
+						/>
+					)}
+					<span className="truncate">
+						<PrivacyMask inline>
+							{presentation.resultPreview &&
+							presentation.resultPreview.length > 0
+								? presentation.resultPreview
+								: presentation.isError
+									? "(error)"
+									: "(empty)"}
+						</PrivacyMask>
+					</span>
+				</div>
+			)}
+		</>
+	);
+}
+
+function ExpandableToolEventBlock({
+	event,
+	permissionLabel,
+}: Pick<ToolBlockProps, "event" | "permissionLabel">) {
+	const [open, setOpen] = useState(false);
+	const historical = useHistoricalToolEventDetail(event, open);
+	const presentation = toolEventPresentation(event, open, historical);
 	const toggleOpen = () => {
 		const nextOpen = !open;
 		setOpen(nextOpen);
-		// The shared detail cache is byte-bounded. Drop this component's
-		// additional reference when it closes so evicted results can be GC'd.
-		if (!nextOpen && needsDetail) setDetail(null);
+		if (!nextOpen) historical.release();
 	};
 	const detailPanel = (
-		<>
-			{open && needsDetail && !detail && (
-				<div className="mx-3 mb-1.5 min-w-0 max-w-[calc(100%_-_1.5rem)] border border-[var(--tool-panel-border)] bg-[var(--tool-panel)] px-3 py-2 text-[11px] text-muted-foreground/70">
-					{detailError ? (
-						<div className="flex items-center justify-between gap-3">
-							<span>{detailError}</span>
-							<button
-								type="button"
-								onClick={() => setDetailError(null)}
-								className="shrink-0 text-primary/75 underline underline-offset-2 hover:text-primary"
-							>
-								Retry
-							</button>
-						</div>
-					) : (
-						<span>{detailLoading ? "Loading full result…" : "Loading…"}</span>
-					)}
-				</div>
-			)}
-			{open && (!needsDetail || detail) && (
-				<ToolBlockExpandedPanel
-					inputEntries={inputEntries}
-					hasResult={hasResult}
-					isError={isError}
-					isReasoning={isReasoning}
-					renderResultAsMarkdown={renderResultAsMarkdown}
-					strippedResult={strippedResult}
-				/>
-			)}
-		</>
+		<ToolDetailPanel
+			open={open}
+			historical={historical}
+			presentation={presentation}
+		/>
 	);
 
 	if (isHlidDelegationToolEvent(event)) {
@@ -262,65 +465,28 @@ export const ToolBlock = memo(function ToolBlock({
 			</HlidDelegationToolBlock>
 		);
 	}
-
 	return (
 		<div className="my-0.5 min-w-0 max-w-full overflow-hidden">
-			<button
-				type="button"
-				onClick={toggleOpen}
-				aria-expanded={open}
-				className="flex items-center gap-2.5 w-full min-w-0 max-w-full overflow-hidden px-3 py-1.5 group hover:bg-primary/[0.03] transition-colors text-left"
-			>
-				<ChevronRight
-					className={`w-3 h-3 shrink-0 text-primary/50 group-hover:text-primary/80 transition-transform duration-150 ${open ? "rotate-90" : ""}`}
-				/>
-				<PrivacyMask
-					inline
-					className="text-[11px] font-medium tracking-wider text-primary/70 group-hover:text-primary/90 shrink-0"
-				>
-					{event.name}
-				</PrivacyMask>
-				<PrivacyMask className="flex flex-1 min-w-0 max-w-full gap-1.5 flex-nowrap overflow-hidden">
-					{pills.map(([k, v]) => (
-						<span
-							key={k}
-							className="block min-w-0 max-w-full truncate whitespace-nowrap text-[9px] tracking-wide border border-primary/20 text-primary/50 px-1.5 py-0.5 font-mono overflow-hidden"
-						>
-							{k}: {inputPreview(v)}
-						</span>
-					))}
-				</PrivacyMask>
-			</button>
-			{permissionLabel && (
-				<div className="flex items-center gap-1.5 pl-8 pr-3 pb-1 -mt-0.5 text-[9px] tracking-widest text-muted-foreground/55 uppercase">
-					<Check className="w-2.5 h-2.5 text-status-success/55" />
-					<span>{permissionLabel}</span>
-				</div>
-			)}
-			{!open && hasResult && (
-				<div
-					className={`flex items-center gap-1.5 pl-8 pr-3 pb-1 text-[10px] font-mono leading-tight ${
-						isError ? "text-destructive/70" : "text-muted-foreground/55"
-					}`}
-				>
-					{isError && (
-						<AlertTriangle
-							className="w-2.5 h-2.5 shrink-0 text-destructive/70"
-							aria-label="Error"
-						/>
-					)}
-					<span className="truncate">
-						<PrivacyMask inline>
-							{resultPreview && resultPreview.length > 0
-								? resultPreview
-								: isError
-									? "(error)"
-									: "(empty)"}
-						</PrivacyMask>
-					</span>
-				</div>
-			)}
+			<ToolEventSummary
+				event={event}
+				permissionLabel={permissionLabel}
+				open={open}
+				onToggle={toggleOpen}
+				presentation={presentation}
+			/>
 			{detailPanel}
 		</div>
+	);
+}
+
+export const ToolBlock = memo(function ToolBlock(props: ToolBlockProps) {
+	const kind = specializedToolEventKind(props.event);
+	return kind ? (
+		<SpecializedToolEvent {...props} kind={kind} />
+	) : (
+		<ExpandableToolEventBlock
+			event={props.event}
+			permissionLabel={props.permissionLabel}
+		/>
 	);
 });

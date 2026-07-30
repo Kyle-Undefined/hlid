@@ -99,6 +99,92 @@ describe("ToolBlock — collapsed", () => {
 	});
 });
 
+describe("ToolBlock — specialized event dispatch", () => {
+	it("routes capture and control events to the Project Preview capture row", () => {
+		render(
+			<ToolBlock
+				event={makeEvent({
+					name: "mcp__hlid__capture_project_preview",
+					input: { viewport: "mobile" },
+					result: JSON.stringify({
+						preview_id: "preview-1",
+						path: "/settings",
+						viewport: "mobile",
+						width: 390,
+						height: 844,
+						full_page: false,
+						size_bytes: 1024,
+					}),
+				})}
+			/>,
+		);
+
+		expect(
+			screen.getByText("Project Preview captured for agent"),
+		).not.toBeNull();
+		expect(screen.getByText(/mobile · 390×844 · \/settings/i)).not.toBeNull();
+		expect(screen.queryByText("mcp__hlid__capture_project_preview")).toBeNull();
+	});
+
+	it("routes lifecycle events to the Project Preview lifecycle row", () => {
+		render(
+			<ToolBlock
+				event={makeEvent({
+					name: "mcp__hlid__start_project_preview",
+					input: { port: 4173 },
+				})}
+			/>,
+		);
+
+		expect(screen.getByText("Starting Project Preview")).not.toBeNull();
+		expect(screen.getByText("starting")).not.toBeNull();
+		expect(screen.queryByText("mcp__hlid__start_project_preview")).toBeNull();
+	});
+
+	it.each([
+		["control_project_preview", "Controlling Project Preview"],
+		["inspect_project_preview", "Project Preview"],
+		["stop_project_preview", "Project Preview"],
+	] as const)("routes %s through its specialized Preview row", (name, label) => {
+		render(
+			<ToolBlock
+				event={makeEvent({
+					name: `mcp__hlid__${name}`,
+				})}
+			/>,
+		);
+
+		expect(screen.getByText(label)).not.toBeNull();
+		expect(screen.queryByText(`mcp__hlid__${name}`)).toBeNull();
+	});
+
+	it("gives subagent rendering precedence over a Preview-shaped tool name", () => {
+		render(
+			<ToolBlock
+				event={makeEvent({
+					name: "mcp__hlid__capture_project_preview",
+					subagent: {
+						provider: "codex",
+						agentId: "preview-child",
+						kind: "agent",
+						name: "Preview specialist",
+						status: "completed",
+						startedAtMs: 1,
+						endedAtMs: 2,
+					},
+				})}
+			/>,
+		);
+
+		expect(
+			screen.getByRole("button", {
+				name: "Preview specialist completed",
+			}),
+		).not.toBeNull();
+		expect(screen.queryByText("Project Preview captured for agent")).toBeNull();
+	});
+});
+
 describe("ToolBlock — Hlid orchestration audit rows", () => {
 	it.each([
 		["delegate_hlid_agent", "Delegate child", "CREATED"],
@@ -490,6 +576,39 @@ describe("ToolBlock — expanded", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 		await waitFor(() => {
 			expect(document.querySelector("pre")?.textContent).toBe("recovered");
+		});
+		expect(mockLoadToolEventDetail).toHaveBeenCalledTimes(2);
+	});
+
+	it("releases hydrated detail when closed and reloads it on demand", async () => {
+		mockLoadToolEventDetail
+			.mockResolvedValueOnce({ result: "first hydrated result" })
+			.mockResolvedValueOnce({ result: "second hydrated result" });
+		render(
+			<ToolBlock
+				event={makeEvent({
+					result: "preview",
+					resultLength: 500,
+					resultTruncated: true,
+					detailSessionId: "session-1",
+				})}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { expanded: false }));
+		await waitFor(() => {
+			expect(document.querySelector("pre")?.textContent).toBe(
+				"first hydrated result",
+			);
+		});
+		fireEvent.click(screen.getByRole("button", { expanded: true }));
+		expect(document.querySelector("pre")).toBeNull();
+
+		fireEvent.click(screen.getByRole("button", { expanded: false }));
+		await waitFor(() => {
+			expect(document.querySelector("pre")?.textContent).toBe(
+				"second hydrated result",
+			);
 		});
 		expect(mockLoadToolEventDetail).toHaveBeenCalledTimes(2);
 	});
