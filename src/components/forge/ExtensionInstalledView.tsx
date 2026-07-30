@@ -6,9 +6,11 @@ import type { ExtensionSectionController } from "./useExtensionSectionController
 export function ExtensionInstalledView({
 	model,
 	controller,
+	inventoryGeneration,
 }: {
 	model: ExtensionSectionViewModel;
 	controller: ExtensionSectionController;
+	inventoryGeneration: number;
 }) {
 	if (model.labels.length === 0) {
 		return (
@@ -47,6 +49,7 @@ export function ExtensionInstalledView({
 								<InstalledExtensionCard
 									key={extension.id}
 									extension={extension}
+									inventoryGeneration={inventoryGeneration}
 									mutating={controller.mutatingId === extension.id}
 									onUpdate={
 										extension.nativeUpdate?.available === true

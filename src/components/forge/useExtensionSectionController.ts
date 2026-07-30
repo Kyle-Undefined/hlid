@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	getExtensionInventoryFn,
 	getExtensionReviewFn,
@@ -60,28 +60,40 @@ function mutationNotice(
 	return `${message}${result.warning ? ` ${result.warning}` : ""}`;
 }
 
-function useExtensionInventory() {
+function useExtensionInventory(isMounted: () => boolean) {
 	const [inventory, setInventory] =
 		useState<ExtensionInventory>(EMPTY_INVENTORY);
+	const [inventoryGeneration, setInventoryGeneration] = useState(0);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
+	const requestIdRef = useRef(0);
 	const loadInventory = useCallback(
 		async (request: () => Promise<ExtensionInventory>) => {
+			if (!isMounted()) return;
+			const requestId = ++requestIdRef.current;
 			setLoading(true);
 			setError(null);
 			try {
-				setInventory(await request());
+				const nextInventory = await request();
+				if (isMounted() && requestId === requestIdRef.current) {
+					setInventory(nextInventory);
+					setInventoryGeneration((generation) => generation + 1);
+				}
 			} catch (cause) {
-				setError(
-					cause instanceof Error
-						? cause.message
-						: "Unable to inspect provider extensions",
-				);
+				if (isMounted() && requestId === requestIdRef.current) {
+					setError(
+						cause instanceof Error
+							? cause.message
+							: "Unable to inspect provider extensions",
+					);
+				}
 			} finally {
-				setLoading(false);
+				if (isMounted() && requestId === requestIdRef.current) {
+					setLoading(false);
+				}
 			}
 		},
-		[],
+		[isMounted],
 	);
 	const load = useCallback(
 		() => loadInventory(getExtensionInventoryFn),
@@ -93,9 +105,13 @@ function useExtensionInventory() {
 	);
 	useEffect(() => {
 		void load();
+		return () => {
+			requestIdRef.current += 1;
+		};
 	}, [load]);
 	return {
 		inventory,
+		inventoryGeneration,
 		loading,
 		inventoryError: error,
 		load,
@@ -103,41 +119,62 @@ function useExtensionInventory() {
 	};
 }
 
-function useExtensionReview() {
+function useExtensionReview(isMounted: () => boolean) {
 	const [review, setReview] = useState<ExtensionReview | null>(null);
 	const [reviewingId, setReviewingId] = useState<string | null>(null);
 	const [reviewError, setReviewError] = useState<{
 		id: string;
 		message: string;
 	} | null>(null);
+	const requestIdRef = useRef(0);
 	const clearReview = useCallback(() => {
+		requestIdRef.current += 1;
+		if (!isMounted()) return;
 		setReview(null);
+		setReviewingId(null);
 		setReviewError(null);
-	}, []);
+	}, [isMounted]);
+	useEffect(
+		() => () => {
+			requestIdRef.current += 1;
+		},
+		[],
+	);
 	const reviewExtension = useCallback(
 		async (extension: AvailableExtension) => {
+			if (!isMounted()) return;
 			if (review?.id === extension.id) {
 				clearReview();
 				return;
 			}
+			const requestId = ++requestIdRef.current;
 			setReviewingId(extension.id);
 			setReviewError(null);
 			setReview(null);
 			try {
-				setReview(await getExtensionReviewFn({ data: { id: extension.id } }));
-			} catch (cause) {
-				setReviewError({
-					id: extension.id,
-					message:
-						cause instanceof Error
-							? cause.message
-							: "Unable to review this extension",
+				const nextReview = await getExtensionReviewFn({
+					data: { id: extension.id },
 				});
+				if (isMounted() && requestId === requestIdRef.current) {
+					setReview(nextReview);
+				}
+			} catch (cause) {
+				if (isMounted() && requestId === requestIdRef.current) {
+					setReviewError({
+						id: extension.id,
+						message:
+							cause instanceof Error
+								? cause.message
+								: "Unable to review this extension",
+					});
+				}
 			} finally {
-				setReviewingId(null);
+				if (isMounted() && requestId === requestIdRef.current) {
+					setReviewingId(null);
+				}
 			}
 		},
-		[clearReview, review?.id],
+		[clearReview, isMounted, review?.id],
 	);
 	return { review, reviewingId, reviewError, clearReview, reviewExtension };
 }
@@ -145,6 +182,7 @@ function useExtensionReview() {
 function useExtensionMutation(
 	load: () => Promise<void>,
 	clearReview: () => void,
+	isMounted: () => boolean,
 ) {
 	const [mutatingId, setMutatingId] = useState<string | null>(null);
 	const [notice, setNotice] = useState<string | null>(null);
@@ -156,16 +194,19 @@ function useExtensionMutation(
 	}, [notice]);
 	const mutate = useCallback<ExtensionMutationController>(
 		async (input, onSuccess) => {
+			if (!isMounted()) return;
 			setMutatingId("environmentId" in input ? input.environmentId : input.id);
 			setNotice(null);
 			setError(null);
 			try {
 				const { result } = await mutateExtensionFn({ data: input });
+				if (!isMounted()) return;
 				setNotice(mutationNotice(input, result));
 				onSuccess?.();
 				clearReview();
 				await load();
 			} catch (cause) {
+				if (!isMounted()) return;
 				setError(
 					cause instanceof Error ? cause.message : "Extension action failed",
 				);
@@ -173,10 +214,12 @@ function useExtensionMutation(
 				// Always replace the visible catalog with a fresh provider snapshot.
 				await load().catch(() => {});
 			} finally {
-				setMutatingId(null);
+				if (isMounted()) {
+					setMutatingId(null);
+				}
 			}
 		},
-		[clearReview, load],
+		[clearReview, isMounted, load],
 	);
 	return {
 		mutatingId,
@@ -187,9 +230,21 @@ function useExtensionMutation(
 }
 
 export function useExtensionSectionController() {
-	const inventory = useExtensionInventory();
-	const review = useExtensionReview();
-	const mutation = useExtensionMutation(inventory.load, review.clearReview);
+	const mountedRef = useRef(false);
+	useEffect(() => {
+		mountedRef.current = true;
+		return () => {
+			mountedRef.current = false;
+		};
+	}, []);
+	const isMounted = useCallback(() => mountedRef.current, []);
+	const inventory = useExtensionInventory(isMounted);
+	const review = useExtensionReview(isMounted);
+	const mutation = useExtensionMutation(
+		inventory.load,
+		review.clearReview,
+		isMounted,
+	);
 	return {
 		...inventory,
 		...review,

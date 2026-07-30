@@ -106,7 +106,11 @@ export function ExtensionsSection() {
 			) : model.view === "marketplace" ? (
 				<ExtensionMarketplaceView model={model} controller={controller} />
 			) : (
-				<ExtensionInstalledView model={model} controller={controller} />
+				<ExtensionInstalledView
+					model={model}
+					controller={controller}
+					inventoryGeneration={controller.inventoryGeneration}
+				/>
 			)}
 		</Section>
 	);

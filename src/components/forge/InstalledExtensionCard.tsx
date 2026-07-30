@@ -1,6 +1,5 @@
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import { ConfirmAction } from "#/components/ConfirmAction";
-import { getExtensionReviewFn } from "#/lib/serverFns/extensions";
 import type {
 	ExtensionReview,
 	ProviderExtension,
@@ -10,6 +9,7 @@ import {
 	ExtensionMetaValue,
 	TrustReviewAndManifest,
 } from "./ExtensionReviewDetails";
+import { useInstalledExtensionReview } from "./useInstalledExtensionReview";
 
 function readableDate(value: string): string {
 	if (!value) return "";
@@ -289,41 +289,29 @@ function InstalledUninstallAction({
 
 export function InstalledExtensionCard({
 	extension,
+	inventoryGeneration,
 	onUpdate,
 	onSetEnabled,
 	onUninstall,
 	mutating,
 }: {
 	extension: ProviderExtension;
+	inventoryGeneration: number;
 	onUpdate?: () => void;
 	onSetEnabled: () => void;
 	onUninstall: () => void;
 	mutating: boolean;
 }) {
-	const [review, setReview] = useState<ExtensionReview | null>(null);
-	const [reviewing, setReviewing] = useState(false);
-	const [reviewError, setReviewError] = useState<string | null>(null);
-	const loadReview = useCallback(async () => {
-		if (review || reviewing) return;
-		setReviewing(true);
-		setReviewError(null);
-		try {
-			setReview(await getExtensionReviewFn({ data: { id: extension.id } }));
-		} catch (cause) {
-			setReviewError(
-				cause instanceof Error
-					? cause.message
-					: "Unable to load the installed package review",
-			);
-		} finally {
-			setReviewing(false);
-		}
-	}, [extension.id, review, reviewing]);
+	const [expanded, setExpanded] = useState(false);
+	const { review, reviewing, reviewError, requestReview } =
+		useInstalledExtensionReview(extension, expanded, inventoryGeneration);
 	return (
 		<details
 			className="group border border-border bg-card"
 			onToggle={(event) => {
-				if (event.currentTarget.open) void loadReview();
+				const open = event.currentTarget.open;
+				setExpanded(open);
+				if (open) requestReview();
 			}}
 		>
 			<summary className="cursor-pointer list-none px-4 py-3 [&::-webkit-details-marker]:hidden">

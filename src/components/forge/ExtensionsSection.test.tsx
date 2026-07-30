@@ -8,8 +8,12 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ExtensionInventory } from "#/server/extensionInventory";
+import type {
+	ExtensionInventory,
+	ExtensionReview,
+} from "#/server/extensionInventory";
 import { ExtensionsSection } from "./ExtensionsSection";
+import { useExtensionSectionController } from "./useExtensionSectionController";
 
 const mocks = vi.hoisted(() => ({
 	getExtensionInventory: vi.fn(),
@@ -166,6 +170,55 @@ const inventory: ExtensionInventory = {
 	errors: [],
 };
 
+function deferred<T>() {
+	let resolve!: (value: T | PromiseLike<T>) => void;
+	const promise = new Promise<T>((fulfill) => {
+		resolve = fulfill;
+	});
+	return { promise, resolve };
+}
+
+function installedReview(
+	message: string,
+	manifestText: string,
+	skillPath: string,
+): ExtensionReview {
+	return {
+		...inventory.available[0],
+		id: "claude-extension",
+		installed: true,
+		enabled: true,
+		reviewMessage: message,
+		reviewToken: "f".repeat(64),
+		manifestPath: "/plugin.json",
+		manifestText,
+		capabilities: [],
+		components: [],
+		skillFiles: [
+			{
+				path: skillPath,
+				content: `# ${message}`,
+				truncated: false,
+			},
+		],
+		errors: [],
+	};
+}
+
+function ExtensionControllerHarness() {
+	const controller = useExtensionSectionController();
+	return (
+		<>
+			<div data-testid="inventory-generation">
+				{controller.inventory.generatedAt}
+			</div>
+			<button type="button" onClick={() => void controller.load()}>
+				Load inventory
+			</button>
+		</>
+	);
+}
+
 afterEach(() => {
 	cleanup();
 	vi.clearAllMocks();
@@ -173,6 +226,178 @@ afterEach(() => {
 });
 
 describe("ExtensionsSection", () => {
+	it("keeps the newest inventory when an older request resolves last", async () => {
+		const olderRequest = deferred<ExtensionInventory>();
+		const newerRequest = deferred<ExtensionInventory>();
+		mocks.getExtensionInventory
+			.mockResolvedValueOnce(inventory)
+			.mockImplementationOnce(() => olderRequest.promise)
+			.mockImplementationOnce(() => newerRequest.promise);
+		render(<ExtensionControllerHarness />);
+		await waitFor(() =>
+			expect(screen.getByTestId("inventory-generation").textContent).toBe(
+				inventory.generatedAt,
+			),
+		);
+
+		const loadButton = screen.getByRole("button", { name: "Load inventory" });
+		fireEvent.click(loadButton);
+		fireEvent.click(loadButton);
+		expect(mocks.getExtensionInventory).toHaveBeenCalledTimes(3);
+
+		await act(async () => {
+			newerRequest.resolve({
+				...inventory,
+				generatedAt: "2026-07-22T00:02:00.000Z",
+			});
+			await newerRequest.promise;
+		});
+		expect(screen.getByTestId("inventory-generation").textContent).toBe(
+			"2026-07-22T00:02:00.000Z",
+		);
+
+		await act(async () => {
+			olderRequest.resolve({
+				...inventory,
+				generatedAt: "2026-07-22T00:01:00.000Z",
+			});
+			await olderRequest.promise;
+		});
+		expect(screen.getByTestId("inventory-generation").textContent).toBe(
+			"2026-07-22T00:02:00.000Z",
+		);
+	});
+
+	it("keeps the newest marketplace review when the prior request resolves last", async () => {
+		const firstReview = deferred<ExtensionReview>();
+		const secondReview = deferred<ExtensionReview>();
+		mocks.getExtensionInventory.mockResolvedValue(inventory);
+		mocks.getExtensionReview.mockImplementation(({ id }: { id: string }) =>
+			id === inventory.available[0]?.id
+				? firstReview.promise
+				: secondReview.promise,
+		);
+		render(<ExtensionsSection />);
+		await waitFor(() => expect(screen.getByText("Reviewer")).toBeTruthy());
+		fireEvent.click(screen.getByRole("tab", { name: "marketplace" }));
+
+		const reviewButtons = screen.getAllByRole("button", { name: "Review" });
+		fireEvent.click(reviewButtons[0]);
+		fireEvent.click(reviewButtons[1]);
+
+		await act(async () => {
+			secondReview.resolve({
+				...inventory.available[1],
+				reviewMessage: "The second review remains selected.",
+				reviewToken: "b".repeat(64),
+				manifestPath: "/marketplace.json",
+				manifestText: '{"name":"remote"}',
+				capabilities: [],
+				components: [],
+				skillFiles: [],
+				errors: [],
+			});
+			await secondReview.promise;
+		});
+		expect(
+			screen.getByText("The second review remains selected."),
+		).toBeTruthy();
+
+		await act(async () => {
+			firstReview.resolve({
+				...inventory.available[0],
+				reviewMessage: "The stale first review replaced the selection.",
+				reviewToken: "a".repeat(64),
+				manifestPath: "/plugin.json",
+				manifestText: '{"name":"reviewer"}',
+				capabilities: [],
+				components: [],
+				skillFiles: [],
+				errors: [],
+			});
+			await firstReview.promise;
+		});
+		expect(
+			screen.getByText("The second review remains selected."),
+		).toBeTruthy();
+		expect(
+			screen.queryByText("The stale first review replaced the selection."),
+		).toBeNull();
+	});
+
+	it("refuses inventory and mutation follow-up work after unmount", async () => {
+		const mutation = deferred<{
+			ok: true;
+			result: {
+				action: "set_enabled";
+				providerId: "claude";
+				subject: string;
+				pluginId: string;
+				environmentLabel: string;
+				output: string;
+			};
+		}>();
+		const onSuccess = vi.fn();
+		const controllerRef: {
+			current: ReturnType<typeof useExtensionSectionController> | null;
+		} = { current: null };
+		function LifecycleHarness() {
+			const controller = useExtensionSectionController();
+			controllerRef.current = controller;
+			return (
+				<button
+					type="button"
+					onClick={() =>
+						void controller?.mutate(
+							{
+								action: "set_enabled",
+								id: "claude-extension",
+								expectedVersion: "1.2.3",
+								expectedEnabled: true,
+								enabled: false,
+							},
+							onSuccess,
+						)
+					}
+				>
+					Mutate extension
+				</button>
+			);
+		}
+		mocks.getExtensionInventory.mockResolvedValue(inventory);
+		mocks.mutateExtension.mockImplementation(() => mutation.promise);
+		const view = render(<LifecycleHarness />);
+		await waitFor(() =>
+			expect(mocks.getExtensionInventory).toHaveBeenCalledOnce(),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Mutate extension" }));
+		expect(mocks.mutateExtension).toHaveBeenCalledOnce();
+
+		view.unmount();
+		await controllerRef.current?.load();
+		await controllerRef.current?.retryInspection();
+		expect(mocks.getExtensionInventory).toHaveBeenCalledOnce();
+		expect(mocks.refreshExtensionInventory).not.toHaveBeenCalled();
+
+		await act(async () => {
+			mutation.resolve({
+				ok: true,
+				result: {
+					action: "set_enabled",
+					providerId: "claude",
+					subject: "reviewer@official",
+					pluginId: "reviewer@official",
+					environmentLabel: "WSL · Ubuntu",
+					output: "disabled",
+				},
+			});
+			await mutation.promise;
+		});
+		expect(onSuccess).not.toHaveBeenCalled();
+		expect(mocks.getExtensionInventory).toHaveBeenCalledOnce();
+		expect(mocks.refreshExtensionInventory).not.toHaveBeenCalled();
+	});
+
 	it("shows provider-specific inventories and folded manifest review", async () => {
 		mocks.getExtensionInventory.mockResolvedValue(inventory);
 		mocks.getExtensionReview.mockResolvedValue({
@@ -216,6 +441,128 @@ describe("ExtensionsSection", () => {
 		expect(screen.getByText("Windows")).toBeTruthy();
 		expect(screen.getAllByText("Disabled").length).toBeGreaterThan(0);
 		expect(screen.getByText("Complete manifest")).toBeTruthy();
+	});
+
+	it("reloads an open installed review when refreshed package bodies change", async () => {
+		const refreshedReview = deferred<ExtensionReview>();
+		const updatedInventory: ExtensionInventory = {
+			...inventory,
+			generatedAt: "2026-07-22T00:04:00.000Z",
+		};
+		mocks.getExtensionInventory.mockResolvedValue(inventory);
+		mocks.refreshExtensionInventory.mockResolvedValue(updatedInventory);
+		mocks.getExtensionReview
+			.mockResolvedValueOnce(
+				installedReview(
+					"Stale package review",
+					'{"name":"reviewer"}',
+					"skills/stale/SKILL.md",
+				),
+			)
+			.mockImplementationOnce(() => refreshedReview.promise);
+		render(<ExtensionsSection />);
+		fireEvent.click(await screen.findByText("Reviewer"));
+		expect(await screen.findByText("skills/stale/SKILL.md")).toBeTruthy();
+
+		fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+
+		expect(await screen.findByText("Loading package files…")).toBeTruthy();
+		expect(screen.queryByText("skills/stale/SKILL.md")).toBeNull();
+		expect(mocks.getExtensionReview).toHaveBeenCalledTimes(2);
+
+		await act(async () => {
+			refreshedReview.resolve(
+				installedReview(
+					"Current package review",
+					'{"name":"reviewer"}',
+					"skills/current/SKILL.md",
+				),
+			);
+			await refreshedReview.promise;
+		});
+		expect(await screen.findByText("skills/current/SKILL.md")).toBeTruthy();
+		expect(mocks.getExtensionReview).toHaveBeenCalledTimes(2);
+	});
+
+	it("owns pending installed reviews across an A to B to A revision cycle", async () => {
+		const firstAReview = deferred<ExtensionReview>();
+		const bReview = deferred<ExtensionReview>();
+		const secondAReview = deferred<ExtensionReview>();
+		const updatedInventory: ExtensionInventory = {
+			...inventory,
+			extensions: inventory.extensions.map((extension) =>
+				extension.id === "claude-extension"
+					? {
+							...extension,
+							version: "2.0.0",
+							lastUpdated: "2026-07-22T00:03:00.000Z",
+							manifestText: '{"name":"reviewer-v2"}',
+						}
+					: extension,
+			),
+		};
+		mocks.getExtensionInventory.mockResolvedValue(inventory);
+		mocks.refreshExtensionInventory
+			.mockResolvedValueOnce(updatedInventory)
+			.mockResolvedValueOnce(inventory);
+		mocks.getExtensionReview
+			.mockImplementationOnce(() => firstAReview.promise)
+			.mockImplementationOnce(() => bReview.promise)
+			.mockImplementationOnce(() => secondAReview.promise);
+		render(<ExtensionsSection />);
+		fireEvent.click(await screen.findByText("Reviewer"));
+		expect(await screen.findByText("Loading package files…")).toBeTruthy();
+		expect(mocks.getExtensionReview).toHaveBeenCalledOnce();
+
+		fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+		expect(await screen.findByText("2.0.0")).toBeTruthy();
+		expect(screen.getByText('{"name":"reviewer-v2"}')).toBeTruthy();
+		await waitFor(() =>
+			expect(mocks.getExtensionReview).toHaveBeenCalledTimes(2),
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+		expect(await screen.findByText("1.2.3")).toBeTruthy();
+		await waitFor(() =>
+			expect(mocks.getExtensionReview).toHaveBeenCalledTimes(3),
+		);
+
+		await act(async () => {
+			firstAReview.resolve(
+				installedReview(
+					"First A review",
+					'{"name":"reviewer-a-old"}',
+					"skills/first-a/SKILL.md",
+				),
+			);
+			await firstAReview.promise;
+		});
+		expect(screen.queryByText("skills/first-a/SKILL.md")).toBeNull();
+		expect(screen.getByText("Loading package files…")).toBeTruthy();
+		await act(async () => {
+			bReview.resolve(
+				installedReview(
+					"B review",
+					'{"name":"reviewer-b"}',
+					"skills/b/SKILL.md",
+				),
+			);
+			await bReview.promise;
+		});
+		expect(screen.queryByText("skills/b/SKILL.md")).toBeNull();
+		expect(screen.getByText("Loading package files…")).toBeTruthy();
+		await act(async () => {
+			secondAReview.resolve(
+				installedReview(
+					"Current A review",
+					'{"name":"reviewer"}',
+					"skills/current-a/SKILL.md",
+				),
+			);
+			await secondAReview.promise;
+		});
+		expect(await screen.findByText("skills/current-a/SKILL.md")).toBeTruthy();
+		expect(screen.queryByText("Loading package files…")).toBeNull();
 	});
 
 	it("browses cached marketplace entries and lazily reviews one package", async () => {
