@@ -9,11 +9,10 @@ import { createHash } from "node:crypto";
 import {
 	existsSync,
 	readFileSync,
-	readdirSync,
-	statSync,
 	writeFileSync,
 } from "node:fs";
-import { posix, resolve } from "node:path";
+import { resolve } from "node:path";
+import { scanEmbeddedFiles } from "./embed-client-files";
 
 const root = resolve(import.meta.dir, "..");
 const clientDir = resolve(root, "dist", "client");
@@ -48,21 +47,6 @@ if (!existsSync(clientDir)) {
 	process.exit(0);
 }
 
-function walk(dir: string, base = ""): string[] {
-	const entries = readdirSync(dir);
-	const files: string[] = [];
-	for (const name of entries) {
-		const abs = `${dir}/${name}`;
-		const rel = base ? posix.join(base, name) : name;
-		if (statSync(abs).isDirectory()) {
-			files.push(...walk(abs, rel));
-		} else {
-			files.push(rel);
-		}
-	}
-	return files;
-}
-
 // Hash suffix prevents collisions when distinct paths sanitize to the same
 // identifier (e.g. "foo-bar.js" and "foo_bar.js" both → "foo_bar_js").
 function safeIdent(p: string): string {
@@ -71,12 +55,14 @@ function safeIdent(p: string): string {
 	return `f_${sanitized}_${hash}`;
 }
 
-const files = walk(clientDir).sort();
+const files = scanEmbeddedFiles(clientDir);
 
 function readServerFnNames(): Array<[string, string]> {
 	if (!existsSync(serverDir)) return [];
 	const entries = new Map<string, string>();
-	for (const rel of walk(serverDir).filter((path) => path.endsWith(".js"))) {
+	for (const rel of scanEmbeddedFiles(serverDir).filter((path) =>
+		path.endsWith(".js"),
+	)) {
 		const source = readFileSync(resolve(serverDir, rel), "utf8");
 		const pattern =
 			/"([0-9a-f]{64})"\s*:\s*\{\s*functionName\s*:\s*"([A-Za-z][A-Za-z0-9_]*)_createServerFn_handler"/g;

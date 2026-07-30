@@ -14,9 +14,7 @@ export interface ReplayState {
 }
 
 /**
- * Replay-buffer + error-state transition applied on every broadcast. Shared by
- * the module-level singleton (legacy single-session path) and the per-session
- * SessionRunState so their semantics cannot drift:
+ * Replay-buffer + error-state transition applied by each SessionRunState:
  *
  * - chunk / tool_event / permission_request / permission_resolved accumulate,
  *   capped at REPLAY_BUFFER_MAX (drop oldest)
@@ -158,23 +156,11 @@ export class SessionRunState {
 	}
 }
 
-// ── Module-level singleton (legacy single-session path) ──────────────────────
-
-const moduleReplay: ReplayState = { buffer: [], lastError: null };
+// ── Global client delivery ───────────────────────────────────────────────────
 
 export const wsState = {
 	clients: new Set<ServerWebSocket<unknown>>(),
-	get lastSessionError(): string | null {
-		return moduleReplay.lastError;
-	},
-	set lastSessionError(value: string | null) {
-		moduleReplay.lastError = value;
-	},
 };
-
-export function getRunBuffer(): readonly ServerMessage[] {
-	return moduleReplay.buffer;
-}
 
 export function broadcast(msg: ServerMessage): void {
 	if (msg.type === "mcp_status")
@@ -183,8 +169,6 @@ export function broadcast(msg: ServerMessage): void {
 			.catch((e) =>
 				console.error("[runState] saveSetting mcp_status_cache failed:", e),
 			);
-
-	applyReplayTransition(moduleReplay, msg);
 
 	const data = JSON.stringify(msg);
 	for (const ws of wsState.clients) {

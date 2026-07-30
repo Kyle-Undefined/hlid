@@ -2,7 +2,7 @@
  * Utility function tests — pure logic, no mocks needed.
  */
 import { describe, expect, it } from "vitest";
-import { clampInt, cn, SESSION_LABEL_LENGTH, uid } from "./utils";
+import { clampInt, SESSION_LABEL_LENGTH, uid } from "./utils";
 
 // ── SESSION_LABEL_LENGTH ──────────────────────────────────────────────────────
 
@@ -14,31 +14,6 @@ describe("SESSION_LABEL_LENGTH", () => {
 
 	it("equals 40", () => {
 		expect(SESSION_LABEL_LENGTH).toBe(40);
-	});
-});
-
-// ── cn ────────────────────────────────────────────────────────────────────────
-
-describe("cn", () => {
-	it("joins class names", () => {
-		expect(cn("a", "b")).toBe("a b");
-	});
-
-	it("filters falsy values", () => {
-		expect(cn("a", false, null, undefined, "b")).toBe("a b");
-	});
-
-	it("merges conflicting Tailwind classes (last wins)", () => {
-		// tailwind-merge deduplicates bg- utilities
-		expect(cn("bg-red-500", "bg-blue-500")).toBe("bg-blue-500");
-	});
-
-	it("handles empty call", () => {
-		expect(cn()).toBe("");
-	});
-
-	it("handles conditional object syntax", () => {
-		expect(cn({ "text-bold": true, "text-italic": false })).toBe("text-bold");
 	});
 });
 

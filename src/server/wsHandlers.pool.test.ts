@@ -74,7 +74,6 @@ function makeManager(
 	abort: ReturnType<typeof vi.fn>;
 	skipSleep: ReturnType<typeof vi.fn>;
 	getSleepState: ReturnType<typeof vi.fn>;
-	clearHistory: ReturnType<typeof vi.fn>;
 	runQuery: ReturnType<typeof vi.fn>;
 	getPendingPermissionRequests: ReturnType<typeof vi.fn>;
 	getPendingAskUserQuestions: ReturnType<typeof vi.fn>;
@@ -105,7 +104,6 @@ function makeManager(
 		abort: vi.fn(),
 		skipSleep: vi.fn(),
 		getSleepState: vi.fn().mockReturnValue(null),
-		clearHistory: vi.fn(),
 		reinitialize: vi.fn(),
 		syncConfig: vi.fn().mockReturnValue(false),
 		runQuery: vi.fn().mockResolvedValue(undefined),
@@ -366,84 +364,6 @@ describe("close (pool)", () => {
 		open(ws as never);
 		close(ws as never);
 		expect(vault.runState.removeSubscriber).toHaveBeenCalledWith(ws);
-	});
-});
-
-// ── new_session ───────────────────────────────────────────────────────────────
-
-describe("message — new_session", () => {
-	it("calls pool.create with provided agent_cwd and agent_name", async () => {
-		const vault = makeEntry("vault-id");
-		const newEntry = makeEntry("new-session-id");
-		newEntry.agentCwd = "/code/proj";
-		newEntry.agentName = "My Agent";
-		const pool = makePool(vault);
-		pool.create.mockReturnValue(newEntry);
-		const { message } = createWsHandlers(pool);
-		const ws = makeWs();
-		await message(
-			ws as never,
-			JSON.stringify({
-				type: "new_session",
-				agent_cwd: "/code/proj",
-				agent_name: "My Agent",
-			}),
-		);
-		expect(pool.create).toHaveBeenCalledWith("/code/proj", "My Agent");
-	});
-
-	it("defaults agent_cwd to vault cwd when omitted", async () => {
-		const vault = makeEntry("vault-id");
-		vault.agentCwd = "/tmp/vault";
-		const newEntry = makeEntry("new-id");
-		const pool = makePool(vault);
-		pool.create.mockReturnValue(newEntry);
-		const { message } = createWsHandlers(pool);
-		const ws = makeWs();
-		await message(ws as never, JSON.stringify({ type: "new_session" }));
-		const [cwd] = pool.create.mock.calls[0] as [string, string];
-		expect(cwd).toBe("/tmp/vault");
-	});
-
-	it("sends session_created to the requesting ws", async () => {
-		const vault = makeEntry("vault-id");
-		const newEntry = makeEntry("new-session-id");
-		newEntry.agentCwd = "/code/proj";
-		newEntry.agentName = "My Agent";
-		const pool = makePool(vault);
-		pool.create.mockReturnValue(newEntry);
-		const { message } = createWsHandlers(pool);
-		const ws = makeWs();
-		await message(
-			ws as never,
-			JSON.stringify({
-				type: "new_session",
-				agent_cwd: "/code/proj",
-				agent_name: "My Agent",
-			}),
-		);
-		const calls = mockSend.mock.calls.filter((c) => c[0] === ws);
-		const createdMsg = calls.find((c) => c[1].type === "session_created");
-		expect(createdMsg).toBeDefined();
-		expect(createdMsg?.[1]).toMatchObject({
-			type: "session_created",
-			session_id: "new-session-id",
-			agent_cwd: "/code/proj",
-			agent_name: "My Agent",
-		});
-	});
-
-	it("broadcasts sessions_status to all clients after create", async () => {
-		const vault = makeEntry("vault-id");
-		const newEntry = makeEntry("new-session-id");
-		const pool = makePool(vault);
-		pool.create.mockReturnValue(newEntry);
-		const { message } = createWsHandlers(pool);
-		const ws = makeWs();
-		await message(ws as never, JSON.stringify({ type: "new_session" }));
-		expect(mockBroadcast).toHaveBeenCalledWith(
-			expect.objectContaining({ type: "sessions_status" }),
-		);
 	});
 });
 
@@ -1569,7 +1489,7 @@ describe("message — abort (pool)", () => {
 // ── clear routes to subscribed session ───────────────────────────────────────
 
 describe("message — clear (pool)", () => {
-	it("sets pendingNewSession flag without calling clearHistory", async () => {
+	it("sets the pendingNewSession flag", async () => {
 		const vault = makeEntry("vault-id");
 		const other = makeEntry("other-id");
 		const pool = makePool(vault);
@@ -1581,9 +1501,6 @@ describe("message — clear (pool)", () => {
 		const { message } = createWsHandlers(pool);
 		const ws = makeWs("other-id");
 		await message(ws as never, JSON.stringify({ type: "clear" }));
-		// clearHistory must NOT be called — the existing subprocess stays alive
-		expect(other.manager.clearHistory).not.toHaveBeenCalled();
-		expect(vault.manager.clearHistory).not.toHaveBeenCalled();
 		// pendingNewSession flag must be set so the next chat spawns a fresh entry
 		expect(ws.data.pendingNewSession).toBe(true);
 	});

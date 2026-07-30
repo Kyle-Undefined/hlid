@@ -80,7 +80,6 @@ const DB_GET_HANDLERS: Record<string, DbGetHandler> = {
 		getSessionScopedRows(url, db.getSessionAskUserQuestions),
 	"/db/weekly-stats": () => getWeeklyStats(),
 	"/db/thirty-day-stats": () => getThirtyDayStats(),
-	"/db/usage-windows": () => getUsageWindows(),
 	"/db/provider-usage": ({ url }) => getProviderUsage(url),
 	"/db/attachments": ({ url }) => getAttachments(url),
 	"/db/logs": ({ url }) => getLogs(url),
@@ -492,44 +491,6 @@ async function getSessionScopedRows<T>(
 		? clampInt(maxSeqParam, 0, 0, Number.MAX_SAFE_INTEGER)
 		: undefined;
 	return Response.json(await query(sessionId, minSeq, beforeSeq, maxSeq));
-}
-
-async function getUsageWindows(): Promise<Response> {
-	const cached = await readAnalyticsSnapshot(
-		"providerUsage",
-		"legacy-usage-windows",
-		() => db.getUsageWindows(),
-		{ maxAgeMs: 15_000 },
-	);
-	const windows = {
-		...cached,
-		fiveHour: { ...cached.fiveHour },
-		weekly: { ...cached.weekly },
-		weeklySonnet: cached.weeklySonnet ? { ...cached.weeklySonnet } : null,
-	};
-	// Overlay in-memory high-water marks. DB writes are async/void so the mark
-	// is always more current during a session; DB is the cold-start fallback only.
-	const m5 = getWindowMark("claude", "five_hour");
-	const mW = getWindowMark("claude", "weekly");
-	const mS = getWindowMark("claude", "weekly_sonnet");
-	if (m5)
-		windows.fiveHour = {
-			...windows.fiveHour,
-			utilization: m5.utilization,
-			resetsAt: m5.resetsAt,
-		};
-	if (mW)
-		windows.weekly = {
-			...windows.weekly,
-			utilization: mW.utilization,
-			resetsAt: mW.resetsAt,
-		};
-	if (mS)
-		windows.weeklySonnet = {
-			utilization: mS.utilization,
-			resetsAt: mS.resetsAt,
-		};
-	return Response.json(windows);
 }
 
 async function getProviderUsage(url: URL): Promise<Response> {

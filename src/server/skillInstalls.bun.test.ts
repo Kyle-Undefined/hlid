@@ -1,3 +1,4 @@
+// Bun lane: staged skill metadata is parsed by Bun.YAML.
 import {
 	existsSync,
 	mkdirSync,

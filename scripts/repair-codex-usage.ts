@@ -1,9 +1,9 @@
 import {
 	applyCodexUsageRepair,
 	planCodexUsageRepair,
-	tokenBucketTotal,
 	type CodexUsageRepairManifest,
 } from "../src/db/codexUsageRepair";
+import { usageRepairTokenSummary } from "../src/db/usageRepairShared";
 import {
 	countByReason,
 	finalizeMaintenanceDatabase,
@@ -35,9 +35,7 @@ function summarize(manifest: CodexUsageRepairManifest): Record<string, unknown> 
 		providerLabelCorrections: manifest.providerCorrections.length,
 		unresolvedRows: manifest.unresolved.length,
 		unresolvedByReason: countByReason(manifest.unresolved),
-		coveredTokensBefore: tokenBucketTotal(manifest.totals.before),
-		coveredTokensAfter: tokenBucketTotal(manifest.totals.after),
-		delta: tokenBucketTotal(manifest.totals.after) - tokenBucketTotal(manifest.totals.before),
+		...usageRepairTokenSummary(manifest),
 	};
 }
 

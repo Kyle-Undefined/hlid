@@ -1,6 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-import { HlidConfigSchema } from "#/config";
-import { assembleCockpitData, collectCockpitData } from "./cockpitData";
+import { describe, expect, it } from "vitest";
+import { assembleCockpitData } from "./cockpitData";
 
 function skill(name: string) {
 	return {
@@ -12,7 +11,18 @@ function skill(name: string) {
 	};
 }
 
-describe("collectCockpitData", () => {
+function project(status: "active" | "done") {
+	return {
+		file: `${status}.md`,
+		title: status,
+		status,
+		rawStatus: status,
+		tags: [],
+		isFolder: false,
+	};
+}
+
+describe("assembleCockpitData", () => {
 	it("merges Hlid-managed skills without coupling them to a provider", () => {
 		const result = assembleCockpitData({
 			inboxCount: 0,
@@ -49,36 +59,12 @@ describe("collectCockpitData", () => {
 	});
 
 	it("aggregates projects and merges Claude skills without duplicates", () => {
-		const readDirectory = vi.fn(() => ["one.md", "two.txt", "three.md"]);
-		const scanProjects = vi.fn(() => [
-			{ status: "active" },
-			{ status: "done" },
-		]);
-		const scanSkills = vi
-			.fn()
-			.mockReturnValueOnce({
-				skills: [skill("Shared"), skill("Vault")],
-				sectionOrder: ["core"],
-			})
-			.mockReturnValueOnce({
-				skills: [skill("shared"), skill("Claude")],
-				sectionOrder: [],
-			});
-		const config = HlidConfigSchema.parse({
-			vault: {
-				path: "/vault",
-				inbox: "Inbox",
-				projects: "Projects",
-				skills: "Skills",
-			},
-		});
-
-		const result = collectCockpitData(config, {
-			readDirectory,
-			scanProjects: scanProjects as never,
-			scanSkills,
-			joinPath: (...parts) => parts.join("/"),
-			claudeSkillsDir: "/home/.claude/skills",
+		const result = assembleCockpitData({
+			inboxCount: 2,
+			projects: [project("active"), project("done")],
+			vaultSkills: [skill("Shared"), skill("Vault")],
+			sectionOrder: ["core"],
+			claudeSkills: [skill("shared"), skill("Claude")],
 		});
 
 		expect(result).toMatchObject({
@@ -98,22 +84,5 @@ describe("collectCockpitData", () => {
 			providerId: "claude",
 			section: "claude",
 		});
-	});
-
-	it("treats a missing inbox as empty without hiding other data", () => {
-		const missing = Object.assign(new Error("missing"), { code: "ENOENT" });
-		const config = HlidConfigSchema.parse({ vault: { path: "/vault" } });
-		const result = collectCockpitData(config, {
-			readDirectory: () => {
-				throw missing;
-			},
-			scanProjects: () => [],
-			scanSkills: () => ({ skills: [], sectionOrder: [] }),
-			joinPath: (...parts) => parts.join("/"),
-			claudeSkillsDir: "/home/.claude/skills",
-		});
-
-		expect(result.inboxCount).toBe(0);
-		expect(result.skills).toEqual([]);
 	});
 });

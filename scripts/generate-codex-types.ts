@@ -10,9 +10,8 @@
 //   2. Walks the import graph from a curated seed list so the copied set is
 //      self-contained (every relative import a seed file needs, transitively).
 //   3. Copies that closure into src/server/codexProtocol/, preserving the
-//      generator's own directory layout (so relative imports need no rewrite),
-//      with a vendoring banner prepended to each file.
-//   4. Writes an index.ts barrel re-exporting the seed types.
+//      generator's own directory layout, contents, and ownership notices.
+//   4. Writes an Hlid-owned index.ts barrel re-exporting the seed types.
 //
 // Idempotent: wipes and rewrites src/server/codexProtocol/ on every run.
 // Pinned to a CLI version deliberately — re-run this manually after a codex
@@ -204,16 +203,12 @@ async function walkClosure(
 	return visited;
 }
 
-function banner(cliVersion: string): string {
-	const date = new Date().toISOString().slice(0, 10);
-	return `// AUTO-GENERATED — vendored from codex-cli's \`codex app-server generate-ts\`.
-// CLI version: ${cliVersion} (pinned to ${CLI_VERSION_PIN} in scripts/generate-codex-types.ts)
-// Generated: ${date}
+const BARREL_BANNER = `// AUTO-GENERATED — Hlid-owned barrel for vendored codex-cli app-server types.
+// Source version: ${CLI_VERSION_PIN} (pinned in scripts/generate-codex-types.ts).
 // Regenerate via \`bun scripts/generate-codex-types.ts\`; version bumps are
 // deliberate manual updates, not run automatically on every build.
 
 `;
-}
 
 async function main(): Promise<void> {
 	if (!existsSync(join(root, "package.json"))) {
@@ -258,12 +253,11 @@ async function main(): Promise<void> {
 		rmSync(outDir, { recursive: true, force: true });
 		await mkdir(outDir, { recursive: true });
 
-		const b = banner(cliVersion);
 		for (const rel of closure) {
 			const content = await readFile(join(genRoot, rel), "utf8");
 			const dest = join(outDir, rel);
 			await mkdir(dirname(dest), { recursive: true });
-			await writeFile(dest, b + content);
+			await writeFile(dest, content);
 		}
 
 		const barrelLines = SEEDS.map(([name, relPath]) => {
@@ -272,7 +266,7 @@ async function main(): Promise<void> {
 		});
 		await writeFile(
 			join(outDir, "index.ts"),
-			`${b}${barrelLines.join("\n")}\n`,
+			`${BARREL_BANNER}${barrelLines.join("\n")}\n`,
 		);
 
 		console.log(

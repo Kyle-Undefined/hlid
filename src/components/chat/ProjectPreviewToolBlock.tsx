@@ -1,3 +1,5 @@
+/// <reference lib="es2023.array" />
+
 import {
 	AlertTriangle,
 	Camera,
@@ -376,23 +378,12 @@ function isActivePreviewState(state: ProjectPreviewSnapshot["state"]): boolean {
 	return state === "starting" || state === "ready";
 }
 
-function findLastProjectPreviewEventIndex(
-	events: ToolEventMessage[],
-	matches: (event: ToolEventMessage) => boolean,
-): number {
-	for (let index = events.length - 1; index >= 0; index--) {
-		const event = events[index];
-		if (event && matches(event)) return index;
-	}
-	return -1;
-}
-
 export function selectActiveProjectPreviewEvents(
 	events: ToolEventMessage[],
 	livePreview: ProjectPreviewSnapshot | null,
 	sessionActive: boolean,
 ): ToolEventMessage[] {
-	const latestStartIndex = findLastProjectPreviewEventIndex(events, (event) =>
+	const latestStartIndex = events.findLastIndex((event) =>
 		event.name.endsWith("start_project_preview"),
 	);
 	if (latestStartIndex >= 0) {
@@ -420,8 +411,7 @@ export function selectActiveProjectPreviewEvents(
 		}
 	}
 	if (!livePreview || !isActivePreviewState(livePreview.state)) return [];
-	const matchingStartIndex = findLastProjectPreviewEventIndex(
-		events,
+	const matchingStartIndex = events.findLastIndex(
 		(event) =>
 			event.name.endsWith("start_project_preview") &&
 			projectPreviewEventId(event) === livePreview.id,

@@ -1133,41 +1133,6 @@ describe("SessionManager — session-scoped permission persistence", () => {
 		expect(sm.getPendingPermissionRequests()).toHaveLength(0);
 	});
 
-	it("clearHistory clears session allowlist — tool prompts again after clear", async () => {
-		const provider = makeProvider("Bash");
-		const sm = new SessionManager(makeConfig(), makeProviders(provider));
-
-		const turn1 = sm.runQuery("hello", () => {}, {
-			sessionId: "sess-1",
-		});
-		await waitFor(() =>
-			expect(sm.getPendingPermissionRequests()).toHaveLength(1),
-		);
-		sm.handlePermissionResponse("tid-1", true, "session");
-		await turn1;
-
-		sm.clearHistory();
-
-		const provider2 = makeProvider("Bash", "tid-2");
-		const sm2 = new SessionManager(makeConfig(), makeProviders(provider2));
-		// sm2 has clean state — should prompt for Bash
-		const emittedTurn2: unknown[] = [];
-		const turn2 = sm2.runQuery("new session msg", (m) => emittedTurn2.push(m), {
-			sessionId: "sess-2",
-		});
-		await waitFor(() =>
-			expect(sm2.getPendingPermissionRequests()).toHaveLength(1),
-		);
-		expect(
-			emittedTurn2.some(
-				(m) => (m as { type: string }).type === "permission_request",
-			),
-		).toBe(true);
-
-		sm2.handlePermissionResponse("tid-2", false);
-		await turn2;
-	});
-
 	it("reinitialize clears session allowlist", async () => {
 		const provider = makeProvider("Read");
 		const sm = new SessionManager(makeConfig(), makeProviders(provider));

@@ -40,28 +40,12 @@
 			"exports": ["setDbForTest"]
 		},
 		{
-			"file": "src/db/sessions.ts",
-			"exports": ["setSessionClaudeId"]
-		},
-		{
 			"file": "src/lib/updates.ts",
 			"exports": ["cleanupStagingDir"]
 		},
 		{
-			"file": "src/lib/usageWindows.ts",
-			"exports": ["applyRateLimitToWindowData", "mergeUsageWindows"]
-		},
-		{
 			"file": "src/server/codexAppServer.ts",
 			"exports": ["__resetCodexAppServersForTesting"]
-		},
-		{
-			"file": "src/server/runState.ts",
-			"exports": ["getRunBuffer"]
-		},
-		{
-			"file": "src/db/index.ts",
-			"exports": ["UsageWindow"]
 		},
 		{
 			"file": "src/server/usageGate.ts",
@@ -128,7 +112,6 @@
 		,"handlePermissionResponse"
 		,"getPendingAskUserQuestions"
 		,"handleAskUserQuestionResponse"
-		,"clearHistory"
 		,"runQuery"
 		,"cancelQueued"
 		,"promoteQueued"

@@ -29,7 +29,7 @@ export function getWindowMark(
 
 /**
  * Update the in-memory mark from a CLI rate_limit event.
- * Called by session.ts handleRateLimit so /db/usage-windows overlay reflects
+ * Called by session.ts handleRateLimit so /db/provider-usage reflects
  * live values even when the SDK reports rate-limit info directly (not via
  * proxy response headers). Always reflects the latest reading — external
  * Anthropic resets can lower utilization within the same window period

@@ -1,10 +1,9 @@
 /**
  * runState unit tests.
  *
- * Replay-buffer + error-state semantics are tested once against the shared
- * applyReplayTransition helper. The module-level broadcast and SessionRunState
- * suites only cover their own wiring (delivery, tagging, subscribers) plus one
- * smoke test each proving they run messages through the shared transition.
+ * Replay-buffer + error-state semantics are tested against the
+ * applyReplayTransition helper and SessionRunState. The global broadcast suite
+ * covers client delivery only.
  * DB is mocked to prevent bun:sqlite from loading in Node.js vitest.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -21,7 +20,6 @@ import type { ServerMessage } from "./protocol";
 import {
 	applyReplayTransition,
 	broadcast,
-	getRunBuffer,
 	REPLAY_BUFFER_MAX,
 	type ReplayState,
 	SessionRunState,
@@ -64,12 +62,9 @@ const DONE_MSG: ServerMessage = {
 	tokens_in_context: null,
 };
 
-/** Reset module-level mutable state before each test. */
+/** Reset global client state before each test. */
 function resetState() {
 	wsState.clients.clear();
-	wsState.lastSessionError = null;
-	// Flush the module run buffer by broadcasting a status/running message
-	broadcast({ type: "status", state: "running", model: "__reset__" });
 }
 
 beforeEach(() => {
@@ -164,7 +159,7 @@ describe("applyReplayTransition", () => {
 	});
 });
 
-// ── broadcast (module singleton) — wiring ────────────────────────────────────
+// ── global broadcast delivery ────────────────────────────────────────────────
 
 describe("broadcast — client delivery", () => {
 	it("sends serialized message to all connected clients", () => {
@@ -193,21 +188,6 @@ describe("broadcast — client delivery", () => {
 
 	it("does not throw when clients set is empty", () => {
 		expect(() => broadcast({ type: "chunk", text: "quiet" })).not.toThrow();
-	});
-});
-
-describe("broadcast — replay transition wiring", () => {
-	it("runs messages through the shared transition (buffer + lastSessionError)", () => {
-		broadcast({ type: "chunk", text: "a" });
-		expect(getRunBuffer()).toHaveLength(1);
-		expect(getRunBuffer()[0]).toMatchObject({ type: "chunk", text: "a" });
-
-		broadcast({ type: "error", message: "boom" });
-		expect(getRunBuffer()).toHaveLength(0);
-		expect(wsState.lastSessionError).toBe("boom");
-
-		broadcast({ type: "status", state: "running", model: "m" });
-		expect(wsState.lastSessionError).toBeNull();
 	});
 });
 

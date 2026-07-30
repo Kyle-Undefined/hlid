@@ -13,10 +13,10 @@ import { createClaudeHistorySessionStore } from "../server/claudeHistorySessionS
 import {
 	applyProviderHistoryImport,
 	discoverClaudeHistoryRoots,
-	historyTokenTotal,
 	planProviderHistoryImport,
 } from "./providerHistoryImport";
 import { setDbForTest } from "./schema";
+import { usageTokenTotal } from "./usageRepairShared";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -377,7 +377,7 @@ describe("provider history import", () => {
 		});
 		expect(first.sessions).toHaveLength(1);
 		expect(first.sessions[0].queries).toHaveLength(1);
-		expect(historyTokenTotal(first.sessions[0].queries[0].usage)).toBe(110);
+		expect(usageTokenTotal(first.sessions[0].queries[0].usage)).toBe(110);
 		await applyProviderHistoryImport(db, first);
 
 		writeJsonl(childPath, [
@@ -390,7 +390,7 @@ describe("provider history import", () => {
 		});
 		expect(second.sessions).toHaveLength(1);
 		expect(second.sessions[0].queries).toHaveLength(1);
-		expect(historyTokenTotal(second.sessions[0].queries[0].usage)).toBe(55);
+		expect(usageTokenTotal(second.sessions[0].queries[0].usage)).toBe(55);
 		expect(
 			second.skipped.some((row) => row.reason === "provenance-conflict"),
 		).toBe(false);
@@ -612,7 +612,7 @@ describe("provider history import", () => {
 			cacheReadTokens: 31,
 			cacheCreationTokens: 0,
 		});
-		expect(historyTokenTotal(query.usage)).toBe(56);
+		expect(usageTokenTotal(query.usage)).toBe(56);
 		expect(query.estimatedCost).toBeCloseTo(0.0001803);
 		expect(query.unpriced).toBe(0);
 		expect(query.evidence.childIds).toEqual(["agent-child"]);
@@ -876,7 +876,7 @@ describe("provider history import", () => {
 			cacheReadTokens: 0,
 			cacheCreationTokens: 0,
 		});
-		expect(historyTokenTotal(manifest.totals)).toBe(110);
+		expect(usageTokenTotal(manifest.totals)).toBe(110);
 
 		await applyProviderHistoryImport(db, manifest);
 		expect(

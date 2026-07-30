@@ -1,9 +1,9 @@
 import {
 	applyClaudeUsageRepair,
-	claudeTokenTotal,
 	planClaudeUsageRepair,
 	type ClaudeUsageRepairManifest,
 } from "../src/db/claudeUsageRepair";
+import { usageRepairTokenSummary } from "../src/db/usageRepairShared";
 import {
 	countByReason,
 	finalizeMaintenanceDatabase,
@@ -36,11 +36,7 @@ function summarize(manifest: ClaudeUsageRepairManifest): Record<string, unknown>
 		repairableRows: manifest.rows.length,
 		unresolvedRows: manifest.unresolved.length,
 		unresolvedByReason: countByReason(manifest.unresolved),
-		coveredTokensBefore: claudeTokenTotal(manifest.totals.before),
-		coveredTokensAfter: claudeTokenTotal(manifest.totals.after),
-		delta:
-			claudeTokenTotal(manifest.totals.after) -
-			claudeTokenTotal(manifest.totals.before),
+		...usageRepairTokenSummary(manifest),
 	};
 }
 

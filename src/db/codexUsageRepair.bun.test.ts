@@ -7,8 +7,8 @@ import {
 	applyCodexUsageRepair,
 	loadCodexRollouts,
 	planCodexUsageRepair,
-	tokenBucketTotal,
 } from "./codexUsageRepair";
+import { usageTokenTotal } from "./usageRepairShared";
 
 const tempDirs: string[] = [];
 
@@ -187,7 +187,7 @@ describe("legacy Codex rollout parsing", () => {
 		expect(
 			rollout?.turns.map((turn) =>
 				turn.increments.reduce(
-					(total, increment) => total + tokenBucketTotal(increment.usage),
+					(total, increment) => total + usageTokenTotal(increment.usage),
 					0,
 				),
 			),
@@ -514,7 +514,7 @@ describe("Codex usage repair", () => {
 			cacheCreationTokens: 0,
 		});
 		expect(manifest.rows[0].evidence.childThreadIds).toEqual(["thread-child"]);
-		expect(tokenBucketTotal(manifest.totals.after)).toBe(260);
+		expect(usageTokenTotal(manifest.totals.after)).toBe(260);
 
 		const applied = applyCodexUsageRepair(db, manifest);
 		expect(applied.appliedRows).toBe(1);

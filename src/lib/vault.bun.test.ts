@@ -3,6 +3,7 @@
  * Uses real temp-dir fixtures; no mocks required.
  */
 import {
+	chmodSync,
 	mkdirSync,
 	mkdtempSync,
 	rmSync,
@@ -238,5 +239,76 @@ describe("scanMemory", () => {
 		const results = scanMemory(root, "memory");
 		const names = results.map((r) => r.name).sort();
 		expect(names).toEqual(["nested", "top"]);
+		expect(results.find((result) => result.name === "nested")?.path).toBe(
+			join("sub", "nested.md"),
+		);
 	});
+
+	it("keeps hidden Markdown files and strips frontmatter from their content", () => {
+		const mem = join(root, "memory");
+		mkdirSync(mem);
+		writeFileSync(
+			join(mem, ".context.md"),
+			md("memory body", { title: "Context" }),
+		);
+
+		expect(scanMemory(root, "memory")).toEqual([
+			{
+				path: ".context.md",
+				name: ".context",
+				content: "memory body",
+			},
+		]);
+	});
+
+	it("does not traverse symlinked files or directories", () => {
+		const mem = join(root, "memory");
+		mkdirSync(mem);
+		writeFileSync(join(mem, "real.md"), "real");
+		writeFileSync(join(outside, "outside.md"), "outside");
+		symlinkSync(outside, join(mem, "linked-directory"));
+		symlinkSync(join(outside, "outside.md"), join(mem, "linked-file.md"));
+
+		expect(scanMemory(root, "memory").map((result) => result.name)).toEqual([
+			"real",
+		]);
+	});
+
+	it.runIf(process.platform !== "win32" && process.getuid?.() !== 0)(
+		"skips an unreadable Markdown file without dropping readable siblings",
+		() => {
+			const mem = join(root, "memory");
+			mkdirSync(mem);
+			const unreadable = join(mem, "unreadable.md");
+			writeFileSync(unreadable, "unreadable");
+			writeFileSync(join(mem, "readable.md"), "readable");
+			chmodSync(unreadable, 0);
+			try {
+				expect(scanMemory(root, "memory").map((result) => result.name)).toEqual(
+					["readable"],
+				);
+			} finally {
+				chmodSync(unreadable, 0o600);
+			}
+		},
+	);
+
+	it.runIf(process.platform !== "win32" && process.getuid?.() !== 0)(
+		"skips an unreadable directory without dropping readable siblings",
+		() => {
+			const mem = join(root, "memory");
+			const unreadable = join(mem, "blocked");
+			mkdirSync(unreadable, { recursive: true });
+			writeFileSync(join(unreadable, "hidden.md"), "hidden");
+			writeFileSync(join(mem, "readable.md"), "readable");
+			chmodSync(unreadable, 0);
+			try {
+				expect(scanMemory(root, "memory").map((result) => result.name)).toEqual(
+					["readable"],
+				);
+			} finally {
+				chmodSync(unreadable, 0o700);
+			}
+		},
+	);
 });

@@ -14,7 +14,7 @@ export default defineConfig({
 			"scripts/**/*.test.ts",
 		],
 		// DB tests require bun:sqlite — run with `bun run test:db` instead
-		exclude: ["src/**/*.bun.test.ts"],
+		exclude: ["src/**/*.bun.test.ts", "scripts/**/*.bun.test.ts"],
 		coverage: {
 			provider: "v8",
 			processingConcurrency: Math.min(4, maxWorkers),
@@ -31,6 +31,13 @@ export default defineConfig({
 				"src/**/*.test-utils.ts",
 				// Covered by the separate Bun test runner, which supports bun:sqlite.
 				"src/db/**",
+				// These modules now use Bun-native APIs and are covered in the Bun lane.
+				"src/lib/frontmatter.ts",
+				"src/lib/updates.ts",
+				"src/lib/vault.ts",
+				"src/server/skillImports.ts",
+				"src/server/skillInstalls.ts",
+				"src/server/skillPackage.ts",
 				// Generated or embedded artifacts are not authored coverage targets.
 				"src/routeTree.gen.ts",
 				"src/server/codexProtocol/**",

@@ -2,11 +2,11 @@ import {
 	applyProviderHistoryImport,
 	discoverClaudeHistoryRoots,
 	discoverCodexHistoryRoots,
-	historyTokenTotal,
 	planProviderHistoryImport,
 	type ProviderHistoryImportManifest,
 } from "../src/db/providerHistoryImport";
 import { initializeSchema } from "../src/db/schema";
+import { usageTokenTotal } from "../src/db/usageRepairShared";
 import {
 	countByReason,
 	finalizeMaintenanceDatabase,
@@ -47,7 +47,7 @@ function summarize(manifest: ProviderHistoryImportManifest): Record<string, unkn
 					sessions: sessions.length,
 					queries: queries.length,
 					tokens: queries.reduce(
-						(total, query) => total + historyTokenTotal(query.usage),
+						(total, query) => total + usageTokenTotal(query.usage),
 						0,
 					),
 				},
@@ -59,7 +59,7 @@ function summarize(manifest: ProviderHistoryImportManifest): Record<string, unkn
 		scanned: manifest.scanned,
 		plannedSessions: manifest.sessions.length,
 		plannedQueries: manifest.totals.queries,
-		plannedTokens: historyTokenTotal(manifest.totals),
+		plannedTokens: usageTokenTotal(manifest.totals),
 		plannedTurns: manifest.totals.turns,
 		byProvider,
 		alreadyImported: manifest.alreadyImported,

@@ -1,6 +1,5 @@
-// AUTO-GENERATED — vendored from codex-cli's `codex app-server generate-ts`.
-// CLI version: codex-cli 0.146.0 (pinned to 0.146.0 in scripts/generate-codex-types.ts)
-// Generated: 2026-07-29
+// AUTO-GENERATED — Hlid-owned barrel for vendored codex-cli app-server types.
+// Source version: 0.146.0 (pinned in scripts/generate-codex-types.ts).
 // Regenerate via `bun scripts/generate-codex-types.ts`; version bumps are
 // deliberate manual updates, not run automatically on every build.
 

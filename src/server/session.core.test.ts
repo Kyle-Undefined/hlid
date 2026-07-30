@@ -574,37 +574,6 @@ describe("SessionManager — provider background tasks", () => {
 	});
 });
 
-// ── clearHistory ──────────────────────────────────────────────────────────────
-
-describe("SessionManager — clearHistory", () => {
-	it("does not throw", () => {
-		const sm = new SessionManager(
-			makeConfig(),
-			makeProviders(makeProvider("Bash")),
-		);
-		expect(() => sm.clearHistory()).not.toThrow();
-	});
-
-	it("session remains idle after clearHistory", () => {
-		const sm = new SessionManager(
-			makeConfig(),
-			makeProviders(makeProvider("Bash")),
-		);
-		sm.clearHistory();
-		expect(sm.getStatus().state).toBe("idle");
-	});
-
-	it("calls db.clearCurrentSessionId", () => {
-		vi.mocked(dbMock.clearCurrentSessionId).mockClear();
-		const sm = new SessionManager(
-			makeConfig(),
-			makeProviders(makeProvider("Bash")),
-		);
-		sm.clearHistory();
-		expect(vi.mocked(dbMock.clearCurrentSessionId)).toHaveBeenCalled();
-	});
-});
-
 // ── abort ─────────────────────────────────────────────────────────────────────
 
 describe("SessionManager — abort", () => {

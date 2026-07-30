@@ -106,7 +106,6 @@ vi.mock("#/components/ledger/LedgerStats", () => ({
 		value: string;
 		sub?: string;
 	}) => <div data-testid={`stat-${label}`}>{`${value}|${sub ?? ""}`}</div>,
-	StatRows: () => <div>Stat rows</div>,
 }));
 vi.mock("#/components/ledger/SessionsLedger", () => ({
 	SessionsLedger: ({

@@ -1039,13 +1039,6 @@ export type ClientPlanModeExitResponseMessage =
 
 // ── Multi-session client → server messages ────────────────────────────────────
 
-/** Create a new session (optionally for a specific agent). Server replies with session_created. */
-export type ClientNewSessionMessage = {
-	type: "new_session";
-	agent_cwd?: string;
-	agent_name?: string;
-};
-
 /** Switch this WS connection's focused session. Server replays the new session's buffer. */
 export type ClientSubscribeSessionMessage = {
 	type: "subscribe_session";
@@ -1140,7 +1133,6 @@ export type ClientMessage =
 	| ClientSyncMcpListMessage
 	| ClientAskUserQuestionResponseMessage
 	| ClientPlanModeExitResponseMessage
-	| ClientNewSessionMessage
 	| ClientSubscribeSessionMessage
 	| ClientStopSessionMessage
 	| ClientCloseSessionMessage

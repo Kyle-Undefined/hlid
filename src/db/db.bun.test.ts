@@ -77,7 +77,6 @@ import {
 	setSessionActualModel,
 	setSessionAgentCwd,
 	setSessionArchived,
-	setSessionClaudeId,
 	setSessionEffort,
 	setSessionModel,
 	setSessionPermissionMode,
@@ -97,7 +96,6 @@ import {
 	getAggregatedStats,
 	getProviderUsage,
 	getThirtyDayStats,
-	getUsageWindows,
 	getWeeklyStats,
 	registerProvider,
 } from "./usage";
@@ -573,14 +571,14 @@ describe("sessions — claude_session_id", () => {
 
 	it("sets and gets claude_session_id", async () => {
 		await createSession("s1", "L", "m");
-		await setSessionClaudeId("s1", "claude-uuid-123");
+		await setSessionProviderSession("s1", "claude", "claude-uuid-123");
 		expect(await getSessionClaudeId("s1")).toBe("claude-uuid-123");
 	});
 
-	it("setSessionClaudeId(null) clears the value", async () => {
+	it("the provider session setter clears claude_session_id", async () => {
 		await createSession("s1", "L", "m");
-		await setSessionClaudeId("s1", "claude-uuid-123");
-		await setSessionClaudeId("s1", null);
+		await setSessionProviderSession("s1", "claude", "claude-uuid-123");
+		await setSessionProviderSession("s1", "claude", null);
 		expect(await getSessionClaudeId("s1")).toBeNull();
 	});
 });
@@ -607,9 +605,9 @@ describe("sessions — provider sessions", () => {
 		expect(await getSessionClaudeId("s1")).toBeNull();
 	});
 
-	it("keeps the legacy Claude helper compatible", async () => {
+	it("keeps the legacy Claude getter compatible with provider sessions", async () => {
 		await createSession("s1", "L", "m");
-		await setSessionClaudeId("s1", "claude-uuid-123");
+		await setSessionProviderSession("s1", "claude", "claude-uuid-123");
 		expect(await getSessionProviderId("s1")).toBe("claude");
 		expect(await getSessionProviderSession("s1", "claude")).toBe(
 			"claude-uuid-123",
@@ -1889,25 +1887,6 @@ describe("usage — getThirtyDayStats", () => {
 	});
 });
 
-// ── usage — getUsageWindows ───────────────────────────────────────────────────
-
-describe("usage — getUsageWindows", () => {
-	beforeEach(() => freshDb());
-
-	it("returns zeroed windows on empty DB", async () => {
-		const { fiveHour, weekly } = await getUsageWindows();
-		expect(fiveHour.tokens).toBe(0);
-		expect(fiveHour.queries).toBe(0);
-		expect(weekly.tokens).toBe(0);
-		expect(weekly.sessions).toBe(0);
-	});
-
-	it("weeklySonnet is null when no rl setting stored", async () => {
-		const { weeklySonnet } = await getUsageWindows();
-		expect(weeklySonnet).toBeNull();
-	});
-});
-
 // ── attachments ───────────────────────────────────────────────────────────────
 
 function makeAttachment(
@@ -2393,81 +2372,6 @@ describe("usage — getWeeklyStats", () => {
 	});
 });
 
-// ── usage — getUsageWindows parseRl logic ─────────────────────────────────────
-
-describe("usage — getUsageWindows rate-limit settings", () => {
-	beforeEach(() => freshDb());
-
-	it("exposes utilization and resetsAt from rl_claude_five_hour when not expired", async () => {
-		const resetsAt = Math.floor(Date.now() / 1000) + 3600;
-		await saveSetting(
-			"rl_claude_five_hour",
-			JSON.stringify({ utilization: 0.75, resetsAt }),
-		);
-		const { fiveHour } = await getUsageWindows();
-		expect(fiveHour.utilization).toBeCloseTo(0.75);
-		expect(fiveHour.resetsAt).toBe(resetsAt);
-	});
-
-	it("ignores rl_claude_five_hour setting when resetsAt is in the past", async () => {
-		const resetsAt = Math.floor(Date.now() / 1000) - 60;
-		await saveSetting(
-			"rl_claude_five_hour",
-			JSON.stringify({ utilization: 0.9, resetsAt }),
-		);
-		const { fiveHour } = await getUsageWindows();
-		expect(fiveHour.utilization).toBeNull();
-	});
-
-	it("handles malformed JSON in rl settings without throwing", async () => {
-		await saveSetting("rl_claude_five_hour", "not-valid-json{{");
-		const { fiveHour } = await getUsageWindows();
-		expect(fiveHour.utilization).toBeNull();
-	});
-
-	it("exposes utilization and resetsAt from rl_claude_weekly when not expired", async () => {
-		const resetsAt = Math.floor(Date.now() / 1000) + 3600;
-		await saveSetting(
-			"rl_claude_weekly",
-			JSON.stringify({ utilization: 0.6, resetsAt }),
-		);
-		const { weekly } = await getUsageWindows();
-		expect(weekly.utilization).toBeCloseTo(0.6);
-		expect(weekly.resetsAt).toBe(resetsAt);
-	});
-
-	it("ignores rl_claude_weekly setting when resetsAt is in the past", async () => {
-		const resetsAt = Math.floor(Date.now() / 1000) - 60;
-		await saveSetting(
-			"rl_claude_weekly",
-			JSON.stringify({ utilization: 0.8, resetsAt }),
-		);
-		const { weekly } = await getUsageWindows();
-		expect(weekly.utilization).toBeNull();
-	});
-
-	it("returns weeklySonnet utilization when rl_claude_weekly_sonnet is set and unexpired", async () => {
-		const resetsAt = Math.floor(Date.now() / 1000) + 3600;
-		await saveSetting(
-			"rl_claude_weekly_sonnet",
-			JSON.stringify({ utilization: 0.5, resetsAt }),
-		);
-		const { weeklySonnet } = await getUsageWindows();
-		expect(weeklySonnet).not.toBeNull();
-		expect(weeklySonnet?.utilization).toBeCloseTo(0.5);
-	});
-
-	it("weeklySonnet is null when rl_claude_weekly_sonnet resetsAt expired", async () => {
-		const resetsAt = Math.floor(Date.now() / 1000) - 1;
-		await saveSetting(
-			"rl_claude_weekly_sonnet",
-			JSON.stringify({ utilization: 0.5, resetsAt }),
-		);
-		const { weeklySonnet } = await getUsageWindows();
-		expect(weeklySonnet).toBeNull();
-	});
-});
-
 // ── ledger immutability ───────────────────────────────────────────────────────
 // All-time stats (usage_daily) and window stats (usage_queries) must survive
 // session deletion. Deleting sessions should clean up disk/context but never
@@ -2556,23 +2460,6 @@ describe("ledger — usage_queries survives session deletion (window immutabilit
 			.query<{ n: number }, []>(`SELECT COUNT(*) as n FROM usage_queries`)
 			.get()?.n;
 		expect(countAfter).toBe(1);
-	});
-
-	it("getUsageWindows query count unchanged after session deletion", async () => {
-		await createSession("s1", "L", "m");
-		await recordQuery(
-			"s1",
-			baseQuery({ input_tokens: 200, output_tokens: 80 }),
-		);
-
-		const before = await getUsageWindows();
-		expect(before.fiveHour.queries).toBe(1);
-
-		await deleteSession("s1");
-
-		const after = await getUsageWindows();
-		expect(after.fiveHour.queries).toBe(1);
-		expect(after.fiveHour.tokens).toBe(before.fiveHour.tokens);
 	});
 
 	it("usage_queries has no FK to sessions (structural)", async () => {

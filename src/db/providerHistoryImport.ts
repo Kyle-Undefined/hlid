@@ -161,8 +161,6 @@ type CodexTerminalTurn = CodexTurn & {
 	terminal: "completed" | "aborted";
 };
 
-export const historyTokenTotal = usageTokenTotal;
-
 async function isDirectory(path: string): Promise<boolean> {
 	return (await stat(path).catch(() => null))?.isDirectory() === true;
 }
@@ -244,7 +242,7 @@ export async function discoverCodexHistoryRoots(
 }
 
 function positiveUsage(usage: HistoryTokenBuckets): boolean {
-	return historyTokenTotal(usage) > 0;
+	return usageTokenTotal(usage) > 0;
 }
 
 function sha256(value: string): string {

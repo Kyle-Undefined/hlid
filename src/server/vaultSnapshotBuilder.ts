@@ -3,10 +3,7 @@ import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { HlidConfig } from "../config";
-import {
-	assembleCockpitData,
-	type collectCockpitData,
-} from "../lib/cockpitData";
+import { assembleCockpitData } from "../lib/cockpitData";
 import {
 	type FolderGroup,
 	type MemoryFile,
@@ -82,7 +79,7 @@ export type VaultRouteSnapshot = {
 
 export type VaultSnapshotData = {
 	vault: VaultRouteSnapshot;
-	cockpit: ReturnType<typeof collectCockpitData>;
+	cockpit: ReturnType<typeof assembleCockpitData>;
 };
 
 function portableVaultPath(...parts: Array<string | undefined>): string {

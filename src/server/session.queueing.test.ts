@@ -426,38 +426,6 @@ describe("SessionManager — runQuery queueing", () => {
 		expect(results[1].status).toBe("fulfilled");
 		expect(calls).toBe(2);
 	});
-
-	it("clearHistory drops queued turns silently and does not start them", async () => {
-		const ctl = makeControllableProvider();
-		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
-
-		const t1 = sm.runQuery("a", () => {}, {
-			sessionId: "sess-1",
-		});
-		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
-		const t2 = sm.runQuery("b", () => {}, {
-			sessionId: "sess-1",
-		});
-
-		// Clear before turn 1 completes — turn 2 should never start.
-		sm.clearHistory();
-
-		// Let turn 1 finish so its iterator drains.
-		ctl.turns[0].resolveDone();
-		await t1;
-
-		// Give the drain loop a tick; turn 2 must not have invoked the provider.
-		await new Promise((r) => setTimeout(r, 20));
-		expect(ctl.getSendCount()).toBe(1);
-
-		// t2 should resolve (or reject) without hanging.
-		await Promise.race([
-			t2,
-			new Promise((_, rej) => setTimeout(() => rej(new Error("t2 hung")), 200)),
-		]).catch(() => {
-			/* either resolution acceptable */
-		});
-	});
 });
 
 // ── Slice C: cancelQueued ─────────────────────────────────────────────────────
@@ -1431,22 +1399,6 @@ describe("SessionManager — Slice B AgentSession reuse", () => {
 		});
 		await sm.runQuery("second", () => {}, {
 			sessionId: "sess-B",
-		});
-
-		expect(ctl.getQueryCallCount()).toBe(2);
-		ctl.closeStream();
-	});
-
-	it("clearHistory tears down the cached AgentSession", async () => {
-		const ctl = makeLongLivedProvider();
-		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
-
-		await sm.runQuery("first", () => {}, {
-			sessionId: "sess-1",
-		});
-		sm.clearHistory();
-		await sm.runQuery("second", () => {}, {
-			sessionId: "sess-2",
 		});
 
 		expect(ctl.getQueryCallCount()).toBe(2);

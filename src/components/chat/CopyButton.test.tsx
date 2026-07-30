@@ -29,4 +29,17 @@ describe("CopyButton", () => {
 		render(<CopyButton onCopy={vi.fn()} copied={true} />);
 		expect(screen.getByRole("button", { name: /copied/i })).toBeDefined();
 	});
+
+	it("lets a caller replace the default transition class", () => {
+		render(
+			<CopyButton
+				onCopy={vi.fn()}
+				copied={false}
+				className="opacity-0 transition-opacity"
+			/>,
+		);
+		const button = screen.getByRole("button");
+		expect(button.className).toContain("transition-opacity");
+		expect(button.className).not.toContain("transition-all");
+	});
 });

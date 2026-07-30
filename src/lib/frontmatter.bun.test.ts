@@ -39,4 +39,18 @@ describe("parseFrontmatter", () => {
 			content: "Body",
 		});
 	});
+
+	it("keeps date-like scalars as strings", () => {
+		expect(parseFrontmatter("---\npublished: 2026-07-30\n---\nBody")).toEqual({
+			data: { published: "2026-07-30" },
+			content: "Body",
+		});
+	});
+
+	it("does not evaluate custom scalar tags", () => {
+		expect(parseFrontmatter("---\nvalue: !custom tagged\n---\nBody")).toEqual({
+			data: { value: "tagged" },
+			content: "Body",
+		});
+	});
 });

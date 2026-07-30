@@ -1,6 +1,5 @@
 import { useSyncExternalStore } from "react";
 import * as privacyStore from "#/hooks/privacyStore";
-import { cn } from "#/lib/utils";
 
 interface PrivacyMaskProps {
 	children: React.ReactNode;
@@ -27,7 +26,7 @@ export function PrivacyMask({ children, className, inline }: PrivacyMaskProps) {
 	);
 	const Tag = inline ? "span" : "div";
 	return (
-		<Tag className={cn(className)} style={isPrivate ? BLUR_STYLE : CLEAR_STYLE}>
+		<Tag className={className} style={isPrivate ? BLUR_STYLE : CLEAR_STYLE}>
 			{children}
 		</Tag>
 	);

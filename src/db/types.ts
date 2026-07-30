@@ -218,22 +218,6 @@ export type PermissionEventRow = {
 	timestamp: number;
 };
 
-export type UsageWindow = {
-	tokens: number;
-	sessions: number;
-	queries: number;
-	cost: number;
-	utilization: number | null;
-	resetsAt: number | null;
-	rateLimitType: string | null;
-};
-
-export type UsageWindows = {
-	fiveHour: UsageWindow;
-	weekly: UsageWindow;
-	weeklySonnet: { utilization: number | null; resetsAt: number | null } | null;
-};
-
 /**
  * A single rate-limit window entry within a provider's usage snapshot.
  * `utilization` is set for plan-% style providers (Anthropic).

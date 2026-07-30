@@ -5,10 +5,6 @@ import {
 	useState,
 	useSyncExternalStore,
 } from "react";
-import {
-	type McpServerEntry,
-	mapMcpServer,
-} from "#/components/cockpit/McpPanel";
 import type { AggStats, SessionRow, ThirtyDayStats, WeeklyStats } from "#/db";
 import {
 	incrementThirtyDayStats,
@@ -20,6 +16,7 @@ import {
 	getSessionsStatus,
 	subscribeSessionsStatus,
 } from "#/hooks/wsSessionStatusStore";
+import { type McpServerEntry, mapMcpServer } from "#/lib/mcp";
 import { getActiveSessionRowFn } from "#/lib/serverFns/sessions";
 import {
 	getCockpitStatsFn,

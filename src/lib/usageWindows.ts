@@ -1,8 +1,4 @@
-import type {
-	ProviderUsageSnapshot,
-	ProviderWindowEntry,
-	UsageWindows,
-} from "#/db";
+import type { ProviderUsageSnapshot, ProviderWindowEntry } from "#/db";
 import type { RateLimitMessage } from "#/server/protocol";
 
 const EMPTY_PROVIDER_WINDOW = {
@@ -42,37 +38,13 @@ export function builtInProviderUsageShells(): ProviderUsageSnapshot[] {
 	}));
 }
 
-export function applyRateLimitToWindowData(
-	prev: UsageWindows | null,
-	rateLimit: Pick<
-		RateLimitMessage,
-		"rateLimitType" | "utilization" | "resetsAt"
-	>,
-): UsageWindows | null {
-	if (!prev || rateLimit.utilization == null) return prev;
-	const update = {
-		utilization: rateLimit.utilization,
-		resetsAt: rateLimit.resetsAt ?? null,
-	};
-	switch (rateLimit.rateLimitType) {
-		case "five_hour":
-			return { ...prev, fiveHour: { ...prev.fiveHour, ...update } };
-		case "weekly_sonnet":
-			return { ...prev, weeklySonnet: update };
-		case "weekly":
-			return { ...prev, weekly: { ...prev.weekly, ...update } };
-		default:
-			return prev;
-	}
-}
-
 type WindowReading = {
 	utilization: number | null;
 	resetsAt: number | null;
 };
 
 /**
- * Core merge rule shared by mergeUsageWindows and mergeProviderSnapshot:
+ * Core merge rule for provider usage snapshots:
  * prefer the fresh reading unless it carries no utilization for a still-valid
  * previous window (anti-flicker), in which case keep the previous reading.
  * Exported for direct unit testing.
@@ -94,41 +66,6 @@ export function preferredWindowReading(
 				resetsAt: previous.resetsAt,
 			}
 		: { utilization: fresh.utilization, resetsAt: fresh.resetsAt };
-}
-
-function mergeWindow(
-	fresh: UsageWindows["fiveHour"],
-	previous: UsageWindows["fiveHour"],
-	now: number,
-): UsageWindows["fiveHour"] {
-	return { ...fresh, ...preferredWindowReading(fresh, previous, now) };
-}
-
-function mergeSonnetWindow(
-	fresh: UsageWindows["weeklySonnet"],
-	previous: UsageWindows["weeklySonnet"],
-	now: number,
-): UsageWindows["weeklySonnet"] {
-	if (!fresh) return null;
-	return { ...fresh, ...preferredWindowReading(fresh, previous, now) };
-}
-
-export function mergeUsageWindows(
-	fresh: UsageWindows,
-	previous: UsageWindows | null,
-): UsageWindows {
-	if (!previous) return fresh;
-	const now = Date.now() / 1000;
-	return {
-		...fresh,
-		fiveHour: mergeWindow(fresh.fiveHour, previous.fiveHour, now),
-		weekly: mergeWindow(fresh.weekly, previous.weekly, now),
-		weeklySonnet: mergeSonnetWindow(
-			fresh.weeklySonnet,
-			previous.weeklySonnet,
-			now,
-		),
-	};
 }
 
 export function applyRateLimitToSnapshot(

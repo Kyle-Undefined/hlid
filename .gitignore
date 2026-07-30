@@ -4,6 +4,7 @@ dist
 dist-ssr
 *.local
 settings.json
+!src/server/fixtures/extensions/claude-code-2.1.218/settings.json
 .env
 .nitro
 .tanstack

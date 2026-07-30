@@ -8,18 +8,15 @@ import {
 	useReadAloudPreferences,
 	useReadAloudState,
 } from "#/hooks/readAloudStore";
-import { cn } from "#/lib/utils";
 
 export function ReadAloudButton({
 	messageId,
 	text,
 	dbId,
-	className,
 }: {
 	messageId: string;
 	text: string;
 	dbId?: number;
-	className?: string;
 }) {
 	const state = useReadAloudState();
 	const preferences = useReadAloudPreferences();
@@ -27,6 +24,10 @@ export function ReadAloudButton({
 	const loading = active && state.phase === "loading";
 	const playing = active && state.phase === "speaking";
 	const paused = active && state.phase === "paused";
+	const buttonStateClass =
+		loading || playing || paused
+			? "text-primary/70 opacity-100"
+			: "text-muted-foreground/40";
 	const [supported, setSupported] = useState(false);
 	const engineName =
 		preferences.provider === "microsoft"
@@ -59,11 +60,7 @@ export function ReadAloudButton({
 							? `${label} using ${engineName}`
 							: `${engineName} is unavailable`
 				}
-				className={cn(
-					"p-1 text-muted-foreground/40 transition-all hover:text-muted-foreground/80 disabled:opacity-30",
-					(loading || playing || paused) && "text-primary/70 opacity-100",
-					className,
-				)}
+				className={`p-1 transition-all hover:text-muted-foreground/80 disabled:opacity-30 ${buttonStateClass}`}
 			>
 				{loading ? (
 					<LoaderCircle aria-hidden className="w-3 h-3 animate-spin" />

@@ -836,7 +836,7 @@ export class SessionManager {
 	private isDraining = false;
 	// Slice B: long-lived AgentSession per chat. Cached by chat-scoped key so
 	// consecutive turns reuse one provider.query() invocation. Tear down on
-	// chat switch / clearHistory / abort.
+	// chat switch / abort.
 	private agentSession: AgentSession | null = null;
 	private agentSessionKey: string | null = null;
 	private realtimeMode: ProviderRealtimeMode | null = null;
@@ -2135,34 +2135,6 @@ export class SessionManager {
 		return this.planModeManager.getPending();
 	}
 
-	clearHistory(): void {
-		this.unregisterUmbodApprovalSession?.();
-		this.unregisterUmbodApprovalSession = null;
-		this.clearCurrentSessionIdentity();
-		this.providerSessionId = null;
-		this.providerSessionProviderId = null;
-		this.historyResumeMode = "none";
-		this.providerOverride = null;
-		this.providerHandoffPending = false;
-		this.messageSeq = 0;
-		this.agentCwd = undefined;
-		this.agentMode = "cwd";
-		this.sessionAllowedTools.clear();
-		this.askUserQuestions.clearAll();
-		this.planModeManager.clearAll();
-		// Drop any queued (not-yet-started) turns silently.
-		this.turnQueue.resolveAll();
-		// Slice B: tear down the AgentSession (cancels any running turn) so the
-		// next runQuery starts a fresh SDK stream for the new chat.
-		this.agentSession?.cancel();
-		this.agentSession = null;
-		this.agentSessionKey = null;
-		this.restartAgentSessionForEffort = false;
-		db.clearCurrentSessionId().catch((e) =>
-			logDbError("clearCurrentSessionId", e),
-		);
-	}
-
 	private async restoreSessionContext(
 		sessionId: string,
 		updateGlobalFocus = true,
@@ -2500,7 +2472,7 @@ export class SessionManager {
 					windowId,
 				}),
 			);
-			// Mirror into the in-memory high-water mark so /db/usage-windows
+			// Mirror into the in-memory high-water mark so /db/provider-usage
 			// overlay reflects live values immediately (not just on next cold start).
 			updateWindowMark(
 				providerId,

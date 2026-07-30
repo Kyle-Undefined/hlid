@@ -13,7 +13,7 @@ import {
 	finiteNumber,
 	storedQueriesForSession as queriesForSession,
 	rebuildUsageDate,
-	recordUsageRepairRun,
+	recordManifestUsageRepairRun,
 	type StoredQuery,
 	type StoredUsageQuery,
 	selectStoredQueryById as selectQueryById,
@@ -26,7 +26,6 @@ import {
 	usageBucketsEqual as usageEquals,
 	usageBucketsPositive as usageIsPositive,
 	storedUsageQueriesForSession as usageQueriesForSession,
-	usageTokenTotal,
 } from "./usageRepairShared";
 
 export const CODEX_USAGE_REPAIR_VERSION = 3 as const;
@@ -1222,16 +1221,7 @@ export function applyCodexUsageRepair(
 				);
 			}
 		}
-		recordUsageRepairRun(db, {
-			manifest,
-			version: manifest.version,
-			plannedRows: manifest.rows.length,
-			appliedRows,
-			alreadyCorrectRows,
-			unresolvedRows: manifest.unresolved.length,
-			beforeTokens: tokenBucketTotal(manifest.totals.before),
-			afterTokens: tokenBucketTotal(manifest.totals.after),
-		});
+		recordManifestUsageRepairRun(db, manifest, appliedRows, alreadyCorrectRows);
 	});
 	transaction.immediate();
 	return {
@@ -1243,5 +1233,3 @@ export function applyCodexUsageRepair(
 		affectedDates: affectedDates.size,
 	};
 }
-
-export const tokenBucketTotal = usageTokenTotal;

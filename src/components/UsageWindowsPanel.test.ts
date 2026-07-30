@@ -1,12 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { ProviderUsageSnapshot, UsageWindow, UsageWindows } from "#/db";
+import type { ProviderUsageSnapshot } from "#/db";
 import {
 	applyRateLimitToSnapshot,
-	applyRateLimitToWindowData,
 	builtInProviderUsageShells,
 	mergeFreshProviderSnapshots,
 	mergeProviderSnapshot,
-	mergeUsageWindows,
 	preferredWindowReading,
 	providerWindowUsage,
 } from "#/lib/usageWindows";
@@ -25,28 +23,12 @@ describe("builtInProviderUsageShells", () => {
 	});
 });
 
-function makeWindows(
-	utilization: number | null,
-	resetsAt: number | null,
-): UsageWindows {
-	const win: UsageWindow = {
-		tokens: 0,
-		queries: 0,
-		sessions: 0,
-		cost: 0,
-		utilization,
-		resetsAt,
-		rateLimitType: null,
-	};
-	return { fiveHour: win, weekly: win, weeklySonnet: null };
-}
-
 const NOW = Math.floor(Date.now() / 1000);
 const FUTURE_NEAR = NOW + 2 * 24 * 3600; // 2 days out (old window, still valid)
 const FUTURE_FAR = NOW + 7 * 24 * 3600; // 7 days out (new window after reset)
 
-// Core merge rule tested once here; mergeUsageWindows / mergeProviderSnapshot
-// both delegate to it, so their suites below only cover wrapper wiring.
+// Core merge rule tested once here; mergeProviderSnapshot delegates to it, so
+// its suite below only covers wrapper wiring.
 describe("preferredWindowReading", () => {
 	it("uses fresh utilization within same window (external reset)", () => {
 		// Anthropic can reset usage without changing resetsAt — downward moves are valid.
@@ -102,109 +84,6 @@ describe("preferredWindowReading", () => {
 			NOW,
 		);
 		expect(result).toEqual({ utilization: null, resetsAt: FUTURE_FAR });
-	});
-});
-
-describe("mergeUsageWindows", () => {
-	it("uses fresh when prev is null", () => {
-		const fresh = makeWindows(0.1, FUTURE_FAR);
-		const result = mergeUsageWindows(fresh, null);
-		expect(result.weekly.utilization).toBe(0.1);
-	});
-
-	it("applies the preferred reading per window, including weeklySonnet", () => {
-		const win: UsageWindow = {
-			tokens: 0,
-			queries: 0,
-			sessions: 0,
-			cost: 0,
-			utilization: 0.0,
-			resetsAt: FUTURE_NEAR,
-			rateLimitType: null,
-		};
-		const prev: UsageWindows = {
-			fiveHour: { ...win, utilization: 0.5 },
-			weekly: { ...win, utilization: 0.25 },
-			weeklySonnet: { utilization: 0.31, resetsAt: FUTURE_NEAR },
-		};
-		const fresh: UsageWindows = {
-			fiveHour: { ...win, utilization: 0.6 },
-			weekly: { ...win, utilization: null }, // anti-flicker path
-			weeklySonnet: { utilization: null, resetsAt: FUTURE_NEAR },
-		};
-		const result = mergeUsageWindows(fresh, prev);
-		expect(result.fiveHour.utilization).toBe(0.6);
-		expect(result.weekly.utilization).toBe(0.25);
-		expect(result.weeklySonnet?.utilization).toBe(0.31);
-	});
-});
-
-describe("applyRateLimitToWindowData", () => {
-	const base = makeWindows(0.5, FUTURE_NEAR);
-
-	it('updates fiveHour on "five_hour"', () => {
-		const result = applyRateLimitToWindowData(base, {
-			rateLimitType: "five_hour",
-			utilization: 0.9,
-			resetsAt: FUTURE_FAR,
-		});
-		expect(result?.fiveHour.utilization).toBe(0.9);
-		expect(result?.weekly.utilization).toBe(0.5); // unchanged
-	});
-
-	it('updates weekly on "weekly"', () => {
-		const result = applyRateLimitToWindowData(base, {
-			rateLimitType: "weekly",
-			utilization: 0.8,
-			resetsAt: FUTURE_FAR,
-		});
-		expect(result?.weekly.utilization).toBe(0.8);
-		expect(result?.fiveHour.utilization).toBe(0.5); // unchanged
-	});
-
-	it('updates weeklySonnet on "weekly_sonnet"', () => {
-		const withSonnet: UsageWindows = {
-			...base,
-			weeklySonnet: { utilization: 0.1, resetsAt: FUTURE_NEAR },
-		};
-		const result = applyRateLimitToWindowData(withSonnet, {
-			rateLimitType: "weekly_sonnet",
-			utilization: 0.7,
-			resetsAt: FUTURE_FAR,
-		});
-		expect(result?.weeklySonnet?.utilization).toBe(0.7);
-		expect(result?.weekly.utilization).toBe(0.5); // unchanged
-	});
-
-	it("returns prev unchanged for unknown rateLimitType (regression: old fallthrough bug)", () => {
-		// Before fix, any unknown type (e.g. SDK's "seven_day" before translation,
-		// or "overage") would fall through and clobber weekly window.
-		for (const unknown of ["seven_day", "seven_day_sonnet", "overage"]) {
-			const result = applyRateLimitToWindowData(base, {
-				rateLimitType: unknown,
-				utilization: 0.99,
-				resetsAt: FUTURE_FAR,
-			});
-			expect(result).toBe(base); // same reference = unchanged
-		}
-	});
-
-	it("returns prev unchanged when utilization is null", () => {
-		const result = applyRateLimitToWindowData(base, {
-			rateLimitType: "weekly",
-			utilization: null,
-			resetsAt: FUTURE_FAR,
-		});
-		expect(result).toBe(base);
-	});
-
-	it("returns null when prev is null", () => {
-		const result = applyRateLimitToWindowData(null, {
-			rateLimitType: "weekly",
-			utilization: 0.5,
-			resetsAt: FUTURE_FAR,
-		});
-		expect(result).toBeNull();
 	});
 });
 

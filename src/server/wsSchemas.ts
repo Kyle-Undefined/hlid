@@ -234,11 +234,6 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 				});
 			}
 		}),
-	z.strictObject({
-		type: z.literal("new_session"),
-		agent_cwd: path.optional(),
-		agent_name: z.string().min(1).max(256).optional(),
-	}),
 	z.strictObject({ type: z.literal("subscribe_session"), session_id: id }),
 	z.strictObject({ type: z.literal("stop_session"), session_id: id }),
 	z.strictObject({ type: z.literal("close_session"), session_id: id }),

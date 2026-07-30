@@ -1,0 +1,6 @@
+{
+	"enabledPlugins": {
+		"reviewer@official": true,
+		"disabled-example@official": false
+	}
+}

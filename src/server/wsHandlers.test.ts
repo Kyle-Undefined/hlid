@@ -120,7 +120,6 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		abort: vi.fn(),
 		skipSleep: vi.fn(),
 		getSleepState: vi.fn().mockReturnValue(null),
-		clearHistory: vi.fn(),
 		reinitialize: vi.fn(),
 		syncConfig: vi.fn().mockReturnValue(false),
 		runQuery: vi.fn().mockResolvedValue(undefined),
@@ -2834,109 +2833,6 @@ describe("message — sync_mcp_list (agent_cwd)", () => {
 		expect(mcpCall).toBeDefined();
 		const servers = (mcpCall?.[1] as { servers: unknown[] }).servers;
 		expect(servers).toHaveLength(0);
-	});
-});
-
-// ── message: new_session ──────────────────────────────────────────────────────
-
-describe("message — new_session", () => {
-	it("sends session_created to requesting ws", async () => {
-		const session = makeSession();
-		const { pool } = wrapSession(session);
-		const { message } = createWsHandlers(pool as never);
-		const ws = makeWs();
-		mockSend.mockClear();
-		await message(ws as never, JSON.stringify({ type: "new_session" }));
-		const createdMsg = mockSend.mock.calls.find(
-			(c) =>
-				c[0] === ws && (c[1] as { type?: string })?.type === "session_created",
-		);
-		expect(createdMsg).toBeDefined();
-	});
-
-	it("sends status and queue_state to requesting ws after creation", async () => {
-		const session = makeSession();
-		const { pool } = wrapSession(session);
-		const { message } = createWsHandlers(pool as never);
-		const ws = makeWs();
-		mockSend.mockClear();
-		await message(ws as never, JSON.stringify({ type: "new_session" }));
-		const types = mockSend.mock.calls
-			.filter((c) => c[0] === ws)
-			.map((c) => (c[1] as { type?: string })?.type);
-		expect(types).toContain("status");
-		expect(types).toContain("queue_state");
-	});
-
-	it("subscribes ws to new session (addSubscriber called)", async () => {
-		const session = makeSession();
-		const { pool, runState } = wrapSession(session);
-		const { message } = createWsHandlers(pool as never);
-		const ws = makeWs("vault-id");
-		await message(ws as never, JSON.stringify({ type: "new_session" }));
-		expect(runState.addSubscriber).toHaveBeenCalledWith(ws);
-	});
-
-	it("unsubscribes ws from old session before subscribing to new", async () => {
-		const session = makeSession();
-		const { pool, runState } = wrapSession(session);
-		const { message } = createWsHandlers(pool as never);
-		const ws = makeWs("vault-id");
-		await message(ws as never, JSON.stringify({ type: "new_session" }));
-		expect(runState.removeSubscriber).toHaveBeenCalledWith(ws);
-	});
-
-	it("updates ws.data.subscribedSessionId to new session id", async () => {
-		const session = makeSession();
-		const { pool, entry } = wrapSession(session);
-		const { message } = createWsHandlers(pool as never);
-		const ws = makeWs("vault-id");
-		await message(ws as never, JSON.stringify({ type: "new_session" }));
-		expect(ws.data.subscribedSessionId).toBe(entry.sessionId);
-	});
-
-	it("broadcasts sessions_status after creation", async () => {
-		const session = makeSession();
-		const { pool } = wrapSession(session);
-		const { message } = createWsHandlers(pool as never);
-		const ws = makeWs();
-		mockBroadcast.mockClear();
-		await message(ws as never, JSON.stringify({ type: "new_session" }));
-		expect(mockBroadcast).toHaveBeenCalledWith(
-			expect.objectContaining({ type: "sessions_status" }),
-		);
-	});
-
-	it("sends error (not throw) when pool is at capacity", async () => {
-		const session = makeSession();
-		const { pool } = wrapSession(session);
-		pool.create = vi.fn().mockImplementation(() => {
-			throw new Error(
-				"Session pool at capacity (20). Close a session before creating a new one.",
-			);
-		});
-		const { message } = createWsHandlers(pool as never);
-		const ws = makeWs();
-		await expect(
-			message(ws as never, JSON.stringify({ type: "new_session" })),
-		).resolves.toBeUndefined();
-		expect(lastSentTo(ws)).toMatchObject({
-			type: "error",
-			message: expect.stringContaining("capacity"),
-		});
-	});
-
-	it("does not broadcast sessions_status on capacity error", async () => {
-		const session = makeSession();
-		const { pool } = wrapSession(session);
-		pool.create = vi.fn().mockImplementation(() => {
-			throw new Error("capacity");
-		});
-		const { message } = createWsHandlers(pool as never);
-		const ws = makeWs();
-		mockBroadcast.mockClear();
-		await message(ws as never, JSON.stringify({ type: "new_session" }));
-		expect(mockBroadcast).not.toHaveBeenCalled();
 	});
 });
 

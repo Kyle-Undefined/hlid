@@ -226,6 +226,15 @@ describe("getStatus — fresh cache", () => {
 // ── getStatus — version string edge cases ─────────────────────────────────────
 
 describe("getStatus — version comparison edge cases", () => {
+	it("normalizes a leading v before comparing versions", async () => {
+		vi.mocked(readFile)
+			.mockResolvedValueOnce(makeCacheJson("v1.0.0") as never)
+			.mockResolvedValueOnce(makeCacheJson("V1.0.1") as never);
+
+		expect((await getStatus()).available).toBe(false);
+		expect((await getStatus()).available).toBe(true);
+	});
+
 	it("patch increment makes update available", async () => {
 		vi.mocked(readFile).mockResolvedValueOnce(makeCacheJson("1.0.1") as never);
 		const status = await getStatus();

@@ -1,3 +1,4 @@
+// Bun lane: skill frontmatter is parsed by Bun.YAML.
 import { describe, expect, it } from "vitest";
 import { skillDocumentMetadata } from "./skillPackage";
 

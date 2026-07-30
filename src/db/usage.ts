@@ -4,7 +4,6 @@ import type {
 	ProviderUsageSnapshot,
 	ProviderWindowEntry,
 	ThirtyDayStats,
-	UsageWindows,
 	WeeklyStats,
 } from "./types";
 
@@ -129,96 +128,6 @@ export async function getAggregatedStats(): Promise<AggStats> {
 			.get() ?? EMPTY_WINDOW;
 
 	return { allTime: { ...allTime, sessions: sessionCount }, today, thisMonth };
-}
-
-export async function getUsageWindows(): Promise<UsageWindows> {
-	const db = await getDb();
-
-	type WindowRow = {
-		tokens: number;
-		sessions: number;
-		queries: number;
-		cost: number;
-	};
-	const EMPTY: WindowRow = { tokens: 0, sessions: 0, queries: 0, cost: 0 };
-
-	const fiveHourRow =
-		db
-			.query<WindowRow, []>(`
-      SELECT
-		COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_creation_tokens, 0)), 0) as tokens,
-        COUNT(DISTINCT session_id) as sessions,
-        COUNT(*) as queries,
-		COALESCE(SUM(cost) + SUM(COALESCE(estimated_cost, 0)), 0) as cost
-      FROM usage_queries
-      WHERE timestamp >= strftime('%s', 'now', '-5 hours')
-    `)
-			.get() ?? EMPTY;
-
-	const weeklyRow =
-		db
-			.query<WindowRow, []>(`
-      SELECT
-		COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_creation_tokens, 0)), 0) as tokens,
-        COUNT(DISTINCT session_id) as sessions,
-        COUNT(*) as queries,
-		COALESCE(SUM(cost) + SUM(COALESCE(estimated_cost, 0)), 0) as cost
-      FROM usage_queries
-      WHERE timestamp >= strftime('%s', 'now', '-7 days')
-    `)
-			.get() ?? EMPTY;
-
-	type SettingsRow = { value: string };
-	type RlState = {
-		utilization: number | null;
-		resetsAt: number | null;
-		rateLimitType: string | null;
-	};
-	const NULL_RL: RlState = {
-		utilization: null,
-		resetsAt: null,
-		rateLimitType: null,
-	};
-
-	const parseRl = (row: SettingsRow | null): RlState => {
-		if (!row) return NULL_RL;
-		try {
-			const parsed = JSON.parse(row.value) as unknown;
-			if (typeof parsed !== "object" || parsed === null) return NULL_RL;
-			const obj = parsed as Record<string, unknown>;
-			const resetsAt = currentResetTimestamp(obj.resetsAt);
-			if (obj.resetsAt != null && resetsAt == null) return NULL_RL;
-			return {
-				utilization:
-					typeof obj.utilization === "number" ? obj.utilization : null,
-				resetsAt,
-				rateLimitType:
-					typeof obj.rateLimitType === "string" ? obj.rateLimitType : null,
-			};
-		} catch {
-			return NULL_RL;
-		}
-	};
-
-	const rl5hr = db
-		.query<SettingsRow, [string]>(`SELECT value FROM settings WHERE key = ?`)
-		.get("rl_claude_five_hour");
-	const rlWeekly = db
-		.query<SettingsRow, [string]>(`SELECT value FROM settings WHERE key = ?`)
-		.get("rl_claude_weekly");
-	const rlWeeklySonnet = db
-		.query<SettingsRow, [string]>(`SELECT value FROM settings WHERE key = ?`)
-		.get("rl_claude_weekly_sonnet");
-
-	const sonnetRl = parseRl(rlWeeklySonnet);
-	return {
-		fiveHour: { ...fiveHourRow, ...parseRl(rl5hr) },
-		weekly: { ...weeklyRow, ...parseRl(rlWeekly) },
-		weeklySonnet:
-			sonnetRl.utilization !== null
-				? { utilization: sonnetRl.utilization, resetsAt: sonnetRl.resetsAt }
-				: null,
-	};
 }
 
 /** A single rolling time-window definition for a provider. */

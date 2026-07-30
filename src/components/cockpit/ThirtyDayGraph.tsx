@@ -1,14 +1,24 @@
-import { useMemo } from "react";
 import {
-	Area,
-	AreaChart,
-	ResponsiveContainer,
-	Tooltip,
-	XAxis,
-	YAxis,
-} from "recharts";
+	type PointerEvent as ReactPointerEvent,
+	useId,
+	useMemo,
+	useState,
+} from "react";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { ThirtyDayStats } from "#/db";
+
+const CHART_WIDTH = 1_000;
+const PLOT_HEIGHT = 40;
+const PLOT_TOP = 2;
+const PLOT_BOTTOM = 38;
+const TICK_INDEXES = [0, 9, 19, 29] as const;
+
+type GraphPoint = {
+	date: string;
+	value: number;
+	x: number;
+	y: number;
+};
 
 function fmtTickDate(iso: string): string {
 	const [, m, d] = iso.split("-");
@@ -29,6 +39,53 @@ function fmtTickDate(iso: string): string {
 	return `${month} ${parseInt(d, 10)}`;
 }
 
+function buildGraphPoints(days: ThirtyDayStats["days"]): GraphPoint[] {
+	let running = 0;
+	const cumulative = days.map((day) => {
+		running += day.count;
+		return { date: day.date, value: running };
+	});
+	const maxValue = Math.max(1, ...cumulative.map((point) => point.value));
+	const xDivisor = Math.max(1, cumulative.length - 1);
+	const plotHeight = PLOT_BOTTOM - PLOT_TOP;
+
+	return cumulative.map((point, index) => ({
+		...point,
+		x: (index / xDivisor) * CHART_WIDTH,
+		y: PLOT_BOTTOM - (point.value / maxValue) * plotHeight,
+	}));
+}
+
+function linePath(points: GraphPoint[]): string {
+	return points
+		.map(
+			(point, index) =>
+				`${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`,
+		)
+		.join(" ");
+}
+
+function areaPath(points: GraphPoint[]): string {
+	if (points.length === 0) return "";
+	const first = points[0];
+	const last = points.at(-1) as GraphPoint;
+	return `${linePath(points)} L ${last.x.toFixed(2)} ${PLOT_BOTTOM} L ${first.x.toFixed(2)} ${PLOT_BOTTOM} Z`;
+}
+
+function pointerIndex(
+	event: ReactPointerEvent<SVGSVGElement>,
+	pointCount: number,
+): number | null {
+	if (pointCount === 0) return null;
+	const bounds = event.currentTarget.getBoundingClientRect();
+	if (bounds.width <= 0) return null;
+	const ratio = Math.max(
+		0,
+		Math.min(1, (event.clientX - bounds.left) / bounds.width),
+	);
+	return Math.round(ratio * (pointCount - 1));
+}
+
 export function ThirtyDayGraph({
 	data,
 	label = "30D activity",
@@ -36,23 +93,16 @@ export function ThirtyDayGraph({
 	data: ThirtyDayStats;
 	label?: string;
 }) {
-	const points = useMemo(() => {
-		let running = 0;
-		return data.days.map((d) => {
-			running += d.count;
-			return { date: d.date, value: running };
-		});
-	}, [data.days]);
-
-	const isEmpty = data.total === 0;
-
-	const tickDates = useMemo(() => {
-		if (data.days.length === 0) return [];
-		// show ~4 ticks: day 0, ~10, ~20, last
-		return [0, 9, 19, 29]
-			.filter((i) => i < data.days.length)
-			.map((i) => data.days[i].date);
-	}, [data.days]);
+	const gradientId = `thirty-day-fill-${useId().replaceAll(":", "")}`;
+	const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+	const points = useMemo(() => buildGraphPoints(data.days), [data.days]);
+	const seriesPath = useMemo(() => linePath(points), [points]);
+	const fillPath = useMemo(() => areaPath(points), [points]);
+	const tickIndexes = useMemo(
+		() => TICK_INDEXES.filter((index) => index < data.days.length),
+		[data.days.length],
+	);
+	const hoveredPoint = hoveredIndex === null ? undefined : points[hoveredIndex];
 
 	return (
 		<div className="border-b border-border shrink-0 px-4 pt-2.5 pb-0">
@@ -67,69 +117,108 @@ export function ThirtyDayGraph({
 					{data.total} queries
 				</PrivacyMask>
 			</div>
-			<ResponsiveContainer width="100%" height={56}>
-				<AreaChart
-					data={points}
-					margin={{ top: 2, right: 0, bottom: 0, left: 0 }}
+			<div className="relative h-14 w-full">
+				<svg
+					role="img"
+					aria-label="Cumulative queries over 30 days"
+					className="absolute inset-x-0 top-0 h-10 w-full touch-pan-y overflow-visible"
+					viewBox={`0 0 ${CHART_WIDTH} ${PLOT_HEIGHT}`}
+					preserveAspectRatio="none"
+					onPointerMove={(event) =>
+						setHoveredIndex(pointerIndex(event, points.length))
+					}
+					onPointerLeave={() => setHoveredIndex(null)}
 				>
+					<title>Cumulative queries over 30 days</title>
 					<defs>
-						<linearGradient id="thirtyDayFill" x1="0" y1="0" x2="0" y2="1">
-							<stop
-								offset="0%"
-								style={{ stopColor: "var(--data)" }}
-								stopOpacity={0.2}
-							/>
-							<stop
-								offset="100%"
-								style={{ stopColor: "var(--data)" }}
-								stopOpacity={0}
-							/>
+						<linearGradient
+							id={gradientId}
+							x1="0"
+							y1="0"
+							x2="0"
+							y2={PLOT_HEIGHT}
+							gradientUnits="userSpaceOnUse"
+						>
+							<stop offset="0%" stopColor="var(--data)" stopOpacity={0.2} />
+							<stop offset="100%" stopColor="var(--data)" stopOpacity={0} />
 						</linearGradient>
 					</defs>
-					<XAxis
-						dataKey="date"
-						ticks={tickDates}
-						tickFormatter={fmtTickDate}
-						tickLine={false}
-						axisLine={false}
-						tick={{
-							fontSize: 8,
-							fill: "color-mix(in oklch, var(--muted-foreground) 45%, transparent)",
-							fontFamily: "inherit",
-						}}
-						interval="preserveStartEnd"
-						height={16}
-					/>
-					<YAxis hide domain={isEmpty ? [0, 1] : ["auto", "auto"]} />
-					<Tooltip
-						content={({ active, payload }) => {
-							if (!active || !payload?.length) return null;
-							const val = payload[0]?.value;
-							if (val == null) return null;
-							return (
-								<div className="text-[9px] tabular-nums bg-background/90 border border-border px-1.5 py-0.5 rounded shadow-sm text-foreground/70">
-									{val}
-								</div>
-							);
-						}}
-						cursor={{
-							stroke: "var(--data)",
-							strokeWidth: 1,
-							strokeOpacity: 0.3,
-						}}
-					/>
-					<Area
-						type="monotone"
-						dataKey="value"
-						stroke="var(--data)"
-						strokeWidth={1.5}
-						fill="url(#thirtyDayFill)"
-						dot={false}
-						activeDot={{ r: 3, fill: "var(--data)", strokeWidth: 0 }}
-						isAnimationActive={false}
-					/>
-				</AreaChart>
-			</ResponsiveContainer>
+					{fillPath && (
+						<path
+							data-series="running-total-area"
+							d={fillPath}
+							fill={`url(#${gradientId})`}
+						/>
+					)}
+					{seriesPath && (
+						<path
+							data-series="running-total"
+							d={seriesPath}
+							fill="none"
+							stroke="var(--data)"
+							strokeWidth={1.5}
+							strokeLinejoin="round"
+							strokeLinecap="round"
+							vectorEffect="non-scaling-stroke"
+						/>
+					)}
+					{hoveredPoint && (
+						<line
+							x1={hoveredPoint.x}
+							x2={hoveredPoint.x}
+							y1={PLOT_TOP}
+							y2={PLOT_BOTTOM}
+							stroke="var(--data)"
+							strokeWidth={1}
+							strokeOpacity={0.3}
+							vectorEffect="non-scaling-stroke"
+						/>
+					)}
+				</svg>
+				{hoveredPoint && (
+					<>
+						<span
+							aria-hidden
+							className="pointer-events-none absolute h-1.5 w-1.5 rounded-full bg-[var(--data)]"
+							style={{
+								left: `${(hoveredPoint.x / CHART_WIDTH) * 100}%`,
+								top: `${(hoveredPoint.y / PLOT_HEIGHT) * 40}px`,
+								transform: "translate(-50%, -50%)",
+							}}
+						/>
+						<span
+							role="tooltip"
+							className="pointer-events-none absolute rounded border border-border bg-background/90 px-1.5 py-0.5 text-[9px] tabular-nums text-foreground/70 shadow-sm"
+							style={{
+								left: `${Math.max(3, Math.min(97, (hoveredPoint.x / CHART_WIDTH) * 100))}%`,
+								top: `${(hoveredPoint.y / PLOT_HEIGHT) * 40}px`,
+								transform: "translate(-50%, -120%)",
+							}}
+						>
+							{hoveredPoint.value}
+						</span>
+					</>
+				)}
+				{tickIndexes.map((index) => {
+					const position =
+						data.days.length <= 1 ? 0 : (index / (data.days.length - 1)) * 100;
+					const transform =
+						index === 0
+							? "none"
+							: index === data.days.length - 1
+								? "translateX(-100%)"
+								: "translateX(-50%)";
+					return (
+						<span
+							key={`${index}-${data.days[index].date}`}
+							className="absolute bottom-0 text-[8px] text-muted-foreground/45"
+							style={{ left: `${position}%`, transform }}
+						>
+							{fmtTickDate(data.days[index].date)}
+						</span>
+					);
+				})}
+			</div>
 		</div>
 	);
 }

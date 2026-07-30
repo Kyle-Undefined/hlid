@@ -147,6 +147,30 @@ export function usageTokenTotal(usage: UsageTokenBuckets): number {
 	);
 }
 
+type UsageRepairManifestSummary = {
+	version: number;
+	rows: readonly unknown[];
+	unresolved: readonly unknown[];
+	totals: {
+		before: UsageTokenBuckets;
+		after: UsageTokenBuckets;
+	};
+};
+
+export function usageRepairTokenSummary(manifest: UsageRepairManifestSummary): {
+	coveredTokensBefore: number;
+	coveredTokensAfter: number;
+	delta: number;
+} {
+	const coveredTokensBefore = usageTokenTotal(manifest.totals.before);
+	const coveredTokensAfter = usageTokenTotal(manifest.totals.after);
+	return {
+		coveredTokensBefore,
+		coveredTokensAfter,
+		delta: coveredTokensAfter - coveredTokensBefore,
+	};
+}
+
 export function tableHasColumn(
 	db: Database,
 	table: string,
@@ -263,7 +287,7 @@ export function ensureUsageRepairRunsTable(db: Database): void {
 	`);
 }
 
-export function recordUsageRepairRun(
+function recordUsageRepairRun(
 	db: Database,
 	args: {
 		manifest: unknown;
@@ -295,4 +319,23 @@ export function recordUsageRepairRun(
 			args.afterTokens,
 		],
 	);
+}
+
+export function recordManifestUsageRepairRun(
+	db: Database,
+	manifest: UsageRepairManifestSummary,
+	appliedRows: number,
+	alreadyCorrectRows: number,
+): void {
+	const tokenSummary = usageRepairTokenSummary(manifest);
+	recordUsageRepairRun(db, {
+		manifest,
+		version: manifest.version,
+		plannedRows: manifest.rows.length,
+		appliedRows,
+		alreadyCorrectRows,
+		unresolvedRows: manifest.unresolved.length,
+		beforeTokens: tokenSummary.coveredTokensBefore,
+		afterTokens: tokenSummary.coveredTokensAfter,
+	});
 }

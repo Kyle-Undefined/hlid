@@ -7,7 +7,7 @@ import {
 	finiteNumber,
 	storedQueriesForSession as queries,
 	rebuildUsageDate,
-	recordUsageRepairRun,
+	recordManifestUsageRepairRun,
 	type StoredQuery,
 	type StoredUsageQuery,
 	selectStoredQueryById as selectQuery,
@@ -19,7 +19,6 @@ import {
 	usageBucketsEqual as usageEquals,
 	usageBucketsPositive as usagePositive,
 	storedUsageQueriesForSession as usageQueries,
-	usageTokenTotal,
 } from "./usageRepairShared";
 
 export const CLAUDE_USAGE_REPAIR_VERSION = 1 as const;
@@ -739,16 +738,7 @@ export function applyClaudeUsageRepair(
 				);
 			}
 		}
-		recordUsageRepairRun(db, {
-			manifest,
-			version: manifest.version,
-			plannedRows: manifest.rows.length,
-			appliedRows,
-			alreadyCorrectRows,
-			unresolvedRows: manifest.unresolved.length,
-			beforeTokens: claudeTokenTotal(manifest.totals.before),
-			afterTokens: claudeTokenTotal(manifest.totals.after),
-		});
+		recordManifestUsageRepairRun(db, manifest, appliedRows, alreadyCorrectRows);
 	});
 	transaction.immediate();
 	return {
@@ -758,5 +748,3 @@ export function applyClaudeUsageRepair(
 		affectedDates: affectedDates.size,
 	};
 }
-
-export const claudeTokenTotal = usageTokenTotal;

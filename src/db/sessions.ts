@@ -142,13 +142,6 @@ export async function setSessionPermissionMode(
 	]);
 }
 
-export async function setSessionClaudeId(
-	sessionId: string,
-	claudeId: string | null,
-): Promise<void> {
-	await setSessionProviderSession(sessionId, "claude", claudeId);
-}
-
 export async function getSessionClaudeId(
 	sessionId: string,
 ): Promise<string | null> {

@@ -797,8 +797,3 @@ export function savePricingOverrides(text: string): PricingCatalogState {
 	overrideCache = null;
 	return getPricingCatalogState();
 }
-
-/** @internal */
-export function resetPricingCatalogCacheForTesting(): void {
-	overrideCache = null;
-}

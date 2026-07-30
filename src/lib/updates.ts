@@ -191,37 +191,8 @@ function normalizeVersion(v: string): string {
 }
 
 // Return >0 if `a` is newer than `b`, <0 if older, 0 if equal.
-// Numeric segments compared numerically; trailing prerelease (anything after
-// the first "-") makes a version *older* than the same base, matching semver.
-// For our use we only ever compare release tags from GitHub against
-// package.json — both are clean semver in practice.
 function compareVersions(a: string, b: string): number {
-	const split = (v: string) => {
-		const norm = normalizeVersion(v);
-		const dash = norm.indexOf("-");
-		const base = dash === -1 ? norm : norm.slice(0, dash);
-		const pre = dash === -1 ? "" : norm.slice(dash + 1);
-		return {
-			parts: base.split(".").map((s) => {
-				const n = parseInt(s, 10);
-				return Number.isFinite(n) ? n : 0;
-			}),
-			pre,
-		};
-	};
-	const A = split(a);
-	const B = split(b);
-	const len = Math.max(A.parts.length, B.parts.length);
-	for (let i = 0; i < len; i++) {
-		const ai = A.parts[i] ?? 0;
-		const bi = B.parts[i] ?? 0;
-		if (ai !== bi) return ai - bi;
-	}
-	// Equal base versions: a prerelease is older than a non-prerelease.
-	if (A.pre === B.pre) return 0;
-	if (!A.pre) return 1;
-	if (!B.pre) return -1;
-	return A.pre < B.pre ? -1 : 1;
+	return Bun.semver.order(normalizeVersion(a), normalizeVersion(b));
 }
 
 // Fetch the latest non-prerelease and reshape it into our cache row.

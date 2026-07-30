@@ -422,24 +422,6 @@ function sendPendingInteractions(
 	}
 }
 
-function handleNewSession(
-	context: MessageContext,
-	msg: MessageOf<"new_session">,
-): void {
-	const vault = context.pool.vaultEntry();
-	const entry = createPoolEntry(
-		context,
-		msg.agent_cwd ?? vault.agentCwd,
-		msg.agent_name ?? vault.agentName,
-	);
-	if (!entry) return;
-	subscribeToEntry(context, entry);
-	sendSessionCreated(context, entry);
-	send(context.ws, { type: "status", ...entry.manager.getStatus() });
-	sendQueueState(context.ws, entry);
-	broadcastSessionsStatus(context);
-}
-
 async function restoreDetachedStatus(
 	pool: SessionPool,
 	sessionId: string,
@@ -629,9 +611,6 @@ function handleRoutingMessage(
 	msg: ClientMessage,
 ): boolean {
 	switch (msg.type) {
-		case "new_session":
-			handleNewSession(context, msg);
-			return true;
 		case "stop_session":
 			handleStopSession(context, msg);
 			return true;

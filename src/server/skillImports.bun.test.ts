@@ -1,3 +1,4 @@
+// Bun lane: imported skill metadata is parsed by Bun.YAML.
 import {
 	mkdirSync,
 	mkdtempSync,

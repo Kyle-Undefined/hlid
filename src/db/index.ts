@@ -175,8 +175,6 @@ export type {
 	ThirtyDayStats,
 	ToolEventDetailRow,
 	ToolEventSummaryRow,
-	UsageWindow,
-	UsageWindows,
 	WeeklyStats,
 } from "./types";
 // Usage / stats
@@ -184,7 +182,6 @@ export {
 	getAggregatedStats,
 	getProviderUsage,
 	getThirtyDayStats,
-	getUsageWindows,
 	getWeeklyStats,
 	registerProvider,
 } from "./usage";

@@ -1,5 +1,3 @@
-import { load } from "js-yaml";
-
 export type Frontmatter = {
 	data: Record<string, unknown>;
 	content: string;
@@ -17,7 +15,7 @@ export function parseFrontmatter(source: string): Frontmatter {
 
 	const headerEnd = bodyStart + closingMatch.index;
 	const contentStart = headerEnd + closingMatch[0].length;
-	const parsed = load(source.slice(bodyStart, headerEnd), { json: true });
+	const parsed = Bun.YAML.parse(source.slice(bodyStart, headerEnd));
 	const data =
 		parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
 			? (parsed as Record<string, unknown>)
