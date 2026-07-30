@@ -153,4 +153,91 @@ describe("TtsModelsSection", () => {
 				.disabled,
 		).toBe(true);
 	});
+
+	it("reports a failed download and releases the busy action", async () => {
+		server.startDownload.mockRejectedValue(new Error("checksum mismatch"));
+		const onBusyChange = vi.fn();
+		const onError = vi.fn();
+		render(
+			<TtsModelsSection
+				voice={DEFAULT_VOICE_CONFIG}
+				onChange={vi.fn()}
+				info={info}
+				onInfoChange={vi.fn()}
+				busy={null}
+				onBusyChange={onBusyChange}
+				error={null}
+				onError={onError}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "DOWNLOAD" }));
+		await waitFor(() =>
+			expect(onError).toHaveBeenCalledWith("checksum mismatch"),
+		);
+		expect(onBusyChange.mock.calls).toEqual([[model.id], [null]]);
+	});
+
+	it("reports a failed deletion and releases the busy action", async () => {
+		server.deleteModel.mockRejectedValue(new Error("model is in use"));
+		const onBusyChange = vi.fn();
+		const onError = vi.fn();
+		render(
+			<TtsModelsSection
+				voice={DEFAULT_VOICE_CONFIG}
+				onChange={vi.fn()}
+				info={{
+					status: { state: "ready", model: "" },
+					models: [{ ...model, installed: true }],
+				}}
+				onInfoChange={vi.fn()}
+				busy={null}
+				onBusyChange={onBusyChange}
+				error={null}
+				onError={onError}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "DELETE" }));
+		await waitFor(() =>
+			expect(onError).toHaveBeenCalledWith("model is in use"),
+		);
+		expect(onBusyChange.mock.calls).toEqual([[model.id], [null]]);
+	});
+
+	it("cancels an active download and refreshes the model inventory", async () => {
+		server.cancelDownload.mockResolvedValue(undefined);
+		server.getInfo.mockResolvedValue(info);
+		const onInfoChange = vi.fn();
+		const onBusyChange = vi.fn();
+		render(
+			<TtsModelsSection
+				voice={DEFAULT_VOICE_CONFIG}
+				onChange={vi.fn()}
+				info={{
+					status: {
+						state: "unconfigured",
+						model: "",
+						download: {
+							model: model.id,
+							item: "model",
+							received: 10,
+							total: 100,
+						},
+					},
+					models: [model],
+				}}
+				onInfoChange={onInfoChange}
+				busy={model.id}
+				onBusyChange={onBusyChange}
+				error={null}
+				onError={vi.fn()}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "CANCEL" }));
+		await waitFor(() => expect(server.cancelDownload).toHaveBeenCalledOnce());
+		await waitFor(() => expect(onInfoChange).toHaveBeenCalledWith(info));
+		expect(onBusyChange).toHaveBeenCalledWith(null);
+	});
 });

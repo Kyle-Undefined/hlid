@@ -22,6 +22,16 @@ describe("Hlid operating guidance", () => {
 		expect(overview.relatedTopics).toContain("orchestration");
 	});
 
+	it("publishes each focused capability exactly once in topic order", () => {
+		const manifest = buildHlidCapabilityManifest({});
+		const capabilityIds = manifest.capabilities.map(({ id }) => id);
+
+		expect(capabilityIds).toEqual(
+			HLID_HELP_TOPICS.filter((topic) => topic !== "overview"),
+		);
+		expect(new Set(capabilityIds).size).toBe(capabilityIds.length);
+	});
+
 	it("builds a live Codex capability manifest without claiming Claude workflows", () => {
 		const manifest = buildHlidCapabilityManifest({
 			providerId: "codex",

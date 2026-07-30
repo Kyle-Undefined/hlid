@@ -1,0 +1,707 @@
+import {
+	COMMAND_CAPABILITY_REGISTRY,
+	type CommandAction,
+} from "../lib/commands";
+import {
+	isClaudeRuntimeProvider,
+	isCodexRuntimeProvider,
+} from "../lib/providerRuntime";
+import type { ProviderInfo } from "../lib/providerTypes";
+import type {
+	HlidCapabilityManifest,
+	HlidHelpTopic,
+	HlidOperatingContext,
+} from "./hlidHelp";
+import { boundedValue, revisionFor } from "./hlidHelpValue";
+import { buildOrchestrationTargetCatalog } from "./hlidOrchestrationTargets";
+
+type Capability = HlidCapabilityManifest["capabilities"][number];
+type Availability = Capability["availability"];
+type Guidance = NonNullable<Capability["providerGuidance"]>;
+type CapabilityMode = NonNullable<Capability["modes"]>[string];
+type SelectedModel = NonNullable<ProviderInfo["models"]>[number];
+
+type ManifestBuildOptions = {
+	contractVersion: HlidCapabilityManifest["contractVersion"];
+	helpTopics: readonly HlidHelpTopic[];
+	maxOrchestrationTargetCatalogChars: number;
+};
+
+type ManifestState = {
+	context: HlidOperatingContext;
+	providerId: string;
+	runtime: HlidCapabilityManifest["runtime"]["providerRuntime"];
+	sessionScoped: boolean;
+	workspaceAvailable: boolean;
+	vaultConfigured: boolean;
+	provider: ProviderInfo | undefined;
+	orchestrationTargets: HlidCapabilityManifest["orchestrationTargets"];
+	commandActions: CommandAction[];
+	commands: ReadonlySet<CommandAction>;
+	toolNames: string[];
+	tools: ReadonlySet<string> | null;
+	orchestrationAvailability: Availability;
+	selectedModel: SelectedModel | undefined;
+	modelAudioAvailable: boolean | undefined;
+	providerRealtime: boolean;
+	hostCapabilities:
+		| Record<string, { label: string; available: boolean; reason?: string }>
+		| undefined;
+};
+
+type VoiceState = {
+	localDictationAvailability: Availability;
+	localReadAloudAvailability: Availability;
+	nativeAudioAvailability: Availability;
+	ravenLiveAvailability: Availability;
+	voiceAvailability: Availability;
+	realtimeAvailable: boolean;
+	realtimeClientReady: boolean;
+};
+
+function providerRuntime(
+	providerId: string,
+): HlidCapabilityManifest["runtime"]["providerRuntime"] {
+	if (isClaudeRuntimeProvider(providerId)) return "claude";
+	if (isCodexRuntimeProvider(providerId)) return "codex";
+	if (providerId === "acp" || providerId.startsWith("acp:")) return "acp";
+	return "external";
+}
+
+function commandAllowedForProvider(
+	action: CommandAction,
+	providerId: string,
+): boolean {
+	const capability = COMMAND_CAPABILITY_REGISTRY[action];
+	return !capability.providerIds || capability.providerIds.includes(providerId);
+}
+
+function activeCommandActions(
+	providerId: string,
+	provider: ProviderInfo | undefined,
+): CommandAction[] {
+	const providerCapabilities = provider?.capabilities;
+	const hostCapabilities = provider?.hostCapabilities;
+	return Object.values(COMMAND_CAPABILITY_REGISTRY)
+		.filter((capability) => {
+			if (!commandAllowedForProvider(capability.name, providerId)) return false;
+			if (capability.owner === "hlid") {
+				if (capability.name === "workflows") {
+					return (
+						provider?.available !== false &&
+						providerCapabilities?.workflowCatalog === true
+					);
+				}
+				return true;
+			}
+			if (provider?.available === false) return false;
+			if (capability.name === "goal") {
+				return providerCapabilities?.goalControl === true;
+			}
+			if (capability.name === "compact" || capability.name === "review") {
+				return providerCapabilities?.structuredActivities?.includes(
+					capability.name,
+				);
+			}
+			if (capability.name === "computer-use") {
+				return hostCapabilities?.windowsComputerUse?.available === true;
+			}
+			return false;
+		})
+		.map((capability) => capability.name)
+		.sort();
+}
+
+function toolAvailability(
+	tools: ReadonlySet<string> | null,
+	required: readonly string[],
+): Availability {
+	if (!tools) return "conditional";
+	return required.every((name) => tools.has(name))
+		? "available"
+		: "unavailable";
+}
+
+function orchestrationAvailability(
+	sessionScoped: boolean,
+	workspaceAvailable: boolean,
+	tools: ReadonlySet<string> | null,
+	targets: HlidCapabilityManifest["orchestrationTargets"],
+): Availability {
+	if (!sessionScoped || !workspaceAvailable) return "conditional";
+	const availability = toolAvailability(tools, [
+		"delegate_hlid_agent",
+		"list_hlid_agents",
+		"inspect_hlid_agent",
+		"wait_hlid_agent",
+		"steer_hlid_agent",
+		"cancel_hlid_agent",
+		"resume_hlid_agent",
+	]);
+	if (availability !== "available") return availability;
+	if (targets.snapshot !== "current") return "conditional";
+	return targets.availableProviders > 0 ? "available" : "unavailable";
+}
+
+function hostCapabilitiesSnapshot(
+	provider: ProviderInfo | undefined,
+): ManifestState["hostCapabilities"] {
+	if (!provider?.hostCapabilities) return undefined;
+	return Object.fromEntries(
+		Object.entries(provider.hostCapabilities).map(([key, capability]) => [
+			boundedValue(key, 120),
+			{
+				label: boundedValue(capability.label, 160),
+				available: capability.available,
+				...(capability.reason
+					? { reason: boundedValue(capability.reason, 300) }
+					: {}),
+			},
+		]),
+	);
+}
+
+function buildManifestState(
+	context: HlidOperatingContext,
+	maxOrchestrationTargetCatalogChars: number,
+): ManifestState {
+	const providerId = context.providerId?.trim() || "external";
+	const provider = context.providerSnapshot;
+	const sessionScoped = Boolean(context.sessionId);
+	const workspaceAvailable = Boolean(context.runtimeCwd);
+	const orchestrationTargets = buildOrchestrationTargetCatalog(
+		context.providerCatalog,
+		maxOrchestrationTargetCatalogChars,
+	);
+	const commandActions = activeCommandActions(providerId, provider);
+	const toolNames = context.registeredHlidTools
+		? [...new Set(context.registeredHlidTools)].sort()
+		: [];
+	const tools = context.registeredHlidTools
+		? new Set(context.registeredHlidTools)
+		: null;
+	const selectedModel = provider?.models?.find(
+		(model) => model.value === context.model,
+	);
+	return {
+		context,
+		providerId,
+		runtime: providerRuntime(providerId),
+		sessionScoped,
+		workspaceAvailable,
+		vaultConfigured: Boolean(context.vaultName?.trim()),
+		provider,
+		orchestrationTargets,
+		commandActions,
+		commands: new Set(commandActions),
+		toolNames,
+		tools,
+		orchestrationAvailability: orchestrationAvailability(
+			sessionScoped,
+			workspaceAvailable,
+			tools,
+			orchestrationTargets,
+		),
+		selectedModel,
+		modelAudioAvailable: selectedModel?.inputModalities?.includes("audio"),
+		providerRealtime: provider?.capabilities?.realtime === true,
+		hostCapabilities: hostCapabilitiesSnapshot(provider),
+	};
+}
+
+function localRuntimeAvailability(
+	snapshot: { state: string } | undefined,
+): Availability {
+	if (snapshot?.state === "ready") return "available";
+	if (snapshot?.state === "loading" || snapshot === undefined) {
+		return "conditional";
+	}
+	return "unavailable";
+}
+
+function combinedAvailability(values: Availability[]): Availability {
+	if (
+		values.some((value) => value === "available" || value === "provider-native")
+	) {
+		return "available";
+	}
+	return values.includes("conditional") ? "conditional" : "unavailable";
+}
+
+function buildVoiceState(state: ManifestState): VoiceState {
+	const localDictationAvailability = localRuntimeAvailability(
+		state.context.voiceSnapshot,
+	);
+	const localReadAloudAvailability = localRuntimeAvailability(
+		state.context.ttsSnapshot,
+	);
+	const nativeAudioAvailability: Availability =
+		state.provider?.available === false || state.modelAudioAvailable === false
+			? "unavailable"
+			: state.modelAudioAvailable === true
+				? "provider-native"
+				: "conditional";
+	const realtimeClientReady =
+		state.providerRealtime &&
+		state.context.codexRealtimeEnabled === true &&
+		state.modelAudioAvailable === true;
+	const realtimeAvailable =
+		realtimeClientReady && state.context.codexRealtimeBackendAvailable === true;
+	const ravenLiveAvailability: Availability = realtimeAvailable
+		? "provider-native"
+		: realtimeClientReady ||
+				(state.providerRealtime &&
+					state.context.codexRealtimeEnabled === true &&
+					state.modelAudioAvailable === undefined)
+			? "conditional"
+			: "unavailable";
+	return {
+		localDictationAvailability,
+		localReadAloudAvailability,
+		nativeAudioAvailability,
+		ravenLiveAvailability,
+		voiceAvailability: combinedAvailability([
+			localDictationAvailability,
+			localReadAloudAvailability,
+			nativeAudioAvailability,
+			ravenLiveAvailability,
+		]),
+		realtimeAvailable,
+		realtimeClientReady,
+	};
+}
+
+function runtimeEnvironment(
+	runtimeCwd: string | undefined,
+): HlidCapabilityManifest["runtime"]["environment"] {
+	if (
+		process.platform === "win32" ||
+		/^[A-Za-z]:[\\/]/.test(runtimeCwd ?? "")
+	) {
+		return "windows";
+	}
+	if (process.env.WSL_DISTRO_NAME || (runtimeCwd ?? "").startsWith("/mnt/")) {
+		return "wsl";
+	}
+	if (runtimeCwd) return "host";
+	return "unknown";
+}
+
+function providerGuidance(
+	state: ManifestState,
+	source: Guidance["source"],
+): Guidance {
+	return {
+		providerId: boundedValue(state.providerId, 120),
+		source,
+	};
+}
+
+function buildRegistrySnapshot(state: ManifestState) {
+	const { context, provider, selectedModel } = state;
+	return {
+		commandActions: state.commandActions,
+		hlidTools: state.toolNames,
+		provider: provider
+			? {
+					id: boundedValue(provider.id, 120),
+					available: provider.available,
+					capabilities: provider.capabilities
+						? {
+								...provider.capabilities,
+								structuredActivities: provider.capabilities.structuredActivities
+									?.slice()
+									.sort(),
+							}
+						: undefined,
+					forkCapability: provider.forkCapability,
+					hostCapabilities: state.hostCapabilities,
+					selectedModel: selectedModel
+						? {
+								value: boundedValue(selectedModel.value, 200),
+								inputModalities: selectedModel.inputModalities?.slice().sort(),
+							}
+						: undefined,
+				}
+			: null,
+		voice: context.voiceSnapshot
+			? {
+					state: context.voiceSnapshot.state,
+					model: context.voiceSnapshot.model
+						? boundedValue(context.voiceSnapshot.model, 200)
+						: undefined,
+				}
+			: null,
+		tts: context.ttsSnapshot
+			? {
+					state: context.ttsSnapshot.state,
+					model: context.ttsSnapshot.model
+						? boundedValue(context.ttsSnapshot.model, 200)
+						: undefined,
+				}
+			: null,
+		features: {
+			codexRealtimeEnabled: context.codexRealtimeEnabled ?? false,
+			codexRealtimeBackendAvailable:
+				context.codexRealtimeBackendAvailable ?? false,
+		},
+		orchestrationTargets: state.orchestrationTargets,
+	};
+}
+
+function referencesCapability(state: ManifestState): Capability {
+	return {
+		id: "references",
+		owner: "hlid",
+		availability:
+			state.vaultConfigured || state.workspaceAvailable
+				? "available"
+				: "conditional",
+		summary:
+			"Vault and Workspace @ references are exact selections. Links, neighbors, imports, and related files stay out of scope unless the user asks.",
+	};
+}
+
+function permissionsCapability(state: ManifestState): Capability {
+	return {
+		id: "permissions",
+		owner: state.sessionScoped ? "hlid" : "provider",
+		availability: "available",
+		summary:
+			"Hlid applies its active approval policy around provider-native permission behavior. Mutations remain subject to the active policy.",
+	};
+}
+
+function sessionsCapability(state: ManifestState): Capability {
+	return {
+		id: "sessions",
+		owner: "hlid",
+		availability:
+			state.sessionScoped &&
+			state.commands.has("rename") &&
+			state.commands.has("archive")
+				? "available"
+				: "unavailable",
+		summary:
+			"Raven sessions own transcript persistence, rename, archive, exact fork provenance, usage, and retained Relic links.",
+	};
+}
+
+function contextCapability(state: ManifestState): Capability {
+	return {
+		id: "context",
+		owner: "hlid",
+		availability:
+			state.sessionScoped && state.commands.has("context")
+				? "available"
+				: "conditional",
+		summary:
+			"Hlid records a bounded receipt of the context it adds to each turn. Raven exposes it through /context without adding the receipt to the provider transcript.",
+	};
+}
+
+function plansReviewCapability(state: ManifestState): Capability {
+	return {
+		id: "plans_review",
+		owner: "hlid",
+		availability: state.sessionScoped ? "available" : "conditional",
+		summary:
+			"Hlid presents provider plan decisions and optional HTML plan documents through one approve, revise, or cancel lifecycle.",
+	};
+}
+
+function workflowsCapability(state: ManifestState): Capability {
+	const available = state.commands.has("workflows");
+	return {
+		id: "workflows",
+		owner: "provider",
+		availability: available ? "provider-native" : "unavailable",
+		providerGuidance: providerGuidance(state, "provider-command-catalog"),
+		summary: available
+			? "Claude Dynamic Workflows remain provider-native; Hlid supplies the Raven lifecycle and review surface."
+			: "The active provider does not expose Claude Dynamic Workflows.",
+	};
+}
+
+function orchestrationCapability(state: ManifestState): Capability {
+	return {
+		id: "orchestration",
+		owner: "hlid",
+		availability: state.orchestrationAvailability,
+		summary:
+			"Hlid can create nested durable Raven children across registered providers and exact configured workspaces, with bounded depth, explicit model, effort, and service-tier selection, explicit handoff, independent transcripts, passive usage reporting, native steering when available, explicit cancellation, restart continuation, provenance, and bounded results. Focused orchestration help includes a bounded snapshot of the live target provider and model catalog.",
+	};
+}
+
+function goalsCapability(state: ManifestState): Capability {
+	const available = state.commands.has("goal");
+	return {
+		id: "goals",
+		owner: "provider",
+		availability: available ? "provider-native" : "unavailable",
+		providerGuidance: providerGuidance(state, "provider-capability-catalog"),
+		summary: available
+			? "Goals use Codex's native goal lifecycle; Hlid displays and persists the live provider state."
+			: "The active provider does not expose Codex native goals.",
+	};
+}
+
+function relicsCapability(state: ManifestState): Capability {
+	return {
+		id: "relics",
+		owner: "hlid",
+		availability: toolAvailability(state.tools, ["publish_relic"]),
+		summary:
+			"Agent-generated reports and durable deliverables can be published to Hlid Relics. Ordinary source files do not belong there.",
+	};
+}
+
+function projectPreviewCapability(state: ManifestState): Capability {
+	return {
+		id: "project_preview",
+		owner: "hlid",
+		availability:
+			state.sessionScoped && state.workspaceAvailable
+				? toolAvailability(state.tools, [
+						"start_project_preview",
+						"inspect_project_preview",
+						"capture_project_preview",
+						"export_project_preview_capture",
+						"control_project_preview",
+						"stop_project_preview",
+					])
+				: "conditional",
+		summary:
+			"Project Preview can run, present, inspect, capture a high-density PNG, export an approved capture into the active workspace, and interact with a session-scoped web project.",
+	};
+}
+
+function mcpCapability(state: ManifestState): Capability {
+	return {
+		id: "mcp",
+		owner: "hlid",
+		availability: state.commands.has("mcp") ? "available" : "unavailable",
+		summary:
+			"Hlid discovers and reviews provider MCP state without flattening provider-native server semantics.",
+	};
+}
+
+function skillsExtensionsCapability(): Capability {
+	return {
+		id: "skills_extensions",
+		owner: "hlid",
+		availability: "available",
+		summary:
+			"Hlid keeps selected prompt skills, managed skill packages, and provider-native extensions distinct while supplying shared discovery and review flows.",
+	};
+}
+
+function apiCapability(state: ManifestState): Capability {
+	return {
+		id: "api",
+		owner: "hlid",
+		availability: toolAvailability(state.tools, ["hlid_api"]),
+		summary:
+			"Hlid exposes a curated live HTTP catalog through /api-index. Use hlid_api to discover only the endpoints relevant to the task.",
+	};
+}
+
+function computerUseCapability(state: ManifestState): Capability {
+	const computerUse = state.provider?.hostCapabilities?.windowsComputerUse;
+	return {
+		id: "computer_use",
+		owner: "hlid",
+		availability:
+			computerUse?.available === true
+				? "available"
+				: state.provider
+					? "unavailable"
+					: "conditional",
+		summary:
+			computerUse?.available === true
+				? "Windows Computer Use is available through a fresh Windows-native Codex worker with Hlid and native per-app approval boundaries."
+				: `Windows Computer Use is not currently proven available${
+						computerUse?.reason
+							? `: ${boundedValue(computerUse.reason, 300)}`
+							: "."
+					}`,
+	};
+}
+
+function localDictationMode(
+	state: ManifestState,
+	voice: VoiceState,
+): CapabilityMode {
+	const snapshot = state.context.voiceSnapshot;
+	return {
+		owner: "hlid",
+		availability: voice.localDictationAvailability,
+		summary:
+			snapshot?.state === "ready"
+				? "Local Whisper dictation is ready."
+				: snapshot?.state === "loading"
+					? "The configured local Whisper model is loading."
+					: snapshot
+						? `Local Whisper dictation is ${snapshot.state}.`
+						: "Local Whisper status is not available in this snapshot.",
+	};
+}
+
+function localReadAloudMode(
+	state: ManifestState,
+	voice: VoiceState,
+): CapabilityMode {
+	const snapshot = state.context.ttsSnapshot;
+	return {
+		owner: "hlid",
+		availability: voice.localReadAloudAvailability,
+		summary:
+			snapshot?.state === "ready"
+				? "Local neural read aloud is ready."
+				: snapshot?.state === "loading"
+					? "The configured local neural speech model is loading."
+					: snapshot
+						? `Local neural read aloud is ${snapshot.state}.`
+						: "Local neural read-aloud status is not available in this snapshot.",
+	};
+}
+
+function nativeAudioMode(
+	state: ManifestState,
+	voice: VoiceState,
+): CapabilityMode {
+	return {
+		owner: "provider",
+		availability: voice.nativeAudioAvailability,
+		providerGuidance: providerGuidance(state, "provider-model-catalog"),
+		summary:
+			state.modelAudioAvailable === true
+				? "The selected provider model advertises native audio input."
+				: state.modelAudioAvailable === false
+					? "The selected provider model does not advertise native audio input."
+					: "Native audio input depends on the selected provider model's current modalities.",
+	};
+}
+
+function ravenLiveMode(
+	state: ManifestState,
+	voice: VoiceState,
+): CapabilityMode {
+	return {
+		owner: "provider",
+		availability: voice.ravenLiveAvailability,
+		providerGuidance: providerGuidance(state, "provider-capability-catalog"),
+		summary: voice.realtimeAvailable
+			? "Raven Live is supported by the active provider transport, selected model, Hlid feature flag, and backend."
+			: voice.realtimeClientReady
+				? "Raven Live is client-ready; backend availability is confirmed only when the realtime session starts."
+				: "Raven Live requires a supporting provider transport, the Hlid feature flag, an audio-capable model, and backend availability.",
+	};
+}
+
+function voiceCapability(state: ManifestState, voice: VoiceState): Capability {
+	return {
+		id: "voice_audio",
+		owner: "hlid",
+		availability: voice.voiceAvailability,
+		summary:
+			"Voice is reported as separate local dictation, local neural read aloud, provider-native audio input, and Raven Live modes.",
+		modes: {
+			local_dictation: localDictationMode(state, voice),
+			local_read_aloud: localReadAloudMode(state, voice),
+			native_audio_input: nativeAudioMode(state, voice),
+			raven_live: ravenLiveMode(state, voice),
+		},
+	};
+}
+
+function providersCapability(state: ManifestState): Capability {
+	return {
+		id: "providers",
+		owner: "provider",
+		availability:
+			state.provider?.available === false
+				? "unavailable"
+				: state.provider
+					? "provider-native"
+					: "conditional",
+		providerGuidance: providerGuidance(state, "provider-capability-catalog"),
+		summary:
+			"Claude, Codex, ACP, and future providers retain their own commands, hidden context, forks, models, and lifecycle limits.",
+	};
+}
+
+function buildCapabilities(
+	state: ManifestState,
+	voice: VoiceState,
+): Capability[] {
+	return [
+		referencesCapability(state),
+		permissionsCapability(state),
+		sessionsCapability(state),
+		contextCapability(state),
+		plansReviewCapability(state),
+		workflowsCapability(state),
+		orchestrationCapability(state),
+		goalsCapability(state),
+		relicsCapability(state),
+		projectPreviewCapability(state),
+		mcpCapability(state),
+		skillsExtensionsCapability(),
+		apiCapability(state),
+		computerUseCapability(state),
+		voiceCapability(state, voice),
+		providersCapability(state),
+	];
+}
+
+function manifestRuntime(
+	state: ManifestState,
+): HlidCapabilityManifest["runtime"] {
+	const { context } = state;
+	return {
+		providerId: boundedValue(state.providerId, 120),
+		providerRuntime: state.runtime,
+		environment: runtimeEnvironment(context.runtimeCwd),
+		...(context.model ? { model: boundedValue(context.model, 200) } : {}),
+		...(context.effort ? { effort: boundedValue(context.effort, 80) } : {}),
+		sessionScoped: state.sessionScoped,
+	};
+}
+
+export function buildHlidCapabilityManifestImpl(
+	context: HlidOperatingContext,
+	options: ManifestBuildOptions,
+): HlidCapabilityManifest {
+	const state = buildManifestState(
+		context,
+		options.maxOrchestrationTargetCatalogChars,
+	);
+	return {
+		contractVersion: options.contractVersion,
+		runtime: manifestRuntime(state),
+		permissions: {
+			mode: boundedValue(context.permissionMode ?? "provider-default", 80),
+			policyEnforced: context.policyEnforced ?? false,
+			owner: state.sessionScoped ? "hlid-and-provider" : "provider",
+		},
+		references: {
+			vaultConfigured: state.vaultConfigured,
+			workspaceAvailable: state.workspaceAvailable,
+			exactSelections: true,
+			relatedExpansion: "only-when-requested",
+		},
+		registry: {
+			revision: revisionFor(
+				buildRegistrySnapshot(state),
+				options.contractVersion,
+			),
+			commandActions: state.commandActions,
+			hlidTools: state.toolNames,
+			providerSnapshot: state.provider ? "current" : "unavailable",
+		},
+		capabilities: buildCapabilities(state, buildVoiceState(state)),
+		orchestrationTargets: state.orchestrationTargets,
+		helpTopics: options.helpTopics,
+	};
+}

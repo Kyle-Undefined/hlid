@@ -15,6 +15,26 @@ const serverFns = vi.hoisted(() => ({
 }));
 vi.mock("#/lib/serverFns/obsidian", () => serverFns);
 
+const installedStatus = {
+	supported: true,
+	installed: true,
+	registered: false,
+	version: "1.12.7",
+	state: "available",
+	detail: "Obsidian CLI is installed.",
+	agentTools: ["read_note", "run_command"],
+	connection: {
+		vaultName: "Fornbok",
+		state: "connected",
+		connection: {
+			version: "1.12.7",
+			vaultPath: "C:\\Vaults\\Fornbok",
+		},
+		error: null,
+		checkedAt: 1,
+	},
+};
+
 beforeEach(() => {
 	serverFns.getObsidianStatusFn.mockReset();
 	serverFns.testObsidianConnectionFn.mockReset();
@@ -163,5 +183,48 @@ describe("ObsidianSection", () => {
 			}),
 		);
 		expect(onRememberedCommandsChange).toHaveBeenCalledWith([]);
+	});
+
+	it("reports a failed explicit CLI recheck without discarding prior status", async () => {
+		serverFns.getObsidianStatusFn
+			.mockResolvedValueOnce(installedStatus)
+			.mockRejectedValueOnce(new Error("host bridge unavailable"));
+		render(
+			<ObsidianSection
+				rememberedCommands={[]}
+				onRememberedCommandsChange={vi.fn()}
+			/>,
+		);
+		await screen.findByText("v1.12.7");
+
+		fireEvent.click(screen.getByRole("button", { name: "Recheck" }));
+		await waitFor(() =>
+			expect(screen.getByRole("alert").textContent).toContain(
+				"host bridge unavailable",
+			),
+		);
+		expect(screen.getByText("v1.12.7")).toBeTruthy();
+	});
+
+	it("records a failed connection test in the visible status", async () => {
+		serverFns.getObsidianStatusFn.mockResolvedValue(installedStatus);
+		serverFns.testObsidianConnectionFn.mockRejectedValue(
+			new Error("vault did not answer"),
+		);
+		render(
+			<ObsidianSection
+				rememberedCommands={[]}
+				onRememberedCommandsChange={vi.fn()}
+			/>,
+		);
+		await screen.findByText("connected with v1.12.7");
+
+		fireEvent.click(screen.getByRole("button", { name: "Test connection" }));
+		await waitFor(() =>
+			expect(screen.getByRole("alert").textContent).toContain(
+				"vault did not answer",
+			),
+		);
+		expect(screen.getByText("not connected")).toBeTruthy();
 	});
 });

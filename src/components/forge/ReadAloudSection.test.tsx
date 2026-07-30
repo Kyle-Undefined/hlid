@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import {
+	act,
 	cleanup,
 	fireEvent,
 	render,
@@ -275,5 +276,121 @@ describe("ReadAloudSection", () => {
 		fireEvent.click(previewButton);
 		expect(Audio).toHaveBeenCalledWith("/api/read-aloud/preview");
 		expect(screen.getByRole("button", { name: "Loading…" })).toBeTruthy();
+	});
+
+	it("keeps device voice local while saving shared reading speed", async () => {
+		const speechSynthesis = {
+			getVoices: vi.fn(() => [
+				{
+					voiceURI: "local-test",
+					name: "Local Test",
+					lang: "en-US",
+					default: true,
+					localService: true,
+				},
+			]),
+			addEventListener: vi.fn(),
+			removeEventListener: vi.fn(),
+		};
+		vi.stubGlobal("speechSynthesis", speechSynthesis);
+		vi.stubGlobal(
+			"fetch",
+			vi
+				.fn()
+				.mockResolvedValue(Response.json({ available: false, voices: [] })),
+		);
+		const onChange = vi.fn();
+		render(<Harness onChange={onChange} />);
+
+		const deviceVoice = await screen.findByLabelText("Read aloud device voice");
+		fireEvent.change(deviceVoice, { target: { value: "local-test" } });
+		fireEvent.change(screen.getByLabelText("Read aloud speed"), {
+			target: { value: "1.5" },
+		});
+
+		expect(onChange).toHaveBeenCalledWith({ read_aloud_rate: 1.5 });
+		expect(localStorage.getItem(READ_ALOUD_PREFERENCES_KEY)).toBe(
+			'{"voiceURI":"local-test"}',
+		);
+	});
+
+	it("reports a Microsoft voice refresh failure without throwing", async () => {
+		const fetch = vi
+			.fn()
+			.mockResolvedValueOnce(Response.json({ available: true, voices: [] }))
+			.mockRejectedValueOnce(new Error("Windows host is offline"));
+		vi.stubGlobal("fetch", fetch);
+		render(<Harness />);
+		const engine = screen.getByLabelText("Read aloud speech engine");
+		await waitFor(() =>
+			expect(
+				engine
+					.querySelector('option[value="microsoft"]')
+					?.hasAttribute("disabled"),
+			).toBe(false),
+		);
+		fireEvent.change(engine, { target: { value: "microsoft" } });
+		fireEvent.click(screen.getByRole("button", { name: "Refresh voices" }));
+
+		expect(await screen.findByText("Windows host is offline")).toBeTruthy();
+		expect(
+			engine
+				.querySelector('option[value="microsoft"]')
+				?.hasAttribute("disabled"),
+		).toBe(true);
+	});
+
+	it("returns neural preview controls to idle after playback ends", async () => {
+		const previewAudio = {
+			onended: null as (() => void) | null,
+			onerror: null as (() => void) | null,
+			onplaying: null as (() => void) | null,
+			pause: vi.fn(),
+			play: vi.fn().mockResolvedValue(undefined),
+		};
+		vi.stubGlobal(
+			"Audio",
+			vi.fn(function AudioMock() {
+				return previewAudio;
+			}),
+		);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(Response.json({ available: true, voices: [] })),
+		);
+		render(
+			<Harness
+				initialVoice={{
+					...DEFAULT_VOICE_CONFIG,
+					read_aloud_provider: "neural",
+					tts_model: "kitten",
+				}}
+				ttsInfo={{
+					status: { state: "ready", model: "kitten" },
+					models: [
+						{
+							id: "kitten",
+							label: "Kitten",
+							description: "Local speech",
+							tier: "fast",
+							sizeBytes: 1,
+							runtimeSizeBytes: 1,
+							installed: true,
+							recommended: true,
+							quantized: true,
+							language: "English",
+							license: "Apache-2.0",
+							voices: [],
+						},
+					],
+				}}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "Play preview" }));
+		act(() => previewAudio.onplaying?.());
+		expect(screen.getByRole("button", { name: "Playing…" })).toBeTruthy();
+		act(() => previewAudio.onended?.());
+		expect(screen.getByRole("button", { name: "Play preview" })).toBeTruthy();
 	});
 });
