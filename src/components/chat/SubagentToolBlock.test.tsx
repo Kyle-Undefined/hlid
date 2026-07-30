@@ -5,6 +5,7 @@ import {
 	fireEvent,
 	render,
 	screen,
+	within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SubagentSnapshot } from "#/server/agentProvider";
@@ -147,7 +148,7 @@ describe("SubagentToolBlock", () => {
 		).toContain("break-words");
 	});
 
-	it("keeps mobile child heights stable across step preview lengths", () => {
+	it("keeps mobile subagent heights stable across step preview lengths", () => {
 		const longStep =
 			'Running /bin/bash -lc "gh run view --job 123456789 --log"';
 		render(
@@ -155,28 +156,31 @@ describe("SubagentToolBlock", () => {
 				<SubagentToolBlock
 					subagent={snapshot({
 						agentId: "short-step",
+						name: "short-step",
 						currentStep: "Reasoning",
 					})}
-					nested
 				/>
 				<SubagentToolBlock
 					subagent={snapshot({
 						agentId: "long-step",
+						name: "long-step",
 						currentStep: longStep,
 					})}
-					nested
 				/>
 			</>,
 		);
 
 		for (const preview of [
-			screen.getByText("Reasoning"),
-			screen.getByText(longStep),
+			within(
+				screen.getByRole("button", { name: /short-step running/i }),
+			).getByText("Reasoning"),
+			within(
+				screen.getByRole("button", { name: /long-step running/i }),
+			).getByText(longStep),
 		]) {
 			const classes = preview.className.split(/\s+/);
 			expect(classes).toContain("truncate");
 			expect(classes).not.toContain("break-words");
-			expect(classes).toContain("sm:truncate");
 		}
 	});
 

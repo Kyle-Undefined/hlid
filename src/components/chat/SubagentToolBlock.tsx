@@ -123,14 +123,12 @@ function useSubagentDuration(
 
 function SubagentHeader({
 	subagent,
-	nested,
 	open,
 	durationMs,
 	onToggle,
 	summary,
 }: {
 	subagent: SubagentSnapshot;
-	nested: boolean;
 	open: boolean;
 	durationMs: number;
 	onToggle: () => void;
@@ -194,11 +192,7 @@ function SubagentHeader({
 					</span>
 				)}
 			</div>
-			<PrivacyMask
-				className={`col-span-2 col-start-3 row-start-3 min-w-0 text-[10px] text-muted-foreground/60 sm:col-auto sm:row-auto sm:flex-1 sm:truncate ${
-					nested ? "truncate" : "break-words"
-				}`}
-			>
+			<PrivacyMask className="col-span-2 col-start-3 row-start-3 min-w-0 truncate text-[10px] text-muted-foreground/60 sm:col-auto sm:row-auto sm:flex-1">
 				{summary ?? subagent.currentStep ?? subagent.description ?? "Working"}
 			</PrivacyMask>
 			<span className="col-start-4 row-start-1 shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground/55 sm:col-auto sm:row-auto">
@@ -491,7 +485,6 @@ export function SubagentToolBlock({
 		>
 			<SubagentHeader
 				subagent={subagent}
-				nested={nested}
 				open={open}
 				durationMs={durationMs}
 				onToggle={toggleOpen}
