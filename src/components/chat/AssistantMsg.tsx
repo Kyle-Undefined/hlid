@@ -5,6 +5,7 @@ import { PrivacyMask } from "#/components/PrivacyMask";
 import { useCopyToClipboard } from "#/hooks/useCopyToClipboard";
 import type { ObsidianCaptureDestination } from "#/lib/obsidianCapture";
 import type { ToolEventMessage } from "#/server/protocol";
+import { planAssistantTranscript } from "./assistantTranscriptLayout";
 import { CopyButton } from "./CopyButton";
 import type {
 	AssistantMessage,
@@ -165,78 +166,13 @@ export function AssistantMsg({
 	onDecidePermission?: PermissionDecisionHandler;
 }) {
 	const { copy, copied } = useCopyToClipboard();
-	const rawSteerBoundaries = acceptedSteers.map((steer) => {
-		const rawBoundary = Number.isFinite(steer.steerToolEventIndex)
-			? Math.floor(steer.steerToolEventIndex as number)
-			: message.toolEvents.length;
-		return Math.min(message.toolEvents.length, Math.max(0, rawBoundary));
+	const transcriptPlan = planAssistantTranscript({
+		toolEvents: message.toolEvents,
+		acceptedSteers,
+		toolEventStartIndex,
+		groupedProjectPreviewEventIds,
+		isProjectPreviewEvent: isProjectPreviewToolEvent,
 	});
-	const workflowEventIndexByAgentId = new Map<string, number>();
-	for (const [eventIndex, event] of message.toolEvents.entries()) {
-		if (event.subagent?.kind === "workflow") {
-			workflowEventIndexByAgentId.set(event.subagent.agentId, eventIndex);
-		}
-	}
-	const nestedSubagentEventIds = new Set<string>();
-	const workflowChildren = new Map<
-		string,
-		NonNullable<ToolEventMessage["subagent"]>[]
-	>();
-	for (const [eventIndex, event] of message.toolEvents.entries()) {
-		const child = event.subagent;
-		if (!child?.parentActivityId) continue;
-		const parentIndex = workflowEventIndexByAgentId.get(child.parentActivityId);
-		if (parentIndex === undefined) continue;
-		// A child emitted after an accepted steer belongs below that receipt.
-		// Keep only same-boundary children inside the earlier workflow card.
-		if (
-			rawSteerBoundaries.some(
-				(boundary) => parentIndex < boundary && boundary <= eventIndex,
-			)
-		) {
-			continue;
-		}
-		nestedSubagentEventIds.add(event.id);
-		const children = workflowChildren.get(child.parentActivityId) ?? [];
-		children.push(child);
-		workflowChildren.set(child.parentActivityId, children);
-	}
-	// Keep live subagents at the bottom of the active assistant turn. New parent
-	// tool calls and text can then stream above them without pushing the cards
-	// out of view. Once a subagent finishes it returns to its original transcript
-	// position, preserving history order.
-	const activeSubagentEvents = message.toolEvents.filter((event) => {
-		const status = event.subagent?.status;
-		return (
-			!nestedSubagentEventIds.has(event.id) &&
-			(status === "pending" || status === "running" || status === "paused")
-		);
-	});
-	const previewEvents = message.toolEvents.filter(isProjectPreviewToolEvent);
-	const groupedPreviewEvents = groupedProjectPreviewEventIds
-		? previewEvents.filter((event) =>
-				groupedProjectPreviewEventIds.has(event.id),
-			)
-		: previewEvents;
-	const visibleToolStart = Math.min(
-		Math.max(0, toolEventStartIndex),
-		message.toolEvents.length,
-	);
-	const transcriptToolEventIndices = new Set<number>();
-	for (
-		let eventIndex = visibleToolStart;
-		eventIndex < message.toolEvents.length;
-		eventIndex++
-	) {
-		const event = message.toolEvents[eventIndex];
-		if (
-			!activeSubagentEvents.includes(event) &&
-			!nestedSubagentEventIds.has(event.id) &&
-			!groupedPreviewEvents.includes(event)
-		) {
-			transcriptToolEventIndices.add(eventIndex);
-		}
-	}
 	const renderTool = (event: (typeof message.toolEvents)[number]) => {
 		const historicalPreviewEvents = historicalProjectPreviewGroups?.get(
 			event.id,
@@ -257,7 +193,14 @@ export function AssistantMsg({
 				providerId={providerId}
 				childSubagents={
 					event.subagent?.kind === "workflow"
-						? workflowChildren.get(event.subagent.agentId)
+						? transcriptPlan.workflowChildEventIndices
+								.get(event.subagent.agentId)
+								?.map(
+									(eventIndex) =>
+										message.toolEvents[eventIndex].subagent as NonNullable<
+											ToolEventMessage["subagent"]
+										>,
+								)
 						: undefined
 				}
 				pendingPermissions={
@@ -271,38 +214,24 @@ export function AssistantMsg({
 			/>
 		);
 	};
-	const steerReceiptsByBoundary = new Map<number, UserMessage[]>();
-	for (const [steerIndex, steer] of acceptedSteers.entries()) {
-		const boundary = Math.min(
-			message.toolEvents.length,
-			Math.max(visibleToolStart, rawSteerBoundaries[steerIndex]),
+	const transcriptItems = transcriptPlan.items.map((item) =>
+		item.kind === "steer" ? (
+			<AcceptedSteerReceipt
+				key={item.key}
+				message={acceptedSteers[item.steerIndex]}
+				responseId={message.id}
+			/>
+		) : (
+			renderTool(message.toolEvents[item.eventIndex])
+		),
+	);
+	const activeSubagentEvents = transcriptPlan.activeSubagentEventIndices.map(
+		(eventIndex) => message.toolEvents[eventIndex],
+	);
+	const groupedPreviewEvents =
+		transcriptPlan.groupedProjectPreviewEventIndices.map(
+			(eventIndex) => message.toolEvents[eventIndex],
 		);
-		const receipts = steerReceiptsByBoundary.get(boundary) ?? [];
-		receipts.push(steer);
-		steerReceiptsByBoundary.set(boundary, receipts);
-	}
-	const transcriptItems: React.ReactNode[] = [];
-	for (
-		let eventIndex = visibleToolStart;
-		eventIndex <= message.toolEvents.length;
-		eventIndex++
-	) {
-		for (const steer of steerReceiptsByBoundary.get(eventIndex) ?? []) {
-			transcriptItems.push(
-				<AcceptedSteerReceipt
-					key={`steer:${steer.id}`}
-					message={steer}
-					responseId={message.id}
-				/>,
-			);
-		}
-		if (
-			eventIndex < message.toolEvents.length &&
-			transcriptToolEventIndices.has(eventIndex)
-		) {
-			transcriptItems.push(renderTool(message.toolEvents[eventIndex]));
-		}
-	}
 	const hasAcceptedSteer = acceptedSteers.length > 0;
 	const latestAcceptedSteer = acceptedSteers.at(-1);
 	const jumpToAcceptedSteer = () => {
