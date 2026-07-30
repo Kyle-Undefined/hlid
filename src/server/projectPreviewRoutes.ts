@@ -257,6 +257,271 @@ async function inspectPreview(sessionId: string, previewId?: string) {
 	}
 }
 
+async function resolveBrowserPreview(rawPreviewId: string, sessionId: string) {
+	const previewId =
+		rawPreviewId === "session" ? undefined : decodeURIComponent(rawPreviewId);
+	const preview = await inspectPreview(sessionId, previewId);
+	const target = projectPreviewManager.relayTarget(preview.id);
+	return { preview, port: target.port };
+}
+
+type ProjectPreviewRouteContext = {
+	url: URL;
+	req: Request;
+	capture: CaptureProjectPreview;
+	control: ControlProjectPreview;
+};
+
+type ProjectPreviewApiRouteHandler = (
+	context: ProjectPreviewRouteContext,
+) => Promise<Response | null>;
+
+async function handleStartRoute({
+	url,
+	req,
+}: ProjectPreviewRouteContext): Promise<Response | null> {
+	if (url.pathname !== "/api/project-previews/start" || req.method !== "POST") {
+		return null;
+	}
+	const body = startSchema.parse(await req.json());
+	const preview = await projectPreviewManager.start({
+		sessionId: body.session_id,
+		runtimeCwd: body.runtime_cwd,
+		command: body.command,
+		port: body.port,
+		path: body.path,
+		workingDirectory: body.working_directory,
+		label: body.label,
+		present: body.present,
+		replaceExisting: body.replace_existing,
+		readinessTimeoutSeconds: body.readiness_timeout_seconds,
+	});
+	return Response.json(preview, {
+		status: preview.state === "ready" ? 201 : 409,
+	});
+}
+
+async function handleSessionRoute({
+	url,
+	req,
+}: ProjectPreviewRouteContext): Promise<Response | null> {
+	if (
+		url.pathname === "/api/project-previews/session" &&
+		req.method === "GET"
+	) {
+		const sessionId = requiredSessionId(url);
+		if (sessionId instanceof Response) return sessionId;
+		return Response.json(await inspectPreview(sessionId));
+	}
+	if (
+		(url.pathname !== "/api/project-previews/session/stop" &&
+			url.pathname !== "/api/project-previews/session/restart") ||
+		req.method !== "POST"
+	) {
+		return null;
+	}
+	const body = actionSchema.parse(await req.json());
+	const preview = url.pathname.endsWith("/stop")
+		? await projectPreviewManager.stop(body.session_id)
+		: await projectPreviewManager.restart(body.session_id);
+	return Response.json(preview);
+}
+
+async function handleCaptureRoute({
+	url,
+	req,
+	capture,
+}: ProjectPreviewRouteContext): Promise<Response | null> {
+	const match = url.pathname.match(
+		/^\/api\/project-previews\/([^/]+)\/capture$/,
+	);
+	if (!match || req.method !== "POST") return null;
+	const body = captureSchema.parse(await req.json());
+	const { preview, port } = await resolveBrowserPreview(
+		match[1],
+		body.session_id,
+	);
+	const result: ProjectPreviewCaptureResult = await capture({
+		previewId: preview.id,
+		sessionId: preview.session_id,
+		port,
+		path: body.path ?? preview.path,
+		viewport: body.viewport,
+		...(body.width !== undefined && body.height !== undefined
+			? { size: { width: body.width, height: body.height } }
+			: {}),
+		...(body.scroll_x !== undefined ? { scrollX: body.scroll_x } : {}),
+		...(body.scroll_y !== undefined ? { scrollY: body.scroll_y } : {}),
+		fullPage: body.full_page,
+	});
+	return Response.json(result, {
+		headers: { "cache-control": "no-store" },
+	});
+}
+
+async function handleControlRoute({
+	url,
+	req,
+	control,
+}: ProjectPreviewRouteContext): Promise<Response | null> {
+	const match = url.pathname.match(
+		/^\/api\/project-previews\/([^/]+)\/control$/,
+	);
+	if (!match || req.method !== "POST") return null;
+	const body = controlSchema.parse(await req.json());
+	const { preview, port } = await resolveBrowserPreview(
+		match[1],
+		body.session_id,
+	);
+	const result = await control(
+		parseControlInput(body, {
+			previewId: preview.id,
+			sessionId: preview.session_id,
+			port,
+			initialPath: preview.path,
+		}),
+	);
+	return Response.json(result, {
+		headers: { "cache-control": "no-store" },
+	});
+}
+
+async function handleFeedbackRoute({
+	url,
+	req,
+}: ProjectPreviewRouteContext): Promise<Response | null> {
+	const match = url.pathname.match(
+		/^\/api\/project-previews\/([^/]+)\/feedback$/,
+	);
+	if (!match || req.method !== "POST") return null;
+	const body = feedbackSchema.parse(await req.json());
+	const previewId = decodeURIComponent(match[1]);
+	const preview = await inspectPreview(body.session_id, previewId);
+	const frame = projectPreviewBrowserManager.getFrame(
+		preview.id,
+		body.session_id,
+		body.frame_id,
+	);
+	if (!frame) {
+		return Response.json(
+			{ error: "The source Preview capture is no longer available." },
+			{ status: 410 },
+		);
+	}
+	const sourceSha256 = createHash("sha256")
+		.update(Buffer.from(frame.image_base64, "base64"))
+		.digest("hex");
+	const attachment = await retainProjectPreviewFeedback({
+		attachmentId: body.attachment_id,
+		previewId: preview.id,
+		sessionId: body.session_id,
+		sourceFrameId: frame.frame_id,
+		path: frame.path,
+		viewport: frame.viewport,
+		width: frame.width,
+		height: frame.height,
+		sourceSha256,
+		capturedAt: frame.captured_at,
+		comment: body.comment,
+	});
+	if (!attachment) {
+		return Response.json(
+			{
+				error: "Preview feedback must use a new PNG uploaded by this session.",
+			},
+			{ status: 409 },
+		);
+	}
+	bumpDataRevision("relics", "storage");
+	return Response.json({
+		attachment: {
+			id: attachment.id,
+			path: attachment.path,
+			filename: attachment.filename,
+			mime: attachment.mime,
+			kind: attachment.kind,
+			reference: "relic",
+		},
+		open_url: `/api/attachments/${attachment.id}/raw`,
+	});
+}
+
+async function handleAgentFrameRoute({
+	url,
+	req,
+}: ProjectPreviewRouteContext): Promise<Response | null> {
+	const match = url.pathname.match(
+		/^\/api\/project-previews\/([^/]+)\/agent-frame$/,
+	);
+	if (!match || req.method !== "GET") return null;
+	const sessionId = requiredSessionId(url);
+	if (sessionId instanceof Response) return sessionId;
+	const previewId = decodeURIComponent(match[1]);
+	await inspectPreview(sessionId, previewId);
+	const frameId = url.searchParams.get("frame_id")?.trim();
+	if (frameId && !z.string().uuid().safeParse(frameId).success) {
+		return Response.json({ error: "frame_id must be a UUID" }, { status: 400 });
+	}
+	const frame = projectPreviewBrowserManager.getFrame(
+		previewId,
+		sessionId,
+		frameId,
+	);
+	if (frame && url.searchParams.get("after_frame_id") === frame.frame_id) {
+		return Response.json(null, {
+			headers: { "cache-control": "no-store" },
+		});
+	}
+	return Response.json(frame, {
+		headers: { "cache-control": "no-store" },
+	});
+}
+
+async function handleByIdRoute({
+	url,
+	req,
+}: ProjectPreviewRouteContext): Promise<Response> {
+	const match = url.pathname.match(
+		/^\/api\/project-previews\/([^/]+)(?:\/(stop|restart))?$/,
+	);
+	if (!match) return new Response("Not found", { status: 404 });
+	const previewId = decodeURIComponent(match[1]);
+	const action = match[2];
+	if (!action && req.method === "GET") {
+		const sessionId = requiredSessionId(url);
+		if (sessionId instanceof Response) return sessionId;
+		return Response.json(await inspectPreview(sessionId, previewId));
+	}
+	if (req.method !== "POST" || !action) {
+		return new Response("Method not allowed", { status: 405 });
+	}
+	const body = actionSchema.parse(await req.json());
+	const preview =
+		action === "stop"
+			? await projectPreviewManager.stop(body.session_id, previewId)
+			: await projectPreviewManager.restart(body.session_id, previewId);
+	return Response.json(preview);
+}
+
+const projectPreviewApiRouteHandlers = [
+	handleStartRoute,
+	handleSessionRoute,
+	handleCaptureRoute,
+	handleControlRoute,
+	handleFeedbackRoute,
+	handleAgentFrameRoute,
+] satisfies ProjectPreviewApiRouteHandler[];
+
+async function handleProjectPreviewApiRoute(
+	context: ProjectPreviewRouteContext,
+): Promise<Response> {
+	for (const handler of projectPreviewApiRouteHandlers) {
+		const response = await handler(context);
+		if (response) return response;
+	}
+	return handleByIdRoute(context);
+}
+
 export async function handleProjectPreviewRoute(
 	url: URL,
 	req: Request,
@@ -277,208 +542,7 @@ export async function handleProjectPreviewRoute(
 			(previewId) => projectPreviewManager.relayTarget(previewId),
 		);
 		if (relay) return relay;
-		if (
-			url.pathname === "/api/project-previews/start" &&
-			req.method === "POST"
-		) {
-			const body = startSchema.parse(await req.json());
-			const preview = await projectPreviewManager.start({
-				sessionId: body.session_id,
-				runtimeCwd: body.runtime_cwd,
-				command: body.command,
-				port: body.port,
-				path: body.path,
-				workingDirectory: body.working_directory,
-				label: body.label,
-				present: body.present,
-				replaceExisting: body.replace_existing,
-				readinessTimeoutSeconds: body.readiness_timeout_seconds,
-			});
-			return Response.json(preview, {
-				status: preview.state === "ready" ? 201 : 409,
-			});
-		}
-
-		if (
-			url.pathname === "/api/project-previews/session" &&
-			req.method === "GET"
-		) {
-			const sessionId = requiredSessionId(url);
-			if (sessionId instanceof Response) return sessionId;
-			return Response.json(await inspectPreview(sessionId));
-		}
-		if (
-			(url.pathname === "/api/project-previews/session/stop" ||
-				url.pathname === "/api/project-previews/session/restart") &&
-			req.method === "POST"
-		) {
-			const body = actionSchema.parse(await req.json());
-			const preview = url.pathname.endsWith("/stop")
-				? await projectPreviewManager.stop(body.session_id)
-				: await projectPreviewManager.restart(body.session_id);
-			return Response.json(preview);
-		}
-
-		const captureMatch = url.pathname.match(
-			/^\/api\/project-previews\/([^/]+)\/capture$/,
-		);
-		if (captureMatch && req.method === "POST") {
-			const body = captureSchema.parse(await req.json());
-			const previewId =
-				captureMatch[1] === "session"
-					? undefined
-					: decodeURIComponent(captureMatch[1]);
-			const preview = await inspectPreview(body.session_id, previewId);
-			const target = projectPreviewManager.relayTarget(preview.id);
-			const result: ProjectPreviewCaptureResult = await capture({
-				previewId: preview.id,
-				sessionId: preview.session_id,
-				port: target.port,
-				path: body.path ?? preview.path,
-				viewport: body.viewport,
-				...(body.width !== undefined && body.height !== undefined
-					? { size: { width: body.width, height: body.height } }
-					: {}),
-				...(body.scroll_x !== undefined ? { scrollX: body.scroll_x } : {}),
-				...(body.scroll_y !== undefined ? { scrollY: body.scroll_y } : {}),
-				fullPage: body.full_page,
-			});
-			return Response.json(result, {
-				headers: { "cache-control": "no-store" },
-			});
-		}
-
-		const controlMatch = url.pathname.match(
-			/^\/api\/project-previews\/([^/]+)\/control$/,
-		);
-		if (controlMatch && req.method === "POST") {
-			const body = controlSchema.parse(await req.json());
-			const previewId =
-				controlMatch[1] === "session"
-					? undefined
-					: decodeURIComponent(controlMatch[1]);
-			const preview = await inspectPreview(body.session_id, previewId);
-			const target = projectPreviewManager.relayTarget(preview.id);
-			const result = await control(
-				parseControlInput(body, {
-					previewId: preview.id,
-					sessionId: preview.session_id,
-					port: target.port,
-					initialPath: preview.path,
-				}),
-			);
-			return Response.json(result, {
-				headers: { "cache-control": "no-store" },
-			});
-		}
-
-		const feedbackMatch = url.pathname.match(
-			/^\/api\/project-previews\/([^/]+)\/feedback$/,
-		);
-		if (feedbackMatch && req.method === "POST") {
-			const body = feedbackSchema.parse(await req.json());
-			const previewId = decodeURIComponent(feedbackMatch[1]);
-			const preview = await inspectPreview(body.session_id, previewId);
-			const frame = projectPreviewBrowserManager.getFrame(
-				preview.id,
-				body.session_id,
-				body.frame_id,
-			);
-			if (!frame) {
-				return Response.json(
-					{ error: "The source Preview capture is no longer available." },
-					{ status: 410 },
-				);
-			}
-			const sourceSha256 = createHash("sha256")
-				.update(Buffer.from(frame.image_base64, "base64"))
-				.digest("hex");
-			const attachment = await retainProjectPreviewFeedback({
-				attachmentId: body.attachment_id,
-				previewId: preview.id,
-				sessionId: body.session_id,
-				sourceFrameId: frame.frame_id,
-				path: frame.path,
-				viewport: frame.viewport,
-				width: frame.width,
-				height: frame.height,
-				sourceSha256,
-				capturedAt: frame.captured_at,
-				comment: body.comment,
-			});
-			if (!attachment) {
-				return Response.json(
-					{
-						error:
-							"Preview feedback must use a new PNG uploaded by this session.",
-					},
-					{ status: 409 },
-				);
-			}
-			bumpDataRevision("relics", "storage");
-			return Response.json({
-				attachment: {
-					id: attachment.id,
-					path: attachment.path,
-					filename: attachment.filename,
-					mime: attachment.mime,
-					kind: attachment.kind,
-					reference: "relic",
-				},
-				open_url: `/api/attachments/${attachment.id}/raw`,
-			});
-		}
-
-		const frameMatch = url.pathname.match(
-			/^\/api\/project-previews\/([^/]+)\/agent-frame$/,
-		);
-		if (frameMatch && req.method === "GET") {
-			const sessionId = requiredSessionId(url);
-			if (sessionId instanceof Response) return sessionId;
-			const previewId = decodeURIComponent(frameMatch[1]);
-			await inspectPreview(sessionId, previewId);
-			const frameId = url.searchParams.get("frame_id")?.trim();
-			if (frameId && !z.string().uuid().safeParse(frameId).success) {
-				return Response.json(
-					{ error: "frame_id must be a UUID" },
-					{ status: 400 },
-				);
-			}
-			const frame = projectPreviewBrowserManager.getFrame(
-				previewId,
-				sessionId,
-				frameId,
-			);
-			if (frame && url.searchParams.get("after_frame_id") === frame.frame_id) {
-				return Response.json(null, {
-					headers: { "cache-control": "no-store" },
-				});
-			}
-			return Response.json(frame, {
-				headers: { "cache-control": "no-store" },
-			});
-		}
-
-		const match = url.pathname.match(
-			/^\/api\/project-previews\/([^/]+)(?:\/(stop|restart))?$/,
-		);
-		if (!match) return new Response("Not found", { status: 404 });
-		const previewId = decodeURIComponent(match[1]);
-		const action = match[2];
-		if (!action && req.method === "GET") {
-			const sessionId = requiredSessionId(url);
-			if (sessionId instanceof Response) return sessionId;
-			return Response.json(await inspectPreview(sessionId, previewId));
-		}
-		if (req.method !== "POST" || !action) {
-			return new Response("Method not allowed", { status: 405 });
-		}
-		const body = actionSchema.parse(await req.json());
-		const preview =
-			action === "stop"
-				? await projectPreviewManager.stop(body.session_id, previewId)
-				: await projectPreviewManager.restart(body.session_id, previewId);
-		return Response.json(preview);
+		return await handleProjectPreviewApiRoute({ url, req, capture, control });
 	} catch (error) {
 		if (error instanceof z.ZodError) {
 			return Response.json(

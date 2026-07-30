@@ -1,8 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+	start: vi.fn(),
+	stop: vi.fn(),
+	restart: vi.fn(),
 	inspect: vi.fn(),
 	relayTarget: vi.fn(),
+	selectionRedirect: vi.fn().mockReturnValue(null),
+	handleRelayRequest: vi.fn().mockResolvedValue(null),
 	getProjectPreview: vi.fn(),
 	getLatestProjectPreviewForSession: vi.fn(),
 	getFrame: vi.fn(),
@@ -22,9 +27,17 @@ vi.mock("./dataRevision", () => ({
 
 vi.mock("./projectPreview", () => ({
 	projectPreviewManager: {
+		start: mocks.start,
+		stop: mocks.stop,
+		restart: mocks.restart,
 		inspect: mocks.inspect,
 		relayTarget: mocks.relayTarget,
 	},
+}));
+
+vi.mock("./projectPreviewRelay", () => ({
+	projectPreviewSelectionRedirect: mocks.selectionRedirect,
+	handleProjectPreviewRelayRequest: mocks.handleRelayRequest,
 }));
 
 vi.mock("./projectPreviewBrowser", () => ({
@@ -201,9 +214,185 @@ describe("Project Preview control input", () => {
 	});
 });
 
+describe("Project Preview route dispatch", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mocks.selectionRedirect.mockReturnValue(null);
+		mocks.handleRelayRequest.mockResolvedValue(null);
+		mocks.inspect.mockReturnValue({
+			id: "7c0eea4d-f74e-45c8-8674-a535fbb4412b",
+			session_id: "session-1",
+			path: "/app",
+			state: "ready",
+		});
+		mocks.relayTarget.mockReturnValue({ port: 5173 });
+	});
+
+	it("ignores paths outside the Project Preview API before routing", async () => {
+		const response = await handleProjectPreviewRoute(
+			new URL("http://localhost/api/sessions"),
+			new Request("http://localhost/api/sessions"),
+		);
+
+		expect(response).toBeNull();
+		expect(mocks.selectionRedirect).not.toHaveBeenCalled();
+		expect(mocks.handleRelayRequest).not.toHaveBeenCalled();
+	});
+
+	it("returns a selection redirect before attempting relay or API dispatch", async () => {
+		const selection = new Response(null, { status: 307 });
+		mocks.selectionRedirect.mockReturnValueOnce(selection);
+
+		const response = await handleProjectPreviewRoute(
+			new URL(
+				"http://localhost/api/project-previews/session?session_id=session-1",
+			),
+			new Request(
+				"http://localhost/api/project-previews/session?session_id=session-1",
+			),
+		);
+
+		expect(response).toBe(selection);
+		expect(mocks.handleRelayRequest).not.toHaveBeenCalled();
+		expect(mocks.inspect).not.toHaveBeenCalled();
+	});
+
+	it("returns a relay response before attempting API dispatch", async () => {
+		const relay = new Response("relayed");
+		mocks.handleRelayRequest.mockResolvedValueOnce(relay);
+
+		const response = await handleProjectPreviewRoute(
+			new URL(
+				"http://localhost/api/project-previews/session?session_id=session-1",
+			),
+			new Request(
+				"http://localhost/api/project-previews/session?session_id=session-1",
+			),
+		);
+
+		expect(response).toBe(relay);
+		expect(mocks.selectionRedirect).toHaveBeenCalledOnce();
+		expect(mocks.inspect).not.toHaveBeenCalled();
+	});
+
+	it("dispatches API endpoints after selection and relay decline the request", async () => {
+		const response = await handleProjectPreviewRoute(
+			new URL(
+				"http://localhost/api/project-previews/session?session_id=session-1",
+			),
+			new Request(
+				"http://localhost/api/project-previews/session?session_id=session-1",
+			),
+		);
+
+		expect(response?.status).toBe(200);
+		expect(mocks.selectionRedirect).toHaveBeenCalledOnce();
+		expect(mocks.handleRelayRequest).toHaveBeenCalledOnce();
+		expect(mocks.inspect).toHaveBeenCalledWith("session-1", undefined);
+	});
+
+	it("maps a start request and preserves the ready response status", async () => {
+		mocks.start.mockResolvedValueOnce({
+			id: "7c0eea4d-f74e-45c8-8674-a535fbb4412b",
+			session_id: "session-1",
+			state: "ready",
+		});
+		const response = await handleProjectPreviewRoute(
+			new URL("http://localhost/api/project-previews/start"),
+			new Request("http://localhost/api/project-previews/start", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					session_id: "session-1",
+					runtime_cwd: "/repo",
+					command: "bun dev",
+					port: 5173,
+					path: "/app",
+					working_directory: "apps/web",
+					label: "Web",
+					present: true,
+					replace_existing: true,
+					readiness_timeout_seconds: 30,
+				}),
+			}),
+		);
+
+		expect(response?.status).toBe(201);
+		expect(mocks.start).toHaveBeenCalledWith({
+			sessionId: "session-1",
+			runtimeCwd: "/repo",
+			command: "bun dev",
+			port: 5173,
+			path: "/app",
+			workingDirectory: "apps/web",
+			label: "Web",
+			present: true,
+			replaceExisting: true,
+			readinessTimeoutSeconds: 30,
+		});
+	});
+
+	it("keeps session and decoded by-id lifecycle actions distinct", async () => {
+		mocks.stop.mockResolvedValueOnce({ state: "stopped" });
+		mocks.restart.mockResolvedValueOnce({ state: "ready" });
+
+		const sessionResponse = await handleProjectPreviewRoute(
+			new URL("http://localhost/api/project-previews/session/stop"),
+			new Request("http://localhost/api/project-previews/session/stop", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ session_id: "session-1" }),
+			}),
+		);
+		const byIdResponse = await handleProjectPreviewRoute(
+			new URL("http://localhost/api/project-previews/preview%20id/restart"),
+			new Request(
+				"http://localhost/api/project-previews/preview%20id/restart",
+				{
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ session_id: "session-1" }),
+				},
+			),
+		);
+
+		expect(sessionResponse?.status).toBe(200);
+		expect(byIdResponse?.status).toBe(200);
+		expect(mocks.stop).toHaveBeenCalledWith("session-1");
+		expect(mocks.restart).toHaveBeenCalledWith("session-1", "preview id");
+	});
+
+	it.each([
+		[
+			"unknown nested endpoint",
+			"GET",
+			"http://localhost/api/project-previews/session/missing",
+			404,
+			"Not found",
+		],
+		[
+			"unsupported by-id method",
+			"POST",
+			"http://localhost/api/project-previews/preview-id",
+			405,
+			"Method not allowed",
+		],
+	])("returns the existing response for %s", async (_name, method, href, status, body) => {
+		const response = await handleProjectPreviewRoute(
+			new URL(href),
+			new Request(href, { method }),
+		);
+
+		expect(response?.status).toBe(status);
+		expect(await response?.text()).toBe(body);
+	});
+});
+
 describe("Project Preview capture route", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mocks.selectionRedirect.mockReturnValue(null);
+		mocks.handleRelayRequest.mockResolvedValue(null);
 		mocks.inspect.mockReturnValue({
 			id: "7c0eea4d-f74e-45c8-8674-a535fbb4412b",
 			session_id: "session-1",
