@@ -33,7 +33,7 @@ function ProviderInspectionErrors({
 				<button
 					type="button"
 					onClick={() => void controller.retryInspection()}
-					disabled={controller.loading}
+					disabled={controller.loading || controller.mutation.hasActive}
 					className="border border-status-warning/40 px-2 py-1 text-[9px] tracking-widest uppercase disabled:opacity-40"
 				>
 					{controller.loading ? "Retrying…" : "Retry inspection"}
@@ -65,14 +65,14 @@ export function ExtensionsSection() {
 				<ExtensionSectionControls
 					model={model}
 					loading={controller.loading}
+					mutationActive={controller.mutation.hasActive}
 					onRefresh={() => void controller.retryInspection()}
 				/>
 				{model.view === "marketplace" && (
 					<MarketplaceSourceForm
 						provider={model.provider}
 						environments={model.providerEnvironments}
-						mutatingId={controller.mutatingId}
-						mutate={controller.mutate}
+						mutation={controller.mutation}
 						draft={marketplaceSourceDraft}
 					/>
 				)}
@@ -86,13 +86,36 @@ export function ExtensionsSection() {
 						{controller.inventoryError}
 					</p>
 				)}
-				{controller.mutationNotice && (
-					<p className="text-xs text-status-success">
-						{controller.mutationNotice}
-					</p>
-				)}
-				{controller.mutationError && (
-					<p className="text-xs text-destructive">{controller.mutationError}</p>
+				{controller.mutation.feedback.map((item) =>
+					item.kind === "success" ? (
+						<output
+							key={item.operationId}
+							className="block text-xs text-status-success"
+						>
+							{item.message}
+						</output>
+					) : (
+						<div
+							key={item.operationId}
+							role="alert"
+							className="flex items-start justify-between gap-3 text-xs text-destructive"
+						>
+							<span>{item.message}</span>
+							<button
+								type="button"
+								aria-label="Dismiss extension action error"
+								onClick={() =>
+									controller.mutation.dismissFeedback(
+										item.targetId,
+										item.operationId,
+									)
+								}
+								className="shrink-0 text-[9px] tracking-widest uppercase text-muted-foreground hover:text-foreground"
+							>
+								Dismiss
+							</button>
+						</div>
+					),
 				)}
 				<ProviderInspectionErrors
 					controller={controller}

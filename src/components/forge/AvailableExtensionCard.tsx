@@ -8,20 +8,22 @@ import {
 	ExtensionMetaValue,
 	TrustReviewAndManifest,
 } from "./ExtensionReviewDetails";
+import type { ExtensionTargetMutationState } from "./useExtensionSectionController";
 
 function AvailableInstallAction({
 	extension,
 	review,
-	mutating,
+	mutation,
 	onInstall,
 }: {
 	extension: AvailableExtension;
 	review: ExtensionReview;
-	mutating: boolean;
+	mutation: ExtensionTargetMutationState;
 	onInstall: () => void;
 }) {
 	if (extension.installed) return null;
 	const packageReview = review.reviewLevel === "package";
+	const installing = mutation.activeAction === "install";
 	return (
 		<div
 			className={`flex flex-wrap items-center justify-between gap-3 border px-3 py-2 ${
@@ -58,12 +60,13 @@ function AvailableInstallAction({
 				confirmText={packageReview ? "install" : "install anyway"}
 				variant={packageReview ? "primary" : "destructive"}
 				onConfirm={onInstall}
+				disabled={mutation.blocked}
 				stacked
 				className="justify-end flex-wrap"
 				trigger={(open) => (
 					<button
 						type="button"
-						disabled={mutating}
+						disabled={mutation.blocked}
 						onClick={open}
 						className={`border px-3 py-1.5 text-[10px] tracking-widest uppercase disabled:opacity-40 ${
 							packageReview
@@ -71,7 +74,7 @@ function AvailableInstallAction({
 								: "border-status-warning/50 text-status-warning hover:bg-status-warning/10"
 						}`}
 					>
-						{mutating ? "Installing…" : "Install"}
+						{installing ? "Installing…" : "Install"}
 					</button>
 				)}
 			/>
@@ -82,12 +85,12 @@ function AvailableInstallAction({
 function AvailableExtensionReview({
 	extension,
 	review,
-	mutating,
+	mutation,
 	onInstall,
 }: {
 	extension: AvailableExtension;
 	review: ExtensionReview;
-	mutating: boolean;
+	mutation: ExtensionTargetMutationState;
 	onInstall: () => void;
 }) {
 	const trustSignals = [
@@ -115,7 +118,7 @@ function AvailableExtensionReview({
 			<AvailableInstallAction
 				extension={extension}
 				review={review}
-				mutating={mutating}
+				mutation={mutation}
 				onInstall={onInstall}
 			/>
 			{review.errors.map((message) => (
@@ -157,7 +160,7 @@ export function AvailableExtensionCard({
 	error,
 	onReview,
 	onInstall,
-	mutating,
+	mutation,
 }: {
 	extension: AvailableExtension;
 	review: ExtensionReview | null;
@@ -165,7 +168,7 @@ export function AvailableExtensionCard({
 	error: string | null;
 	onReview: () => void;
 	onInstall: () => void;
-	mutating: boolean;
+	mutation: ExtensionTargetMutationState;
 }) {
 	return (
 		<div className="border border-border bg-card">
@@ -222,7 +225,7 @@ export function AvailableExtensionCard({
 				<AvailableExtensionReview
 					extension={extension}
 					review={review}
-					mutating={mutating}
+					mutation={mutation}
 					onInstall={onInstall}
 				/>
 			)}

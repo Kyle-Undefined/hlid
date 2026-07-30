@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ConfirmAction } from "#/components/ConfirmAction";
 import type {
 	ExtensionProviderId,
@@ -9,18 +9,19 @@ import type { ExtensionMutationInput } from "#/server/extensionMutations";
 import { AvailableExtensionCard } from "./AvailableExtensionCard";
 import type { ExtensionSectionViewModel } from "./ExtensionSectionControls";
 import type {
-	ExtensionMutationController,
+	ExtensionMutationSurface,
 	ExtensionSectionController,
+	ExtensionTargetMutationState,
 } from "./useExtensionSectionController";
 
 function MarketplaceCard({
 	marketplace,
-	mutating,
+	mutation,
 	onUpgrade,
 	onRemove,
 }: {
 	marketplace: ProviderMarketplace;
-	mutating: boolean;
+	mutation: ExtensionTargetMutationState;
 	onUpgrade?: () => void;
 	onRemove?: () => void;
 }) {
@@ -31,6 +32,8 @@ function MarketplaceCard({
 		marketplace.health === "invalid" ? "Repair source" : "Refresh source";
 	const updateConfirmText = updateLabel.toLowerCase();
 	const canRefreshSource = marketplace.health !== "unavailable";
+	const upgrading = mutation.activeAction === "upgrade_marketplace";
+	const removing = mutation.activeAction === "remove_marketplace";
 	return (
 		<div className="border border-border/70 bg-secondary/40 p-3 min-w-0">
 			<div className="flex flex-wrap items-center justify-between gap-2">
@@ -72,6 +75,7 @@ function MarketplaceCard({
 								label={`${updateConfirmText} ${marketplace.name}?`}
 								confirmText={updateConfirmText}
 								onConfirm={onUpgrade}
+								disabled={mutation.blocked}
 								onOpenChange={(open) =>
 									setConfirmingAction(open ? "update" : null)
 								}
@@ -81,11 +85,11 @@ function MarketplaceCard({
 									<button
 										aria-label={`${updateLabel} ${marketplace.name}`}
 										type="button"
-										disabled={mutating}
+										disabled={mutation.blocked}
 										onClick={open}
 										className="border border-border px-2 py-1 text-[9px] tracking-widest uppercase disabled:opacity-40"
 									>
-										{mutating ? "Working…" : updateLabel}
+										{upgrading ? "Working…" : updateLabel}
 									</button>
 								)}
 							/>
@@ -101,6 +105,7 @@ function MarketplaceCard({
 								confirmText="remove source"
 								variant="destructive"
 								onConfirm={onRemove}
+								disabled={mutation.blocked}
 								onOpenChange={(open) =>
 									setConfirmingAction(open ? "remove" : null)
 								}
@@ -110,11 +115,11 @@ function MarketplaceCard({
 									<button
 										aria-label={`Remove ${marketplace.name}`}
 										type="button"
-										disabled={mutating}
+										disabled={mutation.blocked}
 										onClick={open}
 										className="border border-destructive/30 px-2 py-1 text-[9px] tracking-widest text-destructive uppercase disabled:opacity-40"
 									>
-										Remove
+										{removing ? "Removing…" : "Remove"}
 									</button>
 								)}
 							/>
@@ -128,12 +133,10 @@ function MarketplaceCard({
 
 export function MarketplaceGrid({
 	marketplaces,
-	mutatingId,
-	mutate,
+	mutation,
 }: {
 	marketplaces: ProviderMarketplace[];
-	mutatingId: string | null;
-	mutate: ExtensionMutationController;
+	mutation: ExtensionMutationSurface;
 }) {
 	return (
 		<div className="grid gap-2 sm:grid-cols-2">
@@ -141,16 +144,16 @@ export function MarketplaceGrid({
 				<MarketplaceCard
 					key={marketplace.id}
 					marketplace={marketplace}
-					mutating={mutatingId === marketplace.id}
+					mutation={mutation.stateFor(marketplace.id)}
 					onUpgrade={() =>
-						void mutate({
+						void mutation.mutate({
 							action: "upgrade_marketplace",
 							id: marketplace.id,
 							expectedSource: marketplace.source,
 						})
 					}
 					onRemove={() =>
-						void mutate({
+						void mutation.mutate({
 							action: "remove_marketplace",
 							id: marketplace.id,
 							expectedSource: marketplace.source,
@@ -185,14 +188,48 @@ function marketplaceInput(
 export function useMarketplaceSourceDraft(
 	environments: ProviderExtensionEnvironment[],
 ) {
-	const [environmentId, setEnvironmentId] = useState("");
-	const [source, setSource] = useState("");
-	const [ref, setRef] = useState("");
-	const [sparse, setSparse] = useState("");
+	const [environmentId, setEnvironmentIdState] = useState("");
+	const [source, setSourceState] = useState("");
+	const [ref, setRefState] = useState("");
+	const [sparse, setSparseState] = useState("");
+	const revisionRef = useRef(0);
+	const setEnvironmentId = useCallback((value: string) => {
+		revisionRef.current += 1;
+		setEnvironmentIdState(value);
+	}, []);
+	const setSource = useCallback((value: string) => {
+		revisionRef.current += 1;
+		setSourceState(value);
+	}, []);
+	const setRef = useCallback((value: string) => {
+		revisionRef.current += 1;
+		setRefState(value);
+	}, []);
+	const setSparse = useCallback((value: string) => {
+		revisionRef.current += 1;
+		setSparseState(value);
+	}, []);
 	useEffect(() => {
 		if (environments.some((item) => item.id === environmentId)) return;
 		setEnvironmentId(environments[0]?.id ?? "");
-	}, [environmentId, environments]);
+	}, [environmentId, environments, setEnvironmentId]);
+	const submission = useCallback(
+		() => ({
+			revision: revisionRef.current,
+			environmentId,
+			source,
+			ref,
+			sparse,
+		}),
+		[environmentId, source, ref, sparse],
+	);
+	const clearIfCurrent = useCallback((snapshot: { revision: number }) => {
+		if (snapshot.revision !== revisionRef.current) return;
+		revisionRef.current += 1;
+		setSourceState("");
+		setRefState("");
+		setSparseState("");
+	}, []);
 	return {
 		environmentId,
 		setEnvironmentId,
@@ -202,11 +239,8 @@ export function useMarketplaceSourceDraft(
 		setRef,
 		sparse,
 		setSparse,
-		clear: () => {
-			setSource("");
-			setRef("");
-			setSparse("");
-		},
+		submission,
+		clearIfCurrent,
 	};
 }
 
@@ -217,16 +251,23 @@ export type MarketplaceSourceDraft = ReturnType<
 export function MarketplaceSourceForm({
 	provider,
 	environments,
-	mutatingId,
-	mutate,
+	mutation,
 	draft,
 }: {
 	provider: ExtensionProviderId;
 	environments: ProviderExtensionEnvironment[];
-	mutatingId: string | null;
-	mutate: ExtensionMutationController;
+	mutation: ExtensionMutationSurface;
 	draft: MarketplaceSourceDraft;
 }) {
+	const targetMutation = mutation.stateFor(draft.environmentId);
+	const adding = targetMutation.activeAction === "add_marketplace";
+	const confirmationKey = JSON.stringify([
+		provider,
+		draft.environmentId,
+		draft.source,
+		draft.ref,
+		draft.sparse,
+	]);
 	return (
 		<details className="border border-border/70 bg-secondary/25">
 			<summary className="cursor-pointer px-3 py-2 text-[10px] tracking-widest uppercase">
@@ -279,20 +320,23 @@ export function MarketplaceSourceForm({
 				</div>
 				<div className="flex w-full justify-end">
 					<ConfirmAction
+						key={confirmationKey}
 						label={`add marketplace source ${draft.source.trim()}?`}
 						confirmText="add source"
-						onConfirm={() =>
-							void mutate(
+						disabled={mutation.hasActive}
+						onConfirm={() => {
+							const submission = draft.submission();
+							void mutation.mutate(
 								marketplaceInput(
 									provider,
-									draft.environmentId,
-									draft.source,
-									draft.ref,
-									draft.sparse,
+									submission.environmentId,
+									submission.source,
+									submission.ref,
+									submission.sparse,
 								),
-								draft.clear,
-							)
-						}
+								() => draft.clearIfCurrent(submission),
+							);
+						}}
 						stacked
 						className="justify-end"
 						trigger={(open) => (
@@ -301,12 +345,12 @@ export function MarketplaceSourceForm({
 								disabled={
 									!draft.environmentId ||
 									!draft.source.trim() ||
-									mutatingId !== null
+									mutation.hasActive
 								}
 								onClick={open}
 								className="border border-primary/40 px-3 py-1.5 text-[10px] tracking-widest text-primary uppercase disabled:opacity-40"
 							>
-								{mutatingId === draft.environmentId ? "Adding…" : "Add source"}
+								{adding ? "Adding…" : "Add source"}
 							</button>
 						)}
 					/>
@@ -335,8 +379,7 @@ export function ExtensionMarketplaceView({
 				{model.providerMarketplaces.length > 0 ? (
 					<MarketplaceGrid
 						marketplaces={model.providerMarketplaces}
-						mutatingId={controller.mutatingId}
-						mutate={controller.mutate}
+						mutation={controller.mutation}
 					/>
 				) : (
 					<p className="text-xs text-muted-foreground">
@@ -355,6 +398,7 @@ export function ExtensionMarketplaceView({
 					{model.providerAvailable.map((extension) => {
 						const review =
 							controller.review?.id === extension.id ? controller.review : null;
+						const mutation = controller.mutation.stateFor(extension.id);
 						return (
 							<AvailableExtensionCard
 								key={extension.id}
@@ -369,13 +413,13 @@ export function ExtensionMarketplaceView({
 								onReview={() => void controller.reviewExtension(extension)}
 								onInstall={() => {
 									if (!review) return;
-									void controller.mutate({
+									void controller.mutation.mutate({
 										action: "install",
 										id: extension.id,
 										reviewToken: review.reviewToken,
 									});
 								}}
-								mutating={controller.mutatingId === extension.id}
+								mutation={mutation}
 							/>
 						);
 					})}

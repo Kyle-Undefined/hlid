@@ -23,6 +23,7 @@ export function ConfirmAction({
 	className,
 	stacked = false,
 	onOpenChange,
+	disabled = false,
 }: {
 	label?: string;
 	/** Text on the destructive button (default "confirm"). */
@@ -37,20 +38,27 @@ export function ConfirmAction({
 	stacked?: boolean;
 	/** Observe the inline confirmation opening or closing. */
 	onOpenChange?: (open: boolean) => void;
+	/** Prevent opening or completing the confirmation. */
+	disabled?: boolean;
 }) {
 	const [confirming, setConfirming] = useState(false);
 	const confirmBtnRef = useRef<HTMLButtonElement>(null);
 	const setOpen = useCallback(
 		(open: boolean) => {
+			if (open && disabled) return;
 			setConfirming(open);
 			onOpenChange?.(open);
 		},
-		[onOpenChange],
+		[disabled, onOpenChange],
 	);
 
 	useEffect(() => {
 		if (confirming) confirmBtnRef.current?.focus();
 	}, [confirming]);
+
+	useEffect(() => {
+		if (disabled && confirming) setOpen(false);
+	}, [confirming, disabled, setOpen]);
 
 	useEffect(() => {
 		if (!confirming) return;
@@ -87,11 +95,13 @@ export function ConfirmAction({
 				<button
 					ref={confirmBtnRef}
 					type="button"
+					disabled={disabled}
 					onClick={() => {
+						if (disabled) return;
 						setOpen(false);
 						onConfirm();
 					}}
-					className={`shrink-0 text-[9px] tracking-widest uppercase transition-colors ${confirmCls}`}
+					className={`shrink-0 text-[9px] tracking-widest uppercase transition-colors disabled:opacity-40 ${confirmCls}`}
 				>
 					{confirmText}
 				</button>

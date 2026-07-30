@@ -40,45 +40,49 @@ export function ExtensionInstalledView({
 						{marketplaces.length > 0 && (
 							<MarketplaceGrid
 								marketplaces={marketplaces}
-								mutatingId={controller.mutatingId}
-								mutate={controller.mutate}
+								mutation={controller.mutation}
 							/>
 						)}
 						<div className="space-y-2">
-							{extensions.map((extension) => (
-								<InstalledExtensionCard
-									key={extension.id}
-									extension={extension}
-									inventoryGeneration={inventoryGeneration}
-									mutating={controller.mutatingId === extension.id}
-									onUpdate={
-										extension.nativeUpdate?.available === true
-											? () =>
-													void controller.mutate({
-														action: "update",
-														id: extension.id,
-														expectedVersion: extension.version,
-													})
-											: undefined
-									}
-									onSetEnabled={() =>
-										void controller.mutate({
-											action: "set_enabled",
-											id: extension.id,
-											expectedVersion: extension.version,
-											expectedEnabled: extension.enabled,
-											enabled: !extension.enabled,
-										})
-									}
-									onUninstall={() =>
-										void controller.mutate({
-											action: "uninstall",
-											id: extension.id,
-											expectedVersion: extension.version,
-										})
-									}
-								/>
-							))}
+							{extensions.map((extension) => {
+								const mutationState = controller.mutation.stateFor(
+									extension.id,
+								);
+								return (
+									<InstalledExtensionCard
+										key={extension.id}
+										extension={extension}
+										inventoryGeneration={inventoryGeneration}
+										mutation={mutationState}
+										onUpdate={
+											extension.nativeUpdate?.available === true
+												? () =>
+														void controller.mutation.mutate({
+															action: "update",
+															id: extension.id,
+															expectedVersion: extension.version,
+														})
+												: undefined
+										}
+										onSetEnabled={() =>
+											void controller.mutation.mutate({
+												action: "set_enabled",
+												id: extension.id,
+												expectedVersion: extension.version,
+												expectedEnabled: extension.enabled,
+												enabled: !extension.enabled,
+											})
+										}
+										onUninstall={() =>
+											void controller.mutation.mutate({
+												action: "uninstall",
+												id: extension.id,
+												expectedVersion: extension.version,
+											})
+										}
+									/>
+								);
+							})}
 							{extensions.length === 0 && (
 								<p className="text-xs text-muted-foreground">
 									No installed extensions match this filter.

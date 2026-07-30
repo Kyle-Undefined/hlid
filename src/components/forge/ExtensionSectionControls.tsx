@@ -160,10 +160,12 @@ export type ExtensionSectionViewModel = ReturnType<
 export function ExtensionSectionControls({
 	model,
 	loading,
+	mutationActive,
 	onRefresh,
 }: {
 	model: ExtensionSectionViewModel;
 	loading: boolean;
+	mutationActive: boolean;
 	onRefresh: () => void;
 }) {
 	const searchLabel =
@@ -227,7 +229,7 @@ export function ExtensionSectionControls({
 				<button
 					type="button"
 					onClick={onRefresh}
-					disabled={loading}
+					disabled={loading || mutationActive}
 					className="self-start border border-border px-3 py-1.5 text-[10px] tracking-widest uppercase disabled:opacity-50"
 				>
 					{loading ? "Inspecting…" : "Refresh"}

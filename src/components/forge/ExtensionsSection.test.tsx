@@ -172,10 +172,12 @@ const inventory: ExtensionInventory = {
 
 function deferred<T>() {
 	let resolve!: (value: T | PromiseLike<T>) => void;
-	const promise = new Promise<T>((fulfill) => {
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((fulfill, fail) => {
 		resolve = fulfill;
+		reject = fail;
 	});
-	return { promise, resolve };
+	return { promise, reject, resolve };
 }
 
 function installedReview(
@@ -348,7 +350,7 @@ describe("ExtensionsSection", () => {
 				<button
 					type="button"
 					onClick={() =>
-						void controller?.mutate(
+						void controller?.mutation.mutate(
 							{
 								action: "set_enabled",
 								id: "claude-extension",
@@ -1131,6 +1133,299 @@ describe("ExtensionsSection", () => {
 				expectedSource: "github · example/plugins",
 			}),
 		);
+	});
+
+	it("keeps independent mutation owners and their feedback visible", async () => {
+		const claudeMutation = deferred<{
+			ok: true;
+			result: {
+				action: "set_enabled";
+				providerId: "claude";
+				subject: string;
+				pluginId: string;
+				environmentLabel: string;
+				output: string;
+			};
+		}>();
+		const codexMutation = deferred<never>();
+		mocks.getExtensionInventory.mockResolvedValue(inventory);
+		mocks.getExtensionReview.mockResolvedValue(null);
+		mocks.mutateExtension.mockImplementation(
+			(input: Record<string, unknown>) =>
+				input.id === "claude-extension"
+					? claudeMutation.promise
+					: codexMutation.promise,
+		);
+		render(<ExtensionsSection />);
+		await waitFor(() => expect(screen.getByText("Reviewer")).toBeTruthy());
+
+		fireEvent.click(screen.getByText("Reviewer"));
+		fireEvent.click(screen.getByRole("button", { name: "Disable" }));
+		await waitFor(() =>
+			expect(screen.getByRole("button", { name: "Working…" })).toBeTruthy(),
+		);
+		expect(
+			screen.getByRole("button", { name: "Update" }).hasAttribute("disabled"),
+		).toBe(true);
+		expect(
+			screen
+				.getByRole("button", { name: "Uninstall" })
+				.hasAttribute("disabled"),
+		).toBe(true);
+		expect(
+			screen.getByRole("button", { name: "Refresh" }).hasAttribute("disabled"),
+		).toBe(true);
+
+		fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+		fireEvent.click(await screen.findByText("GitHub"));
+		const enable = screen.getByRole("button", { name: "Enable" });
+		expect(enable.hasAttribute("disabled")).toBe(false);
+		fireEvent.click(enable);
+		await waitFor(() =>
+			expect(screen.getByRole("button", { name: "Working…" })).toBeTruthy(),
+		);
+
+		await act(async () => {
+			claudeMutation.resolve({
+				ok: true,
+				result: {
+					action: "set_enabled",
+					providerId: "claude",
+					subject: "reviewer@official",
+					pluginId: "reviewer@official",
+					environmentLabel: "WSL · Ubuntu",
+					output: "disabled",
+				},
+			});
+			await claudeMutation.promise;
+		});
+		expect((await screen.findByRole("status")).textContent).toContain(
+			"reviewer@official disabled in WSL · Ubuntu.",
+		);
+		expect(screen.getByRole("button", { name: "Working…" })).toBeTruthy();
+
+		await act(async () => {
+			codexMutation.reject(new Error("Codex enable failed"));
+			await codexMutation.promise.catch(() => {});
+		});
+		expect((await screen.findByRole("alert")).textContent).toContain(
+			"Codex enable failed",
+		);
+		expect(screen.getByRole("status").textContent).toContain(
+			"reviewer@official disabled in WSL · Ubuntu.",
+		);
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Dismiss extension action error",
+			}),
+		);
+		expect(screen.queryByRole("alert")).toBeNull();
+		expect(screen.getByRole("status").textContent).toContain(
+			"reviewer@official disabled in WSL · Ubuntu.",
+		);
+	});
+
+	it("keeps inspection controls disabled through mutation reconciliation", async () => {
+		const reconciliation = deferred<ExtensionInventory>();
+		const inventoryWithRetry: ExtensionInventory = {
+			...inventory,
+			errors: [
+				{
+					providerId: "claude",
+					environment: "wsl",
+					environmentLabel: "WSL · Ubuntu",
+					message: "Marketplace inspection is temporarily unavailable",
+					recovery: "retry_inventory",
+				},
+			],
+		};
+		mocks.getExtensionInventory
+			.mockResolvedValueOnce(inventoryWithRetry)
+			.mockImplementationOnce(() => reconciliation.promise);
+		mocks.getExtensionReview.mockResolvedValue(null);
+		mocks.mutateExtension.mockResolvedValue({
+			ok: true,
+			result: {
+				action: "set_enabled",
+				providerId: "claude",
+				subject: "reviewer@official",
+				pluginId: "reviewer@official",
+				environmentLabel: "WSL · Ubuntu",
+				output: "disabled",
+			},
+		});
+		render(<ExtensionsSection />);
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: "Retry inspection" }),
+			).toBeTruthy(),
+		);
+
+		fireEvent.click(screen.getByText("Reviewer"));
+		fireEvent.click(screen.getByRole("button", { name: "Disable" }));
+		await waitFor(() =>
+			expect(mocks.getExtensionInventory).toHaveBeenCalledTimes(2),
+		);
+		expect(
+			screen
+				.getByRole("button", { name: "Inspecting…" })
+				.hasAttribute("disabled"),
+		).toBe(true);
+		expect(
+			screen
+				.getByRole("button", { name: "Retrying…" })
+				.hasAttribute("disabled"),
+		).toBe(true);
+		expect(screen.getByRole("button", { name: "Working…" })).toBeTruthy();
+
+		await act(async () => {
+			reconciliation.resolve(inventoryWithRetry);
+			await reconciliation.promise;
+		});
+		await waitFor(() =>
+			expect(
+				screen
+					.getByRole("button", { name: "Disable" })
+					.hasAttribute("disabled"),
+			).toBe(false),
+		);
+		expect(
+			screen.getByRole("button", { name: "Refresh" }).hasAttribute("disabled"),
+		).toBe(false);
+		expect(
+			screen
+				.getByRole("button", { name: "Retry inspection" })
+				.hasAttribute("disabled"),
+		).toBe(false);
+	});
+
+	it("shows progress only for the marketplace action that owns the card", async () => {
+		const marketplaceMutation = deferred<{
+			ok: true;
+			result: {
+				action: "upgrade_marketplace";
+				providerId: "claude";
+				subject: string;
+				environmentLabel: string;
+				output: string;
+			};
+		}>();
+		mocks.getExtensionInventory.mockResolvedValue(inventory);
+		mocks.mutateExtension.mockImplementation(() => marketplaceMutation.promise);
+		render(<ExtensionsSection />);
+		await waitFor(() => expect(screen.getByText("Reviewer")).toBeTruthy());
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Refresh source official" }),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "refresh source" }));
+		await waitFor(() => expect(mocks.mutateExtension).toHaveBeenCalledOnce());
+		const refresh = screen.getByRole("button", {
+			name: "Refresh source official",
+		});
+		const remove = screen.getByRole("button", { name: "Remove official" });
+		expect(refresh.textContent).toBe("Working…");
+		expect(refresh.hasAttribute("disabled")).toBe(true);
+		expect(remove.textContent).toBe("Remove");
+		expect(remove.hasAttribute("disabled")).toBe(true);
+
+		await act(async () => {
+			marketplaceMutation.resolve({
+				ok: true,
+				result: {
+					action: "upgrade_marketplace",
+					providerId: "claude",
+					subject: "official",
+					environmentLabel: "WSL · Ubuntu",
+					output: "updated",
+				},
+			});
+			await marketplaceMutation.promise;
+		});
+		await waitFor(() =>
+			expect(
+				screen
+					.getByRole("button", { name: "Refresh source official" })
+					.hasAttribute("disabled"),
+			).toBe(false),
+		);
+	});
+
+	it("closes marketplace confirmation when its draft context changes", async () => {
+		mocks.getExtensionInventory.mockResolvedValue(inventory);
+		render(<ExtensionsSection />);
+		await waitFor(() => expect(screen.getByText("Reviewer")).toBeTruthy());
+		fireEvent.click(screen.getByRole("tab", { name: "marketplace" }));
+		fireEvent.click(screen.getByText("Add marketplace source"));
+		fireEvent.change(screen.getByLabelText("Marketplace source"), {
+			target: { value: "example/first-source" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Add source" }));
+		expect(screen.getByRole("button", { name: "add source" })).toBeTruthy();
+
+		fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+
+		expect(screen.queryByRole("button", { name: "add source" })).toBeNull();
+		expect(screen.getByRole("button", { name: "Add source" })).toBeTruthy();
+		expect(mocks.mutateExtension).not.toHaveBeenCalled();
+	});
+
+	it("does not clear a marketplace draft changed after submission", async () => {
+		const mutation = deferred<{
+			ok: true;
+			result: {
+				action: "add_marketplace";
+				providerId: "claude";
+				subject: string;
+				environmentLabel: string;
+				output: string;
+			};
+		}>();
+		mocks.getExtensionInventory.mockResolvedValue(inventory);
+		mocks.mutateExtension.mockImplementation(() => mutation.promise);
+		render(<ExtensionsSection />);
+		await waitFor(() => expect(screen.getByText("Reviewer")).toBeTruthy());
+		fireEvent.click(screen.getByRole("tab", { name: "marketplace" }));
+		fireEvent.click(screen.getByText("Add marketplace source"));
+		fireEvent.change(screen.getByLabelText("Marketplace source"), {
+			target: { value: "example/first-source" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Add source" }));
+		fireEvent.click(screen.getByRole("button", { name: "add source" }));
+		await waitFor(() => expect(mocks.mutateExtension).toHaveBeenCalledOnce());
+		expect(screen.getByRole("button", { name: "Adding…" })).toBeTruthy();
+
+		fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+		fireEvent.change(screen.getByLabelText("Marketplace source"), {
+			target: { value: "example/second-source" },
+		});
+		fireEvent.change(screen.getByLabelText("Marketplace Git ref"), {
+			target: { value: "release-2" },
+		});
+		const blockedAdd = screen.getByRole("button", { name: "Add source" });
+		expect(blockedAdd.hasAttribute("disabled")).toBe(true);
+
+		await act(async () => {
+			mutation.resolve({
+				ok: true,
+				result: {
+					action: "add_marketplace",
+					providerId: "claude",
+					subject: "first-source",
+					environmentLabel: "WSL · Ubuntu",
+					output: "added",
+				},
+			});
+			await mutation.promise;
+		});
+		await waitFor(() =>
+			expect(
+				(screen.getByLabelText("Marketplace source") as HTMLInputElement).value,
+			).toBe("example/second-source"),
+		);
+		expect(
+			(screen.getByLabelText("Marketplace Git ref") as HTMLInputElement).value,
+		).toBe("release-2");
 	});
 
 	it("keeps an unfinished marketplace draft while switching views", async () => {

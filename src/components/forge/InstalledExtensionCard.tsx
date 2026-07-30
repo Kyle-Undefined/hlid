@@ -9,6 +9,7 @@ import {
 	ExtensionMetaValue,
 	TrustReviewAndManifest,
 } from "./ExtensionReviewDetails";
+import type { ExtensionTargetMutationState } from "./useExtensionSectionController";
 import { useInstalledExtensionReview } from "./useInstalledExtensionReview";
 
 function readableDate(value: string): string {
@@ -64,13 +65,14 @@ function InstalledRecoveryNotice({
 
 function InstalledStatusAction({
 	extension,
-	mutating,
+	mutation,
 	onSetEnabled,
 }: {
 	extension: ProviderExtension;
-	mutating: boolean;
+	mutation: ExtensionTargetMutationState;
 	onSetEnabled: () => void;
 }) {
+	const changingStatus = mutation.activeAction === "set_enabled";
 	return (
 		<div className="flex flex-wrap items-center justify-between gap-3 border border-border/70 bg-secondary/25 px-3 py-2">
 			<div className="text-xs text-muted-foreground">
@@ -82,7 +84,7 @@ function InstalledStatusAction({
 			</div>
 			<button
 				type="button"
-				disabled={mutating}
+				disabled={mutation.blocked}
 				onClick={onSetEnabled}
 				className={`border px-3 py-1.5 text-[10px] tracking-widest uppercase disabled:opacity-40 ${
 					extension.enabled
@@ -90,7 +92,7 @@ function InstalledStatusAction({
 						: "border-primary/40 text-primary hover:bg-primary/10"
 				}`}
 			>
-				{mutating ? "Working…" : extension.enabled ? "Disable" : "Enable"}
+				{changingStatus ? "Working…" : extension.enabled ? "Disable" : "Enable"}
 			</button>
 		</div>
 	);
@@ -98,15 +100,16 @@ function InstalledStatusAction({
 
 function InstalledUpdateAction({
 	extension,
-	mutating,
+	mutation,
 	onUpdate,
 }: {
 	extension: ProviderExtension;
-	mutating: boolean;
+	mutation: ExtensionTargetMutationState;
 	onUpdate?: () => void;
 }) {
 	if (!onUpdate) return null;
 	const repairingCache = extension.cacheRecovery?.action === "native_update";
+	const updating = mutation.activeAction === "update";
 	return (
 		<div className="flex flex-wrap items-center justify-between gap-3 border border-border/70 bg-secondary/25 px-3 py-2">
 			<div className="text-xs text-muted-foreground">
@@ -118,16 +121,17 @@ function InstalledUpdateAction({
 				label={`${repairingCache ? "repair" : "update"} ${extension.name}?`}
 				confirmText={repairingCache ? "repair" : "update"}
 				onConfirm={onUpdate}
+				disabled={mutation.blocked}
 				stacked
 				className="justify-end flex-wrap"
 				trigger={(open) => (
 					<button
 						type="button"
-						disabled={mutating}
+						disabled={mutation.blocked}
 						onClick={open}
 						className="border border-primary/40 px-3 py-1.5 text-[10px] tracking-widest uppercase text-primary hover:bg-primary/10 disabled:opacity-40"
 					>
-						{mutating
+						{updating
 							? repairingCache
 								? "Repairing…"
 								: "Updating…"
@@ -252,13 +256,14 @@ function InstalledReview({
 
 function InstalledUninstallAction({
 	extension,
-	mutating,
+	mutation,
 	onUninstall,
 }: {
 	extension: ProviderExtension;
-	mutating: boolean;
+	mutation: ExtensionTargetMutationState;
 	onUninstall: () => void;
 }) {
+	const uninstalling = mutation.activeAction === "uninstall";
 	return (
 		<div className="flex flex-wrap items-center justify-between gap-3 border border-destructive/20 bg-destructive/5 px-3 py-2">
 			<div className="text-xs text-muted-foreground">
@@ -270,16 +275,17 @@ function InstalledUninstallAction({
 				label={`remove ${extension.name}?`}
 				confirmText="remove"
 				onConfirm={onUninstall}
+				disabled={mutation.blocked}
 				stacked
 				className="justify-end flex-wrap"
 				trigger={(open) => (
 					<button
 						type="button"
-						disabled={mutating}
+						disabled={mutation.blocked}
 						onClick={open}
 						className="border border-destructive/40 px-3 py-1.5 text-[10px] tracking-widest uppercase text-destructive hover:bg-destructive/10 disabled:opacity-40"
 					>
-						{mutating ? "Removing…" : "Uninstall"}
+						{uninstalling ? "Removing…" : "Uninstall"}
 					</button>
 				)}
 			/>
@@ -293,14 +299,14 @@ export function InstalledExtensionCard({
 	onUpdate,
 	onSetEnabled,
 	onUninstall,
-	mutating,
+	mutation,
 }: {
 	extension: ProviderExtension;
 	inventoryGeneration: number;
 	onUpdate?: () => void;
 	onSetEnabled: () => void;
 	onUninstall: () => void;
-	mutating: boolean;
+	mutation: ExtensionTargetMutationState;
 }) {
 	const [expanded, setExpanded] = useState(false);
 	const { review, reviewing, reviewError, requestReview } =
@@ -363,12 +369,12 @@ export function InstalledExtensionCard({
 				<InstalledRecoveryNotice extension={extension} />
 				<InstalledStatusAction
 					extension={extension}
-					mutating={mutating}
+					mutation={mutation}
 					onSetEnabled={onSetEnabled}
 				/>
 				<InstalledUpdateAction
 					extension={extension}
-					mutating={mutating}
+					mutation={mutation}
 					onUpdate={onUpdate}
 				/>
 				<InstalledMetadata extension={extension} />
@@ -380,7 +386,7 @@ export function InstalledExtensionCard({
 				/>
 				<InstalledUninstallAction
 					extension={extension}
-					mutating={mutating}
+					mutation={mutation}
 					onUninstall={onUninstall}
 				/>
 			</div>
