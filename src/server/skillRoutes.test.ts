@@ -118,11 +118,32 @@ describe("handleSkillRoute", () => {
 		);
 	});
 
+	it("uses the startup config when the live config cannot be loaded", async () => {
+		const startupConfig = {
+			...config,
+			vault: { path: "/startup-vault", name: "Startup" },
+		} as HlidConfig;
+		mocks.loadConfig.mockImplementationOnce(() => {
+			throw new Error("config unavailable");
+		});
+
+		await handleSkillRoute(
+			new URL("http://localhost/skills/catalog"),
+			request("/skills/catalog", undefined, "GET"),
+			startupConfig,
+		);
+
+		expect(mocks.discoverSkillPackages).toHaveBeenCalledWith(
+			startupConfig,
+			expect.any(Map),
+		);
+	});
+
 	it("imports selected discovery IDs and invalidates the shared skill snapshot", async () => {
 		const id = "a".repeat(24);
 		const response = await handleSkillRoute(
 			new URL("http://localhost/skills/import"),
-			request("/skills/import", { ids: [id] }),
+			request("/skills/import", { ids: [id, id] }),
 			config,
 		);
 		expect(response?.status).toBe(200);
@@ -136,6 +157,9 @@ describe("handleSkillRoute", () => {
 			config,
 		);
 		expect(mocks.getVaultSnapshot).toHaveBeenCalledWith({ refresh: true });
+		expect(
+			mocks.invalidateVaultSnapshot.mock.invocationCallOrder[0],
+		).toBeLessThan(mocks.getVaultSnapshot.mock.invocationCallOrder[0]);
 	});
 
 	it("lists managed skills separately from provider imports", async () => {
@@ -147,6 +171,64 @@ describe("handleSkillRoute", () => {
 		expect(await managed?.json()).toEqual({
 			skills: [{ id: "c".repeat(24), name: "review" }],
 		});
+	});
+
+	it("reads managed and staged content through their exact routes", async () => {
+		const managedId = "c".repeat(24);
+		const stagedId = "d".repeat(24);
+		const managed = await handleSkillRoute(
+			new URL(`http://localhost/skills/managed/content?id=${managedId}`),
+			request(`/skills/managed/content?id=${managedId}`, undefined, "GET"),
+			config,
+		);
+		const staged = await handleSkillRoute(
+			new URL(
+				`http://localhost/skills/staged/content?id=${stagedId}&path=helper.md`,
+			),
+			request(
+				`/skills/staged/content?id=${stagedId}&path=helper.md`,
+				undefined,
+				"GET",
+			),
+			config,
+		);
+
+		expect(await managed?.json()).toMatchObject({
+			id: managedId,
+			content: "# Managed review\n",
+		});
+		expect(await staged?.json()).toEqual({
+			path: "helper.md",
+			content: "# Helper\n",
+		});
+		expect(mocks.readManagedSkillDocument).toHaveBeenCalledWith(managedId);
+		expect(mocks.readStagedSkillFile).toHaveBeenCalledWith(
+			stagedId,
+			"helper.md",
+		);
+	});
+
+	it("maps staged content read failures without changing the active snapshot", async () => {
+		const id = "d".repeat(24);
+		mocks.readStagedSkillFile.mockRejectedValueOnce(
+			new Error("staged file unavailable"),
+		);
+		const response = await handleSkillRoute(
+			new URL(`http://localhost/skills/staged/content?id=${id}&path=helper.md`),
+			request(
+				`/skills/staged/content?id=${id}&path=helper.md`,
+				undefined,
+				"GET",
+			),
+			config,
+		);
+
+		expect(response?.status).toBe(400);
+		expect(await response?.json()).toEqual({
+			error: "staged_skill_read_failed",
+			message: "staged file unavailable",
+		});
+		expect(mocks.invalidateVaultSnapshot).not.toHaveBeenCalled();
 	});
 
 	it("discovers remote repository skills without staging them", async () => {
@@ -202,6 +284,31 @@ describe("handleSkillRoute", () => {
 		expect(mocks.getVaultSnapshot).toHaveBeenCalledWith({ refresh: true });
 	});
 
+	it("keeps the install invalidation when the snapshot refresh fails", async () => {
+		const id = "d".repeat(24);
+		mocks.getVaultSnapshot.mockRejectedValueOnce(
+			new Error("snapshot refresh failed"),
+		);
+		const response = await handleSkillRoute(
+			new URL("http://localhost/skills/install"),
+			request("/skills/install", { id }),
+			config,
+		);
+
+		expect(response?.status).toBe(400);
+		expect(await response?.json()).toEqual({
+			error: "skill_install_failed",
+			message: "snapshot refresh failed",
+		});
+		expect(mocks.invalidateVaultSnapshot).toHaveBeenCalledWith(
+			"skill-install",
+			config,
+		);
+		expect(
+			mocks.invalidateVaultSnapshot.mock.invocationCallOrder[0],
+		).toBeLessThan(mocks.getVaultSnapshot.mock.invocationCallOrder[0]);
+	});
+
 	it("discards a declined stage without refreshing the snapshot", async () => {
 		const id = "d".repeat(24);
 		const response = await handleSkillRoute(
@@ -232,6 +339,23 @@ describe("handleSkillRoute", () => {
 			config,
 		);
 		expect(mocks.getVaultSnapshot).toHaveBeenCalledWith({ refresh: true });
+	});
+
+	it("does not refresh when the managed skill has already disappeared", async () => {
+		const id = "c".repeat(24);
+		mocks.removeManagedSkill.mockResolvedValueOnce(null);
+		const response = await handleSkillRoute(
+			new URL("http://localhost/skills/remove"),
+			request("/skills/remove", { id }),
+			config,
+		);
+
+		expect(response?.status).toBe(404);
+		expect(await response?.json()).toEqual({
+			error: "managed_skill_not_found",
+		});
+		expect(mocks.invalidateVaultSnapshot).not.toHaveBeenCalled();
+		expect(mocks.getVaultSnapshot).not.toHaveBeenCalled();
 	});
 
 	it("returns SKILL.md content by opaque discovery ID", async () => {

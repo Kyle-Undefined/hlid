@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { createReadAloudRouteHandler } from "./readAloudRoutes";
+import {
+	createReadAloudRouteHandler,
+	MAX_READ_ALOUD_TEXT_CHARS,
+} from "./readAloudRoutes";
 
 const voice = {
 	id: "windows:mark",
@@ -85,6 +88,8 @@ describe("read aloud internal routes", () => {
 		);
 		expect(response?.status).toBe(200);
 		expect(response?.headers.get("content-type")).toBe("audio/wav");
+		expect(response?.headers.get("cache-control")).toBe("private, no-store");
+		expect(response?.headers.get("content-length")).toBe("17");
 		expect(synthesize).toHaveBeenCalledWith("Read this.", "windows:mark");
 	});
 
@@ -99,6 +104,42 @@ describe("read aloud internal routes", () => {
 			request(`${url.pathname}${url.search}`),
 		);
 		expect(response?.status).toBe(404);
+	});
+
+	it.each([
+		["missing", null, 404, "assistant message not found"],
+		["empty", "", 422, "message has no readable text"],
+		[
+			"oversized",
+			"x".repeat(MAX_READ_ALOUD_TEXT_CHARS + 1),
+			413,
+			"message is too long to synthesize",
+		],
+	] as const)("validates %s message text before selecting the neural provider", async (_name, markdown, status, error) => {
+		const synthesize = vi.fn();
+		const getNeuralSettings = vi.fn(() => ({
+			voiceId: "expr-voice-5-f",
+			rate: 1,
+		}));
+		const handler = createReadAloudRouteHandler({
+			speech: { voices: vi.fn(), synthesize: vi.fn() },
+			tts: { synthesize },
+			getAssistantMessageText: vi.fn().mockResolvedValue(markdown),
+			getNeuralSettings,
+		});
+		const url = new URL(
+			"http://localhost/read-aloud/audio?message_id=42&provider=neural&chunk_index=0",
+		);
+
+		const response = await handler(
+			url,
+			request(`${url.pathname}${url.search}`),
+		);
+
+		expect(response?.status).toBe(status);
+		expect(await response?.json()).toEqual({ error });
+		expect(getNeuralSettings).not.toHaveBeenCalled();
+		expect(synthesize).not.toHaveBeenCalled();
 	});
 
 	it("admits only one synthesis at a time", async () => {
@@ -116,8 +157,29 @@ describe("read aloud internal routes", () => {
 		await vi.waitFor(() => expect(synthesize).toHaveBeenCalledOnce());
 		const second = await handler(url, request(`${url.pathname}${url.search}`));
 		expect(second?.status).toBe(429);
+		expect(second?.headers.get("retry-after")).toBe("1");
 		resolveAudio?.(new TextEncoder().encode("RIFF0000WAVEaudio"));
 		expect((await first)?.status).toBe(200);
+	});
+
+	it("releases the Microsoft synthesis gate after a provider failure", async () => {
+		const synthesize = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("Microsoft speech failed"))
+			.mockResolvedValueOnce(new TextEncoder().encode("RIFF0000WAVEaudio"));
+		const handler = createReadAloudRouteHandler({
+			speech: { voices: vi.fn(), synthesize },
+			getAssistantMessageText: vi.fn().mockResolvedValue("Read this"),
+		});
+		const url = new URL("http://localhost/read-aloud/audio?message_id=42");
+
+		const failed = await handler(url, request(`${url.pathname}${url.search}`));
+		const retried = await handler(url, request(`${url.pathname}${url.search}`));
+
+		expect(failed?.status).toBe(503);
+		expect(await failed?.json()).toEqual({ error: "Microsoft speech failed" });
+		expect(retried?.status).toBe(200);
+		expect(synthesize).toHaveBeenCalledTimes(2);
 	});
 
 	it("synthesizes a bounded neural chunk with server-owned settings", async () => {
@@ -156,6 +218,68 @@ describe("read aloud internal routes", () => {
 		);
 	});
 
+	it.each([
+		["non-numeric", "bad", 400, "invalid chunk_index"],
+		["fractional", "1.5", 400, "invalid chunk_index"],
+		["negative", "-1", 400, "invalid chunk_index"],
+		["past the end", "99", 416, "read-aloud chunk not found"],
+	] as const)("rejects a %s neural chunk before synthesis", async (_name, chunkIndex, status, error) => {
+		const synthesize = vi.fn();
+		const getNeuralSettings = vi.fn(() => ({
+			voiceId: "expr-voice-5-f",
+			rate: 1,
+		}));
+		const handler = createReadAloudRouteHandler({
+			speech: { voices: vi.fn(), synthesize: vi.fn() },
+			tts: { synthesize },
+			getAssistantMessageText: vi.fn().mockResolvedValue("Read this"),
+			getNeuralSettings,
+		});
+		const url = new URL(
+			`http://localhost/read-aloud/audio?message_id=42&provider=neural&chunk_index=${chunkIndex}`,
+		);
+
+		const response = await handler(
+			url,
+			request(`${url.pathname}${url.search}`),
+		);
+
+		expect(response?.status).toBe(status);
+		expect(await response?.json()).toEqual({ error });
+		expect(getNeuralSettings).not.toHaveBeenCalled();
+		expect(synthesize).not.toHaveBeenCalled();
+	});
+
+	it("maps neural queue pressure to 429 and other failures to 503", async () => {
+		const synthesize = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("neural queue is full"))
+			.mockRejectedValueOnce(new Error("neural runtime unavailable"));
+		const handler = createReadAloudRouteHandler({
+			speech: { voices: vi.fn(), synthesize: vi.fn() },
+			tts: { synthesize },
+			getAssistantMessageText: vi.fn().mockResolvedValue("Read this"),
+		});
+		const url = new URL(
+			"http://localhost/read-aloud/audio?message_id=42&provider=neural&chunk_index=0",
+		);
+
+		const busy = await handler(url, request(`${url.pathname}${url.search}`));
+		const unavailable = await handler(
+			url,
+			request(`${url.pathname}${url.search}`),
+		);
+
+		expect(busy?.status).toBe(429);
+		expect(busy?.headers.get("retry-after")).toBe("1");
+		expect(await busy?.json()).toEqual({ error: "neural queue is full" });
+		expect(unavailable?.status).toBe(503);
+		expect(unavailable?.headers.get("retry-after")).toBeNull();
+		expect(await unavailable?.json()).toEqual({
+			error: "neural runtime unavailable",
+		});
+	});
+
 	it("uses fixed text for neural voice preview", async () => {
 		const synthesize = vi.fn().mockResolvedValue({
 			audio: new TextEncoder().encode("RIFF0000WAVEaudio"),
@@ -179,5 +303,26 @@ describe("read aloud internal routes", () => {
 			"expr-voice-2-f",
 			1,
 		);
+	});
+
+	it("maps neural preview failures to service unavailable", async () => {
+		const handler = createReadAloudRouteHandler({
+			speech: { voices: vi.fn(), synthesize: vi.fn() },
+			tts: {
+				synthesize: vi
+					.fn()
+					.mockRejectedValue(new Error("preview model unavailable")),
+			},
+			getAssistantMessageText: vi.fn(),
+		});
+		const response = await handler(
+			new URL("http://localhost/read-aloud/preview"),
+			request("/read-aloud/preview"),
+		);
+
+		expect(response?.status).toBe(503);
+		expect(await response?.json()).toEqual({
+			error: "preview model unavailable",
+		});
 	});
 });
