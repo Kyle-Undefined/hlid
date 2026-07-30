@@ -26,6 +26,7 @@ const available: AvailableExtension = {
 	id: "a".repeat(24),
 	providerId: "claude",
 	providerLabel: "Claude",
+	environmentId: extensionEnvironmentId("claude", home),
 	environment: "host",
 	environmentLabel: "Host",
 	pluginId: "reviewer@official",
@@ -46,6 +47,7 @@ const installed: ProviderExtension = {
 	id: "b".repeat(24),
 	providerId: "claude",
 	providerLabel: "Claude",
+	environmentId: extensionEnvironmentId("claude", home),
 	environment: "host",
 	environmentLabel: "Host",
 	pluginId: "reviewer@official",
@@ -105,12 +107,25 @@ function inventory(input: {
 	};
 }
 
+function deferred<T>() {
+	let resolve!: (value: T | PromiseLike<T>) => void;
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((fulfill, fail) => {
+		resolve = fulfill;
+		reject = fail;
+	});
+	return { promise, reject, resolve };
+}
+
 function marketplace(
 	overrides: Partial<ProviderMarketplace> = {},
 ): ProviderMarketplace {
+	const providerId = overrides.providerId ?? "claude";
 	return {
 		id: "9".repeat(24),
-		providerId: "claude",
+		providerId,
+		environmentId:
+			overrides.environmentId ?? extensionEnvironmentId(providerId, home),
 		environment: "host",
 		environmentLabel: "Host",
 		name: "team-tools",
@@ -129,14 +144,13 @@ describe("mutateProviderExtension", () => {
 	const inspectReview = vi.fn();
 
 	beforeEach(() => {
-		vi.clearAllMocks();
+		vi.resetAllMocks();
 		run.mockResolvedValue({ output: "ok", code: 0 });
 		inspectReview.mockResolvedValue(review);
 	});
 
 	it("installs a reviewed Claude package through the native CLI", async () => {
 		discover
-			.mockResolvedValueOnce(inventory({ available: [available] }))
 			.mockResolvedValueOnce(inventory({ available: [available] }))
 			.mockResolvedValueOnce(inventory({ extensions: [installed] }));
 
@@ -146,6 +160,7 @@ describe("mutateProviderExtension", () => {
 				{
 					action: "install",
 					id: available.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					reviewToken: review.reviewToken,
 				},
 				{
@@ -183,6 +198,7 @@ describe("mutateProviderExtension", () => {
 		const wrongEnvironment = {
 			...installed,
 			id: "d".repeat(24),
+			environmentId: "0".repeat(24),
 			environmentLabel: "Other host",
 			version: "9.0.0",
 		};
@@ -194,8 +210,12 @@ describe("mutateProviderExtension", () => {
 		};
 		const otherIdentities = [wrongProvider, wrongEnvironment, wrongScope];
 		discover
-			.mockResolvedValueOnce(inventory({ available: [available] }))
-			.mockResolvedValueOnce(inventory({ extensions: otherIdentities }))
+			.mockResolvedValueOnce(
+				inventory({
+					available: [available],
+					extensions: otherIdentities,
+				}),
+			)
 			.mockResolvedValueOnce(
 				inventory({ extensions: [...otherIdentities, installed] }),
 			);
@@ -206,6 +226,7 @@ describe("mutateProviderExtension", () => {
 				{
 					action: "install",
 					id: available.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					reviewToken: review.reviewToken,
 				},
 				{
@@ -225,7 +246,6 @@ describe("mutateProviderExtension", () => {
 		inspectReview.mockResolvedValueOnce({ ...review, version: "1.2.4" });
 		discover
 			.mockResolvedValueOnce(inventory({ available: [available] }))
-			.mockResolvedValueOnce(inventory({ available: [available] }))
 			.mockResolvedValueOnce(inventory({ extensions: [refreshed] }));
 
 		await expect(
@@ -234,6 +254,7 @@ describe("mutateProviderExtension", () => {
 				{
 					action: "install",
 					id: available.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					reviewToken: review.reviewToken,
 				},
 				{
@@ -252,7 +273,6 @@ describe("mutateProviderExtension", () => {
 		const mismatched = { ...installed, version: "9.0.0" };
 		discover
 			.mockResolvedValueOnce(inventory({ available: [available] }))
-			.mockResolvedValueOnce(inventory({ available: [available] }))
 			.mockResolvedValueOnce(inventory({ extensions: [mismatched] }))
 			.mockResolvedValueOnce(inventory({}));
 
@@ -262,6 +282,7 @@ describe("mutateProviderExtension", () => {
 				{
 					action: "install",
 					id: available.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					reviewToken: review.reviewToken,
 				},
 				{
@@ -303,7 +324,6 @@ describe("mutateProviderExtension", () => {
 		const mismatched = { ...installed, version: "9.0.0" };
 		discover
 			.mockResolvedValueOnce(inventory({ available: [available] }))
-			.mockResolvedValueOnce(inventory({ available: [available] }))
 			.mockResolvedValueOnce(inventory({ extensions: [mismatched] }))
 			.mockResolvedValueOnce(inventory({ extensions: [mismatched] }));
 		run
@@ -316,6 +336,7 @@ describe("mutateProviderExtension", () => {
 				{
 					action: "install",
 					id: available.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					reviewToken: review.reviewToken,
 				},
 				{
@@ -342,7 +363,6 @@ describe("mutateProviderExtension", () => {
 		};
 		discover
 			.mockResolvedValueOnce(inventory({ available: [available] }))
-			.mockResolvedValueOnce(inventory({ available: [available] }))
 			.mockResolvedValueOnce(
 				inventory({
 					extensions: [installed],
@@ -360,6 +380,7 @@ describe("mutateProviderExtension", () => {
 				{
 					action: "install",
 					id: available.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					reviewToken: review.reviewToken,
 				},
 				{
@@ -402,6 +423,7 @@ describe("mutateProviderExtension", () => {
 				{
 					action: "uninstall",
 					id: installed.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					expectedVersion: installed.version,
 				},
 				{
@@ -431,7 +453,6 @@ describe("mutateProviderExtension", () => {
 		};
 		discover
 			.mockResolvedValueOnce(inventory({ available: [available] }))
-			.mockResolvedValueOnce(inventory({ available: [available] }))
 			.mockResolvedValueOnce(inventory({ extensions: [corrupt] }))
 			.mockResolvedValueOnce(inventory({}));
 
@@ -441,6 +462,7 @@ describe("mutateProviderExtension", () => {
 				{
 					action: "install",
 					id: available.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					reviewToken: review.reviewToken,
 				},
 				{
@@ -467,7 +489,6 @@ describe("mutateProviderExtension", () => {
 		};
 		discover
 			.mockResolvedValueOnce(inventory({ available: [available] }))
-			.mockResolvedValueOnce(inventory({ available: [available] }))
 			.mockResolvedValueOnce(inventory({ extensions: [damaged] }))
 			.mockResolvedValueOnce(inventory({}));
 
@@ -477,6 +498,7 @@ describe("mutateProviderExtension", () => {
 				{
 					action: "install",
 					id: available.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					reviewToken: review.reviewToken,
 				},
 				{
@@ -502,7 +524,6 @@ describe("mutateProviderExtension", () => {
 		};
 		discover
 			.mockResolvedValueOnce(inventory({ available: [available] }))
-			.mockResolvedValueOnce(inventory({ available: [available] }))
 			.mockResolvedValueOnce(inventory({ extensions: [metadataOnly] }));
 
 		await expect(
@@ -511,6 +532,7 @@ describe("mutateProviderExtension", () => {
 				{
 					action: "install",
 					id: available.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					reviewToken: review.reviewToken,
 				},
 				{
@@ -529,7 +551,6 @@ describe("mutateProviderExtension", () => {
 		const mismatched = { ...installed, version: "9.0.0" };
 		discover
 			.mockResolvedValueOnce(inventory({ available: [available] }))
-			.mockResolvedValueOnce(inventory({ available: [available] }))
 			.mockResolvedValueOnce(inventory({ extensions: [mismatched] }))
 			.mockResolvedValueOnce(inventory({}));
 		run
@@ -542,6 +563,7 @@ describe("mutateProviderExtension", () => {
 				{
 					action: "install",
 					id: available.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					reviewToken: review.reviewToken,
 				},
 				{
@@ -566,7 +588,6 @@ describe("mutateProviderExtension", () => {
 		const mismatched = { ...installed, version: "9.0.0" };
 		discover
 			.mockResolvedValueOnce(inventory({ available: [available] }))
-			.mockResolvedValueOnce(inventory({ available: [available] }))
 			.mockResolvedValueOnce(inventory({ extensions: [mismatched] }))
 			.mockResolvedValueOnce(
 				inventory({
@@ -587,6 +608,7 @@ describe("mutateProviderExtension", () => {
 				{
 					action: "install",
 					id: available.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					reviewToken: review.reviewToken,
 				},
 				{
@@ -615,7 +637,6 @@ describe("mutateProviderExtension", () => {
 			message: "Installed plugin registry is invalid: malformed JSON",
 		};
 		discover
-			.mockResolvedValueOnce(inventory({ available: [available] }))
 			.mockResolvedValueOnce(
 				inventory({
 					available: [available],
@@ -630,6 +651,7 @@ describe("mutateProviderExtension", () => {
 				{
 					action: "install",
 					id: available.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					reviewToken: review.reviewToken,
 				},
 				{
@@ -658,6 +680,7 @@ describe("mutateProviderExtension", () => {
 			{
 				action: "uninstall",
 				id: installed.id,
+				environmentId: extensionEnvironmentId("claude", home),
 				expectedVersion: installed.version,
 			},
 			{
@@ -681,6 +704,7 @@ describe("mutateProviderExtension", () => {
 			id: "c".repeat(24),
 			providerId: "codex",
 			providerLabel: "Codex",
+			environmentId: extensionEnvironmentId("codex", home),
 			pluginId: "github@curated",
 			name: "github",
 			marketplace: "curated",
@@ -694,6 +718,7 @@ describe("mutateProviderExtension", () => {
 			{
 				action: "uninstall",
 				id: codexInstalled.id,
+				environmentId: extensionEnvironmentId("codex", home),
 				expectedVersion: "1.2.3",
 			},
 			{
@@ -727,6 +752,7 @@ describe("mutateProviderExtension", () => {
 				{
 					action: "update",
 					id: installed.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					expectedVersion: installed.version,
 				},
 				{
@@ -762,6 +788,7 @@ describe("mutateProviderExtension", () => {
 			{
 				action: "set_enabled",
 				id: installed.id,
+				environmentId: extensionEnvironmentId("claude", home),
 				expectedVersion: installed.version,
 				expectedEnabled: true,
 				enabled: false,
@@ -788,6 +815,7 @@ describe("mutateProviderExtension", () => {
 			id: "6".repeat(24),
 			providerId: "codex",
 			providerLabel: "Codex",
+			environmentId: extensionEnvironmentId("codex", home),
 			pluginId: "github@curated",
 			name: "github",
 			marketplace: "curated",
@@ -806,6 +834,7 @@ describe("mutateProviderExtension", () => {
 			{
 				action: "set_enabled",
 				id: codexInstalled.id,
+				environmentId: extensionEnvironmentId("codex", home),
 				expectedVersion: codexInstalled.version,
 				expectedEnabled: false,
 				enabled: true,
@@ -862,17 +891,18 @@ enabled = true
 		const wslAvailable = {
 			...available,
 			id: "d".repeat(24),
+			environmentId: extensionEnvironmentId("claude", wslHome),
 			environment: "wsl" as const,
 			environmentLabel: "WSL · Ubuntu",
 		};
 		const wslInstalled = {
 			...installed,
 			id: "e".repeat(24),
+			environmentId: extensionEnvironmentId("claude", wslHome),
 			environment: "wsl" as const,
 			environmentLabel: "WSL · Ubuntu",
 		};
 		discover
-			.mockResolvedValueOnce(inventory({ available: [wslAvailable] }))
 			.mockResolvedValueOnce(inventory({ available: [wslAvailable] }))
 			.mockResolvedValueOnce(inventory({ extensions: [wslInstalled] }));
 
@@ -881,6 +911,7 @@ enabled = true
 			{
 				action: "install",
 				id: wslAvailable.id,
+				environmentId: extensionEnvironmentId("claude", wslHome),
 				reviewToken: review.reviewToken,
 			},
 			{
@@ -901,9 +932,256 @@ enabled = true
 		);
 	});
 
+	it.each([
+		{
+			label: "WSL share",
+			firstPath: "\\\\wsl.localhost\\Ubuntu\\home\\test",
+			aliasPath: "\\\\wsl$\\ubuntu\\home\\test\\",
+			environment: "wsl",
+			environmentLabel: "WSL · Ubuntu",
+		},
+		{
+			label: "Windows drive",
+			firstPath: "C:\\Users\\Test",
+			aliasPath: "c:\\users\\test\\",
+			environment: "windows",
+			environmentLabel: "Windows",
+		},
+		{
+			label: "Windows UNC",
+			firstPath: "\\\\server\\share\\Test",
+			aliasPath: "\\\\SERVER\\SHARE\\test\\",
+			environment: "windows",
+			environmentLabel: "Windows",
+		},
+	] as const)("serializes $label aliases and releases the environment after failure", async ({
+		firstPath,
+		aliasPath,
+		environment,
+		environmentLabel,
+	}) => {
+		const firstHome: ProviderExtensionHome = {
+			path: firstPath,
+			environment,
+			environmentLabel,
+		};
+		const aliasHome: ProviderExtensionHome = {
+			...firstHome,
+			path: aliasPath,
+		};
+		const aliasInstalled: ProviderExtension = {
+			...installed,
+			id: "7".repeat(24),
+			environmentId: extensionEnvironmentId("claude", firstHome),
+			environment,
+			environmentLabel,
+		};
+		const pending = deferred<{ output: string; code: number | null }>();
+		const firstRun = vi.fn(() => pending.promise);
+		const firstDiscover = vi
+			.fn()
+			.mockResolvedValueOnce(inventory({ extensions: [aliasInstalled] }))
+			.mockResolvedValueOnce(inventory({ extensions: [aliasInstalled] }));
+		const first = mutateProviderExtension(
+			config,
+			{
+				action: "uninstall",
+				id: aliasInstalled.id,
+				environmentId: extensionEnvironmentId("claude", firstHome),
+				expectedVersion: aliasInstalled.version,
+			},
+			{
+				homes: () => [firstHome],
+				discover: firstDiscover,
+				run: firstRun,
+				resolveClaude: () => "/usr/bin/claude",
+				writeProviderWrapper: () => "C:\\Hlid\\wrappers\\claude.cmd",
+			},
+		);
+		await vi.waitFor(() => expect(firstRun).toHaveBeenCalledOnce());
+
+		const blockedRun = vi.fn();
+		const blockedDiscover = vi
+			.fn()
+			.mockResolvedValue(inventory({ extensions: [aliasInstalled] }));
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "uninstall",
+					id: aliasInstalled.id,
+					environmentId: extensionEnvironmentId("claude", aliasHome),
+					expectedVersion: aliasInstalled.version,
+				},
+				{
+					homes: () => [aliasHome],
+					discover: blockedDiscover,
+					run: blockedRun,
+					resolveClaude: () => "/usr/bin/claude",
+					writeProviderWrapper: () => "C:\\Hlid\\wrappers\\claude.cmd",
+				},
+			),
+		).rejects.toThrow("already running");
+		expect(blockedDiscover).not.toHaveBeenCalled();
+		expect(blockedRun).not.toHaveBeenCalled();
+
+		pending.resolve({ output: "permission denied", code: 1 });
+		await expect(first).rejects.toThrow("permission denied");
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "uninstall",
+					id: aliasInstalled.id,
+					environmentId: extensionEnvironmentId("claude", aliasHome),
+					expectedVersion: aliasInstalled.version,
+				},
+				{
+					homes: () => [aliasHome],
+					discover: vi
+						.fn()
+						.mockResolvedValueOnce(inventory({ extensions: [aliasInstalled] }))
+						.mockResolvedValueOnce(inventory({})),
+					run: vi.fn().mockResolvedValue({ output: "removed", code: 0 }),
+					resolveClaude: () => "/usr/bin/claude",
+					writeProviderWrapper: () => "C:\\Hlid\\wrappers\\claude.cmd",
+				},
+			),
+		).resolves.toMatchObject({ action: "uninstall" });
+	});
+
+	it("revalidates a prepared request after the owning mutation changes version", async () => {
+		const updated = { ...installed, version: "1.2.4" };
+		const preparedRequest = {
+			action: "update" as const,
+			id: installed.id,
+			environmentId: extensionEnvironmentId("claude", home),
+			expectedVersion: installed.version,
+		};
+		const pending = deferred<{ output: string; code: number | null }>();
+		const firstRun = vi.fn(() => pending.promise);
+		const firstDiscover = vi
+			.fn()
+			.mockResolvedValueOnce(inventory({ extensions: [installed] }))
+			.mockResolvedValueOnce(inventory({ extensions: [updated] }));
+		const first = mutateProviderExtension(config, preparedRequest, {
+			homes: () => [home],
+			discover: firstDiscover,
+			run: firstRun,
+			resolveClaude: () => "/usr/bin/claude",
+		});
+		await vi.waitFor(() => expect(firstRun).toHaveBeenCalledOnce());
+
+		const blockedDiscover = vi
+			.fn()
+			.mockResolvedValue(inventory({ extensions: [installed] }));
+		await expect(
+			mutateProviderExtension(config, preparedRequest, {
+				homes: () => [home],
+				discover: blockedDiscover,
+				run: vi.fn(),
+				resolveClaude: () => "/usr/bin/claude",
+			}),
+		).rejects.toThrow("already running");
+		expect(blockedDiscover).not.toHaveBeenCalled();
+
+		pending.resolve({ output: "updated", code: 0 });
+		await expect(first).resolves.toMatchObject({ action: "update" });
+
+		const staleRun = vi.fn();
+		const staleDiscover = vi
+			.fn()
+			.mockResolvedValue(inventory({ extensions: [updated] }));
+		await expect(
+			mutateProviderExtension(config, preparedRequest, {
+				homes: () => [home],
+				discover: staleDiscover,
+				run: staleRun,
+				resolveClaude: () => "/usr/bin/claude",
+			}),
+		).rejects.toThrow(
+			"requested installed version was 1.2.3, but the provider now reports 1.2.4",
+		);
+		expect(staleDiscover).toHaveBeenCalledOnce();
+		expect(staleRun).not.toHaveBeenCalled();
+	});
+
+	it("allows provider mutations in different environments to run together", async () => {
+		const firstHome: ProviderExtensionHome = {
+			path: "/home/first",
+			environment: "host",
+			environmentLabel: "First host",
+		};
+		const secondHome: ProviderExtensionHome = {
+			path: "/home/second",
+			environment: "host",
+			environmentLabel: "Second host",
+		};
+		const firstInstalled: ProviderExtension = {
+			...installed,
+			id: "7".repeat(24),
+			environmentId: extensionEnvironmentId("claude", firstHome),
+			environmentLabel: firstHome.environmentLabel,
+		};
+		const secondInstalled: ProviderExtension = {
+			...installed,
+			id: "8".repeat(24),
+			environmentId: extensionEnvironmentId("claude", secondHome),
+			environmentLabel: secondHome.environmentLabel,
+		};
+		const firstPending = deferred<{ output: string; code: number | null }>();
+		const secondPending = deferred<{ output: string; code: number | null }>();
+		const firstRun = vi.fn(() => firstPending.promise);
+		const secondRun = vi.fn(() => secondPending.promise);
+		const first = mutateProviderExtension(
+			config,
+			{
+				action: "uninstall",
+				id: firstInstalled.id,
+				environmentId: extensionEnvironmentId("claude", firstHome),
+				expectedVersion: firstInstalled.version,
+			},
+			{
+				homes: () => [firstHome],
+				discover: vi
+					.fn()
+					.mockResolvedValueOnce(inventory({ extensions: [firstInstalled] }))
+					.mockResolvedValueOnce(inventory({})),
+				run: firstRun,
+				resolveClaude: () => "/usr/bin/claude",
+			},
+		);
+		const second = mutateProviderExtension(
+			config,
+			{
+				action: "uninstall",
+				id: secondInstalled.id,
+				environmentId: extensionEnvironmentId("claude", secondHome),
+				expectedVersion: secondInstalled.version,
+			},
+			{
+				homes: () => [secondHome],
+				discover: vi
+					.fn()
+					.mockResolvedValueOnce(inventory({ extensions: [secondInstalled] }))
+					.mockResolvedValueOnce(inventory({})),
+				run: secondRun,
+				resolveClaude: () => "/usr/bin/claude",
+			},
+		);
+		await vi.waitFor(() => {
+			expect(firstRun).toHaveBeenCalledOnce();
+			expect(secondRun).toHaveBeenCalledOnce();
+		});
+
+		firstPending.resolve({ output: "removed first", code: 0 });
+		secondPending.resolve({ output: "removed second", code: 0 });
+		await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+	});
+
 	it("allows a token-bound metadata-only install through the native provider", async () => {
 		discover
-			.mockResolvedValueOnce(inventory({ available: [available] }))
 			.mockResolvedValueOnce(inventory({ available: [available] }))
 			.mockResolvedValueOnce(inventory({ extensions: [installed] }));
 		inspectReview.mockResolvedValue({ ...review, reviewLevel: "marketplace" });
@@ -912,6 +1190,7 @@ enabled = true
 			{
 				action: "install",
 				id: available.id,
+				environmentId: extensionEnvironmentId("claude", home),
 				reviewToken: review.reviewToken,
 			},
 			{
@@ -930,15 +1209,14 @@ enabled = true
 	});
 
 	it("requires the exact package review token selected by the user", async () => {
-		discover
-			.mockResolvedValueOnce(inventory({ available: [available] }))
-			.mockResolvedValueOnce(inventory({ available: [available] }));
+		discover.mockResolvedValueOnce(inventory({ available: [available] }));
 		await expect(
 			mutateProviderExtension(
 				config,
 				{
 					action: "install",
 					id: available.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					reviewToken: "0".repeat(64),
 				},
 				{
@@ -960,6 +1238,7 @@ enabled = true
 				{
 					action: "uninstall",
 					id: installed.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					expectedVersion: "0.9.0",
 				},
 				{ homes: () => [home], discover, run },
@@ -982,6 +1261,7 @@ enabled = true
 				{
 					action: "uninstall",
 					id: installed.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					expectedVersion: installed.version,
 				},
 				{
@@ -1009,6 +1289,7 @@ enabled = true
 				{
 					action: "uninstall",
 					id: installed.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					expectedVersion: installed.version,
 				},
 				{
@@ -1040,6 +1321,7 @@ enabled = true
 				{
 					action: "uninstall",
 					id: installed.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					expectedVersion: installed.version,
 				},
 				{
@@ -1053,6 +1335,53 @@ enabled = true
 			message: expect.stringContaining("state changed unexpectedly"),
 			stateChanged: true,
 		});
+	});
+
+	it("rejects mismatched extension and marketplace environments before mutation", async () => {
+		const providerRun = vi.fn();
+		discover.mockReset();
+		discover.mockResolvedValueOnce(inventory({ extensions: [installed] }));
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "uninstall",
+					id: installed.id,
+					environmentId: "0".repeat(24),
+					expectedVersion: installed.version,
+				},
+				{
+					homes: () => [home],
+					discover,
+					run: providerRun,
+					resolveClaude: () => "/usr/bin/claude",
+				},
+			),
+		).rejects.toThrow("provider environment changed");
+
+		const currentMarketplace = marketplace();
+		discover.mockReset();
+		discover.mockResolvedValueOnce(
+			inventory({ marketplaces: [currentMarketplace] }),
+		);
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "upgrade_marketplace",
+					id: currentMarketplace.id,
+					environmentId: "0".repeat(24),
+					expectedSource: currentMarketplace.source,
+				},
+				{
+					homes: () => [home],
+					discover,
+					run: providerRun,
+					resolveClaude: () => "/usr/bin/claude",
+				},
+			),
+		).rejects.toThrow("provider environment changed");
+		expect(providerRun).not.toHaveBeenCalled();
 	});
 
 	it("adds a Claude marketplace to one exact provider environment", async () => {
@@ -1152,13 +1481,13 @@ enabled = true
 		const current = marketplace();
 		discover
 			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
-			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
 			.mockResolvedValueOnce(inventory({ marketplaces: [current] }));
 		await mutateProviderExtension(
 			config,
 			{
 				action: "upgrade_marketplace",
 				id: current.id,
+				environmentId: extensionEnvironmentId("claude", home),
 				expectedSource: current.source,
 			},
 			{
@@ -1179,7 +1508,6 @@ enabled = true
 		discover.mockReset();
 		discover
 			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
-			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
 			.mockResolvedValueOnce(
 				inventory({
 					marketplaces: [
@@ -1196,6 +1524,7 @@ enabled = true
 			{
 				action: "remove_marketplace",
 				id: current.id,
+				environmentId: extensionEnvironmentId("claude", home),
 				expectedSource: current.source,
 			},
 			{
@@ -1218,7 +1547,6 @@ enabled = true
 		const current = marketplace();
 		discover
 			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
-			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
 			.mockResolvedValueOnce(inventory({}));
 		run.mockResolvedValue({
 			output: "marketplace is not declared in user settings",
@@ -1231,6 +1559,7 @@ enabled = true
 				{
 					action: "remove_marketplace",
 					id: current.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					expectedSource: current.source,
 				},
 				{
@@ -1254,7 +1583,6 @@ enabled = true
 		const healthy = marketplace();
 		discover
 			.mockResolvedValueOnce(inventory({ marketplaces: [unhealthy] }))
-			.mockResolvedValueOnce(inventory({ marketplaces: [unhealthy] }))
 			.mockResolvedValueOnce(inventory({ marketplaces: [healthy] }));
 		run.mockResolvedValue({
 			output: "metadata cleanup failed after refreshing the snapshot",
@@ -1267,6 +1595,7 @@ enabled = true
 				{
 					action: "upgrade_marketplace",
 					id: unhealthy.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					expectedSource: unhealthy.source,
 				},
 				{
@@ -1282,6 +1611,47 @@ enabled = true
 		});
 	});
 
+	it("classifies a failed marketplace command from its single locked baseline", async () => {
+		const current = marketplace();
+		const divergentSnapshot = {
+			...current,
+			source: "",
+			canManage: false,
+		};
+		discover
+			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
+			.mockResolvedValueOnce(inventory({ marketplaces: [divergentSnapshot] }))
+			// A second pre-command discovery would consume the divergent snapshot
+			// and then compare it with this identical post-command state.
+			.mockResolvedValueOnce(inventory({ marketplaces: [divergentSnapshot] }));
+		run.mockResolvedValue({
+			output: "fatal: repository not found",
+			code: 1,
+		});
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "upgrade_marketplace",
+					id: current.id,
+					environmentId: extensionEnvironmentId("claude", home),
+					expectedSource: current.source,
+				},
+				{
+					homes: () => [home],
+					discover,
+					run,
+					resolveClaude: () => "/usr/bin/claude",
+				},
+			),
+		).rejects.toMatchObject({
+			message: expect.stringContaining("state changed unexpectedly"),
+			stateChanged: true,
+		});
+		expect(discover).toHaveBeenCalledTimes(2);
+	});
+
 	it.each([
 		["invalid", "Repair source"],
 		["missing", "Refresh source"],
@@ -1295,7 +1665,6 @@ enabled = true
 		};
 		discover
 			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
-			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
 			.mockResolvedValueOnce(inventory({ marketplaces: [degraded] }));
 
 		await expect(
@@ -1304,6 +1673,7 @@ enabled = true
 				{
 					action: "upgrade_marketplace",
 					id: current.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					expectedSource: current.source,
 				},
 				{
@@ -1328,7 +1698,6 @@ enabled = true
 		});
 		discover
 			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
-			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
 			.mockResolvedValueOnce(inventory({ marketplaces: [current] }));
 		run
 			.mockResolvedValueOnce({
@@ -1345,6 +1714,7 @@ enabled = true
 				{
 					action: "upgrade_marketplace",
 					id: current.id,
+					environmentId: extensionEnvironmentId("codex", home),
 					expectedSource: current.source,
 				},
 				{
@@ -1371,7 +1741,6 @@ enabled = true
 		const current = marketplace({ providerId: "codex" });
 		discover
 			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
-			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
 			.mockResolvedValueOnce(inventory({ marketplaces: [current] }));
 		run
 			.mockResolvedValueOnce({ output, code: 1 })
@@ -1384,6 +1753,7 @@ enabled = true
 				{
 					action: "upgrade_marketplace",
 					id: current.id,
+					environmentId: extensionEnvironmentId("codex", home),
 					expectedSource: current.source,
 				},
 				{
@@ -1403,7 +1773,6 @@ enabled = true
 		const current = marketplace({ providerId: "codex" });
 		discover
 			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
-			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
 			.mockResolvedValueOnce(inventory({ marketplaces: [current] }));
 		run
 			.mockResolvedValueOnce({
@@ -1422,6 +1791,7 @@ enabled = true
 				{
 					action: "upgrade_marketplace",
 					id: current.id,
+					environmentId: extensionEnvironmentId("codex", home),
 					expectedSource: current.source,
 				},
 				{
@@ -1455,6 +1825,7 @@ enabled = true
 				{
 					action: "upgrade_marketplace",
 					id: current.id,
+					environmentId: extensionEnvironmentId("codex", home),
 					expectedSource: current.source,
 				},
 				{
@@ -1479,6 +1850,7 @@ enabled = true
 				{
 					action: "upgrade_marketplace",
 					id: "5".repeat(24),
+					environmentId: extensionEnvironmentId("claude", home),
 					expectedSource: "github · example/team-tools",
 				},
 				{ homes: () => [home], discover, run },
@@ -1496,6 +1868,7 @@ enabled = true
 				{
 					action: "remove_marketplace",
 					id: current.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					expectedSource: "old source",
 				},
 				{ homes: () => [home], discover, run },
@@ -1511,6 +1884,7 @@ enabled = true
 				{
 					action: "upgrade_marketplace",
 					id: builtIn.id,
+					environmentId: extensionEnvironmentId("claude", home),
 					expectedSource: builtIn.source,
 				},
 				{ homes: () => [home], discover, run },

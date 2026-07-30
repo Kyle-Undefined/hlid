@@ -13,6 +13,7 @@ import { parse as parseToml } from "smol-toml";
 import type { HlidConfig } from "../config";
 import { resolveCodexExecutable } from "../lib/codexPath";
 import {
+	declaredPathKey,
 	expandTilde,
 	explicitPathEnvironment,
 	parseWslUncSyntax,
@@ -76,10 +77,11 @@ export type ExtensionSkillFile = {
 	size?: number;
 };
 
-export type ProviderExtension = {
+type ExtensionPackageIdentity = {
 	id: string;
 	providerId: ExtensionProviderId;
 	providerLabel: string;
+	environmentId: string;
 	environment: ExtensionEnvironment;
 	environmentLabel: string;
 	pluginId: string;
@@ -89,6 +91,9 @@ export type ProviderExtension = {
 	version: string;
 	description: string;
 	author: string;
+};
+
+export type ProviderExtension = ExtensionPackageIdentity & {
 	homepage: string;
 	repository: string;
 	license: string;
@@ -127,6 +132,7 @@ export type ProviderExtension = {
 export type ProviderMarketplace = {
 	id: string;
 	providerId: ExtensionProviderId;
+	environmentId: string;
 	environment: ExtensionEnvironment;
 	environmentLabel: string;
 	name: string;
@@ -140,19 +146,7 @@ export type ProviderMarketplace = {
 	diagnostic?: string;
 };
 
-export type AvailableExtension = {
-	id: string;
-	providerId: ExtensionProviderId;
-	providerLabel: string;
-	environment: ExtensionEnvironment;
-	environmentLabel: string;
-	pluginId: string;
-	name: string;
-	displayName: string;
-	marketplace: string;
-	version: string;
-	description: string;
-	author: string;
+export type AvailableExtension = ExtensionPackageIdentity & {
 	category: string;
 	source: string;
 	homepage: string;
@@ -266,7 +260,9 @@ function extensionId(
 	installPath: string,
 ): string {
 	return createHash("sha256")
-		.update(`${providerId}\0${home.path}\0${pluginId}\0${installPath}`)
+		.update(
+			`${providerId}\0${declaredPathKey(home.path)}\0${pluginId}\0${declaredPathKey(installPath)}`,
+		)
 		.digest("hex")
 		.slice(0, 24);
 }
@@ -277,7 +273,7 @@ function marketplaceId(
 	name: string,
 ): string {
 	return createHash("sha256")
-		.update(`${providerId}\0${home.path}\0${name}`)
+		.update(`${providerId}\0${declaredPathKey(home.path)}\0${name}`)
 		.digest("hex")
 		.slice(0, 24);
 }
@@ -287,7 +283,7 @@ export function extensionEnvironmentId(
 	home: ProviderExtensionHome,
 ): string {
 	return createHash("sha256")
-		.update(`${providerId}\0${home.path}\0environment`)
+		.update(`${providerId}\0${declaredPathKey(home.path)}\0environment`)
 		.digest("hex")
 		.slice(0, 24);
 }
@@ -299,7 +295,9 @@ function availableExtensionId(
 	name: string,
 ): string {
 	return createHash("sha256")
-		.update(`${providerId}\0${home.path}\0${marketplace}\0${name}\0available`)
+		.update(
+			`${providerId}\0${declaredPathKey(home.path)}\0${marketplace}\0${name}\0available`,
+		)
 		.digest("hex")
 		.slice(0, 24);
 }
@@ -325,8 +323,22 @@ function addHome(
 	path: string,
 	runtime = runtimeForPath(path),
 ): void {
-	if (homes.some((home) => home.path === path)) return;
+	const key = declaredPathKey(path);
+	if (homes.some((home) => declaredPathKey(home.path) === key)) return;
 	homes.push({ path, ...runtime });
+}
+
+function uniqueProviderHomes(
+	homes: ProviderExtensionHome[],
+): ProviderExtensionHome[] {
+	const unique: ProviderExtensionHome[] = [];
+	for (const home of homes) {
+		addHome(unique, home.path, {
+			environment: home.environment,
+			environmentLabel: home.environmentLabel,
+		});
+	}
+	return unique;
 }
 
 export function providerExtensionHomes(
@@ -1186,6 +1198,7 @@ function availableFromEntry(
 		id: availableExtensionId(providerId, home, marketplace, name),
 		providerId,
 		providerLabel: providerId === "claude" ? "Claude" : "Codex",
+		environmentId: extensionEnvironmentId(providerId, home),
 		environment: home.environment,
 		environmentLabel: home.environmentLabel,
 		pluginId: marketplacePluginId(name, marketplace),
@@ -1358,6 +1371,7 @@ async function inspectClaudeHome(
 			marketplaces.push({
 				id: marketplaceId(providerId, home, name),
 				providerId,
+				environmentId: extensionEnvironmentId(providerId, home),
 				environment: home.environment,
 				environmentLabel: home.environmentLabel,
 				name,
@@ -1432,6 +1446,7 @@ async function inspectClaudeHome(
 				id: extensionId(providerId, home, pluginId, safeRoot),
 				providerId,
 				providerLabel: "Claude",
+				environmentId: extensionEnvironmentId(providerId, home),
 				environment: home.environment,
 				environmentLabel: home.environmentLabel,
 				pluginId,
@@ -1611,6 +1626,7 @@ async function inspectCodexHome(
 			id: extensionId(providerId, home, pluginId, installPath),
 			providerId,
 			providerLabel: "Codex",
+			environmentId: extensionEnvironmentId(providerId, home),
 			environment: home.environment,
 			environmentLabel: home.environmentLabel,
 			pluginId,
@@ -1672,7 +1688,7 @@ async function inspectCodexHome(
 	const configuredMarketplaceConfig = recordValue(config.marketplaces);
 	for (const configuredMarketplace of marketplaceRoots) {
 		const snapshotRoot = resolve(configuredMarketplace.root);
-		const rootKey = snapshotRoot;
+		const rootKey = declaredPathKey(snapshotRoot);
 		if (seenMarketplaceRoots.has(rootKey)) continue;
 		seenMarketplaceRoots.add(rootKey);
 		const snapshotPath = resolve(
@@ -1692,6 +1708,7 @@ async function inspectCodexHome(
 			marketplaces.push({
 				id: marketplaceId(providerId, home, configuredMarketplace.name),
 				providerId,
+				environmentId: extensionEnvironmentId(providerId, home),
 				environment: home.environment,
 				environmentLabel: home.environmentLabel,
 				name: configuredMarketplace.name,
@@ -1734,6 +1751,7 @@ async function inspectCodexHome(
 			marketplaces.push({
 				id: marketplaceId(providerId, home, name),
 				providerId,
+				environmentId: extensionEnvironmentId(providerId, home),
 				environment: home.environment,
 				environmentLabel: home.environmentLabel,
 				name,
@@ -1820,6 +1838,7 @@ async function inspectCodexHome(
 		marketplaces.push({
 			id: marketplaceId(providerId, home, marketplaceName),
 			providerId,
+			environmentId: extensionEnvironmentId(providerId, home),
 			environment: home.environment,
 			environmentLabel: home.environmentLabel,
 			name: marketplaceName,
@@ -1835,13 +1854,13 @@ async function inspectCodexHome(
 		const manageableSource = marketplaces.some(
 			(marketplace) =>
 				marketplace.providerId === providerId &&
-				marketplace.environmentLabel === extension.environmentLabel &&
+				marketplace.environmentId === extension.environmentId &&
 				marketplace.name === extension.marketplace &&
 				marketplace.canManage,
 		);
 		const reviewablePackage = reviewTargets.some(
 			(target) =>
-				target.available.environmentLabel === extension.environmentLabel &&
+				target.available.environmentId === extension.environmentId &&
 				target.available.pluginId === extension.pluginId &&
 				target.available.reviewLevel === "package",
 		);
@@ -1877,7 +1896,8 @@ export async function discoverExtensionInventory(
 	homes = providerExtensionHomes(config),
 	dependencies: ExtensionInventoryDependencies = {},
 ): Promise<ExtensionInventory> {
-	const results = await inspectProviderHomes(config, homes, dependencies);
+	const uniqueHomes = uniqueProviderHomes(homes);
+	const results = await inspectProviderHomes(config, uniqueHomes, dependencies);
 	const extensions = results
 		.flatMap((result) => result.extensions)
 		.sort(
@@ -1902,7 +1922,7 @@ export async function discoverExtensionInventory(
 				a.environmentLabel.localeCompare(b.environmentLabel) ||
 				a.displayName.localeCompare(b.displayName),
 		);
-	const environments = homes.flatMap((home) =>
+	const environments = uniqueHomes.flatMap((home) =>
 		(["claude", "codex"] as const).map((providerId) => ({
 			id: extensionEnvironmentId(providerId, home),
 			providerId,
@@ -1973,6 +1993,7 @@ export async function reviewAvailableExtension(
 			id: extension.id,
 			providerId: extension.providerId,
 			providerLabel: extension.providerLabel,
+			environmentId: extension.environmentId,
 			environment: extension.environment,
 			environmentLabel: extension.environmentLabel,
 			pluginId: extension.pluginId,

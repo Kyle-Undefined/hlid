@@ -112,16 +112,26 @@ function useExtensionReview(isMounted: () => boolean) {
 		message: string;
 	} | null>(null);
 	const requestIdRef = useRef(0);
+	const targetIdRef = useRef<string | null>(null);
 	const clearReview = useCallback(() => {
 		requestIdRef.current += 1;
+		targetIdRef.current = null;
 		if (!isMounted()) return;
 		setReview(null);
 		setReviewingId(null);
 		setReviewError(null);
 	}, [isMounted]);
+	const clearReviewForTarget = useCallback(
+		(targetId: string) => {
+			if (targetIdRef.current !== targetId) return;
+			clearReview();
+		},
+		[clearReview],
+	);
 	useEffect(
 		() => () => {
 			requestIdRef.current += 1;
+			targetIdRef.current = null;
 		},
 		[],
 	);
@@ -133,6 +143,7 @@ function useExtensionReview(isMounted: () => boolean) {
 				return;
 			}
 			const requestId = ++requestIdRef.current;
+			targetIdRef.current = extension.id;
 			setReviewingId(extension.id);
 			setReviewError(null);
 			setReview(null);
@@ -142,6 +153,7 @@ function useExtensionReview(isMounted: () => boolean) {
 				});
 				if (isMounted() && requestId === requestIdRef.current) {
 					setReview(nextReview);
+					targetIdRef.current = nextReview?.id ?? null;
 				}
 			} catch (cause) {
 				if (isMounted() && requestId === requestIdRef.current) {
@@ -161,7 +173,14 @@ function useExtensionReview(isMounted: () => boolean) {
 		},
 		[clearReview, isMounted, review?.id],
 	);
-	return { review, reviewingId, reviewError, clearReview, reviewExtension };
+	return {
+		review,
+		reviewingId,
+		reviewError,
+		clearReview,
+		clearReviewForTarget,
+		reviewExtension,
+	};
 }
 
 export function useExtensionSectionController() {
@@ -177,7 +196,7 @@ export function useExtensionSectionController() {
 	const review = useExtensionReview(isMounted);
 	const mutation = useExtensionMutationController({
 		load: inventory.load,
-		clearReview: review.clearReview,
+		clearReviewForTarget: review.clearReviewForTarget,
 		isMounted,
 	});
 	return {

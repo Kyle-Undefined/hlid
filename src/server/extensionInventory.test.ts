@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HlidConfig } from "../config";
 import {
 	discoverExtensionInventory,
+	extensionEnvironmentId,
 	type ProviderExtensionHome,
 	parseCodexMarketplaceList,
 	providerExtensionHomes,
@@ -88,7 +89,7 @@ describe("discoverExtensionInventory", () => {
 				},
 				{
 					name: "Same home",
-					path: "\\\\wsl.localhost\\Ubuntu\\home\\kyle\\other",
+					path: "\\\\wsl$\\ubuntu\\home\\kyle\\other",
 					mode: "cwd",
 					provider: "claude",
 				},
@@ -103,6 +104,51 @@ describe("discoverExtensionInventory", () => {
 				environment: "wsl",
 				environmentLabel: "WSL · Ubuntu",
 			},
+		]);
+	});
+
+	it("uses one opaque provider environment identity for WSL share aliases", () => {
+		const localhostHome: ProviderExtensionHome = {
+			path: "\\\\wsl.localhost\\Ubuntu\\home\\kyle",
+			environment: "wsl",
+			environmentLabel: "WSL · Ubuntu",
+		};
+		const dollarHome: ProviderExtensionHome = {
+			...localhostHome,
+			path: "\\\\wsl$\\ubuntu\\home\\kyle\\",
+		};
+
+		expect(extensionEnvironmentId("claude", localhostHome)).toBe(
+			extensionEnvironmentId("claude", dollarHome),
+		);
+		expect(extensionEnvironmentId("codex", localhostHome)).not.toBe(
+			extensionEnvironmentId("claude", localhostHome),
+		);
+	});
+
+	it("canonicalizes explicitly supplied homes once at the inventory boundary", async () => {
+		const declaredHome: ProviderExtensionHome = {
+			path: "\\\\wsl.localhost\\Ubuntu\\home\\kyle",
+			environment: "wsl",
+			environmentLabel: "WSL · Ubuntu",
+		};
+		const aliasHome: ProviderExtensionHome = {
+			...declaredHome,
+			path: "\\\\wsl$\\ubuntu\\home\\kyle\\",
+		};
+		const listCodexMarketplaces = vi.fn().mockResolvedValue([]);
+
+		const inventory = await discoverExtensionInventory(
+			config(),
+			[declaredHome, aliasHome],
+			{ listCodexMarketplaces },
+		);
+
+		expect(listCodexMarketplaces).toHaveBeenCalledOnce();
+		expect(inventory.environments).toHaveLength(2);
+		expect(inventory.environments.map((item) => item.id)).toEqual([
+			extensionEnvironmentId("claude", declaredHome),
+			extensionEnvironmentId("codex", declaredHome),
 		]);
 	});
 

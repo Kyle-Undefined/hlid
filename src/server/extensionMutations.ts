@@ -5,7 +5,8 @@ import type { HlidConfig } from "../config";
 import { writeFileAtomicSync } from "../lib/atomicFile";
 import { resolveClaudeExecutable } from "../lib/claudePath";
 import { resolveCodexExecutable } from "../lib/codexPath";
-import { parseWslUncSyntax } from "../lib/paths";
+import type { ExtensionMutationInput } from "../lib/extensionMutation";
+import { declaredPathKey, parseWslUncSyntax } from "../lib/paths";
 import {
 	type BoundedProcessOptions,
 	type BoundedProcessResult,
@@ -35,47 +36,7 @@ const MAX_SPARSE_PATH_CHARS = 512;
 const MARKETPLACE_UPDATE_RETRY_DELAY_MS = 750;
 const activeMutations = new Set<string>();
 
-export type ExtensionMutationInput =
-	| {
-			action: "install";
-			id: string;
-			reviewToken: string;
-	  }
-	| {
-			action: "uninstall";
-			id: string;
-			expectedVersion: string;
-	  }
-	| {
-			action: "update";
-			id: string;
-			expectedVersion: string;
-	  }
-	| {
-			action: "set_enabled";
-			id: string;
-			expectedVersion: string;
-			expectedEnabled: boolean;
-			enabled: boolean;
-	  }
-	| {
-			action: "add_marketplace";
-			providerId: ExtensionProviderId;
-			environmentId: string;
-			source: string;
-			ref?: string;
-			sparse?: string[];
-	  }
-	| {
-			action: "upgrade_marketplace";
-			id: string;
-			expectedSource: string;
-	  }
-	| {
-			action: "remove_marketplace";
-			id: string;
-			expectedSource: string;
-	  };
+export type { ExtensionMutationInput } from "../lib/extensionMutation";
 
 export type ExtensionMutationResult = {
 	action: ExtensionMutationInput["action"];
@@ -108,6 +69,7 @@ export class ExtensionMutationError extends Error {
 type LocatedExtension = {
 	home: ProviderExtensionHome;
 	providerId: ExtensionProviderId;
+	environmentId: string;
 	pluginId: string;
 	environmentLabel: string;
 	scope: string;
@@ -115,9 +77,19 @@ type LocatedExtension = {
 	enabled: boolean;
 };
 
+type LocatedExtensionSource = Pick<
+	ProviderExtension,
+	"providerId" | "environmentId" | "pluginId" | "environmentLabel" | "version"
+>;
+
 type LocatedMarketplace = {
 	home: ProviderExtensionHome;
 	marketplace: ProviderMarketplace;
+};
+
+type ResolvedMutationEnvironment = {
+	home: ProviderExtensionHome;
+	providerId: ExtensionProviderId;
 };
 
 type MutationCommand = {
@@ -267,74 +239,101 @@ function validateShellArgument(value: string, label: string): void {
 	}
 }
 
-async function locateExtension(
-	config: HlidConfig,
-	id: string,
-	kind: "available" | "installed",
-	dependencies: ExtensionMutationDependencies,
-): Promise<LocatedExtension | null> {
-	const homes = (dependencies.homes ?? providerExtensionHomes)(config);
-	const discover = dependencies.discover ?? discoverExtensionInventory;
-	for (const home of homes) {
-		const inventory = await discover(config, [home]);
-		if (kind === "available") {
-			const extension = inventory.available.find((item) => item.id === id);
-			if (extension) {
-				return {
-					home,
-					providerId: extension.providerId,
-					pluginId: extension.pluginId,
-					environmentLabel: extension.environmentLabel,
-					scope: "user",
-					version: extension.version,
-					enabled: false,
-				};
-			}
-			continue;
-		}
-		const extension = inventory.extensions.find((item) => item.id === id);
-		if (extension) {
-			return {
-				home,
-				providerId: extension.providerId,
-				pluginId: extension.pluginId,
-				environmentLabel: extension.environmentLabel,
-				scope: extension.scope,
-				version: extension.version,
-				enabled: extension.enabled,
-			};
-		}
-	}
-	return null;
+function locatedExtension(
+	home: ProviderExtensionHome,
+	extension: LocatedExtensionSource,
+	scope: string,
+	enabled: boolean,
+): LocatedExtension {
+	return {
+		home,
+		providerId: extension.providerId,
+		environmentId: extension.environmentId,
+		pluginId: extension.pluginId,
+		environmentLabel: extension.environmentLabel,
+		scope,
+		version: extension.version,
+		enabled,
+	};
 }
 
-async function locateEnvironment(
+function locateExtension(
+	inventory: ExtensionInventory,
+	environment: ResolvedMutationEnvironment,
+	id: string,
+	kind: "available" | "installed",
+): LocatedExtension | null {
+	const environmentId = extensionEnvironmentId(
+		environment.providerId,
+		environment.home,
+	);
+	if (kind === "available") {
+		const extension = inventory.available.find(
+			(item) =>
+				item.id === id &&
+				item.providerId === environment.providerId &&
+				item.environmentId === environmentId,
+		);
+		return extension
+			? locatedExtension(environment.home, extension, "user", false)
+			: null;
+	}
+	const extension = inventory.extensions.find(
+		(item) =>
+			item.id === id &&
+			item.providerId === environment.providerId &&
+			item.environmentId === environmentId,
+	);
+	return extension
+		? locatedExtension(
+				environment.home,
+				extension,
+				extension.scope,
+				extension.enabled,
+			)
+		: null;
+}
+
+function resolveMutationEnvironment(
 	config: HlidConfig,
-	providerId: ExtensionProviderId,
-	environmentId: string,
+	input: ExtensionMutationInput,
 	dependencies: ExtensionMutationDependencies,
-): Promise<ProviderExtensionHome | null> {
+): ResolvedMutationEnvironment {
 	const homes = (dependencies.homes ?? providerExtensionHomes)(config);
-	return (
-		homes.find(
-			(home) => extensionEnvironmentId(providerId, home) === environmentId,
-		) ?? null
+	const providerIds: readonly ExtensionProviderId[] =
+		input.action === "add_marketplace"
+			? [input.providerId]
+			: ["claude", "codex"];
+	for (const home of homes) {
+		for (const providerId of providerIds) {
+			if (extensionEnvironmentId(providerId, home) === input.environmentId) {
+				return { home, providerId };
+			}
+		}
+	}
+	throw new Error(
+		input.action === "add_marketplace"
+			? "Provider environment not found"
+			: "The provider environment changed. Refresh Extensions before retrying.",
 	);
 }
 
-async function locateMarketplace(
-	config: HlidConfig,
+function locateMarketplace(
+	inventory: ExtensionInventory,
+	environment: ResolvedMutationEnvironment,
 	id: string,
-	dependencies: ExtensionMutationDependencies,
-): Promise<LocatedMarketplace | null> {
-	const homes = (dependencies.homes ?? providerExtensionHomes)(config);
-	const discover = dependencies.discover ?? discoverExtensionInventory;
-	for (const home of homes) {
-		const inventory = await discover(config, [home]);
-		const marketplace = inventory.marketplaces.find((item) => item.id === id);
-		if (marketplace) return { home, marketplace };
-	}
-	return null;
+): LocatedMarketplace | null {
+	const environmentId = extensionEnvironmentId(
+		environment.providerId,
+		environment.home,
+	);
+	const marketplace = inventory.marketplaces.find(
+		(item) =>
+			item.id === id &&
+			item.providerId === environment.providerId &&
+			item.environmentId === environmentId,
+	);
+	return marketplace ? { home: environment.home, marketplace } : null;
 }
 
 function resolveProviderCommand(
@@ -511,9 +510,8 @@ function matchesLocatedExtension(
 ): boolean {
 	return (
 		extension.providerId === target.providerId &&
+		extension.environmentId === target.environmentId &&
 		extension.pluginId === target.pluginId &&
-		extension.environment === target.home.environment &&
-		extension.environmentLabel === target.environmentLabel &&
 		extension.scope === target.scope
 	);
 }
@@ -653,7 +651,7 @@ async function withMutationLock<T>(
 	environmentLabel: string,
 	run: () => Promise<T>,
 ): Promise<T> {
-	const mutationKey = `${providerId}\0${homePath}`;
+	const mutationKey = `${providerId}\0${declaredPathKey(homePath)}`;
 	if (activeMutations.has(mutationKey)) {
 		throw new Error(
 			`Another ${providerId} extension action is already running in ${environmentLabel}`,
@@ -744,395 +742,411 @@ function marketplaceCommand(
 	};
 }
 
-export async function mutateProviderExtension(
+async function mutateEnablementTransaction(
 	config: HlidConfig,
-	input: ExtensionMutationInput,
-	dependencies: ExtensionMutationDependencies = {},
+	input: Extract<ExtensionMutationInput, { action: "set_enabled" }>,
+	environment: ResolvedMutationEnvironment,
+	dependencies: ExtensionMutationDependencies,
 ): Promise<ExtensionMutationResult> {
-	if (input.action === "set_enabled") {
-		const target = await locateExtension(
-			config,
-			input.id,
-			"installed",
-			dependencies,
-		);
-		if (!target) throw new Error("Installed extension not found");
-		if (target.version !== input.expectedVersion) {
-			throw new Error(
-				`The requested installed version was ${input.expectedVersion}, but the provider now reports ${target.version}. Refresh before changing this extension.`,
+	return withMutationLock(
+		environment.providerId,
+		environment.home.path,
+		environment.home.environmentLabel,
+		async () => {
+			const inventory = await (
+				dependencies.discover ?? discoverExtensionInventory
+			)(config, [environment.home]);
+			const target = locateExtension(
+				inventory,
+				environment,
+				input.id,
+				"installed",
 			);
-		}
-		if (target.enabled !== input.expectedEnabled) {
-			throw new Error(
-				"The installed plugin status changed. Refresh before changing it.",
-			);
-		}
-		if (input.enabled === input.expectedEnabled) {
-			throw new Error("The installed plugin already has that status");
-		}
+			if (!target) throw new Error("Installed extension not found");
+			if (target.version !== input.expectedVersion) {
+				throw new Error(
+					`The requested installed version was ${input.expectedVersion}, but the provider now reports ${target.version}. Refresh before changing this extension.`,
+				);
+			}
+			if (target.enabled !== input.expectedEnabled) {
+				throw new Error(
+					"The installed plugin status changed. Refresh before changing it.",
+				);
+			}
+			if (input.enabled === input.expectedEnabled) {
+				throw new Error("The installed plugin already has that status");
+			}
 
-		return withMutationLock(
-			target.providerId,
-			target.home.path,
-			target.environmentLabel,
-			async () => {
-				let output: string;
-				let providerExitCode: number | null = 0;
-				if (target.providerId === "claude") {
-					validatePluginId(target.pluginId);
-					const scope =
-						target.scope === "project" || target.scope === "local"
-							? target.scope
-							: "user";
-					const command = resolveProviderCommand(
-						config,
-						target.home,
-						target.providerId,
-						dependencies,
-					);
-					const args = [
-						"plugin",
-						input.enabled ? "enable" : "disable",
-						target.pluginId,
-						"--scope",
-						scope,
-					];
-					const result = await runProviderCommand(
-						dependencies.run ?? runBoundedProcess,
-						command.executable,
-						args,
-						{
-							timeoutMs: MUTATION_TIMEOUT_MS,
-							timeoutError: input.enabled
-								? "Plugin enable timed out"
-								: "Plugin disable timed out",
-							maxOutputChars: MAX_OUTPUT_CHARS,
-							shell: command.shell,
-							cwd: command.cwd,
-						},
-					);
-					providerExitCode = result.code;
-					output = result.output.trim();
-				} else {
-					const configPath = resolve(target.home.path, ".codex", "config.toml");
-					(dependencies.setCodexPluginEnabled ?? setCodexPluginEnabled)(
-						configPath,
-						target.pluginId,
-						input.expectedEnabled,
-						input.enabled,
-					);
-					output = `Codex plugin ${input.enabled ? "enabled" : "disabled"}`;
-				}
-
-				const refreshed = await discoverAfterMutation(
+			let output: string;
+			let providerExitCode: number | null = 0;
+			if (target.providerId === "claude") {
+				validatePluginId(target.pluginId);
+				const scope =
+					target.scope === "project" || target.scope === "local"
+						? target.scope
+						: "user";
+				const command = resolveProviderCommand(
 					config,
 					target.home,
+					target.providerId,
 					dependencies,
-					providerExitCode !== 0
-						? `Plugin ${input.enabled ? "enable" : "disable"} exited ${providerExitCode ?? "without a status"}: ${output}`
-						: undefined,
 				);
-				const updated = refreshed.extensions.find(
-					(item) => item.id === input.id || item.pluginId === target.pluginId,
+				const args = [
+					"plugin",
+					input.enabled ? "enable" : "disable",
+					target.pluginId,
+					"--scope",
+					scope,
+				];
+				const result = await runProviderCommand(
+					dependencies.run ?? runBoundedProcess,
+					command.executable,
+					args,
+					{
+						timeoutMs: MUTATION_TIMEOUT_MS,
+						timeoutError: input.enabled
+							? "Plugin enable timed out"
+							: "Plugin disable timed out",
+						maxOutputChars: MAX_OUTPUT_CHARS,
+						shell: command.shell,
+						cwd: command.cwd,
+					},
 				);
-				const stateChanged =
-					!updated ||
-					updated.version !== target.version ||
-					updated.enabled !== target.enabled;
-				if (providerExitCode !== 0 && updated?.enabled !== input.enabled) {
-					const detail = output.trim().split(/\r?\n/).slice(-6).join(" ");
-					const failure = detail
-						? `Plugin ${input.enabled ? "enable" : "disable"} exited ${providerExitCode ?? "without a status"}: ${detail}`
-						: `Plugin ${input.enabled ? "enable" : "disable"} exited ${providerExitCode ?? "without a status"}`;
-					throw new ExtensionMutationError(
-						`${failure} ${recoveryMessage(stateChanged)}`,
-						stateChanged,
-					);
-				}
-				if (!updated || updated.enabled !== input.enabled) {
-					throw new ExtensionMutationError(
-						`The provider action completed, but the plugin is still ${
-							input.enabled ? "disabled" : "enabled"
-						}. ${recoveryMessage(stateChanged)}`,
-						stateChanged,
-					);
-				}
-				return {
-					action: input.action,
-					providerId: target.providerId,
-					subject: target.pluginId,
-					pluginId: target.pluginId,
-					environmentLabel: target.environmentLabel,
-					output,
-					...(providerExitCode !== 0
-						? {
-								warning: providerErrorWarning(
-									`plugin ${input.enabled ? "enable" : "disable"}`,
-								),
-							}
-						: {}),
-				};
-			},
-		);
-	}
+				providerExitCode = result.code;
+				output = result.output.trim();
+			} else {
+				const configPath = resolve(target.home.path, ".codex", "config.toml");
+				(dependencies.setCodexPluginEnabled ?? setCodexPluginEnabled)(
+					configPath,
+					target.pluginId,
+					input.expectedEnabled,
+					input.enabled,
+				);
+				output = `Codex plugin ${input.enabled ? "enabled" : "disabled"}`;
+			}
 
-	if (
-		input.action === "add_marketplace" ||
-		input.action === "upgrade_marketplace" ||
-		input.action === "remove_marketplace"
-	) {
-		let home: ProviderExtensionHome;
-		let providerId: ExtensionProviderId;
-		let marketplace: ProviderMarketplace | null = null;
-		if (input.action === "add_marketplace") {
-			const locatedHome = await locateEnvironment(
+			const refreshed = await discoverAfterMutation(
 				config,
-				input.providerId,
-				input.environmentId,
+				target.home,
+				dependencies,
+				providerExitCode !== 0
+					? `Plugin ${input.enabled ? "enable" : "disable"} exited ${providerExitCode ?? "without a status"}: ${output}`
+					: undefined,
+			);
+			const updated = refreshed.extensions.find(
+				(item) => item.id === input.id || item.pluginId === target.pluginId,
+			);
+			const stateChanged =
+				!updated ||
+				updated.version !== target.version ||
+				updated.enabled !== target.enabled;
+			if (providerExitCode !== 0 && updated?.enabled !== input.enabled) {
+				const detail = output.trim().split(/\r?\n/).slice(-6).join(" ");
+				const failure = detail
+					? `Plugin ${input.enabled ? "enable" : "disable"} exited ${providerExitCode ?? "without a status"}: ${detail}`
+					: `Plugin ${input.enabled ? "enable" : "disable"} exited ${providerExitCode ?? "without a status"}`;
+				throw new ExtensionMutationError(
+					`${failure} ${recoveryMessage(stateChanged)}`,
+					stateChanged,
+				);
+			}
+			if (!updated || updated.enabled !== input.enabled) {
+				throw new ExtensionMutationError(
+					`The provider action completed, but the plugin is still ${
+						input.enabled ? "disabled" : "enabled"
+					}. ${recoveryMessage(stateChanged)}`,
+					stateChanged,
+				);
+			}
+			return {
+				action: input.action,
+				providerId: target.providerId,
+				subject: target.pluginId,
+				pluginId: target.pluginId,
+				environmentLabel: target.environmentLabel,
+				output,
+				...(providerExitCode !== 0
+					? {
+							warning: providerErrorWarning(
+								`plugin ${input.enabled ? "enable" : "disable"}`,
+							),
+						}
+					: {}),
+			};
+		},
+	);
+}
+
+async function mutateMarketplaceTransaction(
+	config: HlidConfig,
+	input: Extract<
+		ExtensionMutationInput,
+		{
+			action: "add_marketplace" | "upgrade_marketplace" | "remove_marketplace";
+		}
+	>,
+	environment: ResolvedMutationEnvironment,
+	dependencies: ExtensionMutationDependencies,
+): Promise<ExtensionMutationResult> {
+	return withMutationLock(
+		environment.providerId,
+		environment.home.path,
+		environment.home.environmentLabel,
+		async () => {
+			let home: ProviderExtensionHome;
+			let providerId: ExtensionProviderId;
+			let marketplace: ProviderMarketplace | null = null;
+			const discover = dependencies.discover ?? discoverExtensionInventory;
+			let before: ExtensionInventory;
+			if (input.action === "add_marketplace") {
+				home = environment.home;
+				providerId = input.providerId;
+				before = await discover(config, [home]);
+			} else {
+				before = await discover(config, [environment.home]);
+				const located = locateMarketplace(before, environment, input.id);
+				if (!located) {
+					throw new Error(
+						"The configured marketplace source is no longer present. Refresh Extensions, then add or restore the source before retrying.",
+					);
+				}
+				home = located.home;
+				marketplace = located.marketplace;
+				providerId = marketplace.providerId;
+				if (!marketplace.canManage) {
+					throw new Error("This built-in marketplace cannot be changed");
+				}
+				if (marketplace.source !== input.expectedSource) {
+					throw new Error(
+						"The marketplace source changed. Refresh before changing it.",
+					);
+				}
+			}
+
+			const beforeIds = new Set(
+				before.marketplaces
+					.filter((item) => item.providerId === providerId && item.canManage)
+					.map((item) => item.id),
+			);
+			const command = marketplaceCommand(
+				config,
+				home,
+				providerId,
+				input,
+				marketplace?.name ?? null,
 				dependencies,
 			);
-			if (!locatedHome) throw new Error("Provider environment not found");
-			home = locatedHome;
-			providerId = input.providerId;
-		} else {
-			const located = await locateMarketplace(config, input.id, dependencies);
-			if (!located) {
-				throw new Error(
-					"The configured marketplace source is no longer present. Refresh Extensions, then add or restore the source before retrying.",
-				);
-			}
-			home = located.home;
-			marketplace = located.marketplace;
-			providerId = marketplace.providerId;
-			if (!marketplace.canManage) {
-				throw new Error("This built-in marketplace cannot be changed");
-			}
-			if (marketplace.source !== input.expectedSource) {
-				throw new Error(
-					"The marketplace source changed. Refresh before changing it.",
-				);
-			}
-		}
-
-		return withMutationLock(
-			providerId,
-			home.path,
-			home.environmentLabel,
-			async () => {
-				const discover = dependencies.discover ?? discoverExtensionInventory;
-				const before = await discover(config, [home]);
-				const beforeIds = new Set(
-					before.marketplaces
-						.filter((item) => item.providerId === providerId && item.canManage)
-						.map((item) => item.id),
-				);
-				const command = marketplaceCommand(
-					config,
-					home,
-					providerId,
-					input,
-					marketplace?.name ?? null,
-					dependencies,
-				);
-				const run = dependencies.run ?? runBoundedProcess;
-				const processOptions = {
-					timeoutMs: MUTATION_TIMEOUT_MS,
-					timeoutError:
-						input.action === "add_marketplace"
-							? "Marketplace addition timed out"
-							: input.action === "upgrade_marketplace"
-								? "Marketplace update timed out"
-								: "Marketplace removal timed out",
-					maxOutputChars: MAX_OUTPUT_CHARS,
-					shell: command.shell,
-					cwd: command.cwd,
-				};
-				let result = await runProviderCommand(
+			const run = dependencies.run ?? runBoundedProcess;
+			const processOptions = {
+				timeoutMs: MUTATION_TIMEOUT_MS,
+				timeoutError:
+					input.action === "add_marketplace"
+						? "Marketplace addition timed out"
+						: input.action === "upgrade_marketplace"
+							? "Marketplace update timed out"
+							: "Marketplace removal timed out",
+				maxOutputChars: MAX_OUTPUT_CHARS,
+				shell: command.shell,
+				cwd: command.cwd,
+			};
+			let result = await runProviderCommand(
+				run,
+				command.executable,
+				command.args,
+				processOptions,
+			);
+			let retriedTransientFailure = false;
+			if (
+				input.action === "upgrade_marketplace" &&
+				result.code !== 0 &&
+				isTransientMarketplaceNetworkFailure(result.output)
+			) {
+				retriedTransientFailure = true;
+				await (dependencies.wait ?? wait)(MARKETPLACE_UPDATE_RETRY_DELAY_MS);
+				result = await runProviderCommand(
 					run,
 					command.executable,
 					command.args,
 					processOptions,
 				);
-				let retriedTransientFailure = false;
-				if (
-					input.action === "upgrade_marketplace" &&
-					result.code !== 0 &&
-					isTransientMarketplaceNetworkFailure(result.output)
-				) {
-					retriedTransientFailure = true;
-					await (dependencies.wait ?? wait)(MARKETPLACE_UPDATE_RETRY_DELAY_MS);
-					result = await runProviderCommand(
-						run,
-						command.executable,
-						command.args,
-						processOptions,
-					);
-				}
-				const providerFailure =
-					result.code !== 0
-						? `${
-								retriedTransientFailure
-									? `${failureMessage(input.action, result.code, result.output)} Hlið retried once after a transient network failure.`
-									: failureMessage(input.action, result.code, result.output)
-							}`
-						: undefined;
-				const refreshed = await discoverAfterMutation(
-					config,
-					home,
-					dependencies,
-					providerFailure,
-				);
-				const providerMarketplaces = refreshed.marketplaces.filter(
-					(item) => item.providerId === providerId,
-				);
-				const inventoryErrors = refreshed.errors.filter(
-					(error) =>
-						error.providerId === providerId &&
-						error.environment === home.environment &&
-						error.environmentLabel === home.environmentLabel,
-				);
-				if (inventoryErrors.length > 0) {
-					throw new ExtensionMutationError(
-						`${providerFailure ? `${providerFailure} ` : ""}Hlið could not verify the marketplace change because the refreshed provider inventory was incomplete: ${inventoryErrors
-							.map((error) => error.message)
-							.join(" ")} Refresh before taking another action.`,
-						true,
-					);
-				}
-				const refreshedMarketplace = marketplace
-					? providerMarketplaces.find(
-							(item) => item.id === marketplace.id && item.canManage,
-						)
-					: providerMarketplaces.find(
-							(item) => item.canManage && !beforeIds.has(item.id),
-						);
-				const desiredStateReached =
-					input.action === "add_marketplace"
-						? Boolean(refreshedMarketplace)
-						: input.action === "remove_marketplace"
-							? !refreshedMarketplace
-							: Boolean(
-									refreshedMarketplace &&
-										marketplace &&
-										!refreshedMarketplace.health &&
-										(refreshedMarketplace.lastUpdated !==
-											marketplace.lastUpdated ||
-											refreshedMarketplace.source !== marketplace.source ||
-											refreshedMarketplace.path !== marketplace.path ||
-											refreshedMarketplace.pluginCount !==
-												marketplace.pluginCount ||
-											refreshedMarketplace.health !== marketplace.health ||
-											refreshedMarketplace.diagnostic !==
-												marketplace.diagnostic),
-								);
-				const providerStateChanged =
-					marketplaceStateFingerprint(before.marketplaces, providerId) !==
-					marketplaceStateFingerprint(refreshed.marketplaces, providerId);
-				if (
-					input.action === "upgrade_marketplace" &&
-					refreshedMarketplace?.health
-				) {
-					const recoveryAction =
-						refreshedMarketplace.health === "invalid"
-							? "Repair source"
-							: refreshedMarketplace.health === "missing"
-								? "Refresh source"
-								: "Retry inspection";
-					throw new ExtensionMutationError(
-						`${providerFailure ? `${providerFailure} ` : ""}The refreshed marketplace source is still ${refreshedMarketplace.health}. Choose ${recoveryAction} after resolving the provider diagnostic. ${recoveryMessage(providerStateChanged)}`,
-						providerStateChanged,
-						true,
-					);
-				}
-				if (result.code !== 0 && !desiredStateReached) {
-					const message = failureMessage(
-						input.action,
-						result.code,
-						result.output,
-					);
-					throw new ExtensionMutationError(
-						`${
+			}
+			const providerFailure =
+				result.code !== 0
+					? `${
 							retriedTransientFailure
-								? `${message} Hlið retried once after a transient network failure.`
-								: message
-						} ${marketplaceRecoveryMessage(
-							retriedTransientFailure,
-							result.output,
-							providerStateChanged,
-						)}`,
-						providerStateChanged,
+								? `${failureMessage(input.action, result.code, result.output)} Hlið retried once after a transient network failure.`
+								: failureMessage(input.action, result.code, result.output)
+						}`
+					: undefined;
+			const refreshed = await discoverAfterMutation(
+				config,
+				home,
+				dependencies,
+				providerFailure,
+			);
+			const providerMarketplaces = refreshed.marketplaces.filter(
+				(item) => item.providerId === providerId,
+			);
+			const inventoryErrors = refreshed.errors.filter(
+				(error) =>
+					error.providerId === providerId &&
+					error.environment === home.environment &&
+					error.environmentLabel === home.environmentLabel,
+			);
+			if (inventoryErrors.length > 0) {
+				throw new ExtensionMutationError(
+					`${providerFailure ? `${providerFailure} ` : ""}Hlið could not verify the marketplace change because the refreshed provider inventory was incomplete: ${inventoryErrors
+						.map((error) => error.message)
+						.join(" ")} Refresh before taking another action.`,
+					true,
+				);
+			}
+			const refreshedMarketplace = marketplace
+				? providerMarketplaces.find(
+						(item) => item.id === marketplace.id && item.canManage,
+					)
+				: providerMarketplaces.find(
+						(item) => item.canManage && !beforeIds.has(item.id),
 					);
-				}
-				if (
-					(input.action === "add_marketplace" && !refreshedMarketplace) ||
-					(input.action === "upgrade_marketplace" && !refreshedMarketplace) ||
-					(input.action === "remove_marketplace" && refreshedMarketplace)
-				) {
-					throw new ExtensionMutationError(
-						`${
-							input.action === "add_marketplace"
-								? "The provider command completed, but no marketplace was added"
-								: input.action === "upgrade_marketplace"
-									? "The provider command completed, but the marketplace disappeared"
-									: "The provider command completed, but the marketplace is still configured"
-						}. ${recoveryMessage(providerStateChanged)}`,
+			const desiredStateReached =
+				input.action === "add_marketplace"
+					? Boolean(refreshedMarketplace)
+					: input.action === "remove_marketplace"
+						? !refreshedMarketplace
+						: Boolean(
+								refreshedMarketplace &&
+									marketplace &&
+									!refreshedMarketplace.health &&
+									(refreshedMarketplace.lastUpdated !==
+										marketplace.lastUpdated ||
+										refreshedMarketplace.source !== marketplace.source ||
+										refreshedMarketplace.path !== marketplace.path ||
+										refreshedMarketplace.pluginCount !==
+											marketplace.pluginCount ||
+										refreshedMarketplace.health !== marketplace.health ||
+										refreshedMarketplace.diagnostic !== marketplace.diagnostic),
+							);
+			const providerStateChanged =
+				marketplaceStateFingerprint(before.marketplaces, providerId) !==
+				marketplaceStateFingerprint(refreshed.marketplaces, providerId);
+			if (
+				input.action === "upgrade_marketplace" &&
+				refreshedMarketplace?.health
+			) {
+				const recoveryAction =
+					refreshedMarketplace.health === "invalid"
+						? "Repair source"
+						: refreshedMarketplace.health === "missing"
+							? "Refresh source"
+							: "Retry inspection";
+				throw new ExtensionMutationError(
+					`${providerFailure ? `${providerFailure} ` : ""}The refreshed marketplace source is still ${refreshedMarketplace.health}. Choose ${recoveryAction} after resolving the provider diagnostic. ${recoveryMessage(providerStateChanged)}`,
+					providerStateChanged,
+					true,
+				);
+			}
+			if (result.code !== 0 && !desiredStateReached) {
+				const message = failureMessage(
+					input.action,
+					result.code,
+					result.output,
+				);
+				throw new ExtensionMutationError(
+					`${
+						retriedTransientFailure
+							? `${message} Hlið retried once after a transient network failure.`
+							: message
+					} ${marketplaceRecoveryMessage(
+						retriedTransientFailure,
+						result.output,
 						providerStateChanged,
-					);
-				}
-				const subject =
-					marketplace?.name ??
-					refreshedMarketplace?.name ??
-					(input.action === "add_marketplace"
-						? normalizedMarketplaceSource(input.source)
-						: "Marketplace");
-				return {
-					action: input.action,
-					providerId,
-					subject,
-					environmentLabel: home.environmentLabel,
-					output: result.output.trim(),
-					...(result.code !== 0
-						? {
-								warning: providerErrorWarning(
-									input.action.replaceAll("_", " "),
-								),
-							}
-						: {}),
-				};
-			},
-		);
-	}
+					)}`,
+					providerStateChanged,
+				);
+			}
+			if (
+				(input.action === "add_marketplace" && !refreshedMarketplace) ||
+				(input.action === "upgrade_marketplace" && !refreshedMarketplace) ||
+				(input.action === "remove_marketplace" && refreshedMarketplace)
+			) {
+				throw new ExtensionMutationError(
+					`${
+						input.action === "add_marketplace"
+							? "The provider command completed, but no marketplace was added"
+							: input.action === "upgrade_marketplace"
+								? "The provider command completed, but the marketplace disappeared"
+								: "The provider command completed, but the marketplace is still configured"
+					}. ${recoveryMessage(providerStateChanged)}`,
+					providerStateChanged,
+				);
+			}
+			const subject =
+				marketplace?.name ??
+				refreshedMarketplace?.name ??
+				(input.action === "add_marketplace"
+					? normalizedMarketplaceSource(input.source)
+					: "Marketplace");
+			return {
+				action: input.action,
+				providerId,
+				subject,
+				environmentLabel: home.environmentLabel,
+				output: result.output.trim(),
+				...(result.code !== 0
+					? {
+							warning: providerErrorWarning(input.action.replaceAll("_", " ")),
+						}
+					: {}),
+			};
+		},
+	);
+}
 
-	const kind = input.action === "install" ? "available" : "installed";
-	const target = await locateExtension(config, input.id, kind, dependencies);
-	if (!target) {
-		throw new Error(
-			input.action === "install"
-				? "Marketplace extension not found"
-				: "Installed extension not found",
-		);
-	}
-
+async function mutatePluginTransaction(
+	config: HlidConfig,
+	input: Extract<
+		ExtensionMutationInput,
+		{ action: "install" | "uninstall" | "update" }
+	>,
+	environment: ResolvedMutationEnvironment,
+	dependencies: ExtensionMutationDependencies,
+): Promise<ExtensionMutationResult> {
 	return withMutationLock(
-		target.providerId,
-		target.home.path,
-		target.environmentLabel,
+		environment.providerId,
+		environment.home.path,
+		environment.home.environmentLabel,
 		async () => {
+			const kind = input.action === "install" ? "available" : "installed";
+			const locatedInventory = await (
+				dependencies.discover ?? discoverExtensionInventory
+			)(config, [environment.home]);
+			const target = locateExtension(
+				locatedInventory,
+				environment,
+				input.id,
+				kind,
+			);
+			if (!target) {
+				throw new Error(
+					input.action === "install"
+						? "Marketplace extension not found"
+						: "Installed extension not found",
+				);
+			}
+
 			let freshInstallRollbackSafe = false;
 			let reviewedInstallVersion: string | null = null;
 			if (input.action === "install") {
-				const current = await (
-					dependencies.discover ?? discoverExtensionInventory
-				)(config, [target.home]);
 				if (
-					current.extensions.some((item) =>
+					locatedInventory.extensions.some((item) =>
 						matchesLocatedExtension(item, target),
 					)
 				) {
 					throw new Error("This extension is already installed");
 				}
 				freshInstallRollbackSafe =
-					providerEnvironmentInventoryErrors(current, target).length === 0;
+					providerEnvironmentInventoryErrors(locatedInventory, target)
+						.length === 0;
 				const review = await (dependencies.review ?? reviewAvailableExtension)(
 					config,
 					input.id,
@@ -1307,4 +1321,33 @@ export async function mutateProviderExtension(
 			};
 		},
 	);
+}
+
+export async function mutateProviderExtension(
+	config: HlidConfig,
+	input: ExtensionMutationInput,
+	dependencies: ExtensionMutationDependencies = {},
+): Promise<ExtensionMutationResult> {
+	const environment = resolveMutationEnvironment(config, input, dependencies);
+	if (input.action === "set_enabled") {
+		return mutateEnablementTransaction(
+			config,
+			input,
+			environment,
+			dependencies,
+		);
+	}
+	if (
+		input.action === "add_marketplace" ||
+		input.action === "upgrade_marketplace" ||
+		input.action === "remove_marketplace"
+	) {
+		return mutateMarketplaceTransaction(
+			config,
+			input,
+			environment,
+			dependencies,
+		);
+	}
+	return mutatePluginTransaction(config, input, environment, dependencies);
 }

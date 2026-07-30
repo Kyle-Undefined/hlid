@@ -30,7 +30,10 @@ export type ExtensionMutationController = (
 
 export type ExtensionMutationSurface = {
 	mutate: ExtensionMutationController;
-	stateFor: (targetId: string) => ExtensionTargetMutationState;
+	stateFor: (
+		targetId: string,
+		environmentId: string,
+	) => ExtensionTargetMutationState;
 	dismissFeedback: (targetId: string, operationId: number) => void;
 	hasActive: boolean;
 	feedback: readonly ExtensionMutationFeedback[];
@@ -39,12 +42,23 @@ export type ExtensionMutationSurface = {
 type ActiveMutation = {
 	operationId: number;
 	action: ExtensionMutationInput["action"];
+	environmentId: string;
 };
 
 type SuccessTimer = {
 	operationId: number;
 	timer: ReturnType<typeof setTimeout>;
 };
+
+function hasActiveEnvironment(
+	active: ReadonlyMap<string, ActiveMutation>,
+	environmentId: string,
+): boolean {
+	for (const operation of active.values()) {
+		if (operation.environmentId === environmentId) return true;
+	}
+	return false;
+}
 
 function mutationTargetId(input: ExtensionMutationInput): string {
 	return input.action === "add_marketplace" ? input.environmentId : input.id;
@@ -83,11 +97,11 @@ function mutationNotice(
 
 export function useExtensionMutationController({
 	load,
-	clearReview,
+	clearReviewForTarget,
 	isMounted,
 }: {
 	load: () => Promise<void>;
-	clearReview: () => void;
+	clearReviewForTarget: (targetId: string) => void;
 	isMounted: () => boolean;
 }): ExtensionMutationSurface {
 	const operationIdRef = useRef(0);
@@ -190,11 +204,18 @@ export function useExtensionMutationController({
 		async (input, onSuccess) => {
 			if (!isMounted()) return "unmounted";
 			const targetId = mutationTargetId(input);
-			if (activeRef.current.has(targetId)) return "busy";
+			const { environmentId } = input;
+			if (
+				activeRef.current.has(targetId) ||
+				hasActiveEnvironment(activeRef.current, environmentId)
+			) {
+				return "busy";
+			}
 
 			const operation: ActiveMutation = {
 				operationId: ++operationIdRef.current,
 				action: input.action,
+				environmentId,
 			};
 			activeRef.current.set(targetId, operation);
 			setActive((current) => {
@@ -238,7 +259,7 @@ export function useExtensionMutationController({
 					console.error("Extension mutation success callback failed", cause);
 				}
 				try {
-					clearReview();
+					clearReviewForTarget(targetId);
 				} catch (cause) {
 					console.error("Unable to clear the extension review", cause);
 				}
@@ -262,14 +283,21 @@ export function useExtensionMutationController({
 				}
 			}
 		},
-		[clearReview, clearTargetFeedback, isMounted, load, publishFeedback],
+		[
+			clearReviewForTarget,
+			clearTargetFeedback,
+			isMounted,
+			load,
+			publishFeedback,
+		],
 	);
 
 	const stateFor = useCallback(
-		(targetId: string): ExtensionTargetMutationState => {
+		(targetId: string, environmentId: string): ExtensionTargetMutationState => {
 			const current = active.get(targetId);
 			return {
-				blocked: Boolean(current),
+				blocked:
+					Boolean(current) || hasActiveEnvironment(active, environmentId),
 				activeAction: current?.action ?? null,
 			};
 		},

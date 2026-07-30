@@ -144,11 +144,15 @@ export function MarketplaceGrid({
 				<MarketplaceCard
 					key={marketplace.id}
 					marketplace={marketplace}
-					mutation={mutation.stateFor(marketplace.id)}
+					mutation={mutation.stateFor(
+						marketplace.id,
+						marketplace.environmentId,
+					)}
 					onUpgrade={() =>
 						void mutation.mutate({
 							action: "upgrade_marketplace",
 							id: marketplace.id,
+							environmentId: marketplace.environmentId,
 							expectedSource: marketplace.source,
 						})
 					}
@@ -156,6 +160,7 @@ export function MarketplaceGrid({
 						void mutation.mutate({
 							action: "remove_marketplace",
 							id: marketplace.id,
+							environmentId: marketplace.environmentId,
 							expectedSource: marketplace.source,
 						})
 					}
@@ -259,7 +264,10 @@ export function MarketplaceSourceForm({
 	mutation: ExtensionMutationSurface;
 	draft: MarketplaceSourceDraft;
 }) {
-	const targetMutation = mutation.stateFor(draft.environmentId);
+	const targetMutation = mutation.stateFor(
+		draft.environmentId,
+		draft.environmentId,
+	);
 	const adding = targetMutation.activeAction === "add_marketplace";
 	const confirmationKey = JSON.stringify([
 		provider,
@@ -323,7 +331,7 @@ export function MarketplaceSourceForm({
 						key={confirmationKey}
 						label={`add marketplace source ${draft.source.trim()}?`}
 						confirmText="add source"
-						disabled={mutation.hasActive}
+						disabled={targetMutation.blocked}
 						onConfirm={() => {
 							const submission = draft.submission();
 							void mutation.mutate(
@@ -345,7 +353,7 @@ export function MarketplaceSourceForm({
 								disabled={
 									!draft.environmentId ||
 									!draft.source.trim() ||
-									mutation.hasActive
+									targetMutation.blocked
 								}
 								onClick={open}
 								className="border border-primary/40 px-3 py-1.5 text-[10px] tracking-widest text-primary uppercase disabled:opacity-40"
@@ -398,7 +406,10 @@ export function ExtensionMarketplaceView({
 					{model.providerAvailable.map((extension) => {
 						const review =
 							controller.review?.id === extension.id ? controller.review : null;
-						const mutation = controller.mutation.stateFor(extension.id);
+						const mutation = controller.mutation.stateFor(
+							extension.id,
+							extension.environmentId,
+						);
 						return (
 							<AvailableExtensionCard
 								key={extension.id}
@@ -416,6 +427,7 @@ export function ExtensionMarketplaceView({
 									void controller.mutation.mutate({
 										action: "install",
 										id: extension.id,
+										environmentId: extension.environmentId,
 										reviewToken: review.reviewToken,
 									});
 								}}

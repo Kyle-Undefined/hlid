@@ -17,6 +17,7 @@ const review: ExtensionReview = {
 	id: "0123456789abcdef01234567",
 	providerId: "codex",
 	providerLabel: "Codex",
+	environmentId: "111111111111111111111111",
 	environment: "host",
 	environmentLabel: "Host",
 	pluginId: "github@curated",
@@ -139,6 +140,7 @@ describe("extension inventory routes", () => {
 				body: JSON.stringify({
 					action: "uninstall",
 					id: "0123456789abcdef01234567",
+					environmentId: "111111111111111111111111",
 					expectedVersion: "1.0.0",
 				}),
 			}),
@@ -205,6 +207,7 @@ describe("extension inventory routes", () => {
 			body: JSON.stringify({
 				action: "install",
 				id: "0123456789abcdef01234567",
+				environmentId: "111111111111111111111111",
 				reviewToken: "f".repeat(64),
 			}),
 		});
@@ -214,6 +217,7 @@ describe("extension inventory routes", () => {
 		expect(mutate).toHaveBeenCalledWith(config, {
 			action: "install",
 			id: "0123456789abcdef01234567",
+			environmentId: "111111111111111111111111",
 			reviewToken: "f".repeat(64),
 		});
 		expect(onChanged).toHaveBeenCalledWith(config);
@@ -279,6 +283,7 @@ describe("extension inventory routes", () => {
 			body: JSON.stringify({
 				action: "remove_marketplace",
 				id: "../../unsafe",
+				environmentId: "111111111111111111111111",
 				expectedSource: "source",
 			}),
 		});
@@ -304,6 +309,7 @@ describe("extension inventory routes", () => {
 			body: JSON.stringify({
 				action: "set_enabled",
 				id: "1".repeat(24),
+				environmentId: "111111111111111111111111",
 				expectedVersion: "1.0.0",
 				expectedEnabled: true,
 				enabled: false,
@@ -318,6 +324,7 @@ describe("extension inventory routes", () => {
 			body: JSON.stringify({
 				action: "set_enabled",
 				id: "1".repeat(24),
+				environmentId: "111111111111111111111111",
 				expectedVersion: "1.0.0",
 				expectedEnabled: true,
 				enabled: true,
@@ -340,6 +347,7 @@ describe("extension inventory routes", () => {
 			body: JSON.stringify({
 				action: "uninstall",
 				id: "0123456789abcdef01234567",
+				environmentId: "111111111111111111111111",
 				expectedVersion: "1.0.0",
 			}),
 		});
@@ -367,6 +375,7 @@ describe("extension inventory routes", () => {
 			body: JSON.stringify({
 				action: "uninstall",
 				id: "0123456789abcdef01234567",
+				environmentId: "111111111111111111111111",
 				expectedVersion: "1.0.0",
 			}),
 		});
@@ -401,6 +410,7 @@ describe("extension inventory routes", () => {
 			body: JSON.stringify({
 				action: "install",
 				id: "0123456789abcdef01234567",
+				environmentId: "111111111111111111111111",
 				reviewToken: "f".repeat(64),
 			}),
 		});

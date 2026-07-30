@@ -70,6 +70,16 @@ export function expandTilde(p: string): string {
 	return p;
 }
 
+function stripNonRootTrailingSeparators(
+	path: string,
+	root: string,
+	separator: string,
+): string {
+	let end = path.length;
+	while (end > root.length && path[end - 1] === separator) end -= 1;
+	return path.slice(0, end);
+}
+
 /**
  * Stable comparison key for configured and persisted path strings.
  * This intentionally performs no filesystem access so display-only metadata
@@ -79,12 +89,22 @@ export function declaredPathKey(path: string): string {
 	const expanded = expandTilde(path);
 	const wslPath = parseWslUncSyntax(expanded);
 	if (wslPath) {
-		return `wsl:${wslPath.distro.toLowerCase()}:${posix.normalize(
-			wslPath.posixPath,
-		)}`;
+		const normalized = posix.normalize(wslPath.posixPath);
+		const withoutTrailingSeparator = stripNonRootTrailingSeparators(
+			normalized,
+			posix.parse(normalized).root,
+			posix.sep,
+		);
+		return `wsl:${wslPath.distro.toLowerCase()}:${withoutTrailingSeparator}`;
 	}
 	if (/^[a-z]:[\\/]/i.test(expanded) || expanded.startsWith("\\\\")) {
-		return `windows:${win32.normalize(expanded).toLowerCase()}`;
+		const normalized = win32.normalize(expanded);
+		const withoutTrailingSeparator = stripNonRootTrailingSeparators(
+			normalized,
+			win32.parse(normalized).root,
+			win32.sep,
+		);
+		return `windows:${withoutTrailingSeparator.toLowerCase()}`;
 	}
 	return `native:${resolve(expanded)}`;
 }

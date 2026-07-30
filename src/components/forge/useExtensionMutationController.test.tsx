@@ -2,7 +2,11 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { useCallback, useEffect, useRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ExtensionInventory } from "#/server/extensionInventory";
+import type {
+	AvailableExtension,
+	ExtensionInventory,
+	ExtensionReview,
+} from "#/server/extensionInventory";
 import type {
 	ExtensionMutationInput,
 	ExtensionMutationResult,
@@ -70,13 +74,55 @@ function mutationResponse(
 	};
 }
 
+function availableExtension(
+	id: string,
+	environmentId: string,
+	name: string,
+): AvailableExtension {
+	return {
+		id,
+		providerId: "claude",
+		providerLabel: "Claude",
+		environmentId,
+		environment: "host",
+		environmentLabel: `Host · ${name}`,
+		pluginId: `${name}@official`,
+		name,
+		displayName: name,
+		marketplace: "official",
+		version: "1.0.0",
+		description: "",
+		author: "",
+		category: "",
+		source: "official",
+		homepage: "",
+		installed: false,
+		enabled: null,
+		reviewLevel: "package",
+	};
+}
+
+function extensionReview(extension: AvailableExtension): ExtensionReview {
+	return {
+		...extension,
+		reviewMessage: `${extension.displayName} review`,
+		reviewToken: extension.id.padEnd(64, "0").slice(0, 64),
+		manifestPath: `/${extension.name}/plugin.json`,
+		manifestText: JSON.stringify({ name: extension.name }),
+		capabilities: [],
+		components: [],
+		skillFiles: [],
+		errors: [],
+	};
+}
+
 function MutationHarness({
 	load,
 	clearReview,
 	capture,
 }: {
 	load: () => Promise<void>;
-	clearReview: () => void;
+	clearReview: (targetId: string) => void;
 	capture: (surface: ExtensionMutationSurface) => void;
 }) {
 	const mountedRef = useRef(false);
@@ -89,7 +135,7 @@ function MutationHarness({
 	const isMounted = useCallback(() => mountedRef.current, []);
 	const surface = useExtensionMutationController({
 		load,
-		clearReview,
+		clearReviewForTarget: clearReview,
 		isMounted,
 	});
 	capture(surface);
@@ -146,6 +192,7 @@ describe("useExtensionMutationController", () => {
 				{
 					action: "update",
 					id: "shared-target",
+					environmentId: "shared-environment",
 					expectedVersion: "1.0.0",
 				},
 				firstCallback,
@@ -154,6 +201,7 @@ describe("useExtensionMutationController", () => {
 				{
 					action: "uninstall",
 					id: "shared-target",
+					environmentId: "shared-environment",
 					expectedVersion: "1.0.0",
 				},
 				secondCallback,
@@ -162,7 +210,7 @@ describe("useExtensionMutationController", () => {
 
 		expect(secondStatus).toBe("busy");
 		expect(mocks.mutateExtension).toHaveBeenCalledOnce();
-		expect(surface.stateFor("shared-target")).toEqual({
+		expect(surface.stateFor("shared-target", "shared-environment")).toEqual({
 			blocked: true,
 			activeAction: "update",
 		});
@@ -177,28 +225,98 @@ describe("useExtensionMutationController", () => {
 		expect(secondCallback).not.toHaveBeenCalled();
 		expect(load).toHaveBeenCalledOnce();
 		expect(clearReview).toHaveBeenCalledOnce();
-		expect(surface.stateFor("shared-target")).toEqual({
+		expect(clearReview).toHaveBeenCalledWith("shared-target");
+		expect(surface.stateFor("shared-target", "shared-environment")).toEqual({
 			blocked: false,
 			activeAction: null,
 		});
 	});
 
-	it("uses environmentId only for add_marketplace and id for every other action", async () => {
+	it("blocks other targets in the same environment and releases eligibility", async () => {
+		const pending = deferred<ReturnType<typeof mutationResponse>>();
+		mocks.mutateExtension
+			.mockImplementationOnce(() => pending.promise)
+			.mockResolvedValueOnce(mutationResponse("uninstall", "second@official"));
+		let surface!: ExtensionMutationSurface;
+		render(
+			<MutationHarness
+				load={vi.fn().mockResolvedValue(undefined)}
+				clearReview={vi.fn()}
+				capture={(next) => {
+					surface = next;
+				}}
+			/>,
+		);
+
+		let first!: ReturnType<ExtensionMutationSurface["mutate"]>;
+		let blocked!: Awaited<ReturnType<ExtensionMutationSurface["mutate"]>>;
+		await act(async () => {
+			first = surface.mutate({
+				action: "update",
+				id: "first-target",
+				environmentId: "shared-environment",
+				expectedVersion: "1",
+			});
+			blocked = await surface.mutate({
+				action: "uninstall",
+				id: "second-target",
+				environmentId: "shared-environment",
+				expectedVersion: "1",
+			});
+		});
+
+		expect(blocked).toBe("busy");
+		expect(surface.stateFor("second-target", "shared-environment")).toEqual({
+			blocked: true,
+			activeAction: null,
+		});
+		expect(mocks.mutateExtension).toHaveBeenCalledOnce();
+
+		await act(async () => {
+			pending.resolve(mutationResponse("update", "first@official"));
+			expect(await first).toBe("succeeded");
+		});
+		expect(
+			surface.stateFor("second-target", "shared-environment").blocked,
+		).toBe(false);
+
+		await act(async () => {
+			expect(
+				await surface.mutate({
+					action: "uninstall",
+					id: "second-target",
+					environmentId: "shared-environment",
+					expectedVersion: "1",
+				}),
+			).toBe("succeeded");
+		});
+		expect(mocks.mutateExtension).toHaveBeenCalledTimes(2);
+	});
+
+	it("owns progress by target while admitting concurrent environments", async () => {
 		const inputs: ExtensionMutationInput[] = [
 			{
 				action: "install",
 				id: "available-target",
+				environmentId: "environment-0",
 				reviewToken: "a".repeat(64),
 			},
 			{
 				action: "uninstall",
 				id: "uninstall-target",
+				environmentId: "environment-1",
 				expectedVersion: "1",
 			},
-			{ action: "update", id: "update-target", expectedVersion: "1" },
+			{
+				action: "update",
+				id: "update-target",
+				environmentId: "environment-2",
+				expectedVersion: "1",
+			},
 			{
 				action: "set_enabled",
 				id: "enabled-target",
+				environmentId: "environment-3",
 				expectedVersion: "1",
 				expectedEnabled: true,
 				enabled: false,
@@ -206,17 +324,19 @@ describe("useExtensionMutationController", () => {
 			{
 				action: "add_marketplace",
 				providerId: "claude",
-				environmentId: "environment-target",
+				environmentId: "environment-4",
 				source: "example/plugins",
 			},
 			{
 				action: "upgrade_marketplace",
 				id: "upgrade-target",
+				environmentId: "environment-5",
 				expectedSource: "example/plugins",
 			},
 			{
 				action: "remove_marketplace",
 				id: "remove-target",
+				environmentId: "environment-6",
 				expectedSource: "example/plugins",
 			},
 		];
@@ -240,6 +360,7 @@ describe("useExtensionMutationController", () => {
 
 		let operations: Promise<"succeeded" | "failed" | "busy" | "unmounted">[] =
 			[];
+		const environments = inputs.map((input) => input.environmentId);
 		act(() => {
 			operations = inputs.map((input) => surface.mutate(input));
 		});
@@ -248,12 +369,12 @@ describe("useExtensionMutationController", () => {
 			"uninstall-target",
 			"update-target",
 			"enabled-target",
-			"environment-target",
+			"environment-4",
 			"upgrade-target",
 			"remove-target",
 		];
 		for (const [index, targetId] of expectedTargets.entries()) {
-			expect(surface.stateFor(targetId)).toEqual({
+			expect(surface.stateFor(targetId, environments[index] ?? "")).toEqual({
 				blocked: true,
 				activeAction: inputs[index]?.action,
 			});
@@ -298,18 +419,23 @@ describe("useExtensionMutationController", () => {
 			firstOperation = surface.mutate({
 				action: "install",
 				id: "first-target",
+				environmentId: "first-environment",
 				reviewToken: "a".repeat(64),
 			});
 			secondOperation = surface.mutate({
 				action: "add_marketplace",
 				providerId: "codex",
-				environmentId: "second-target",
+				environmentId: "second-environment",
 				source: "example/plugins",
 			});
 		});
 		expect(surface.hasActive).toBe(true);
-		expect(surface.stateFor("first-target").blocked).toBe(true);
-		expect(surface.stateFor("second-target").blocked).toBe(true);
+		expect(surface.stateFor("first-target", "first-environment").blocked).toBe(
+			true,
+		);
+		expect(
+			surface.stateFor("second-environment", "second-environment").blocked,
+		).toBe(true);
 
 		await act(async () => {
 			first.resolve(
@@ -321,8 +447,12 @@ describe("useExtensionMutationController", () => {
 			);
 			expect(await firstOperation).toBe("succeeded");
 		});
-		expect(surface.stateFor("first-target").blocked).toBe(false);
-		expect(surface.stateFor("second-target").blocked).toBe(true);
+		expect(surface.stateFor("first-target", "first-environment").blocked).toBe(
+			false,
+		);
+		expect(
+			surface.stateFor("second-environment", "second-environment").blocked,
+		).toBe(true);
 		expect(surface.feedback).toEqual([
 			expect.objectContaining({
 				targetId: "first-target",
@@ -336,14 +466,16 @@ describe("useExtensionMutationController", () => {
 			second.reject(new Error("Marketplace action failed"));
 			expect(await secondOperation).toBe("failed");
 		});
-		expect(surface.stateFor("second-target").blocked).toBe(false);
+		expect(
+			surface.stateFor("second-environment", "second-environment").blocked,
+		).toBe(false);
 		expect(surface.feedback).toEqual([
 			expect.objectContaining({
 				targetId: "first-target",
 				kind: "success",
 			}),
 			expect.objectContaining({
-				targetId: "second-target",
+				targetId: "second-environment",
 				kind: "error",
 				message: "Marketplace action failed",
 			}),
@@ -354,7 +486,7 @@ describe("useExtensionMutationController", () => {
 		});
 		expect(surface.feedback).toEqual([
 			expect.objectContaining({
-				targetId: "second-target",
+				targetId: "second-environment",
 				kind: "error",
 			}),
 		]);
@@ -363,11 +495,11 @@ describe("useExtensionMutationController", () => {
 			throw new Error("Expected owned error feedback");
 		}
 		act(() => {
-			surface.dismissFeedback("second-target", errorOperationId + 1);
+			surface.dismissFeedback("second-environment", errorOperationId + 1);
 		});
 		expect(surface.feedback).toHaveLength(1);
 		act(() => {
-			surface.dismissFeedback("second-target", errorOperationId);
+			surface.dismissFeedback("second-environment", errorOperationId);
 		});
 		expect(surface.feedback).toEqual([]);
 
@@ -376,7 +508,7 @@ describe("useExtensionMutationController", () => {
 			retryOperation = surface.mutate({
 				action: "add_marketplace",
 				providerId: "codex",
-				environmentId: "second-target",
+				environmentId: "second-environment",
 				source: "example/plugins",
 			});
 		});
@@ -385,6 +517,99 @@ describe("useExtensionMutationController", () => {
 			retry.resolve(mutationResponse("add_marketplace", "example/plugins"));
 			expect(await retryOperation).toBe("succeeded");
 		});
+	});
+
+	it("preserves a newer cross-environment review after reverse mutation completion", async () => {
+		const firstExtension = availableExtension(
+			"1".repeat(24),
+			"a".repeat(24),
+			"first",
+		);
+		const secondExtension = availableExtension(
+			"2".repeat(24),
+			"b".repeat(24),
+			"second",
+		);
+		const firstMutation = deferred<ReturnType<typeof mutationResponse>>();
+		const secondMutation = deferred<ReturnType<typeof mutationResponse>>();
+		mocks.getExtensionInventory.mockResolvedValue(EMPTY_INVENTORY);
+		mocks.getExtensionReview.mockImplementation(({ id }: { id: string }) =>
+			Promise.resolve(
+				extensionReview(
+					id === firstExtension.id ? firstExtension : secondExtension,
+				),
+			),
+		);
+		mocks.mutateExtension.mockImplementation((input: ExtensionMutationInput) =>
+			input.action === "install" && input.id === firstExtension.id
+				? firstMutation.promise
+				: secondMutation.promise,
+		);
+		let controller!: ExtensionSectionController;
+		render(
+			<ControllerHarness
+				capture={(next) => {
+					controller = next;
+				}}
+			/>,
+		);
+		await waitFor(() =>
+			expect(screen.getByTestId("inventory-generated-at").textContent).toBe(
+				EMPTY_INVENTORY.generatedAt,
+			),
+		);
+
+		await act(async () => {
+			await controller.reviewExtension(firstExtension);
+		});
+		expect(controller.review?.id).toBe(firstExtension.id);
+
+		let firstOperation!: ReturnType<ExtensionMutationSurface["mutate"]>;
+		act(() => {
+			firstOperation = controller.mutation.mutate({
+				action: "install",
+				id: firstExtension.id,
+				environmentId: firstExtension.environmentId,
+				reviewToken: extensionReview(firstExtension).reviewToken,
+			});
+		});
+
+		await act(async () => {
+			await controller.reviewExtension(secondExtension);
+		});
+		expect(controller.review?.id).toBe(secondExtension.id);
+
+		let secondOperation!: ReturnType<ExtensionMutationSurface["mutate"]>;
+		act(() => {
+			secondOperation = controller.mutation.mutate({
+				action: "install",
+				id: secondExtension.id,
+				environmentId: secondExtension.environmentId,
+				reviewToken: extensionReview(secondExtension).reviewToken,
+			});
+		});
+
+		await act(async () => {
+			secondMutation.resolve(
+				mutationResponse("install", secondExtension.pluginId),
+			);
+			expect(await secondOperation).toBe("succeeded");
+		});
+		expect(controller.review).toBeNull();
+
+		await act(async () => {
+			await controller.reviewExtension(secondExtension);
+		});
+		expect(controller.review?.id).toBe(secondExtension.id);
+
+		await act(async () => {
+			firstMutation.resolve(
+				mutationResponse("install", firstExtension.pluginId),
+			);
+			expect(await firstOperation).toBe("succeeded");
+		});
+		expect(controller.review?.id).toBe(secondExtension.id);
+		expect(controller.review?.reviewMessage).toBe("second review");
 	});
 
 	it("does not let an older success timer clear newer target feedback", async () => {
@@ -405,6 +630,7 @@ describe("useExtensionMutationController", () => {
 		const input: ExtensionMutationInput = {
 			action: "update",
 			id: "shared-target",
+			environmentId: "shared-environment",
 			expectedVersion: "1",
 		};
 
@@ -498,6 +724,7 @@ describe("useExtensionMutationController", () => {
 				{
 					action: "remove_marketplace",
 					id: "failure-target",
+					environmentId: "failure-environment",
 					expectedSource: "example/plugins",
 				},
 				failedCallback,
@@ -540,6 +767,7 @@ describe("useExtensionMutationController", () => {
 			{
 				action: "update",
 				id: "unmounted-target",
+				environmentId: "unmounted-environment",
 				expectedVersion: "1",
 			},
 			callback,
@@ -559,6 +787,7 @@ describe("useExtensionMutationController", () => {
 			await surface.mutate({
 				action: "update",
 				id: "after-unmount",
+				environmentId: "after-unmount-environment",
 				expectedVersion: "1",
 			}),
 		).toBe("unmounted");
@@ -600,12 +829,13 @@ describe("extension inventory request barriers", () => {
 			firstOperation = controller.mutation.mutate({
 				action: "update",
 				id: "first-target",
+				environmentId: "first-environment",
 				expectedVersion: "1",
 			});
 			secondOperation = controller.mutation.mutate({
 				action: "add_marketplace",
 				providerId: "codex",
-				environmentId: "second-target",
+				environmentId: "second-environment",
 				source: "example/plugins",
 			});
 		});
@@ -626,8 +856,13 @@ describe("extension inventory request barriers", () => {
 		await waitFor(() =>
 			expect(mocks.getExtensionInventory).toHaveBeenCalledTimes(3),
 		);
-		expect(controller.mutation.stateFor("first-target").blocked).toBe(true);
-		expect(controller.mutation.stateFor("second-target").blocked).toBe(true);
+		expect(
+			controller.mutation.stateFor("first-target", "first-environment").blocked,
+		).toBe(true);
+		expect(
+			controller.mutation.stateFor("second-environment", "second-environment")
+				.blocked,
+		).toBe(true);
 
 		await act(async () => {
 			staleInventory.resolve({
@@ -636,8 +871,13 @@ describe("extension inventory request barriers", () => {
 			});
 			await staleInventory.promise;
 		});
-		expect(controller.mutation.stateFor("first-target").blocked).toBe(true);
-		expect(controller.mutation.stateFor("second-target").blocked).toBe(true);
+		expect(
+			controller.mutation.stateFor("first-target", "first-environment").blocked,
+		).toBe(true);
+		expect(
+			controller.mutation.stateFor("second-environment", "second-environment")
+				.blocked,
+		).toBe(true);
 		expect(screen.getByTestId("inventory-generated-at").textContent).toBe(
 			EMPTY_INVENTORY.generatedAt,
 		);
@@ -651,8 +891,13 @@ describe("extension inventory request barriers", () => {
 			expect(await firstOperation).toBe("succeeded");
 			expect(await secondOperation).toBe("succeeded");
 		});
-		expect(controller.mutation.stateFor("first-target").blocked).toBe(false);
-		expect(controller.mutation.stateFor("second-target").blocked).toBe(false);
+		expect(
+			controller.mutation.stateFor("first-target", "first-environment").blocked,
+		).toBe(false);
+		expect(
+			controller.mutation.stateFor("second-environment", "second-environment")
+				.blocked,
+		).toBe(false);
 		expect(screen.getByTestId("inventory-generated-at").textContent).toBe(
 			newestInventory.generatedAt,
 		);

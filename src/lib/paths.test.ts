@@ -76,6 +76,9 @@ describe("declaredPathKey", () => {
 				"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\project\\.",
 			),
 		).toBe(declaredPathKey("\\\\wsl$\\ubuntu-24.04\\home\\kyle\\project"));
+		expect(
+			declaredPathKey("\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\project\\"),
+		).toBe(declaredPathKey("\\\\wsl$\\ubuntu-24.04\\home\\kyle\\project"));
 	});
 
 	it("normalizes WSL dot segments while preserving POSIX path case", () => {
@@ -87,6 +90,23 @@ describe("declaredPathKey", () => {
 		expect(
 			declaredPathKey("\\\\wsl.localhost\\Ubuntu\\home\\kyle\\Other"),
 		).not.toBe(declaredPathKey("\\\\wsl$\\Ubuntu\\home\\kyle\\other"));
+	});
+
+	it("removes non-root Windows trailing separators", () => {
+		expect(declaredPathKey("C:\\Users\\Kyle\\")).toBe(
+			declaredPathKey("c:\\users\\kyle"),
+		);
+		expect(declaredPathKey("\\\\server\\share\\Plugins\\")).toBe(
+			declaredPathKey("\\\\SERVER\\SHARE\\plugins"),
+		);
+	});
+
+	it("preserves Windows drive, UNC share, and WSL distro roots", () => {
+		expect(declaredPathKey("C:\\")).toBe("windows:c:\\");
+		expect(declaredPathKey("\\\\server\\share\\")).toBe(
+			"windows:\\\\server\\share\\",
+		);
+		expect(declaredPathKey("\\\\wsl$\\Ubuntu\\")).toBe("wsl:ubuntu:/");
 	});
 });
 

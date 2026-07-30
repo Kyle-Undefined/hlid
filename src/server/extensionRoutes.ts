@@ -1,5 +1,9 @@
 import type { HlidConfig } from "../config";
 import {
+	type ExtensionMutationInput,
+	extensionMutationSchema,
+} from "../lib/extensionMutation";
+import {
 	discoverExtensionInventory,
 	type ExtensionInventory,
 	type ExtensionReview,
@@ -7,7 +11,6 @@ import {
 } from "./extensionInventory";
 import {
 	ExtensionMutationError,
-	type ExtensionMutationInput,
 	type ExtensionMutationResult,
 	mutateProviderExtension,
 } from "./extensionMutations";
@@ -24,57 +27,6 @@ type ExtensionRouteDependencies = {
 };
 
 const EXTENSION_CATALOG_CACHE_MS = 5_000;
-
-function validExtensionId(value: unknown): boolean {
-	return typeof value === "string" && /^[0-9a-f]{24}$/.test(value);
-}
-
-function validExpectedSource(value: unknown): boolean {
-	return typeof value === "string" && value.length <= 2_048;
-}
-
-function isValidExtensionMutation(
-	input: Record<string, unknown>,
-): input is ExtensionMutationInput {
-	return (
-		(input.action === "install" &&
-			validExtensionId(input.id) &&
-			typeof input.reviewToken === "string" &&
-			/^[0-9a-f]{64}$/.test(input.reviewToken)) ||
-		(input.action === "uninstall" &&
-			validExtensionId(input.id) &&
-			typeof input.expectedVersion === "string" &&
-			input.expectedVersion.length <= 128) ||
-		(input.action === "update" &&
-			validExtensionId(input.id) &&
-			typeof input.expectedVersion === "string" &&
-			input.expectedVersion.length <= 128) ||
-		(input.action === "set_enabled" &&
-			validExtensionId(input.id) &&
-			typeof input.expectedVersion === "string" &&
-			input.expectedVersion.length <= 128 &&
-			typeof input.expectedEnabled === "boolean" &&
-			typeof input.enabled === "boolean" &&
-			input.enabled !== input.expectedEnabled) ||
-		(input.action === "add_marketplace" &&
-			(input.providerId === "claude" || input.providerId === "codex") &&
-			validExtensionId(input.environmentId) &&
-			typeof input.source === "string" &&
-			input.source.length <= 2_048 &&
-			(input.ref === undefined ||
-				(typeof input.ref === "string" && input.ref.length <= 256)) &&
-			(input.sparse === undefined ||
-				(Array.isArray(input.sparse) &&
-					input.sparse.length <= 20 &&
-					input.sparse.every(
-						(value) => typeof value === "string" && value.length <= 512,
-					)))) ||
-		((input.action === "upgrade_marketplace" ||
-			input.action === "remove_marketplace") &&
-			validExtensionId(input.id) &&
-			validExpectedSource(input.expectedSource))
-	);
-}
 
 export function createExtensionRouteHandler(
 	dependencies: ExtensionRouteDependencies,
@@ -130,19 +82,14 @@ export function createExtensionRouteHandler(
 			} catch {
 				return Response.json({ error: "Invalid JSON body" }, { status: 400 });
 			}
-			if (!body || typeof body !== "object" || Array.isArray(body)) {
+			const parsed = extensionMutationSchema.safeParse(body);
+			if (!parsed.success) {
 				return Response.json(
 					{ error: "Invalid extension mutation" },
 					{ status: 400 },
 				);
 			}
-			const input = body as Record<string, unknown>;
-			if (!isValidExtensionMutation(input)) {
-				return Response.json(
-					{ error: "Invalid extension mutation" },
-					{ status: 400 },
-				);
-			}
+			const input = parsed.data;
 			try {
 				const config = dependencies.loadConfig();
 				const mutate = dependencies.mutate ?? mutateProviderExtension;

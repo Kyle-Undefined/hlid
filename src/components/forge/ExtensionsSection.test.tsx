@@ -51,6 +51,7 @@ const inventory: ExtensionInventory = {
 			id: "claude-extension",
 			providerId: "claude",
 			providerLabel: "Claude",
+			environmentId: "111111111111111111111111",
 			environment: "wsl",
 			environmentLabel: "WSL · Ubuntu",
 			pluginId: "reviewer@official",
@@ -81,6 +82,7 @@ const inventory: ExtensionInventory = {
 			id: "codex-extension",
 			providerId: "codex",
 			providerLabel: "Codex",
+			environmentId: "222222222222222222222222",
 			environment: "windows",
 			environmentLabel: "Windows",
 			pluginId: "github@curated",
@@ -115,6 +117,7 @@ const inventory: ExtensionInventory = {
 		{
 			id: "333333333333333333333333",
 			providerId: "claude",
+			environmentId: "111111111111111111111111",
 			environment: "wsl",
 			environmentLabel: "WSL · Ubuntu",
 			name: "official",
@@ -130,6 +133,7 @@ const inventory: ExtensionInventory = {
 			id: "0123456789abcdef01234567",
 			providerId: "claude",
 			providerLabel: "Claude",
+			environmentId: "111111111111111111111111",
 			environment: "wsl",
 			environmentLabel: "WSL · Ubuntu",
 			pluginId: "reviewer@official",
@@ -150,6 +154,7 @@ const inventory: ExtensionInventory = {
 			id: "abcdef0123456789abcdef01",
 			providerId: "claude",
 			providerLabel: "Claude",
+			environmentId: "111111111111111111111111",
 			environment: "wsl",
 			environmentLabel: "WSL · Ubuntu",
 			pluginId: "remote@official",
@@ -354,6 +359,7 @@ describe("ExtensionsSection", () => {
 							{
 								action: "set_enabled",
 								id: "claude-extension",
+								environmentId: "111111111111111111111111",
 								expectedVersion: "1.2.3",
 								expectedEnabled: true,
 								enabled: false,
@@ -625,6 +631,7 @@ describe("ExtensionsSection", () => {
 			expect(mocks.mutateExtension).toHaveBeenCalledWith({
 				action: "install",
 				id: "0123456789abcdef01234567",
+				environmentId: "111111111111111111111111",
 				reviewToken: "f".repeat(64),
 			}),
 		);
@@ -655,6 +662,7 @@ describe("ExtensionsSection", () => {
 			expect(mocks.mutateExtension).toHaveBeenCalledWith({
 				action: "uninstall",
 				id: "claude-extension",
+				environmentId: "111111111111111111111111",
 				expectedVersion: "1.2.3",
 			}),
 		);
@@ -683,6 +691,7 @@ describe("ExtensionsSection", () => {
 			expect(mocks.mutateExtension).toHaveBeenCalledWith({
 				action: "update",
 				id: "claude-extension",
+				environmentId: "111111111111111111111111",
 				expectedVersion: "1.2.3",
 			}),
 		);
@@ -744,6 +753,7 @@ describe("ExtensionsSection", () => {
 			expect(mocks.mutateExtension).toHaveBeenCalledWith({
 				action: "update",
 				id: "claude-extension",
+				environmentId: "111111111111111111111111",
 				expectedVersion: "1.2.3",
 			}),
 		);
@@ -949,6 +959,7 @@ describe("ExtensionsSection", () => {
 			expect(mocks.mutateExtension).toHaveBeenCalledWith({
 				action: "set_enabled",
 				id: "claude-extension",
+				environmentId: "111111111111111111111111",
 				expectedVersion: "1.2.3",
 				expectedEnabled: true,
 				enabled: false,
@@ -1046,6 +1057,7 @@ describe("ExtensionsSection", () => {
 			expect(mocks.mutateExtension).toHaveBeenCalledWith({
 				action: "install",
 				id: "abcdef0123456789abcdef01",
+				environmentId: "111111111111111111111111",
 				reviewToken: "e".repeat(64),
 			}),
 		);
@@ -1114,6 +1126,7 @@ describe("ExtensionsSection", () => {
 			expect(mocks.mutateExtension).toHaveBeenCalledWith({
 				action: "upgrade_marketplace",
 				id: "333333333333333333333333",
+				environmentId: "111111111111111111111111",
 				expectedSource: "github · example/plugins",
 			}),
 		);
@@ -1130,6 +1143,7 @@ describe("ExtensionsSection", () => {
 			expect(mocks.mutateExtension).toHaveBeenCalledWith({
 				action: "remove_marketplace",
 				id: "333333333333333333333333",
+				environmentId: "111111111111111111111111",
 				expectedSource: "github · example/plugins",
 			}),
 		);
@@ -1402,8 +1416,10 @@ describe("ExtensionsSection", () => {
 		fireEvent.change(screen.getByLabelText("Marketplace Git ref"), {
 			target: { value: "release-2" },
 		});
-		const blockedAdd = screen.getByRole("button", { name: "Add source" });
-		expect(blockedAdd.hasAttribute("disabled")).toBe(true);
+		const crossEnvironmentAdd = screen.getByRole("button", {
+			name: "Add source",
+		});
+		expect(crossEnvironmentAdd.hasAttribute("disabled")).toBe(false);
 
 		await act(async () => {
 			mutation.resolve({
@@ -1476,6 +1492,7 @@ describe("ExtensionsSection", () => {
 			expect(mocks.mutateExtension).toHaveBeenCalledWith({
 				action: "set_enabled",
 				id: "claude-extension",
+				environmentId: "111111111111111111111111",
 				expectedVersion: "1.2.3",
 				expectedEnabled: true,
 				enabled: false,

@@ -47,6 +47,7 @@ export function ExtensionInstalledView({
 							{extensions.map((extension) => {
 								const mutationState = controller.mutation.stateFor(
 									extension.id,
+									extension.environmentId,
 								);
 								return (
 									<InstalledExtensionCard
@@ -60,6 +61,7 @@ export function ExtensionInstalledView({
 														void controller.mutation.mutate({
 															action: "update",
 															id: extension.id,
+															environmentId: extension.environmentId,
 															expectedVersion: extension.version,
 														})
 												: undefined
@@ -68,6 +70,7 @@ export function ExtensionInstalledView({
 											void controller.mutation.mutate({
 												action: "set_enabled",
 												id: extension.id,
+												environmentId: extension.environmentId,
 												expectedVersion: extension.version,
 												expectedEnabled: extension.enabled,
 												enabled: !extension.enabled,
@@ -77,6 +80,7 @@ export function ExtensionInstalledView({
 											void controller.mutation.mutate({
 												action: "uninstall",
 												id: extension.id,
+												environmentId: extension.environmentId,
 												expectedVersion: extension.version,
 											})
 										}

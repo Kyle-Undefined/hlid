@@ -2,14 +2,15 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { dbFetch, dbJson } from "#/lib/dbClient";
+import {
+	type ExtensionMutationInput,
+	extensionMutationSchema,
+} from "#/lib/extensionMutation";
 import type {
 	ExtensionInventory,
 	ExtensionReview,
 } from "#/server/extensionInventory";
-import type {
-	ExtensionMutationInput,
-	ExtensionMutationResult,
-} from "#/server/extensionMutations";
+import type { ExtensionMutationResult } from "#/server/extensionMutations";
 
 const EMPTY_EXTENSION_INVENTORY: ExtensionInventory = {
 	generatedAt: "",
@@ -56,49 +57,6 @@ export const getExtensionReviewFn = createServerFn({ method: "GET" })
 			EXTENSION_READ_BUDGET,
 		),
 	);
-
-const extensionMutationSchema = z.discriminatedUnion("action", [
-	z.object({
-		action: z.literal("install"),
-		id: z.string().regex(/^[0-9a-f]{24}$/),
-		reviewToken: z.string().regex(/^[0-9a-f]{64}$/),
-	}),
-	z.object({
-		action: z.literal("uninstall"),
-		id: z.string().regex(/^[0-9a-f]{24}$/),
-		expectedVersion: z.string().max(128),
-	}),
-	z.object({
-		action: z.literal("update"),
-		id: z.string().regex(/^[0-9a-f]{24}$/),
-		expectedVersion: z.string().max(128),
-	}),
-	z.object({
-		action: z.literal("set_enabled"),
-		id: z.string().regex(/^[0-9a-f]{24}$/),
-		expectedVersion: z.string().max(128),
-		expectedEnabled: z.boolean(),
-		enabled: z.boolean(),
-	}),
-	z.object({
-		action: z.literal("add_marketplace"),
-		providerId: z.enum(["claude", "codex"]),
-		environmentId: z.string().regex(/^[0-9a-f]{24}$/),
-		source: z.string().min(1).max(2_048),
-		ref: z.string().max(256).optional(),
-		sparse: z.array(z.string().min(1).max(512)).max(20).optional(),
-	}),
-	z.object({
-		action: z.literal("upgrade_marketplace"),
-		id: z.string().regex(/^[0-9a-f]{24}$/),
-		expectedSource: z.string().max(2_048),
-	}),
-	z.object({
-		action: z.literal("remove_marketplace"),
-		id: z.string().regex(/^[0-9a-f]{24}$/),
-		expectedSource: z.string().max(2_048),
-	}),
-]);
 
 export const mutateExtensionFn = createServerFn({ method: "POST" })
 	.validator((raw) => extensionMutationSchema.parse(raw))
