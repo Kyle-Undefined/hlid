@@ -116,7 +116,7 @@ describe("Project Preview relay", () => {
 	it("rewrites root assets and injects the WebSocket relay bootstrap", async () => {
 		const port = await upstream(() => ({
 			contentType: "text/html; charset=utf-8",
-			body: '<!doctype html><head></head><script>window.$_TSR={router:{manifest:{routes:{__root__:{preloads:["/assets/app.js"],scripts:[{attrs:{type:"module",src:"/assets/app.js"}}]}}}}}</script><script type="module" src="/assets/app.js"></script><link href="/src/app.css">',
+			body: '<!doctype html><head></head><script class = "$tsr">window.$_TSR={router:{manifest:$R[1]={routes:{__root__:{preloads:$R[4]=["/@id/virtual:tanstack-start-dev-client-entry","/assets/app.js"],scripts:[{attrs:{type:"module",src:"/@id/virtual:tanstack-start-dev-client-entry"}}],css:[{href:"/@tanstack-start/styles.css?routes=__root__"}]}}},matches:$R[10]=[$R[11]={loaderData:$R[12]={href:"/docs",src:"/avatar.png",preloads:["/semantic"]}}]}}</script><script type="module" src="/@id/virtual:tanstack-start-dev-client-entry"></script><script src="/assets/app.js"></script><link href="/src/app.css">',
 		}));
 		const response = await handleProjectPreviewRelayRequest(
 			new URL(
@@ -132,7 +132,22 @@ describe("Project Preview relay", () => {
 		);
 		expect(text).not.toContain('src:"/assets/app.js"');
 		expect(text).toContain(
-			'src:"/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/assets/app.js"',
+			'preloads:$R[4]=["/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/@id/virtual:tanstack-start-dev-client-entry","/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/assets/app.js"]',
+		);
+		expect(text).not.toContain(
+			'src:"/@id/virtual:tanstack-start-dev-client-entry"',
+		);
+		expect(text).toContain(
+			'src:"/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/@id/virtual:tanstack-start-dev-client-entry"',
+		);
+		expect(text).not.toContain(
+			'href:"/@tanstack-start/styles.css?routes=__root__"',
+		);
+		expect(text).toContain(
+			'href:"/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/@tanstack-start/styles.css?routes=__root__"',
+		);
+		expect(text).toContain(
+			'loaderData:$R[12]={href:"/docs",src:"/avatar.png",preloads:["/semantic"]}',
 		);
 		expect(text).toContain("NativeWebSocket");
 		expect(text).toContain(
@@ -143,7 +158,9 @@ describe("Project Preview relay", () => {
 		);
 		expect(text).toContain("hlid:project-preview-state");
 		expect(text).toContain("scroll_x");
-		expect(text).toContain("document.currentScript?.remove()");
+		expect(text?.match(/document\.currentScript\?\.remove\(\)/g)).toHaveLength(
+			2,
+		);
 		expect(text).toContain(
 			"Service workers are disabled in Hlid Project Preview.",
 		);
@@ -159,7 +176,7 @@ describe("Project Preview relay", () => {
 	it("rewrites module imports without corrupting regular expressions", async () => {
 		const port = await upstream(() => ({
 			contentType: "text/javascript",
-			body: 'import value from "/src/value.js"; const fenced = /```[\\s\\S]*?```/g; export default value;',
+			body: 'import value from "/src/value.js"; const $$splitComponentImporter=()=>import("/src/routes/login.tsx?tsr-split=component"); const fenced = /```[\\s\\S]*?```/g; export default value;',
 		}));
 		const response = await handleProjectPreviewRelayRequest(
 			new URL(
@@ -171,6 +188,9 @@ describe("Project Preview relay", () => {
 		const text = await response?.text();
 		expect(text).toContain(
 			'import value from "/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/src/value.js"',
+		);
+		expect(text).toContain(
+			'import("/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/src/routes/login.tsx?tsr-split=component")',
 		);
 		expect(text).toContain("const fenced = /```[\\s\\S]*?```/g");
 	});

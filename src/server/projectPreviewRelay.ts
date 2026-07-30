@@ -363,13 +363,67 @@ async function rewriteJavascriptReferences(
 	return rewritten;
 }
 
+function matchingObjectEnd(text: string, openIndex: number): number | null {
+	let depth = 0;
+	let quote: '"' | "'" | "`" | null = null;
+	let escaped = false;
+	for (let index = openIndex; index < text.length; index++) {
+		const char = text[index];
+		if (quote) {
+			if (escaped) {
+				escaped = false;
+			} else if (char === "\\") {
+				escaped = true;
+			} else if (char === quote) {
+				quote = null;
+			}
+			continue;
+		}
+		if (char === '"' || char === "'" || char === "`") {
+			quote = char;
+			continue;
+		}
+		if (char === "{") {
+			depth++;
+		} else if (char === "}") {
+			depth--;
+			if (depth === 0) return index + 1;
+		}
+	}
+	return null;
+}
+
+function rewriteTanStackManifestResources(
+	script: string,
+	prefix: string,
+): string {
+	const property = /\bmanifest\s*:\s*(?:\$R\[\d+\]\s*=\s*)?\{/.exec(script);
+	if (!property || property.index === undefined) return script;
+	const openIndex = property.index + property[0].lastIndexOf("{");
+	const endIndex = matchingObjectEnd(script, openIndex);
+	if (endIndex === null) return script;
+	const manifest = script
+		.slice(openIndex, endIndex)
+		.replace(/\b(src|href)\s*:\s*(["'])\/(?!\/)/g, `$1:$2${prefix}/`)
+		.replace(
+			/(\bpreloads\s*:\s*(?:\$R\[\d+\]\s*=\s*)?\[)([\s\S]*?)(\])/g,
+			(_match, open: string, entries: string, close: string) =>
+				`${open}${entries.replace(/(["'])\/(?!\/)/g, `$1${prefix}/`)}${close}`,
+		);
+	return `${script.slice(0, openIndex)}${manifest}${script.slice(endIndex)}`;
+}
+
 async function rewriteRootReferences(
 	text: string,
 	contentType: string,
 	prefix: string,
 ): Promise<string> {
 	if (contentType.includes("text/html")) {
-		return text
+		const rewrittenManifest = text.replace(
+			/<script\b[^>]*\bclass\s*=\s*(["'])\$tsr\1[^>]*>[\s\S]*?<\/script>/gi,
+			(manifest) => rewriteTanStackManifestResources(manifest, prefix),
+		);
+		return rewrittenManifest
 			.replace(/\b(src|href|action|poster)=("|')\/(?!\/)/gi, `$1=$2${prefix}/`)
 			.replace(/url\((["']?)\/(?!\/)/gi, `url($1${prefix}/`)
 			.replace(/(["'`])\/assets\//g, `$1${prefix}/assets/`);
@@ -392,7 +446,7 @@ function relayBootstrap(prefix: string): string {
 	// install a root-scoped worker that controls later previews or reloads the
 	// current frame during its update lifecycle.
 	const serviceWorkerGuard =
-		'<script>(()=>{const sw=navigator.serviceWorker;if(!sw)return;const blocked=()=>Promise.reject(new DOMException("Service workers are disabled in Hlid Project Preview.","SecurityError"));try{Object.defineProperty(sw,"register",{configurable:true,value:blocked})}catch{try{sw.register=blocked}catch{}}void sw.getRegistrations().then((registrations)=>Promise.all(registrations.map((registration)=>registration.unregister()))).catch(()=>{})})();</script>';
+		'<script>(()=>{document.currentScript?.remove();const sw=navigator.serviceWorker;if(!sw)return;const blocked=()=>Promise.reject(new DOMException("Service workers are disabled in Hlid Project Preview.","SecurityError"));try{Object.defineProperty(sw,"register",{configurable:true,value:blocked})}catch{try{sw.register=blocked}catch{}}void sw.getRegistrations().then((registrations)=>Promise.all(registrations.map((registration)=>registration.unregister()))).catch(()=>{})})();</script>';
 	return `${serviceWorkerGuard}<script>(()=>{const p=${value};const rewrite=(value)=>{try{const url=new URL(typeof value==="string"?value:value.url,location.href);const pagePort=Number(location.port||(location.protocol==="https:"?443:80));const targetPort=Number(url.port||(url.protocol==="https:"||url.protocol==="wss:"?443:80));const sameEndpoint=url.hostname===location.hostname&&targetPort===pagePort;const adjacentEndpoint=url.hostname===location.hostname&&targetPort===pagePort+1;const socket=url.protocol==="ws:"||url.protocol==="wss:";if(adjacentEndpoint){url.protocol=socket?(location.protocol==="https:"?"wss:":"ws:"):location.protocol;url.host=location.host;url.pathname=p+"/__hlid_backend__"+url.pathname;return url.toString()}if(sameEndpoint&&!url.pathname.startsWith(p)){const backendSocket=socket&&(url.pathname==="/ws"||url.pathname.startsWith("/ws/"));url.pathname=p+(backendSocket?"/__hlid_backend__":"")+url.pathname;return url.toString()}}catch{}return value};const NativeWebSocket=window.WebSocket;const RelayWebSocket=function(url,protocols){return new NativeWebSocket(rewrite(url),protocols)};Object.setPrototypeOf(RelayWebSocket,NativeWebSocket);RelayWebSocket.prototype=NativeWebSocket.prototype;window.WebSocket=RelayWebSocket;const nativeFetch=window.fetch.bind(window);window.fetch=(input,init)=>nativeFetch(typeof input==="string"?rewrite(input):input,init);const nativeOpen=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(method,url,...rest){return nativeOpen.call(this,method,rewrite(url),...rest)};const previewId=p.split("/")[3]||"";const route=()=>{const pathname=location.pathname.startsWith(p)?location.pathname.slice(p.length)||"/":location.pathname;return pathname+location.search+location.hash};const sendState=()=>{if(parent===window)return;parent.postMessage({type:"hlid:project-preview-state",version:1,preview_id:previewId,path:route(),width:Math.round(innerWidth),height:Math.round(innerHeight),scroll_x:Math.round(scrollX),scroll_y:Math.round(scrollY)},"*")};let scheduled=false;const scheduleState=()=>{if(scheduled)return;scheduled=true;requestAnimationFrame(()=>{scheduled=false;sendState()})};for(const name of ["load","resize","scroll","hashchange","popstate"])addEventListener(name,scheduleState,{passive:true});for(const name of ["pushState","replaceState"]){const native=history[name];history[name]=function(...args){const result=native.apply(this,args);scheduleState();return result}}addEventListener("message",(event)=>{if(event.data?.type==="hlid:project-preview-state-request")sendState()});queueMicrotask(sendState);document.currentScript?.remove()})();</script>`;
 }
 
