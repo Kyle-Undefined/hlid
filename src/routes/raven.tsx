@@ -410,6 +410,15 @@ type RavenSessionSelection = {
 	permissionMode?: string;
 };
 
+type RavenProviderIdentity = {
+	activeProviderId: string;
+	configuredProviderId: string;
+};
+
+type RavenProviderOwnership = RavenProviderIdentity & {
+	sessionSelection: RavenSessionSelection;
+};
+
 function restoredRavenSessionSelection(
 	existingSessionId: string | null,
 	agentSkillContext: string | undefined,
@@ -635,9 +644,13 @@ function useRavenChatRuntime({
 	const [goalError, setGoalError] = useState<string | null>(null);
 	const goalRequestIdRef = useRef<string | null>(null);
 	const goalStartPendingRef = useRef(false);
-	const [mcpServers, setMcpServers] = useState<
-		ReturnType<typeof mapMcpServer>[]
-	>([]);
+	const [mcpSnapshot, setMcpSnapshot] = useState<{
+		providerId: string | null;
+		servers: ReturnType<typeof mapMcpServer>[];
+	}>({
+		providerId: null,
+		servers: [],
+	});
 	const [mcpOpenSignal, setMcpOpenSignal] = useState(0);
 	const [contextInspectorOpen, setContextInspectorOpen] = useState(false);
 	const [contextInspectorTarget, setContextInspectorTarget] =
@@ -750,24 +763,27 @@ function useRavenChatRuntime({
 				messageProviderId !== expectedProviderId
 			)
 				return;
-			setMcpServers(
-				message.servers.map((server) =>
+			setMcpSnapshot({
+				providerId: messageProviderId ?? expectedProviderId ?? null,
+				servers: message.servers.map((server) =>
 					mapMcpServer({
 						...server,
 						providerId: server.provider_id ?? message.provider_id,
 					}),
 				),
-			);
+			});
 		},
 		[agentCwd, expectedProviderId],
 	);
 	const handleSlashCommandsMessage = useCallback(
 		function handleSlashCommandsMessage(message: SlashCommandsMessage) {
 			if ((message.agent_cwd ?? "") !== (agentCwd ?? "")) return;
+			if (expectedProviderId && message.provider_id !== expectedProviderId)
+				return;
 			setSdkSlashCommands(message.commands);
 			setSdkSlashCommandProviderId(message.provider_id);
 		},
-		[agentCwd],
+		[agentCwd, expectedProviderId],
 	);
 	const handleWorkflowCatalogMessage = useCallback(
 		function handleWorkflowCatalogMessage(message: WorkflowCatalogMessage) {
@@ -921,7 +937,7 @@ function useRavenChatRuntime({
 	useEffect(() => {
 		setSdkSlashCommands([]);
 		setSdkSlashCommandProviderId(null);
-		setMcpServers([]);
+		setMcpSnapshot({ providerId: null, servers: [] });
 		setContextInspectorOpen(false);
 		setContextInspectorTarget(null);
 		setWorkflowManagerOpen(false);
@@ -995,7 +1011,10 @@ function useRavenChatRuntime({
 		workflowSourceResult,
 		setWorkflowSourceResult,
 		refreshWorkflows,
-		mcpServers,
+		mcpServers:
+			!expectedProviderId || mcpSnapshot.providerId === expectedProviderId
+				? mcpSnapshot.servers
+				: [],
 		mcpOpenSignal,
 		openMcp,
 		contextInspectorOpen,
@@ -1291,6 +1310,7 @@ function useRavenViewport({
 type RavenActionProps = {
 	config: RavenConfig;
 	initialVoiceInfo: Awaited<ReturnType<typeof getVoiceInfoFn>>;
+	activeProviderId: string;
 	input: string;
 	setInput: ReturnType<typeof useDraft>["setInput"];
 	clearDraft: ReturnType<typeof useDraft>["clearDraft"];
@@ -1302,6 +1322,7 @@ type RavenActionProps = {
 	planHtml: boolean;
 	sessionSelection: RavenSessionSelection;
 	setSessionSelection: Dispatch<SetStateAction<RavenSessionSelection>>;
+	resetSessionSelection: () => void;
 	session: ReturnType<typeof useRavenSessionIdentity>;
 	runtime: ReturnType<typeof useRavenChatRuntime>;
 	upload: ReturnType<typeof useFileUpload>;
@@ -1384,6 +1405,7 @@ function useRavenSend(props: RavenActionProps) {
 		planMode,
 		planHtml,
 		sessionSelection,
+		activeProviderId,
 	} = props;
 	const { agentSkillContext, agentContextSentRef, sessionId } = props.session;
 	const {
@@ -1543,7 +1565,7 @@ function useRavenSend(props: RavenActionProps) {
 				agentContextAlreadySent: agentContextSentRef.current,
 				planMode,
 				planHtml,
-				provider: sessionSelection.providerId,
+				provider: activeProviderId,
 				model: sessionSelection.model,
 				effort: sessionSelection.effort,
 				permissionMode: sessionSelection.permissionMode,
@@ -1594,6 +1616,7 @@ function useRavenSend(props: RavenActionProps) {
 			planMode,
 			planHtml,
 			sessionSelection,
+			activeProviderId,
 			dispatch,
 			atBottomRef,
 			agentContextSentRef,
@@ -1634,14 +1657,7 @@ function useRavenVoice(
 		},
 		[config.voice.auto_send, handleSend, input, setInput, textareaRef],
 	);
-	const configuredProvider =
-		(config.agents ?? []).find(
-			(agent) => agent.path === props.session.agentSkillContext,
-		)?.provider ?? config.vault_provider;
-	const providerId =
-		props.sessionSelection.providerId ??
-		props.session.liveSessionStatus?.provider_id ??
-		configuredProvider;
+	const providerId = props.activeProviderId;
 	const selectedAgent = (config.agents ?? []).find(
 		(agent) => agent.path === props.session.agentSkillContext,
 	);
@@ -1776,7 +1792,7 @@ function useRavenQueueActions(props: RavenActionProps) {
 }
 
 function useRavenClear(props: RavenActionProps) {
-	const { clearDraft, setPlanMode, setSessionSelection } = props;
+	const { clearDraft, setPlanMode, resetSessionSelection } = props;
 	const clearVaultReferences = props.vaultPicker.clear;
 	const { setAgentSkillContext, agentContextSentRef, activateNewSession } =
 		props.session;
@@ -1798,7 +1814,7 @@ function useRavenClear(props: RavenActionProps) {
 		wsStore.clearMessageBuffer();
 		clearChatQueue();
 		clearVaultReferences();
-		setSessionSelection({});
+		resetSessionSelection();
 		const newId = uid();
 		setAgentSkillContext(undefined);
 		activateNewSession(newId, true);
@@ -1812,7 +1828,7 @@ function useRavenClear(props: RavenActionProps) {
 		activateNewSession,
 		setAgentSkillContext,
 		setPlanMode,
-		setSessionSelection,
+		resetSessionSelection,
 		clearVaultReferences,
 	]);
 }
@@ -1896,10 +1912,58 @@ function defaultSelectionForProvider(
 	};
 }
 
+function resolveRavenProviderOwnership({
+	agentList,
+	agentSkillContext,
+	vaultProviderId,
+	sessionSelection,
+	restoredProviderId,
+	liveSessionSelection,
+	pendingProviderId,
+}: {
+	agentList: RavenAgentList;
+	agentSkillContext: string | undefined;
+	vaultProviderId: string;
+	sessionSelection: RavenSessionSelection;
+	restoredProviderId: string | null;
+	liveSessionSelection: RavenSessionSelection | null;
+	pendingProviderId: string | null;
+}): RavenProviderOwnership {
+	const configuredProviderId = resolveActiveProviderId(
+		agentList,
+		agentSkillContext,
+		vaultProviderId,
+	);
+	const selectedProviderId =
+		sessionSelection.providerId ?? restoredProviderId ?? configuredProviderId;
+	if (pendingProviderId) {
+		return {
+			activeProviderId: pendingProviderId,
+			configuredProviderId,
+			sessionSelection,
+		};
+	}
+	if (
+		liveSessionSelection?.providerId &&
+		liveSessionSelection.providerId !== selectedProviderId
+	) {
+		return {
+			activeProviderId: liveSessionSelection.providerId,
+			configuredProviderId,
+			sessionSelection: liveSessionSelection,
+		};
+	}
+	return {
+		activeProviderId: liveSessionSelection?.providerId ?? selectedProviderId,
+		configuredProviderId,
+		sessionSelection,
+	};
+}
+
 function deriveRavenComposerState({
 	config,
-	agentList,
 	providers,
+	providerIdentity,
 	agentSkillContext,
 	input,
 	activeSkills,
@@ -1911,13 +1975,11 @@ function deriveRavenComposerState({
 	model,
 	actualModel,
 	selection,
-	restoredSession,
-	sessionProviderId,
 	planMode,
 }: {
 	config: RavenConfig;
-	agentList: RavenAgentList;
 	providers: RavenProviders;
+	providerIdentity: RavenProviderIdentity;
 	agentSkillContext: string | undefined;
 	input: string;
 	activeSkills: ActiveRavenSkill[];
@@ -1929,8 +1991,6 @@ function deriveRavenComposerState({
 	model: string | undefined;
 	actualModel: string | null;
 	selection: RavenSessionSelection;
-	restoredSession: boolean;
-	sessionProviderId: string | null;
 	planMode: boolean;
 }) {
 	const hasInput =
@@ -1943,11 +2003,7 @@ function deriveRavenComposerState({
 	const selectedAgent = agentSkillContext
 		? config.agents?.find((agent) => agent.path === agentSkillContext)
 		: undefined;
-	const configuredProviderId = resolveActiveProviderId(
-		agentList,
-		agentSkillContext,
-		config.vault_provider,
-	);
+	const { activeProviderId, configuredProviderId } = providerIdentity;
 	const vaultSelection = configuredVaultSelection(config, configuredProviderId);
 	const configuredSelection: RavenSessionSelection = {
 		providerId: configuredProviderId,
@@ -1956,11 +2012,8 @@ function deriveRavenComposerState({
 		permissionMode:
 			selectedAgent?.permission_mode ?? vaultSelection.permissionMode,
 	};
-	const providerId =
-		selection.providerId ??
-		(restoredSession ? sessionProviderId : null) ??
-		configuredProviderId;
-	const providerUsesConfiguredDefaults = providerId === configuredProviderId;
+	const providerUsesConfiguredDefaults =
+		activeProviderId === configuredProviderId;
 	const selectedModel =
 		selection.model ??
 		(providerUsesConfiguredDefaults ? configuredSelection.model : undefined) ??
@@ -1978,8 +2031,10 @@ function deriveRavenComposerState({
 	const { effectiveActualModel, mismatch: runtimeModelMismatch } =
 		deriveModelMismatch(configuredSelection.model, actualModel, selectedModel);
 	const modelMismatch =
-		providerId !== configuredProviderId || runtimeModelMismatch;
-	const provider = providers.find((candidate) => candidate.id === providerId);
+		activeProviderId !== configuredProviderId || runtimeModelMismatch;
+	const provider = providers.find(
+		(candidate) => candidate.id === activeProviderId,
+	);
 	const configuredProvider = providers.find(
 		(candidate) => candidate.id === configuredProviderId,
 	);
@@ -1994,9 +2049,7 @@ function deriveRavenComposerState({
 			? fmtModel(effectiveActualModel)
 			: null,
 		modelMismatch,
-		activeProviderId: providerId,
-		activeProviderLabel: provider?.label ?? providerId,
-		configuredProviderId,
+		activeProviderLabel: provider?.label ?? activeProviderId,
 		configuredProviderLabel: configuredProvider?.label ?? configuredProviderId,
 		configuredModelShort: configuredSelection.model
 			? fmtModel(configuredSelection.model)
@@ -2126,7 +2179,13 @@ export function ChatPage() {
 				initialSessionPermissionMode,
 			),
 		);
+	const [pendingProviderId, setPendingProviderId] = useState<string | null>(
+		null,
+	);
+	const pendingProviderIdRef = useRef<string | null>(null);
 	useEffect(() => {
+		pendingProviderIdRef.current = null;
+		setPendingProviderId(null);
 		setSessionSelection(
 			restoredRavenSessionSelection(
 				existingSessionId,
@@ -2148,11 +2207,40 @@ export function ChatPage() {
 		initialSessionPermissionMode,
 	]);
 	const liveSessionStatus = session.liveSessionStatus;
+	const liveSessionSelection: RavenSessionSelection | null =
+		liveSessionStatus &&
+		liveSessionStatus.mode !== "terminal" &&
+		liveSessionStatus.provider_id
+			? {
+					providerId: liveSessionStatus.provider_id,
+					...(liveSessionStatus.model
+						? { model: liveSessionStatus.model }
+						: {}),
+					...(liveSessionStatus.effort
+						? { effort: liveSessionStatus.effort }
+						: {}),
+					...(liveSessionStatus.permission_mode
+						? { permissionMode: liveSessionStatus.permission_mode }
+						: {}),
+				}
+			: null;
 	useEffect(() => {
 		if (!liveSessionStatus || liveSessionStatus.mode === "terminal") return;
+		const liveProviderId = liveSessionStatus.provider_id ?? null;
+		const pendingProvider = pendingProviderIdRef.current;
+		if (pendingProvider && liveProviderId !== pendingProvider) return;
+		if (pendingProvider) {
+			pendingProviderIdRef.current = null;
+			setPendingProviderId(null);
+		}
 		setSessionSelection((current) => {
+			const providerChanged =
+				liveProviderId !== null && current.providerId !== liveProviderId;
+			const base: RavenSessionSelection = providerChanged
+				? { providerId: liveProviderId }
+				: current;
 			const next = {
-				...current,
+				...base,
 				...(liveSessionStatus.model ? { model: liveSessionStatus.model } : {}),
 				...(liveSessionStatus.effort
 					? { effort: liveSessionStatus.effort }
@@ -2161,30 +2249,56 @@ export function ChatPage() {
 					? { permissionMode: liveSessionStatus.permission_mode }
 					: {}),
 			};
-			return next.model === current.model &&
+			return next.providerId === current.providerId &&
+				next.model === current.model &&
 				next.effort === current.effort &&
 				next.permissionMode === current.permissionMode
 				? current
 				: next;
 		});
 	}, [liveSessionStatus]);
+	const selectSessionProvider = useCallback(
+		(next: RavenSessionSelection) => {
+			const nextProviderId = next.providerId ?? null;
+			const liveProviderId = liveSessionSelection?.providerId ?? null;
+			const pending =
+				nextProviderId && nextProviderId !== liveProviderId
+					? nextProviderId
+					: null;
+			pendingProviderIdRef.current = pending;
+			setPendingProviderId(pending);
+			setSessionSelection(next);
+		},
+		[liveSessionSelection?.providerId],
+	);
+	const resetSessionSelection = useCallback(() => {
+		pendingProviderIdRef.current = null;
+		setPendingProviderId(null);
+		setSessionSelection({});
+	}, []);
 
 	const liveStats = useWsLiveStats();
 	const chatQueue = useWsChatQueue();
-	const metadataProviderId =
-		sessionSelection.providerId ??
-		(restoredSession ? initialSessionProviderId : null) ??
-		resolveActiveProviderId(
-			agentList,
-			agentSkillContext,
-			config.vault_provider,
-		);
+	const providerIdentity = resolveRavenProviderOwnership({
+		agentList,
+		agentSkillContext,
+		vaultProviderId: config.vault_provider,
+		sessionSelection,
+		restoredProviderId: restoredSession ? initialSessionProviderId : null,
+		liveSessionSelection,
+		pendingProviderId,
+	});
+	const {
+		activeProviderId,
+		configuredProviderId,
+		sessionSelection: effectiveSessionSelection,
+	} = providerIdentity;
 	const runtime = useRavenChatRuntime({
 		existingSessionId,
 		isExplicitSession,
 		sessionIdRef,
 		agentCwd: agentSkillContext,
-		expectedProviderId: metadataProviderId,
+		expectedProviderId: activeProviderId,
 	});
 	const {
 		wsStatus,
@@ -2254,22 +2368,14 @@ export function ChatPage() {
 
 	// ─── Skills + slash picker ────────────────────────────────────────────────
 
-	const commandProviderId =
-		sessionSelection.providerId ??
-		(restoredSession ? initialSessionProviderId : null) ??
-		resolveActiveProviderId(
-			agentList,
-			agentSkillContext,
-			config.vault_provider,
-		);
 	useEffect(() => {
 		setActiveSkills((selected) =>
-			filterProviderCompatibleCommands(selected, commandProviderId),
+			filterProviderCompatibleCommands(selected, activeProviderId),
 		);
-	}, [commandProviderId]);
+	}, [activeProviderId]);
 	const savedWorkflowCommands = useMemo<ProviderCommand[]>(
 		() =>
-			runtime.workflowCatalogProviderId === commandProviderId &&
+			runtime.workflowCatalogProviderId === activeProviderId &&
 			(runtime.workflowCatalogAgentCwd ?? "") === (agentSkillContext ?? "")
 				? runtime.workflowCatalog.workflows
 						.filter((workflow) => workflow.availableAsCommand)
@@ -2282,7 +2388,7 @@ export function ChatPage() {
 						}))
 				: [],
 		[
-			commandProviderId,
+			activeProviderId,
 			agentSkillContext,
 			runtime.workflowCatalog,
 			runtime.workflowCatalogAgentCwd,
@@ -2292,12 +2398,12 @@ export function ChatPage() {
 	const providerCommands = useMemo<ProviderCommand[]>(
 		() => [
 			...savedWorkflowCommands,
-			...(sdkSlashCommandProviderId === commandProviderId
+			...(sdkSlashCommandProviderId === activeProviderId
 				? sdkSlashCommands
 				: []),
 		],
 		[
-			commandProviderId,
+			activeProviderId,
 			savedWorkflowCommands,
 			sdkSlashCommandProviderId,
 			sdkSlashCommands,
@@ -2306,7 +2412,7 @@ export function ChatPage() {
 	const commands = useCommands(
 		vaultSkills,
 		providerCommands,
-		commandProviderId,
+		activeProviderId,
 		"raven",
 	);
 	useEffect(() => {
@@ -2329,14 +2435,14 @@ export function ChatPage() {
 		input,
 		commands,
 		activeSkills,
-		commandProviderId,
+		activeProviderId,
 		config.ui.show_provider_entries,
 	);
 
 	function handleSkillSelect(command: CommandDescriptor) {
 		focusSkillOnNextRender();
 		setActiveSkills((selected) =>
-			addCommandSelection(selected, command, commandProviderId),
+			addCommandSelection(selected, command, activeProviderId),
 		);
 		setInput(picker.promptWithoutQuery);
 	}
@@ -2356,6 +2462,7 @@ export function ChatPage() {
 	} = useRavenActions({
 		config,
 		initialVoiceInfo,
+		activeProviderId,
 		input,
 		setInput,
 		clearDraft,
@@ -2365,8 +2472,9 @@ export function ChatPage() {
 		planMode,
 		setPlanMode,
 		planHtml,
-		sessionSelection,
+		sessionSelection: effectiveSessionSelection,
 		setSessionSelection,
+		resetSessionSelection,
 		session,
 		runtime,
 		upload,
@@ -2385,9 +2493,7 @@ export function ChatPage() {
 		activePermissionMode,
 		actualModelShort,
 		modelMismatch,
-		activeProviderId,
 		activeProviderLabel,
-		configuredProviderId,
 		configuredProviderLabel,
 		configuredModelShort,
 		configuredSelection,
@@ -2396,8 +2502,8 @@ export function ChatPage() {
 		effortOptions,
 	} = deriveRavenComposerState({
 		config,
-		agentList,
 		providers,
+		providerIdentity,
 		agentSkillContext,
 		input,
 		activeSkills,
@@ -2410,9 +2516,7 @@ export function ChatPage() {
 		isRunning,
 		model,
 		actualModel,
-		selection: sessionSelection,
-		restoredSession,
-		sessionProviderId: initialSessionProviderId,
+		selection: effectiveSessionSelection,
 		planMode,
 	});
 	const delegatedNativeSteeringAvailable =
@@ -2478,6 +2582,7 @@ export function ChatPage() {
 		activeEffort,
 		activePermissionMode,
 		setSessionSelection,
+		selectSessionProvider,
 		actualModelShort,
 		modelMismatch,
 		activeProviderId,
@@ -3433,6 +3538,7 @@ function ChatModelBadge({
 	activeEffort,
 	activePermissionMode,
 	setSessionSelection,
+	selectSessionProvider,
 	actualModelShort,
 	modelMismatch,
 	activeProviderId,
@@ -3574,7 +3680,7 @@ function ChatModelBadge({
 										provider,
 										configuredSelection,
 									);
-									setSessionSelection(next);
+									selectSessionProvider(next);
 									wsStore.seedActualModel(null);
 									send({
 										type: "set_provider",
@@ -4435,6 +4541,7 @@ interface ChatComposerProps {
 	activeEffort: string | null;
 	activePermissionMode: string | null;
 	setSessionSelection: Dispatch<SetStateAction<RavenSessionSelection>>;
+	selectSessionProvider: (selection: RavenSessionSelection) => void;
 	actualModelShort: string | null;
 	modelMismatch: boolean;
 	activeProviderId: string;

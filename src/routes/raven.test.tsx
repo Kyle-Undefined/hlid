@@ -1618,6 +1618,462 @@ describe("Raven composed submission behavior", () => {
 		expect(screen.getByText("current")).toBeTruthy();
 	});
 
+	it("keeps restored and switched provider metadata, commands, and composer state aligned", async () => {
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				vault_provider: "codex",
+				codex: { model: "gpt-5.6-sol" },
+			},
+			existingSessionId: "saved-session",
+			isExplicitSession: true,
+			sessionModel: "claude-sonnet-4-6",
+			sessionProviderId: "claude",
+			providers: [
+				{
+					id: "claude",
+					label: "Claude",
+					available: true,
+					models: [{ value: "claude-sonnet-4-6", label: "Sonnet 4.6" }],
+				},
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [
+						{
+							value: "gpt-5.6-sol",
+							label: "GPT-5.6-Sol",
+							isDefault: true,
+						},
+					],
+					effortLevels: [{ value: "medium", label: "Medium", isDefault: true }],
+					permissionModes: [
+						{ value: "default", label: "Ask", isDefault: true },
+					],
+				},
+			],
+		};
+		render(<ChatPage />);
+
+		expect(
+			screen.getByRole("button", { name: /claude.*sonnet 4\.6/i }),
+		).toBeTruthy();
+		act(() => {
+			state.onMessage?.({
+				type: "mcp_status",
+				provider_id: "codex",
+				servers: [
+					{ name: "stale-a", status: "connected", scope: "global" },
+					{ name: "stale-b", status: "connected", scope: "global" },
+				],
+			});
+			state.onMessage?.({
+				type: "mcp_status",
+				provider_id: "claude",
+				servers: [
+					{ name: "claude-tools", status: "connected", scope: "global" },
+				],
+			});
+			state.onMessage?.({
+				type: "slash_commands",
+				provider_id: "claude",
+				commands: [
+					{
+						name: "claude-only",
+						description: "Claude command",
+						argumentHint: "",
+					},
+				],
+			});
+		});
+		expect(
+			screen.getByRole("button", { name: "MCP server status" }).textContent,
+		).toContain("1/1");
+
+		const composer = screen.getByRole("combobox");
+		fireEvent.change(composer, { target: { value: "/claude" } });
+		fireEvent.click(
+			screen.getByRole("button", { name: "Select /claude-only" }),
+		);
+		expect(
+			screen.getByRole("button", {
+				name: "Clear selected command /claude-only",
+			}),
+		).toBeTruthy();
+
+		fireEvent.click(
+			screen.getByRole("button", { name: /claude.*sonnet 4\.6/i }),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Codex" }));
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: /codex.*gpt-5\.6-sol/i }),
+			).toBeTruthy(),
+		);
+		expect(
+			screen.queryByRole("button", {
+				name: "Clear selected command /claude-only",
+			}),
+		).toBeNull();
+		expect(
+			screen.getByRole("button", { name: "MCP server status" }).textContent,
+		).toContain("0");
+
+		act(() => {
+			state.onMessage?.({
+				type: "mcp_status",
+				provider_id: "claude",
+				servers: [
+					{ name: "stale-a", status: "connected", scope: "global" },
+					{ name: "stale-b", status: "connected", scope: "global" },
+				],
+			});
+			state.onMessage?.({
+				type: "slash_commands",
+				provider_id: "claude",
+				commands: [
+					{
+						name: "stale-claude",
+						description: "Stale command",
+						argumentHint: "",
+					},
+				],
+			});
+			state.onMessage?.({
+				type: "workflow_catalog",
+				provider_id: "claude",
+				workflows: [
+					{
+						id: "stale-workflow",
+						name: "stale-workflow",
+						description: "Stale workflow",
+						argumentHint: "",
+						scriptPath: "/vault/.claude/workflows/stale.js",
+						scope: "project",
+						scopeLabel: "Project",
+						availableAsCommand: true,
+					},
+				],
+				locations: [],
+			});
+		});
+		fireEvent.change(composer, { target: { value: "/stale" } });
+		expect(screen.queryByRole("button", { name: /Select \/stale/ })).toBeNull();
+		expect(
+			screen.getByRole("button", { name: "MCP server status" }).textContent,
+		).toContain("0");
+
+		act(() => {
+			state.onMessage?.({
+				type: "mcp_status",
+				provider_id: "codex",
+				servers: [
+					{ name: "codex-tools", status: "connected", scope: "global" },
+				],
+			});
+			state.onMessage?.({
+				type: "slash_commands",
+				provider_id: "codex",
+				commands: [
+					{
+						name: "codex-only",
+						description: "Codex command",
+						argumentHint: "",
+					},
+				],
+			});
+			state.onMessage?.({
+				type: "workflow_catalog",
+				provider_id: "codex",
+				workflows: [
+					{
+						id: "codex-workflow",
+						name: "codex-workflow",
+						description: "Codex workflow",
+						argumentHint: "",
+						scriptPath: "/vault/.codex/workflows/codex.js",
+						scope: "project",
+						scopeLabel: "Project",
+						availableAsCommand: true,
+					},
+				],
+				locations: [],
+			});
+		});
+		expect(
+			screen.getByRole("button", { name: "MCP server status" }).textContent,
+		).toContain("1/1");
+		fireEvent.change(composer, { target: { value: "/codex-only" } });
+		expect(
+			screen.getByRole("button", { name: "Select /codex-only" }),
+		).toBeTruthy();
+		fireEvent.change(composer, { target: { value: "/codex-workflow" } });
+		expect(
+			screen.getByRole("button", { name: "Select /codex-workflow" }),
+		).toBeTruthy();
+
+		const staleCodexHandler = state.onMessage;
+		if (!screen.queryByRole("button", { name: "Claude" })) {
+			fireEvent.click(
+				screen.getByRole("button", { name: /codex.*gpt-5\.6-sol/i }),
+			);
+		}
+		fireEvent.click(screen.getByRole("button", { name: "Claude" }));
+		expect(
+			screen.getByRole("button", { name: /claude.*sonnet 4\.6/i }),
+		).toBeTruthy();
+
+		act(() => {
+			staleCodexHandler?.({
+				type: "mcp_status",
+				provider_id: "codex",
+				servers: [
+					{ name: "late-a", status: "connected", scope: "global" },
+					{ name: "late-b", status: "connected", scope: "global" },
+				],
+			});
+			staleCodexHandler?.({
+				type: "slash_commands",
+				provider_id: "codex",
+				commands: [
+					{
+						name: "late-codex",
+						description: "Late Codex command",
+						argumentHint: "",
+					},
+				],
+			});
+			staleCodexHandler?.({
+				type: "workflow_catalog",
+				provider_id: "codex",
+				workflows: [
+					{
+						id: "late-codex-workflow",
+						name: "late-codex-workflow",
+						description: "Late Codex workflow",
+						argumentHint: "",
+						scriptPath: "/vault/.codex/workflows/late.js",
+						scope: "project",
+						scopeLabel: "Project",
+						availableAsCommand: true,
+					},
+				],
+				locations: [],
+			});
+		});
+		fireEvent.change(composer, { target: { value: "/late" } });
+		expect(screen.queryByRole("button", { name: /Select \/late/ })).toBeNull();
+		expect(
+			screen.getByRole("button", { name: "MCP server status" }).textContent,
+		).toContain("0");
+
+		act(() => {
+			state.onMessage?.({
+				type: "mcp_status",
+				provider_id: "claude",
+				servers: [
+					{ name: "claude-tools", status: "connected", scope: "global" },
+				],
+			});
+			state.onMessage?.({
+				type: "slash_commands",
+				provider_id: "claude",
+				commands: [
+					{
+						name: "current-claude",
+						description: "Current Claude command",
+						argumentHint: "",
+					},
+				],
+			});
+		});
+		expect(
+			screen.getByRole("button", { name: "MCP server status" }).textContent,
+		).toContain("1/1");
+		fireEvent.change(composer, { target: { value: "/current" } });
+		expect(
+			screen.getByRole("button", { name: "Select /current-claude" }),
+		).toBeTruthy();
+	});
+
+	it("gives a live provider tuple ownership while preserving optimistic user switches", async () => {
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				vault_provider: "claude",
+				claude: {
+					interactive_mode: false,
+					model: "claude-sonnet-4-6",
+					effort: "high",
+					permission_mode: "default",
+				},
+			},
+			existingSessionId: "saved-session",
+			isExplicitSession: true,
+			sessionModel: "claude-sonnet-4-6",
+			sessionProviderId: "claude",
+			sessionEffort: "high",
+			sessionPermissionMode: "default",
+			providers: [
+				{
+					id: "claude",
+					label: "Claude",
+					available: true,
+					models: [
+						{
+							value: "claude-sonnet-4-6",
+							label: "Sonnet 4.6",
+							isDefault: true,
+						},
+					],
+					effortLevels: [{ value: "high", label: "High", isDefault: true }],
+					permissionModes: [
+						{ value: "default", label: "Ask", isDefault: true },
+					],
+				},
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [
+						{
+							value: "gpt-5.6-sol",
+							label: "GPT-5.6-Sol",
+							isDefault: true,
+						},
+					],
+					effortLevels: [{ value: "xhigh", label: "X-High", isDefault: true }],
+					permissionModes: [
+						{
+							value: "bypassPermissions",
+							label: "Auto-approve all",
+							isDefault: true,
+						},
+					],
+				},
+			],
+		};
+		state.sessions = [
+			{
+				session_id: "live-session",
+				db_session_id: "saved-session",
+				mode: "sdk",
+				state: "idle",
+				provider_id: "codex",
+				model: "gpt-5.6-sol",
+				effort: "xhigh",
+				permission_mode: "bypassPermissions",
+			},
+		];
+		const view = render(<ChatPage />);
+
+		expect(
+			screen.getByRole("button", {
+				name: /codex.*gpt-5\.6-sol.*xhigh.*auto/i,
+			}),
+		).toBeTruthy();
+		state.send.mockClear();
+		fireEvent.change(screen.getByRole("combobox"), {
+			target: { value: "use the live owner" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Send" }));
+		expect(state.send).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "chat",
+				provider: "codex",
+				model: "gpt-5.6-sol",
+				effort: "xhigh",
+				permission_mode: "bypassPermissions",
+			}),
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: /codex.*gpt-5\.6-sol.*xhigh.*auto/i,
+			}),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Claude" }));
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*high.*ask/i,
+			}),
+		).toBeTruthy();
+
+		state.send.mockClear();
+		fireEvent.change(screen.getByRole("combobox"), {
+			target: { value: "keep the optimistic switch" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Send" }));
+		expect(state.send).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "chat",
+				provider: "claude",
+				model: "claude-sonnet-4-6",
+				effort: "high",
+				permission_mode: "default",
+			}),
+		);
+
+		state.sessions = [
+			{
+				session_id: "live-session",
+				db_session_id: "saved-session",
+				mode: "sdk",
+				state: "idle",
+				provider_id: "claude",
+				model: "claude-sonnet-4-6",
+				effort: "high",
+				permission_mode: "default",
+			},
+		];
+		view.rerender(<ChatPage />);
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", {
+					name: /claude.*sonnet 4\.6.*high.*ask/i,
+				}),
+			).toBeTruthy(),
+		);
+
+		state.sessions = [
+			{
+				session_id: "live-session",
+				db_session_id: "saved-session",
+				mode: "sdk",
+				state: "idle",
+				provider_id: "codex",
+				model: "gpt-5.6-sol",
+				effort: "xhigh",
+				permission_mode: "bypassPermissions",
+			},
+		];
+		view.rerender(<ChatPage />);
+		expect(
+			screen.getByRole("button", {
+				name: /codex.*gpt-5\.6-sol.*xhigh.*auto/i,
+			}),
+		).toBeTruthy();
+
+		state.send.mockClear();
+		fireEvent.change(screen.getByRole("combobox"), {
+			target: { value: "follow the remote switch" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Send" }));
+		expect(state.send).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "chat",
+				provider: "codex",
+				model: "gpt-5.6-sol",
+				effort: "xhigh",
+				permission_mode: "bypassPermissions",
+			}),
+		);
+	});
+
 	it("restores a live session's model, effort, and permission after refresh", () => {
 		state.model = "gpt-5.5";
 		state.effort = "xhigh";
