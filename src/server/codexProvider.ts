@@ -1851,10 +1851,11 @@ class CodexAgentSession implements AgentSession {
 
 	async usageWindows(): Promise<ProviderWindowReading[]> {
 		await this.ensureReady();
-		const response = asObj(
-			await this.request("account/rateLimits/read", undefined),
-		);
-		return mapCodexRateLimitWindows(response.rateLimits);
+		if (!this.conn) throw new Error("Codex app-server is not running");
+		const observation = await this.conn.readAccountRateLimits();
+		return observation.status === "current"
+			? mapCodexRateLimitWindows(observation.snapshot)
+			: [];
 	}
 
 	[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
@@ -1976,8 +1977,12 @@ class CodexAgentSession implements AgentSession {
 		// Seed usage windows immediately; rolling account/rateLimits/updated
 		// notifications keep them fresh during turns.
 		void conn
-			.request("account/rateLimits/read", undefined)
-			.then((res) => this.emitRateLimits(asObj(res).rateLimits))
+			.readAccountRateLimits()
+			.then((observation) => {
+				if (observation.status === "current") {
+					this.emitRateLimits(observation.snapshot);
+				}
+			})
 			.catch(() => {});
 	}
 
@@ -2022,9 +2027,9 @@ class CodexAgentSession implements AgentSession {
 	}
 
 	private detachAllThreads(): void {
-		if (this.conn) {
+		if (this.conn && this.threadHandler) {
 			for (const threadId of this.attachedThreadIds) {
-				this.conn.detachThread(threadId);
+				this.conn.detachThread(threadId, this.threadHandler);
 			}
 		}
 		this.attachedThreadIds.clear();
@@ -2788,7 +2793,9 @@ class CodexAgentSession implements AgentSession {
 					endedAtMs: Date.now(),
 				});
 			}
-			this.conn?.detachThread(threadId);
+			if (this.conn && this.threadHandler) {
+				this.conn.detachThread(threadId, this.threadHandler);
+			}
 			this.attachedThreadIds.delete(threadId);
 			this.subagentByThread.delete(threadId);
 			this.childLastUsage.delete(threadId);

@@ -60,6 +60,17 @@ function serverRequest(proc: FakeProc, id: number, threadId: string): void {
 	);
 }
 
+function serverNotification(
+	proc: FakeProc,
+	method: string,
+	params: unknown,
+): void {
+	proc.stdout.emit(
+		"data",
+		Buffer.from(`${JSON.stringify({ method, params })}\n`),
+	);
+}
+
 describe("CodexAppServer idle lifecycle", () => {
 	const live = new Set<CodexAppServer>();
 
@@ -128,7 +139,7 @@ describe("CodexAppServer idle lifecycle", () => {
 			onExit: vi.fn(),
 		};
 		server.attachThread("thread-1", handler);
-		server.detachThread("thread-1");
+		server.detachThread("thread-1", handler);
 
 		await vi.advanceTimersByTimeAsync(5);
 		expect(server.alive).toBe(true);
@@ -422,17 +433,211 @@ describe("CodexAppServer idle lifecycle", () => {
 
 		await vi.advanceTimersByTimeAsync(100);
 		expect(server.alive).toBe(true);
-		server.detachThread("thread-1");
+		server.detachThread("thread-1", handler);
 		await vi.advanceTimersByTimeAsync(25);
 		server.attachThread("thread-1", handler);
 		await vi.advanceTimersByTimeAsync(100);
 		expect(server.alive).toBe(true);
 		expect(proc.kill).not.toHaveBeenCalled();
 
-		server.detachThread("thread-1");
+		server.detachThread("thread-1", handler);
 		await vi.advanceTimersByTimeAsync(50);
 		expect(server.alive).toBe(false);
 		expect(proc.kill).toHaveBeenCalledOnce();
+	});
+
+	it("does not let a stale owner detach a replacement handler", async () => {
+		const { server, proc } = await create();
+		const staleOwner: ThreadHandler = {
+			onNotification: vi.fn(),
+			onRequest: vi.fn(async () => ({})),
+			onExit: vi.fn(),
+		};
+		const replacementOwner: ThreadHandler = {
+			onNotification: vi.fn(),
+			onRequest: vi.fn(async () => ({})),
+			onExit: vi.fn(),
+		};
+		server.attachThread("thread-1", staleOwner);
+		server.attachThread("thread-1", replacementOwner);
+
+		server.detachThread("thread-1", staleOwner);
+		expect(server.threadCount).toBe(1);
+		serverNotification(proc, "thread/status/updated", {
+			threadId: "thread-1",
+		});
+		expect(staleOwner.onNotification).not.toHaveBeenCalled();
+		expect(replacementOwner.onNotification).toHaveBeenCalledOnce();
+		await vi.advanceTimersByTimeAsync(50);
+		expect(server.alive).toBe(true);
+
+		server.detachThread("thread-1", replacementOwner);
+		await vi.advanceTimersByTimeAsync(50);
+		expect(server.alive).toBe(false);
+	});
+
+	it("fans out threadless notifications once per owning handler", async () => {
+		const { server, proc } = await create();
+		const primaryOwner: ThreadHandler = {
+			onNotification: vi.fn(),
+			onRequest: vi.fn(async () => ({})),
+			onExit: vi.fn(),
+		};
+		const secondaryOwner: ThreadHandler = {
+			onNotification: vi.fn(),
+			onRequest: vi.fn(async () => ({})),
+			onExit: vi.fn(),
+		};
+		server.attachThread("parent-thread", primaryOwner);
+		for (let index = 0; index < 25; index++) {
+			server.attachThread(`child-thread-${index}`, primaryOwner);
+		}
+		server.attachThread("other-owner-thread", secondaryOwner);
+
+		const params = { rateLimits: { primary: { usedPercent: 34 } } };
+		serverNotification(proc, "account/rateLimits/updated", params);
+
+		expect(primaryOwner.onNotification).toHaveBeenCalledOnce();
+		expect(primaryOwner.onNotification).toHaveBeenCalledWith(
+			"account/rateLimits/updated",
+			params,
+		);
+		expect(secondaryOwner.onNotification).toHaveBeenCalledOnce();
+		expect(secondaryOwner.onNotification).toHaveBeenCalledWith(
+			"account/rateLimits/updated",
+			params,
+		);
+	});
+
+	it("notifies each owning handler once when the app-server exits", async () => {
+		const { server } = await create();
+		const primaryOwner: ThreadHandler = {
+			onNotification: vi.fn(),
+			onRequest: vi.fn(async () => ({})),
+			onExit: vi.fn(),
+		};
+		const secondaryOwner: ThreadHandler = {
+			onNotification: vi.fn(),
+			onRequest: vi.fn(async () => ({})),
+			onExit: vi.fn(),
+		};
+		server.attachThread("parent-thread", primaryOwner);
+		for (let index = 0; index < 25; index++) {
+			server.attachThread(`child-thread-${index}`, primaryOwner);
+		}
+		server.attachThread("other-owner-thread", secondaryOwner);
+
+		const error = new Error("transport closed");
+		server.kill(error);
+
+		expect(primaryOwner.onExit).toHaveBeenCalledOnce();
+		expect(primaryOwner.onExit).toHaveBeenCalledWith(error);
+		expect(secondaryOwner.onExit).toHaveBeenCalledOnce();
+		expect(secondaryOwner.onExit).toHaveBeenCalledWith(error);
+	});
+
+	it("coalesces concurrent account rate-limit reads", async () => {
+		const { server, proc, writes } = await create();
+
+		const first = server.readAccountRateLimits();
+		const second = server.readAccountRateLimits();
+		expect(second).toBe(first);
+		const requests = writes
+			.map((line) => JSON.parse(line) as { id?: number; method?: string })
+			.filter((message) => message.method === "account/rateLimits/read");
+		expect(requests).toHaveLength(1);
+
+		respond(proc, requests[0]?.id ?? 0, {
+			rateLimits: { primary: { usedPercent: 27 } },
+		});
+		await expect(first).resolves.toEqual({
+			status: "current",
+			snapshot: { primary: { usedPercent: 27 } },
+		});
+		await expect(second).resolves.toEqual({
+			status: "current",
+			snapshot: { primary: { usedPercent: 27 } },
+		});
+	});
+
+	it("rejects an older read after a native rate-limit update", async () => {
+		const { server, proc, writes } = await create();
+
+		const read = server.readAccountRateLimits();
+		const request = writes
+			.map((line) => JSON.parse(line) as { id?: number; method?: string })
+			.filter((message) => message.method === "account/rateLimits/read")
+			.at(-1);
+		serverNotification(proc, "account/rateLimits/updated", {
+			rateLimits: { primary: { usedPercent: 34 } },
+		});
+		respond(proc, request?.id ?? 0, {
+			rateLimits: { primary: { usedPercent: 27 } },
+		});
+
+		await expect(read).resolves.toEqual({ status: "superseded" });
+	});
+
+	it("accepts a lower read started after a native rate-limit update", async () => {
+		const { server, proc, writes } = await create();
+		serverNotification(proc, "account/rateLimits/updated", {
+			rateLimits: { primary: { usedPercent: 34 } },
+		});
+
+		const read = server.readAccountRateLimits();
+		const request = writes
+			.map((line) => JSON.parse(line) as { id?: number; method?: string })
+			.filter((message) => message.method === "account/rateLimits/read")
+			.at(-1);
+		respond(proc, request?.id ?? 0, {
+			rateLimits: { primary: { usedPercent: 27 } },
+		});
+
+		await expect(read).resolves.toEqual({
+			status: "current",
+			snapshot: { primary: { usedPercent: 27 } },
+		});
+	});
+
+	it("does not coalesce a post-update read onto an older request", async () => {
+		const { server, proc, writes } = await create();
+		const older = server.readAccountRateLimits();
+		const olderRequest = writes
+			.map((line) => JSON.parse(line) as { id?: number; method?: string })
+			.filter((message) => message.method === "account/rateLimits/read")
+			.at(-1);
+
+		serverNotification(proc, "account/rateLimits/updated", {
+			rateLimits: { primary: { usedPercent: 34 } },
+		});
+		const newer = server.readAccountRateLimits();
+		const requests = writes
+			.map((line) => JSON.parse(line) as { id?: number; method?: string })
+			.filter((message) => message.method === "account/rateLimits/read");
+		expect(requests).toHaveLength(2);
+		const newerRequest = requests.at(-1);
+
+		respond(proc, olderRequest?.id ?? 0, {
+			rateLimits: { primary: { usedPercent: 27 } },
+		});
+		await expect(older).resolves.toEqual({ status: "superseded" });
+		const coalesced = server.readAccountRateLimits();
+		expect(coalesced).toBe(newer);
+		expect(
+			writes
+				.map((line) => JSON.parse(line) as { method?: string })
+				.filter((message) => message.method === "account/rateLimits/read"),
+		).toHaveLength(2);
+
+		respond(proc, newerRequest?.id ?? 0, {
+			rateLimits: { primary: { usedPercent: 27 } },
+		});
+		const current = {
+			status: "current",
+			snapshot: { primary: { usedPercent: 27 } },
+		};
+		await expect(newer).resolves.toEqual(current);
+		await expect(coalesced).resolves.toEqual(current);
 	});
 
 	it("waits for a server-initiated request to settle after detach", async () => {
@@ -451,7 +656,7 @@ describe("CodexAppServer idle lifecycle", () => {
 		await Promise.resolve();
 		expect(handler.onRequest).toHaveBeenCalledOnce();
 
-		server.detachThread("thread-1");
+		server.detachThread("thread-1", handler);
 		await vi.advanceTimersByTimeAsync(100);
 		expect(server.alive).toBe(true);
 

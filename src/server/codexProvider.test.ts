@@ -1219,6 +1219,14 @@ function emitSessionNotification(
 	);
 }
 
+function emitSessionResponse(
+	proc: FakeProc,
+	id: number,
+	result: Record<string, unknown>,
+): void {
+	proc.stdout.emit("data", Buffer.from(`${JSON.stringify({ id, result })}\n`));
+}
+
 async function nextSessionEvent(
 	iterator: AsyncIterator<AgentEvent>,
 ): Promise<AgentEvent> {
@@ -2176,6 +2184,65 @@ describe("CodexAgentSession — usage windows", () => {
 			},
 		]);
 		session.cancel();
+	});
+
+	it("does not surface a read superseded by a native rate-limit update", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		const reading = session.usageWindows?.();
+		if (!reading) throw new Error("Codex usage windows unavailable");
+		await vi.waitFor(() => {
+			expect(
+				writes
+					.map((line) => JSON.parse(line) as { id?: number; method?: string })
+					.filter((message) => message.method === "account/rateLimits/read"),
+			).toHaveLength(1);
+		});
+		const request = writes
+			.map((line) => JSON.parse(line) as { id?: number; method?: string })
+			.filter((message) => message.method === "account/rateLimits/read")
+			.at(-1);
+
+		emitSessionNotification(proc, "account/rateLimits/updated", {
+			rateLimits: {
+				primary: {
+					usedPercent: 34,
+					windowDurationMins: 10_080,
+					resetsAt: 1_800_600_000,
+				},
+			},
+		});
+		emitSessionResponse(proc, request?.id ?? 0, {
+			rateLimits: {
+				primary: {
+					usedPercent: 27,
+					windowDurationMins: 10_080,
+					resetsAt: 1_800_600_000,
+				},
+			},
+		});
+
+		await expect(reading).resolves.toEqual([]);
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "session_start",
+			sessionId: "thread-1",
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "rate_limit",
+			status: "ok",
+			rateLimitType: "weekly",
+			utilization: 0.34,
+			resetsAt: 1_800_600_000,
+		});
+		session.cancel();
+		await expect(events.next()).resolves.toEqual({
+			value: undefined,
+			done: true,
+		});
 	});
 });
 

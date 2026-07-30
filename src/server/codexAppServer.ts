@@ -83,6 +83,10 @@ type PendingRequest = {
 	timer: ReturnType<typeof setTimeout>;
 };
 
+export type CodexRateLimitsRead =
+	| { status: "current"; snapshot: unknown }
+	| { status: "superseded" };
+
 /** Per-thread callbacks a session registers to receive its routed traffic. */
 export type ThreadHandler = {
 	onNotification(method: string, params: unknown): void;
@@ -214,6 +218,11 @@ export class CodexAppServer {
 	private dead = false;
 	private idleTimer: ReturnType<typeof setTimeout> | undefined;
 	private activeServerRequests = 0;
+	private accountRateLimitsRevision = 0;
+	private accountRateLimitsRead: {
+		revision: number;
+		promise: Promise<CodexRateLimitsRead>;
+	} | null = null;
 	private readonly idleTimeoutMs: number;
 	private readonly metadataIdleTimeoutMs: number;
 	private useLongIdleGrace = false;
@@ -302,6 +311,35 @@ export class CodexAppServer {
 		return this.sendRequest(method, params, timeoutMs, false);
 	}
 
+	/**
+	 * Read the account-wide rate-limit snapshot through one shared ownership
+	 * boundary. Concurrent sessions reuse the same RPC, and a native update that
+	 * arrives while the read is in flight supersedes that older response.
+	 */
+	readAccountRateLimits(): Promise<CodexRateLimitsRead> {
+		const startingRevision = this.accountRateLimitsRevision;
+		if (this.accountRateLimitsRead?.revision === startingRevision) {
+			return this.accountRateLimitsRead.promise;
+		}
+		const pending = this.request("account/rateLimits/read", undefined).then(
+			(response): CodexRateLimitsRead =>
+				this.accountRateLimitsRevision === startingRevision
+					? { status: "current", snapshot: asObj(response).rateLimits }
+					: { status: "superseded" },
+		);
+		this.accountRateLimitsRead = {
+			revision: startingRevision,
+			promise: pending,
+		};
+		const clearPending = () => {
+			if (this.accountRateLimitsRead?.promise === pending) {
+				this.accountRateLimitsRead = null;
+			}
+		};
+		void pending.then(clearPending, clearPending);
+		return pending;
+	}
+
 	private sendRequest(
 		method: string,
 		params: unknown,
@@ -346,7 +384,8 @@ export class CodexAppServer {
 		this.threads.set(threadId, handler);
 	}
 
-	detachThread(threadId: string): void {
+	detachThread(threadId: string, expectedHandler: ThreadHandler): void {
+		if (this.threads.get(threadId) !== expectedHandler) return;
 		this.threads.delete(threadId);
 		this.scheduleIdleReap();
 	}
@@ -377,7 +416,7 @@ export class CodexAppServer {
 			pending.reject(err);
 		}
 		this.pending.clear();
-		const handlers = [...this.threads.values()];
+		const handlers = new Set(this.threads.values());
 		this.threads.clear();
 		try {
 			for (const handler of handlers) handler.onExit(err);
@@ -561,13 +600,16 @@ export class CodexAppServer {
 			return;
 		}
 		// Notification — route by threadId; thread-less notifications (e.g.
-		// account/mcp status updates) fan out to every attached session.
+		// account/mcp status updates) fan out once per attached session owner.
 		if (msg.method) {
+			if (msg.method === "account/rateLimits/updated") {
+				this.accountRateLimitsRevision++;
+			}
 			const threadId = this.threadIdOf(msg.params);
 			if (threadId) {
 				this.threads.get(threadId)?.onNotification(msg.method, msg.params);
 			} else {
-				for (const handler of this.threads.values()) {
+				for (const handler of new Set(this.threads.values())) {
 					handler.onNotification(msg.method, msg.params);
 				}
 			}
