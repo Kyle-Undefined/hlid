@@ -15,10 +15,10 @@ import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { ProjectPreviewFeedbackModal } from "#/components/chat/ProjectPreviewFeedbackModal";
 import { ClickableImage } from "#/components/ImageViewerModal";
 import { useProjectPreviewActions } from "#/hooks/useProjectPreviewActions";
+import { useProjectPreviewAgentFrame } from "#/hooks/useProjectPreviewAgentFrame";
 import { enqueueChat } from "#/hooks/wsStore";
 import {
 	captureProjectPreviewFeedbackFn,
-	getProjectPreviewAgentFrameFn,
 	type ProjectPreviewAgentFrame,
 	type ProjectPreviewSnapshot,
 	saveProjectPreviewFeedbackFn,
@@ -132,10 +132,13 @@ export function ProjectPreviewPane({
 		path: preview.path,
 	}));
 	const [surface, setSurface] = useState<"user" | "agent" | "logs">("user");
-	const [agentFrame, setAgentFrame] = useState<ProjectPreviewAgentFrame | null>(
-		null,
-	);
-	const [agentFrameError, setAgentFrameError] = useState<string | null>(null);
+	const isReady = preview.state === "ready";
+	const { frame: agentFrame, error: agentFrameError } =
+		useProjectPreviewAgentFrame({
+			enabled: isReady && surface === "agent",
+			previewId: preview.id,
+			sessionId: preview.session_id,
+		});
 	const [viewport, setViewport] = useState<
 		"fit" | "desktop" | "tablet" | "mobile"
 	>("fit");
@@ -153,45 +156,10 @@ export function ProjectPreviewPane({
 	const [feedbackError, setFeedbackError] = useState<string | null>(null);
 	const iframeRef = useRef<HTMLIFrameElement>(null);
 	const previewViewStateRef = useRef<PreviewViewState | null>(null);
-	const isReady = preview.state === "ready";
-	const agentFrameIdRef = useRef<string | null>(null);
-	agentFrameIdRef.current = agentFrame?.frame_id ?? null;
 	const agentFrameRatio = agentFrame ? framePixelRatio(agentFrame) : null;
 	const agentFrameCaptureSize = agentFrame
 		? frameCaptureSize(agentFrame)
 		: null;
-	useEffect(() => {
-		if (!isReady || surface !== "agent") return;
-		let cancelled = false;
-		const load = () => {
-			void getProjectPreviewAgentFrameFn({
-				data: {
-					sessionId: preview.session_id,
-					previewId: preview.id,
-					...(agentFrameIdRef.current
-						? { afterFrameId: agentFrameIdRef.current }
-						: {}),
-				},
-			})
-				.then((frame) => {
-					if (cancelled) return;
-					if (frame) setAgentFrame(frame);
-					setAgentFrameError(null);
-				})
-				.catch((cause) => {
-					if (cancelled) return;
-					setAgentFrameError(
-						cause instanceof Error ? cause.message : String(cause),
-					);
-				});
-		};
-		load();
-		const timer = window.setInterval(load, 1_500);
-		return () => {
-			cancelled = true;
-			window.clearInterval(timer);
-		};
-	}, [isReady, preview.id, preview.session_id, surface]);
 	const previewUrl = (() => {
 		if (typeof window === "undefined") return preview.url;
 		try {

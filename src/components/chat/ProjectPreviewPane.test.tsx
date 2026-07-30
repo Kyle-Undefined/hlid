@@ -204,6 +204,66 @@ describe("ProjectPreviewPane", () => {
 		expect(liveFrame.parentElement?.className).not.toContain("hidden");
 	});
 
+	it("clears an old agent frame when a replacement preview becomes active", async () => {
+		const current = preview();
+		const oldFrame: ProjectPreviewAgentFrame = {
+			preview_id: current.id,
+			session_id: current.session_id,
+			path: "/old",
+			viewport: "desktop",
+			width: 1440,
+			height: 1000,
+			full_page: false,
+			captured_at: 10,
+			mime: "image/png",
+			size_bytes: 3,
+			image_base64: "AQID",
+			frame_id: "e16b1643-591f-4d67-8c22-9df105659385",
+			title: "Web app",
+			elements: [],
+			console_messages: [],
+			failed_requests: [],
+		};
+		const replacementFrame = new Promise<ProjectPreviewAgentFrame | null>(
+			() => {},
+		);
+		vi.mocked(getProjectPreviewAgentFrameFn)
+			.mockResolvedValueOnce(oldFrame)
+			.mockReturnValue(replacementFrame);
+		const { rerender } = render(<ProjectPreviewPane preview={current} />);
+
+		fireEvent.click(screen.getByLabelText("Show agent view"));
+		expect(
+			await screen.findByRole("button", {
+				name: "View Agent browser at /old",
+			}),
+		).not.toBeNull();
+
+		const replacementId = "223e4567-e89b-42d3-a456-426614174001";
+		rerender(
+			<ProjectPreviewPane
+				preview={{
+					...current,
+					id: replacementId,
+					relay_url: `/api/project-previews/${replacementId}/relay/`,
+				}}
+			/>,
+		);
+
+		expect(
+			screen.queryByRole("button", {
+				name: "View Agent browser at /old",
+			}),
+		).toBeNull();
+		expect(screen.getByText("No agent frame yet.")).not.toBeNull();
+		expect(getProjectPreviewAgentFrameFn).toHaveBeenLastCalledWith({
+			data: {
+				sessionId: current.session_id,
+				previewId: replacementId,
+			},
+		});
+	});
+
 	it("renders a high-density full-page frame at its capture width and offers the raw PNG", async () => {
 		const frame: ProjectPreviewAgentFrame = {
 			preview_id: preview().id,
