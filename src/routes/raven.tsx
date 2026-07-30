@@ -3837,7 +3837,7 @@ function ChatInputNotices({
 						(voice.livePhase === "starting" ? "connecting…" : "listening…")}
 				</output>
 			)}
-			<div className="flex flex-wrap items-center gap-x-1 gap-y-1.5 px-4 py-1.5 border-b border-border/40 md:gap-x-3">
+			<div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-1.5 border-b border-border/40">
 				{messages.length === 0 && agentList.length > 0 && (
 					<div className="flex min-w-0 w-full items-center gap-3 md:w-auto md:flex-1">
 						<AgentSelect
@@ -3855,7 +3855,6 @@ function ChatInputNotices({
 						servers={runtime.mcpServers}
 						align="mobile-left"
 						openSignal={runtime.mcpOpenSignal}
-						buttonClassName="min-h-11 px-2 md:min-h-0 md:px-0"
 						label={`MCP runtime · ${
 							agentList.find((agent) => agent.path === agentSkillContext)
 								?.name ??
@@ -3891,7 +3890,7 @@ function ChatInputNotices({
 								? "Enable plan mode — Codex plans at up to X-High effort"
 								: "Enable plan mode — the agent plans before acting"
 						}
-						className={`flex min-h-11 items-center gap-1.5 px-2 text-[9px] tracking-widest uppercase transition-colors shrink-0 md:min-h-0 md:px-0 ${
+						className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors shrink-0 ${
 							planMode
 								? "text-primary border-b border-primary/50"
 								: "text-muted-foreground/40 hover:text-muted-foreground/70"
@@ -3905,7 +3904,7 @@ function ChatInputNotices({
 							type="button"
 							onClick={() => setPlanHtml((v) => !v)}
 							title="Render the plan as a styled HTML page shown in a modal"
-							className={`flex min-h-11 items-center gap-1.5 px-2 text-[9px] tracking-widest uppercase transition-colors shrink-0 md:min-h-0 md:px-0 ${
+							className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors shrink-0 ${
 								planHtml
 									? "text-primary border-b border-primary/50"
 									: "text-muted-foreground/40 hover:text-muted-foreground/70"
@@ -3919,7 +3918,7 @@ function ChatInputNotices({
 						type="button"
 						onClick={onToggleTerminal}
 						title="Open a real terminal in this project — for running dev servers or recovering from things the agent can't fix"
-						className={`flex min-h-11 items-center gap-1.5 px-2 text-[9px] tracking-widest uppercase transition-colors shrink-0 md:min-h-0 md:px-0 ${
+						className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors shrink-0 ${
 							terminalOpen
 								? "text-primary border-b border-primary/50"
 								: "text-muted-foreground/40 hover:text-muted-foreground/70"
@@ -3958,7 +3957,7 @@ function ChatInputControls(props: ChatComposerProps) {
 					type="button"
 					onClick={() => fileInputRef.current?.click()}
 					disabled={wsStatus !== "connected"}
-					className="flex min-h-11 min-w-11 shrink-0 items-center justify-center px-2 py-2 text-muted-foreground/45 transition-colors hover:text-muted-foreground disabled:opacity-30 md:min-h-0 md:min-w-0 md:py-3"
+					className="px-2 py-2 md:py-3 text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0 disabled:opacity-30"
 					aria-label="Attach file"
 					title="Attach file"
 				>
@@ -3966,7 +3965,7 @@ function ChatInputControls(props: ChatComposerProps) {
 				</button>
 				<ObsidianActiveNoteButton
 					onAdd={props.vaultPicker.addVaultReference}
-					className="flex min-h-11 min-w-11 items-center justify-center px-2 py-2 md:min-h-0 md:min-w-0 md:py-3"
+					className="px-2 py-2 md:py-3"
 				/>
 				<ChatVoiceControls {...props} />
 				{sessionFork.canFork && (
@@ -3974,7 +3973,7 @@ function ChatInputControls(props: ChatComposerProps) {
 						type="button"
 						onClick={() => sessionFork.fork()}
 						disabled={sessionFork.forking}
-						className="flex min-h-11 min-w-11 shrink-0 items-center justify-center px-2 py-2 text-muted-foreground/45 transition-colors hover:text-muted-foreground disabled:opacity-40 md:min-h-0 md:min-w-0 md:py-3"
+						className="px-2 py-2 md:py-3 text-muted-foreground/45 hover:text-muted-foreground disabled:opacity-40 transition-colors shrink-0"
 						aria-label="Fork session"
 						title="Fork this session into a new one"
 					>
@@ -4021,7 +4020,7 @@ function ChatVoiceControls(props: ChatVoiceControlsProps) {
 					(!voice.ready && voice.phase !== "recording") ||
 					processing
 				}
-				className={`flex min-h-11 min-w-11 shrink-0 items-center justify-center px-2 py-2 transition-colors disabled:opacity-30 md:min-h-0 md:min-w-0 md:py-3 ${voice.phase === "recording" ? "text-destructive" : "text-muted-foreground/45 hover:text-muted-foreground"}`}
+				className={`px-2 py-2 md:py-3 transition-colors shrink-0 disabled:opacity-30 ${voice.phase === "recording" ? "text-destructive" : "text-muted-foreground/45 hover:text-muted-foreground"}`}
 				aria-label={
 					voice.phase === "recording" ? "Stop recording" : actionLabel
 				}
@@ -4037,7 +4036,7 @@ function ChatVoiceControls(props: ChatVoiceControlsProps) {
 				<button
 					type="button"
 					onClick={voice.cancel}
-					className="flex min-h-11 min-w-11 shrink-0 items-center justify-center px-2 py-2 text-muted-foreground/45 transition-colors hover:text-muted-foreground md:min-h-0 md:min-w-0 md:py-3"
+					className="px-2 py-2 md:py-3 text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0"
 					aria-label="Cancel recording"
 					title="Cancel recording"
 				>
@@ -4056,7 +4055,7 @@ function ChatVoiceControls(props: ChatVoiceControlsProps) {
 						isRunning ||
 						voice.liveUnavailable !== null
 					}
-					className={`flex min-h-11 min-w-11 shrink-0 items-center justify-center px-2 py-2 transition-colors disabled:opacity-30 md:min-h-0 md:min-w-0 md:py-3 ${
+					className={`px-2 py-2 md:py-3 transition-colors shrink-0 disabled:opacity-30 ${
 						liveActive
 							? "text-primary"
 							: "text-muted-foreground/45 hover:text-muted-foreground"

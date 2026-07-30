@@ -926,10 +926,8 @@ describe("Raven composed submission behavior", () => {
 		expect(attach.className).toContain("py-2");
 		expect(voice.className).toContain("py-2");
 		for (const control of [attach, activeNote, voice]) {
-			expect(control.className).toContain("min-h-11");
-			expect(control.className).toContain("min-w-11");
-			expect(control.className).toContain("md:min-h-0");
-			expect(control.className).toContain("md:min-w-0");
+			expect(control.className).not.toContain("min-h-11");
+			expect(control.className).not.toContain("min-w-11");
 		}
 		expect(attach.className).not.toContain("md:order");
 		expect(voice.className).not.toContain("md:order");
@@ -944,19 +942,21 @@ describe("Raven composed submission behavior", () => {
 		).toBeTruthy();
 	});
 
-	it("uses mobile-height touch targets for Raven composer actions", () => {
+	it("keeps secondary composer controls compact on mobile", () => {
 		render(<ChatPage />);
 
-		const controls = [
+		const secondaryControls = [
 			screen.getByRole("button", { name: "MCP server status" }),
 			screen.getByRole("button", { name: "plan" }),
 			screen.getByRole("button", { name: "terminal" }),
-			screen.getByRole("button", { name: "Send" }),
 		];
-		for (const control of controls) {
-			expect(control.className).toContain("min-h-11");
-			expect(control.className).toContain("md:min-h-0");
+		for (const control of secondaryControls) {
+			expect(control.className).not.toContain("min-h-11");
 		}
+
+		const send = screen.getByRole("button", { name: "Send" });
+		expect(send.className).toContain("min-h-11");
+		expect(send.className).toContain("md:min-h-0");
 	});
 
 	it("places Fork in the left control cluster next to voice", () => {
@@ -977,8 +977,8 @@ describe("Raven composed submission behavior", () => {
 			voice.compareDocumentPosition(fork) & Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
 		expect(fork.className).toContain("px-2");
-		expect(fork.className).toContain("min-h-11");
-		expect(fork.className).toContain("min-w-11");
+		expect(fork.className).not.toContain("min-h-11");
+		expect(fork.className).not.toContain("min-w-11");
 		expect(newChat.className).toContain("min-h-11");
 		expect(newChat.className).toContain("min-w-11");
 		expect(fork.className).not.toContain("w-full");
