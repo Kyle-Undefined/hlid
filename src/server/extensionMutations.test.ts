@@ -70,6 +70,7 @@ const installed: ProviderExtension = {
 	manifestPath: "/plugin.json",
 	manifestText: "{}",
 	errors: [],
+	nativeUpdate: { available: true },
 };
 const review: ExtensionReview = {
 	...available,
@@ -92,6 +93,7 @@ function inventory(input: {
 	available?: AvailableExtension[];
 	extensions?: ProviderExtension[];
 	marketplaces?: ProviderMarketplace[];
+	errors?: ExtensionInventory["errors"];
 }): ExtensionInventory {
 	return {
 		generatedAt: "2026-07-23T00:00:00.000Z",
@@ -99,7 +101,7 @@ function inventory(input: {
 		available: input.available ?? [],
 		extensions: input.extensions ?? [],
 		marketplaces: input.marketplaces ?? [],
-		errors: [],
+		errors: input.errors ?? [],
 	};
 }
 
@@ -167,6 +169,509 @@ describe("mutateProviderExtension", () => {
 				shell: false,
 				timeoutError: "Plugin installation timed out",
 			}),
+		);
+	});
+
+	it("matches refreshed installs only in the target provider, environment, and scope", async () => {
+		const wrongProvider = {
+			...installed,
+			id: "c".repeat(24),
+			providerId: "codex" as const,
+			providerLabel: "Codex",
+			version: "9.0.0",
+		};
+		const wrongEnvironment = {
+			...installed,
+			id: "d".repeat(24),
+			environmentLabel: "Other host",
+			version: "9.0.0",
+		};
+		const wrongScope = {
+			...installed,
+			id: "e".repeat(24),
+			scope: "project",
+			version: "9.0.0",
+		};
+		const otherIdentities = [wrongProvider, wrongEnvironment, wrongScope];
+		discover
+			.mockResolvedValueOnce(inventory({ available: [available] }))
+			.mockResolvedValueOnce(inventory({ extensions: otherIdentities }))
+			.mockResolvedValueOnce(
+				inventory({ extensions: [...otherIdentities, installed] }),
+			);
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "install",
+					id: available.id,
+					reviewToken: review.reviewToken,
+				},
+				{
+					homes: () => [home],
+					discover,
+					review: inspectReview,
+					run,
+					resolveClaude: () => "/usr/bin/claude",
+				},
+			),
+		).resolves.toMatchObject({ action: "install" });
+		expect(run).toHaveBeenCalledOnce();
+	});
+
+	it("verifies an install against the token-reviewed version", async () => {
+		const refreshed = { ...installed, version: "1.2.4" };
+		inspectReview.mockResolvedValueOnce({ ...review, version: "1.2.4" });
+		discover
+			.mockResolvedValueOnce(inventory({ available: [available] }))
+			.mockResolvedValueOnce(inventory({ available: [available] }))
+			.mockResolvedValueOnce(inventory({ extensions: [refreshed] }));
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "install",
+					id: available.id,
+					reviewToken: review.reviewToken,
+				},
+				{
+					homes: () => [home],
+					discover,
+					review: inspectReview,
+					run,
+					resolveClaude: () => "/usr/bin/claude",
+				},
+			),
+		).resolves.toMatchObject({ action: "install" });
+		expect(run).toHaveBeenCalledOnce();
+	});
+
+	it("rolls back a brand-new install when post-install verification fails", async () => {
+		const mismatched = { ...installed, version: "9.0.0" };
+		discover
+			.mockResolvedValueOnce(inventory({ available: [available] }))
+			.mockResolvedValueOnce(inventory({ available: [available] }))
+			.mockResolvedValueOnce(inventory({ extensions: [mismatched] }))
+			.mockResolvedValueOnce(inventory({}));
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "install",
+					id: available.id,
+					reviewToken: review.reviewToken,
+				},
+				{
+					homes: () => [home],
+					discover,
+					review: inspectReview,
+					run,
+					resolveClaude: () => "/usr/bin/claude",
+				},
+			),
+		).rejects.toMatchObject({
+			message: expect.stringContaining("plugin is no longer installed"),
+			stateChanged: false,
+			refreshRequired: true,
+		});
+		expect(run).toHaveBeenNthCalledWith(
+			1,
+			"/usr/bin/claude",
+			["plugin", "install", "reviewer@official", "--scope", "user"],
+			expect.any(Object),
+		);
+		expect(run).toHaveBeenNthCalledWith(
+			2,
+			"/usr/bin/claude",
+			[
+				"plugin",
+				"uninstall",
+				"reviewer@official",
+				"--scope",
+				"user",
+				"--yes",
+				"--keep-data",
+			],
+			expect.objectContaining({ timeoutError: "Plugin rollback timed out" }),
+		);
+	});
+
+	it("preserves reconcile-and-warn when a fresh-install rollback is inconclusive", async () => {
+		const mismatched = { ...installed, version: "9.0.0" };
+		discover
+			.mockResolvedValueOnce(inventory({ available: [available] }))
+			.mockResolvedValueOnce(inventory({ available: [available] }))
+			.mockResolvedValueOnce(inventory({ extensions: [mismatched] }))
+			.mockResolvedValueOnce(inventory({ extensions: [mismatched] }));
+		run
+			.mockResolvedValueOnce({ output: "installed", code: 0 })
+			.mockResolvedValueOnce({ output: "cache remained busy", code: 1 });
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "install",
+					id: available.id,
+					reviewToken: review.reviewToken,
+				},
+				{
+					homes: () => [home],
+					discover,
+					review: inspectReview,
+					run,
+					resolveClaude: () => "/usr/bin/claude",
+				},
+			),
+		).rejects.toMatchObject({
+			message: expect.stringContaining("plugin remains installed"),
+			stateChanged: true,
+		});
+		expect(run).toHaveBeenCalledTimes(2);
+	});
+
+	it("rolls back a fresh install when post-mutation inventory is incomplete after a nonzero exit", async () => {
+		const partialInventoryError = {
+			providerId: "claude" as const,
+			environment: "host" as const,
+			environmentLabel: "Host",
+			message: "Installed plugin registry is temporarily unreadable",
+		};
+		discover
+			.mockResolvedValueOnce(inventory({ available: [available] }))
+			.mockResolvedValueOnce(inventory({ available: [available] }))
+			.mockResolvedValueOnce(
+				inventory({
+					extensions: [installed],
+					errors: [partialInventoryError],
+				}),
+			)
+			.mockResolvedValueOnce(inventory({}));
+		run
+			.mockResolvedValueOnce({ output: "metadata cleanup failed", code: 1 })
+			.mockResolvedValueOnce({ output: "removed", code: 0 });
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "install",
+					id: available.id,
+					reviewToken: review.reviewToken,
+				},
+				{
+					homes: () => [home],
+					discover,
+					review: inspectReview,
+					run,
+					resolveClaude: () => "/usr/bin/claude",
+				},
+			),
+		).rejects.toMatchObject({
+			message: expect.stringContaining(
+				"refreshed provider inventory was incomplete",
+			),
+			stateChanged: false,
+			refreshRequired: true,
+		});
+		expect(run).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not infer uninstall success from incomplete target inventory", async () => {
+		discover
+			.mockResolvedValueOnce(inventory({ extensions: [installed] }))
+			.mockResolvedValueOnce(
+				inventory({
+					errors: [
+						{
+							providerId: "claude",
+							environment: "host",
+							environmentLabel: "Host",
+							message: "Installed plugin registry is temporarily unreadable",
+						},
+					],
+				}),
+			);
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "uninstall",
+					id: installed.id,
+					expectedVersion: installed.version,
+				},
+				{
+					homes: () => [home],
+					discover,
+					run,
+					resolveClaude: () => "/usr/bin/claude",
+				},
+			),
+		).rejects.toMatchObject({
+			message: expect.stringContaining(
+				"refreshed provider inventory was incomplete",
+			),
+			stateChanged: true,
+			refreshRequired: true,
+		});
+	});
+
+	it("rolls back a brand-new install with a corrupt provider cache", async () => {
+		const corrupt = {
+			...installed,
+			errors: ["Manifest JSON is invalid: Unexpected token"],
+			cacheRecovery: {
+				issue: "corrupt" as const,
+				action: "native_update" as const,
+			},
+		};
+		discover
+			.mockResolvedValueOnce(inventory({ available: [available] }))
+			.mockResolvedValueOnce(inventory({ available: [available] }))
+			.mockResolvedValueOnce(inventory({ extensions: [corrupt] }))
+			.mockResolvedValueOnce(inventory({}));
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "install",
+					id: available.id,
+					reviewToken: review.reviewToken,
+				},
+				{
+					homes: () => [home],
+					discover,
+					review: inspectReview,
+					run,
+					resolveClaude: () => "/usr/bin/claude",
+				},
+			),
+		).rejects.toMatchObject({
+			message: expect.stringContaining("package cache could not be verified"),
+			stateChanged: false,
+			refreshRequired: true,
+		});
+		expect(run).toHaveBeenCalledTimes(2);
+	});
+
+	it("rolls back every fresh install whose review health is damaged", async () => {
+		const damaged = {
+			...installed,
+			reviewHealth: "damaged" as const,
+			errors: ["The installed manifest could not be parsed"],
+		};
+		discover
+			.mockResolvedValueOnce(inventory({ available: [available] }))
+			.mockResolvedValueOnce(inventory({ available: [available] }))
+			.mockResolvedValueOnce(inventory({ extensions: [damaged] }))
+			.mockResolvedValueOnce(inventory({}));
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "install",
+					id: available.id,
+					reviewToken: review.reviewToken,
+				},
+				{
+					homes: () => [home],
+					discover,
+					review: inspectReview,
+					run,
+					resolveClaude: () => "/usr/bin/claude",
+				},
+			),
+		).rejects.toMatchObject({
+			message: expect.stringContaining("package cache could not be verified"),
+			stateChanged: false,
+			refreshRequired: true,
+		});
+		expect(run).toHaveBeenCalledTimes(2);
+	});
+
+	it("keeps metadata-only fresh installs as an intentional review state", async () => {
+		const metadataOnly = {
+			...installed,
+			reviewHealth: "metadata_only" as const,
+		};
+		discover
+			.mockResolvedValueOnce(inventory({ available: [available] }))
+			.mockResolvedValueOnce(inventory({ available: [available] }))
+			.mockResolvedValueOnce(inventory({ extensions: [metadataOnly] }));
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "install",
+					id: available.id,
+					reviewToken: review.reviewToken,
+				},
+				{
+					homes: () => [home],
+					discover,
+					review: inspectReview,
+					run,
+					resolveClaude: () => "/usr/bin/claude",
+				},
+			),
+		).resolves.toMatchObject({ action: "install" });
+		expect(run).toHaveBeenCalledOnce();
+	});
+
+	it("does not accept a bad partial install after a nonzero provider exit", async () => {
+		const mismatched = { ...installed, version: "9.0.0" };
+		discover
+			.mockResolvedValueOnce(inventory({ available: [available] }))
+			.mockResolvedValueOnce(inventory({ available: [available] }))
+			.mockResolvedValueOnce(inventory({ extensions: [mismatched] }))
+			.mockResolvedValueOnce(inventory({}));
+		run
+			.mockResolvedValueOnce({ output: "metadata cleanup failed", code: 1 })
+			.mockResolvedValueOnce({ output: "removed", code: 0 });
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "install",
+					id: available.id,
+					reviewToken: review.reviewToken,
+				},
+				{
+					homes: () => [home],
+					discover,
+					review: inspectReview,
+					run,
+					resolveClaude: () => "/usr/bin/claude",
+				},
+			),
+		).rejects.toMatchObject({
+			message: expect.stringContaining(
+				"installed version 9.0.0, but the reviewed marketplace version was 1.2.3",
+			),
+			stateChanged: false,
+			refreshRequired: true,
+		});
+		expect(run).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not claim rollback success from an incomplete provider inventory", async () => {
+		const mismatched = { ...installed, version: "9.0.0" };
+		discover
+			.mockResolvedValueOnce(inventory({ available: [available] }))
+			.mockResolvedValueOnce(inventory({ available: [available] }))
+			.mockResolvedValueOnce(inventory({ extensions: [mismatched] }))
+			.mockResolvedValueOnce(
+				inventory({
+					errors: [
+						{
+							providerId: "claude",
+							environment: "host",
+							environmentLabel: "Host",
+							message: "Installed plugin registry is invalid: malformed JSON",
+						},
+					],
+				}),
+			);
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "install",
+					id: available.id,
+					reviewToken: review.reviewToken,
+				},
+				{
+					homes: () => [home],
+					discover,
+					review: inspectReview,
+					run,
+					resolveClaude: () => "/usr/bin/claude",
+				},
+			),
+		).rejects.toMatchObject({
+			message: expect.stringContaining(
+				"refreshed provider inventory was incomplete",
+			),
+			stateChanged: true,
+			refreshRequired: true,
+		});
+	});
+
+	it("does not roll back when the locked pre-install inventory was incomplete", async () => {
+		const mismatched = { ...installed, version: "9.0.0" };
+		const partialInventoryError = {
+			providerId: "claude" as const,
+			environment: "host" as const,
+			environmentLabel: "Host",
+			message: "Installed plugin registry is invalid: malformed JSON",
+		};
+		discover
+			.mockResolvedValueOnce(inventory({ available: [available] }))
+			.mockResolvedValueOnce(
+				inventory({
+					available: [available],
+					errors: [partialInventoryError],
+				}),
+			)
+			.mockResolvedValueOnce(inventory({ extensions: [mismatched] }));
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "install",
+					id: available.id,
+					reviewToken: review.reviewToken,
+				},
+				{
+					homes: () => [home],
+					discover,
+					review: inspectReview,
+					run,
+					resolveClaude: () => "/usr/bin/claude",
+				},
+			),
+		).rejects.toMatchObject({
+			message: expect.stringContaining("did not attempt automatic rollback"),
+			stateChanged: true,
+			refreshRequired: true,
+		});
+		expect(run).toHaveBeenCalledOnce();
+	});
+
+	it("keeps normal explicit Claude uninstall semantics separate from rollback", async () => {
+		discover
+			.mockResolvedValueOnce(inventory({ extensions: [installed] }))
+			.mockResolvedValueOnce(inventory({}));
+
+		await mutateProviderExtension(
+			config,
+			{
+				action: "uninstall",
+				id: installed.id,
+				expectedVersion: installed.version,
+			},
+			{
+				homes: () => [home],
+				discover,
+				run,
+				resolveClaude: () => "/usr/bin/claude",
+			},
+		);
+
+		expect(run).toHaveBeenCalledWith(
+			"/usr/bin/claude",
+			["plugin", "uninstall", "reviewer@official", "--scope", "user", "--yes"],
+			expect.objectContaining({ timeoutError: "Plugin removal timed out" }),
 		);
 	});
 
@@ -459,7 +964,9 @@ enabled = true
 				},
 				{ homes: () => [home], discover, run },
 			),
-		).rejects.toThrow("installed version changed");
+		).rejects.toThrow(
+			"requested installed version was 0.9.0, but the provider now reports 1.2.3",
+		);
 		expect(run).not.toHaveBeenCalled();
 	});
 
@@ -739,6 +1246,80 @@ enabled = true
 		});
 	});
 
+	it("recognizes provider-native marketplace repair from restored health", async () => {
+		const unhealthy = marketplace({
+			health: "invalid",
+			diagnostic: "The local snapshot is invalid.",
+		});
+		const healthy = marketplace();
+		discover
+			.mockResolvedValueOnce(inventory({ marketplaces: [unhealthy] }))
+			.mockResolvedValueOnce(inventory({ marketplaces: [unhealthy] }))
+			.mockResolvedValueOnce(inventory({ marketplaces: [healthy] }));
+		run.mockResolvedValue({
+			output: "metadata cleanup failed after refreshing the snapshot",
+			code: 1,
+		});
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "upgrade_marketplace",
+					id: unhealthy.id,
+					expectedSource: unhealthy.source,
+				},
+				{
+					homes: () => [home],
+					discover,
+					run,
+					resolveClaude: () => "/usr/bin/claude",
+				},
+			),
+		).resolves.toMatchObject({
+			action: "upgrade_marketplace",
+			warning: expect.stringContaining("refreshed state confirms"),
+		});
+	});
+
+	it.each([
+		["invalid", "Repair source"],
+		["missing", "Refresh source"],
+		["unavailable", "Retry inspection"],
+	] as const)("rejects a marketplace refresh that leaves a source %s", async (health, recoveryAction) => {
+		const current = marketplace();
+		const degraded = {
+			...current,
+			health,
+			diagnostic: `The refreshed marketplace snapshot is ${health}.`,
+		};
+		discover
+			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
+			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
+			.mockResolvedValueOnce(inventory({ marketplaces: [degraded] }));
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "upgrade_marketplace",
+					id: current.id,
+					expectedSource: current.source,
+				},
+				{
+					homes: () => [home],
+					discover,
+					run,
+					resolveClaude: () => "/usr/bin/claude",
+				},
+			),
+		).rejects.toMatchObject({
+			message: expect.stringContaining(`Choose ${recoveryAction}`),
+			stateChanged: true,
+			refreshRequired: true,
+		});
+	});
+
 	it("retries one transient marketplace update network failure", async () => {
 		const current = marketplace({
 			providerId: "codex",
@@ -783,6 +1364,80 @@ enabled = true
 		expect(run).toHaveBeenCalledTimes(2);
 	});
 
+	it.each([
+		"Marketplace update timed out",
+		"connect ETIMEDOUT 140.82.112.3:443",
+	])("retries the transient marketplace failure %s", async (output) => {
+		const current = marketplace({ providerId: "codex" });
+		discover
+			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
+			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
+			.mockResolvedValueOnce(inventory({ marketplaces: [current] }));
+		run
+			.mockResolvedValueOnce({ output, code: 1 })
+			.mockResolvedValueOnce({ output: "updated", code: 0 });
+		const wait = vi.fn().mockResolvedValue(undefined);
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "upgrade_marketplace",
+					id: current.id,
+					expectedSource: current.source,
+				},
+				{
+					homes: () => [home],
+					discover,
+					run,
+					wait,
+					resolveCodex: () => "/usr/bin/codex",
+				},
+			),
+		).resolves.toMatchObject({ action: "upgrade_marketplace" });
+		expect(wait).toHaveBeenCalledWith(750);
+		expect(run).toHaveBeenCalledTimes(2);
+	});
+
+	it("guides a retry when a marketplace remains offline", async () => {
+		const current = marketplace({ providerId: "codex" });
+		discover
+			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
+			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
+			.mockResolvedValueOnce(inventory({ marketplaces: [current] }));
+		run
+			.mockResolvedValueOnce({
+				output: "Recv failure: Connection was reset",
+				code: 1,
+			})
+			.mockResolvedValueOnce({
+				output: "Could not resolve host: github.com",
+				code: 1,
+			});
+		const wait = vi.fn().mockResolvedValue(undefined);
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "upgrade_marketplace",
+					id: current.id,
+					expectedSource: current.source,
+				},
+				{
+					homes: () => [home],
+					discover,
+					run,
+					wait,
+					resolveCodex: () => "/usr/bin/codex",
+				},
+			),
+		).rejects.toThrow(
+			"Choose Refresh source or Repair source when connectivity returns",
+		);
+		expect(run).toHaveBeenCalledTimes(2);
+	});
+
 	it("does not retry permanent marketplace update failures", async () => {
 		const current = marketplace({ providerId: "codex" });
 		discover
@@ -813,6 +1468,23 @@ enabled = true
 		).rejects.toThrow("repository not found");
 		expect(wait).not.toHaveBeenCalled();
 		expect(run).toHaveBeenCalledTimes(1);
+	});
+
+	it("explains when a configured marketplace source disappeared", async () => {
+		discover.mockResolvedValueOnce(inventory({}));
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "upgrade_marketplace",
+					id: "5".repeat(24),
+					expectedSource: "github · example/team-tools",
+				},
+				{ homes: () => [home], discover, run },
+			),
+		).rejects.toThrow("configured marketplace source is no longer present");
+		expect(run).not.toHaveBeenCalled();
 	});
 
 	it("refuses stale or built-in marketplace mutations", async () => {

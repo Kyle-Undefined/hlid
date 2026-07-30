@@ -35,6 +35,16 @@ export const getExtensionInventoryFn = createServerFn({
 	),
 );
 
+export const refreshExtensionInventoryFn = createServerFn({
+	method: "GET",
+}).handler(() =>
+	dbJson<ExtensionInventory>(
+		"/extensions/catalog?refresh=1",
+		EMPTY_EXTENSION_INVENTORY,
+		EXTENSION_READ_BUDGET,
+	),
+);
+
 export const getExtensionReviewFn = createServerFn({ method: "GET" })
 	.validator((raw) =>
 		z.object({ id: z.string().regex(/^[0-9a-f]{24}$/) }).parse(raw),

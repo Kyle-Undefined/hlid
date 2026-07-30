@@ -196,6 +196,7 @@ describe("provider extension contract fixtures", () => {
 					enabled: true,
 					source: "./plugins/reviewer",
 					capabilities: ["Read", "Review"],
+					nativeUpdate: { available: true },
 				}),
 				expect.objectContaining({
 					providerId: "codex",
@@ -204,6 +205,12 @@ describe("provider extension contract fixtures", () => {
 					version: "0.4.0",
 					enabled: false,
 					capabilities: ["Read", "Review"],
+					nativeUpdate: expect.objectContaining({
+						available: false,
+						reason: expect.stringContaining(
+							"does not expose a native per-plugin update command",
+						),
+					}),
 				}),
 			]),
 		);

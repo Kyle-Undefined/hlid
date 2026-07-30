@@ -13,11 +13,13 @@ import { ExtensionsSection } from "./ExtensionsSection";
 
 const mocks = vi.hoisted(() => ({
 	getExtensionInventory: vi.fn(),
+	refreshExtensionInventory: vi.fn(),
 	getExtensionReview: vi.fn(),
 	mutateExtension: vi.fn(),
 }));
 vi.mock("#/lib/serverFns/extensions", () => ({
 	getExtensionInventoryFn: () => mocks.getExtensionInventory(),
+	refreshExtensionInventoryFn: () => mocks.refreshExtensionInventory(),
 	getExtensionReviewFn: ({ data }: { data: { id: string } }) =>
 		mocks.getExtensionReview(data),
 	mutateExtensionFn: ({ data }: { data: Record<string, unknown> }) =>
@@ -69,6 +71,7 @@ const inventory: ExtensionInventory = {
 			manifestPath: "/plugin.json",
 			manifestText: '{\n  "name": "reviewer"\n}',
 			errors: [],
+			nativeUpdate: { available: true },
 		},
 		{
 			id: "codex-extension",
@@ -98,6 +101,10 @@ const inventory: ExtensionInventory = {
 			manifestPath: "C:\\plugin.json",
 			manifestText: '{\n  "name": "github"\n}',
 			errors: [],
+			nativeUpdate: {
+				available: false,
+				reason: "Codex does not expose a native per-plugin update command.",
+			},
 		},
 	],
 	marketplaces: [
@@ -336,6 +343,225 @@ describe("ExtensionsSection", () => {
 		expect(screen.queryByRole("button", { name: "Update" })).toBeNull();
 	});
 
+	it("offers provider-native cache recovery without inventing a Codex update", async () => {
+		const recoveryInventory: ExtensionInventory = {
+			...inventory,
+			extensions: inventory.extensions.map((extension) =>
+				extension.providerId === "claude"
+					? {
+							...extension,
+							errors: ["Manifest JSON is invalid: unexpected token"],
+							cacheRecovery: {
+								issue: "corrupt" as const,
+								action: "native_update" as const,
+							},
+							reviewHealth: "damaged" as const,
+						}
+					: {
+							...extension,
+							errors: ["Plugin manifest is missing"],
+							cacheRecovery: {
+								issue: "missing" as const,
+								action: "marketplace_refresh_reinstall" as const,
+							},
+							reviewHealth: "damaged" as const,
+						},
+			),
+		};
+		mocks.getExtensionInventory.mockResolvedValue(recoveryInventory);
+		mocks.mutateExtension.mockResolvedValue({
+			ok: true,
+			result: {
+				action: "update",
+				providerId: "claude",
+				subject: "reviewer@official",
+				pluginId: "reviewer@official",
+				environmentLabel: "WSL · Ubuntu",
+				output: "repaired",
+			},
+		});
+		render(<ExtensionsSection />);
+		await waitFor(() => expect(screen.getByText("Reviewer")).toBeTruthy());
+
+		fireEvent.click(screen.getByText("Reviewer"));
+		expect(
+			screen.getByText(/Ask Claude to repair it through its native plugin/),
+		).toBeTruthy();
+		expect(screen.getByText("Manifest unavailable")).toBeTruthy();
+		expect(screen.queryByText("Complete manifest")).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Repair cache" }));
+		fireEvent.click(screen.getByRole("button", { name: "repair" }));
+		await waitFor(() =>
+			expect(mocks.mutateExtension).toHaveBeenCalledWith({
+				action: "update",
+				id: "claude-extension",
+				expectedVersion: "1.2.3",
+			}),
+		);
+
+		fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+		fireEvent.click(await screen.findByText("GitHub"));
+		expect(
+			screen.getByText(
+				"Codex does not expose a native per-plugin update command.",
+			),
+		).toBeTruthy();
+		expect(
+			screen.getByText(
+				/Refresh the curated marketplace source, then uninstall this package/,
+			),
+		).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Update" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Repair cache" })).toBeNull();
+	});
+
+	it("does not recommend removing a damaged Codex package without a proven replacement", async () => {
+		mocks.getExtensionInventory.mockResolvedValue({
+			...inventory,
+			extensions: inventory.extensions.map((extension) =>
+				extension.providerId === "codex"
+					? {
+							...extension,
+							errors: ["Plugin manifest is missing"],
+							cacheRecovery: {
+								issue: "missing" as const,
+								action: "restore_source" as const,
+							},
+							reviewHealth: "damaged" as const,
+						}
+					: extension,
+			),
+		});
+		render(<ExtensionsSection />);
+
+		fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+		fireEvent.click(await screen.findByText("GitHub"));
+		expect(
+			screen.getByText(/cannot prove that a manageable source/),
+		).toBeTruthy();
+		expect(
+			screen.getByText(/review the replacement before removing/),
+		).toBeTruthy();
+		expect(
+			screen.queryByText(
+				/Refresh the curated marketplace source, then uninstall this package/,
+			),
+		).toBeNull();
+	});
+
+	it("labels provider-native marketplace recovery from explicit health", async () => {
+		const configuredMarketplace = inventory.marketplaces[0];
+		if (!configuredMarketplace)
+			throw new Error("Marketplace fixture is missing");
+		mocks.getExtensionInventory.mockResolvedValue({
+			...inventory,
+			marketplaces: [
+				{
+					...configuredMarketplace,
+					health: "missing",
+					diagnostic: "The local snapshot is missing.",
+				},
+				{
+					...configuredMarketplace,
+					id: "444444444444444444444444",
+					name: "broken",
+					health: "invalid",
+					diagnostic: "The local snapshot is invalid.",
+				},
+				{
+					...configuredMarketplace,
+					id: "555555555555555555555555",
+					name: "read-only",
+					canManage: false,
+					health: "missing",
+					diagnostic: "The read-only built-in marketplace snapshot is missing.",
+				},
+				{
+					...configuredMarketplace,
+					id: "666666666666666666666666",
+					name: "offline",
+					health: "unavailable",
+					diagnostic: "Hlið could not inspect this snapshot. Retry inspection.",
+				},
+			],
+		});
+		render(<ExtensionsSection />);
+
+		expect(
+			await screen.findByRole("button", { name: "Refresh source official" }),
+		).toBeTruthy();
+		expect(
+			screen.getByRole("button", { name: "Repair source broken" }),
+		).toBeTruthy();
+		expect(screen.getByText("The local snapshot is missing.")).toBeTruthy();
+		expect(screen.getByText("The local snapshot is invalid.")).toBeTruthy();
+		expect(
+			screen.getByText(
+				"The read-only built-in marketplace snapshot is missing.",
+			),
+		).toBeTruthy();
+		expect(
+			screen.queryByRole("button", { name: "Refresh source read-only" }),
+		).toBeNull();
+		expect(
+			screen.getByText(
+				"Hlið could not inspect this snapshot. Retry inspection.",
+			),
+		).toBeTruthy();
+		expect(
+			screen.queryByRole("button", { name: "Refresh source offline" }),
+		).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: "Repair source offline" }),
+		).toBeNull();
+		expect(screen.getByRole("button", { name: "Remove offline" })).toBeTruthy();
+	});
+
+	it("forces a fresh inventory scan from the visible toolbar refresh", async () => {
+		mocks.getExtensionInventory.mockResolvedValueOnce(inventory);
+		mocks.refreshExtensionInventory.mockResolvedValueOnce(inventory);
+		render(<ExtensionsSection />);
+
+		fireEvent.click(await screen.findByRole("button", { name: "Refresh" }));
+
+		await waitFor(() =>
+			expect(mocks.refreshExtensionInventory).toHaveBeenCalledOnce(),
+		);
+		expect(mocks.getExtensionInventory).toHaveBeenCalledOnce();
+		expect(mocks.mutateExtension).not.toHaveBeenCalled();
+	});
+
+	it("retries an offline marketplace inspection without mutating provider state", async () => {
+		const offlineInventory: ExtensionInventory = {
+			...inventory,
+			errors: [
+				{
+					providerId: "codex",
+					environment: "windows",
+					environmentLabel: "Windows",
+					message: "Marketplace lookup failed: network is unreachable",
+					recovery: "retry_inventory",
+				},
+			],
+		};
+		mocks.getExtensionInventory.mockResolvedValueOnce(offlineInventory);
+		mocks.refreshExtensionInventory.mockResolvedValueOnce(inventory);
+		render(<ExtensionsSection />);
+
+		fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+		fireEvent.click(
+			await screen.findByRole("button", { name: "Retry inspection" }),
+		);
+		await waitFor(() =>
+			expect(mocks.refreshExtensionInventory).toHaveBeenCalledOnce(),
+		);
+		expect(mocks.getExtensionInventory).toHaveBeenCalledOnce();
+		expect(mocks.mutateExtension).not.toHaveBeenCalled();
+		expect(
+			screen.queryByRole("button", { name: "Retry inspection" }),
+		).toBeNull();
+	});
+
 	it("keeps card actions aligned and toggles installed plugin status", async () => {
 		const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
 		mocks.getExtensionInventory
@@ -532,9 +758,9 @@ describe("ExtensionsSection", () => {
 		);
 
 		fireEvent.click(
-			await screen.findByRole("button", { name: "Update official" }),
+			await screen.findByRole("button", { name: "Refresh source official" }),
 		);
-		fireEvent.click(screen.getByRole("button", { name: "update" }));
+		fireEvent.click(screen.getByRole("button", { name: "refresh source" }));
 		await waitFor(() =>
 			expect(mocks.mutateExtension).toHaveBeenCalledWith({
 				action: "upgrade_marketplace",
@@ -548,7 +774,7 @@ describe("ExtensionsSection", () => {
 		);
 		expect(screen.getByText(/all Claude settings scopes/)).toBeTruthy();
 		expect(
-			screen.queryByRole("button", { name: "Update official" }),
+			screen.queryByRole("button", { name: "Refresh source official" }),
 		).toBeNull();
 		fireEvent.click(screen.getByRole("button", { name: "remove source" }));
 		await waitFor(() =>

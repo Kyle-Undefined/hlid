@@ -542,6 +542,34 @@ describe("Hlid delegation manager", () => {
 		expect(statusChangedCalls).toBeGreaterThan(0);
 	});
 
+	it("fails a provider turn that completes without an assistant result", async () => {
+		db.getSessionMessages.mockResolvedValue([]);
+		const manager = new HlidDelegationManager(
+			pool as unknown as SessionPool,
+			async () => catalog,
+			() => {
+				statusChangedCalls++;
+			},
+		);
+
+		const created = await manager.delegate("parent-1", {
+			task: "Complete without a result",
+			provider: "codex",
+		});
+		const failed = await manager.wait("parent-1", created.id, 1);
+
+		expect(failed).toMatchObject({
+			status: "failed",
+			result_text: null,
+			error: "The delegated provider completed without an assistant result.",
+			complete: true,
+		});
+		expect(db.finishHlidDelegation).toHaveBeenCalledWith(created.id, {
+			status: "failed",
+			error: "The delegated provider completed without an assistant result.",
+		});
+	});
+
 	it("retires only the terminal nested child and leaves active descendants alone", async () => {
 		delegatedParent = snapshot({
 			id: "parent-delegation",

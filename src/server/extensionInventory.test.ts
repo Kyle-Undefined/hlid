@@ -1,4 +1,5 @@
 import {
+	chmodSync,
 	mkdirSync,
 	mkdtempSync,
 	rmSync,
@@ -176,6 +177,237 @@ source = "example/team-tools"
 		);
 	});
 
+	it("preserves configured Codex marketplaces when snapshots are missing or invalid", async () => {
+		const missingRoot = join(root, "missing-marketplace");
+		const invalidRoot = join(root, "invalid-marketplace");
+		const invalidShapeRoot = join(root, "invalid-shape-marketplace");
+		const readOnlyRoot = join(root, "read-only-marketplace");
+		const invalidSnapshot = join(
+			invalidRoot,
+			".agents",
+			"plugins",
+			"marketplace.json",
+		);
+		mkdirSync(join(invalidRoot, ".agents", "plugins"), { recursive: true });
+		writeFileSync(invalidSnapshot, "{not json");
+		writeJson(
+			join(invalidShapeRoot, ".agents", "plugins", "marketplace.json"),
+			[],
+		);
+
+		const inventory = await discoverExtensionInventory(config(), [home], {
+			listCodexMarketplaces: vi.fn().mockResolvedValue([
+				{
+					name: "missing-tools",
+					root: missingRoot,
+					source: "git · example/missing-tools",
+				},
+				{
+					name: "invalid-tools",
+					root: invalidRoot,
+					source: "git · example/invalid-tools",
+				},
+				{
+					name: "invalid-shape-tools",
+					root: invalidShapeRoot,
+					source: "git · example/invalid-shape-tools",
+				},
+				{
+					name: "read-only-tools",
+					root: readOnlyRoot,
+					source: "",
+				},
+			]),
+		});
+
+		expect(inventory.marketplaces).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					name: "missing-tools",
+					source: "git · example/missing-tools",
+					canManage: true,
+					health: "missing",
+					diagnostic: expect.stringContaining("local snapshot is missing"),
+				}),
+				expect.objectContaining({
+					name: "invalid-tools",
+					source: "git · example/invalid-tools",
+					canManage: true,
+					health: "invalid",
+					diagnostic: expect.stringContaining("snapshot is invalid"),
+				}),
+				expect.objectContaining({
+					name: "invalid-shape-tools",
+					canManage: true,
+					health: "invalid",
+					diagnostic: expect.stringContaining("snapshot root is not an object"),
+				}),
+				expect.objectContaining({
+					name: "read-only-tools",
+					canManage: false,
+					health: "missing",
+					diagnostic: expect.stringContaining(
+						"read-only built-in marketplace snapshot is missing",
+					),
+				}),
+			]),
+		);
+		expect(inventory.errors).toHaveLength(2);
+		expect(inventory.errors).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					providerId: "codex",
+					message: expect.stringContaining("snapshot is invalid"),
+				}),
+				expect.objectContaining({
+					providerId: "codex",
+					message: expect.stringContaining("snapshot root is not an object"),
+				}),
+			]),
+		);
+		expect(inventory.errors.every((error) => !error.recovery)).toBe(true);
+	});
+
+	it("marks unreadable configured Claude snapshots as inspection failures", async () => {
+		const marketplaceRoot = join(root, "unreadable-claude-marketplace");
+		const snapshotPath = join(
+			marketplaceRoot,
+			".claude-plugin",
+			"marketplace.json",
+		);
+		writeJson(snapshotPath, { name: "official", plugins: [] });
+		chmodSync(snapshotPath, 0);
+		writeJson(join(root, ".claude", "plugins", "known_marketplaces.json"), {
+			official: {
+				source: { source: "github", repo: "example/extensions" },
+				installLocation: marketplaceRoot,
+			},
+		});
+
+		try {
+			const inventory = await discoverExtensionInventory(config(), [home], {
+				listCodexMarketplaces: vi.fn().mockResolvedValue([]),
+			});
+
+			expect(inventory.marketplaces).toContainEqual(
+				expect.objectContaining({
+					providerId: "claude",
+					name: "official",
+					canManage: true,
+					health: "unavailable",
+					diagnostic: expect.stringContaining("Retry inspection"),
+				}),
+			);
+			expect(inventory.errors).toContainEqual(
+				expect.objectContaining({
+					providerId: "claude",
+					message: expect.stringContaining("could not inspect"),
+					recovery: "retry_inventory",
+				}),
+			);
+		} finally {
+			chmodSync(snapshotPath, 0o600);
+		}
+	});
+
+	it("marks unreadable configured Codex snapshots as inspection failures", async () => {
+		const marketplaceRoot = join(root, "unreadable-codex-marketplace");
+		const snapshotPath = join(
+			marketplaceRoot,
+			".agents",
+			"plugins",
+			"marketplace.json",
+		);
+		writeJson(snapshotPath, { name: "team-tools", plugins: [] });
+		chmodSync(snapshotPath, 0);
+
+		try {
+			const inventory = await discoverExtensionInventory(config(), [home], {
+				listCodexMarketplaces: vi.fn().mockResolvedValue([
+					{
+						name: "team-tools",
+						root: marketplaceRoot,
+						source: "git · example/team-tools",
+					},
+				]),
+			});
+
+			expect(inventory.marketplaces).toContainEqual(
+				expect.objectContaining({
+					providerId: "codex",
+					name: "team-tools",
+					canManage: true,
+					health: "unavailable",
+					diagnostic: expect.stringContaining("Retry inspection"),
+				}),
+			);
+			expect(inventory.errors).toContainEqual(
+				expect.objectContaining({
+					providerId: "codex",
+					message: expect.stringContaining("could not inspect"),
+					recovery: "retry_inventory",
+				}),
+			);
+		} finally {
+			chmodSync(snapshotPath, 0o600);
+		}
+	});
+
+	it("keeps unavailable opportunistic Codex probes silent", async () => {
+		const snapshotPath = join(
+			root,
+			".codex",
+			".tmp",
+			"plugins",
+			".agents",
+			"plugins",
+			"marketplace.json",
+		);
+		writeJson(snapshotPath, { name: "openai-curated", plugins: [] });
+		chmodSync(snapshotPath, 0);
+
+		try {
+			const inventory = await discoverExtensionInventory(config(), [home], {
+				listCodexMarketplaces: vi.fn().mockResolvedValue([]),
+			});
+
+			expect(
+				inventory.marketplaces.some(
+					(marketplace) => marketplace.name === "openai-curated",
+				),
+			).toBe(false);
+			expect(inventory.errors).toEqual([]);
+		} finally {
+			chmodSync(snapshotPath, 0o600);
+		}
+	});
+
+	it("diagnoses a configured Claude marketplace whose snapshot disappeared", async () => {
+		const marketplaceRoot = join(root, "missing-claude-marketplace");
+		writeJson(join(root, ".claude", "plugins", "known_marketplaces.json"), {
+			official: {
+				source: {
+					source: "github",
+					repo: "example/extensions",
+				},
+				installLocation: marketplaceRoot,
+			},
+		});
+
+		const inventory = await discoverExtensionInventory(config(), [home], {
+			listCodexMarketplaces: vi.fn().mockResolvedValue([]),
+		});
+
+		expect(inventory.marketplaces).toContainEqual(
+			expect.objectContaining({
+				providerId: "claude",
+				name: "official",
+				health: "missing",
+				diagnostic: expect.stringContaining("local snapshot is missing"),
+			}),
+		);
+	});
+
 	it("reviews root-only Agent Plugins packages from Codex marketplaces", async () => {
 		const marketplaceRoot = join(root, "portable-marketplace");
 		const pluginRoot = join(marketplaceRoot, "plugins", "portable-review");
@@ -305,10 +537,11 @@ source = "example/team-tools"
 			listCodexMarketplaces: vi.fn().mockResolvedValue([]),
 		});
 		for (const item of invalid) {
-			expect(
-				inventory.extensions.find((extension) => extension.name === item.name)
-					?.errors,
-			).toEqual([expect.stringContaining(item.error)]);
+			const extension = inventory.extensions.find(
+				(extension) => extension.name === item.name,
+			);
+			expect(extension?.errors).toEqual([expect.stringContaining(item.error)]);
+			expect(extension?.cacheRecovery).toBeUndefined();
 		}
 	});
 
@@ -784,6 +1017,270 @@ enabled = true
 		expect(remoteReview?.manifestText).toContain("Remote metadata only");
 	});
 
+	it("offers only provider-native repair for a corrupt Claude cache", async () => {
+		const pluginRoot = join(
+			root,
+			".claude",
+			"plugins",
+			"cache",
+			"official",
+			"broken",
+			"1.0.0",
+		);
+		mkdirSync(join(pluginRoot, ".claude-plugin"), { recursive: true });
+		writeFileSync(
+			join(pluginRoot, ".claude-plugin", "plugin.json"),
+			"{not json",
+		);
+		writeJson(join(root, ".claude", "plugins", "installed_plugins.json"), {
+			plugins: {
+				"broken@official": [
+					{ scope: "user", version: "1.0.0", installPath: pluginRoot },
+				],
+			},
+		});
+
+		const inventory = await discoverExtensionInventory(config(), [home], {
+			listCodexMarketplaces: vi.fn().mockResolvedValue([]),
+		});
+
+		expect(inventory.extensions).toContainEqual(
+			expect.objectContaining({
+				providerId: "claude",
+				pluginId: "broken@official",
+				nativeUpdate: { available: true },
+				reviewHealth: "damaged",
+				cacheRecovery: {
+					issue: "corrupt",
+					action: "native_update",
+				},
+			}),
+		);
+		const extension = inventory.extensions.find(
+			(item) => item.pluginId === "broken@official",
+		);
+		const review = await reviewAvailableExtension(
+			config(),
+			extension?.id ?? "",
+			[home],
+			{ listCodexMarketplaces: vi.fn().mockResolvedValue([]) },
+		);
+		expect(review).toMatchObject({
+			reviewLevel: "unavailable",
+			reviewMessage: expect.stringContaining("review is incomplete"),
+		});
+		expect(review?.reviewMessage).not.toContain("Complete package review");
+	});
+
+	it("uses Claude marketplace metadata without treating a missing cache as repairable", async () => {
+		const marketplaceRoot = join(root, "claude-marketplace-metadata");
+		writeJson(join(root, ".claude", "plugins", "known_marketplaces.json"), {
+			official: {
+				source: { source: "github", repo: "example/extensions" },
+				installLocation: marketplaceRoot,
+			},
+		});
+		writeJson(join(marketplaceRoot, ".claude-plugin", "marketplace.json"), {
+			name: "official",
+			plugins: [
+				{
+					name: "metadata-only",
+					description: "Marketplace metadata",
+				},
+			],
+		});
+		const missingInstall = join(
+			root,
+			".claude",
+			"plugins",
+			"cache",
+			"official",
+			"metadata-only",
+			"1.0.0",
+		);
+		writeJson(join(root, ".claude", "plugins", "installed_plugins.json"), {
+			plugins: {
+				"metadata-only@official": [
+					{
+						scope: "user",
+						version: "1.0.0",
+						installPath: missingInstall,
+					},
+				],
+			},
+		});
+
+		const inventory = await discoverExtensionInventory(config(), [home], {
+			listCodexMarketplaces: vi.fn().mockResolvedValue([]),
+		});
+		const extension = inventory.extensions.find(
+			(item) => item.pluginId === "metadata-only@official",
+		);
+
+		expect(extension).toMatchObject({
+			description: "Marketplace metadata",
+			errors: [],
+			reviewHealth: "metadata_only",
+		});
+		expect(extension?.cacheRecovery).toBeUndefined();
+	});
+
+	it("classifies invalid manifest bytes as corrupt provider cache", async () => {
+		const pluginRoot = join(
+			root,
+			".claude",
+			"plugins",
+			"cache",
+			"official",
+			"invalid-bytes",
+			"1.0.0",
+		);
+		mkdirSync(join(pluginRoot, ".claude-plugin"), { recursive: true });
+		writeFileSync(
+			join(pluginRoot, ".claude-plugin", "plugin.json"),
+			Buffer.from([0xff, 0xfe, 0xfd]),
+		);
+		writeJson(join(root, ".claude", "plugins", "installed_plugins.json"), {
+			plugins: {
+				"invalid-bytes@official": [
+					{ scope: "user", version: "1.0.0", installPath: pluginRoot },
+				],
+			},
+		});
+
+		const inventory = await discoverExtensionInventory(config(), [home], {
+			listCodexMarketplaces: vi.fn().mockResolvedValue([]),
+		});
+
+		expect(inventory.extensions[0]).toMatchObject({
+			errors: ["Manifest is not valid UTF-8"],
+			reviewHealth: "damaged",
+			cacheRecovery: {
+				issue: "corrupt",
+				action: "native_update",
+			},
+		});
+	});
+
+	it("does not classify a manifest permission failure as corrupt cache", async () => {
+		const pluginRoot = join(
+			root,
+			".claude",
+			"plugins",
+			"cache",
+			"official",
+			"unreadable",
+			"1.0.0",
+		);
+		const manifestPath = join(pluginRoot, ".claude-plugin", "plugin.json");
+		writeJson(manifestPath, { name: "unreadable" });
+		chmodSync(manifestPath, 0);
+		writeJson(join(root, ".claude", "plugins", "installed_plugins.json"), {
+			plugins: {
+				"unreadable@official": [
+					{ scope: "user", version: "1.0.0", installPath: pluginRoot },
+				],
+			},
+		});
+
+		try {
+			const inventory = await discoverExtensionInventory(config(), [home], {
+				listCodexMarketplaces: vi.fn().mockResolvedValue([]),
+			});
+			const extension = inventory.extensions[0];
+			expect(extension?.errors).toEqual([
+				expect.stringContaining("Manifest could not be read"),
+			]);
+			expect(extension?.reviewHealth).toBe("damaged");
+			expect(extension?.cacheRecovery).toBeUndefined();
+		} finally {
+			chmodSync(manifestPath, 0o600);
+		}
+	});
+
+	it("offers Codex reinstall recovery only with a manageable reviewed source", async () => {
+		const installedRoot = join(
+			root,
+			".codex",
+			"plugins",
+			"cache",
+			"team-tools",
+			"reviewer",
+		);
+		mkdirSync(join(installedRoot, ".codex-plugin"), { recursive: true });
+		writeFileSync(
+			join(installedRoot, ".codex-plugin", "plugin.json"),
+			"{not json",
+		);
+		mkdirSync(join(root, ".codex"), { recursive: true });
+		writeFileSync(
+			join(root, ".codex", "config.toml"),
+			'[plugins."reviewer@team-tools"]\nenabled = true\n',
+		);
+
+		const marketplaceRoot = join(root, "team-tools-marketplace");
+		const replacementRoot = join(marketplaceRoot, "plugins", "reviewer");
+		writeJson(join(marketplaceRoot, ".agents", "plugins", "marketplace.json"), {
+			name: "team-tools",
+			plugins: [
+				{
+					name: "reviewer",
+					source: { source: "local", path: "./plugins/reviewer" },
+				},
+			],
+		});
+		writeJson(join(replacementRoot, ".codex-plugin", "plugin.json"), {
+			name: "reviewer",
+			version: "2.0.0",
+		});
+		const listCodexMarketplaces = vi.fn().mockResolvedValue([
+			{
+				name: "team-tools",
+				root: marketplaceRoot,
+				source: "git · example/team-tools",
+			},
+		]);
+
+		const inventory = await discoverExtensionInventory(config(), [home], {
+			listCodexMarketplaces,
+		});
+
+		expect(
+			inventory.extensions.find(
+				(extension) => extension.pluginId === "reviewer@team-tools",
+			),
+		).toMatchObject({
+			reviewHealth: "damaged",
+			cacheRecovery: {
+				issue: "corrupt",
+				action: "marketplace_refresh_reinstall",
+			},
+		});
+		expect(
+			inventory.available.find(
+				(extension) => extension.pluginId === "reviewer@team-tools",
+			),
+		).toMatchObject({ reviewLevel: "package" });
+	});
+
+	it("marks offline marketplace inspection as safe to retry", async () => {
+		const inventory = await discoverExtensionInventory(config(), [home], {
+			listCodexMarketplaces: vi
+				.fn()
+				.mockRejectedValue(
+					new Error("failed to connect: network is unreachable"),
+				),
+		});
+
+		expect(inventory.errors).toContainEqual(
+			expect.objectContaining({
+				providerId: "codex",
+				message: expect.stringContaining("failed to connect"),
+				recovery: "retry_inventory",
+			}),
+		);
+	});
+
 	it("returns bounded provider errors without losing the other inventory", async () => {
 		mkdirSync(join(root, ".claude", "plugins"), { recursive: true });
 		writeFileSync(
@@ -806,6 +1303,14 @@ enabled = true
 				providerId: "codex",
 				pluginId: "missing@curated",
 				errors: ["Plugin manifest is missing"],
+				nativeUpdate: {
+					available: false,
+					reason: "Codex does not expose a native per-plugin update command.",
+				},
+				cacheRecovery: {
+					issue: "missing",
+					action: "restore_source",
+				},
 			}),
 		]);
 	});
@@ -843,6 +1348,7 @@ enabled = true
 		expect(extension?.manifestText).toBe("");
 		expect(extension?.components).toEqual([]);
 		expect(extension?.skillFiles).toEqual([]);
+		expect(extension?.cacheRecovery).toBeUndefined();
 	});
 
 	it("does not expose a skill file symlink outside an installed package", async () => {

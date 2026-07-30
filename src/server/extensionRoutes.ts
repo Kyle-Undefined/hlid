@@ -151,9 +151,10 @@ export function createExtensionRouteHandler(
 				await dependencies.onChanged?.(config);
 				return Response.json({ ok: true, result });
 			} catch (error) {
-				const stateChanged =
-					error instanceof ExtensionMutationError && error.stateChanged;
-				if (stateChanged) {
+				const mutationError =
+					error instanceof ExtensionMutationError ? error : null;
+				const stateChanged = mutationError?.stateChanged === true;
+				if (mutationError?.refreshRequired) {
 					invalidateCatalog();
 					try {
 						await dependencies.onChanged?.(dependencies.loadConfig());
@@ -177,6 +178,9 @@ export function createExtensionRouteHandler(
 			return null;
 		}
 		if (url.pathname === "/extensions/catalog") {
+			if (url.searchParams.get("refresh") === "1") {
+				invalidateCatalog();
+			}
 			return Response.json(await readCatalog());
 		}
 		if (url.pathname === "/extensions/review") {

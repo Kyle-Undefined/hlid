@@ -8,6 +8,7 @@ import {
 	stat,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { TextDecoder } from "node:util";
 import { parse as parseToml } from "smol-toml";
 import type { HlidConfig } from "../config";
 import { resolveCodexExecutable } from "../lib/codexPath";
@@ -103,6 +104,24 @@ export type ProviderExtension = {
 	manifestPath: string;
 	manifestText: string;
 	errors: string[];
+	/** Provider-native per-plugin update support for this installed extension. */
+	nativeUpdate: {
+		available: boolean;
+		reason?: string;
+	};
+	/**
+	 * A narrowly classified provider-cache problem with a provider-truthful
+	 * recovery path. Authored schema failures and unsafe paths are excluded.
+	 */
+	cacheRecovery?: {
+		issue: "missing" | "corrupt";
+		action:
+			| "native_update"
+			| "marketplace_refresh_reinstall"
+			| "restore_source";
+	};
+	/** Omitted only when the installed package supports a complete review. */
+	reviewHealth?: "metadata_only" | "damaged";
 };
 
 export type ProviderMarketplace = {
@@ -116,6 +135,9 @@ export type ProviderMarketplace = {
 	pluginCount: number | null;
 	lastUpdated: string;
 	canManage: boolean;
+	/** Omitted when the provider-owned marketplace snapshot is healthy. */
+	health?: "missing" | "invalid" | "unavailable";
+	diagnostic?: string;
 };
 
 export type AvailableExtension = {
@@ -136,7 +158,7 @@ export type AvailableExtension = {
 	homepage: string;
 	installed: boolean;
 	enabled: boolean | null;
-	reviewLevel: "package" | "marketplace";
+	reviewLevel: "package" | "marketplace" | "unavailable";
 };
 
 export type ExtensionReview = AvailableExtension & {
@@ -155,6 +177,8 @@ export type ExtensionInventoryError = {
 	environment: ExtensionEnvironment;
 	environmentLabel: string;
 	message: string;
+	/** Optional user action that is safe without mutating provider metadata. */
+	recovery?: "retry_inventory";
 };
 
 export type ExtensionInventory = {
@@ -181,11 +205,23 @@ export type ExtensionInventoryDependencies = {
 
 type JsonRecord = Record<string, unknown>;
 
+type ManifestErrorKind =
+	| "missing"
+	| "invalid_bytes"
+	| "invalid_json"
+	| "invalid_shape"
+	| "unsafe"
+	| "too_large"
+	| "io"
+	| "unsupported_schema"
+	| "invalid_schema";
+
 type ManifestRead = {
 	path: string;
 	raw: string;
 	value: JsonRecord;
 	error: string | null;
+	errorKind: ManifestErrorKind | null;
 };
 
 type ExtensionReviewTarget = {
@@ -431,6 +467,17 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+class InvalidMarketplaceSnapshotError extends Error {}
+
+function marketplaceSnapshotFailureHealth(
+	error: unknown,
+): "invalid" | "unavailable" {
+	return error instanceof SyntaxError ||
+		error instanceof InvalidMarketplaceSnapshotError
+		? "invalid"
+		: "unavailable";
+}
+
 function isMissing(error: unknown): boolean {
 	return (
 		isRecord(error) && (error.code === "ENOENT" || error.code === "ENOTDIR")
@@ -441,12 +488,58 @@ function inventoryError(
 	providerId: ExtensionProviderId,
 	home: ProviderExtensionHome,
 	message: string,
+	recovery?: ExtensionInventoryError["recovery"],
 ): ExtensionInventoryError {
 	return {
 		providerId,
 		environment: home.environment,
 		environmentLabel: home.environmentLabel,
 		message,
+		...(recovery ? { recovery } : {}),
+	};
+}
+
+function isRetryableMarketplaceLookupError(error: unknown): boolean {
+	const message = errorMessage(error);
+	return [
+		/connection (?:was )?reset/i,
+		/failed to connect/i,
+		/could not resolve host/i,
+		/network (?:is )?unreachable/i,
+		/operation timed out/i,
+		/lookup timed out/i,
+		/tls.*(?:timeout|closed|eof)/i,
+		/http\/2 stream.*(?:error|closed)/i,
+		/unexpected eof/i,
+	].some((pattern) => pattern.test(message));
+}
+
+function nativeUpdateCapability(
+	providerId: ExtensionProviderId,
+): ProviderExtension["nativeUpdate"] {
+	return providerId === "claude"
+		? { available: true }
+		: {
+				available: false,
+				reason: "Codex does not expose a native per-plugin update command.",
+			};
+}
+
+function cacheRecovery(
+	providerId: ExtensionProviderId,
+	manifest: ManifestRead,
+): ProviderExtension["cacheRecovery"] {
+	const issue =
+		manifest.errorKind === "missing"
+			? "missing"
+			: manifest.errorKind === "invalid_bytes" ||
+					manifest.errorKind === "invalid_json"
+				? "corrupt"
+				: null;
+	if (!issue) return undefined;
+	return {
+		issue,
+		action: providerId === "claude" ? "native_update" : "restore_source",
 	};
 }
 
@@ -488,6 +581,7 @@ async function safeManifest(
 				raw: "",
 				value: {},
 				error: "Manifest resolves outside the provider plugin cache",
+				errorKind: "unsafe",
 			};
 		}
 		const info = await lstat(path);
@@ -497,6 +591,7 @@ async function safeManifest(
 				raw: "",
 				value: {},
 				error: "Manifest is not a regular file",
+				errorKind: "unsafe",
 			};
 		}
 		if (info.size > MAX_MANIFEST_BYTES) {
@@ -505,9 +600,22 @@ async function safeManifest(
 				raw: "",
 				value: {},
 				error: "Manifest exceeds the 256 KB review limit",
+				errorKind: "too_large",
 			};
 		}
-		const raw = await readFile(path, "utf8");
+		const bytes = await readFile(path);
+		let raw: string;
+		try {
+			raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+		} catch {
+			return {
+				path,
+				raw: "",
+				value: {},
+				error: "Manifest is not valid UTF-8",
+				errorKind: "invalid_bytes",
+			};
+		}
 		try {
 			const value = JSON.parse(raw) as unknown;
 			return {
@@ -515,6 +623,7 @@ async function safeManifest(
 				raw: JSON.stringify(value, null, 2),
 				value: recordValue(value),
 				error: isRecord(value) ? null : "Manifest root is not an object",
+				errorKind: isRecord(value) ? null : "invalid_shape",
 			};
 		} catch (error) {
 			return {
@@ -522,16 +631,19 @@ async function safeManifest(
 				raw,
 				value: {},
 				error: `Manifest JSON is invalid: ${errorMessage(error)}`,
+				errorKind: "invalid_json",
 			};
 		}
 	} catch (error) {
+		const missing = isMissing(error);
 		return {
 			path,
 			raw: "",
 			value: {},
-			error: isMissing(error)
+			error: missing
 				? "Plugin manifest is missing"
 				: `Manifest could not be read: ${errorMessage(error)}`,
+			errorKind: missing ? "missing" : "io",
 		};
 	}
 }
@@ -684,16 +796,28 @@ async function safeCodexManifest(
 			? agentPluginSchemaStatus(portable.value)
 			: "unrelated";
 	if (schemaStatus === "unrelated") {
-		return safeManifest(root, CODEX_PLUGIN_MANIFEST_RELATIVE_PATH, boundary);
+		const legacy = await safeManifest(
+			root,
+			CODEX_PLUGIN_MANIFEST_RELATIVE_PATH,
+			boundary,
+		);
+		return legacy.errorKind === "missing" &&
+			portable.errorKind !== null &&
+			portable.errorKind !== "missing"
+			? portable
+			: legacy;
 	}
 	if (schemaStatus === "unsupported") {
 		return {
 			...portable,
 			error: `Unsupported Agent Plugins schema: ${stringValue(portable.value.$schema)}`,
+			errorKind: "unsupported_schema",
 		};
 	}
 	const manifestError = portableManifestError(portable.value);
-	if (manifestError) return { ...portable, error: manifestError };
+	if (manifestError) {
+		return { ...portable, error: manifestError, errorKind: "invalid_schema" };
+	}
 
 	const extensions = recordValue(portable.value.extensions);
 	const inlineExtension = isRecord(extensions["com.openai"])
@@ -706,7 +830,7 @@ async function safeCodexManifest(
 			CODEX_PLUGIN_MANIFEST_RELATIVE_PATH,
 			boundary,
 		);
-		if (candidate.error !== "Plugin manifest is missing") {
+		if (candidate.errorKind !== "missing") {
 			fallbackOverlay = candidate;
 		}
 	}
@@ -723,6 +847,7 @@ async function safeCodexManifest(
 			error: `Codex manifest extension is invalid: ${
 				fallbackOverlay?.error ?? extensionError
 			}`,
+			errorKind: fallbackOverlay?.errorKind ?? "invalid_schema",
 		};
 	}
 	return {
@@ -734,6 +859,7 @@ async function safeCodexManifest(
 			: portable.raw,
 		value,
 		error: null,
+		errorKind: null,
 	};
 }
 
@@ -1171,10 +1297,46 @@ async function inspectClaudeHome(
 			const manifestPath = path
 				? resolve(path, ".claude-plugin", "marketplace.json")
 				: "";
-			if (manifestPath) {
-				const manifest = recordValue(
-					await readOptionalJson(manifestPath).catch(() => null),
-				);
+			let manifest: JsonRecord | null = null;
+			let health: ProviderMarketplace["health"];
+			let diagnostic = "";
+			if (!manifestPath) {
+				health = "missing";
+				diagnostic =
+					"Claude still configures this marketplace, but its local snapshot location is missing. Refresh the source, or remove it if it no longer exists.";
+			} else {
+				try {
+					const value = await readOptionalJson(manifestPath);
+					if (value === null) {
+						health = "missing";
+						diagnostic =
+							"Claude still configures this marketplace, but its local snapshot is missing. Refresh the source, or remove it if it no longer exists.";
+					} else if (!isRecord(value)) {
+						health = "invalid";
+						diagnostic =
+							"Claude's local marketplace snapshot is invalid. Repair it through the provider's native marketplace update.";
+					} else {
+						manifest = value;
+					}
+				} catch (error) {
+					health = marketplaceSnapshotFailureHealth(error);
+					diagnostic =
+						health === "invalid"
+							? `Claude's local marketplace snapshot is invalid: ${errorMessage(error)}`
+							: `Hlið could not inspect Claude's local marketplace snapshot: ${errorMessage(error)} Retry inspection after checking filesystem access. The source remains configured and can still be removed.`;
+					if (health === "unavailable") {
+						errors.push(
+							inventoryError(
+								providerId,
+								home,
+								`${name}: ${diagnostic}`,
+								"retry_inventory",
+							),
+						);
+					}
+				}
+			}
+			if (manifest) {
 				for (const rawPlugin of Array.isArray(manifest.plugins)
 					? manifest.plugins
 					: []) {
@@ -1201,9 +1363,11 @@ async function inspectClaudeHome(
 				name,
 				source: marketplaceSource(marketplace.source),
 				path,
-				pluginCount: path ? await marketplacePluginCount(path) : null,
+				pluginCount:
+					manifest && path ? await marketplacePluginCount(path) : null,
 				lastUpdated: stringValue(marketplace.lastUpdated),
 				canManage: true,
+				...(health ? { health, diagnostic } : {}),
 			});
 		}
 	} catch (error) {
@@ -1247,19 +1411,23 @@ async function inspectClaudeHome(
 			const marketplaceEntry = marketplaceEntries.get(
 				`${identity.marketplace}\0${identity.name}`,
 			);
-			if (manifest.error === "Plugin manifest is missing" && marketplaceEntry) {
+			let usedMarketplaceMetadata = false;
+			if (manifest.errorKind === "missing" && marketplaceEntry) {
 				manifest = {
 					path: marketplaceEntry.path,
 					raw: JSON.stringify(marketplaceEntry.value, null, 2),
 					value: marketplaceEntry.value,
 					error: null,
+					errorKind: null,
 				};
+				usedMarketplaceMetadata = true;
 			}
 			if (manifest.error) pluginErrors.push(manifest.error);
 			const metadata = {
 				...(marketplaceEntry?.value ?? {}),
 				...manifest.value,
 			};
+			const recovery = cacheRecovery(providerId, manifest);
 			const extension: ProviderExtension = {
 				id: extensionId(providerId, home, pluginId, safeRoot),
 				providerId,
@@ -1294,6 +1462,13 @@ async function inspectClaudeHome(
 				manifestPath: manifest.path,
 				manifestText: manifest.raw,
 				errors: pluginErrors,
+				nativeUpdate: nativeUpdateCapability(providerId),
+				...(recovery ? { cacheRecovery: recovery } : {}),
+				...(pluginErrors.length > 0
+					? { reviewHealth: "damaged" as const }
+					: usedMarketplaceMetadata
+						? { reviewHealth: "metadata_only" as const }
+						: {}),
 			};
 			extensions.push(extension);
 			installedReviewTargets.push({ extension, boundary: pluginHome });
@@ -1407,6 +1582,9 @@ async function inspectCodexHome(
 				providerId,
 				home,
 				`Configured marketplace lookup failed: ${errorMessage(error)}`,
+				isRetryableMarketplaceLookupError(error)
+					? "retry_inventory"
+					: undefined,
 			),
 		);
 	}
@@ -1428,6 +1606,7 @@ async function inspectCodexHome(
 		const installPath = discoveredRoot ?? safeFallback;
 		const manifest = await safeCodexManifest(installPath, cacheRoot);
 		const pluginErrors = manifest.error ? [manifest.error] : [];
+		const recovery = cacheRecovery(providerId, manifest);
 		const extension: ProviderExtension = {
 			id: extensionId(providerId, home, pluginId, installPath),
 			providerId,
@@ -1460,6 +1639,9 @@ async function inspectCodexHome(
 			manifestPath: manifest.path,
 			manifestText: manifest.raw,
 			errors: pluginErrors,
+			nativeUpdate: nativeUpdateCapability(providerId),
+			...(recovery ? { cacheRecovery: recovery } : {}),
+			...(manifest.error ? { reviewHealth: "damaged" as const } : {}),
 		};
 		extensions.push(extension);
 		installedReviewTargets.push({ extension, boundary: cacheRoot });
@@ -1469,21 +1651,25 @@ async function inspectCodexHome(
 		...configuredMarketplaceRoots.map((marketplace) => ({
 			...marketplace,
 			canManage: Boolean(marketplace.source),
+			preserveWhenUnhealthy: true,
 		})),
 		{
 			name: "openai-curated",
 			root: resolve(codexHome, ".tmp", "plugins"),
 			source: "Codex curated marketplace",
 			canManage: false,
+			preserveWhenUnhealthy: false,
 		},
 		{
 			name: "personal",
 			root: home.path,
 			source: "Personal marketplace",
 			canManage: false,
+			preserveWhenUnhealthy: false,
 		},
 	];
 	const seenMarketplaceRoots = new Set<string>();
+	const configuredMarketplaceConfig = recordValue(config.marketplaces);
 	for (const configuredMarketplace of marketplaceRoots) {
 		const snapshotRoot = resolve(configuredMarketplace.root);
 		const rootKey = snapshotRoot;
@@ -1495,14 +1681,55 @@ async function inspectCodexHome(
 			"plugins",
 			"marketplace.json",
 		);
+		const configuredEntry = recordValue(
+			configuredMarketplaceConfig[configuredMarketplace.name],
+		);
+		const preserveUnhealthyMarketplace = (
+			health: NonNullable<ProviderMarketplace["health"]>,
+			diagnostic: string,
+		): boolean => {
+			if (!configuredMarketplace.preserveWhenUnhealthy) return false;
+			marketplaces.push({
+				id: marketplaceId(providerId, home, configuredMarketplace.name),
+				providerId,
+				environment: home.environment,
+				environmentLabel: home.environmentLabel,
+				name: configuredMarketplace.name,
+				source: configuredMarketplace.source || "Codex marketplace snapshot",
+				path: snapshotRoot,
+				pluginCount: null,
+				lastUpdated: stringValue(configuredEntry.last_updated),
+				canManage: configuredMarketplace.canManage,
+				health,
+				diagnostic,
+			});
+			return true;
+		};
 		try {
 			const snapshotValue = await readOptionalJson(snapshotPath);
-			if (snapshotValue === null) continue;
-			const snapshot = recordValue(snapshotValue);
+			if (snapshotValue === null) {
+				preserveUnhealthyMarketplace(
+					"missing",
+					configuredMarketplace.canManage
+						? "Codex still configures this marketplace, but its local snapshot is missing. Refresh the source, or remove it if it no longer exists."
+						: "Codex's read-only built-in marketplace snapshot is missing. Restore it through the provider installation; Hlið cannot mutate this source.",
+				);
+				continue;
+			}
+			if (!isRecord(snapshotValue)) {
+				throw new InvalidMarketplaceSnapshotError(
+					"Marketplace snapshot root is not an object",
+				);
+			}
+			const snapshot = snapshotValue;
 			const name = stringValue(snapshot.name);
-			if (!name) continue;
-			const configuredEntry = recordValue(
-				recordValue(config.marketplaces)[name],
+			if (!name) {
+				throw new InvalidMarketplaceSnapshotError(
+					"Marketplace snapshot name is missing",
+				);
+			}
+			const namedConfiguredEntry = recordValue(
+				configuredMarketplaceConfig[name],
 			);
 			marketplaces.push({
 				id: marketplaceId(providerId, home, name),
@@ -1518,7 +1745,9 @@ async function inspectCodexHome(
 				pluginCount: Array.isArray(snapshot.plugins)
 					? snapshot.plugins.length
 					: null,
-				lastUpdated: stringValue(configuredEntry.last_updated),
+				lastUpdated:
+					stringValue(namedConfiguredEntry.last_updated) ||
+					stringValue(configuredEntry.last_updated),
 				canManage: configuredMarketplace.canManage,
 			});
 			for (const rawPlugin of Array.isArray(snapshot.plugins)
@@ -1562,13 +1791,25 @@ async function inspectCodexHome(
 				});
 			}
 		} catch (error) {
-			errors.push(
-				inventoryError(
-					providerId,
-					home,
-					`Marketplace snapshot is invalid: ${errorMessage(error)}`,
-				),
-			);
+			const health = marketplaceSnapshotFailureHealth(error);
+			const diagnostic =
+				health === "unavailable"
+					? configuredMarketplace.canManage
+						? `Hlið could not inspect Codex's local marketplace snapshot: ${errorMessage(error)} Retry inspection after checking filesystem access. The source remains configured and can still be removed.`
+						: `Hlið could not inspect Codex's read-only built-in marketplace snapshot: ${errorMessage(error)} Retry inspection after provider filesystem access is restored; Hlið cannot mutate this source.`
+					: configuredMarketplace.canManage
+						? `Codex's local marketplace snapshot is invalid: ${errorMessage(error)}`
+						: `Codex's read-only built-in marketplace snapshot is invalid: ${errorMessage(error)} Restore it through the provider installation; Hlið cannot mutate this source.`;
+			if (preserveUnhealthyMarketplace(health, diagnostic)) {
+				errors.push(
+					inventoryError(
+						providerId,
+						home,
+						diagnostic,
+						health === "unavailable" ? "retry_inventory" : undefined,
+					),
+				);
+			}
 		}
 	}
 
@@ -1588,6 +1829,25 @@ async function inspectCodexHome(
 			lastUpdated: "",
 			canManage: false,
 		});
+	}
+	for (const extension of extensions) {
+		if (extension.cacheRecovery?.action !== "restore_source") continue;
+		const manageableSource = marketplaces.some(
+			(marketplace) =>
+				marketplace.providerId === providerId &&
+				marketplace.environmentLabel === extension.environmentLabel &&
+				marketplace.name === extension.marketplace &&
+				marketplace.canManage,
+		);
+		const reviewablePackage = reviewTargets.some(
+			(target) =>
+				target.available.environmentLabel === extension.environmentLabel &&
+				target.available.pluginId === extension.pluginId &&
+				target.available.reviewLevel === "package",
+		);
+		if (manageableSource && reviewablePackage) {
+			extension.cacheRecovery.action = "marketplace_refresh_reinstall";
+		}
 	}
 	return {
 		extensions,
@@ -1683,6 +1943,14 @@ export async function reviewAvailableExtension(
 						installedTarget.boundary,
 					)
 				: null;
+		const reviewLevel: ExtensionReview["reviewLevel"] =
+			extension.reviewHealth === "metadata_only"
+				? "marketplace"
+				: extension.reviewHealth === "damaged" ||
+						!rootIsSafe ||
+						Boolean(manifest?.error)
+					? "unavailable"
+					: "package";
 		const [components, skillFiles] = rootIsSafe
 			? await Promise.all([
 					inspectComponents(
@@ -1719,9 +1987,13 @@ export async function reviewAvailableExtension(
 			homepage: extension.homepage,
 			installed: true,
 			enabled: extension.enabled,
-			reviewLevel: "package",
+			reviewLevel,
 			reviewMessage:
-				"Complete package review from the provider's installed plugin cache.",
+				reviewLevel === "package"
+					? "Complete package review from the provider's installed plugin cache."
+					: reviewLevel === "marketplace"
+						? "Marketplace metadata only. The installed package manifest is not present in the provider cache."
+						: "Installed package review is incomplete because the provider cache or manifest is damaged.",
 			reviewToken,
 			manifestPath: extension.manifestPath,
 			manifestText: extension.manifestText,

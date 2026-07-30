@@ -5,6 +5,7 @@ import {
 	getExtensionInventoryFn,
 	getExtensionReviewFn,
 	mutateExtensionFn,
+	refreshExtensionInventoryFn,
 } from "#/lib/serverFns/extensions";
 import type {
 	AvailableExtension,
@@ -183,6 +184,10 @@ function MarketplaceCard({
 	const [confirmingAction, setConfirmingAction] = useState<
 		"update" | "remove" | null
 	>(null);
+	const updateLabel =
+		marketplace.health === "invalid" ? "Repair source" : "Refresh source";
+	const updateConfirmText = updateLabel.toLowerCase();
+	const canRefreshSource = marketplace.health !== "unavailable";
 	return (
 		<div className="border border-border/70 bg-secondary/40 p-3 min-w-0">
 			<div className="flex flex-wrap items-center justify-between gap-2">
@@ -203,21 +208,26 @@ function MarketplaceCard({
 					{marketplace.path}
 				</div>
 			)}
+			{marketplace.diagnostic && (
+				<div className="mt-2 border border-status-warning/30 bg-status-warning/5 px-2 py-1.5 text-[10px] text-status-warning">
+					{marketplace.diagnostic}
+				</div>
+			)}
 			<div className="mt-2 flex flex-wrap items-center justify-between gap-2">
 				<span className="text-[9px] tracking-widest uppercase text-muted-foreground">
 					{marketplace.canManage ? "Configured source" : "Built in"}
 				</span>
-				{marketplace.canManage && onUpgrade && onRemove && (
+				{marketplace.canManage && (onUpgrade || onRemove) && (
 					<div
 						className={`flex flex-wrap items-center justify-end gap-1.5 ${
 							confirmingAction ? "w-full" : "w-full sm:w-auto"
 						}`}
 					>
-						{confirmingAction !== "remove" && (
+						{canRefreshSource && onUpgrade && confirmingAction !== "remove" && (
 							<ConfirmAction
 								key="update"
-								label={`update ${marketplace.name}?`}
-								confirmText="update"
+								label={`${updateConfirmText} ${marketplace.name}?`}
+								confirmText={updateConfirmText}
 								onConfirm={onUpgrade}
 								onOpenChange={(open) =>
 									setConfirmingAction(open ? "update" : null)
@@ -226,18 +236,18 @@ function MarketplaceCard({
 								className="justify-end"
 								trigger={(open) => (
 									<button
-										aria-label={`Update ${marketplace.name}`}
+										aria-label={`${updateLabel} ${marketplace.name}`}
 										type="button"
 										disabled={mutating}
 										onClick={open}
 										className="border border-border px-2 py-1 text-[9px] tracking-widest uppercase disabled:opacity-40"
 									>
-										{mutating ? "Working…" : "Update"}
+										{mutating ? "Working…" : updateLabel}
 									</button>
 								)}
 							/>
 						)}
-						{confirmingAction !== "update" && (
+						{onRemove && confirmingAction !== "update" && (
 							<ConfirmAction
 								key="remove"
 								label={`remove ${marketplace.name}? ${
@@ -543,6 +553,18 @@ function ExtensionCard({
 			.filter((item) => ["hooks", "mcp", "scripts", "apps"].includes(item.kind))
 			.map((item) => item.label),
 	];
+	const repairingCache = extension.cacheRecovery?.action === "native_update";
+	const manifestSummary = review
+		? review.reviewLevel === "package"
+			? "Complete manifest"
+			: review.reviewLevel === "marketplace"
+				? "Marketplace metadata"
+				: "Manifest unavailable"
+		: extension.reviewHealth === "metadata_only"
+			? "Marketplace metadata"
+			: extension.reviewHealth === "damaged"
+				? "Manifest unavailable"
+				: "Complete manifest";
 	const loadReview = useCallback(async () => {
 		if (review || reviewing) return;
 		setReviewing(true);
@@ -612,6 +634,34 @@ function ExtensionCard({
 						))}
 					</div>
 				)}
+				{extension.cacheRecovery?.action ===
+					"marketplace_refresh_reinstall" && (
+					<div className="border border-status-warning/30 bg-status-warning/5 px-3 py-2 text-xs text-status-warning">
+						<div>
+							{extension.nativeUpdate?.reason ??
+								"Codex does not expose a native per-plugin update command."}
+						</div>
+						<div className="mt-1 text-muted-foreground">
+							Refresh the {extension.marketplace || "configured"} marketplace
+							source, then uninstall this package and install it again from
+							Marketplace after reviewing it.
+						</div>
+					</div>
+				)}
+				{extension.cacheRecovery?.action === "restore_source" && (
+					<div className="border border-status-warning/30 bg-status-warning/5 px-3 py-2 text-xs text-status-warning">
+						<div>
+							{extension.nativeUpdate?.reason ??
+								"Codex does not expose a native per-plugin update command."}
+						</div>
+						<div className="mt-1 text-muted-foreground">
+							Hlið cannot prove that a manageable source and reviewable
+							replacement package are available. Restore or add the package
+							source, refresh inventory, and review the replacement before
+							removing this installation.
+						</div>
+					</div>
+				)}
 				<div className="flex flex-wrap items-center justify-between gap-3 border border-border/70 bg-secondary/25 px-3 py-2">
 					<div className="text-xs text-muted-foreground">
 						<span className="text-foreground/85">
@@ -636,12 +686,13 @@ function ExtensionCard({
 				{onUpdate && (
 					<div className="flex flex-wrap items-center justify-between gap-3 border border-border/70 bg-secondary/25 px-3 py-2">
 						<div className="text-xs text-muted-foreground">
-							Check the configured Claude marketplace and update this installed
-							plugin in place.
+							{repairingCache
+								? "The installed cache is missing or corrupt. Ask Claude to repair it through its native plugin update command."
+								: "Check the configured Claude marketplace and update this installed plugin in place."}
 						</div>
 						<ConfirmAction
-							label={`update ${extension.name}?`}
-							confirmText="update"
+							label={`${repairingCache ? "repair" : "update"} ${extension.name}?`}
+							confirmText={repairingCache ? "repair" : "update"}
 							onConfirm={onUpdate}
 							stacked
 							className="justify-end flex-wrap"
@@ -652,7 +703,13 @@ function ExtensionCard({
 									onClick={open}
 									className="border border-primary/40 px-3 py-1.5 text-[10px] tracking-widest uppercase text-primary hover:bg-primary/10 disabled:opacity-40"
 								>
-									{mutating ? "Updating…" : "Update"}
+									{mutating
+										? repairingCache
+											? "Repairing…"
+											: "Updating…"
+										: repairingCache
+											? "Repair cache"
+											: "Update"}
 								</button>
 							)}
 						/>
@@ -708,11 +765,16 @@ function ExtensionCard({
 						{reviewError}
 					</div>
 				)}
+				{review && review.reviewLevel !== "package" && (
+					<div className="border border-status-warning/30 bg-status-warning/5 px-3 py-2 text-xs text-status-warning">
+						{review.reviewMessage}
+					</div>
+				)}
 				<TrustReviewAndManifest
 					skillFiles={review?.skillFiles ?? []}
 					trustSignals={trustSignals}
 					trustFallbackMessage="The manifest does not declare additional trust capabilities."
-					manifestSummary="Complete manifest"
+					manifestSummary={manifestSummary}
 					manifestPath={extension.manifestPath}
 					manifestText={extension.manifestText || "Manifest unavailable"}
 				/>
@@ -781,21 +843,32 @@ export function ExtensionsSection() {
 	const [marketplaceRef, setMarketplaceRef] = useState("");
 	const [marketplaceSparse, setMarketplaceSparse] = useState("");
 
-	const load = useCallback(async () => {
-		setLoading(true);
-		setError(null);
-		try {
-			setInventory(await getExtensionInventoryFn());
-		} catch (cause) {
-			setError(
-				cause instanceof Error
-					? cause.message
-					: "Unable to inspect provider extensions",
-			);
-		} finally {
-			setLoading(false);
-		}
-	}, []);
+	const loadInventory = useCallback(
+		async (request: () => Promise<ExtensionInventory>) => {
+			setLoading(true);
+			setError(null);
+			try {
+				setInventory(await request());
+			} catch (cause) {
+				setError(
+					cause instanceof Error
+						? cause.message
+						: "Unable to inspect provider extensions",
+				);
+			} finally {
+				setLoading(false);
+			}
+		},
+		[],
+	);
+	const load = useCallback(
+		() => loadInventory(getExtensionInventoryFn),
+		[loadInventory],
+	);
+	const retryInspection = useCallback(
+		() => loadInventory(refreshExtensionInventoryFn),
+		[loadInventory],
+	);
 
 	useEffect(() => {
 		void load();
@@ -1027,7 +1100,7 @@ export function ExtensionsSection() {
 					/>
 					<button
 						type="button"
-						onClick={() => void load()}
+						onClick={() => void retryInspection()}
 						disabled={loading}
 						className="self-start border border-border px-3 py-1.5 text-[10px] tracking-widest uppercase disabled:opacity-50"
 					>
@@ -1177,12 +1250,24 @@ export function ExtensionsSection() {
 					<p className="text-xs text-destructive">{mutationError}</p>
 				)}
 				{providerErrors.map((item) => (
-					<p
+					<div
 						key={`${item.environmentLabel}-${item.message}`}
-						className="text-xs text-status-warning"
+						className="flex flex-wrap items-center justify-between gap-2 border border-status-warning/20 bg-status-warning/5 px-3 py-2 text-xs text-status-warning"
 					>
-						{item.environmentLabel}: {item.message}
-					</p>
+						<span>
+							{item.environmentLabel}: {item.message}
+						</span>
+						{item.recovery === "retry_inventory" && (
+							<button
+								type="button"
+								onClick={() => void retryInspection()}
+								disabled={loading}
+								className="border border-status-warning/40 px-2 py-1 text-[9px] tracking-widest uppercase disabled:opacity-40"
+							>
+								{loading ? "Retrying…" : "Retry inspection"}
+							</button>
+						)}
+					</div>
 				))}
 			</div>
 			{loading &&
@@ -1287,7 +1372,7 @@ export function ExtensionsSection() {
 											extension={extension}
 											mutating={mutatingId === extension.id}
 											onUpdate={
-												extension.providerId === "claude"
+												extension.nativeUpdate?.available === true
 													? () =>
 															void mutateExtension({
 																action: "update",

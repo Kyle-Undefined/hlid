@@ -14,8 +14,10 @@ import {
 import { escapeRegExp } from "../lib/utils";
 import {
 	discoverExtensionInventory,
+	type ExtensionInventory,
 	type ExtensionProviderId,
 	extensionEnvironmentId,
+	type ProviderExtension,
 	type ProviderExtensionHome,
 	type ProviderMarketplace,
 	providerExtensionHomes,
@@ -88,11 +90,18 @@ export type ExtensionMutationResult = {
 
 export class ExtensionMutationError extends Error {
 	readonly stateChanged: boolean;
+	/** Refresh caches even when a verified rollback restored the visible state. */
+	readonly refreshRequired: boolean;
 
-	constructor(message: string, stateChanged = false) {
+	constructor(
+		message: string,
+		stateChanged = false,
+		refreshRequired = stateChanged,
+	) {
 		super(message);
 		this.name = "ExtensionMutationError";
 		this.stateChanged = stateChanged;
+		this.refreshRequired = refreshRequired;
 	}
 }
 
@@ -450,6 +459,19 @@ function providerErrorWarning(action: string): string {
 	return `The provider reported an error during ${action}, but its refreshed state confirms the requested change.`;
 }
 
+function marketplaceRecoveryMessage(
+	retriedTransientFailure: boolean,
+	output: string,
+	stateChanged: boolean,
+): string {
+	if (retriedTransientFailure && isTransientMarketplaceNetworkFailure(output)) {
+		return stateChanged
+			? "The marketplace source still appears offline after one automatic retry, and provider state changed unexpectedly. Hlið refreshed its inventory; review the current source before choosing Refresh source or Repair source again."
+			: "The marketplace source still appears offline after one automatic retry. Choose Refresh source or Repair source when connectivity returns.";
+	}
+	return recoveryMessage(stateChanged);
+}
+
 async function discoverAfterMutation(
 	config: HlidConfig,
 	home: ProviderExtensionHome,
@@ -471,6 +493,111 @@ async function discoverAfterMutation(
 	}
 }
 
+function providerEnvironmentInventoryErrors(
+	inventory: ExtensionInventory,
+	target: LocatedExtension,
+): ExtensionInventory["errors"] {
+	return inventory.errors.filter(
+		(error) =>
+			error.providerId === target.providerId &&
+			error.environment === target.home.environment &&
+			error.environmentLabel === target.environmentLabel,
+	);
+}
+
+function matchesLocatedExtension(
+	extension: ProviderExtension,
+	target: LocatedExtension,
+): boolean {
+	return (
+		extension.providerId === target.providerId &&
+		extension.pluginId === target.pluginId &&
+		extension.environment === target.home.environment &&
+		extension.environmentLabel === target.environmentLabel &&
+		extension.scope === target.scope
+	);
+}
+
+function unsafeFreshInstallRollbackError(
+	verificationFailure: string,
+): ExtensionMutationError {
+	return new ExtensionMutationError(
+		`${verificationFailure} Hlið did not attempt automatic rollback because the pre-install provider inventory was incomplete and could not prove that this exact plugin was absent. Hlið refreshed its inventory; review the current state before taking another action.`,
+		true,
+	);
+}
+
+async function rollbackFreshInstall(
+	config: HlidConfig,
+	target: LocatedExtension,
+	dependencies: ExtensionMutationDependencies,
+	verificationFailure: string,
+): Promise<never> {
+	const command = commandForMutation(config, target, "uninstall", dependencies);
+	const rollbackArgs =
+		target.providerId === "claude"
+			? [...command.args, "--keep-data"]
+			: command.args;
+	const result = await runProviderCommand(
+		dependencies.run ?? runBoundedProcess,
+		command.executable,
+		rollbackArgs,
+		{
+			timeoutMs: MUTATION_TIMEOUT_MS,
+			timeoutError: "Plugin rollback timed out",
+			maxOutputChars: MAX_OUTPUT_CHARS,
+			shell: command.shell,
+			cwd: command.cwd,
+		},
+	);
+	const discover = dependencies.discover ?? discoverExtensionInventory;
+	let refreshed: ExtensionInventory;
+	try {
+		refreshed = await discover(config, [target.home]);
+	} catch (error) {
+		const detail = error instanceof Error ? `: ${error.message}` : "";
+		throw new ExtensionMutationError(
+			`${verificationFailure} Hlið attempted the provider-native uninstall because this exact plugin was absent before installation, but could not verify the rollback${detail}. Refresh before taking another action.`,
+			true,
+		);
+	}
+	const inventoryErrors = providerEnvironmentInventoryErrors(refreshed, target);
+	if (inventoryErrors.length > 0) {
+		throw new ExtensionMutationError(
+			`${verificationFailure} Hlið attempted the provider-native uninstall because this exact plugin was absent before installation, but the refreshed provider inventory was incomplete: ${inventoryErrors
+				.map((error) => error.message)
+				.join(" ")} Refresh before taking another action.`,
+			true,
+		);
+	}
+	const stillInstalled = refreshed.extensions.some((item) =>
+		matchesLocatedExtension(item, target),
+	);
+	if (!stillInstalled) {
+		const providerDetail =
+			result.code === 0
+				? ""
+				: ` The provider reported ${failureMessage(
+						"uninstall",
+						result.code,
+						result.output,
+					)}, but refreshed state confirms removal.`;
+		throw new ExtensionMutationError(
+			`${verificationFailure} Hlið used the provider-native uninstall and verified that this plugin is no longer installed.${providerDetail}`,
+			false,
+			true,
+		);
+	}
+	throw new ExtensionMutationError(
+		`${verificationFailure} Hlið attempted the provider-native uninstall because this exact plugin was absent before installation, but the plugin remains installed. ${failureMessage(
+			"uninstall",
+			result.code,
+			result.output,
+		)} ${recoveryMessage(true)}`,
+		true,
+	);
+}
+
 function marketplaceStateFingerprint(
 	items: readonly ProviderMarketplace[],
 	providerId: ExtensionProviderId,
@@ -485,6 +612,8 @@ function marketplaceStateFingerprint(
 				pluginCount: item.pluginCount,
 				lastUpdated: item.lastUpdated,
 				canManage: item.canManage,
+				health: item.health,
+				diagnostic: item.diagnostic,
 			}))
 			.sort((a, b) => a.id.localeCompare(b.id)),
 	);
@@ -492,14 +621,18 @@ function marketplaceStateFingerprint(
 
 function isTransientMarketplaceNetworkFailure(output: string): boolean {
 	return [
+		/marketplace update timed out/i,
 		/connection (?:was )?reset/i,
+		/(?:connection|request) timed out/i,
 		/recv failure/i,
 		/failed to connect/i,
 		/could not resolve host/i,
+		/network (?:is )?unreachable/i,
 		/operation timed out/i,
 		/tls.*(?:timeout|closed|eof)/i,
 		/http\/2 stream.*(?:error|closed)/i,
 		/unexpected eof/i,
+		/\b(?:eai_again|econnaborted|econnrefused|econnreset|ehostunreach|enetunreach|enotfound|etimedout|und_err_connect_timeout)\b/i,
 	].some((pattern) => pattern.test(output));
 }
 
@@ -626,7 +759,7 @@ export async function mutateProviderExtension(
 		if (!target) throw new Error("Installed extension not found");
 		if (target.version !== input.expectedVersion) {
 			throw new Error(
-				"The installed version changed. Refresh before changing this extension.",
+				`The requested installed version was ${input.expectedVersion}, but the provider now reports ${target.version}. Refresh before changing this extension.`,
 			);
 		}
 		if (target.enabled !== input.expectedEnabled) {
@@ -763,7 +896,11 @@ export async function mutateProviderExtension(
 			providerId = input.providerId;
 		} else {
 			const located = await locateMarketplace(config, input.id, dependencies);
-			if (!located) throw new Error("Marketplace source not found");
+			if (!located) {
+				throw new Error(
+					"The configured marketplace source is no longer present. Refresh Extensions, then add or restore the source before retrying.",
+				);
+			}
 			home = located.home;
 			marketplace = located.marketplace;
 			providerId = marketplace.providerId;
@@ -848,6 +985,20 @@ export async function mutateProviderExtension(
 				const providerMarketplaces = refreshed.marketplaces.filter(
 					(item) => item.providerId === providerId,
 				);
+				const inventoryErrors = refreshed.errors.filter(
+					(error) =>
+						error.providerId === providerId &&
+						error.environment === home.environment &&
+						error.environmentLabel === home.environmentLabel,
+				);
+				if (inventoryErrors.length > 0) {
+					throw new ExtensionMutationError(
+						`${providerFailure ? `${providerFailure} ` : ""}Hlið could not verify the marketplace change because the refreshed provider inventory was incomplete: ${inventoryErrors
+							.map((error) => error.message)
+							.join(" ")} Refresh before taking another action.`,
+						true,
+					);
+				}
 				const refreshedMarketplace = marketplace
 					? providerMarketplaces.find(
 							(item) => item.id === marketplace.id && item.canManage,
@@ -863,16 +1014,36 @@ export async function mutateProviderExtension(
 							: Boolean(
 									refreshedMarketplace &&
 										marketplace &&
+										!refreshedMarketplace.health &&
 										(refreshedMarketplace.lastUpdated !==
 											marketplace.lastUpdated ||
 											refreshedMarketplace.source !== marketplace.source ||
 											refreshedMarketplace.path !== marketplace.path ||
 											refreshedMarketplace.pluginCount !==
-												marketplace.pluginCount),
+												marketplace.pluginCount ||
+											refreshedMarketplace.health !== marketplace.health ||
+											refreshedMarketplace.diagnostic !==
+												marketplace.diagnostic),
 								);
 				const providerStateChanged =
 					marketplaceStateFingerprint(before.marketplaces, providerId) !==
 					marketplaceStateFingerprint(refreshed.marketplaces, providerId);
+				if (
+					input.action === "upgrade_marketplace" &&
+					refreshedMarketplace?.health
+				) {
+					const recoveryAction =
+						refreshedMarketplace.health === "invalid"
+							? "Repair source"
+							: refreshedMarketplace.health === "missing"
+								? "Refresh source"
+								: "Retry inspection";
+					throw new ExtensionMutationError(
+						`${providerFailure ? `${providerFailure} ` : ""}The refreshed marketplace source is still ${refreshedMarketplace.health}. Choose ${recoveryAction} after resolving the provider diagnostic. ${recoveryMessage(providerStateChanged)}`,
+						providerStateChanged,
+						true,
+					);
+				}
 				if (result.code !== 0 && !desiredStateReached) {
 					const message = failureMessage(
 						input.action,
@@ -884,7 +1055,11 @@ export async function mutateProviderExtension(
 							retriedTransientFailure
 								? `${message} Hlið retried once after a transient network failure.`
 								: message
-						} ${recoveryMessage(providerStateChanged)}`,
+						} ${marketplaceRecoveryMessage(
+							retriedTransientFailure,
+							result.output,
+							providerStateChanged,
+						)}`,
 						providerStateChanged,
 					);
 				}
@@ -943,19 +1118,21 @@ export async function mutateProviderExtension(
 		target.home.path,
 		target.environmentLabel,
 		async () => {
+			let freshInstallRollbackSafe = false;
+			let reviewedInstallVersion: string | null = null;
 			if (input.action === "install") {
 				const current = await (
 					dependencies.discover ?? discoverExtensionInventory
 				)(config, [target.home]);
 				if (
-					current.extensions.some(
-						(item) =>
-							item.providerId === target.providerId &&
-							item.pluginId === target.pluginId,
+					current.extensions.some((item) =>
+						matchesLocatedExtension(item, target),
 					)
 				) {
 					throw new Error("This extension is already installed");
 				}
+				freshInstallRollbackSafe =
+					providerEnvironmentInventoryErrors(current, target).length === 0;
 				const review = await (dependencies.review ?? reviewAvailableExtension)(
 					config,
 					input.id,
@@ -967,14 +1144,28 @@ export async function mutateProviderExtension(
 						"The cached package changed after review. Review it again before installing.",
 					);
 				}
+				reviewedInstallVersion = review.version;
 			} else if (target.version !== input.expectedVersion) {
 				throw new Error(
-					`The installed version changed. Refresh before ${
+					`The requested installed version was ${input.expectedVersion}, but the provider now reports ${target.version}. Refresh before ${
 						input.action === "update" ? "updating" : "removing"
 					} this extension.`,
 				);
 			}
 
+			const failFreshInstallVerification = (
+				verificationFailure: string,
+			): Promise<never> => {
+				if (!freshInstallRollbackSafe) {
+					throw unsafeFreshInstallRollbackError(verificationFailure);
+				}
+				return rollbackFreshInstall(
+					config,
+					target,
+					dependencies,
+					verificationFailure,
+				);
+			};
 			const command = commandForMutation(
 				config,
 				target,
@@ -998,18 +1189,73 @@ export async function mutateProviderExtension(
 					cwd: command.cwd,
 				},
 			);
-			const refreshed = await discoverAfterMutation(
-				config,
-				target.home,
-				dependencies,
-				result.code !== 0
-					? failureMessage(input.action, result.code, result.output)
-					: undefined,
+			let refreshed: ExtensionInventory;
+			try {
+				refreshed = await discoverAfterMutation(
+					config,
+					target.home,
+					dependencies,
+					result.code !== 0
+						? failureMessage(input.action, result.code, result.output)
+						: undefined,
+				);
+			} catch (error) {
+				if (input.action === "install") {
+					const verificationFailure =
+						error instanceof Error
+							? error.message
+							: "Hlið could not verify the newly installed plugin.";
+					return failFreshInstallVerification(verificationFailure);
+				}
+				throw error;
+			}
+			const inventoryErrors = providerEnvironmentInventoryErrors(
+				refreshed,
+				target,
 			);
-			const refreshedExtension = refreshed.extensions.find(
-				(item) => item.id === input.id || item.pluginId === target.pluginId,
+			if (inventoryErrors.length > 0) {
+				const verificationFailure = `${result.code !== 0 ? `${failureMessage(input.action, result.code, result.output)} ` : ""}Hlið could not verify the plugin change because the refreshed provider inventory was incomplete: ${inventoryErrors
+					.map((error) => error.message)
+					.join(" ")} Refresh before taking another action.`;
+				if (input.action === "install") {
+					return failFreshInstallVerification(verificationFailure);
+				}
+				throw new ExtensionMutationError(verificationFailure, true);
+			}
+			const refreshedExtension = refreshed.extensions.find((item) =>
+				matchesLocatedExtension(item, target),
 			);
 			const stillInstalled = Boolean(refreshedExtension);
+			if (input.action === "install" && !refreshedExtension) {
+				const verificationFailure = `${result.code !== 0 ? `${failureMessage(input.action, result.code, result.output)} ` : ""}The provider command completed, but Hlið could not verify that the reviewed extension was installed.`;
+				return failFreshInstallVerification(verificationFailure);
+			}
+			if (input.action === "install" && refreshedExtension) {
+				const expectedVersion = (reviewedInstallVersion ?? "").trim();
+				const actualVersion = refreshedExtension.version.trim();
+				if (
+					expectedVersion &&
+					actualVersion &&
+					expectedVersion !== "unknown" &&
+					actualVersion !== "unknown" &&
+					expectedVersion !== actualVersion
+				) {
+					const verificationFailure = `The provider installed version ${actualVersion}, but the reviewed marketplace version was ${expectedVersion}.`;
+					return failFreshInstallVerification(verificationFailure);
+				}
+				if (
+					refreshedExtension.reviewHealth === "damaged" ||
+					refreshedExtension.cacheRecovery
+				) {
+					const packageError =
+						refreshedExtension.errors[0] ??
+						(refreshedExtension.cacheRecovery
+							? `The installed package cache is ${refreshedExtension.cacheRecovery.issue}.`
+							: "The installed package review is damaged.");
+					const verificationFailure = `The provider installed the plugin, but its package cache could not be verified: ${packageError}.`;
+					return failFreshInstallVerification(verificationFailure);
+				}
+			}
 			const desiredStateReached =
 				input.action === "install"
 					? stillInstalled

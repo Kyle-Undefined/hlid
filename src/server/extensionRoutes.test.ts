@@ -87,6 +87,34 @@ describe("extension inventory routes", () => {
 		expect(discover).toHaveBeenCalledOnce();
 	});
 
+	it("bypasses the catalog cache for an explicit refresh read", async () => {
+		const refreshed = {
+			...inventory,
+			generatedAt: "2026-07-22T00:00:01.000Z",
+		};
+		const discover = vi
+			.fn()
+			.mockResolvedValueOnce(inventory)
+			.mockResolvedValueOnce(refreshed);
+		const handle = createExtensionRouteHandler({
+			loadConfig: () => ({}) as HlidConfig,
+			discover,
+		});
+		const cached = new Request("http://localhost/extensions/catalog");
+		const forced = new Request("http://localhost/extensions/catalog?refresh=1");
+
+		expect(await (await handle(new URL(cached.url), cached))?.json()).toEqual(
+			inventory,
+		);
+		expect(await (await handle(new URL(cached.url), cached))?.json()).toEqual(
+			inventory,
+		);
+		expect(await (await handle(new URL(forced.url), forced))?.json()).toEqual(
+			refreshed,
+		);
+		expect(discover).toHaveBeenCalledTimes(2);
+	});
+
 	it("invalidates the catalog cache after provider state changes", async () => {
 		const discover = vi.fn().mockResolvedValue(inventory);
 		const mutate = vi.fn().mockResolvedValue({
@@ -350,6 +378,39 @@ describe("extension inventory routes", () => {
 			stateChanged: true,
 		});
 		expect(onChanged).toHaveBeenCalledOnce();
+	});
+
+	it("refreshes cached provider state after a verified rollback", async () => {
+		const discover = vi.fn().mockResolvedValue(inventory);
+		const onChanged = vi.fn();
+		const handle = createExtensionRouteHandler({
+			loadConfig: () => ({}) as HlidConfig,
+			discover,
+			mutate: vi
+				.fn()
+				.mockRejectedValue(
+					new ExtensionMutationError("install rolled back", false, true),
+				),
+			onChanged,
+		});
+		const catalog = new Request("http://localhost/extensions/catalog");
+		await handle(new URL(catalog.url), catalog);
+		const request = new Request("http://localhost/extensions/mutate", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				action: "install",
+				id: "0123456789abcdef01234567",
+				reviewToken: "f".repeat(64),
+			}),
+		});
+
+		const response = await handle(new URL(request.url), request);
+		expect(await response?.json()).toEqual({ error: "install rolled back" });
+		expect(onChanged).toHaveBeenCalledOnce();
+
+		await handle(new URL(catalog.url), catalog);
+		expect(discover).toHaveBeenCalledTimes(2);
 	});
 
 	it("ignores unsupported methods and unrelated paths", async () => {
