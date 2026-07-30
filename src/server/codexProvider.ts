@@ -664,6 +664,35 @@ function filePathFromItem(value: unknown): string | null {
 	return null;
 }
 
+function commandFromProviderInput(value: unknown, depth = 0): string | null {
+	if (depth > 3) return null;
+	const obj = asObj(value);
+	for (const key of ["command", "cmd"]) {
+		const command = obj[key];
+		if (typeof command === "string" && command.trim()) return command;
+	}
+	for (const key of [
+		"tool_input",
+		"toolInput",
+		"arguments",
+		"input",
+		"params",
+		"parameters",
+		"request",
+		"payload",
+	]) {
+		const command = commandFromProviderInput(obj[key], depth + 1);
+		if (command) return command;
+	}
+	return null;
+}
+
+function commandFromStartedItem(value: unknown): string | null {
+	const item = asObj(value);
+	if (item.type !== "commandExecution") return null;
+	return commandFromProviderInput(item);
+}
+
 export function codexSubagentStatus(
 	value: CollabAgentStatus | null | undefined,
 	previous?: SubagentSnapshot["status"],
@@ -2559,8 +2588,18 @@ class CodexAgentSession implements AgentSession {
 			method === "applyPatchApproval"
 				? (filePathFromItem(startedItem) ?? filePathFromItem(params))
 				: null;
-		const toolName = filePath ? "Write" : method;
-		const toolInput = filePath ? { file_path: filePath } : params;
+		const command =
+			method === "item/commandExecution/requestApproval" ||
+			method === "execCommandApproval"
+				? (commandFromProviderInput(params) ??
+					commandFromStartedItem(startedItem))
+				: null;
+		const toolName = filePath ? "Write" : command ? "bash" : method;
+		const toolInput = filePath
+			? { file_path: filePath }
+			: command
+				? { command }
+				: params;
 		const decision = await this.params.canUseTool(toolName, toolInput, {
 			toolUseID: itemId,
 			signal: this.params.signal ?? new AbortController().signal,

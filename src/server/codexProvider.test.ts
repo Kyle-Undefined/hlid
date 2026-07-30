@@ -4180,6 +4180,80 @@ describe("CodexAgentSession — notifications", () => {
 		session.cancel();
 	});
 
+	it("routes command approvals through canonical bash inputs", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi.fn().mockResolvedValue({ behavior: "allow" });
+		const session = new CodexProvider().query(baseCodexParams({ canUseTool }));
+		await session.send("inspect it");
+
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			item: {
+				id: "command-from-item",
+				type: "commandExecution",
+				command: "git status",
+			},
+		});
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 78,
+					method: "item/commandExecution/requestApproval",
+					params: { threadId: "thread-1", itemId: "command-from-item" },
+				})}\n`,
+			),
+		);
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 79,
+					method: "execCommandApproval",
+					params: {
+						threadId: "thread-1",
+						approvalId: "legacy-command",
+						request: { cmd: "git diff --stat" },
+					},
+				})}\n`,
+			),
+		);
+
+		await vi.waitFor(() => expect(canUseTool).toHaveBeenCalledTimes(2));
+		expect(canUseTool).toHaveBeenNthCalledWith(
+			1,
+			"bash",
+			{ command: "git status" },
+			expect.objectContaining({ toolUseID: "command-from-item" }),
+		);
+		expect(canUseTool).toHaveBeenNthCalledWith(
+			2,
+			"bash",
+			{ command: "git diff --stat" },
+			expect.objectContaining({ toolUseID: "legacy-command" }),
+		);
+		await vi.waitFor(() => {
+			const responses = writes
+				.map((line) => JSON.parse(line))
+				.filter((message) => message.id === 78 || message.id === 79);
+			expect(responses).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						id: 78,
+						result: { decision: "accept" },
+					}),
+					expect.objectContaining({
+						id: 79,
+						result: { decision: "accept" },
+					}),
+				]),
+			);
+		});
+		session.cancel();
+	});
+
 	it("uses approval boundaries as the auto-sleep fallback when Umbod is disabled", async () => {
 		const { proc, writes } = makeFakeSessionProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);

@@ -16,7 +16,8 @@ const testState = vi.hoisted(() => ({
 		fetch: (request: Request) => Promise<Response>;
 	}>,
 	readUmbodCalls: vi.fn(),
-	invalidateUmbodAnalytics: vi.fn(),
+	closeUmbodAnalytics: vi.fn(),
+	markUmbodAnalyticsStale: vi.fn(),
 }));
 
 vi.mock("#/lib/paths", () => ({
@@ -31,7 +32,8 @@ vi.mock("#/server/config", () => ({
 vi.mock("#/server/umbodAnalyticsWorkerClient", () => ({
 	readUmbodAnalytics: vi.fn(),
 	readUmbodCalls: testState.readUmbodCalls,
-	invalidateUmbodAnalytics: testState.invalidateUmbodAnalytics,
+	closeUmbodAnalytics: testState.closeUmbodAnalytics,
+	markUmbodAnalyticsStale: testState.markUmbodAnalyticsStale,
 }));
 vi.mock("@umbod/core", () => ({
 	loadManifest: vi.fn(async () => ({
@@ -63,6 +65,7 @@ Object.assign(globalThis, {
 });
 
 import { createUmbod, findAdapterById, loadManifest } from "@umbod/core";
+import { getDataRevisions, resetDataRevisionsForTesting } from "./dataRevision";
 import {
 	authorizeHlidTool,
 	bootstrapUmbod,
@@ -112,6 +115,47 @@ describe("saveUmbodManifest", () => {
 		expect(createUmbod).toHaveBeenCalledTimes(engineCount + 1);
 		expect(originalEngine.close).not.toHaveBeenCalled();
 		expect(replacement.auditLog).toBe(originalEngine.auditLog);
+		expect(testState.markUmbodAnalyticsStale).toHaveBeenCalled();
+		expect(getDataRevisions().umbod).toBe(1);
+	});
+
+	it("marks every activity stale immediately and coalesces revision broadcasts", async () => {
+		vi.useFakeTimers();
+		mkdirSync(testState.root, { recursive: true });
+		writeFileSync(join(testState.root, "umbod.toml"), manifest("allow"));
+		await bootstrapUmbod();
+		const options = vi.mocked(createUmbod).mock.calls.at(-1)?.[0] as {
+			onActivity?: (entry: unknown) => void;
+		};
+		testState.markUmbodAnalyticsStale.mockClear();
+
+		options.onActivity?.({});
+		options.onActivity?.({});
+		options.onActivity?.({});
+
+		expect(testState.markUmbodAnalyticsStale).toHaveBeenCalledTimes(3);
+		expect(getDataRevisions().umbod).toBe(0);
+		await vi.advanceTimersByTimeAsync(99);
+		expect(getDataRevisions().umbod).toBe(0);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(getDataRevisions().umbod).toBe(1);
+	});
+
+	it("publishes a manifest save immediately without a trailing activity bump", async () => {
+		vi.useFakeTimers();
+		mkdirSync(testState.root, { recursive: true });
+		writeFileSync(join(testState.root, "umbod.toml"), manifest("allow"));
+		await bootstrapUmbod();
+		const options = vi.mocked(createUmbod).mock.calls.at(-1)?.[0] as {
+			onActivity?: (entry: unknown) => void;
+		};
+		options.onActivity?.({});
+
+		await saveUmbodManifest(manifest("approve"));
+
+		expect(getDataRevisions().umbod).toBe(1);
+		await vi.advanceTimersByTimeAsync(100);
+		expect(getDataRevisions().umbod).toBe(1);
 	});
 
 	it("keeps the existing manifest and removes the candidate when validation fails", async () => {
@@ -189,6 +233,86 @@ describe("saveUmbodManifest", () => {
 			total: 1,
 			totalPages: 1,
 		});
+	});
+
+	it.each([
+		["command", { command: "git status" }],
+		["cmd", { cmd: "git status" }],
+		["arguments.command", { arguments: { command: "git status" } }],
+		["nested provider input", { toolInput: { input: { cmd: "git status" } } }],
+	])("normalizes direct %s inputs like the Codex hook", async (_label, input) => {
+		mkdirSync(testState.root, { recursive: true });
+		writeFileSync(join(testState.root, "umbod.toml"), manifest("allow"));
+		vi.mocked(findAdapterById).mockReturnValueOnce({
+			normalizePayload: vi.fn(() => ({ tool: "bash" })),
+		} as never);
+		await bootstrapUmbod();
+		const engine = vi.mocked(createUmbod).mock.results.at(-1)?.value as {
+			authorize: ReturnType<typeof vi.fn>;
+		};
+		engine.authorize.mockResolvedValue({
+			decision: "allow",
+			policyDecision: "allow",
+			entry: { reason: "matched command rule" },
+		});
+
+		await authorizeHlidTool({
+			agent: "codex",
+			tool: "Exec_Command",
+			input,
+			cwd: testState.root,
+			sessionId: "db-session",
+			toolUseId: "direct-command",
+			bypassApproval: false,
+			prompt: vi.fn(),
+		});
+
+		expect(findAdapterById).toHaveBeenCalledWith("codex");
+		expect(engine.authorize).toHaveBeenCalledWith(
+			expect.objectContaining({
+				agent: "codex",
+				tool: "bash",
+				command: "git status",
+				inputs: input,
+				workingDirectory: testState.root,
+			}),
+			expect.objectContaining({ bypassApproval: false }),
+		);
+	});
+
+	it("keeps the direct-call fallback when no command is available", async () => {
+		mkdirSync(testState.root, { recursive: true });
+		writeFileSync(join(testState.root, "umbod.toml"), manifest("allow"));
+		vi.mocked(findAdapterById).mockReturnValueOnce({
+			normalizePayload: vi.fn(() => ({ tool: "bash" })),
+		} as never);
+		await bootstrapUmbod();
+		const engine = vi.mocked(createUmbod).mock.results.at(-1)?.value as {
+			authorize: ReturnType<typeof vi.fn>;
+		};
+		engine.authorize.mockResolvedValue({
+			decision: "allow",
+			policyDecision: "allow",
+			entry: { reason: "default allow" },
+		});
+
+		await authorizeHlidTool({
+			agent: "codex",
+			tool: "Bash",
+			input: { reason: "network access" },
+			cwd: testState.root,
+			toolUseId: "direct-fallback",
+			bypassApproval: false,
+			prompt: vi.fn(),
+		});
+
+		expect(engine.authorize).toHaveBeenCalledWith(
+			expect.objectContaining({
+				tool: "bash",
+				command: 'bash {"reason":"network access"}',
+			}),
+			expect.any(Object),
+		);
 	});
 
 	it("routes hook approvals to the owning session and reuses the decision", async () => {
@@ -410,6 +534,8 @@ describe("umbodHookArtifacts", () => {
 
 afterEach(() => {
 	if (testState.servers.length > 2) testState.servers.splice(0, 2);
+	resetDataRevisionsForTesting();
+	vi.useRealTimers();
 });
 
 process.on("exit", () =>

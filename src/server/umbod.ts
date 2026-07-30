@@ -4,8 +4,10 @@ import type { ApprovalDecision, ToolCall, Umbod } from "@umbod/core";
 import { writeFileAtomic } from "#/lib/atomicFile";
 import { APP_DIR } from "#/lib/paths";
 import { loadConfig } from "#/server/config";
+import { bumpDataRevision } from "#/server/dataRevision";
 import {
-	invalidateUmbodAnalytics,
+	closeUmbodAnalytics,
+	markUmbodAnalyticsStale,
 	readUmbodAnalytics,
 	readUmbodCalls,
 } from "#/server/umbodAnalyticsWorkerClient";
@@ -20,6 +22,9 @@ let instance: Umbod | null = null;
 let instancePath: string | null = null;
 let instanceReload: Promise<void> | null = null;
 let hookServer: ReturnType<typeof Bun.serve> | null = null;
+let umbodRevisionTimer: ReturnType<typeof setTimeout> | null = null;
+
+const UMBOD_REVISION_COALESCE_MS = 100;
 
 type HookApprovalHandler = (
 	call: ToolCall,
@@ -45,6 +50,24 @@ type RoutedHookDecision = {
 const routedHookDecisions = new Map<string, RoutedHookDecision>();
 const routedHookDecisionQueue: RoutedHookDecision[] = [];
 
+function markUmbodActivity(): void {
+	markUmbodAnalyticsStale();
+	if (umbodRevisionTimer) return;
+	umbodRevisionTimer = setTimeout(() => {
+		umbodRevisionTimer = null;
+		bumpDataRevision("umbod");
+	}, UMBOD_REVISION_COALESCE_MS);
+}
+
+function publishUmbodChange(): void {
+	markUmbodAnalyticsStale();
+	if (umbodRevisionTimer) {
+		clearTimeout(umbodRevisionTimer);
+		umbodRevisionTimer = null;
+	}
+	bumpDataRevision("umbod");
+}
+
 async function reloadUmbod(path: string): Promise<void> {
 	const { createUmbod, loadManifest } = await import("@umbod/core");
 	const manifest = await loadManifest(path);
@@ -56,6 +79,7 @@ async function reloadUmbod(path: string): Promise<void> {
 			: { dbPath: resolve(APP_DIR, "umbod.hlid.db") }),
 		sessionLogSources: [{ agent: "claude" }, { agent: "codex" }],
 		approvalPrompt: routeHookApproval,
+		onActivity: markUmbodActivity,
 	});
 	// Reloading shares the existing audit store. Do not close the old wrapper:
 	// its close() would close that shared store and could interrupt an in-flight
@@ -191,6 +215,56 @@ async function getUmbod(): Promise<Umbod | null> {
 	return instance;
 }
 
+function commandFromProviderInput(
+	value: unknown,
+	depth = 0,
+): string | undefined {
+	if (depth > 3 || !value || typeof value !== "object") return undefined;
+	const input = value as Record<string, unknown>;
+	for (const key of ["command", "cmd"]) {
+		const command = input[key];
+		if (typeof command === "string" && command.trim()) return command;
+	}
+	for (const key of [
+		"tool_input",
+		"toolInput",
+		"arguments",
+		"input",
+		"params",
+		"parameters",
+		"request",
+		"payload",
+	]) {
+		const command = commandFromProviderInput(input[key], depth + 1);
+		if (command) return command;
+	}
+	return undefined;
+}
+
+async function canonicalToolName(
+	agent: string,
+	tool: string,
+	inputs: Record<string, unknown>,
+	command: string | undefined,
+	cwd: string,
+): Promise<string> {
+	const fallback = tool.toLowerCase();
+	try {
+		const { findAdapterById } = await import("@umbod/core");
+		const adapter = findAdapterById(agent.toLowerCase());
+		if (!adapter) return fallback;
+		const normalized = adapter.normalizePayload({
+			tool_name: tool,
+			tool_input: inputs,
+			...(command ? { command } : {}),
+			cwd,
+		});
+		return normalized.tool || fallback;
+	} catch {
+		return fallback;
+	}
+}
+
 export async function bootstrapUmbod(): Promise<void> {
 	const umbod = await getUmbod();
 	if (!umbod || hookServer) return;
@@ -264,15 +338,22 @@ export async function authorizeHlidTool(options: {
 		options.input && typeof options.input === "object"
 			? (options.input as Record<string, unknown>)
 			: { value: options.input };
-	const command =
-		typeof inputs.command === "string"
-			? inputs.command
-			: typeof inputs.file_path === "string"
-				? `${options.tool} ${inputs.file_path}`
-				: `${options.tool} ${JSON.stringify(inputs)}`;
+	const explicitCommand = commandFromProviderInput(inputs);
+	const tool = await canonicalToolName(
+		options.agent,
+		options.tool,
+		inputs,
+		explicitCommand,
+		options.cwd,
+	);
+	const command = explicitCommand
+		? explicitCommand
+		: typeof inputs.file_path === "string"
+			? `${tool} ${inputs.file_path}`
+			: `${tool} ${JSON.stringify(inputs)}`;
 	const call: ToolCall = {
 		agent: options.agent,
-		tool: options.tool,
+		tool,
 		command,
 		inputs,
 		workingDirectory: options.cwd,
@@ -398,15 +479,19 @@ export async function saveUmbodManifest(source: string): Promise<void> {
 	// Hlid-authored saves replace only the policy engine. Keep the embedded
 	// HTTP listener and audit store alive.
 	if (config?.enabled) await performUmbodReload(path);
-	invalidateUmbodAnalytics();
+	publishUmbodChange();
 }
 
 export function closeUmbod(): void {
+	if (umbodRevisionTimer) {
+		clearTimeout(umbodRevisionTimer);
+		umbodRevisionTimer = null;
+	}
 	hookServer?.stop(true);
 	hookServer = null;
 	instance?.close();
 	instance = null;
 	instancePath = null;
 	instanceReload = null;
-	invalidateUmbodAnalytics();
+	closeUmbodAnalytics();
 }

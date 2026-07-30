@@ -1,8 +1,20 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 import { UmbodDashboard } from "#/components/forge/UmbodDashboard";
 import { UmbodHooksPanel } from "#/components/forge/UmbodHooksPanel";
 import { UmbodManifestPanel } from "#/components/forge/UmbodManifestPanel";
 import type { HlidConfig } from "#/config";
+import {
+	getDataRevisionSnapshot,
+	subscribeDataRevisionSnapshot,
+} from "#/hooks/wsDataRevisionStore";
+
+const ANALYTICS_REFRESH_DEBOUNCE_MS = 500;
 
 export type UmbodSnapshot = {
 	enabled: boolean;
@@ -44,6 +56,13 @@ export function UmbodSection({
 }) {
 	const [snapshot, setSnapshot] = useState<UmbodSnapshot | null>(null);
 	const loadGeneration = useRef(0);
+	const umbodRevision = useSyncExternalStore(
+		subscribeDataRevisionSnapshot,
+		() => getDataRevisionSnapshot().umbod,
+		() => 0,
+	);
+	const observedRevision = useRef(umbodRevision);
+	const refreshTimer = useRef<number | null>(null);
 	const load = useCallback(async (refresh = false) => {
 		const generation = ++loadGeneration.current;
 		const response = await fetch("/api/umbod");
@@ -77,12 +96,37 @@ export function UmbodSection({
 			});
 		}
 	}, []);
+	const refreshNow = useCallback(async () => {
+		if (refreshTimer.current !== null) {
+			window.clearTimeout(refreshTimer.current);
+			refreshTimer.current = null;
+		}
+		observedRevision.current = getDataRevisionSnapshot().umbod;
+		await load(true);
+	}, [load]);
+
 	useEffect(() => {
 		void load();
 		return () => {
 			loadGeneration.current += 1;
 		};
 	}, [load]);
+	useEffect(() => {
+		if (observedRevision.current === umbodRevision) return;
+		observedRevision.current = umbodRevision;
+		if (refreshTimer.current !== null)
+			window.clearTimeout(refreshTimer.current);
+		refreshTimer.current = window.setTimeout(() => {
+			refreshTimer.current = null;
+			void load(true);
+		}, ANALYTICS_REFRESH_DEBOUNCE_MS);
+		return () => {
+			if (refreshTimer.current !== null) {
+				window.clearTimeout(refreshTimer.current);
+				refreshTimer.current = null;
+			}
+		};
+	}, [load, umbodRevision]);
 
 	return (
 		<div className="space-y-6">
@@ -90,7 +134,7 @@ export function UmbodSection({
 				value={value}
 				onChange={onChange}
 				snapshot={snapshot}
-				onSaved={() => load(true)}
+				onSaved={refreshNow}
 			/>
 			<UmbodHooksPanel />
 			<UmbodDashboard

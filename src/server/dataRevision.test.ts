@@ -15,7 +15,11 @@ describe("data revisions", () => {
 
 		bumpDataRevision("stats", "sessions", "stats");
 
-		expect(getDataRevisions()).toMatchObject({ stats: 1, sessions: 1 });
+		expect(getDataRevisions()).toMatchObject({
+			stats: 1,
+			sessions: 1,
+			umbod: 0,
+		});
 		expect(subscriber).toHaveBeenCalledOnce();
 		expect(subscriber).toHaveBeenCalledWith(
 			expect.objectContaining({ stats: 1, sessions: 1, relics: 0 }),
@@ -27,5 +31,11 @@ describe("data revisions", () => {
 		snapshot.stats = 99;
 
 		expect(getDataRevisions().stats).toBe(0);
+	});
+
+	it("tracks Umbod activity independently", () => {
+		bumpDataRevision("umbod");
+
+		expect(getDataRevisions()).toMatchObject({ stats: 0, umbod: 1 });
 	});
 });

@@ -33,6 +33,7 @@ const analyticsWorker = new WorkerRpcClient<
 let cached:
 	| {
 			key: string;
+			generation: number;
 			fetchedAt: number;
 			value: UmbodAnalyticsSnapshot;
 	  }
@@ -40,9 +41,12 @@ let cached:
 let inFlight:
 	| {
 			key: string;
+			generation: number;
 			promise: Promise<UmbodAnalyticsSnapshot>;
 	  }
 	| undefined;
+let analyticsGeneration = 0;
+let analyticsCloseEpoch = 0;
 
 function runWorker(request: WorkerRequestWithoutId): Promise<unknown> {
 	return analyticsWorker.run(request);
@@ -57,8 +61,17 @@ async function analyticsKey(
 	manifest: Manifest,
 	databasePath: string,
 ): Promise<string> {
-	const database = await fileFingerprint(databasePath);
-	return `${JSON.stringify(manifest)}\0${databasePath}:${database}`;
+	const databaseFiles = [
+		databasePath,
+		`${databasePath}-wal`,
+		`${databasePath}-shm`,
+	];
+	const fingerprints = await Promise.all(
+		databaseFiles.map((path) => fileFingerprint(path)),
+	);
+	return `${JSON.stringify(manifest)}\0${databaseFiles
+		.map((path, index) => `${path}:${fingerprints[index]}`)
+		.join("\0")}`;
 }
 
 /**
@@ -71,15 +84,43 @@ export async function readUmbodAnalytics(
 	databasePath: string,
 	refresh = false,
 ): Promise<UmbodAnalyticsSnapshot> {
-	const key = await analyticsKey(manifest, databasePath);
+	const closeEpoch = analyticsCloseEpoch;
+	let generation: number;
+	let key: string;
+	// Do not launch work against an identity assembled across an audit write.
+	// SQLite fingerprints are quick, so retry until they belong to one known
+	// analytics generation.
+	do {
+		generation = analyticsGeneration;
+		key = await analyticsKey(manifest, databasePath);
+		if (analyticsCloseEpoch !== closeEpoch)
+			throw new Error("Umbod analytics closed");
+	} while (generation !== analyticsGeneration);
 	if (
 		!refresh &&
 		cached?.key === key &&
+		cached.generation === generation &&
 		Date.now() - cached.fetchedAt < ANALYTICS_MAX_AGE_MS
 	) {
 		return cached.value;
 	}
-	if (inFlight?.key === key) return inFlight.promise;
+	if (inFlight) {
+		if (inFlight.key === key && inFlight.generation === generation)
+			return inFlight.promise;
+		const active = inFlight.promise;
+		// The worker serializes requests. Wait for an obsolete snapshot to finish
+		// and then recompute against the latest generation instead of filling its
+		// queue with refreshes that can no longer populate the cache.
+		try {
+			await active;
+		} catch (error) {
+			if (analyticsCloseEpoch !== closeEpoch) throw error;
+		}
+		if (analyticsCloseEpoch !== closeEpoch)
+			throw new Error("Umbod analytics closed");
+		if (inFlight?.promise === active) inFlight = undefined;
+		return readUmbodAnalytics(manifest, databasePath, refresh);
+	}
 	const promise = runWorker({
 		kind: "snapshot",
 		manifest,
@@ -88,15 +129,21 @@ export async function readUmbodAnalytics(
 		const value = result as UmbodAnalyticsSnapshot;
 		// Umbod initializes its schema when opening the analytics connection,
 		// which can update SQLite metadata even for an otherwise read-only pass.
-		// Fingerprint after that initialization so the next read is a true hit.
+		// Fingerprint after that initialization so the next read is a true hit,
+		// but never let a request spanning an audited mutation publish under the
+		// newer database fingerprint.
+		if (analyticsGeneration !== generation) return value;
+		const completedKey = await analyticsKey(manifest, databasePath);
+		if (analyticsGeneration !== generation) return value;
 		cached = {
-			key: await analyticsKey(manifest, databasePath),
+			key: completedKey,
+			generation,
 			fetchedAt: Date.now(),
 			value,
 		};
 		return value;
 	});
-	inFlight = { key, promise };
+	inFlight = { key, generation, promise };
 	return promise.finally(() => {
 		if (inFlight?.promise === promise) inFlight = undefined;
 	});
@@ -115,8 +162,20 @@ export function readUmbodCalls(
 	});
 }
 
-export function invalidateUmbodAnalytics(): void {
+/**
+ * Mark cached analytics stale after an audit write without interrupting the
+ * worker. A subsequent read waits for obsolete work already running, then
+ * coalesces onto one snapshot for the latest generation.
+ */
+export function markUmbodAnalyticsStale(): void {
+	analyticsGeneration++;
 	cached = undefined;
+}
+
+/** Stop the worker and reject pending reads during Hlid shutdown. */
+export function closeUmbodAnalytics(): void {
+	analyticsCloseEpoch++;
+	markUmbodAnalyticsStale();
 	inFlight = undefined;
-	analyticsWorker.close("Umbod analytics invalidated");
+	analyticsWorker.close("Umbod analytics closed");
 }

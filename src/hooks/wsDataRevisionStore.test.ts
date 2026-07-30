@@ -27,7 +27,8 @@ describe("ws data revision store", () => {
 				...EMPTY_DATA_REVISIONS,
 				relics: 2,
 				vault: 1,
+				umbod: 3,
 			}),
-		).toEqual(["relics", "vault"]);
+		).toEqual(["relics", "vault", "umbod"]);
 	});
 });

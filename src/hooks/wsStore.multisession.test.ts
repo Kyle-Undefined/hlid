@@ -236,6 +236,8 @@ describe("server data revisions", () => {
 				config: 0,
 				mcp: 0,
 				storage: 0,
+				routines: 0,
+				umbod: 4,
 			},
 		});
 
@@ -243,6 +245,7 @@ describe("server data revisions", () => {
 			stats: 2,
 			sessions: 1,
 			relics: 3,
+			umbod: 4,
 		});
 		expect(notify).toHaveBeenCalledOnce();
 	});

@@ -76,14 +76,31 @@ function chipClass(value: string): string {
 	return "border-border bg-secondary text-muted-foreground";
 }
 
-function Chip({ value }: { value: string }) {
+function Chip({ value, label = value }: { value: string; label?: string }) {
 	return (
 		<span
 			className={`inline-flex border px-1.5 py-0.5 text-[9px] uppercase tracking-wider ${chipClass(value)}`}
 		>
-			{value}
+			{label}
 		</span>
 	);
+}
+
+function ruleStatusLabel(status: string): string {
+	switch (status) {
+		case "active":
+			return "Matched";
+		case "stale":
+			return "Not matched recently";
+		case "dead":
+			return "Never matched";
+		case "shadowed":
+			return "Shadowed";
+		case "invalid":
+			return "Invalid pattern";
+		default:
+			return status;
+	}
 }
 
 function Totals({ tools, loading }: { tools?: ToolUsage; loading: boolean }) {
@@ -173,9 +190,15 @@ function RuleHealthPanel({
 }) {
 	return (
 		<div className="border border-border p-3 space-y-2">
-			<div className="flex items-center justify-between">
-				<h4 className="text-xs font-medium">Rule health</h4>
-				<span className="text-[9px] uppercase tracking-wider text-muted-foreground">
+			<div className="flex items-start justify-between gap-3">
+				<div>
+					<h4 className="text-xs font-medium">Rule analysis</h4>
+					<p className="mt-1 text-[10px] text-muted-foreground">
+						Matched, Not matched recently, and Never matched reflect recorded
+						calls, not manifest validation.
+					</p>
+				</div>
+				<span className="shrink-0 text-[9px] uppercase tracking-wider text-muted-foreground">
 					{loading ? "…" : (rules?.rules?.length ?? 0)} rules
 				</span>
 			</div>
@@ -189,7 +212,7 @@ function RuleHealthPanel({
 					</code>
 					<div className="flex shrink-0 items-center gap-2">
 						<span className="text-muted-foreground">{rule.matchCount}</span>
-						<Chip value={rule.status} />
+						<Chip value={rule.status} label={ruleStatusLabel(rule.status)} />
 					</div>
 				</div>
 			))}

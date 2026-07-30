@@ -67,7 +67,9 @@ describe("UmbodManifestPanel", () => {
 			target: { value: "[rules]" },
 		});
 		fireEvent.click(screen.getByRole("button", { name: "Validate & save" }));
-		expect(await screen.findByText("Manifest saved")).toBeTruthy();
+		expect(
+			await screen.findByText("Manifest validated and saved"),
+		).toBeTruthy();
 		expect(fetchMock).toHaveBeenCalledWith(
 			"/api/umbod",
 			expect.objectContaining({
@@ -91,6 +93,13 @@ describe("UmbodManifestPanel", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Validate & save" }));
 		expect(await screen.findByText("invalid TOML at line 3")).toBeTruthy();
 		expect(onSaved).not.toHaveBeenCalled();
+	});
+
+	it("separates manifest validation from historical rule findings", () => {
+		renderPanel();
+		expect(
+			screen.getByText(/Validation checks the manifest.*recorded tool calls/),
+		).toBeTruthy();
 	});
 
 	it("shows tool totals and non-active rule findings from the snapshot", () => {

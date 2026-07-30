@@ -66,6 +66,12 @@ describe("UmbodDashboard", () => {
 							status: "active",
 							matchCount: 3,
 						},
+						{
+							pattern: "git *",
+							decision: "allow",
+							status: "dead",
+							matchCount: 0,
+						},
 					],
 				}}
 			/>,
@@ -73,7 +79,12 @@ describe("UmbodDashboard", () => {
 
 		await screen.findByText("git push origin main");
 		expect(screen.getAllByText("12")).toHaveLength(2);
-		expect(screen.getByText("active")).toBeTruthy();
+		expect(screen.getByText("Matched")).toBeTruthy();
+		expect(screen.getByText("Never matched")).toBeTruthy();
+		expect(screen.queryByText("dead")).toBeNull();
+		expect(
+			screen.getByText(/Never matched reflect recorded calls/),
+		).toBeTruthy();
 
 		fireEvent.click(screen.getByText("git push origin main"));
 		expect(screen.getByText("session-1")).toBeTruthy();

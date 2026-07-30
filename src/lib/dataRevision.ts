@@ -8,6 +8,7 @@ export const DATA_DOMAINS = [
 	"mcp",
 	"storage",
 	"routines",
+	"umbod",
 ] as const;
 
 export type DataDomain = (typeof DATA_DOMAINS)[number];

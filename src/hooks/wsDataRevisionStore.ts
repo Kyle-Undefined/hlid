@@ -16,6 +16,7 @@ export const EMPTY_DATA_REVISIONS: DataRevisionSnapshot = {
 	mcp: 0,
 	storage: 0,
 	routines: 0,
+	umbod: 0,
 };
 
 let snapshot: DataRevisionSnapshot = { ...EMPTY_DATA_REVISIONS };

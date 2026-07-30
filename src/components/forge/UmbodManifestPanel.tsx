@@ -22,14 +22,18 @@ export function UmbodManifestPanel({
 	}, [snapshot?.source]);
 
 	async function save() {
-		setStatus("Validating…");
+		setStatus("Validating manifest…");
 		const response = await fetch("/api/umbod", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ source }),
 		});
 		const body = (await response.json()) as { error?: string };
-		setStatus(response.ok ? "Manifest saved" : (body.error ?? "Save failed"));
+		setStatus(
+			response.ok
+				? "Manifest validated and saved"
+				: (body.error ?? "Manifest validation or save failed"),
+		);
 		if (response.ok) await onSaved();
 	}
 
@@ -90,6 +94,10 @@ export function UmbodManifestPanel({
 					{status || snapshot?.error}
 				</span>
 			</div>
+			<p className="text-[10px] text-muted-foreground">
+				Validation checks the manifest. Match-history labels below describe
+				recorded tool calls and do not affect whether the manifest saved.
+			</p>
 			{snapshot?.enabled && (
 				<div className="grid gap-3 md:grid-cols-2 text-xs">
 					<div className="border border-border p-3">
@@ -104,7 +112,7 @@ export function UmbodManifestPanel({
 					</div>
 					<div className="border border-border p-3">
 						<div className="text-muted-foreground uppercase tracking-wider text-[10px]">
-							Rule findings
+							Rule analysis findings
 						</div>
 						<div className="text-2xl mt-1">
 							{snapshot.analyticsLoading
