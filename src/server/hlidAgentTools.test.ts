@@ -51,7 +51,10 @@ describe("Hlid agent tools", () => {
 
 	it("exposes deferred orchestration, Relic, and Project Preview capabilities", () => {
 		expect(HLID_AGENT_TOOL_SPECS).toHaveLength(HLID_AGENT_TOOL_COUNT);
-		expect(HLID_AGENT_TOOL_SPECS.map((spec) => spec.name)).toEqual([
+		const specNames = HLID_AGENT_TOOL_SPECS.map((spec) => spec.name);
+		expect(new Set(specNames).size).toBe(specNames.length);
+		expect([...specNames].sort()).toEqual(Object.keys(hlidAgentSchemas).sort());
+		expect(specNames).toEqual([
 			"hlid_help",
 			"hlid_api",
 			"delegate_hlid_agent",
@@ -257,6 +260,25 @@ describe("Hlid agent tools", () => {
 		expect(orchestrationSpecs.cancel_hlid_agent?.description).toContain(
 			"explicitly abandons continuation",
 		);
+	});
+
+	it("rejects a schema entry that has no registered execution handler", async () => {
+		const mutableSchemas = hlidAgentSchemas as unknown as Record<
+			string,
+			(typeof hlidAgentSchemas)["publish_relic"]
+		>;
+		mutableSchemas.future_tool = hlidAgentSchemas.publish_relic;
+		try {
+			await expect(
+				executeHlidAgentTool("future_tool", {
+					filename: "unexpected.html",
+					content: "<p>must not publish</p>",
+				}),
+			).rejects.toThrow("Unknown Hlid tool: future_tool");
+			expect(db.dbFetch).not.toHaveBeenCalled();
+		} finally {
+			delete mutableSchemas.future_tool;
+		}
 	});
 
 	it("creates, inspects, and waits on parent-owned durable children", async () => {

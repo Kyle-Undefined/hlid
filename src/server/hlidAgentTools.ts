@@ -1017,201 +1017,175 @@ function captureMetadata(
 	return metadata;
 }
 
-export async function executeHlidAgentTool(
-	name: string,
+type HlidAgentToolHandler = (
 	input: unknown,
-	context: HlidAgentToolContext = {},
+	context: HlidAgentToolContext,
+) => Promise<string>;
+
+type DelegationToolName =
+	| "delegate_hlid_agent"
+	| "list_hlid_agents"
+	| "inspect_hlid_agent"
+	| "wait_hlid_agent"
+	| "steer_hlid_agent"
+	| "cancel_hlid_agent"
+	| "resume_hlid_agent";
+
+async function executeDelegationTool(
+	toolName: DelegationToolName,
+	input: unknown,
+	context: HlidAgentToolContext,
 ): Promise<string> {
-	if (!(name in hlidAgentSchemas))
-		throw new Error(`Unknown Hlid tool: ${name}`);
-	const toolName = name as HlidAgentToolName;
-	if (toolName === "hlid_help") {
-		const parsed = hlidAgentSchemas.hlid_help.parse(input);
-		return buildHlidHelpResponse(
-			parsed.topic ?? "overview",
-			await liveHlidOperatingContext(context),
-		);
+	if (!context.sessionId) {
+		throw new Error("Hlid delegation requires an active parent Raven session.");
 	}
-	if (toolName === "hlid_api") {
-		const parsed = hlidAgentSchemas.hlid_api.parse(input);
-		const response = await dbFetch("/api-index");
-		await requireDbOk(response, "Discover Hlid API");
-		return buildHlidApiDiscoveryResponse(
-			parseHlidApiIndex(await response.json()),
-			parsed,
-		);
-	}
-	if (
-		toolName === "delegate_hlid_agent" ||
-		toolName === "list_hlid_agents" ||
-		toolName === "inspect_hlid_agent" ||
-		toolName === "wait_hlid_agent" ||
-		toolName === "steer_hlid_agent" ||
-		toolName === "cancel_hlid_agent" ||
-		toolName === "resume_hlid_agent"
-	) {
-		if (!context.sessionId) {
-			throw new Error(
-				"Hlid delegation requires an active parent Raven session.",
-			);
-		}
-		if (toolName === "delegate_hlid_agent") {
-			const parsed = hlidAgentSchemas.delegate_hlid_agent.parse(input);
-			const response = await dbFetch("/hlid-agents/delegate", {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({
-					...parsed,
-					parent_session_id: context.sessionId,
-				}),
-			});
-			await requireDbOk(response, "Delegate Hlid child agent");
-			return JSON.stringify(await response.json());
-		}
-		if (toolName === "inspect_hlid_agent") {
-			const parsed = hlidAgentSchemas.inspect_hlid_agent.parse(input);
-			const response = await dbFetch(
-				`/hlid-agents/${encodeURIComponent(parsed.id)}?parent_session_id=${encodeURIComponent(context.sessionId)}`,
-			);
-			await requireDbOk(response, "Inspect Hlid child agent");
-			return JSON.stringify(await response.json());
-		}
-		if (toolName === "list_hlid_agents") {
-			const parsed = hlidAgentSchemas.list_hlid_agents.parse(input);
-			const search = new URLSearchParams({
-				parent_session_id: context.sessionId,
-				...(parsed.limit !== undefined ? { limit: String(parsed.limit) } : {}),
-			});
-			const response = await dbFetch(`/hlid-agents?${search.toString()}`);
-			await requireDbOk(response, "List Hlid child agents");
-			return JSON.stringify(await response.json());
-		}
-		if (toolName === "wait_hlid_agent") {
-			const parsed = hlidAgentSchemas.wait_hlid_agent.parse(input);
-			const response = await dbFetch(
-				`/hlid-agents/${encodeURIComponent(parsed.id)}/wait`,
-				{
-					method: "POST",
-					headers: { "content-type": "application/json" },
-					body: JSON.stringify({
-						parent_session_id: context.sessionId,
-						...(parsed.wait_seconds !== undefined
-							? { wait_seconds: parsed.wait_seconds }
-							: {}),
-					}),
-				},
-			);
-			await requireDbOk(response, "Wait for Hlid child agent");
-			return JSON.stringify(await response.json());
-		}
-		const parsed =
-			toolName === "steer_hlid_agent"
-				? hlidAgentSchemas.steer_hlid_agent.parse(input)
-				: toolName === "cancel_hlid_agent"
-					? hlidAgentSchemas.cancel_hlid_agent.parse(input)
-					: hlidAgentSchemas.resume_hlid_agent.parse(input);
-		const action =
-			toolName === "steer_hlid_agent"
-				? "steer"
-				: toolName === "cancel_hlid_agent"
-					? "cancel"
-					: "resume";
-		const response = await dbFetch(
-			`/hlid-agents/${encodeURIComponent(parsed.id)}/${action}`,
-			{
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({
-					...parsed,
-					id: undefined,
-					parent_session_id: context.sessionId,
-				}),
-			},
-		);
-		await requireDbOk(
-			response,
-			toolName === "steer_hlid_agent"
-				? "Steer Hlid child agent"
-				: toolName === "cancel_hlid_agent"
-					? "Cancel Hlid child agent"
-					: "Continue Hlid child agent",
-		);
-		return JSON.stringify(await response.json());
-	}
-	if (toolName === "start_project_preview") {
-		const parsed = hlidAgentSchemas.start_project_preview.parse(input);
-		if (!context.runtimeCwd || !context.sessionId) {
-			throw new Error(
-				"Hlid could not resolve the active session and provider working directory.",
-			);
-		}
-		const response = await dbFetch("/api/project-previews/start", {
+	if (toolName === "delegate_hlid_agent") {
+		const parsed = hlidAgentSchemas.delegate_hlid_agent.parse(input);
+		const response = await dbFetch("/hlid-agents/delegate", {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({
 				...parsed,
-				runtime_cwd: context.runtimeCwd,
-				session_id: context.sessionId,
+				parent_session_id: context.sessionId,
 			}),
 		});
-		await requireDbOk(response, "Start Project Preview");
+		await requireDbOk(response, "Delegate Hlid child agent");
 		return JSON.stringify(await response.json());
 	}
-	if (
-		toolName === "inspect_project_preview" ||
-		toolName === "stop_project_preview"
-	) {
-		if (!context.sessionId) {
-			throw new Error("Hlid could not resolve the active session.");
-		}
-		const schema =
-			toolName === "inspect_project_preview"
-				? hlidAgentSchemas.inspect_project_preview
-				: hlidAgentSchemas.stop_project_preview;
-		const parsed = schema.parse(input);
-		const previewId = parsed.preview_id;
-		const path = previewId
-			? `/api/project-previews/${encodeURIComponent(previewId)}`
-			: "/api/project-previews/session";
-		const response =
-			toolName === "inspect_project_preview"
-				? await dbFetch(
-						`${path}?session_id=${encodeURIComponent(context.sessionId)}`,
-					)
-				: await dbFetch(`${path}/stop`, {
-						method: "POST",
-						headers: { "content-type": "application/json" },
-						body: JSON.stringify({ session_id: context.sessionId }),
-					});
-		await requireDbOk(
-			response,
-			toolName === "inspect_project_preview"
-				? "Inspect Project Preview"
-				: "Stop Project Preview",
+	if (toolName === "inspect_hlid_agent") {
+		const parsed = hlidAgentSchemas.inspect_hlid_agent.parse(input);
+		const response = await dbFetch(
+			`/hlid-agents/${encodeURIComponent(parsed.id)}?parent_session_id=${encodeURIComponent(context.sessionId)}`,
 		);
+		await requireDbOk(response, "Inspect Hlid child agent");
 		return JSON.stringify(await response.json());
 	}
-	if (toolName === "capture_project_preview") {
-		return JSON.stringify(
-			captureMetadata(await requestProjectPreviewCapture(input, context)),
-		);
-	}
-	if (toolName === "export_project_preview_capture") {
-		const { result, savedPath } = await requestProjectPreviewExport(
-			input,
-			context,
-		);
-		return JSON.stringify({
-			...captureMetadata(result),
-			saved_path: savedPath,
+	if (toolName === "list_hlid_agents") {
+		const parsed = hlidAgentSchemas.list_hlid_agents.parse(input);
+		const search = new URLSearchParams({
+			parent_session_id: context.sessionId,
+			...(parsed.limit !== undefined ? { limit: String(parsed.limit) } : {}),
 		});
+		const response = await dbFetch(`/hlid-agents?${search.toString()}`);
+		await requireDbOk(response, "List Hlid child agents");
+		return JSON.stringify(await response.json());
 	}
-	if (toolName === "control_project_preview") {
-		return JSON.stringify(
-			captureMetadata(await requestProjectPreviewControl(input, context)),
+	if (toolName === "wait_hlid_agent") {
+		const parsed = hlidAgentSchemas.wait_hlid_agent.parse(input);
+		const response = await dbFetch(
+			`/hlid-agents/${encodeURIComponent(parsed.id)}/wait`,
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					parent_session_id: context.sessionId,
+					...(parsed.wait_seconds !== undefined
+						? { wait_seconds: parsed.wait_seconds }
+						: {}),
+				}),
+			},
+		);
+		await requireDbOk(response, "Wait for Hlid child agent");
+		return JSON.stringify(await response.json());
+	}
+	const parsed =
+		toolName === "steer_hlid_agent"
+			? hlidAgentSchemas.steer_hlid_agent.parse(input)
+			: toolName === "cancel_hlid_agent"
+				? hlidAgentSchemas.cancel_hlid_agent.parse(input)
+				: hlidAgentSchemas.resume_hlid_agent.parse(input);
+	const action =
+		toolName === "steer_hlid_agent"
+			? "steer"
+			: toolName === "cancel_hlid_agent"
+				? "cancel"
+				: "resume";
+	const response = await dbFetch(
+		`/hlid-agents/${encodeURIComponent(parsed.id)}/${action}`,
+		{
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				...parsed,
+				id: undefined,
+				parent_session_id: context.sessionId,
+			}),
+		},
+	);
+	await requireDbOk(
+		response,
+		toolName === "steer_hlid_agent"
+			? "Steer Hlid child agent"
+			: toolName === "cancel_hlid_agent"
+				? "Cancel Hlid child agent"
+				: "Continue Hlid child agent",
+	);
+	return JSON.stringify(await response.json());
+}
+
+async function executeStartProjectPreview(
+	input: unknown,
+	context: HlidAgentToolContext,
+): Promise<string> {
+	const parsed = hlidAgentSchemas.start_project_preview.parse(input);
+	if (!context.runtimeCwd || !context.sessionId) {
+		throw new Error(
+			"Hlid could not resolve the active session and provider working directory.",
 		);
 	}
+	const response = await dbFetch("/api/project-previews/start", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({
+			...parsed,
+			runtime_cwd: context.runtimeCwd,
+			session_id: context.sessionId,
+		}),
+	});
+	await requireDbOk(response, "Start Project Preview");
+	return JSON.stringify(await response.json());
+}
 
+async function executeProjectPreviewReadOrStop(
+	toolName: "inspect_project_preview" | "stop_project_preview",
+	input: unknown,
+	context: HlidAgentToolContext,
+): Promise<string> {
+	if (!context.sessionId) {
+		throw new Error("Hlid could not resolve the active session.");
+	}
+	const schema =
+		toolName === "inspect_project_preview"
+			? hlidAgentSchemas.inspect_project_preview
+			: hlidAgentSchemas.stop_project_preview;
+	const parsed = schema.parse(input);
+	const previewId = parsed.preview_id;
+	const path = previewId
+		? `/api/project-previews/${encodeURIComponent(previewId)}`
+		: "/api/project-previews/session";
+	const response =
+		toolName === "inspect_project_preview"
+			? await dbFetch(
+					`${path}?session_id=${encodeURIComponent(context.sessionId)}`,
+				)
+			: await dbFetch(`${path}/stop`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ session_id: context.sessionId }),
+				});
+	await requireDbOk(
+		response,
+		toolName === "inspect_project_preview"
+			? "Inspect Project Preview"
+			: "Stop Project Preview",
+	);
+	return JSON.stringify(await response.json());
+}
+
+async function executePublishRelic(
+	input: unknown,
+	context: HlidAgentToolContext,
+): Promise<string> {
 	const parsed = hlidAgentSchemas.publish_relic.parse(input);
 	const hasSource = typeof parsed.source_path === "string";
 	const hasContent = typeof parsed.content === "string";
@@ -1236,6 +1210,74 @@ export async function executeHlidAgentTool(
 	});
 	await requireDbOk(response, "Publish Relic");
 	return JSON.stringify(await response.json());
+}
+
+const hlidAgentToolHandlers = {
+	hlid_help: async (input, context) => {
+		const parsed = hlidAgentSchemas.hlid_help.parse(input);
+		return buildHlidHelpResponse(
+			parsed.topic ?? "overview",
+			await liveHlidOperatingContext(context),
+		);
+	},
+	hlid_api: async (input) => {
+		const parsed = hlidAgentSchemas.hlid_api.parse(input);
+		const response = await dbFetch("/api-index");
+		await requireDbOk(response, "Discover Hlid API");
+		return buildHlidApiDiscoveryResponse(
+			parseHlidApiIndex(await response.json()),
+			parsed,
+		);
+	},
+	delegate_hlid_agent: (input, context) =>
+		executeDelegationTool("delegate_hlid_agent", input, context),
+	list_hlid_agents: (input, context) =>
+		executeDelegationTool("list_hlid_agents", input, context),
+	inspect_hlid_agent: (input, context) =>
+		executeDelegationTool("inspect_hlid_agent", input, context),
+	wait_hlid_agent: (input, context) =>
+		executeDelegationTool("wait_hlid_agent", input, context),
+	steer_hlid_agent: (input, context) =>
+		executeDelegationTool("steer_hlid_agent", input, context),
+	cancel_hlid_agent: (input, context) =>
+		executeDelegationTool("cancel_hlid_agent", input, context),
+	resume_hlid_agent: (input, context) =>
+		executeDelegationTool("resume_hlid_agent", input, context),
+	publish_relic: executePublishRelic,
+	start_project_preview: executeStartProjectPreview,
+	inspect_project_preview: (input, context) =>
+		executeProjectPreviewReadOrStop("inspect_project_preview", input, context),
+	capture_project_preview: async (input, context) =>
+		JSON.stringify(
+			captureMetadata(await requestProjectPreviewCapture(input, context)),
+		),
+	export_project_preview_capture: async (input, context) => {
+		const { result, savedPath } = await requestProjectPreviewExport(
+			input,
+			context,
+		);
+		return JSON.stringify({
+			...captureMetadata(result),
+			saved_path: savedPath,
+		});
+	},
+	control_project_preview: async (input, context) =>
+		JSON.stringify(
+			captureMetadata(await requestProjectPreviewControl(input, context)),
+		),
+	stop_project_preview: (input, context) =>
+		executeProjectPreviewReadOrStop("stop_project_preview", input, context),
+} satisfies Record<HlidAgentToolName, HlidAgentToolHandler>;
+
+export async function executeHlidAgentTool(
+	name: string,
+	input: unknown,
+	context: HlidAgentToolContext = {},
+): Promise<string> {
+	if (!Object.hasOwn(hlidAgentToolHandlers, name)) {
+		throw new Error(`Unknown Hlid tool: ${name}`);
+	}
+	return hlidAgentToolHandlers[name as HlidAgentToolName](input, context);
 }
 
 export async function executeHlidAgentToolRich(
