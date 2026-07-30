@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
 	loadConfig: vi.fn(),
 	invalidateVaultSnapshot: vi.fn(),
 	getVaultSnapshot: vi.fn(),
+	refreshVaultSnapshotWithStatus: vi.fn(),
 }));
 
 vi.mock("./skillImports", () => ({
@@ -37,6 +38,7 @@ vi.mock("./config", () => ({ loadConfig: mocks.loadConfig }));
 vi.mock("./vaultSnapshot", () => ({
 	invalidateVaultSnapshot: mocks.invalidateVaultSnapshot,
 	getVaultSnapshot: mocks.getVaultSnapshot,
+	refreshVaultSnapshotWithStatus: mocks.refreshVaultSnapshotWithStatus,
 }));
 
 import { handleSkillRoute } from "./skillRoutes";
@@ -99,6 +101,10 @@ beforeEach(() => {
 	});
 	mocks.discardStagedSkill.mockResolvedValue(true);
 	mocks.getVaultSnapshot.mockResolvedValue({});
+	mocks.refreshVaultSnapshotWithStatus.mockResolvedValue({
+		status: "refreshed",
+		snapshot: {},
+	});
 });
 
 describe("handleSkillRoute", () => {
@@ -277,36 +283,64 @@ describe("handleSkillRoute", () => {
 			ok: true,
 			installed: { id, name: "review" },
 		});
-		expect(mocks.invalidateVaultSnapshot).toHaveBeenCalledWith(
+		expect(mocks.refreshVaultSnapshotWithStatus).toHaveBeenCalledWith(
 			"skill-install",
 			config,
 		);
-		expect(mocks.getVaultSnapshot).toHaveBeenCalledWith({ refresh: true });
+		expect(mocks.getVaultSnapshot).not.toHaveBeenCalled();
 	});
 
-	it("keeps the install invalidation when the snapshot refresh fails", async () => {
+	it("reports a committed install with a warning when snapshot refresh fails", async () => {
 		const id = "d".repeat(24);
-		mocks.getVaultSnapshot.mockRejectedValueOnce(
-			new Error("snapshot refresh failed"),
-		);
+		mocks.refreshVaultSnapshotWithStatus.mockResolvedValueOnce({
+			status: "degraded",
+			snapshot: {},
+			error: "snapshot refresh failed",
+			retryAt: Date.now() + 30_000,
+		});
 		const response = await handleSkillRoute(
 			new URL("http://localhost/skills/install"),
 			request("/skills/install", { id }),
 			config,
 		);
 
-		expect(response?.status).toBe(400);
+		expect(response?.status).toBe(200);
 		expect(await response?.json()).toEqual({
-			error: "skill_install_failed",
-			message: "snapshot refresh failed",
+			ok: true,
+			installed: { id, name: "review" },
+			warning: {
+				code: "skill_snapshot_refresh_failed",
+				message: "snapshot refresh failed",
+			},
 		});
-		expect(mocks.invalidateVaultSnapshot).toHaveBeenCalledWith(
+		expect(mocks.refreshVaultSnapshotWithStatus).toHaveBeenCalledWith(
 			"skill-install",
 			config,
 		);
-		expect(
-			mocks.invalidateVaultSnapshot.mock.invocationCallOrder[0],
-		).toBeLessThan(mocks.getVaultSnapshot.mock.invocationCallOrder[0]);
+		expect(mocks.getVaultSnapshot).not.toHaveBeenCalled();
+	});
+
+	it("keeps a committed install successful when refresh status throws", async () => {
+		const id = "d".repeat(24);
+		mocks.refreshVaultSnapshotWithStatus.mockRejectedValueOnce(
+			new Error("refresh status unavailable"),
+		);
+
+		const response = await handleSkillRoute(
+			new URL("http://localhost/skills/install"),
+			request("/skills/install", { id }),
+			config,
+		);
+
+		expect(response?.status).toBe(200);
+		expect(await response?.json()).toEqual({
+			ok: true,
+			installed: { id, name: "review" },
+			warning: {
+				code: "skill_snapshot_refresh_failed",
+				message: "refresh status unavailable",
+			},
+		});
 	});
 
 	it("discards a declined stage without refreshing the snapshot", async () => {

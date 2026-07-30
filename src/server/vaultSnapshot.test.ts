@@ -59,7 +59,11 @@ vi.mock("./config", () => ({
 }));
 
 import { bumpDataRevision, getDataRevisions } from "./dataRevision";
-import { getVaultSnapshot, invalidateVaultSnapshot } from "./vaultSnapshot";
+import {
+	getVaultSnapshot,
+	invalidateVaultSnapshot,
+	refreshVaultSnapshotWithStatus,
+} from "./vaultSnapshot";
 
 beforeAll(() => {
 	mocks.config = HlidConfigSchema.parse({
@@ -197,7 +201,7 @@ describe("vault snapshot", () => {
 		}
 	});
 
-	it("keeps the last-good snapshot when a background scan fails", async () => {
+	it("keeps the last-good snapshot and exposes its degraded retry status", async () => {
 		vi.useFakeTimers();
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
@@ -212,6 +216,17 @@ describe("vault snapshot", () => {
 
 			const recovered = await getVaultSnapshot();
 			expect(recovered).toBe(before);
+			expect(mocks.scanProjects).toHaveBeenCalledTimes(scanCalls + 1);
+			const degraded = await refreshVaultSnapshotWithStatus("test-status");
+			expect(degraded).toMatchObject({
+				status: "degraded",
+				snapshot: before,
+				error: "mounted vault unavailable",
+			});
+			if (degraded.status !== "degraded") {
+				throw new Error("Expected a degraded refresh status");
+			}
+			expect(degraded.retryAt).toBeGreaterThan(Date.now());
 			expect(mocks.scanProjects).toHaveBeenCalledTimes(scanCalls + 1);
 			expect(warn).toHaveBeenCalledWith(
 				"[vaultSnapshot] refresh failed: Error: mounted vault unavailable",

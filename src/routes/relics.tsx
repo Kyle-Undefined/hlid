@@ -34,6 +34,7 @@ import {
 	type RemoteSkillDiscovery,
 	SkillManagerDialog,
 	type StagedAgentSkill,
+	type StagedSkillInstallWarning,
 } from "#/components/relics/SkillManagerDialog";
 import type { AttachmentRow } from "#/db";
 import { useDialogFocus } from "#/hooks/useDialogFocus";
@@ -240,6 +241,7 @@ const installStagedSkillFn = createServerFn({ method: "POST" })
 		return response.json() as Promise<{
 			ok: true;
 			installed: { id: string; name: string };
+			warning?: StagedSkillInstallWarning;
 		}>;
 	});
 

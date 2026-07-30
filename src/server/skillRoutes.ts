@@ -16,7 +16,11 @@ import {
 	readStagedSkillFile,
 	stageGitHubSkill,
 } from "./skillInstalls";
-import { getVaultSnapshot, invalidateVaultSnapshot } from "./vaultSnapshot";
+import {
+	getVaultSnapshot,
+	invalidateVaultSnapshot,
+	refreshVaultSnapshotWithStatus,
+} from "./vaultSnapshot";
 
 const MAX_BATCH_IMPORT = 100;
 
@@ -77,11 +81,36 @@ function currentSkillConfig(fallbackConfig: HlidConfig): HlidConfig {
 }
 
 async function refreshSkillSnapshot(
-	reason: "skill-import" | "skill-install" | "skill-remove",
+	reason: "skill-import" | "skill-remove",
 	config: HlidConfig,
 ): Promise<void> {
 	invalidateVaultSnapshot(reason, config);
 	await getVaultSnapshot({ refresh: true });
+}
+
+async function refreshCommittedSkillInstall(
+	config: HlidConfig,
+): Promise<{ code: "skill_snapshot_refresh_failed"; message: string } | null> {
+	try {
+		const refresh = await refreshVaultSnapshotWithStatus(
+			"skill-install",
+			config,
+		);
+		return refresh.status === "degraded"
+			? {
+					code: "skill_snapshot_refresh_failed",
+					message: refresh.error,
+				}
+			: null;
+	} catch (error) {
+		return {
+			code: "skill_snapshot_refresh_failed",
+			message:
+				error instanceof Error
+					? error.message
+					: "The shared skill snapshot could not refresh",
+		};
+	}
 }
 
 async function handleSkillCatalogRoute({
@@ -226,8 +255,12 @@ async function handleStagedSkillActionRoute(
 				: Response.json({ error: "staged_skill_not_found" }, { status: 404 });
 		}
 		const installed = await installStagedSkill(id);
-		await refreshSkillSnapshot("skill-install", context.config);
-		return Response.json({ ok: true, installed });
+		const warning = await refreshCommittedSkillInstall(context.config);
+		return Response.json({
+			ok: true,
+			installed,
+			...(warning ? { warning } : {}),
+		});
 	} catch (error) {
 		return Response.json(
 			{

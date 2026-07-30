@@ -1,8 +1,19 @@
 import { ExternalLink, PackagePlus, Search, X } from "lucide-react";
-import { type MouseEvent, useCallback, useEffect, useState } from "react";
+import {
+	type MouseEvent,
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
 import { ConfirmAction } from "#/components/ConfirmAction";
 import { useDialogFocus } from "#/hooks/useDialogFocus";
 import { fmtBytes } from "#/lib/formatters";
+import {
+	type StagedAgentSkill,
+	type StagedSkillInstallWarning,
+	useStagedSkillReview,
+} from "./useStagedSkillReview";
 
 export type ManagedAgentSkill = {
 	id: string;
@@ -30,21 +41,10 @@ export type RemoteSkillDiscovery = {
 	skills: RemoteAgentSkill[];
 };
 
-export type StagedAgentSkill = {
-	id: string;
-	name: string;
-	description: string;
-	sourceUrl: string;
-	repository: string;
-	requestedRef: string;
-	resolvedSha: string;
-	repositoryPath: string;
-	createdAt: string;
-	files: Array<{ path: string; bytes: number; readable: boolean }>;
-	fileCount: number;
-	bytes: number;
-	skillDocument: string;
-};
+export type {
+	StagedAgentSkill,
+	StagedSkillInstallWarning,
+} from "./useStagedSkillReview";
 
 type SkillDocument = { id: string; name: string; content: string };
 
@@ -72,9 +72,11 @@ export function SkillManagerDialog({
 	readStagedFile: (input: {
 		data: { id: string; path: string };
 	}) => Promise<{ path: string; content: string }>;
-	installSkill: (input: {
-		data: { id: string };
-	}) => Promise<{ ok: true; installed: { id: string; name: string } }>;
+	installSkill: (input: { data: { id: string } }) => Promise<{
+		ok: true;
+		installed: { id: string; name: string };
+		warning?: StagedSkillInstallWarning;
+	}>;
 	discardSkill: (input: { data: { id: string } }) => Promise<{ ok: true }>;
 	readManagedSkill: (input: { data: { id: string } }) => Promise<SkillDocument>;
 	removeSkill: (input: {
@@ -83,13 +85,10 @@ export function SkillManagerDialog({
 }) {
 	const [managed, setManaged] = useState<ManagedAgentSkill[]>([]);
 	const [sourceUrl, setSourceUrl] = useState("");
-	const [staged, setStaged] = useState<StagedAgentSkill | null>(null);
-	const [selectedFile, setSelectedFile] = useState("SKILL.md");
-	const [selectedContent, setSelectedContent] = useState("");
 	const [discovery, setDiscovery] = useState<RemoteSkillDiscovery | null>(null);
 	const [discoveryQuery, setDiscoveryQuery] = useState("");
 	const [loading, setLoading] = useState(true);
-	const [busy, setBusy] = useState(false);
+	const [managerBusy, setManagerBusy] = useState(false);
 	const [removing, setRemoving] = useState<string | null>(null);
 	const [expandedManaged, setExpandedManaged] = useState<string | null>(null);
 	const [managedDocuments, setManagedDocuments] = useState(
@@ -97,65 +96,79 @@ export function SkillManagerDialog({
 	);
 	const [error, setError] = useState<string | null>(null);
 	const [notice, setNotice] = useState<string | null>(null);
-	const close = useCallback(() => {
-		if (busy) return;
-		if (staged) {
-			void discardSkill({ data: { id: staged.id } }).finally(onClose);
-			return;
-		}
-		onClose();
-	}, [busy, discardSkill, onClose, staged]);
-	const { dialogRef, onDialogKeyDown } = useDialogFocus<HTMLDivElement>(close);
+	const [secondaryNotice, setSecondaryNotice] = useState<string | null>(null);
+	const mountedRef = useRef(true);
+	const refreshRequestRef = useRef(0);
 
 	const refreshManaged = useCallback(async () => {
+		const requestId = ++refreshRequestRef.current;
 		setLoading(true);
 		setError(null);
 		try {
-			setManaged((await listManaged()).skills);
+			const result = await listManaged();
+			if (!mountedRef.current || refreshRequestRef.current !== requestId) {
+				return;
+			}
+			setManaged(result.skills);
 		} catch (cause) {
+			if (!mountedRef.current || refreshRequestRef.current !== requestId) {
+				return;
+			}
 			setError(
 				cause instanceof Error ? cause.message : "Unable to load skills",
 			);
 		} finally {
-			setLoading(false);
+			if (mountedRef.current && refreshRequestRef.current === requestId) {
+				setLoading(false);
+			}
 		}
 	}, [listManaged]);
 
-	useEffect(() => {
-		void refreshManaged();
-	}, [refreshManaged]);
+	const stagedReview = useStagedSkillReview({
+		stageSkill,
+		readStagedFile,
+		installSkill,
+		discardSkill,
+		onApproved: async (summary) => {
+			onChanged?.(summary);
+			await refreshManaged();
+		},
+		onError: setError,
+		onNotice: setNotice,
+		onWarning: setSecondaryNotice,
+		onClose,
+	});
+	const busy = managerBusy || stagedReview.busy;
+	const close = useCallback(() => {
+		if (managerBusy) return;
+		stagedReview.close();
+	}, [managerBusy, stagedReview.close]);
+	const { dialogRef, onDialogKeyDown } = useDialogFocus<HTMLDivElement>(close);
 
-	const stageSource = async (url: string, fromDiscovery = false) => {
-		if (!url.trim() || (busy && !fromDiscovery)) return;
-		setBusy(true);
-		setError(null);
-		setNotice(null);
-		try {
-			const result = await stageSkill({ data: { sourceUrl: url.trim() } });
-			setStaged(result.skill);
-			setSelectedFile("SKILL.md");
-			setSelectedContent(result.skill.skillDocument);
-		} catch (cause) {
-			setError(
-				cause instanceof Error ? cause.message : "Unable to stage skill",
-			);
-		} finally {
-			setBusy(false);
-		}
-	};
+	useEffect(() => {
+		mountedRef.current = true;
+		void refreshManaged();
+		return () => {
+			mountedRef.current = false;
+			refreshRequestRef.current += 1;
+		};
+	}, [refreshManaged]);
 
 	const findSkills = async () => {
 		if (!sourceUrl.trim() || busy) return;
-		setBusy(true);
+		setManagerBusy(true);
 		setError(null);
 		setNotice(null);
+		setSecondaryNotice(null);
 		try {
 			const result = await discoverSkills({
 				data: { source: sourceUrl.trim() },
 			});
 			if (result.discovery.skills.length === 1) {
-				setBusy(false);
-				await stageSource(result.discovery.skills[0]?.sourceUrl ?? "", true);
+				setManagerBusy(false);
+				await stagedReview.stageSource(
+					result.discovery.skills[0]?.sourceUrl ?? "",
+				);
 				return;
 			}
 			setDiscovery(result.discovery);
@@ -165,63 +178,7 @@ export function SkillManagerDialog({
 				cause instanceof Error ? cause.message : "Unable to discover skills",
 			);
 		} finally {
-			setBusy(false);
-		}
-	};
-
-	const decline = async () => {
-		if (!staged || busy) return;
-		setBusy(true);
-		setError(null);
-		try {
-			await discardSkill({ data: { id: staged.id } });
-			setStaged(null);
-			setSelectedContent("");
-			setNotice(`${staged.name} declined`);
-		} catch (cause) {
-			setError(
-				cause instanceof Error ? cause.message : "Unable to decline skill",
-			);
-		} finally {
-			setBusy(false);
-		}
-	};
-
-	const approve = async () => {
-		if (!staged || busy) return;
-		setBusy(true);
-		setError(null);
-		try {
-			const result = await installSkill({ data: { id: staged.id } });
-			const summary = `${result.installed.name} added to Hlid`;
-			setStaged(null);
-			setSelectedContent("");
-			setNotice(summary);
-			onChanged?.(summary);
-			await refreshManaged();
-		} catch (cause) {
-			setError(cause instanceof Error ? cause.message : "Unable to add skill");
-		} finally {
-			setBusy(false);
-		}
-	};
-
-	const selectFile = async (path: string) => {
-		if (!staged || path === selectedFile) return;
-		const file = staged.files.find((candidate) => candidate.path === path);
-		if (!file?.readable) return;
-		setSelectedFile(path);
-		if (path === "SKILL.md") {
-			setSelectedContent(staged.skillDocument);
-			return;
-		}
-		setSelectedContent("Loading…");
-		try {
-			const result = await readStagedFile({ data: { id: staged.id, path } });
-			setSelectedContent(result.content);
-		} catch (cause) {
-			setSelectedContent("");
-			setError(cause instanceof Error ? cause.message : "Unable to read file");
+			setManagerBusy(false);
 		}
 	};
 
@@ -252,6 +209,7 @@ export function SkillManagerDialog({
 		if (removing) return;
 		setRemoving(skill.id);
 		setError(null);
+		setSecondaryNotice(null);
 		try {
 			const result = await removeSkill({ data: { id: skill.id } });
 			setManaged((current) => current.filter((item) => item.id !== skill.id));
@@ -307,15 +265,15 @@ export function SkillManagerDialog({
 					</button>
 				</div>
 
-				{staged ? (
+				{stagedReview.staged ? (
 					<SkillReview
-						skill={staged}
-						selectedFile={selectedFile}
-						selectedContent={selectedContent}
+						skill={stagedReview.staged}
+						selectedFile={stagedReview.selectedFile}
+						selectedContent={stagedReview.selectedContent}
 						busy={busy}
-						onSelectFile={(path) => void selectFile(path)}
-						onDecline={() => void decline()}
-						onApprove={() => void approve()}
+						onSelectFile={(path) => void stagedReview.selectFile(path)}
+						onDecline={() => void stagedReview.decline()}
+						onApprove={() => void stagedReview.approve()}
 					/>
 				) : (
 					<>
@@ -379,7 +337,9 @@ export function SkillManagerDialog({
 												</span>
 												<button
 													type="button"
-													onClick={() => void stageSource(skill.sourceUrl)}
+													onClick={() =>
+														void stagedReview.stageSource(skill.sourceUrl)
+													}
 													disabled={skill.alreadyInstalled || busy}
 													className="text-[8px] tracking-widest uppercase text-primary disabled:text-status-success disabled:opacity-70"
 												>
@@ -471,6 +431,11 @@ export function SkillManagerDialog({
 				{notice && (
 					<output className="block shrink-0 px-4 py-2 border-t border-border text-[10px] text-status-success">
 						{notice}
+					</output>
+				)}
+				{secondaryNotice && (
+					<output className="block shrink-0 px-4 py-2 border-t border-border text-[10px] text-status-warning">
+						{secondaryNotice}
 					</output>
 				)}
 				{error && (

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import {
+	act,
 	cleanup,
 	fireEvent,
 	render,
@@ -7,6 +8,7 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { deferred } from "#/test/utils";
 import { SkillManagerDialog } from "./SkillManagerDialog";
 
 afterEach(cleanup);
@@ -90,6 +92,14 @@ function dependencies() {
 describe("SkillManagerDialog", () => {
 	it("stages a GitHub skill and exposes every readable file before approval", async () => {
 		const deps = dependencies();
+		deps.installSkill.mockResolvedValueOnce({
+			ok: true,
+			installed: { id: staged.id, name: "review" },
+			warning: {
+				code: "skill_snapshot_refresh_failed",
+				message: "mounted vault unavailable",
+			},
+		});
 		const onChanged = vi.fn();
 		render(
 			<SkillManagerDialog onClose={vi.fn()} onChanged={onChanged} {...deps} />,
@@ -121,6 +131,12 @@ describe("SkillManagerDialog", () => {
 			}),
 		);
 		expect(onChanged).toHaveBeenCalledWith("review added to Hlid");
+		expect(screen.getByText("review added to Hlid")).toBeDefined();
+		expect(
+			screen.getByText(
+				"Skill list refresh is delayed: mounted vault unavailable",
+			),
+		).toBeDefined();
 	});
 
 	it("lists repository choices before staging a selected skill", async () => {
@@ -181,5 +197,66 @@ describe("SkillManagerDialog", () => {
 			}),
 		);
 		expect(screen.getByText("review declined")).toBeDefined();
+	});
+
+	it("keeps a post-install inventory when the initial load finishes later", async () => {
+		const deps = dependencies();
+		const initialLoad =
+			deferred<Awaited<ReturnType<typeof deps.listManaged>>>();
+		const postInstallLoad =
+			deferred<Awaited<ReturnType<typeof deps.listManaged>>>();
+		deps.listManaged
+			.mockReturnValueOnce(initialLoad.promise)
+			.mockReturnValueOnce(postInstallLoad.promise);
+		render(<SkillManagerDialog onClose={vi.fn()} {...deps} />);
+
+		fireEvent.change(screen.getByLabelText("Skill source"), {
+			target: { value: staged.sourceUrl },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Find skills" }));
+		await screen.findByText("Review a working tree");
+		fireEvent.click(screen.getByRole("button", { name: "Add to Hlid" }));
+		await waitFor(() => expect(deps.listManaged).toHaveBeenCalledTimes(2));
+
+		await act(async () => {
+			postInstallLoad.resolve({
+				skills: [
+					{
+						id: staged.id,
+						name: "newly-installed",
+						description: "Newest inventory",
+						source: "Hlid",
+						sourceUrl: staged.sourceUrl,
+						resolvedSha: staged.resolvedSha,
+						importedAt: staged.createdAt,
+						fileCount: staged.fileCount,
+						bytes: staged.bytes,
+					},
+				],
+			});
+			await postInstallLoad.promise;
+		});
+		expect(await screen.findByText("Newest inventory")).toBeDefined();
+
+		await act(async () => {
+			initialLoad.resolve({
+				skills: [
+					{
+						id: "c".repeat(24),
+						name: "stale",
+						description: "Stale initial inventory",
+						source: "Hlid",
+						sourceUrl: null,
+						resolvedSha: null,
+						importedAt: null,
+						fileCount: 1,
+						bytes: 10,
+					},
+				],
+			});
+			await initialLoad.promise;
+		});
+		expect(screen.getByText("Newest inventory")).toBeDefined();
+		expect(screen.queryByText("Stale initial inventory")).toBeNull();
 	});
 });

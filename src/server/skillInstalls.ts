@@ -118,6 +118,33 @@ export type RemoteSkillDiscovery = {
 
 type StageMetadata = StagedSkillReview & { packageName: string };
 
+const stagedSkillSettlements = new Map<string, Promise<void>>();
+
+/**
+ * Serializes every terminal filesystem action for one stage. The map only
+ * owns live work: durable install replay is reconciled from managed
+ * provenance, while discard remains an idempotent removal.
+ */
+async function withStagedSkillSettlement<T>(
+	id: string,
+	settle: () => Promise<T>,
+): Promise<T> {
+	const previous = stagedSkillSettlements.get(id) ?? Promise.resolve();
+	const result = previous.catch(() => {}).then(settle);
+	const tail = result.then(
+		() => undefined,
+		() => undefined,
+	);
+	stagedSkillSettlements.set(id, tail);
+	try {
+		return await result;
+	} finally {
+		if (stagedSkillSettlements.get(id) === tail) {
+			stagedSkillSettlements.delete(id);
+		}
+	}
+}
+
 function githubHeaders(): HeadersInit {
 	const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
 	return {
@@ -520,18 +547,20 @@ async function downloadSkillPackage(
 	return { files, bytes };
 }
 
-async function cleanupExpiredStages(): Promise<void> {
+export async function cleanupExpiredStages(): Promise<void> {
 	const root = skillStagingDirectory();
 	const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
 	const cutoff = Date.now() - STAGE_TTL_MS;
 	await Promise.all(
 		entries.map(async (entry) => {
 			if (!entry.isDirectory() || !STAGE_ID.test(entry.name)) return;
-			const path = stagedSkillDirectory(entry.name);
-			const info = await stat(path).catch(() => null);
-			if (info && info.mtimeMs < cutoff) {
-				await rm(path, { recursive: true, force: true });
-			}
+			await withStagedSkillSettlement(entry.name, async () => {
+				const path = stagedSkillDirectory(entry.name);
+				const info = await stat(path).catch(() => null);
+				if (info && info.mtimeMs < cutoff) {
+					await rm(path, { recursive: true, force: true });
+				}
+			});
 		}),
 	);
 }
@@ -646,48 +675,102 @@ export async function readStagedSkillFile(
 
 export async function discardStagedSkill(id: string): Promise<boolean> {
 	if (!STAGE_ID.test(id)) return false;
-	const directory = stagedSkillDirectory(id);
-	const exists = await lstat(directory).catch(() => null);
-	if (!exists?.isDirectory()) return false;
-	await rm(directory, { recursive: true, force: false });
-	return true;
+	return withStagedSkillSettlement(id, async () => {
+		const installed = await findInstalledStagedSkill(id);
+		if (installed) {
+			throw new Error(`Skill ${installed.name} was already added to Hlid`);
+		}
+		await rm(stagedSkillDirectory(id), { recursive: true, force: true });
+		return true;
+	});
+}
+
+type InstalledStagedSkill = { id: string; name: string };
+
+async function findInstalledStagedSkill(
+	id: string,
+): Promise<InstalledStagedSkill | null> {
+	for (const skill of await managedSkillPackages()) {
+		const raw = await readFile(
+			resolve(skill.path, ".hlid-source.json"),
+			"utf8",
+		).catch(() => null);
+		if (raw === null) continue;
+		let provenance: Record<string, unknown>;
+		try {
+			provenance = JSON.parse(raw) as Record<string, unknown>;
+		} catch {
+			continue;
+		}
+		const stageId =
+			typeof provenance.stageId === "string"
+				? provenance.stageId
+				: provenance.source === "github" && typeof provenance.id === "string"
+					? provenance.id
+					: null;
+		if (provenance.source !== "github" || stageId !== id) continue;
+		const document = await readFile(
+			resolve(skill.path, "SKILL.md"),
+			"utf8",
+		).catch(() => null);
+		const name =
+			typeof provenance.name === "string" && provenance.name.trim()
+				? provenance.name
+				: document === null
+					? skill.name
+					: skillDocumentMetadata(document, skill.name).name;
+		return { id, name };
+	}
+	return null;
 }
 
 export async function installStagedSkill(
 	id: string,
-): Promise<{ id: string; name: string }> {
-	const { directory, metadata } = await loadStage(id);
-	const packageDirectory = resolve(directory, "package");
-	await validatePackageTree(packageDirectory);
-	const target = resolve(managedSkillsDirectory(), metadata.packageName);
-	if (!pathStartsWith(managedSkillsDirectory(), target)) {
-		throw new Error("Invalid managed skill name");
-	}
-	const existing = await lstat(target).catch(() => null);
-	if (existing)
-		throw new Error(`Skill ${metadata.packageName} is already in Hlid`);
-	await writeFile(
-		resolve(packageDirectory, ".hlid-source.json"),
-		`${JSON.stringify(
-			{
-				id,
-				source: "github",
-				sourcePath: metadata.sourceUrl,
-				sourceUrl: metadata.sourceUrl,
-				repository: metadata.repository,
-				repositoryPath: metadata.repositoryPath,
-				requestedRef: metadata.requestedRef,
-				resolvedSha: metadata.resolvedSha,
-				importedAt: new Date().toISOString(),
-			},
-			null,
-			2,
-		)}\n`,
-		{ encoding: "utf8", mode: 0o600 },
-	);
-	await rename(packageDirectory, target);
-	await rm(directory, { recursive: true, force: true });
-	return { id, name: metadata.name };
+): Promise<InstalledStagedSkill> {
+	if (!STAGE_ID.test(id)) throw new Error("Invalid staged skill ID");
+	return withStagedSkillSettlement(id, async () => {
+		const reconciled = await findInstalledStagedSkill(id);
+		if (reconciled) {
+			await rm(stagedSkillDirectory(id), {
+				recursive: true,
+				force: true,
+			}).catch(() => {});
+			return reconciled;
+		}
+		const { directory, metadata } = await loadStage(id);
+		const packageDirectory = resolve(directory, "package");
+		await validatePackageTree(packageDirectory);
+		const target = resolve(managedSkillsDirectory(), metadata.packageName);
+		if (!pathStartsWith(managedSkillsDirectory(), target)) {
+			throw new Error("Invalid managed skill name");
+		}
+		const existing = await lstat(target).catch(() => null);
+		if (existing)
+			throw new Error(`Skill ${metadata.packageName} is already in Hlid`);
+		await writeFile(
+			resolve(packageDirectory, ".hlid-source.json"),
+			`${JSON.stringify(
+				{
+					stageId: id,
+					name: metadata.name,
+					source: "github",
+					sourcePath: metadata.sourceUrl,
+					sourceUrl: metadata.sourceUrl,
+					repository: metadata.repository,
+					repositoryPath: metadata.repositoryPath,
+					requestedRef: metadata.requestedRef,
+					resolvedSha: metadata.resolvedSha,
+					importedAt: new Date().toISOString(),
+				},
+				null,
+				2,
+			)}\n`,
+			{ encoding: "utf8", mode: 0o600 },
+		);
+		await rename(packageDirectory, target);
+		await rm(directory, { recursive: true, force: true }).catch(() => {});
+		return { id, name: metadata.name };
+	});
 }
 
 export async function listManagedSkills(): Promise<ManagedSkillSummary[]> {

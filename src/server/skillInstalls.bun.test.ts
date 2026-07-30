@@ -6,11 +6,17 @@ import {
 	readFileSync,
 	rmSync,
 	statSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { deferred } from "#/test/utils";
+
+const skillImportMocks = vi.hoisted(() => ({
+	validatePackageTree: vi.fn(),
+}));
 
 vi.mock("./libraryStore", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./libraryStore")>();
@@ -27,8 +33,20 @@ vi.mock("./libraryStore", async (importOriginal) => {
 	};
 });
 
+vi.mock("./skillImports", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./skillImports")>();
+	skillImportMocks.validatePackageTree.mockImplementation(
+		actual.validatePackageTree,
+	);
+	return {
+		...actual,
+		validatePackageTree: skillImportMocks.validatePackageTree,
+	};
+});
+
 import { removeManagedSkill } from "./skillImports";
 import {
+	cleanupExpiredStages,
 	discardStagedSkill,
 	discoverRemoteSkills,
 	installStagedSkill,
@@ -49,6 +67,18 @@ function json(value: unknown, status = 200): Response {
 		status,
 		headers: { "content-type": "application/json" },
 	});
+}
+
+async function remainsPending(promise: Promise<unknown>): Promise<boolean> {
+	return Promise.race([
+		promise.then(
+			() => false,
+			() => false,
+		),
+		new Promise<true>((resolvePending) =>
+			setTimeout(() => resolvePending(true), 20),
+		),
+	]);
 }
 
 beforeEach(() => {
@@ -192,6 +222,8 @@ describe("GitHub skill staging", () => {
 				),
 			),
 		).toMatchObject({
+			stageId: staged.id,
+			name: "demo",
 			source: "github",
 			repository: "openai/skills",
 			resolvedSha: SHA,
@@ -213,8 +245,117 @@ describe("GitHub skill staging", () => {
 			"https://github.com/openai/skills/tree/main/skills/demo",
 		);
 		expect(await discardStagedSkill(staged.id)).toBe(true);
-		expect(await discardStagedSkill(staged.id)).toBe(false);
+		expect(await discardStagedSkill(staged.id)).toBe(true);
 		expect(existsSync(join(root, "managed", "demo"))).toBe(false);
+	});
+
+	it("reconciles an install replay from its managed stage provenance", async () => {
+		const staged = await stageGitHubSkill(
+			"https://github.com/openai/skills/tree/main/skills/demo",
+		);
+		const installed = await installStagedSkill(staged.id);
+
+		await expect(installStagedSkill(staged.id)).resolves.toEqual(installed);
+		expect(existsSync(join(root, "staging", staged.id))).toBe(false);
+		expect(existsSync(join(root, "managed", "demo"))).toBe(true);
+	});
+
+	it("reconciles legacy GitHub provenance that stored the stage as id", async () => {
+		const staged = await stageGitHubSkill(
+			"https://github.com/openai/skills/tree/main/skills/demo",
+		);
+		const installed = await installStagedSkill(staged.id);
+		const provenancePath = join(root, "managed", "demo", ".hlid-source.json");
+		const provenance = JSON.parse(
+			readFileSync(provenancePath, "utf8"),
+		) as Record<string, unknown>;
+		delete provenance.stageId;
+		delete provenance.name;
+		provenance.id = staged.id;
+		writeFileSync(
+			provenancePath,
+			`${JSON.stringify(provenance, null, 2)}\n`,
+			"utf8",
+		);
+
+		await expect(installStagedSkill(staged.id)).resolves.toEqual(installed);
+	});
+
+	it("serializes competing install and discard actions truthfully", async () => {
+		const staged = await stageGitHubSkill(
+			"https://github.com/openai/skills/tree/main/skills/demo",
+		);
+		const validationEntered = deferred<void>();
+		const releaseValidation = deferred<{ fileCount: number; bytes: number }>();
+		skillImportMocks.validatePackageTree.mockImplementationOnce(() => {
+			validationEntered.resolve();
+			return releaseValidation.promise;
+		});
+
+		const installing = installStagedSkill(staged.id);
+		await validationEntered.promise;
+		const discarding = discardStagedSkill(staged.id);
+
+		try {
+			expect(await remainsPending(discarding)).toBe(true);
+			expect(existsSync(join(root, "staging", staged.id))).toBe(true);
+		} finally {
+			releaseValidation.resolve({ fileCount: 2, bytes: 100 });
+		}
+		await expect(installing).resolves.toEqual({
+			id: staged.id,
+			name: "demo",
+		});
+		await expect(discarding).rejects.toThrow(
+			"Skill demo was already added to Hlid",
+		);
+		expect(existsSync(join(root, "managed", "demo"))).toBe(true);
+	});
+
+	it("lets a claimed discard settle before a competing install", async () => {
+		const staged = await stageGitHubSkill(
+			"https://github.com/openai/skills/tree/main/skills/demo",
+		);
+
+		const discarding = discardStagedSkill(staged.id);
+		const installing = installStagedSkill(staged.id);
+
+		await expect(discarding).resolves.toBe(true);
+		await expect(installing).rejects.toThrow(
+			"Staged skill not found or expired",
+		);
+		expect(existsSync(join(root, "managed", "demo"))).toBe(false);
+	});
+
+	it("keeps TTL cleanup behind an active terminal settlement", async () => {
+		const staged = await stageGitHubSkill(
+			"https://github.com/openai/skills/tree/main/skills/demo",
+		);
+		const expired = new Date(Date.now() - 25 * 60 * 60 * 1000);
+		utimesSync(join(root, "staging", staged.id), expired, expired);
+		const validationEntered = deferred<void>();
+		const releaseValidation = deferred<{ fileCount: number; bytes: number }>();
+		skillImportMocks.validatePackageTree.mockImplementationOnce(() => {
+			validationEntered.resolve();
+			return releaseValidation.promise;
+		});
+
+		const installing = installStagedSkill(staged.id);
+		await validationEntered.promise;
+		const cleanup = cleanupExpiredStages();
+
+		try {
+			expect(await remainsPending(cleanup)).toBe(true);
+			expect(existsSync(join(root, "staging", staged.id))).toBe(true);
+		} finally {
+			releaseValidation.resolve({ fileCount: 2, bytes: 100 });
+		}
+		await expect(installing).resolves.toEqual({
+			id: staged.id,
+			name: "demo",
+		});
+		await expect(cleanup).resolves.toBeUndefined();
+		expect(existsSync(join(root, "managed", "demo"))).toBe(true);
 	});
 
 	it("keeps an installed skill's name tied to its managed directory", async () => {

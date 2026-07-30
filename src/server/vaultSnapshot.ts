@@ -29,6 +29,15 @@ export type VaultSnapshot = {
 	cockpit: VaultSnapshotData["cockpit"];
 };
 
+export type VaultSnapshotRefreshStatus =
+	| { status: "refreshed"; snapshot: VaultSnapshot }
+	| {
+			status: "degraded";
+			snapshot: VaultSnapshot;
+			error: string;
+			retryAt: number;
+	  };
+
 const SNAPSHOT_TTL_MS = 5_000;
 const WATCH_DEBOUNCE_MS = 200;
 const SNAPSHOT_FAILURE_RETRY_MS = 30_000;
@@ -38,13 +47,28 @@ type SnapshotRecord = VaultSnapshot & {
 	contentKey: string;
 };
 
+type InternalSnapshotRefreshStatus =
+	| {
+			status: "refreshed";
+			snapshot: SnapshotRecord;
+			completedGeneration: number;
+	  }
+	| {
+			status: "degraded";
+			snapshot: SnapshotRecord;
+			error: string;
+			retryAt: number;
+			completedGeneration: number;
+	  };
+
 let current: SnapshotRecord | null = null;
-let inflight: Promise<SnapshotRecord> | null = null;
+let inflight: Promise<InternalSnapshotRefreshStatus> | null = null;
 let dirty = false;
 let invalidationGeneration = 0;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingConfig: HlidConfig | null = null;
 let retryAfter = 0;
+let lastRefreshFailure: { error: string; retryAt: number } | null = null;
 let watchSignature = "";
 let watchers: FSWatcher[] = [];
 
@@ -123,7 +147,9 @@ function scheduleRefresh(config?: HlidConfig): void {
 	}, delay);
 }
 
-async function refreshSnapshot(config: HlidConfig): Promise<SnapshotRecord> {
+async function refreshSnapshotStatus(
+	config: HlidConfig,
+): Promise<InternalSnapshotRefreshStatus> {
 	if (inflight) return inflight;
 	const startedGeneration = invalidationGeneration;
 	const nextConfigKey = configKey(config);
@@ -145,12 +171,17 @@ async function refreshSnapshot(config: HlidConfig): Promise<SnapshotRecord> {
 		)
 		.then((result) => {
 			retryAfter = 0;
+			lastRefreshFailure = null;
 			if (!result.changed && current?.configKey === nextConfigKey) {
 				const record = { ...current, refreshedAt: Date.now() };
 				current = record;
 				dirty = invalidationGeneration !== startedGeneration;
 				installWatchers(config);
-				return record;
+				return {
+					status: "refreshed",
+					snapshot: record,
+					completedGeneration: startedGeneration,
+				} as const;
 			}
 			if (!result.changed) {
 				throw new Error("Vault snapshot worker omitted changed snapshot data");
@@ -170,7 +201,11 @@ async function refreshSnapshot(config: HlidConfig): Promise<SnapshotRecord> {
 			dirty = invalidationGeneration !== startedGeneration;
 			installWatchers(config);
 			if (changed) emitChange(record);
-			return record;
+			return {
+				status: "refreshed",
+				snapshot: record,
+				completedGeneration: startedGeneration,
+			} as const;
 		})
 		.catch((error) => {
 			// Snapshot inventory is optional route enrichment. Preserve a last-good
@@ -179,26 +214,83 @@ async function refreshSnapshot(config: HlidConfig): Promise<SnapshotRecord> {
 			console.warn(
 				`[vaultSnapshot] refresh failed: ${safeErrorSummary(error)}`,
 			);
+			const errorMessage =
+				error instanceof Error ? error.message : safeErrorSummary(error);
 			retryAfter = Date.now() + SNAPSHOT_FAILURE_RETRY_MS;
+			lastRefreshFailure = { error: errorMessage, retryAt: retryAfter };
 			dirty = false;
-			if (current?.configKey === nextConfigKey) return current;
-			const data = emptySnapshotData(config);
-			const record: SnapshotRecord = {
-				...data,
-				revision: (current?.revision ?? 0) + 1,
-				refreshedAt: Date.now(),
-				configKey: nextConfigKey,
-				contentKey: snapshotContentKey(nextConfigKey, data),
-			};
-			current = record;
-			installWatchers(config);
-			return record;
+			let record = current;
+			if (record?.configKey !== nextConfigKey) {
+				const data = emptySnapshotData(config);
+				record = {
+					...data,
+					revision: (current?.revision ?? 0) + 1,
+					refreshedAt: Date.now(),
+					configKey: nextConfigKey,
+					contentKey: snapshotContentKey(nextConfigKey, data),
+				};
+				current = record;
+				installWatchers(config);
+			}
+			return {
+				status: "degraded",
+				snapshot: record,
+				error: errorMessage,
+				retryAt: retryAfter,
+				completedGeneration: startedGeneration,
+			} as const;
 		})
 		.finally(() => {
 			inflight = null;
 		});
 	inflight = promise;
 	return promise;
+}
+
+async function refreshSnapshot(config: HlidConfig): Promise<SnapshotRecord> {
+	return (await refreshSnapshotStatus(config)).snapshot;
+}
+
+/**
+ * Force a snapshot rebuild for a mutation that must distinguish a fresh view
+ * from the normal last-good fallback. Ordinary snapshot readers intentionally
+ * keep receiving the fallback without handling refresh status.
+ */
+export async function refreshVaultSnapshotWithStatus(
+	_reason = "explicit",
+	config: HlidConfig = loadConfig(),
+): Promise<VaultSnapshotRefreshStatus> {
+	dirty = true;
+	const requestedGeneration = ++invalidationGeneration;
+	if (current && Date.now() < retryAfter) {
+		scheduleRefresh(config);
+		return {
+			status: "degraded",
+			snapshot: current,
+			error:
+				lastRefreshFailure?.error ??
+				"Vault snapshot refresh is waiting to retry",
+			retryAt: lastRefreshFailure?.retryAt ?? retryAfter,
+		};
+	}
+
+	let result = await refreshSnapshotStatus(config);
+	while (
+		result.status === "refreshed" &&
+		result.completedGeneration < requestedGeneration
+	) {
+		result = await refreshSnapshotStatus(config);
+	}
+	if (result.status === "degraded") {
+		scheduleRefresh(config);
+		return {
+			status: result.status,
+			snapshot: result.snapshot,
+			error: result.error,
+			retryAt: result.retryAt,
+		};
+	}
+	return { status: result.status, snapshot: result.snapshot };
 }
 
 /**
