@@ -17,11 +17,8 @@ function renderBar(
 		<LedgerPaginationBar
 			pagination={{
 				page: overrides?.page ?? 2,
-				pageSize: 20,
-				pageSizeOptions: [20, 50],
 				totalPages: overrides?.totalPages ?? 5,
 				onPageChange,
-				onPageSizeChange: vi.fn(),
 			}}
 			loading={overrides?.loading ?? false}
 		/>,

@@ -215,11 +215,8 @@ export function SessionsLedger(props: SessionsLedgerProps) {
 				rowRuntime={rowRuntime}
 				pagination={{
 					page,
-					pageSize,
-					pageSizeOptions,
 					totalPages,
 					onPageChange,
-					onPageSizeChange,
 				}}
 			/>
 		</div>

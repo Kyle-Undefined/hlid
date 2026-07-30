@@ -3,11 +3,8 @@ import { type KeyboardEvent, useState } from "react";
 
 export type LedgerPagination = {
 	page: number;
-	pageSize: number;
-	pageSizeOptions: readonly number[];
 	totalPages: number;
 	onPageChange: (p: number) => void;
-	onPageSizeChange: (size: number) => void;
 };
 
 /** Pager footer: first/prev/next/last plus a jump-to-page input. */

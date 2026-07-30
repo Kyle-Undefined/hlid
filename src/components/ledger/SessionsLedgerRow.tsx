@@ -717,40 +717,6 @@ function SessionActionPanel({
 	);
 }
 
-function SessionActionsPortal({
-	interaction,
-	presentation,
-	archived,
-	isForking,
-	isDesktop,
-}: {
-	interaction: SessionRowInteraction;
-	presentation: SessionRowPresentation;
-	archived: boolean;
-	isForking: boolean;
-	isDesktop: boolean;
-}) {
-	return createPortal(
-		<>
-			<button
-				type="button"
-				onClick={interaction.closeMenu}
-				className={`fixed inset-0 z-[60] ${isDesktop ? "bg-transparent" : "bg-black/10"}`}
-				aria-label="Dismiss session actions"
-			/>
-			{interaction.actionPosition && (
-				<SessionActionPanel
-					interaction={interaction}
-					presentation={presentation}
-					archived={archived}
-					isForking={isForking}
-				/>
-			)}
-		</>,
-		document.body,
-	);
-}
-
 function SessionActions({
 	interaction,
 	presentation,
@@ -779,15 +745,29 @@ function SessionActions({
 			>
 				<Ellipsis size={17} />
 			</button>
-			{interaction.menuOpen && typeof document !== "undefined" && (
-				<SessionActionsPortal
-					interaction={interaction}
-					presentation={presentation}
-					archived={archived}
-					isForking={isForking}
-					isDesktop={isDesktop}
-				/>
-			)}
+			{interaction.menuOpen &&
+				typeof document !== "undefined" &&
+				createPortal(
+					<>
+						<button
+							type="button"
+							onClick={interaction.closeMenu}
+							className={`fixed inset-0 z-[60] ${
+								isDesktop ? "bg-transparent" : "bg-black/10"
+							}`}
+							aria-label="Dismiss session actions"
+						/>
+						{interaction.actionPosition && (
+							<SessionActionPanel
+								interaction={interaction}
+								presentation={presentation}
+								archived={archived}
+								isForking={isForking}
+							/>
+						)}
+					</>,
+					document.body,
+				)}
 		</div>
 	);
 }
