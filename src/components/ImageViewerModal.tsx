@@ -1,25 +1,71 @@
-import { X } from "lucide-react";
+import { Download, Minus, Plus, X } from "lucide-react";
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { useDialogFocus } from "#/hooks/useDialogFocus";
+
+type ImageViewerZoom = "fit" | number;
+
+const MIN_ZOOM = 0.25;
+const MAX_ZOOM = 4;
+const ZOOM_STEP = 0.25;
+
+function boundedZoom(zoom: number): number {
+	return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
+}
+
+function imageExtension(src: string): string {
+	const mime = /^data:image\/([^;,]+)/i.exec(src)?.[1]?.toLowerCase();
+	if (mime === "jpeg") return "jpg";
+	if (mime?.match(/^[a-z0-9.+-]+$/)) return mime;
+	return "png";
+}
+
+function imageFilename(src: string, alt: string): string {
+	const stem = alt
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-|-$/g, "")
+		.slice(0, 80);
+	return `${stem || "image"}.${imageExtension(src)}`;
+}
 
 export function ImageViewerModal({
 	src,
 	alt,
 	onClose,
+	downloadFilename,
 }: {
 	src: string;
 	alt: string;
 	onClose: () => void;
+	downloadFilename?: string;
 }) {
 	const { dialogRef, onDialogKeyDown } =
 		useDialogFocus<HTMLDivElement>(onClose);
+	const [zoom, setZoom] = useState<ImageViewerZoom>("fit");
+	const [naturalSize, setNaturalSize] = useState<{
+		width: number;
+		height: number;
+	} | null>(null);
+	const numericZoom = zoom === "fit" ? null : zoom;
+	const scaledSize =
+		numericZoom !== null && naturalSize
+			? {
+					width: naturalSize.width * numericZoom,
+					height: naturalSize.height * numericZoom,
+				}
+			: null;
+	const changeZoom = (delta: number) => {
+		setZoom((current) =>
+			boundedZoom((current === "fit" ? 1 : current) + delta),
+		);
+	};
 
 	return (
 		// biome-ignore lint/a11y/useKeyWithClickEvents: backdrop Escape handled by inner dialog
 		// biome-ignore lint/a11y/noStaticElementInteractions: modal backdrop pattern
 		<div
-			className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex items-center justify-center p-4"
+			className="fixed inset-0 z-50 flex items-center justify-center bg-background/90 p-4 backdrop-blur-sm"
 			onClick={onClose}
 		>
 			<div
@@ -28,7 +74,7 @@ export function ImageViewerModal({
 				role="dialog"
 				aria-modal="true"
 				aria-label="Image viewer"
-				className="relative flex flex-col items-center gap-3 focus:outline-none"
+				className="relative flex h-full min-h-0 w-full flex-col gap-3 focus:outline-none"
 				onClick={(e) => e.stopPropagation()}
 				onKeyDown={onDialogKeyDown}
 			>
@@ -40,13 +86,109 @@ export function ImageViewerModal({
 				>
 					<X className="w-4 h-4" />
 				</button>
-				<img
-					src={src}
-					alt={alt}
-					className="max-h-[85vh] max-w-[90vw] object-contain shadow-2xl"
-				/>
+				<fieldset className="flex min-h-8 shrink-0 items-center justify-center gap-1 border-0 pr-7">
+					<legend className="sr-only">Image zoom controls</legend>
+					<button
+						type="button"
+						onClick={() => setZoom("fit")}
+						aria-label="Fit image"
+						aria-pressed={zoom === "fit"}
+						className={`border px-2 py-1 text-[10px] ${
+							zoom === "fit"
+								? "border-primary bg-primary text-primary-foreground"
+								: "border-border bg-card text-muted-foreground hover:text-foreground"
+						}`}
+					>
+						Fit
+					</button>
+					<button
+						type="button"
+						onClick={() => setZoom(1)}
+						aria-label="View image at 1:1"
+						aria-pressed={zoom === 1}
+						className={`border px-2 py-1 text-[10px] ${
+							zoom === 1
+								? "border-primary bg-primary text-primary-foreground"
+								: "border-border bg-card text-muted-foreground hover:text-foreground"
+						}`}
+					>
+						1:1
+					</button>
+					<button
+						type="button"
+						onClick={() => changeZoom(-ZOOM_STEP)}
+						disabled={numericZoom === MIN_ZOOM}
+						aria-label="Zoom out"
+						className="border border-border bg-card p-1 text-muted-foreground hover:text-foreground disabled:opacity-30"
+					>
+						<Minus className="h-3.5 w-3.5" />
+					</button>
+					<span
+						className="w-10 text-center font-mono text-[9px] text-muted-foreground"
+						aria-live="polite"
+					>
+						{numericZoom === null ? "Fit" : `${Math.round(numericZoom * 100)}%`}
+					</span>
+					<button
+						type="button"
+						onClick={() => changeZoom(ZOOM_STEP)}
+						disabled={numericZoom === MAX_ZOOM}
+						aria-label="Zoom in"
+						className="border border-border bg-card p-1 text-muted-foreground hover:text-foreground disabled:opacity-30"
+					>
+						<Plus className="h-3.5 w-3.5" />
+					</button>
+					<a
+						href={src}
+						download={downloadFilename || imageFilename(src, alt)}
+						aria-label="Download image"
+						className="ml-1 border border-border bg-card p-1 text-muted-foreground hover:text-foreground"
+					>
+						<Download className="h-3.5 w-3.5" />
+					</a>
+				</fieldset>
+				<div
+					className="min-h-0 flex-1 overflow-auto"
+					data-testid="image-viewer-viewport"
+				>
+					<div
+						className={`flex items-center justify-center ${
+							zoom === "fit" ? "h-full w-full" : "min-h-full min-w-full"
+						}`}
+						style={
+							scaledSize
+								? {
+										width: scaledSize.width,
+										height: scaledSize.height,
+									}
+								: undefined
+						}
+					>
+						<img
+							src={src}
+							alt={alt}
+							onLoad={(event) =>
+								setNaturalSize({
+									width: event.currentTarget.naturalWidth,
+									height: event.currentTarget.naturalHeight,
+								})
+							}
+							className={`shrink-0 object-contain shadow-2xl ${
+								zoom === "fit" ? "max-h-full max-w-full" : "max-w-none"
+							}`}
+							style={
+								scaledSize
+									? {
+											width: scaledSize.width,
+											height: scaledSize.height,
+										}
+									: undefined
+							}
+						/>
+					</div>
+				</div>
 				{alt && (
-					<p className="text-[11px] font-mono text-muted-foreground/70 max-w-[90vw] truncate">
+					<p className="max-w-full shrink-0 truncate text-center font-mono text-[11px] text-muted-foreground/70">
 						{alt}
 					</p>
 				)}
@@ -65,13 +207,23 @@ export function ClickableImage({
 	alt,
 	className,
 	imageClassName,
+	displayWidth,
+	downloadFilename,
 }: {
 	src: string;
 	alt: string;
 	className?: string;
 	imageClassName?: string;
+	displayWidth?: number;
+	downloadFilename?: string;
 }) {
 	const [open, setOpen] = useState(false);
+	const logicalWidth =
+		typeof displayWidth === "number" &&
+		Number.isFinite(displayWidth) &&
+		displayWidth > 0
+			? displayWidth
+			: undefined;
 	return (
 		<>
 			{/* A semantic button is invalid inside Markdown's paragraph element. */}
@@ -80,6 +232,7 @@ export function ClickableImage({
 				role="button"
 				tabIndex={0}
 				className={`cursor-zoom-in p-0 border-0 bg-transparent${className ? ` ${className}` : ""}`}
+				style={logicalWidth ? { width: logicalWidth } : undefined}
 				onClick={(e) => {
 					e.preventDefault();
 					e.stopPropagation();
@@ -105,6 +258,7 @@ export function ClickableImage({
 						src={src}
 						alt={alt}
 						onClose={() => setOpen(false)}
+						downloadFilename={downloadFilename}
 					/>,
 					document.body,
 				)}

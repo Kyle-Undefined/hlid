@@ -1275,7 +1275,7 @@ function StatsPage() {
 	const sessionsStatus = useSyncExternalStore(
 		subscribeSessionsStatus,
 		getSessionsStatus,
-		() => [],
+		getSessionsStatus,
 	);
 
 	// sessionPage state lives in useSessionListSync; the mutations hook layers

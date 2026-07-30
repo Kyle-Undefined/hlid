@@ -53,6 +53,64 @@ function namedViewportForWidth(
 	return "desktop";
 }
 
+function framePixelRatio(frame: ProjectPreviewAgentFrame): number | null {
+	const ratio =
+		frame.pixel_ratio ??
+		(frame.pixel_width && frame.width > 0
+			? frame.pixel_width / frame.width
+			: frame.device_scale_factor);
+	return typeof ratio === "number" && Number.isFinite(ratio) && ratio > 0
+		? ratio
+		: null;
+}
+
+function frameCaptureSize(frame: ProjectPreviewAgentFrame): {
+	width: number;
+	height: number;
+} {
+	const ratio = framePixelRatio(frame);
+	if (ratio && frame.pixel_width && frame.pixel_height) {
+		return {
+			width: Math.max(1, Math.round(frame.pixel_width / ratio)),
+			height: Math.max(1, Math.round(frame.pixel_height / ratio)),
+		};
+	}
+	return { width: frame.width, height: frame.height };
+}
+
+function frameResolutionTitle(frame: ProjectPreviewAgentFrame): string {
+	const capture = frameCaptureSize(frame);
+	if (!frame.pixel_width || !frame.pixel_height) {
+		return `${frame.width}×${frame.height} viewport pixels`;
+	}
+	const captureSize =
+		capture.width === frame.width && capture.height === frame.height
+			? ""
+			: ` · ${capture.width}×${capture.height} capture pixels`;
+	return `${frame.width}×${frame.height} viewport pixels${captureSize} · ${frame.pixel_width}×${frame.pixel_height} PNG`;
+}
+
+function previewCaptureFilename(frame: ProjectPreviewAgentFrame): string {
+	let pathname = frame.path;
+	try {
+		pathname = new URL(frame.path, "https://preview.invalid").pathname;
+	} catch {}
+	const route =
+		pathname
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, "-")
+			.replace(/^-|-$/g, "")
+			.slice(0, 60) || "home";
+	const captured = new Date(frame.captured_at);
+	const timestamp = Number.isNaN(captured.getTime())
+		? "capture"
+		: captured
+				.toISOString()
+				.replace(/\.\d{3}Z$/, "Z")
+				.replace(/[-:]/g, "");
+	return `project-preview-${frame.viewport}-${route}-${timestamp}.png`;
+}
+
 export function ProjectPreviewPane({
 	preview,
 	onClose,
@@ -98,6 +156,10 @@ export function ProjectPreviewPane({
 	const isReady = preview.state === "ready";
 	const agentFrameIdRef = useRef<string | null>(null);
 	agentFrameIdRef.current = agentFrame?.frame_id ?? null;
+	const agentFrameRatio = agentFrame ? framePixelRatio(agentFrame) : null;
+	const agentFrameCaptureSize = agentFrame
+		? frameCaptureSize(agentFrame)
+		: null;
 	useEffect(() => {
 		if (!isReady || surface !== "agent") return;
 		let cancelled = false;
@@ -524,7 +586,14 @@ export function ProjectPreviewPane({
 								<div className="mb-2 flex items-center justify-between gap-3 text-[9px] uppercase tracking-widest text-muted-foreground/60">
 									<span className="truncate">
 										Agent view · {agentFrame.last_action ?? "observed"} ·{" "}
-										{agentFrame.viewport} · {agentFrame.path}
+										{agentFrame.viewport} ·{" "}
+										<span title={frameResolutionTitle(agentFrame)}>
+											{agentFrame.width}×{agentFrame.height}
+											{agentFrameRatio && agentFrameRatio !== 1
+												? ` · ${Number(agentFrameRatio.toFixed(2))}×`
+												: ""}
+										</span>{" "}
+										· {agentFrame.path}
 									</span>
 									<span className="shrink-0">
 										{new Date(agentFrame.captured_at).toLocaleTimeString()}
@@ -535,6 +604,10 @@ export function ProjectPreviewPane({
 									alt={`Agent browser at ${agentFrame.path}`}
 									className="mx-auto block w-fit max-w-full"
 									imageClassName="max-w-full border border-border/40 bg-white"
+									displayWidth={
+										agentFrameCaptureSize?.width ?? agentFrame.width
+									}
+									downloadFilename={previewCaptureFilename(agentFrame)}
 								/>
 								{(agentFrame.console_messages.length > 0 ||
 									agentFrame.failed_requests.length > 0) && (

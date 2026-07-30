@@ -456,7 +456,7 @@ function useRavenSessionIdentity({
 	const sessionsStatus = useSyncExternalStore(
 		subscribeSessionsStatus,
 		getSessionsStatus,
-		() => [],
+		getSessionsStatus,
 	);
 	const [sessionId, setSessionId] = useState(
 		() =>

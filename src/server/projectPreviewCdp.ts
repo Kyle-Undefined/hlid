@@ -6,12 +6,17 @@ import type { Subprocess } from "bun";
 import { loadConfig } from "./config";
 import {
 	isAllowedProjectPreviewBrowserUrl,
+	MAX_PROJECT_PREVIEW_CAPTURE_ATTEMPTS,
 	MAX_PROJECT_PREVIEW_CAPTURE_BYTES,
 	MAX_PROJECT_PREVIEW_FULL_PAGE_HEIGHT,
+	nextProjectPreviewCaptureScale,
+	PROJECT_PREVIEW_CAPTURE_DEVICE_SCALE_FACTOR,
 	PROJECT_PREVIEW_CAPTURE_TIMEOUT_MS,
 	PROJECT_PREVIEW_CAPTURE_VIEWPORTS,
 	type ProjectPreviewCaptureSize,
 	type ProjectPreviewCaptureViewport,
+	projectPreviewCaptureScale,
+	readProjectPreviewPngDimensions,
 } from "./projectPreviewCapture";
 import type { ProjectPreviewAgentElement } from "./protocol";
 
@@ -173,6 +178,45 @@ export type ProjectPreviewBrowserDiagnostics = {
 	failedRequests: string[];
 };
 
+export type ProjectPreviewBrowserCapture = {
+	png: Buffer;
+	pixelWidth: number;
+	pixelHeight: number;
+	deviceScaleFactor: number;
+	pixelRatio: number;
+};
+
+type ProjectPreviewScreenshotClip = {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+	scale: number;
+};
+
+export function projectPreviewDeviceMetrics(
+	size: ProjectPreviewCaptureSize,
+): Record<string, number | boolean> {
+	return {
+		width: size.width,
+		height: size.height,
+		deviceScaleFactor: PROJECT_PREVIEW_CAPTURE_DEVICE_SCALE_FACTOR,
+		mobile: false,
+	};
+}
+
+export function projectPreviewScreenshotParams(
+	fullPage: boolean,
+	clip?: ProjectPreviewScreenshotClip,
+): Record<string, unknown> {
+	return {
+		format: "png",
+		fromSurface: true,
+		captureBeyondViewport: fullPage,
+		...(clip ? { clip } : {}),
+	};
+}
+
 export interface ProjectPreviewBrowserSession {
 	isConnected(): boolean;
 	currentUrl(): Promise<string>;
@@ -182,7 +226,7 @@ export interface ProjectPreviewBrowserSession {
 		viewport: ProjectPreviewCaptureViewport,
 		size?: ProjectPreviewCaptureSize,
 	): Promise<void>;
-	capture(fullPage: boolean): Promise<Buffer>;
+	capture(fullPage: boolean): Promise<ProjectPreviewBrowserCapture>;
 	title(): Promise<string>;
 	semanticSnapshot(limit: number): Promise<ProjectPreviewAgentElement[]>;
 	clickRef(ref: string): Promise<void>;
@@ -917,16 +961,14 @@ class CdpBrowserSession implements ProjectPreviewBrowserSession {
 		customSize?: ProjectPreviewCaptureSize,
 	): Promise<void> {
 		const size = customSize ?? PROJECT_PREVIEW_CAPTURE_VIEWPORTS[viewport];
-		await this.page.send("Emulation.setDeviceMetricsOverride", {
-			width: size.width,
-			height: size.height,
-			deviceScaleFactor: 1,
-			mobile: false,
-		});
+		await this.page.send(
+			"Emulation.setDeviceMetricsOverride",
+			projectPreviewDeviceMetrics(size),
+		);
 		this.viewportSize = size;
 	}
 
-	async capture(fullPage: boolean): Promise<Buffer> {
+	async capture(fullPage: boolean): Promise<ProjectPreviewBrowserCapture> {
 		await this.evaluate(
 			`(async () => {
 				await Promise.race([
@@ -941,9 +983,7 @@ class CdpBrowserSession implements ProjectPreviewBrowserSession {
 			})()`,
 			true,
 		);
-		let clip:
-			| { x: number; y: number; width: number; height: number; scale: number }
-			| undefined;
+		let region: Omit<ProjectPreviewScreenshotClip, "scale"> | undefined;
 		if (fullPage) {
 			const metrics = await this.page.send("Page.getLayoutMetrics");
 			const content = metrics.cssContentSize as
@@ -957,22 +997,82 @@ class CdpBrowserSession implements ProjectPreviewBrowserSession {
 				);
 			}
 			if (width > 0 && height > 0) {
-				clip = { x: 0, y: 0, width, height, scale: 1 };
+				region = { x: 0, y: 0, width, height };
+			} else {
+				throw new Error(
+					"Project Preview browser returned an invalid full-page size.",
+				);
 			}
 		}
-		const result = await this.page.send("Page.captureScreenshot", {
-			format: "png",
-			fromSurface: true,
-			captureBeyondViewport: fullPage,
-			...(clip ? { clip } : {}),
-		});
-		const png = Buffer.from(String(result.data ?? ""), "base64");
-		if (png.byteLength > MAX_PROJECT_PREVIEW_CAPTURE_BYTES) {
+
+		const logicalSize = region ?? {
+			x: 0,
+			y: 0,
+			width: this.viewportSize.width,
+			height: this.viewportSize.height,
+		};
+		let captureScale = projectPreviewCaptureScale(
+			logicalSize.width,
+			logicalSize.height,
+		);
+		for (
+			let attempt = 0;
+			attempt < MAX_PROJECT_PREVIEW_CAPTURE_ATTEMPTS;
+			attempt += 1
+		) {
+			if (captureScale < 1 && !region) {
+				const metrics = await this.page.send("Page.getLayoutMetrics");
+				const visual = metrics.cssVisualViewport as
+					| {
+							pageX?: number;
+							pageY?: number;
+							clientWidth?: number;
+							clientHeight?: number;
+					  }
+					| undefined;
+				region = {
+					x: visual?.pageX ?? 0,
+					y: visual?.pageY ?? 0,
+					width: visual?.clientWidth ?? this.viewportSize.width,
+					height: visual?.clientHeight ?? this.viewportSize.height,
+				};
+			}
+			const clip =
+				region && (fullPage || captureScale < 1)
+					? { ...region, scale: captureScale }
+					: undefined;
+			const result = await this.page.send(
+				"Page.captureScreenshot",
+				projectPreviewScreenshotParams(fullPage, clip),
+			);
+			const png = Buffer.from(String(result.data ?? ""), "base64");
+			const dimensions = readProjectPreviewPngDimensions(png);
+			if (png.byteLength <= MAX_PROJECT_PREVIEW_CAPTURE_BYTES) {
+				const capturedRegion = region ?? logicalSize;
+				const pixelRatio = Math.min(
+					dimensions.width / capturedRegion.width,
+					dimensions.height / capturedRegion.height,
+				);
+				return {
+					png,
+					pixelWidth: dimensions.width,
+					pixelHeight: dimensions.height,
+					deviceScaleFactor: PROJECT_PREVIEW_CAPTURE_DEVICE_SCALE_FACTOR,
+					pixelRatio: Math.round(pixelRatio * 10_000) / 10_000,
+				};
+			}
+			if (attempt + 1 < MAX_PROJECT_PREVIEW_CAPTURE_ATTEMPTS) {
+				captureScale = nextProjectPreviewCaptureScale(
+					captureScale,
+					png.byteLength,
+				);
+				continue;
+			}
 			throw new Error(
-				`Preview capture exceeds the ${MAX_PROJECT_PREVIEW_CAPTURE_BYTES} byte limit.`,
+				`Preview capture exceeds the ${MAX_PROJECT_PREVIEW_CAPTURE_BYTES} byte limit after adaptive downscaling.`,
 			);
 		}
-		return png;
+		throw new Error("Project Preview capture failed.");
 	}
 
 	async title(): Promise<string> {

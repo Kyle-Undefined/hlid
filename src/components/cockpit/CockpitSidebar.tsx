@@ -161,7 +161,7 @@ function usePersistedRecentRows(
 	const sessions = useSyncExternalStore(
 		subscribeSessionsStatus,
 		getSessionsStatus,
-		() => [],
+		getSessionsStatus,
 	);
 	return derivePersistedRecentSessionRows(runs, sessions);
 }
@@ -222,7 +222,7 @@ function AttentionSummary({
 	const sessions = useSyncExternalStore(
 		subscribeSessionsStatus,
 		getSessionsStatus,
-		() => [],
+		getSessionsStatus,
 	);
 	const liveRows = deriveLiveSessionSwitcherRows(sessions);
 	const liveByDbSessionId = new Map(

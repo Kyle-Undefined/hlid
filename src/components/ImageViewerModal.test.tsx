@@ -65,6 +65,56 @@ describe("ImageViewerModal", () => {
 		render(<ImageViewerModal src="x.png" alt="my caption" onClose={vi.fn()} />);
 		expect(screen.getByText("my caption")).toBeDefined();
 	});
+
+	it("switches between fit, 1:1, and stepped zoom inside a scrollable viewport", () => {
+		render(<ImageViewerModal src="x.png" alt="capture" onClose={vi.fn()} />);
+		const image = screen.getByRole("img", { name: "capture" });
+		Object.defineProperties(image, {
+			naturalWidth: { configurable: true, value: 1600 },
+			naturalHeight: { configurable: true, value: 1200 },
+		});
+		fireEvent.load(image);
+
+		expect(
+			screen.getByLabelText("Fit image").getAttribute("aria-pressed"),
+		).toBe("true");
+		expect(
+			screen
+				.getByTestId("image-viewer-viewport")
+				.classList.contains("overflow-auto"),
+		).toBe(true);
+
+		fireEvent.click(screen.getByLabelText("View image at 1:1"));
+		expect((image as HTMLImageElement).style.width).toBe("1600px");
+		expect((image.parentElement as HTMLElement).style.width).toBe("1600px");
+		expect(image.parentElement?.classList.contains("min-w-full")).toBe(true);
+		expect(screen.getByText("100%")).toBeDefined();
+
+		fireEvent.click(screen.getByLabelText("Zoom in"));
+		expect((image as HTMLImageElement).style.width).toBe("2000px");
+		expect((image.parentElement as HTMLElement).style.width).toBe("2000px");
+		expect(screen.getByText("125%")).toBeDefined();
+
+		fireEvent.click(screen.getByLabelText("Fit image"));
+		expect((image as HTMLImageElement).style.width).toBe("");
+	});
+
+	it("downloads the original source with the provided filename", () => {
+		const src = "data:image/png;base64,capture";
+		render(
+			<ImageViewerModal
+				src={src}
+				alt="Preview capture"
+				downloadFilename="project-preview-mobile-settings.png"
+				onClose={vi.fn()}
+			/>,
+		);
+		const download = screen.getByRole("link", { name: "Download image" });
+		expect(download.getAttribute("href")).toBe(src);
+		expect(download.getAttribute("download")).toBe(
+			"project-preview-mobile-settings.png",
+		);
+	});
 });
 
 describe("ClickableImage", () => {
@@ -94,5 +144,27 @@ describe("ClickableImage", () => {
 				name: "Preview capture at /settings",
 			}),
 		).toHaveLength(2);
+	});
+
+	it("constrains a high-density source to its logical display width", () => {
+		render(
+			<ClickableImage
+				src="data:image/png;base64,capture"
+				alt="Desktop preview"
+				displayWidth={1440}
+				downloadFilename="project-preview-desktop-home.png"
+			/>,
+		);
+
+		const thumbnail = screen.getByRole("button", {
+			name: "View Desktop preview",
+		});
+		expect((thumbnail as HTMLElement).style.width).toBe("1440px");
+		fireEvent.click(thumbnail);
+		expect(
+			screen
+				.getByRole("link", { name: "Download image" })
+				.getAttribute("download"),
+		).toBe("project-preview-desktop-home.png");
 	});
 });

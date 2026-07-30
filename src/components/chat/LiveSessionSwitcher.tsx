@@ -438,7 +438,7 @@ export function LiveSessionSwitcherBoundary({
 	const sessions = useSyncExternalStore(
 		subscribeSessionsStatus,
 		getSessionsStatus,
-		() => [],
+		getSessionsStatus,
 	);
 	const rows = deriveLiveSessionSwitcherRows(sessions);
 	const tone = liveSessionToggleTone(rows);

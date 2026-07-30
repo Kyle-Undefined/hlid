@@ -756,6 +756,10 @@ export type ProjectPreviewAgentFrame = {
 	viewport: "desktop" | "tablet" | "mobile";
 	width: number;
 	height: number;
+	pixel_width?: number;
+	pixel_height?: number;
+	device_scale_factor?: number;
+	pixel_ratio?: number;
 	full_page: boolean;
 	captured_at: number;
 	mime: "image/png";

@@ -1,3 +1,14 @@
+import { lstat, realpath, rename, rm, writeFile } from "node:fs/promises";
+import {
+	basename,
+	dirname,
+	isAbsolute,
+	join,
+	relative,
+	resolve,
+	sep,
+	win32,
+} from "node:path";
 import { z } from "zod";
 import { dbFetch, requireDbOk } from "#/lib/dbClient";
 import { parseHlidApiIndex } from "../lib/apiIndex";
@@ -31,6 +42,11 @@ const previewTarget = z.object({
 });
 const previewPath = z.string().trim().max(2_048).optional();
 const previewViewport = z.enum(["desktop", "tablet", "mobile"]).optional();
+const previewCapture = previewTarget.extend({
+	path: previewPath,
+	viewport: previewViewport,
+	full_page: z.boolean().optional(),
+});
 
 export const hlidAgentSchemas = {
 	hlid_help: z.object({
@@ -67,10 +83,14 @@ export const hlidAgentSchemas = {
 		readiness_timeout_seconds: z.number().int().min(1).max(120).optional(),
 	}),
 	inspect_project_preview: previewTarget,
-	capture_project_preview: previewTarget.extend({
-		path: previewPath,
-		viewport: previewViewport,
-		full_page: z.boolean().optional(),
+	capture_project_preview: previewCapture,
+	export_project_preview_capture: previewCapture.extend({
+		output_path: z
+			.string()
+			.trim()
+			.min(1)
+			.max(4_096)
+			.regex(/\.png$/i, "output_path must end with .png"),
 	}),
 	control_project_preview: previewTarget.extend({
 		action: z.enum([
@@ -520,7 +540,7 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 	{
 		name: "capture_project_preview",
 		description:
-			"Observe the persistent Hlid-owned agent browser for a Project Preview and return its PNG plus a bounded semantic element snapshot, route, title, console errors, and failed requests. Omit preview_id to use the current Preview for this session. Use a named desktop, tablet, or mobile viewport and optionally request a bounded full-page capture. This is read-only and does not publish a Relic.",
+			"Observe the persistent Hlid-owned agent browser for a Project Preview and return its lossless high-density PNG plus bitmap dimensions, effective pixel ratio, a bounded semantic element snapshot, route, title, console errors, and failed requests. Omit preview_id to use the current Preview for this session. Use a named desktop, tablet, or mobile viewport and optionally request a bounded full-page capture. This is read-only and does not save a workspace file or publish a Relic.",
 		readOnly: true,
 		deferLoading: true,
 		searchHint:
@@ -549,6 +569,48 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 						"Capture the bounded full page instead of only the viewport. Defaults to false.",
 				},
 			},
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "export_project_preview_capture",
+		description:
+			"Capture the persistent Hlid-owned agent browser once and save that exact lossless PNG to a workspace-relative .png path for documentation or another generated asset. The existing parent directory must remain inside the active workspace. This is a permissioned workspace write; it does not publish a Relic. The result includes the workspace-relative saved_path, capture metadata, and the same image content.",
+		readOnly: false,
+		deferLoading: true,
+		searchHint:
+			"export save high quality screenshot project preview png docs workspace",
+		approvalTitle: "Hlid export Project Preview capture",
+		inputSchema: {
+			type: "object",
+			properties: {
+				preview_id: {
+					type: "string",
+					description:
+						"Optional Preview ID. Omit to capture the current Preview for this session.",
+				},
+				path: {
+					type: "string",
+					description:
+						"Optional Preview-local route beginning with /. Defaults to the Preview's configured path.",
+				},
+				viewport: {
+					type: "string",
+					enum: ["desktop", "tablet", "mobile"],
+					description: "Named capture viewport. Defaults to desktop.",
+				},
+				full_page: {
+					type: "boolean",
+					description:
+						"Capture the bounded full page instead of only the viewport. Defaults to false.",
+				},
+				output_path: {
+					type: "string",
+					description:
+						"Workspace-relative output path ending in .png. Its parent directory must already exist; absolute paths, parent traversal, and symlink escapes are rejected.",
+				},
+			},
+			required: ["output_path"],
 			additionalProperties: false,
 		},
 	},
@@ -751,6 +813,10 @@ const captureResultSchema = z.object({
 	viewport: z.enum(["desktop", "tablet", "mobile"]),
 	width: z.number().int().positive(),
 	height: z.number().int().positive(),
+	pixel_width: z.number().int().positive().optional(),
+	pixel_height: z.number().int().positive().optional(),
+	device_scale_factor: z.number().positive().optional(),
+	pixel_ratio: z.number().positive().optional(),
 	full_page: z.boolean(),
 	captured_at: z.number().int().positive(),
 	mime: z.literal("image/png"),
@@ -823,6 +889,107 @@ async function requestProjectPreviewCapture(
 				: {}),
 		},
 	);
+}
+
+function isWithinDirectory(root: string, candidate: string): boolean {
+	const offset = relative(root, candidate);
+	return (
+		offset === "" ||
+		(!offset.startsWith(`..${sep}`) && offset !== ".." && !isAbsolute(offset))
+	);
+}
+
+function hasParentTraversal(path: string): boolean {
+	return path.split("/").some((segment) => segment === "..");
+}
+
+async function resolveProjectPreviewCaptureOutput(
+	outputPath: string,
+	runtimeCwd: string,
+): Promise<string> {
+	if (
+		isAbsolute(outputPath) ||
+		win32.isAbsolute(outputPath) ||
+		outputPath.includes("\\") ||
+		hasParentTraversal(outputPath)
+	) {
+		throw new Error(
+			"Project Preview output_path must be a workspace-relative path without parent traversal.",
+		);
+	}
+	const workspace = await realpath(runtimeCwd);
+	const requested = resolve(workspace, outputPath);
+	if (!isWithinDirectory(workspace, requested)) {
+		throw new Error(
+			"Project Preview output_path must remain inside the active workspace.",
+		);
+	}
+	let parent: string;
+	try {
+		parent = await realpath(dirname(requested));
+	} catch {
+		throw new Error(
+			"Project Preview output_path parent directory must already exist.",
+		);
+	}
+	if (!isWithinDirectory(workspace, parent)) {
+		throw new Error(
+			"Project Preview output_path parent resolves outside the active workspace.",
+		);
+	}
+	const savedPath = join(parent, basename(requested));
+	try {
+		if ((await lstat(savedPath)).isSymbolicLink()) {
+			throw new Error(
+				"Project Preview output_path cannot replace a symbolic link.",
+			);
+		}
+	} catch (error) {
+		if (
+			typeof error !== "object" ||
+			error === null ||
+			!("code" in error) ||
+			error.code !== "ENOENT"
+		)
+			throw error;
+	}
+	return savedPath;
+}
+
+async function saveProjectPreviewCapture(
+	result: CaptureResult,
+	savedPath: string,
+): Promise<void> {
+	const parent = dirname(savedPath);
+	const temporaryPath = join(
+		parent,
+		`.${basename(savedPath)}.${crypto.randomUUID()}.hlid-tmp`,
+	);
+	try {
+		await writeFile(temporaryPath, Buffer.from(result.image_base64, "base64"), {
+			flag: "wx",
+		});
+		await rename(temporaryPath, savedPath);
+	} finally {
+		await rm(temporaryPath, { force: true }).catch(() => {});
+	}
+}
+
+async function requestProjectPreviewExport(
+	input: unknown,
+	context: HlidAgentToolContext,
+): Promise<{ result: CaptureResult; savedPath: string }> {
+	if (!context.runtimeCwd) {
+		throw new Error("Hlid could not resolve the provider working directory.");
+	}
+	const parsed = hlidAgentSchemas.export_project_preview_capture.parse(input);
+	const savedPath = await resolveProjectPreviewCaptureOutput(
+		parsed.output_path,
+		context.runtimeCwd,
+	);
+	const result = await requestProjectPreviewCapture(parsed, context);
+	await saveProjectPreviewCapture(result, savedPath);
+	return { result, savedPath: parsed.output_path };
 }
 
 async function requestProjectPreviewControl(
@@ -1029,6 +1196,16 @@ export async function executeHlidAgentTool(
 			captureMetadata(await requestProjectPreviewCapture(input, context)),
 		);
 	}
+	if (toolName === "export_project_preview_capture") {
+		const { result, savedPath } = await requestProjectPreviewExport(
+			input,
+			context,
+		);
+		return JSON.stringify({
+			...captureMetadata(result),
+			saved_path: savedPath,
+		});
+	}
 	if (toolName === "control_project_preview") {
 		return JSON.stringify(
 			captureMetadata(await requestProjectPreviewControl(input, context)),
@@ -1068,9 +1245,23 @@ export async function executeHlidAgentToolRich(
 ): Promise<AgentToolPayload> {
 	if (
 		name !== "capture_project_preview" &&
+		name !== "export_project_preview_capture" &&
 		name !== "control_project_preview"
 	) {
 		return { text: await executeHlidAgentTool(name, input, context) };
+	}
+	if (name === "export_project_preview_capture") {
+		const { result, savedPath } = await requestProjectPreviewExport(
+			input,
+			context,
+		);
+		return {
+			text: JSON.stringify({
+				...captureMetadata(result),
+				saved_path: savedPath,
+			}),
+			images: [{ data: result.image_base64, mimeType: result.mime }],
+		};
 	}
 	const result =
 		name === "capture_project_preview"

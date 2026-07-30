@@ -8,6 +8,8 @@ import {
 	parseDevToolsActivePort,
 	parseWindowsBrowserCommand,
 	projectPreviewBrowserUserDataDir,
+	projectPreviewDeviceMetrics,
+	projectPreviewScreenshotParams,
 } from "./projectPreviewCdp";
 
 describe("Project Preview browser selection", () => {
@@ -221,6 +223,43 @@ describe("Project Preview browser selection", () => {
 			url: "about:blank",
 			background: true,
 			hidden: true,
+		});
+	});
+
+	it("keeps CSS viewport coordinates while rendering screenshots at 2x", () => {
+		expect(projectPreviewDeviceMetrics({ width: 390, height: 844 })).toEqual({
+			width: 390,
+			height: 844,
+			deviceScaleFactor: 2,
+			mobile: false,
+		});
+	});
+
+	it("keeps screenshot capture lossless and compositor-backed", () => {
+		expect(projectPreviewScreenshotParams(false)).toEqual({
+			format: "png",
+			fromSurface: true,
+			captureBeyondViewport: false,
+		});
+		expect(
+			projectPreviewScreenshotParams(true, {
+				x: 0,
+				y: 0,
+				width: 1440,
+				height: 8000,
+				scale: 0.5,
+			}),
+		).toEqual({
+			format: "png",
+			fromSurface: true,
+			captureBeyondViewport: true,
+			clip: {
+				x: 0,
+				y: 0,
+				width: 1440,
+				height: 8000,
+				scale: 0.5,
+			},
 		});
 	});
 

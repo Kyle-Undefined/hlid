@@ -250,7 +250,7 @@ export class ProjectPreviewBrowserManager {
 		fullPage: boolean,
 		lastAction?: ProjectPreviewControlAction["action"],
 	): Promise<ProjectPreviewAgentFrame> {
-		const png = await entry.browser.capture(fullPage);
+		const capture = await entry.browser.capture(fullPage);
 		const diagnostics = entry.browser.diagnostics();
 		const frame: ProjectPreviewAgentFrame = {
 			preview_id: entry.previewId,
@@ -259,11 +259,15 @@ export class ProjectPreviewBrowserManager {
 			viewport: entry.viewport,
 			width: entry.width,
 			height: entry.height,
+			pixel_width: capture.pixelWidth,
+			pixel_height: capture.pixelHeight,
+			device_scale_factor: capture.deviceScaleFactor,
+			pixel_ratio: capture.pixelRatio,
 			full_page: fullPage,
 			captured_at: Date.now(),
 			mime: "image/png",
-			size_bytes: png.byteLength,
-			image_base64: png.toString("base64"),
+			size_bytes: capture.png.byteLength,
+			image_base64: capture.png.toString("base64"),
 			frame_id: crypto.randomUUID(),
 			title: (await entry.browser.title()).slice(0, 200),
 			elements: await entry.browser.semanticSnapshot(MAX_ELEMENTS),

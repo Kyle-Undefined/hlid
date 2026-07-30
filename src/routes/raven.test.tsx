@@ -7,6 +7,8 @@ import {
 	screen,
 	waitFor,
 } from "@testing-library/react";
+import { hydrateRoot } from "react-dom/client";
+import { renderToString } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LiveSessionSwitcherBoundary } from "#/components/chat/LiveSessionSwitcher";
 import {
@@ -344,6 +346,49 @@ beforeEach(() => {
 			models: [],
 		},
 	};
+});
+
+describe("Raven hydration", () => {
+	it("hydrates cached live-session snapshots without entering a render loop", async () => {
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: "hydration-session",
+			isExplicitSession: true,
+		};
+		const view = (
+			<LiveSessionSwitcherBoundary routeKey="/raven?session=hydration-session">
+				<ChatPage />
+			</LiveSessionSwitcherBoundary>
+		);
+		const container = document.createElement("div");
+		container.innerHTML = renderToString(view);
+		document.body.append(container);
+		const consoleError = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => {});
+		let root: ReturnType<typeof hydrateRoot> | undefined;
+
+		try {
+			await act(async () => {
+				root = hydrateRoot(container, view);
+				await Promise.resolve();
+			});
+			await waitFor(() =>
+				expect(container.querySelector('[role="combobox"]')).not.toBeNull(),
+			);
+			const errors = consoleError.mock.calls
+				.map((call) => call.map(String).join(" "))
+				.join("\n");
+			expect(errors).not.toContain(
+				"getServerSnapshot should be cached to avoid an infinite loop",
+			);
+			expect(errors).not.toContain("Maximum update depth exceeded");
+		} finally {
+			await act(async () => root?.unmount());
+			consoleError.mockRestore();
+			container.remove();
+		}
+	});
 });
 
 describe("Project Preview tabs", () => {

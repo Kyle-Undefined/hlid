@@ -760,12 +760,13 @@ export function buildHlidCapabilityManifest(
 								"start_project_preview",
 								"inspect_project_preview",
 								"capture_project_preview",
+								"export_project_preview_capture",
 								"control_project_preview",
 								"stop_project_preview",
 							])
 						: "conditional",
 				summary:
-					"Project Preview can run, present, inspect, capture, and interact with a session-scoped web project from the active workspace.",
+					"Project Preview can run, present, inspect, capture a high-density PNG, export an approved capture into the active workspace, and interact with a session-scoped web project.",
 			},
 			{
 				id: "mcp",

@@ -48,9 +48,10 @@ function drawArrow(
 	context: CanvasRenderingContext2D,
 	start: Point,
 	end: Point,
+	rasterScale: number,
 ) {
 	const angle = Math.atan2(end.y - start.y, end.x - start.x);
-	const head = 18;
+	const head = 18 * rasterScale;
 	context.beginPath();
 	context.moveTo(start.x, start.y);
 	context.lineTo(end.x, end.y);
@@ -67,13 +68,17 @@ function drawArrow(
 	context.stroke();
 }
 
-function drawMark(context: CanvasRenderingContext2D, mark: Mark) {
+function drawMark(
+	context: CanvasRenderingContext2D,
+	mark: Mark,
+	rasterScale: number,
+) {
 	context.save();
 	context.lineCap = "round";
 	context.lineJoin = "round";
 	if (mark.kind === "pen") {
 		context.strokeStyle = RED;
-		context.lineWidth = 5;
+		context.lineWidth = 5 * rasterScale;
 		context.beginPath();
 		mark.points.forEach((point, index) => {
 			if (index === 0) context.moveTo(point.x, point.y);
@@ -85,15 +90,15 @@ function drawMark(context: CanvasRenderingContext2D, mark: Mark) {
 		context.fillRect(...markBounds(mark.start, mark.end));
 	} else if (mark.kind === "rectangle") {
 		context.strokeStyle = RED;
-		context.lineWidth = 5;
+		context.lineWidth = 5 * rasterScale;
 		context.strokeRect(...markBounds(mark.start, mark.end));
 	} else if (mark.kind === "arrow") {
 		context.strokeStyle = RED;
-		context.lineWidth = 5;
-		drawArrow(context, mark.start, mark.end);
+		context.lineWidth = 5 * rasterScale;
+		drawArrow(context, mark.start, mark.end, rasterScale);
 	} else {
-		context.font = "600 24px sans-serif";
-		context.lineWidth = 5;
+		context.font = `600 ${24 * rasterScale}px sans-serif`;
+		context.lineWidth = 5 * rasterScale;
 		context.strokeStyle = "white";
 		context.strokeText(mark.text, mark.point.x, mark.point.y);
 		context.fillStyle = RED;
@@ -157,9 +162,13 @@ export function ProjectPreviewFeedbackModal({
 		if (!canvas || !image || !context) return;
 		context.clearRect(0, 0, canvas.width, canvas.height);
 		context.drawImage(image, 0, 0);
-		for (const mark of marks) drawMark(context, mark);
-		if (draft) drawMark(context, draft);
-	}, [draft, loaded, marks]);
+		const rasterScale =
+			frame.width > 0 && image.naturalWidth > 0
+				? image.naturalWidth / frame.width
+				: 1;
+		for (const mark of marks) drawMark(context, mark, rasterScale);
+		if (draft) drawMark(context, draft, rasterScale);
+	}, [draft, frame.width, loaded, marks]);
 
 	const pointFor = (event: ReactPointerEvent<HTMLCanvasElement>): Point => {
 		const canvas = event.currentTarget;

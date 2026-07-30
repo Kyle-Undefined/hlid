@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyProjectPreview } from "#/hooks/projectPreviewStore";
 import {
 	captureProjectPreviewFeedbackFn,
+	getProjectPreviewAgentFrameFn,
 	type ProjectPreviewAgentFrame,
 	restartProjectPreviewFn,
 	stopProjectPreviewFn,
@@ -37,6 +38,7 @@ afterEach(() => {
 	cleanup();
 	vi.clearAllMocks();
 	vi.unstubAllGlobals();
+	vi.mocked(getProjectPreviewAgentFrameFn).mockResolvedValue(null);
 });
 
 function preview(): ProjectPreviewSnapshot {
@@ -200,6 +202,51 @@ describe("ProjectPreviewPane", () => {
 		fireEvent.click(screen.getByLabelText("Show user preview"));
 		expect(screen.getByTitle("Web app")).toBe(liveFrame);
 		expect(liveFrame.parentElement?.className).not.toContain("hidden");
+	});
+
+	it("renders a high-density full-page frame at its capture width and offers the raw PNG", async () => {
+		const frame: ProjectPreviewAgentFrame = {
+			preview_id: preview().id,
+			session_id: "session-1",
+			path: "/settings?tab=display",
+			viewport: "mobile",
+			width: 390,
+			height: 844,
+			pixel_width: 780,
+			pixel_height: 8000,
+			device_scale_factor: 2,
+			pixel_ratio: 2,
+			full_page: true,
+			captured_at: Date.UTC(2026, 6, 29, 14, 5, 6),
+			mime: "image/png",
+			size_bytes: 3,
+			image_base64: "AQID",
+			frame_id: "e16b1643-591f-4d67-8c22-9df105659385",
+			title: "Web app",
+			elements: [],
+			console_messages: [],
+			failed_requests: [],
+		};
+		vi.mocked(getProjectPreviewAgentFrameFn).mockResolvedValue(frame);
+		render(<ProjectPreviewPane preview={preview()} />);
+
+		fireEvent.click(screen.getByLabelText("Show agent view"));
+		const opener = await screen.findByRole("button", {
+			name: "View Agent browser at /settings?tab=display",
+		});
+		expect((opener as HTMLElement).style.width).toBe("390px");
+		const resolution = screen.getByTitle(
+			"390×844 viewport pixels · 390×4000 capture pixels · 780×8000 PNG",
+		);
+		expect(resolution.textContent).toContain("390×844");
+		expect(resolution.textContent).toContain("2×");
+
+		fireEvent.click(opener);
+		const download = screen.getByRole("link", { name: "Download image" });
+		expect(download.getAttribute("href")).toBe("data:image/png;base64,AQID");
+		expect(download.getAttribute("download")).toBe(
+			"project-preview-mobile-settings-20260729T140506Z.png",
+		);
 	});
 
 	it("captures the selected named viewport for user feedback", async () => {

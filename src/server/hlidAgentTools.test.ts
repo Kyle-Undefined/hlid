@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HLID_AGENT_TOOL_COUNT } from "../lib/hlidContext";
 
@@ -62,6 +65,7 @@ describe("Hlid agent tools", () => {
 			"start_project_preview",
 			"inspect_project_preview",
 			"capture_project_preview",
+			"export_project_preview_capture",
 			"control_project_preview",
 			"stop_project_preview",
 		]);
@@ -126,6 +130,12 @@ describe("Hlid agent tools", () => {
 					name: "capture_project_preview",
 					readOnly: true,
 					deferLoading: true,
+				}),
+				expect.objectContaining({
+					name: "export_project_preview_capture",
+					readOnly: false,
+					deferLoading: true,
+					approvalTitle: "Hlid export Project Preview capture",
 				}),
 				expect.objectContaining({
 					name: "control_project_preview",
@@ -736,6 +746,107 @@ describe("Hlid agent tools", () => {
 			size_bytes: 3,
 		});
 		expect(result.text).not.toContain("image_base64");
+	});
+
+	it("exports the exact captured PNG inside the active workspace", async () => {
+		const workspace = await mkdtemp(
+			join(tmpdir(), "hlid-preview-export-test-"),
+		);
+		await mkdir(join(workspace, "docs"));
+		const previewId = "7c0eea4d-f74e-45c8-8674-a535fbb4412b";
+		db.dbFetch.mockResolvedValueOnce(
+			Response.json({
+				preview_id: previewId,
+				session_id: "session-1",
+				path: "/",
+				viewport: "mobile",
+				width: 390,
+				height: 844,
+				pixel_width: 780,
+				pixel_height: 1688,
+				device_scale_factor: 2,
+				pixel_ratio: 2,
+				full_page: false,
+				captured_at: Date.now(),
+				mime: "image/png",
+				size_bytes: 3,
+				image_base64: "AQID",
+			}),
+		);
+
+		try {
+			const result = await executeHlidAgentToolRich(
+				"export_project_preview_capture",
+				{
+					preview_id: previewId,
+					viewport: "mobile",
+					output_path: "docs/mobile.png",
+				},
+				{ runtimeCwd: workspace, sessionId: "session-1" },
+			);
+
+			expect(await readFile(join(workspace, "docs/mobile.png"))).toEqual(
+				Buffer.from([1, 2, 3]),
+			);
+			expect(db.dbFetch).toHaveBeenCalledWith(
+				`/api/project-previews/${previewId}/capture`,
+				expect.objectContaining({
+					body: JSON.stringify({
+						session_id: "session-1",
+						viewport: "mobile",
+					}),
+				}),
+			);
+			expect(result.images).toEqual([{ data: "AQID", mimeType: "image/png" }]);
+			expect(JSON.parse(result.text)).toMatchObject({
+				saved_path: "docs/mobile.png",
+				pixel_width: 780,
+				pixel_height: 1688,
+				device_scale_factor: 2,
+				pixel_ratio: 2,
+			});
+			expect(result.text).not.toContain("image_base64");
+		} finally {
+			await rm(workspace, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects traversal and symlink escapes before capturing an export", async () => {
+		const workspace = await mkdtemp(
+			join(tmpdir(), "hlid-preview-export-test-"),
+		);
+		const outside = await mkdtemp(
+			join(tmpdir(), "hlid-preview-export-outside-"),
+		);
+		await symlink(outside, join(workspace, "outside"));
+
+		try {
+			await expect(
+				executeHlidAgentTool(
+					"export_project_preview_capture",
+					{ output_path: "/tmp/outside.png" },
+					{ runtimeCwd: workspace, sessionId: "session-1" },
+				),
+			).rejects.toThrow("workspace-relative");
+			await expect(
+				executeHlidAgentTool(
+					"export_project_preview_capture",
+					{ output_path: "../outside.png" },
+					{ runtimeCwd: workspace, sessionId: "session-1" },
+				),
+			).rejects.toThrow("parent traversal");
+			await expect(
+				executeHlidAgentTool(
+					"export_project_preview_capture",
+					{ output_path: "outside/capture.png" },
+					{ runtimeCwd: workspace, sessionId: "session-1" },
+				),
+			).rejects.toThrow("resolves outside");
+			expect(db.dbFetch).not.toHaveBeenCalled();
+		} finally {
+			await rm(workspace, { recursive: true, force: true });
+			await rm(outside, { recursive: true, force: true });
+		}
 	});
 
 	it("returns every Preview control action with its resulting image", async () => {

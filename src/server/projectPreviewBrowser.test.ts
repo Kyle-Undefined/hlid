@@ -3,6 +3,11 @@ import {
 	ProjectPreviewBrowserManager,
 	type ProjectPreviewControlAction,
 } from "./projectPreviewBrowser";
+import {
+	PROJECT_PREVIEW_CAPTURE_VIEWPORTS,
+	type ProjectPreviewCaptureSize,
+	type ProjectPreviewCaptureViewport,
+} from "./projectPreviewCapture";
 import type {
 	ProjectPreviewBrowserSession,
 	ProjectPreviewBrowserSessionFactory,
@@ -12,6 +17,8 @@ function fakeBrowserSession() {
 	let currentUrl = "about:blank";
 	let connected = true;
 	let viewport: "desktop" | "tablet" | "mobile" = "desktop";
+	let viewportSize: ProjectPreviewCaptureSize =
+		PROJECT_PREVIEW_CAPTURE_VIEWPORTS.desktop;
 	const browser: ProjectPreviewBrowserSession = {
 		isConnected: vi.fn(() => connected),
 		currentUrl: vi.fn(async () => currentUrl),
@@ -19,10 +26,22 @@ function fakeBrowserSession() {
 			currentUrl = url;
 		}),
 		reload: vi.fn(async () => {}),
-		setViewport: vi.fn(async (next) => {
-			viewport = next;
-		}),
-		capture: vi.fn(async () => Buffer.from([1, 2, 3])),
+		setViewport: vi.fn(
+			async (
+				next: ProjectPreviewCaptureViewport,
+				size?: ProjectPreviewCaptureSize,
+			) => {
+				viewport = next;
+				viewportSize = size ?? PROJECT_PREVIEW_CAPTURE_VIEWPORTS[next];
+			},
+		),
+		capture: vi.fn(async () => ({
+			png: Buffer.from([1, 2, 3]),
+			pixelWidth: viewportSize.width * 2,
+			pixelHeight: viewportSize.height * 2,
+			deviceScaleFactor: 2,
+			pixelRatio: 2,
+		})),
 		title: vi.fn(async () => "Preview app"),
 		semanticSnapshot: vi.fn(async () => [
 			{
@@ -99,6 +118,10 @@ describe("ProjectPreviewBrowserManager", () => {
 		expect(second).toMatchObject({
 			path: "/app",
 			title: "Preview app",
+			pixel_width: 780,
+			pixel_height: 1688,
+			device_scale_factor: 2,
+			pixel_ratio: 2,
 			elements: [{ ref: "e1", role: "button", name: "Save" }],
 		});
 		expect(
