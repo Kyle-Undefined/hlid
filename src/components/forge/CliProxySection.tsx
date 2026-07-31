@@ -90,8 +90,8 @@ function CliProxyOverview({
 }) {
 	if (external) {
 		return (
-			<div className="border border-border/70 bg-background/40 p-3 text-xs">
-				<div>
+			<div className="min-w-0 border border-border/70 bg-background/40 p-3 text-xs">
+				<div className="break-words [overflow-wrap:anywhere]">
 					Using an externally managed instance at {integrationConfig.base_url}.
 				</div>
 				<p className="text-muted-foreground mt-1">
@@ -179,7 +179,10 @@ function CliProxyActivity({
 				</div>
 			)}
 			{(error || info.error) && (
-				<div className="text-xs text-destructive" role="alert">
+				<div
+					className="break-words [overflow-wrap:anywhere] text-xs text-destructive"
+					role="alert"
+				>
 					{error || info.error}
 				</div>
 			)}

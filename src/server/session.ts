@@ -593,7 +593,8 @@ function buildQueryData(
 				primaryModel?.contextWindow ?? turn.lastKnownContextWindow ?? null,
 			stop_reason: event.stopReason ?? null,
 			tokens_in_context: tokensInContext,
-			model: turn.lastActualModel ?? primaryModelId ?? null,
+			model:
+				(turn.lastActualModel ?? primaryModelId ?? turn.selectedModel) || null,
 		},
 	};
 }
@@ -702,12 +703,18 @@ export function resolveDeclaredSessionDefaults(
 	const configuredAgentPath = configuredAgent
 		? expandTilde(configuredAgent.path)
 		: undefined;
-	const configuredAgentOverrides = configuredAgent
-		? configuredAgentSettings(configuredAgent)
-		: undefined;
 	const vaultProviderId = config.vault_provider ?? "claude";
+	const configuredAgentProviderId = configuredAgent
+		? (configuredAgent.provider ?? "claude")
+		: undefined;
+	// A detached chat's saved provider is a session-scoped override. Agent controls
+	// only remain defaults while that chat still uses the agent's own provider.
 	const providerId =
-		configuredAgent?.provider ?? configuredProviderId ?? vaultProviderId;
+		configuredProviderId ?? configuredAgentProviderId ?? vaultProviderId;
+	const configuredAgentOverrides =
+		configuredAgent && configuredAgentProviderId === providerId
+			? configuredAgentSettings(configuredAgent)
+			: undefined;
 	return sessionDefaultsFromSelection(
 		config,
 		configuredAgentPath,
@@ -2803,15 +2810,12 @@ export class SessionManager {
 	}
 
 	/**
-	 * Delegated provider turns can be stopped by a timeout or parent cancellation
-	 * before the provider emits its ordinary `done` event.
-	 * Their incremental usage is still authoritative and belongs in Ledger.
-	 *
-	 * Keep this fallback background-only and guarded by `queryRecorded`: normal
-	 * Raven turns retain their existing cancellation semantics, while completed
-	 * delegated turns continue through handleDone without being counted twice.
+	 * Provider turns can be stopped before the provider emits its ordinary `done`
+	 * event. Their incremental usage is still authoritative and belongs in Ledger.
+	 * Guard with `queryRecorded` so completed turns continue through handleDone
+	 * without being counted twice.
 	 */
-	private async persistIncompleteBackgroundQuery(
+	private async persistIncompleteQuery(
 		sessionId: string,
 		turn: TurnState,
 		provider: AgentProvider,
@@ -2819,7 +2823,7 @@ export class SessionManager {
 	): Promise<void> {
 		if (turn.queryRecorded || !turn.receivedUsage) return;
 		const usage = turn.liveQueryUsage;
-		const model = turn.lastActualModel ?? this.model;
+		const model = turn.lastActualModel ?? (turn.selectedModel || this.model);
 		const estimatedCost = estimateProviderCost(
 			provider.providerId,
 			model,
@@ -2840,7 +2844,12 @@ export class SessionManager {
 				context_window: turn.lastKnownContextWindow,
 				stop_reason: null,
 				tokens_in_context:
-					turn.lastContextTokens ?? turn.lastTurnUsage?.input_tokens ?? null,
+					turn.lastContextTokens ??
+					(turn.lastTurnUsage
+						? turn.lastTurnUsage.input_tokens +
+							(turn.lastTurnUsage.cache_read_input_tokens ?? 0) +
+							(turn.lastTurnUsage.cache_creation_input_tokens ?? 0)
+						: null),
 				model,
 				agent_cwd: this.agentCwd ?? null,
 			},
@@ -2848,6 +2857,14 @@ export class SessionManager {
 		);
 		if (assistantSeq !== null) {
 			await db.setMessageQueryId(sessionId, assistantSeq, recorded.queryId);
+		}
+		if (turn.lastActualModel) {
+			await db.setSessionActualModelForProvider(
+				sessionId,
+				provider.providerId,
+				turn.selectedModel,
+				turn.lastActualModel,
+			);
 		}
 		turn.queryRecorded = true;
 		bumpDataRevision("stats", "sessions");
@@ -5516,16 +5533,16 @@ export class SessionManager {
 					logDbError("appendMessage (assistant)", error);
 				}
 			}
-			if (backgroundSession && sessionId && !turn.queryRecorded) {
+			if (sessionId && !turn.queryRecorded) {
 				try {
-					await this.persistIncompleteBackgroundQuery(
+					await this.persistIncompleteQuery(
 						sessionId,
 						turn,
 						currentProvider,
 						incompleteAssistantSeq,
 					);
 				} catch (error) {
-					logDbError("recordQuery (background incomplete)", error);
+					logDbError("recordQuery (incomplete)", error);
 				}
 			}
 			// drainTurnQueue handles the final status emit + abortController

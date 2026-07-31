@@ -1,13 +1,21 @@
 // @vitest-environment jsdom
 import {
+	act,
 	cleanup,
 	fireEvent,
 	render,
 	screen,
 	waitFor,
 } from "@testing-library/react";
+import { hydrateRoot } from "react-dom/client";
+import { renderToString } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AttachmentRow } from "#/db";
+import {
+	EMPTY_DATA_REVISIONS,
+	replaceDataRevisions,
+	resetDataRevisionsForTesting,
+} from "#/hooks/wsDataRevisionStore";
 
 const ws = vi.hoisted(() => ({ handler: vi.fn() }));
 vi.mock("#/hooks/useWs", () => ({
@@ -39,13 +47,19 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 });
 
 import { RelicPreview } from "#/components/relics/RelicPreview";
-import { AttachmentsPage, deleteRelicRows, SkillImportDialog } from "./relics";
+import {
+	AttachmentsPage,
+	deleteRelicRows,
+	Route,
+	SkillImportDialog,
+} from "./relics";
 
 afterEach(() => {
 	cleanup();
 	vi.restoreAllMocks();
 	ws.handler.mockReset();
 	vi.unstubAllGlobals();
+	resetDataRevisionsForTesting();
 });
 
 function setMobileViewport(): void {
@@ -65,6 +79,39 @@ function setMobileViewport(): void {
 }
 
 describe("AttachmentsPage", () => {
+	it("inherits the router freshness window instead of reloading during hydration", () => {
+		expect(Route.options.staleTime).toBeUndefined();
+	});
+
+	it("does not update an unmounted Relics tree when revisions arrive before hydration", async () => {
+		resetDataRevisionsForTesting();
+		const initial = { rows, total: 2, total_bytes: 7 };
+		const container = document.createElement("div");
+		container.innerHTML = renderToString(<AttachmentsPage initial={initial} />);
+		document.body.append(container);
+		replaceDataRevisions({ ...EMPTY_DATA_REVISIONS, relics: 1 });
+		const consoleError = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
+
+		let root: ReturnType<typeof hydrateRoot> | undefined;
+		try {
+			await act(async () => {
+				root = hydrateRoot(container, <AttachmentsPage initial={initial} />);
+				await Promise.resolve();
+			});
+
+			expect(
+				consoleError.mock.calls.some(([message]) =>
+					String(message).includes("hasn't mounted yet"),
+				),
+			).toBe(false);
+		} finally {
+			await act(async () => root?.unmount());
+			container.remove();
+		}
+	});
+
 	it("promotes Relics to the configured capture folder and opens vault artifacts", async () => {
 		const request = vi
 			.fn<typeof fetch>()
@@ -256,6 +303,36 @@ describe("AttachmentsPage", () => {
 				data: { search: undefined, limit: 50, offset: 0 },
 			}),
 		);
+		await waitFor(() =>
+			expect(
+				screen.queryByRole("button", { name: /new relics — refresh/i }),
+			).toBeNull(),
+		);
+	});
+
+	it("derives the refresh pill from Relics revisions and acknowledges it after reload", async () => {
+		resetDataRevisionsForTesting();
+		const listAttachments = vi.fn().mockResolvedValue({
+			rows,
+			total: 2,
+			total_bytes: 7,
+		});
+		render(
+			<AttachmentsPage
+				initial={{ rows, total: 2, total_bytes: 7 }}
+				listAttachments={listAttachments}
+			/>,
+		);
+
+		act(() => {
+			replaceDataRevisions({ ...EMPTY_DATA_REVISIONS, relics: 1 });
+		});
+		const pill = await screen.findByRole("button", {
+			name: /new relics — refresh/i,
+		});
+		fireEvent.click(pill);
+
+		await waitFor(() => expect(listAttachments).toHaveBeenCalledOnce());
 		await waitFor(() =>
 			expect(
 				screen.queryByRole("button", { name: /new relics — refresh/i }),

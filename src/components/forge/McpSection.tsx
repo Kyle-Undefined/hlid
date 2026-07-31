@@ -385,8 +385,8 @@ function ManagerFooter({
 }) {
 	const { probing, setProbing, send } = status;
 	return (
-		<div className="px-4 py-3 flex items-center justify-between gap-4 border-t border-border">
-			<div className="text-[9px] text-muted-foreground/30 leading-relaxed">
+		<div className="flex min-w-0 flex-col items-start gap-3 border-t border-border px-4 py-3 @2xl:flex-row @2xl:items-center @2xl:justify-between">
+			<div className="min-w-0 break-words text-[9px] leading-relaxed text-muted-foreground/30">
 				compatibility config: .mcp.json · provider-native servers are discovered
 				at runtime
 				<br />

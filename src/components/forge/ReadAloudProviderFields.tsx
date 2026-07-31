@@ -174,7 +174,7 @@ function MicrosoftVoiceActions({
 			label="More Windows voices"
 			hint="On the Windows host, add natural voices in Narrator settings or language voices in Time & language > Speech. Hlid can use voices Windows exposes to apps."
 		>
-			<div className="flex items-center justify-end gap-2">
+			<div className="flex max-w-full flex-wrap items-center gap-2 @4xl:justify-end">
 				<button
 					type="button"
 					onClick={() =>

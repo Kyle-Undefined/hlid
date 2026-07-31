@@ -130,9 +130,13 @@ describe("subscribe", () => {
 		expect(cb).toHaveBeenCalledTimes(1);
 	});
 
-	it("calls subscriber when initFromStorage fires", () => {
+	it("calls subscribers only when initFromStorage changes privacy", () => {
 		const cb = vi.fn();
 		store.subscribe(cb);
+		store.initFromStorage();
+		expect(cb).not.toHaveBeenCalled();
+
+		localStorageStore["hlid:privacy"] = "on";
 		store.initFromStorage();
 		expect(cb).toHaveBeenCalledTimes(1);
 	});

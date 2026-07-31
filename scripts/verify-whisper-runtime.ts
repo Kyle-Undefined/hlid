@@ -1,14 +1,32 @@
-import { resolve } from "node:path";
-import { verifyRuntimeTree } from "./bundle-whisper-assets";
+import { lstatSync, readdirSync } from "node:fs";
+import { join, resolve } from "node:path";
+import {
+	verifyRuntimeArtifact,
+	WHISPER_RUNTIME_ARTIFACT,
+} from "./bundle-whisper-assets";
 
-const runtimeRoot = process.argv[2];
-if (!runtimeRoot) {
-	throw new Error("usage: bun scripts/verify-whisper-runtime.ts <runtime-root>");
+const artifactDirectory = process.argv[2];
+if (!artifactDirectory) {
+	throw new Error(
+		"usage: bun scripts/verify-whisper-runtime.ts <artifact-directory>",
+	);
 }
 
-const resolved = resolve(runtimeRoot);
-if (!verifyRuntimeTree(resolved)) {
-	throw new Error(`whisper runtime does not match the reviewed manifest: ${resolved}`);
+const resolved = resolve(artifactDirectory);
+if (!lstatSync(resolved).isDirectory()) {
+	throw new Error(`whisper runtime artifact must be a directory: ${resolved}`);
 }
+const expected = [WHISPER_RUNTIME_ARTIFACT, "runtime-manifest.json"].sort();
+const actual = readdirSync(resolved).sort();
+if (
+	actual.length !== expected.length ||
+	actual.some((entry, index) => entry !== expected[index])
+) {
+	throw new Error("whisper runtime artifact contains unexpected or missing files");
+}
+await verifyRuntimeArtifact(
+	join(resolved, WHISPER_RUNTIME_ARTIFACT),
+	join(resolved, "runtime-manifest.json"),
+);
 
-console.log(`Verified reviewed whisper runtime at ${resolved}`);
+console.log(`Verified reviewed whisper runtime artifact at ${resolved}`);

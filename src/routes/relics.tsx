@@ -274,7 +274,6 @@ export const Route = createFileRoute("/relics")({
 		]);
 		return { initial, capture: configuredObsidianCapture(config.vault) };
 	},
-	staleTime: 0,
 	component: RelicsRoutePage,
 });
 
@@ -381,16 +380,15 @@ function useRelicsList(initial: ListResult, listAttachments: ListAttachments) {
 	const [selected, setSelected] = useState<Set<string>>(new Set());
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	const [hasNew, setHasNew] = useState(false);
 	const relicsRevision = useSyncExternalStore(
 		subscribeDataRevisionSnapshot,
 		() => getDataRevisionSnapshot().relics,
 		() => 0,
 	);
-	const initialRelicsRevisionRef = useRef(relicsRevision);
-	useEffect(() => {
-		if (relicsRevision !== initialRelicsRevisionRef.current) setHasNew(true);
-	}, [relicsRevision]);
+	const [loadedRelicsRevision, setLoadedRelicsRevision] =
+		useState(relicsRevision);
+	const [hasNewSignal, setHasNewSignal] = useState(false);
+	const hasNew = hasNewSignal || relicsRevision !== loadedRelicsRevision;
 
 	useEffect(() => {
 		setRows(initial.rows);
@@ -415,7 +413,8 @@ function useRelicsList(initial: ListResult, listAttachments: ListAttachments) {
 				setPage(nextPage);
 				setFilters(effective);
 				setSelected(new Set());
-				setHasNew(false);
+				setLoadedRelicsRevision(getDataRevisionSnapshot().relics);
+				setHasNewSignal(false);
 			} catch (e) {
 				setError(e instanceof Error ? e.message : "load failed");
 			} finally {
@@ -472,7 +471,7 @@ function useRelicsList(initial: ListResult, listAttachments: ListAttachments) {
 	// New relics elsewhere → surface a refresh pill instead of yanking the
 	// list back to page 1 (which also cleared any in-progress selection).
 	const handleWsMessage = useCallback((msg: ServerMessage) => {
-		if (msg.type === "attachment_created") setHasNew(true);
+		if (msg.type === "attachment_created") setHasNewSignal(true);
 	}, []);
 	useWs(handleWsMessage);
 

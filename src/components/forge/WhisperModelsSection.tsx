@@ -42,8 +42,8 @@ function WhisperModelRow({
 	}
 
 	return (
-		<div className="px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-			<div>
+		<div className="flex min-w-0 flex-col justify-between gap-3 px-4 py-3 @2xl:flex-row @2xl:items-center">
+			<div className="min-w-0">
 				<div className="text-sm text-foreground">
 					{model.label}
 					{model.recommended ? " · recommended" : ""}
@@ -60,7 +60,7 @@ function WhisperModelRow({
 					</div>
 				)}
 			</div>
-			<div className="flex items-center gap-2">
+			<div className="flex max-w-full flex-wrap items-center gap-2">
 				{model.installed ? (
 					<>
 						<button
@@ -157,7 +157,10 @@ export function WhisperModelsSection({
 				/>
 			))}
 			{error && (
-				<div className="px-4 py-3 text-xs text-destructive" role="alert">
+				<div
+					className="break-words [overflow-wrap:anywhere] px-4 py-3 text-xs text-destructive"
+					role="alert"
+				>
 					{error}
 				</div>
 			)}

@@ -480,6 +480,7 @@ describe("Project Preview relay", () => {
 				headers: {
 					authorization: "Bearer secret",
 					cookie: "hlid_session=secret",
+					"sec-fetch-site": "same-origin",
 					"x-hlid-internal": "secret",
 					[PROJECT_PREVIEW_AUTH_HEADER]: "spoofed",
 				},
@@ -491,6 +492,7 @@ describe("Project Preview relay", () => {
 		expect(receivedHeaders["x-hlid-internal"]).toBeUndefined();
 		expect(receivedHeaders[PROJECT_PREVIEW_AUTH_HEADER]).toBe(capability.token);
 		expect(receivedHeaders.origin).toBe(`http://127.0.0.1:${port}`);
+		expect(receivedHeaders["sec-fetch-site"]).toBe("same-origin");
 	});
 
 	it("isolates preview app cookies and returns them to the upstream app", async () => {

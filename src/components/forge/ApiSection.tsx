@@ -1,4 +1,5 @@
 import { useNavigate } from "@tanstack/react-router";
+import { createServerFn } from "@tanstack/react-start";
 import { useEffect, useState } from "react";
 import {
 	type HlidApiEndpoint,
@@ -6,6 +7,14 @@ import {
 	parseHlidApiIndex,
 } from "../../lib/apiIndex";
 import { dbFetch } from "../../lib/dbClient";
+
+const getApiIndexFn = createServerFn({ method: "GET" }).handler(async () => {
+	const response = await dbFetch("/api-index");
+	if (!response.ok) {
+		throw new Error(`API catalog request failed (${response.status}).`);
+	}
+	return parseHlidApiIndex(await response.json());
+});
 
 type ApiGroupId =
 	| "system"
@@ -143,11 +152,7 @@ export function ApiSection() {
 		let cancelled = false;
 		void (async () => {
 			try {
-				const response = await dbFetch("/api-index");
-				if (!response.ok) {
-					throw new Error(`API catalog request failed (${response.status}).`);
-				}
-				const next = parseHlidApiIndex(await response.json());
+				const next = await getApiIndexFn();
 				if (!cancelled) setIndex(next);
 			} catch (cause) {
 				if (!cancelled) {
@@ -190,7 +195,7 @@ export function ApiSection() {
 			) : null}
 
 			{error ? (
-				<div className="border border-destructive/40 bg-destructive/5 p-4 text-xs text-destructive">
+				<div className="break-words [overflow-wrap:anywhere] border border-destructive/40 bg-destructive/5 p-4 text-xs text-destructive">
 					{error}
 				</div>
 			) : null}
@@ -211,14 +216,14 @@ export function ApiSection() {
 						return (
 							<div
 								key={group.id}
-								className="border border-border bg-card p-4 space-y-3"
+								className="min-w-0 border border-border bg-card p-4 space-y-3"
 							>
-								<div className="flex items-start justify-between gap-4">
-									<div>
+								<div className="flex min-w-0 flex-col items-start gap-2 @xl:flex-row @xl:justify-between @xl:gap-4">
+									<div className="min-w-0">
 										<div className="text-[10px] tracking-widest font-semibold uppercase text-foreground">
 											{group.label}
 										</div>
-										<div className="text-[10px] text-muted-foreground mt-0.5">
+										<div className="mt-0.5 break-words text-[10px] text-muted-foreground">
 											{group.description}
 										</div>
 									</div>
@@ -235,15 +240,15 @@ export function ApiSection() {
 									{endpoints.map((endpoint) => (
 										<div
 											key={`${endpoint.method} ${endpoint.path}`}
-											className="space-y-0.5"
+											className="min-w-0 space-y-0.5"
 										>
-											<div className="font-mono text-[10px] text-muted-foreground/80">
+											<div className="break-all font-mono text-[10px] text-muted-foreground/80">
 												{endpoint.method.padEnd(6)} {endpoint.path}
 												<span className="ml-2 text-muted-foreground/50">
 													{endpoint.server}
 												</span>
 											</div>
-											<div className="text-[10px] text-muted-foreground/65">
+											<div className="break-words text-[10px] text-muted-foreground/65">
 												{endpoint.desc}
 											</div>
 										</div>

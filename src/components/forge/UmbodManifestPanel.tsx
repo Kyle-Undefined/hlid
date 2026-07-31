@@ -38,16 +38,16 @@ export function UmbodManifestPanel({
 	}
 
 	return (
-		<section className="border border-border bg-card p-4 space-y-4">
-			<div className="flex items-start justify-between gap-4">
-				<div>
+		<section className="min-w-0 space-y-4 border border-border bg-card p-4">
+			<div className="flex min-w-0 flex-col items-start gap-3 @2xl:flex-row @2xl:justify-between">
+				<div className="min-w-0">
 					<h3 className="text-sm font-medium">Umbod policy</h3>
-					<p className="text-xs text-muted-foreground mt-1">
+					<p className="mt-1 break-words text-xs text-muted-foreground">
 						Enforce tool policy before provider permission shortcuts. Explicit
 						blocks also apply in bypass mode.
 					</p>
 				</div>
-				<label className="flex items-center gap-2 text-xs">
+				<label className="flex shrink-0 items-center gap-2 text-xs">
 					<input
 						type="checkbox"
 						checked={value.enabled}
@@ -75,7 +75,7 @@ export function UmbodManifestPanel({
 				value={source}
 				onChange={(event) => setSource(event.target.value)}
 			/>
-			<div className="flex items-center gap-3">
+			<div className="flex min-w-0 flex-wrap items-center gap-3">
 				<button
 					type="button"
 					onClick={() => void save()}
@@ -90,7 +90,7 @@ export function UmbodManifestPanel({
 				>
 					Reload insights
 				</button>
-				<span className="text-xs text-muted-foreground">
+				<span className="min-w-0 break-words [overflow-wrap:anywhere] text-xs text-muted-foreground">
 					{status || snapshot?.error}
 				</span>
 			</div>

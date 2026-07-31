@@ -19,7 +19,7 @@ export function Section({
 	children: ReactNode;
 }) {
 	return (
-		<div className="space-y-2">
+		<div className="min-w-0 space-y-2">
 			{title != null && (
 				<div className="px-1">
 					<div className="flex items-center gap-2">
@@ -39,7 +39,7 @@ export function Section({
 				</div>
 			)}
 			<div
-				className={`border border-border divide-y divide-border ${themeSurfaceClass.card}`}
+				className={`min-w-0 border border-border divide-y divide-border ${themeSurfaceClass.card}`}
 			>
 				{children}
 			</div>

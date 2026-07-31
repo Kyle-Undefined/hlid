@@ -33,6 +33,23 @@ describe("MicrosoftSpeechManager", () => {
 		expect(runner).toHaveBeenCalledOnce();
 	});
 
+	it("deduplicates Windows voice inventory entries by id", async () => {
+		const runner = vi
+			.fn<PowerShellRunner>()
+			.mockResolvedValue(
+				bytes(
+					JSON.stringify([
+						voices[0],
+						{ ...voices[0], name: "Duplicate Microsoft Mark" },
+					]),
+				),
+			);
+		const manager = new MicrosoftSpeechManager(runner);
+		expect(await manager.voices()).toEqual([
+			{ ...voices[0], name: "Duplicate Microsoft Mark" },
+		]);
+	});
+
 	it("validates a selected voice and returns WAV audio", async () => {
 		const runner = vi
 			.fn<PowerShellRunner>()

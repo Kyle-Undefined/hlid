@@ -22,6 +22,10 @@ vi.mock("../db", () => ({
 	saveSetting: vi.fn().mockResolvedValue(undefined),
 	setAskUserQuestionResolution: vi.fn().mockResolvedValue(undefined),
 	getSessionSelection: vi.fn().mockResolvedValue(null),
+	setSessionModel: vi.fn().mockResolvedValue(undefined),
+	setSessionEffort: vi.fn().mockResolvedValue(undefined),
+	setSessionPermissionMode: vi.fn().mockResolvedValue(undefined),
+	setSessionProviderSelection: vi.fn().mockResolvedValue(undefined),
 	getHlidDelegationByChildSession: vi.fn().mockResolvedValue(null),
 }));
 
@@ -178,6 +182,7 @@ function wrapSession(session: SessionManager) {
 	const pool = {
 		vaultEntry: vi.fn().mockReturnValue(entry),
 		vaultSessionId: vi.fn().mockReturnValue("vault-id"),
+		getProvider: vi.fn((id: string) => ({ providerId: id })),
 		get: vi.fn((id: string) => (id === "vault-id" ? entry : undefined)),
 		create: vi.fn().mockReturnValue(entry),
 		close: vi.fn(),
@@ -585,14 +590,14 @@ describe("open", () => {
 
 	it("sends current status to new connection", () => {
 		const session = makeSession();
-		const { pool } = wrapSession(session);
+		const { pool, runState } = wrapSession(session);
 		const { open } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		open(ws as never);
-		const types = mockSend.mock.calls
-			.filter((c) => c[0] === ws)
-			.map((c) => (c[1] as { type: string }).type);
-		expect(types).toContain("status");
+		expect(runState.send).toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({ type: "status" }),
+		);
 	});
 
 	it("re-sends last error when session is in error state", () => {
@@ -604,10 +609,10 @@ describe("open", () => {
 		const { open } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		open(ws as never);
-		const calls = mockSend.mock.calls.filter((c) => c[0] === ws);
-		const errorMsg = calls.find((c) => c[1].type === "error");
-		expect(errorMsg).toBeDefined();
-		expect(errorMsg?.[1].message).toBe("Something failed");
+		expect(runState.send).toHaveBeenCalledWith(ws, {
+			type: "error",
+			message: "Something failed",
+		});
 	});
 
 	it("does NOT re-send error when session recovered to idle", () => {
@@ -634,7 +639,7 @@ describe("open", () => {
 		const { open } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		open(ws as never);
-		const sentChunks = mockSend.mock.calls
+		const sentChunks = runState.send.mock.calls
 			.filter((c) => c[0] === ws && c[1].type === "chunk")
 			.map((c) => c[1].text);
 		expect(sentChunks).toEqual(["Hello", " world"]);
@@ -654,13 +659,14 @@ describe("open", () => {
 		const session = makeSession({
 			getLastMcpStatus: vi.fn().mockReturnValue(mcpStatuses),
 		});
-		const { pool } = wrapSession(session);
+		const { pool, runState } = wrapSession(session);
 		const { open } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		open(ws as never);
-		const calls = mockSend.mock.calls.filter((c) => c[0] === ws);
-		const mcpMsg = calls.find((c) => c[1].type === "mcp_status");
-		expect(mcpMsg).toBeDefined();
+		expect(runState.send).toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({ type: "mcp_status" }),
+		);
 	});
 
 	it("replays pending ask_user_question messages when claiming ownership on reconnect", () => {
@@ -679,18 +685,20 @@ describe("open", () => {
 			isRunning: vi.fn().mockReturnValue(true),
 			getPendingAskUserQuestions: vi.fn().mockReturnValue([pendingQ]),
 		});
-		const { pool } = wrapSession(session);
+		const { pool, runState } = wrapSession(session);
 		const { open } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		// No owner yet — reconnecting client claims ownership
 		open(ws as never);
-		const calls = mockSend.mock.calls.filter((c) => c[0] === ws);
-		const qMsg = calls.find((c) => c[1].type === "ask_user_question");
-		expect(qMsg).toBeDefined();
-		expect(qMsg?.[1]).toMatchObject({
-			id: "aqq-1",
-			questions: [{ question: "Which approach?" }],
-		});
+		expect(runState.send).toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({
+				id: "aqq-1",
+				questions: expect.arrayContaining([
+					expect.objectContaining({ question: "Which approach?" }),
+				]),
+			}),
+		);
 	});
 
 	it("replays ask_user_questions when another client already owns the session", () => {
@@ -715,9 +723,10 @@ describe("open", () => {
 		const other = makeWs("vault-id");
 		runState.ownerWs = owner; // pre-set an existing owner
 		open(other as never);
-		const calls = mockSend.mock.calls.filter((c) => c[0] === other);
-		const question = calls.find((c) => c[1].type === "ask_user_question")?.[1];
-		expect(question).toMatchObject({ id: "aqq-1" });
+		expect(runState.send).toHaveBeenCalledWith(
+			other,
+			expect.objectContaining({ type: "ask_user_question", id: "aqq-1" }),
+		);
 	});
 });
 
@@ -779,14 +788,37 @@ describe("message — invalid JSON", () => {
 describe("message — sync", () => {
 	it("sends current status", async () => {
 		const session = makeSession();
-		const { pool } = wrapSession(session);
+		const { pool, runState } = wrapSession(session);
 		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		await message(ws as never, JSON.stringify({ type: "sync" }));
-		const types = mockSend.mock.calls
-			.filter((c) => c[0] === ws)
-			.map((c) => (c[1] as { type: string }).type);
-		expect(types).toContain("status");
+		expect(runState.send).toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({ type: "status" }),
+		);
+	});
+
+	it("scopes replayed auto-sleep state to the synced session", async () => {
+		const sleep = {
+			type: "agent_sleep" as const,
+			state: "sleeping" as const,
+			providerId: "claude",
+			windowId: "five_hour",
+			until: 1_784_060_475,
+			reason: "threshold" as const,
+			utilization: 0.94,
+		};
+		const session = makeSession({
+			getSleepState: vi.fn().mockReturnValue(sleep),
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(ws as never, JSON.stringify({ type: "sync" }));
+
+		expect(runState.send).toHaveBeenCalledWith(ws, sleep);
+		expect(mockSend).not.toHaveBeenCalledWith(ws, sleep);
 	});
 
 	it("replays pending questions and plans without taking ownership", async () => {
@@ -816,7 +848,7 @@ describe("message — sync", () => {
 		await message(other as never, JSON.stringify({ type: "sync" }));
 
 		expect(runState.ownerWs).toBe(owner);
-		const types = mockSend.mock.calls
+		const types = runState.send.mock.calls
 			.filter((call) => call[0] === other)
 			.map((call) => call[1].type);
 		expect(types).toContain("ask_user_question");
@@ -957,6 +989,51 @@ describe("message — set_model", () => {
 		const ws = makeWs();
 		await message(ws as never, JSON.stringify({ type: "set_model" }));
 		expect(session.setModel).toHaveBeenCalledWith(undefined);
+	});
+
+	it("persists a model change for a detached chat without reviving it", async () => {
+		vi.mocked(dbMock.getSessionSelection)
+			.mockResolvedValueOnce({
+				agentCwd: "/tmp/test",
+				providerId: "codex",
+				model: "gpt-5.6-terra",
+				effort: "high",
+				permissionMode: "default",
+			})
+			.mockResolvedValueOnce({
+				agentCwd: "/tmp/test",
+				providerId: "codex",
+				model: "gpt-5.6-sol",
+				effort: "high",
+				permissionMode: "default",
+			});
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("detached-session");
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "set_model",
+				session_id: "detached-session",
+				model: "gpt-5.6-sol",
+			}),
+		);
+
+		expect(dbMock.setSessionModel).toHaveBeenCalledWith(
+			"detached-session",
+			"gpt-5.6-sol",
+		);
+		expect(pool.create).not.toHaveBeenCalled();
+		expect(session.setModel).not.toHaveBeenCalled();
+		expect(lastSentTo(ws)).toEqual(
+			expect.objectContaining({
+				type: "status",
+				session_id: "detached-session",
+				model: "gpt-5.6-sol",
+			}),
+		);
 	});
 });
 
@@ -1726,7 +1803,7 @@ describe("message — chat", () => {
 		expect(session.runQuery).toHaveBeenCalled();
 	});
 
-	it("still applies repeated controls when creating a live manager", async () => {
+	it("applies repeated controls without resetting the configured provider", async () => {
 		const session = makeSession({
 			getProviderId: vi.fn().mockReturnValue("codex"),
 			getCurrentSessionId: vi.fn().mockReturnValue(null),
@@ -1748,11 +1825,42 @@ describe("message — chat", () => {
 			}),
 		);
 
-		expect(session.setProvider).toHaveBeenCalledWith("codex", {
-			model: "gpt-5.6-sol",
-			effort: "ultra",
-			permissionMode: "bypassPermissions",
+		expect(session.setProvider).not.toHaveBeenCalled();
+		expect(session.setModel).toHaveBeenCalledWith("gpt-5.6-sol");
+		expect(session.setEffort).toHaveBeenCalledWith("ultra");
+		expect(session.setPermissionMode).toHaveBeenCalledWith("bypassPermissions");
+		expect(session.runQuery).toHaveBeenCalled();
+	});
+
+	it("preserves same-provider configured controls when the first chat omits overrides", async () => {
+		const session = makeSession({
+			getProviderId: vi.fn().mockReturnValue("codex"),
+			getCurrentSessionId: vi.fn().mockReturnValue(null),
+			getStatus: vi.fn().mockReturnValue({
+				state: "idle",
+				model: "gpt-5.6-sol",
+				effort: "high",
+				permission_mode: "bypassPermissions",
+			}),
 		});
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "first turn",
+				session_id: "new-session",
+				provider: "codex",
+			}),
+		);
+
+		expect(session.setProvider).not.toHaveBeenCalled();
+		expect(session.setModel).not.toHaveBeenCalled();
+		expect(session.setEffort).not.toHaveBeenCalled();
+		expect(session.setPermissionMode).not.toHaveBeenCalled();
 		expect(session.runQuery).toHaveBeenCalled();
 	});
 
@@ -1777,7 +1885,7 @@ describe("message — chat", () => {
 				status.permission_mode = mode as "default";
 			}),
 		});
-		const { pool } = wrapSession(session);
+		const { pool, runState } = wrapSession(session);
 		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 
@@ -1797,7 +1905,7 @@ describe("message — chat", () => {
 		expect(session.setModel).toHaveBeenCalledWith("gpt-5.6-sol");
 		expect(session.setEffort).toHaveBeenCalledWith("ultra");
 		expect(session.setPermissionMode).toHaveBeenCalledWith("bypassPermissions");
-		expect(mockSend).toHaveBeenCalledWith(
+		expect(runState.send).toHaveBeenCalledWith(
 			ws,
 			expect.objectContaining({
 				type: "status",

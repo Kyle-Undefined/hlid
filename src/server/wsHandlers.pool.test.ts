@@ -15,7 +15,8 @@ const {
 	mockBroadcast,
 	mockLoadConfig,
 	mockGetSessionSelection,
-	mockGetLatestProjectPreviewForSession,
+	mockInspectProjectPreview,
+	mockCloseProjectPreviewSession,
 	mockGetHlidDelegationByChildSession,
 	mockAbandonInterruptedHlidDelegation,
 } = vi.hoisted(() => ({
@@ -25,7 +26,8 @@ const {
 	mockSend: vi.fn(),
 	mockBroadcast: vi.fn(),
 	mockGetSessionSelection: vi.fn().mockResolvedValue(null),
-	mockGetLatestProjectPreviewForSession: vi.fn().mockResolvedValue(null),
+	mockInspectProjectPreview: vi.fn(),
+	mockCloseProjectPreviewSession: vi.fn().mockResolvedValue(undefined),
 	mockGetHlidDelegationByChildSession: vi.fn().mockResolvedValue(null),
 	mockAbandonInterruptedHlidDelegation: vi.fn().mockResolvedValue(null),
 	mockLoadConfig: vi.fn().mockReturnValue({
@@ -46,12 +48,18 @@ vi.mock("../db", () => ({
 	saveSetting: vi.fn().mockResolvedValue(undefined),
 	setAskUserQuestionResolution: vi.fn().mockResolvedValue(undefined),
 	getSessionSelection: mockGetSessionSelection,
-	getLatestProjectPreviewForSession: mockGetLatestProjectPreviewForSession,
 	getHlidDelegationByChildSession: mockGetHlidDelegationByChildSession,
 	abandonInterruptedHlidDelegation: mockAbandonInterruptedHlidDelegation,
 }));
 
 vi.mock("./config", () => ({ loadConfig: mockLoadConfig }));
+
+vi.mock("./projectPreview", () => ({
+	projectPreviewManager: {
+		inspect: mockInspectProjectPreview,
+		closeSession: mockCloseProjectPreviewSession,
+	},
+}));
 
 vi.mock("./runState", () => ({
 	wsState,
@@ -212,6 +220,11 @@ beforeEach(() => {
 	wsState.clients.clear();
 	mockSend.mockClear();
 	mockBroadcast.mockClear();
+	mockInspectProjectPreview.mockReset();
+	mockInspectProjectPreview.mockImplementation(() => {
+		throw new Error("Project preview not found for this session.");
+	});
+	mockCloseProjectPreviewSession.mockClear();
 	mockGetHlidDelegationByChildSession.mockReset();
 	mockGetHlidDelegationByChildSession.mockResolvedValue(null);
 	mockAbandonInterruptedHlidDelegation.mockReset();
@@ -275,8 +288,10 @@ describe("open (pool)", () => {
 		const { open } = createWsHandlers(pool);
 		const ws = makeWs();
 		open(ws as never);
-		const calls = mockSend.mock.calls.filter((c) => c[0] === ws);
-		expect(calls.some((c) => c[1].type === "status")).toBe(true);
+		expect(vault.runState.send).toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({ type: "status" }),
+		);
 	});
 
 	it("replays vault runState buffer when session is running", () => {
@@ -289,8 +304,10 @@ describe("open (pool)", () => {
 		const { open } = createWsHandlers(pool);
 		const ws = makeWs();
 		open(ws as never);
-		const calls = mockSend.mock.calls.filter((c) => c[0] === ws);
-		expect(calls.some((c) => c[1].type === "chunk")).toBe(true);
+		expect(vault.runState.send).toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({ type: "chunk" }),
+		);
 	});
 
 	it("claims ownership and replays pending permission requests when no owner", () => {
@@ -304,8 +321,10 @@ describe("open (pool)", () => {
 		const ws = makeWs();
 		open(ws as never);
 		expect(vault.runState.ownerWs).toBe(ws);
-		const calls = mockSend.mock.calls.filter((c) => c[0] === ws);
-		expect(calls.some((c) => c[1].type === "permission_request")).toBe(true);
+		expect(vault.runState.send).toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({ type: "permission_request" }),
+		);
 	});
 
 	it("does NOT claim ownership when runState already has an owner", () => {
@@ -443,16 +462,17 @@ describe("message — subscribe_session", () => {
 			ws as never,
 			JSON.stringify({ type: "subscribe_session", session_id: "other-id" }),
 		);
-		const calls = mockSend.mock.calls.filter((c) => c[0] === ws);
-		const statusMsg = calls.find((c) => c[1].type === "status");
-		expect(statusMsg).toBeDefined();
-		expect(statusMsg?.[1]).toMatchObject({
-			state: "running",
-			model: "model-x",
-		});
+		expect(other.runState.send).toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({
+				type: "status",
+				state: "running",
+				model: "model-x",
+			}),
+		);
 	});
 
-	it("restores the latest Project Preview when a client reconnects", async () => {
+	it("clears every stale Preview alias when no manager-owned Preview exists", async () => {
 		const vault = makeEntry("vault-id");
 		const other = makeEntry("other-id");
 		const pool = makePool(vault);
@@ -460,23 +480,6 @@ describe("message — subscribe_session", () => {
 			if (id === "vault-id") return vault;
 			if (id === "other-id") return other;
 			return undefined;
-		});
-		mockGetLatestProjectPreviewForSession.mockResolvedValueOnce({
-			id: "123e4567-e89b-42d3-a456-426614174000",
-			session_id: "other-id",
-			label: "Web app",
-			command: "bun run dev",
-			cwd: "/work/web",
-			port: 4173,
-			path: "/login",
-			url: "http://127.0.0.1:4173/login",
-			relay_url:
-				"/api/project-previews/123e4567-e89b-42d3-a456-426614174000/relay/login",
-			state: "ready",
-			present: true,
-			started_at: "2026-07-25T18:00:00.000Z",
-			expires_at: "2026-07-25T22:00:00.000Z",
-			logs: [],
 		});
 		const { message } = createWsHandlers(pool);
 		const ws = makeWs("vault-id");
@@ -486,14 +489,95 @@ describe("message — subscribe_session", () => {
 			JSON.stringify({ type: "subscribe_session", session_id: "other-id" }),
 		);
 
-		expect(mockSend).toHaveBeenCalledWith(ws, {
-			type: "project_preview_status",
-			session_id: "other-id",
-			preview: expect.objectContaining({
-				id: "123e4567-e89b-42d3-a456-426614174000",
-				state: "ready",
-			}),
+		expect(mockInspectProjectPreview).toHaveBeenNthCalledWith(1, "other-id");
+		expect(mockInspectProjectPreview).toHaveBeenNthCalledWith(
+			2,
+			"mock-db-session",
+		);
+		expect(
+			mockSend.mock.calls
+				.map(([, sent]) => sent)
+				.filter((sent) => sent.type === "project_preview_status"),
+		).toEqual([
+			{
+				type: "project_preview_status",
+				session_id: "other-id",
+				preview: null,
+			},
+			{
+				type: "project_preview_status",
+				session_id: "mock-db-session",
+				preview: null,
+			},
+		]);
+	});
+
+	it("restores a manager-owned failed Preview through its DB session alias", async () => {
+		const vault = makeEntry("vault-id");
+		const other = makeEntry("other-id");
+		const pool = makePool(vault);
+		pool.get.mockImplementation((id: string) => {
+			if (id === "vault-id") return vault;
+			if (id === "other-id") return other;
+			return undefined;
 		});
+		mockInspectProjectPreview.mockImplementation((sessionId: string) => {
+			if (sessionId !== "mock-db-session") {
+				throw new Error("Project preview not found for this session.");
+			}
+			return {
+				id: "123e4567-e89b-42d3-a456-426614174000",
+				session_id: "mock-db-session",
+				label: "Failed app",
+				command: "bun run dev",
+				cwd: "/work/web",
+				port: 4173,
+				path: "/login",
+				url: "http://127.0.0.1:4173/login",
+				relay_url:
+					"/api/project-previews/123e4567-e89b-42d3-a456-426614174000/relay/login",
+				state: "failed",
+				present: true,
+				started_at: "2026-07-25T18:00:00.000Z",
+				expires_at: "2026-07-25T22:00:00.000Z",
+				ended_at: "2026-07-25T18:00:30.000Z",
+				error: "Preview did not become reachable.",
+				stop_reason: "readiness_timeout",
+				logs: [],
+			};
+		});
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs("vault-id");
+
+		await message(
+			ws as never,
+			JSON.stringify({ type: "subscribe_session", session_id: "other-id" }),
+		);
+
+		expect(mockInspectProjectPreview).toHaveBeenNthCalledWith(1, "other-id");
+		expect(mockInspectProjectPreview).toHaveBeenNthCalledWith(
+			2,
+			"mock-db-session",
+		);
+		expect(
+			mockSend.mock.calls
+				.map(([, sent]) => sent)
+				.filter((sent) => sent.type === "project_preview_status"),
+		).toEqual([
+			{
+				type: "project_preview_status",
+				session_id: "other-id",
+				preview: null,
+			},
+			{
+				type: "project_preview_status",
+				session_id: "mock-db-session",
+				preview: expect.objectContaining({
+					id: "123e4567-e89b-42d3-a456-426614174000",
+					state: "failed",
+				}),
+			},
+		]);
 	});
 
 	it("replays new session's buffer when session is running", async () => {
@@ -515,8 +599,10 @@ describe("message — subscribe_session", () => {
 			ws as never,
 			JSON.stringify({ type: "subscribe_session", session_id: "other-id" }),
 		);
-		const calls = mockSend.mock.calls.filter((c) => c[0] === ws);
-		expect(calls.some((c) => c[1].type === "chunk")).toBe(true);
+		expect(other.runState.send).toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({ type: "chunk" }),
+		);
 	});
 
 	it("replays pending questions and plans when another device owns the run", async () => {
@@ -550,7 +636,7 @@ describe("message — subscribe_session", () => {
 			JSON.stringify({ type: "subscribe_session", session_id: "other-id" }),
 		);
 
-		const types = mockSend.mock.calls
+		const types = other.runState.send.mock.calls
 			.filter((call) => call[0] === ws)
 			.map((call) => call[1].type);
 		expect(types).toContain("ask_user_question");
@@ -583,7 +669,7 @@ describe("message — subscribe_session", () => {
 			JSON.stringify({ type: "subscribe_session", session_id: "other-id" }),
 		);
 
-		expect(mockSend).toHaveBeenCalledWith(
+		expect(other.runState.send).toHaveBeenCalledWith(
 			ws,
 			expect.objectContaining({
 				type: "agent_sleep",
@@ -685,6 +771,7 @@ describe("message — subscribe_session", () => {
 
 		expect(mockSend).toHaveBeenCalledWith(ws, {
 			type: "status",
+			session_id: "archived-einherjar",
 			state: "idle",
 			model: "gpt-session",
 			effort: "high",
@@ -733,9 +820,67 @@ describe("message — subscribe_session", () => {
 
 		expect(mockSend).toHaveBeenCalledWith(ws, {
 			type: "status",
+			session_id: "removed-einherjar",
 			state: "idle",
 			model: "gpt-default",
 			effort: "xhigh",
+			permission_mode: "acceptEdits",
+		});
+	});
+
+	it("uses saved provider defaults after an archived chat switched providers", async () => {
+		const vault = makeEntry("vault-id");
+		const pool = makePool(vault);
+		pool.get.mockReturnValue(undefined);
+		mockGetSessionSelection.mockResolvedValueOnce({
+			agentCwd: "/tmp/codex-agent",
+			providerId: "claude",
+			model: "claude-session-model",
+			effort: null,
+			permissionMode: null,
+		});
+		mockLoadConfig.mockReturnValueOnce({
+			vault: { path: "/tmp/test", name: "Test Vault" },
+			vault_provider: "codex",
+			codex: {
+				model: "gpt-vault",
+				effort: "medium",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+			claude: {
+				model: "claude-default",
+				effort: "high",
+				permission_mode: "acceptEdits",
+				turn_recaps: false,
+			},
+			agents: [
+				{
+					path: "/tmp/codex-agent",
+					provider: "codex",
+					model: "gpt-agent",
+					effort: "ultra",
+					permission_mode: "bypassPermissions",
+				},
+			],
+		});
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs("vault-id");
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "subscribe_session",
+				session_id: "switched-provider-chat",
+			}),
+		);
+
+		expect(mockSend).toHaveBeenCalledWith(ws, {
+			type: "status",
+			session_id: "switched-provider-chat",
+			state: "idle",
+			model: "claude-session-model",
+			effort: "high",
 			permission_mode: "acceptEdits",
 		});
 	});
@@ -766,6 +911,7 @@ describe("message — subscribe_session", () => {
 
 		expect(mockSend).toHaveBeenCalledWith(ws, {
 			type: "status",
+			session_id: "archived-db-id",
 			state: "idle",
 			model: "archived-model",
 			effort: "medium",

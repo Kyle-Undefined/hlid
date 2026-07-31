@@ -78,7 +78,7 @@ export function VaultSection({
 				<div
 					role="radiogroup"
 					aria-labelledby="vault-style-label"
-					className="grid grid-cols-2 gap-2"
+					className="grid grid-cols-1 gap-2 @xl:grid-cols-2"
 				>
 					{(
 						[

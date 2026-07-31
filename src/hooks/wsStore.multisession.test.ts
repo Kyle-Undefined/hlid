@@ -8,7 +8,13 @@
  *  - getAggregateNavStatus()
  */
 // @vitest-environment jsdom
+import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	applyProjectPreview,
+	clearProjectPreview,
+	useProjectPreview,
+} from "./projectPreviewStore";
 import {
 	isRavenTerminalOpen,
 	rememberRavenTerminal,
@@ -448,6 +454,40 @@ describe("subscribeToSession / getSubscribedSessionId", () => {
 // ── session-scoped message filtering ─────────────────────────────────────────
 
 describe("session message filtering", () => {
+	it("clears a stale ready Preview when reconnect restoration reports none", () => {
+		const sessionId = "session-preview-stale";
+		applyProjectPreview({
+			id: "preview-stale",
+			session_id: sessionId,
+			label: "Web app",
+			command: "bun run dev",
+			cwd: "/workspace",
+			port: 5173,
+			path: "/",
+			url: "http://127.0.0.1:5173/",
+			relay_url: "/api/project-previews/preview-stale/relay/",
+			state: "ready",
+			present: true,
+			started_at: "2026-07-25T03:00:00.000Z",
+			expires_at: "2026-07-25T07:00:00.000Z",
+			logs: [],
+		});
+		const current = renderHook(() => useProjectPreview(sessionId));
+		expect(current.result.current?.id).toBe("preview-stale");
+
+		act(() => {
+			receive({
+				type: "project_preview_status",
+				session_id: sessionId,
+				preview: null,
+			});
+		});
+
+		expect(current.result.current).toBeNull();
+		current.unmount();
+		clearProjectPreview(sessionId);
+	});
+
 	it("keeps an idle chat sendable while its Preview runs in the background", () => {
 		wsStore.subscribeToSession("session-preview");
 		receive({

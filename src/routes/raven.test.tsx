@@ -268,6 +268,7 @@ afterEach(cleanup);
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	state.send.mockReturnValue(true);
 	resetDataRevisionsForTesting();
 	resetRavenProviderCacheForTesting();
 	localStorage.clear();
@@ -1367,6 +1368,103 @@ describe("Raven composed submission behavior", () => {
 		expect(badge.textContent).not.toMatch(/claude|medium/i);
 	});
 
+	it("submits the effective Einherjar controls shown for a new chat", () => {
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				vault_provider: "codex",
+				codex: {
+					model: "gpt-5.6-terra",
+					effort: "medium",
+					permission_mode: "default",
+				},
+				agents: [
+					{
+						path: "/hlid",
+						provider: "codex",
+						model: "gpt-5.6-sol",
+						effort: "ultra",
+						permission_mode: "bypassPermissions",
+					},
+				],
+			},
+			agentSkillContext: "/hlid",
+			agentList: [{ path: "/hlid", name: "Hlid", provider: "codex" }],
+			providers: [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [
+						{ value: "gpt-5.6-sol", label: "Sol" },
+						{ value: "gpt-5.6-terra", label: "Terra" },
+					],
+					effortLevels: [{ value: "ultra", label: "Ultra" }],
+					permissionModes: [
+						{
+							value: "bypassPermissions",
+							label: "Auto-approve all",
+						},
+					],
+				},
+			],
+		};
+
+		render(<ChatPage />);
+		fireEvent.change(screen.getByRole("combobox"), {
+			target: { value: "keep this on Sol" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+		expect(state.send).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "chat",
+				provider: "codex",
+				model: "gpt-5.6-sol",
+				effort: "ultra",
+				permission_mode: "bypassPermissions",
+			}),
+		);
+	});
+
+	it("shows the selected model before a stale last-used model", () => {
+		state.model = "gpt-5.6-sol";
+		state.actualModel = "gpt-5.6-terra";
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				vault_provider: "codex",
+				codex: { model: "gpt-5.6-terra" },
+			},
+			existingSessionId: "saved-session",
+			isExplicitSession: true,
+			sessionModel: "gpt-5.6-sol",
+			sessionProviderId: "codex",
+			providers: [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [
+						{ value: "gpt-5.6-sol", label: "Sol" },
+						{ value: "gpt-5.6-terra", label: "Terra" },
+					],
+				},
+			],
+		};
+
+		render(<ChatPage />);
+		const badge = screen.getByRole("button", { name: /gpt-5\.6-sol/i });
+		expect(badge.getAttribute("aria-label")).not.toMatch(/terra/i);
+		expect(badge.className).toContain("text-status-warning");
+		fireEvent.click(badge);
+		expect(screen.getByText("selected")).toBeTruthy();
+		expect(screen.getByText("last used")).toBeTruthy();
+		expect(screen.getAllByText("gpt-5.6-terra").length).toBeGreaterThan(0);
+	});
+
 	it("keeps the CLIProxy model badge compact on mobile", () => {
 		state.actualModel = "gpt-5.6-sol(high)";
 		state.model = "gpt-5.6-sol";
@@ -1475,6 +1573,155 @@ describe("Raven composed submission behavior", () => {
 		expect(screen.queryByRole("dialog", { name: "Model settings" })).toBeNull();
 	});
 
+	it("keeps an optimistic model selection until live status acknowledges it", async () => {
+		state.model = "gpt-5.6-terra";
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				vault_provider: "codex",
+				codex: { model: "gpt-5.6-terra" },
+			},
+			existingSessionId: "saved-session",
+			isExplicitSession: true,
+			sessionModel: "gpt-5.6-terra",
+			sessionProviderId: "codex",
+			providers: [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [
+						{ value: "gpt-5.6-sol", label: "Sol" },
+						{ value: "gpt-5.6-terra", label: "Terra" },
+					],
+				},
+			],
+		};
+		state.sessions = [
+			{
+				session_id: "live-session",
+				db_session_id: "saved-session",
+				mode: "sdk",
+				state: "idle",
+				provider_id: "codex",
+				model: "gpt-5.6-terra",
+			},
+		];
+		const view = render(<ChatPage />);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: /codex.*gpt-5\.6-terra/i }),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Sol" }));
+		expect(
+			screen.getByRole("button", { name: /codex.*gpt-5\.6-sol/i }),
+		).toBeTruthy();
+
+		state.sessions = [
+			{
+				session_id: "live-session",
+				db_session_id: "saved-session",
+				mode: "sdk",
+				state: "idle",
+				provider_id: "codex",
+				model: "gpt-5.6-terra",
+			},
+		];
+		view.rerender(<ChatPage />);
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: /codex.*gpt-5\.6-sol/i }),
+			).toBeTruthy(),
+		);
+
+		fireEvent.change(screen.getByRole("combobox"), {
+			target: { value: "next turn" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Send" }));
+		expect(state.send).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "chat", model: "gpt-5.6-sol" }),
+		);
+
+		state.sessions = [
+			{
+				session_id: "live-session",
+				db_session_id: "saved-session",
+				mode: "sdk",
+				state: "idle",
+				provider_id: "codex",
+				model: "gpt-5.6-sol",
+			},
+		];
+		view.rerender(<ChatPage />);
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: /codex.*gpt-5\.6-sol/i }),
+			).toBeTruthy(),
+		);
+	});
+
+	it("does not keep a dropped or disconnected model selection authoritative", async () => {
+		state.model = "gpt-5.6-terra";
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				vault_provider: "codex",
+				codex: { model: "gpt-5.6-terra" },
+			},
+			existingSessionId: "saved-session",
+			isExplicitSession: true,
+			sessionModel: "gpt-5.6-terra",
+			sessionProviderId: "codex",
+			providers: [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [
+						{ value: "gpt-5.6-sol", label: "Sol" },
+						{ value: "gpt-5.6-terra", label: "Terra" },
+					],
+				},
+			],
+		};
+		state.sessions = [
+			{
+				session_id: "live-session",
+				db_session_id: "saved-session",
+				mode: "sdk",
+				state: "idle",
+				provider_id: "codex",
+				model: "gpt-5.6-terra",
+			},
+		];
+		const view = render(<ChatPage />);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: /codex.*gpt-5\.6-terra/i }),
+		);
+		state.send.mockReturnValue(false);
+		fireEvent.click(screen.getByRole("button", { name: "Sol" }));
+		expect(
+			screen.getByRole("button", { name: /codex.*gpt-5\.6-terra/i }),
+		).toBeTruthy();
+
+		state.send.mockReturnValue(true);
+		fireEvent.click(screen.getByRole("button", { name: "Sol" }));
+		expect(
+			screen.getByRole("button", { name: /codex.*gpt-5\.6-sol/i }),
+		).toBeTruthy();
+
+		state.wsStatus = "disconnected";
+		view.rerender(<ChatPage />);
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: /codex.*gpt-5\.6-terra/i }),
+			).toBeTruthy(),
+		);
+	});
+
 	it("switches the current chat to any available CLI without changing config", () => {
 		state.loaderData = {
 			...state.loaderData,
@@ -1555,7 +1802,7 @@ describe("Raven composed submission behavior", () => {
 		expect(badge.className).not.toContain("text-amber");
 		fireEvent.click(badge);
 		expect(screen.queryByText("configured")).toBeNull();
-		expect(screen.queryByText("current")).toBeNull();
+		expect(screen.queryByText("selected")).toBeNull();
 	});
 
 	it("restores an agent session's saved provider and model instead of current config", () => {
@@ -1612,10 +1859,10 @@ describe("Raven composed submission behavior", () => {
 		expect(screen.getByRole("button", { name: "Fable" })).toBeTruthy();
 		expect(screen.queryByRole("button", { name: "Sol" })).toBeNull();
 		expect(screen.queryByRole("button", { name: "Terra" })).toBeNull();
-		expect(screen.queryByText("selected")).toBeNull();
 		expect(screen.queryByText("actual")).toBeNull();
 		expect(screen.getByText("configured")).toBeTruthy();
-		expect(screen.getByText("current")).toBeTruthy();
+		expect(screen.getByText("selected")).toBeTruthy();
+		expect(screen.queryByText("last used")).toBeNull();
 	});
 
 	it("keeps restored and switched provider metadata, commands, and composer state aligned", async () => {

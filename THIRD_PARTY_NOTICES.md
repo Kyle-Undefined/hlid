@@ -1,9 +1,33 @@
 # Third-party notices
 
-Hlið itself is licensed under the MIT License. The optional local neural
-read-aloud feature downloads the following third-party files only after the
-user chooses Download in Forge. These files are not embedded in the Hlið
-executable or source distribution.
+Hlið itself is licensed under the MIT License. Packaged Windows builds include
+the reviewed speech-to-text runtime below. The optional local neural read-aloud
+feature downloads its runtime and model files only after the user chooses
+Download in Forge; those files are not embedded in the Hlið executable or source
+distribution.
+
+## whisper.cpp v1.9.1 runtime
+
+- Purpose: local speech-to-text with portable CPU and Vulkan backends
+- Project: `ggml-org/whisper.cpp`
+- Source revision: `f049fff95a089aa9969deb009cdd4892b3e74916`
+- Source:
+  `https://github.com/ggml-org/whisper.cpp/tree/f049fff95a089aa9969deb009cdd4892b3e74916`
+- License: MIT
+- Copyright: Copyright (c) 2023-2026 The ggml authors
+- Runtime archive: `hlid-whisper-runtime-windows-x64-v1.9.1.zip`
+- Runtime archive SHA-256:
+  `238d0f7cd98fac00b2e0e117668c28b0105d3dd863aeadedf1973a5a709ab10a`
+- Build provenance: Hlid's release workflow checks out the exact source
+  revision, builds `whisper-server` and the reviewed shared libraries on
+  Windows x64, audits the runtime manifest, and embeds the verified archive in
+  the packaged executable.
+
+The runtime contains `whisper-server.exe`, `whisper.dll`, the reviewed GGML CPU
+and Vulkan libraries, and the pinned upstream `LICENSE`. The same license file
+is embedded with the runtime in the packaged Hlid executable and materialized
+beside the runtime files. Whisper model files remain separate downloads managed
+from Forge.
 
 ## Kitten Nano v0.8 Int8
 

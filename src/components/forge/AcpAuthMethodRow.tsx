@@ -11,19 +11,21 @@ export function AcpAuthMethodRow({
 	onAuthenticate: (methodId: string) => void;
 }) {
 	return (
-		<div className="border border-border p-2 text-xs space-y-1">
-			<div>{method.name}</div>
+		<div className="min-w-0 space-y-1 border border-border p-2 text-xs">
+			<div className="break-words">{method.name}</div>
 			{method.description && (
-				<div className="text-muted-foreground">{method.description}</div>
+				<div className="break-words text-muted-foreground">
+					{method.description}
+				</div>
 			)}
 			{method.vars && (
-				<div className="font-mono text-[10px]">
+				<div className="break-all font-mono text-[10px]">
 					Required environment:{" "}
 					{method.vars.map((variable) => variable.name).join(", ")}
 				</div>
 			)}
 			{method.type === "terminal" && (
-				<div className="font-mono text-[10px]">
+				<div className="break-all font-mono text-[10px]">
 					Run: {item.command} {(method.args ?? []).join(" ")}
 				</div>
 			)}

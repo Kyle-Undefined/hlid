@@ -115,23 +115,6 @@ export async function getProjectPreview(
 	return row ? snapshot(row) : null;
 }
 
-export async function getLatestProjectPreviewForSession(
-	sessionId: string,
-): Promise<ProjectPreviewSnapshot | null> {
-	const db = await getDb();
-	const row = db
-		.query<ProjectPreviewDbRow, [string]>(
-			`SELECT id, session_id, label, command, cwd, port, path, url, relay_url,
-			        state, present, started_at, expires_at, ended_at, exit_code,
-			        error, stop_reason, logs_json
-			 FROM project_previews
-			 WHERE session_id = ?
-			 ORDER BY started_at DESC, rowid DESC LIMIT 1`,
-		)
-		.get(sessionId);
-	return row ? snapshot(row) : null;
-}
-
 export async function stopActiveProjectPreviewsAfterRestart(): Promise<number> {
 	const db = await getDb();
 	const result = db.run(

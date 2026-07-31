@@ -1,10 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import {
-	getLatestProjectPreviewForSession,
-	getProjectPreview,
-	retainProjectPreviewFeedback,
-} from "../db";
+import { getProjectPreview, retainProjectPreviewFeedback } from "../db";
 import { bumpDataRevision } from "./dataRevision";
 import { projectPreviewManager } from "./projectPreview";
 import {
@@ -245,13 +241,11 @@ function requiredSessionId(url: URL): string | Response {
 	);
 }
 
-async function inspectPreview(sessionId: string, previewId?: string) {
+async function inspectPreview(sessionId: string, previewId: string) {
 	try {
 		return projectPreviewManager.inspect(sessionId, previewId);
 	} catch {
-		const persisted = previewId
-			? await getProjectPreview(previewId)
-			: await getLatestProjectPreviewForSession(sessionId);
+		const persisted = await getProjectPreview(previewId);
 		if (!persisted || persisted.session_id !== sessionId) {
 			throw new Error("Project preview not found for this session.");
 		}
@@ -262,7 +256,9 @@ async function inspectPreview(sessionId: string, previewId?: string) {
 async function resolveBrowserPreview(rawPreviewId: string, sessionId: string) {
 	const previewId =
 		rawPreviewId === "session" ? undefined : decodeURIComponent(rawPreviewId);
-	const preview = await inspectPreview(sessionId, previewId);
+	const preview = previewId
+		? await inspectPreview(sessionId, previewId)
+		: projectPreviewManager.inspect(sessionId);
 	const target = projectPreviewManager.relayTarget(preview.id);
 	return { preview, ...target };
 }
@@ -313,7 +309,7 @@ async function handleSessionRoute({
 	) {
 		const sessionId = requiredSessionId(url);
 		if (sessionId instanceof Response) return sessionId;
-		return Response.json(await inspectPreview(sessionId));
+		return Response.json(projectPreviewManager.inspect(sessionId));
 	}
 	if (
 		(url.pathname !== "/api/project-previews/session/stop" &&

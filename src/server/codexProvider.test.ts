@@ -2301,6 +2301,45 @@ describe("CodexAgentSession — setModel", () => {
 		expect(turns[1].model).toBe("gpt-5.5");
 	});
 
+	it("keeps model-less usage attributed to the active turn after selecting the next model", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		await session.send("use the current model");
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "session_start",
+			sessionId: "thread-1",
+		});
+
+		await session.setModel?.("gpt-5.5");
+		emitSessionNotification(proc, "thread/tokenUsage/updated", {
+			threadId: "thread-1",
+			usage: {
+				inputTokens: 12,
+				outputTokens: 7,
+				cacheReadTokens: 3,
+			},
+		});
+
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "usage",
+			model: "gpt-5.4",
+		});
+
+		session.closeInput?.();
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "turn-1", status: "completed" },
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "done",
+			estimatedCost: 0.00012825,
+		});
+	});
+
 	it("carries a catalog-selected service tier into the thread and turn", async () => {
 		const { proc, writes } = makeFakeSessionProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);
@@ -2749,7 +2788,7 @@ describe("CodexAgentSession — notifications", () => {
 				cacheReadTokens: 3,
 				cacheCreationTokens: 0,
 			},
-			model: undefined,
+			model: "gpt-5.4",
 		});
 		expect(await nextSessionEvent(events)).toEqual({
 			type: "done",
@@ -3274,6 +3313,79 @@ describe("CodexAgentSession — notifications", () => {
 				inputTokens: 20,
 				outputTokens: 10,
 				cacheReadTokens: 80,
+				cacheCreationTokens: 0,
+			},
+		});
+		session.cancel();
+	});
+
+	it("seeds idle resumed usage without billing the prior turn", async () => {
+		const { proc } = makeFakeSessionProc({ rateLimits: {} });
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({ sessionId: "existing-thread" }),
+		);
+		const events = session[Symbol.asyncIterator]();
+
+		await expect(session.usageWindows?.()).resolves.toEqual([]);
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "session_start",
+			sessionId: "thread-1",
+		});
+		emitSessionNotification(proc, "thread/tokenUsage/updated", {
+			threadId: "thread-1",
+			tokenUsage: {
+				total: {
+					inputTokens: 206_785,
+					cachedInputTokens: 167_424,
+					outputTokens: 1_828,
+				},
+				last: {
+					inputTokens: 34_743,
+					cachedInputTokens: 31_488,
+					outputTokens: 231,
+				},
+			},
+		});
+
+		await session.send("continue");
+		emitSessionNotification(proc, "thread/tokenUsage/updated", {
+			threadId: "thread-1",
+			tokenUsage: {
+				total: {
+					inputTokens: 243_296,
+					cachedInputTokens: 167_424,
+					outputTokens: 2_193,
+				},
+				last: {
+					inputTokens: 36_511,
+					cachedInputTokens: 0,
+					outputTokens: 365,
+				},
+			},
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "turn-1", status: "completed" },
+		});
+
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "usage",
+			inputTokens: 36_511,
+			outputTokens: 365,
+			queryUsage: {
+				inputTokens: 36_511,
+				outputTokens: 365,
+				cacheReadTokens: 0,
+				cacheCreationTokens: 0,
+			},
+		});
+		expect(await nextDoneEvent(events)).toMatchObject({
+			usage: {
+				inputTokens: 36_511,
+				outputTokens: 365,
+				cacheReadTokens: 0,
 				cacheCreationTokens: 0,
 			},
 		});

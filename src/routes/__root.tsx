@@ -57,7 +57,11 @@ export const Route = createRootRoute({
 			{ name: "apple-mobile-web-app-title", content: "Hlid" },
 		],
 		links: [
-			{ rel: "manifest", href: "/manifest.json" },
+			{
+				rel: "manifest",
+				href: "/manifest.json",
+				crossOrigin: "use-credentials",
+			},
 			{ rel: "apple-touch-icon", href: "/apple-touch-icon.png" },
 			{ rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
 			{ rel: "stylesheet", href: appCss },

@@ -9,7 +9,6 @@ const mocks = vi.hoisted(() => ({
 	selectionRedirect: vi.fn().mockReturnValue(null),
 	handleRelayRequest: vi.fn().mockResolvedValue(null),
 	getProjectPreview: vi.fn(),
-	getLatestProjectPreviewForSession: vi.fn(),
 	getFrame: vi.fn(),
 	retainProjectPreviewFeedback: vi.fn(),
 	bumpDataRevision: vi.fn(),
@@ -17,7 +16,6 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../db", () => ({
 	getProjectPreview: mocks.getProjectPreview,
-	getLatestProjectPreviewForSession: mocks.getLatestProjectPreviewForSession,
 	retainProjectPreviewFeedback: mocks.retainProjectPreviewFeedback,
 }));
 
@@ -60,6 +58,26 @@ const controlBase = {
 	port: 5173,
 	capability,
 	initialPath: "/app",
+};
+const failedPreview = {
+	id: "7c0eea4d-f74e-45c8-8674-a535fbb4412b",
+	session_id: "session-1",
+	label: "Failed app",
+	command: "bun run dev",
+	cwd: "/repo",
+	port: 5173,
+	path: "/app",
+	url: "http://127.0.0.1:5173/app",
+	relay_url:
+		"/api/project-previews/7c0eea4d-f74e-45c8-8674-a535fbb4412b/relay/app",
+	state: "failed",
+	present: true,
+	started_at: "2026-07-31T14:26:37.615Z",
+	expires_at: "2026-07-31T18:26:37.615Z",
+	ended_at: "2026-07-31T14:28:38.167Z",
+	error: "Preview did not become reachable.",
+	stop_reason: "readiness_timeout",
+	logs: [],
 };
 
 describe("Project Preview control input", () => {
@@ -290,7 +308,64 @@ describe("Project Preview route dispatch", () => {
 		expect(response?.status).toBe(200);
 		expect(mocks.selectionRedirect).toHaveBeenCalledOnce();
 		expect(mocks.handleRelayRequest).toHaveBeenCalledOnce();
-		expect(mocks.inspect).toHaveBeenCalledWith("session-1", undefined);
+		expect(mocks.inspect).toHaveBeenCalledWith("session-1");
+	});
+
+	it("does not restore a persisted-only failed Preview as session-current", async () => {
+		mocks.inspect.mockImplementationOnce(() => {
+			throw new Error("Project preview not found for this session.");
+		});
+		mocks.getProjectPreview.mockResolvedValueOnce(failedPreview);
+
+		const response = await handleProjectPreviewRoute(
+			new URL(
+				"http://localhost/api/project-previews/session?session_id=session-1",
+			),
+			new Request(
+				"http://localhost/api/project-previews/session?session_id=session-1",
+			),
+		);
+
+		expect(response?.status).toBe(404);
+		expect(mocks.inspect).toHaveBeenCalledWith("session-1");
+		expect(mocks.getProjectPreview).not.toHaveBeenCalled();
+	});
+
+	it("restores a manager-owned failed Preview as session-current", async () => {
+		mocks.inspect.mockReturnValueOnce(failedPreview);
+
+		const response = await handleProjectPreviewRoute(
+			new URL(
+				"http://localhost/api/project-previews/session?session_id=session-1",
+			),
+			new Request(
+				"http://localhost/api/project-previews/session?session_id=session-1",
+			),
+		);
+
+		expect(response?.status).toBe(200);
+		expect(await response?.json()).toEqual(failedPreview);
+		expect(mocks.getProjectPreview).not.toHaveBeenCalled();
+	});
+
+	it("retains persisted fallback for an explicit Preview ID", async () => {
+		mocks.inspect.mockImplementationOnce(() => {
+			throw new Error("Project preview not found for this session.");
+		});
+		mocks.getProjectPreview.mockResolvedValueOnce(failedPreview);
+
+		const response = await handleProjectPreviewRoute(
+			new URL(
+				`http://localhost/api/project-previews/${failedPreview.id}?session_id=session-1`,
+			),
+			new Request(
+				`http://localhost/api/project-previews/${failedPreview.id}?session_id=session-1`,
+			),
+		);
+
+		expect(response?.status).toBe(200);
+		expect(await response?.json()).toEqual(failedPreview);
+		expect(mocks.getProjectPreview).toHaveBeenCalledWith(failedPreview.id);
 	});
 
 	it("maps a start request and preserves the ready response status", async () => {
@@ -507,7 +582,7 @@ describe("Project Preview capture route", () => {
 
 		expect(response?.status).toBe(200);
 		expect(response?.headers.get("cache-control")).toBe("no-store");
-		expect(mocks.inspect).toHaveBeenCalledWith("session-1", undefined);
+		expect(mocks.inspect).toHaveBeenCalledWith("session-1");
 		expect(mocks.relayTarget).toHaveBeenCalledWith(
 			"7c0eea4d-f74e-45c8-8674-a535fbb4412b",
 		);

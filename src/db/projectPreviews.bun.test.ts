@@ -1,7 +1,6 @@
 import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-	getLatestProjectPreviewForSession,
 	getProjectPreview,
 	saveProjectPreview,
 	stopActiveProjectPreviewsAfterRestart,
@@ -39,7 +38,7 @@ describe("project preview provenance", () => {
 			stop_reason: "explicit",
 		});
 
-		expect(await getLatestProjectPreviewForSession("session-1")).toMatchObject({
+		expect(await getProjectPreview("preview-1")).toMatchObject({
 			id: "preview-1",
 			state: "stopped",
 			stop_reason: "explicit",

@@ -62,7 +62,12 @@ import {
 } from "./session.test-utils";
 
 describe("SessionManager — runQuery queueing", () => {
-	it("settles an explicitly aborted background turn idle and records its partial usage once", async () => {
+	it.each([
+		{ label: "foreground", backgroundSession: false },
+		{ label: "background", backgroundSession: true },
+	])("settles an explicitly aborted $label turn idle and records its partial usage once", async ({
+		backgroundSession,
+	}) => {
 		let step = 0;
 		let rejectPending: ((error: Error) => void) | null = null;
 		let pending = false;
@@ -123,6 +128,7 @@ describe("SessionManager — runQuery queueing", () => {
 		};
 		vi.mocked(dbMock.recordQuery).mockClear();
 		vi.mocked(dbMock.setMessageQueryId).mockClear();
+		vi.mocked(dbMock.setSessionActualModelForProvider).mockClear();
 		const emitted: ServerMessage[] = [];
 		const sm = new SessionManager(makeConfig(), makeProviders(provider));
 		const turn = sm.runQuery(
@@ -132,7 +138,7 @@ describe("SessionManager — runQuery queueing", () => {
 				sessionId: "child-session",
 				attachments: [],
 				turnId: "child-turn",
-				backgroundSession: true,
+				backgroundSession,
 			},
 		);
 
@@ -150,6 +156,8 @@ describe("SessionManager — runQuery queueing", () => {
 				output_tokens: 5,
 				cache_read_tokens: 20,
 				cache_creation_tokens: 2,
+				tokens_in_context: 32,
+				model: "claude-sonnet-4-6",
 				stop_reason: null,
 			}),
 			"claude",
@@ -158,6 +166,12 @@ describe("SessionManager — runQuery queueing", () => {
 			"child-session",
 			expect.any(Number),
 			1,
+		);
+		expect(dbMock.setSessionActualModelForProvider).toHaveBeenCalledWith(
+			"child-session",
+			"claude",
+			"claude-test",
+			"claude-sonnet-4-6",
 		);
 	});
 

@@ -52,12 +52,12 @@ function ModelDetails({
 	progress: TtsDownload | null;
 }) {
 	return (
-		<div>
-			<div className="text-sm text-foreground">
+		<div className="min-w-0">
+			<div className="break-words text-sm text-foreground">
 				{model.label}
 				{model.recommended ? " · recommended" : ""}
 			</div>
-			<div className="text-xs text-muted-foreground">
+			<div className="break-words text-xs text-muted-foreground">
 				{model.description} · {model.tier}
 			</div>
 			<div className="text-xs text-muted-foreground">
@@ -172,9 +172,9 @@ function TtsModelRow(props: TtsModelActionsProps) {
 			? props.info.status.download
 			: null;
 	return (
-		<div className="px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+		<div className="flex min-w-0 flex-col justify-between gap-3 px-4 py-3 @2xl:flex-row @2xl:items-center">
 			<ModelDetails model={props.model} progress={progress} />
-			<div className="flex items-center gap-2">
+			<div className="flex max-w-full flex-wrap items-center gap-2">
 				<TtsModelActions {...props} progress={progress} />
 			</div>
 		</div>
@@ -222,7 +222,10 @@ export function TtsModelsSection({
 				/>
 			))}
 			{error && (
-				<div className="px-4 py-3 text-xs text-destructive" role="alert">
+				<div
+					className="break-words [overflow-wrap:anywhere] px-4 py-3 text-xs text-destructive"
+					role="alert"
+				>
 					{error}
 				</div>
 			)}

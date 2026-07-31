@@ -1,4 +1,8 @@
-import { createMiddleware, createStart } from "@tanstack/react-start";
+import {
+	createCsrfMiddleware,
+	createMiddleware,
+	createStart,
+} from "@tanstack/react-start";
 import { getRequestIP, setResponseHeader } from "@tanstack/react-start/server";
 import { isStaticPath } from "./lib/publicPath";
 import { uiSecurityRejection } from "./lib/uiRequestSecurity";
@@ -41,6 +45,10 @@ const securityBoundary = createMiddleware().server(
 	},
 );
 
+const csrfBoundary = createCsrfMiddleware({
+	filter: (context) => context.handlerType === "serverFn",
+});
+
 export const startInstance = createStart(() => ({
-	requestMiddleware: [securityBoundary],
+	requestMiddleware: [securityBoundary, csrfBoundary],
 }));

@@ -99,7 +99,6 @@ export {
 export { retainProjectPreviewFeedback } from "./projectPreviewFeedback";
 export {
 	deleteProjectPreviewsForSessions,
-	getLatestProjectPreviewForSession,
 	getProjectPreview,
 	saveProjectPreview,
 	stopActiveProjectPreviewsAfterRestart,

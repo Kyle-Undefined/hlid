@@ -72,22 +72,22 @@ export function Field({
 		...(hintId ? { "aria-describedby": hintId } : {}),
 	};
 	return (
-		<div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 md:gap-6 px-4 py-3">
+		<div className="grid min-w-0 gap-2 px-4 py-3 @4xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] @4xl:items-center @4xl:gap-6">
 			<div className="min-w-0">
-				<div id={labelId} className="text-sm text-foreground">
+				<div id={labelId} className="break-words text-sm text-foreground">
 					{label}
 				</div>
 				{hint && (
 					<div
 						id={hintId}
-						className="text-xs text-muted-foreground mt-0.5 break-all"
+						className="mt-0.5 break-words [overflow-wrap:anywhere] text-xs text-muted-foreground"
 					>
 						{hint}
 					</div>
 				)}
 			</div>
 			<FieldControlProvider value={controlA11y}>
-				<div className="shrink-0">
+				<div className="min-w-0 max-w-full break-words @4xl:justify-self-end">
 					{labelNativeControls(children, labelId, hintId)}
 				</div>
 			</FieldControlProvider>
@@ -105,9 +105,13 @@ export function StatusIndicator({
 	label?: string;
 }) {
 	return (
-		<span className="inline-flex items-center gap-3">
-			<StatusDot ok={ok} label={label} />
-			<span className="text-xs text-muted-foreground">{children}</span>
+		<span className="inline-flex min-w-0 max-w-full items-start gap-3">
+			<span className="shrink-0">
+				<StatusDot ok={ok} label={label} />
+			</span>
+			<span className="min-w-0 break-words [overflow-wrap:anywhere] text-xs text-muted-foreground">
+				{children}
+			</span>
 		</span>
 	);
 }

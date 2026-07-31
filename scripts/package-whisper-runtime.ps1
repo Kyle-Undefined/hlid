@@ -16,7 +16,8 @@ $files = @(
   "ggml-vulkan.dll",
   "ggml.dll",
   "whisper.dll",
-  "whisper-server.exe"
+  "whisper-server.exe",
+  "LICENSE"
 )
 $release = Join-Path $RuntimeRoot "Release"
 $output = [System.IO.Path]::GetFullPath($OutputArchive)

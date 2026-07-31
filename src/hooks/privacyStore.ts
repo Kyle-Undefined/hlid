@@ -27,6 +27,7 @@ export function togglePrivacy(): void {
 }
 
 export function initFromStorage(): void {
+	const previous = _privacy;
 	try {
 		_privacy = localStorage.getItem("hlid:privacy") === "on";
 	} catch {}
@@ -34,7 +35,7 @@ export function initFromStorage(): void {
 		"data-privacy",
 		_privacy ? "on" : "off",
 	);
-	notify();
+	if (_privacy !== previous) notify();
 }
 
 /** @internal — resets module state to initial values; for testing only. */

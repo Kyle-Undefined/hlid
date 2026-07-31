@@ -153,11 +153,13 @@ function speechController(): SpeechSynthesis | null {
 }
 
 function browserLocalVoices(): SpeechSynthesisVoice[] {
-	return (
-		speechController()
-			?.getVoices()
-			.filter((voice) => voice.localService === true) ?? []
-	);
+	const unique = new Map<string, SpeechSynthesisVoice>();
+	for (const voice of speechController()?.getVoices() ?? []) {
+		if (voice.localService === true && !unique.has(voice.voiceURI)) {
+			unique.set(voice.voiceURI, voice);
+		}
+	}
+	return [...unique.values()];
 }
 
 function refreshVoices(): void {

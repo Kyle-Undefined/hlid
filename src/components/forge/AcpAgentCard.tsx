@@ -24,26 +24,28 @@ export function AcpAgentCard({
 }) {
 	const enabled = Boolean(configured);
 	return (
-		<div className="px-4 py-3 space-y-2">
-			<div className="flex items-start justify-between gap-4">
+		<div className="min-w-0 space-y-2 px-4 py-3">
+			<div className="flex min-w-0 flex-col items-start gap-3 @2xl:flex-row @2xl:justify-between">
 				<div className="min-w-0">
-					<div className="text-sm">
+					<div className="break-words text-sm">
 						{item.name}{" "}
 						<span className="text-[9px] text-muted-foreground">
 							{item.version}
 						</span>
 					</div>
-					<p className="text-xs text-muted-foreground">{item.description}</p>
+					<p className="break-words text-xs text-muted-foreground">
+						{item.description}
+					</p>
 				</div>
 				<button
 					type="button"
 					onClick={onToggle}
-					className="px-2 py-1 border border-border text-[10px] uppercase"
+					className="shrink-0 border border-border px-2 py-1 text-[10px] uppercase"
 				>
 					{enabled ? "Disable" : "Enable"}
 				</button>
 			</div>
-			<div className="text-[10px] font-mono text-muted-foreground break-all">
+			<div className="min-w-0 break-all font-mono text-[10px] text-muted-foreground">
 				{item.available
 					? `${item.command} ${item.args.join(" ")} · ready`
 					: item.installGuidance}

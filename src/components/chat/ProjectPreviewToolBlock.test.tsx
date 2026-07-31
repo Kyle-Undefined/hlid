@@ -675,7 +675,6 @@ describe("selectActiveProjectPreviewEvents", () => {
 			selectActiveProjectPreviewEvents(
 				[oldStart, oldStop, newStart, newCapture],
 				JSON.parse(newStart.result),
-				true,
 			).map((event) => event.id),
 		).toEqual(["new-start", "new-capture"]);
 	});
@@ -687,12 +686,44 @@ describe("selectActiveProjectPreviewEvents", () => {
 			"stopped",
 		);
 		expect(
-			selectActiveProjectPreviewEvents(
-				[stopped],
-				JSON.parse(stopped.result),
-				false,
-			),
+			selectActiveProjectPreviewEvents([stopped], JSON.parse(stopped.result)),
 		).toEqual([]);
+	});
+
+	it("does not reactivate an interrupted Preview when its session resumes", () => {
+		const interrupted = {
+			type: "tool_event" as const,
+			id: "interrupted-start",
+			name: "mcp__hlid__start_project_preview",
+			input: { port: 4173 },
+		};
+		const previouslyReady = snapshotEvent(
+			"historical-ready",
+			"historical-preview",
+			"ready",
+		);
+
+		expect(selectActiveProjectPreviewEvents([interrupted], null)).toEqual([]);
+		expect(selectActiveProjectPreviewEvents([previouslyReady], null)).toEqual(
+			[],
+		);
+	});
+
+	it("pins a resultless start only when the live manager reports it starting", () => {
+		const starting = {
+			type: "tool_event" as const,
+			id: "starting-tool",
+			name: "mcp__hlid__start_project_preview",
+			input: { port: 4173 },
+		};
+		const liveStarting = {
+			...JSON.parse(snapshotEvent("live", "live-preview", "ready").result),
+			state: "starting",
+		} as ProjectPreviewSnapshot;
+
+		expect(selectActiveProjectPreviewEvents([starting], liveStarting)).toEqual([
+			starting,
+		]);
 	});
 
 	it("keeps a UI-restarted Preview on the latest pinned lifecycle", () => {
@@ -719,11 +750,9 @@ describe("selectActiveProjectPreviewEvents", () => {
 		} as ProjectPreviewSnapshot;
 
 		expect(
-			selectActiveProjectPreviewEvents(
-				[start, capture],
-				liveAfterRestart,
-				false,
-			).map((event) => event.id),
+			selectActiveProjectPreviewEvents([start, capture], liveAfterRestart).map(
+				(event) => event.id,
+			),
 		).toEqual(["start-before-restart", "capture-before-restart"]);
 	});
 

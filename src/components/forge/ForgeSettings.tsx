@@ -385,17 +385,17 @@ function ExperienceCategory({
 				onChange={(patch) => state.setUi((ui) => ({ ...ui, ...patch }))}
 				voiceHotkey={state.voice.enabled ? state.voice.hotkey : ""}
 			/>
-			<div className="border border-border bg-card p-4 flex items-center justify-between gap-4">
-				<div>
+			<div className="flex min-w-0 flex-col items-start gap-3 border border-border bg-card p-4 @2xl:flex-row @2xl:items-center @2xl:justify-between">
+				<div className="min-w-0">
 					<div className="text-sm">Custom theme</div>
-					<p className="text-xs text-muted-foreground mt-0.5">
+					<p className="mt-0.5 break-words text-xs text-muted-foreground">
 						Edit desktop and mobile palettes on their own live-preview screen.
 					</p>
 				</div>
 				<button
 					type="button"
 					onClick={onShowTheme}
-					className="shrink-0 px-3 py-1.5 border border-border text-[10px] tracking-widest uppercase hover:bg-accent"
+					className="max-w-full shrink-0 whitespace-normal border border-border px-3 py-1.5 text-center text-[10px] tracking-widest uppercase hover:bg-accent"
 				>
 					Open theme editor
 				</button>
@@ -438,25 +438,25 @@ function IntegrationsCategory({
 				config={initial.cliproxy}
 				initialInfo={initial.cliProxyInfo}
 			/>
-			<div className="border border-border bg-card p-4 flex items-center justify-between gap-4">
-				<div>
+			<div className="flex min-w-0 flex-col items-start gap-3 border border-border bg-card p-4 @2xl:flex-row @2xl:items-center @2xl:justify-between">
+				<div className="min-w-0">
 					<div className="text-sm">Umbod policy</div>
-					<p className="text-xs text-muted-foreground mt-0.5">
+					<p className="mt-0.5 break-words text-xs text-muted-foreground">
 						Configure enforcement, generate hooks, and inspect tool calls.
 					</p>
 				</div>
 				<button
 					type="button"
 					onClick={onShowUmbod}
-					className="shrink-0 px-3 py-1.5 border border-border text-[10px] tracking-widest uppercase hover:bg-accent"
+					className="max-w-full shrink-0 whitespace-normal border border-border px-3 py-1.5 text-center text-[10px] tracking-widest uppercase hover:bg-accent"
 				>
 					Open Umbod
 				</button>
 			</div>
-			<div className="border border-border bg-card p-4 flex items-center justify-between gap-4">
-				<div>
+			<div className="flex min-w-0 flex-col items-start gap-3 border border-border bg-card p-4 @2xl:flex-row @2xl:items-center @2xl:justify-between">
+				<div className="min-w-0">
 					<div className="text-sm">ACP Agent Catalog</div>
-					<p className="text-xs text-muted-foreground mt-0.5">
+					<p className="mt-0.5 break-words text-xs text-muted-foreground">
 						Browse and configure Agent Client Protocol integrations on their own
 						screen.
 					</p>
@@ -464,7 +464,7 @@ function IntegrationsCategory({
 				<button
 					type="button"
 					onClick={onShowCatalog}
-					className="shrink-0 px-3 py-1.5 border border-border text-[10px] tracking-widest uppercase hover:bg-accent"
+					className="max-w-full shrink-0 whitespace-normal border border-border px-3 py-1.5 text-center text-[10px] tracking-widest uppercase hover:bg-accent"
 				>
 					Open catalog
 				</button>
@@ -647,17 +647,19 @@ function SaveStatus({
 }) {
 	return (
 		<div
-			className="min-h-5 text-[10px] tracking-wider uppercase"
+			className="min-h-5 min-w-0 max-w-full break-words text-[10px] tracking-wider uppercase"
 			aria-live="polite"
 		>
 			{state.saving && <span className="text-muted-foreground">Saving…</span>}
 			{!state.saving && state.error && (
-				<span className="inline-flex flex-wrap items-center gap-2 text-destructive">
-					<span>{state.error}</span>
+				<span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-2 text-destructive">
+					<span className="min-w-0 break-words [overflow-wrap:anywhere]">
+						{state.error}
+					</span>
 					<button
 						type="button"
 						onClick={() => void state.save()}
-						className="border border-destructive/40 px-1.5 py-0.5 hover:bg-destructive/10"
+						className="shrink-0 border border-destructive/40 px-1.5 py-0.5 hover:bg-destructive/10"
 					>
 						Retry save
 					</button>
@@ -704,7 +706,7 @@ function InventoryStatus({
 		<button
 			type="button"
 			onClick={onRetry}
-			className="border border-status-warning/40 px-2 py-1 text-[10px] tracking-wider text-status-warning hover:bg-status-warning/10 uppercase"
+			className="max-w-full whitespace-normal break-words border border-status-warning/40 px-2 py-1 text-left text-[10px] tracking-wider text-status-warning hover:bg-status-warning/10 uppercase"
 		>
 			Inventory unavailable · Retry
 		</button>
@@ -811,7 +813,7 @@ export function ForgeSettings({
 						value={shown.some((item) => item.id === category) ? category : ""}
 						onChange={(e) => choose(e.target.value as Category)}
 						aria-label="Filtered Forge category"
-						className="md:hidden w-full min-w-0 bg-input border border-border px-2 py-1.5 text-xs"
+						className="min-w-0 flex-1 bg-input border border-border px-2 py-1.5 text-xs md:hidden"
 					>
 						{shown.length === 0 && <option value="">No matches</option>}
 						{shown.map((item) => (
@@ -825,7 +827,7 @@ export function ForgeSettings({
 						onChange={(e) => setSearch(e.target.value)}
 						placeholder="Filter setting categories"
 						aria-label="Filter setting categories"
-						className="col-span-2 row-start-2 w-full bg-input border border-border px-3 py-1.5 text-xs focus:outline-none focus:border-primary/50 md:col-span-1 md:row-auto md:ml-auto md:max-w-sm"
+						className="order-last w-full min-w-0 bg-input border border-border px-3 py-1.5 text-xs focus:outline-none focus:border-primary/50 md:order-none md:ml-auto md:w-auto md:max-w-sm md:flex-[1_1_16rem]"
 					/>
 					<InventoryStatus
 						status={inventoryStatus}
@@ -840,7 +842,7 @@ export function ForgeSettings({
 					data-scroll-to-top="route"
 					className="flex-1 overflow-auto"
 				>
-					<div className="max-w-[1000px] mx-auto p-4 sm:p-6 space-y-6">
+					<div className="@container mx-auto max-w-[1000px] min-w-0 space-y-6 p-4 sm:p-6">
 						{shown.length === 0 ? (
 							<div className="border border-border bg-card p-6 text-center space-y-3">
 								<p className="text-sm text-muted-foreground">

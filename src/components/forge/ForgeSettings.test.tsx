@@ -160,6 +160,45 @@ describe("ForgeSettings search", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Retry save" }));
 		expect(save).toHaveBeenCalledOnce();
 	});
+
+	it("wraps long header statuses without hiding recovery actions", () => {
+		const error =
+			"Could not save a configuration path with anextremelylongunbrokentokenfromthebackend";
+		render(
+			<ForgeSettings
+				initial={{} as never}
+				inventoryStatus="unavailable"
+				state={
+					{
+						saving: false,
+						dirty: true,
+						error,
+						savedMsg: null,
+						save: vi.fn(),
+						ui: {
+							theme: "tan",
+							mobileTheme: "same",
+							customTheme: TAN_THEME,
+							mobileCustomTheme: TAN_THEME,
+						},
+					} as never
+				}
+			/>,
+		);
+
+		const errorText = screen.getByText(error);
+		const headerLayout = errorText.closest("header")?.firstElementChild;
+		expect(headerLayout?.className).toContain("flex-wrap");
+		expect(errorText.className).toContain("[overflow-wrap:anywhere]");
+		expect(
+			screen.getByRole("textbox", { name: "Filter setting categories" })
+				.className,
+		).toContain("min-w-0");
+		expect(screen.getByRole("button", { name: "Retry save" })).toBeTruthy();
+		expect(
+			screen.getByRole("button", { name: /Inventory unavailable/i }),
+		).toBeTruthy();
+	});
 });
 
 function renderSettings() {

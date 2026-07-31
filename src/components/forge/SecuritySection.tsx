@@ -93,8 +93,8 @@ export function SecuritySection() {
 						autoComplete="new-password"
 					/>
 				</Field>
-				<div className="px-4 py-3 flex items-center justify-between gap-4">
-					<span className="text-xs text-muted-foreground">
+				<div className="flex min-w-0 flex-col items-start gap-3 px-4 py-3 @2xl:flex-row @2xl:items-center @2xl:justify-between">
+					<span className="min-w-0 break-words text-xs text-muted-foreground">
 						Changing the password locks every trusted device.
 					</span>
 					<button

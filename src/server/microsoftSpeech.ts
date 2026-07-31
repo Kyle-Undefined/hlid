@@ -179,10 +179,13 @@ export class MicrosoftSpeechManager {
 				typeof (value as MicrosoftSpeechVoice).gender === "string" &&
 				typeof (value as MicrosoftSpeechVoice).default === "boolean",
 		);
-		if (voices.length === 0)
+		const uniqueVoices = [
+			...new Map(voices.map((voice) => [voice.id, voice])).values(),
+		];
+		if (uniqueVoices.length === 0)
 			throw new Error("No Microsoft speech voices found");
-		this.voiceCache = { value: voices, at: Date.now() };
-		return voices;
+		this.voiceCache = { value: uniqueVoices, at: Date.now() };
+		return uniqueVoices;
 	}
 
 	// fallow-ignore-next-line unused-class-member -- Called through the structural speech dependency in readAloudRoutes.

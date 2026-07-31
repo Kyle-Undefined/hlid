@@ -3,8 +3,8 @@ import type { ReactNode } from "react";
 /**
  * Shared sticky page header: uppercase eyebrow plus inline controls
  * (mobile category <select>, search input, status region) passed as children.
- * Children lay out in a 2-col grid on mobile and a flex row on md+,
- * matching the original Forge header behavior.
+ * Children wrap as the available content column narrows, keeping search and
+ * status controls readable beside a category rail.
  */
 export function PageHeader({
 	eyebrow,
@@ -15,7 +15,7 @@ export function PageHeader({
 }) {
 	return (
 		<header className="sticky top-0 z-20 shrink-0 border-b border-border bg-background/95 backdrop-blur px-4 py-3">
-			<div className="max-w-[1000px] mx-auto grid grid-cols-[auto_minmax(0,1fr)] items-center gap-2 md:flex md:gap-3">
+			<div className="mx-auto flex max-w-[1000px] min-w-0 flex-wrap items-center gap-2 md:gap-3">
 				<div className="text-[10px] tracking-widest uppercase shrink-0">
 					{eyebrow}
 				</div>

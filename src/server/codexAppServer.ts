@@ -321,7 +321,10 @@ export class CodexAppServer {
 		if (this.accountRateLimitsRead?.revision === startingRevision) {
 			return this.accountRateLimitsRead.promise;
 		}
-		const pending = this.request("account/rateLimits/read", undefined).then(
+		const pending = this.requestOptional(
+			"account/rateLimits/read",
+			undefined,
+		).then(
 			(response): CodexRateLimitsRead =>
 				this.accountRateLimitsRevision === startingRevision
 					? { status: "current", snapshot: asObj(response).rateLimits }

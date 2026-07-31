@@ -1231,6 +1231,7 @@ class CodexAgentSession implements AgentSession {
 	private ready: Promise<void> | null = null;
 	private threadId: string | null = null;
 	private activeTurnId: string | null = null;
+	private activeTurnModel: string | null = null;
 	private canceled = false;
 	private endAfterTurn = false;
 	private emittedAgentMessageText = new Map<string, string>();
@@ -1426,6 +1427,7 @@ class CodexAgentSession implements AgentSession {
 					}
 				: {}),
 		};
+		this.activeTurnModel = this.params.model ?? this.resolvedModel;
 		const result = asObj(await this.request("turn/start", params));
 		const turn = asObj(result.turn);
 		if (typeof turn.id === "string") this.activeTurnId = turn.id;
@@ -1682,6 +1684,7 @@ class CodexAgentSession implements AgentSession {
 		const target = args?.trim()
 			? { type: "custom", instructions: args.trim() }
 			: { type: "uncommittedChanges" };
+		this.activeTurnModel = this.params.model ?? this.resolvedModel;
 		const result = asObj(
 			await this.request("review/start", {
 				threadId: this.threadId,
@@ -2703,7 +2706,7 @@ class CodexAgentSession implements AgentSession {
 		this.queryUsage.cacheCreationTokens += usage.cacheCreationTokens;
 		const cost =
 			estimatedCost === undefined
-				? estimateCodexCost(this.resolvedModel ?? this.params.model, usage)
+				? estimateCodexCost(this.usageModel(), usage)
 				: estimatedCost;
 		if (cost == null) this.queryUsageIsPriced = false;
 		else this.queryEstimatedCost += cost;
@@ -2749,6 +2752,7 @@ class CodexAgentSession implements AgentSession {
 
 	private resetQueryAccounting(): void {
 		this.clearPendingDone();
+		this.activeTurnModel = null;
 		this.queryUsage = emptyCodexUsage();
 		this.queryEstimatedCost = 0;
 		this.queryUsageIsPriced = true;
@@ -2767,6 +2771,10 @@ class CodexAgentSession implements AgentSession {
 
 	private ownsOpenQuery(): boolean {
 		return this.activeTurnId !== null || this.pendingDone !== null;
+	}
+
+	private usageModel(): string | undefined {
+		return this.activeTurnModel ?? this.resolvedModel ?? this.params.model;
 	}
 
 	private ownChildThread(threadId: string): void {
@@ -2821,7 +2829,7 @@ class CodexAgentSession implements AgentSession {
 		const queryTurns = this.queryTurns;
 		const webSearchCalls = this.queryWebSearchItemIds.size;
 		const hostedToolCost = estimateCodexCost(
-			this.resolvedModel ?? this.params.model,
+			this.usageModel(),
 			emptyCodexUsage(),
 			{ webSearchCalls },
 		);
@@ -3252,7 +3260,10 @@ class CodexAgentSession implements AgentSession {
 
 	private recordUsage(usage: AgentEvent | null): void {
 		if (usage?.type !== "usage") return;
-		if (usage.model) this.resolvedModel = usage.model;
+		if (usage.model) {
+			this.resolvedModel = usage.model;
+			if (this.ownsOpenQuery()) this.activeTurnModel = usage.model;
+		}
 		this.lastUsage = {
 			inputTokens: usage.inputTokens,
 			outputTokens: usage.outputTokens,
@@ -3265,10 +3276,17 @@ class CodexAgentSession implements AgentSession {
 		const usage = maybeUsage(params);
 		if (usage?.type !== "usage") return;
 		this.recordUsage(usage);
-		const capturedCumulative = this.recordCumulativeUsage(
-			this.threadId ?? "",
-			params,
-		);
+		const threadId = this.threadId ?? "";
+		if (!this.ownsOpenQuery()) {
+			// A resumed thread can publish its current cumulative token snapshot
+			// before the next turn starts. Keep that total as the subtraction
+			// baseline, but do not attribute the prior turn's last call to a future
+			// Hlid query.
+			const total = maybeTotalUsage(params);
+			if (threadId && total) this.cumulativeUsageByThread.set(threadId, total);
+			return;
+		}
+		const capturedCumulative = this.recordCumulativeUsage(threadId, params);
 		const queryUsage = capturedCumulative
 			? this.queryUsage
 			: {
@@ -3280,8 +3298,10 @@ class CodexAgentSession implements AgentSession {
 						this.queryUsage.cacheCreationTokens +
 						(usage.cacheCreationTokens ?? 0),
 				};
+		const model = usage.model ?? this.usageModel();
 		this.events.push({
 			...usage,
+			...(model ? { model } : {}),
 			queryUsage: { ...queryUsage },
 		});
 	}

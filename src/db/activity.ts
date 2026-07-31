@@ -200,8 +200,8 @@ export async function getModelSplit(): Promise<ModelSplitEntry[]> {
 // ─── getStopReasonSplit ───────────────────────────────────────────────────────
 
 /**
- * Note: user-cancelled queries never call recordQuery() — they produce no row.
- * Filter is purely "exclude NULL stop_reason" (rows from incomplete inserts).
+ * Incomplete or user-cancelled queries have a NULL stop reason. Exclude those
+ * rows so this split describes only provider-reported terminal reasons.
  */
 export async function getStopReasonSplit(): Promise<StopReasonEntry[]> {
 	const db = await getDb();

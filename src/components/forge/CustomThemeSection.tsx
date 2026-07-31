@@ -217,10 +217,10 @@ export function CustomThemeSection({
 					</div>
 				</div>
 
-				<div className="flex items-center justify-between gap-3 border border-border bg-card p-3">
-					<div>
+				<div className="flex min-w-0 flex-col items-start gap-3 border border-border bg-card p-3 @xl:flex-row @xl:items-center @xl:justify-between">
+					<div className="min-w-0">
 						<div className="text-xs text-foreground">Native control style</div>
-						<div className="text-[10px] text-muted-foreground">
+						<div className="break-words text-[10px] text-muted-foreground">
 							Controls browser menus, inputs, and scrollbars.
 						</div>
 					</div>

@@ -8,6 +8,7 @@ const previews = new Map<string, ProjectPreviewSnapshot>();
 const presentationRequests = new Map<string, number>();
 const unavailableSessions = new Set<string>();
 const pendingReads = new Map<string, Promise<ProjectPreviewSnapshot | null>>();
+const authorityGenerations = new Map<string, number>();
 const subscribers = new Set<() => void>();
 let revision = 0;
 
@@ -16,17 +17,29 @@ function emit(): void {
 	for (const subscriber of subscribers) subscriber();
 }
 
+function authorityGeneration(sessionId: string): number {
+	return authorityGenerations.get(sessionId) ?? 0;
+}
+
+function advanceAuthorityGeneration(sessionId: string): void {
+	authorityGenerations.set(sessionId, authorityGeneration(sessionId) + 1);
+}
+
 export function applyProjectPreview(preview: ProjectPreviewSnapshot): void {
+	advanceAuthorityGeneration(preview.session_id);
 	previews.set(preview.session_id, preview);
 	unavailableSessions.delete(preview.session_id);
 	emit();
 }
 
 export function clearProjectPreview(sessionId: string): void {
-	const changed =
-		previews.delete(sessionId) ||
-		presentationRequests.delete(sessionId) ||
-		unavailableSessions.delete(sessionId);
+	// Invalidate an older manager read even when there is no cached state to
+	// delete. A reconnect's authoritative null must win transport-order races.
+	advanceAuthorityGeneration(sessionId);
+	const previewChanged = previews.delete(sessionId);
+	const presentationChanged = presentationRequests.delete(sessionId);
+	const unavailableChanged = unavailableSessions.delete(sessionId);
+	const changed = previewChanged || presentationChanged || unavailableChanged;
 	if (changed) emit();
 }
 
@@ -70,10 +83,13 @@ export function useProjectPreview(
 	useEffect(() => {
 		if (!sessionId) return;
 		if (previews.has(sessionId)) return;
+		const readGeneration = authorityGeneration(sessionId);
 		let cancelled = false;
 		void readProjectPreview(sessionId)
 			.then((preview) => {
-				if (cancelled) return;
+				if (cancelled || authorityGeneration(sessionId) !== readGeneration) {
+					return;
+				}
 				if (preview) {
 					applyProjectPreview(preview);
 				} else {

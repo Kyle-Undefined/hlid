@@ -171,8 +171,8 @@ function McpServerFormBody({
 	if (form.type === "stdio") {
 		return (
 			<>
-				<div className="flex gap-3">
-					<div className="flex-1 space-y-1">
+				<div className="grid min-w-0 gap-3 @2xl:grid-cols-2">
+					<div className="min-w-0 space-y-1">
 						<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
 							Command
 						</div>
@@ -187,7 +187,7 @@ function McpServerFormBody({
 							className="w-full bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
 						/>
 					</div>
-					<div className="flex-1 space-y-1">
+					<div className="min-w-0 space-y-1">
 						<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
 							Args (comma-separated)
 						</div>
@@ -353,9 +353,9 @@ export function EditMcpServerForm({
 	}
 
 	return (
-		<div className="px-4 py-4 space-y-3">
-			<div className="flex items-center justify-between">
-				<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+		<div className="min-w-0 space-y-3 px-4 py-4">
+			<div className="flex min-w-0 flex-col items-start gap-2 @xl:flex-row @xl:items-center @xl:justify-between">
+				<div className="min-w-0 break-all text-[9px] tracking-widest text-muted-foreground uppercase">
 					Edit: {serverName}
 				</div>
 				<McpServerTypeSelect form={form} setForm={setForm} />
@@ -426,9 +426,9 @@ export function AddMcpServerForm({
 	}
 
 	return (
-		<div className="px-4 py-4 space-y-3">
-			<div className="flex gap-3">
-				<div className="flex-1 space-y-1">
+		<div className="min-w-0 space-y-3 px-4 py-4">
+			<div className="grid min-w-0 gap-3 @xl:grid-cols-[minmax(0,1fr)_auto]">
+				<div className="min-w-0 space-y-1">
 					<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
 						Name
 					</div>

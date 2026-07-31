@@ -37,7 +37,7 @@ function ProviderField({
 	const active = providers.find((p) => p.id === claude.vaultProvider);
 	return (
 		<Field label="Provider" hint="provider used for vault chat">
-			<div className="flex items-center gap-2">
+			<div className="flex min-w-0 max-w-full flex-col items-start gap-2 @xl:flex-row @xl:items-center">
 				<select
 					value={claude.vaultProvider}
 					onChange={(e) => onChange({ vaultProvider: e.target.value })}
@@ -50,7 +50,7 @@ function ProviderField({
 					))}
 				</select>
 				{active?.available === false && (
-					<span className="text-[9px] text-destructive/70">
+					<span className="min-w-0 break-words [overflow-wrap:anywhere] text-[9px] text-destructive/70">
 						{active?.unavailableReason ?? "unavailable"}
 					</span>
 				)}
@@ -99,8 +99,8 @@ function WindowsComputerUseFields({
 	};
 	return (
 		<>
-			<div className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-				<div>
+			<div className="flex min-w-0 flex-col gap-2 px-4 py-3 @2xl:flex-row @2xl:items-center @2xl:justify-between">
+				<div className="min-w-0">
 					<div className="text-sm text-foreground">{capability.label}</div>
 					<div className="text-xs text-muted-foreground mt-0.5">
 						Windows-native desktop worker
@@ -391,7 +391,7 @@ export function ClaudeSection({
 	return (
 		<Section title="Vault Agent">
 			{accountInfo && (
-				<div className="px-4 py-2 text-xs text-muted-foreground border-b border-border/50">
+				<div className="break-words [overflow-wrap:anywhere] border-b border-border/50 px-4 py-2 text-xs text-muted-foreground">
 					Account: {accountInfo.email ?? "unknown"}
 					{accountInfo.subscriptionType
 						? ` · ${accountInfo.subscriptionType}`
@@ -413,8 +413,8 @@ export function ClaudeSection({
 								<span
 									className={
 										capability.available
-											? "text-[10px] text-status-success/80"
-											: "text-[10px] text-destructive/70"
+											? "break-words [overflow-wrap:anywhere] text-[10px] text-status-success/80"
+											: "break-words [overflow-wrap:anywhere] text-[10px] text-destructive/70"
 									}
 								>
 									{capability.available

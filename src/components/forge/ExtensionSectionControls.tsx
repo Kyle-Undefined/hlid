@@ -174,7 +174,7 @@ export function ExtensionSectionControls({
 			: "Search marketplaces";
 	return (
 		<>
-			<div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+			<div className="flex min-w-0 flex-col gap-2 @4xl:flex-row @4xl:items-center">
 				<div
 					className="inline-flex self-start border border-border bg-secondary p-1"
 					role="tablist"
@@ -224,7 +224,7 @@ export function ExtensionSectionControls({
 					onChange={(event) => model.setSearch(event.target.value)}
 					placeholder={searchLabel}
 					aria-label={searchLabel}
-					className="min-w-0 flex-1 bg-input border border-border px-2.5 py-1.5 text-xs"
+					className="min-w-0 flex-1 bg-input border border-border px-2.5 py-1.5 text-xs @4xl:min-w-40"
 				/>
 				<button
 					type="button"

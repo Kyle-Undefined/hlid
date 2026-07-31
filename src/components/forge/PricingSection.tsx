@@ -321,7 +321,7 @@ export function PricingSection() {
 					UTC and <code>effective_until</code> is exclusive.
 				</div>
 				{catalog.error && (
-					<div className="whitespace-pre-wrap border border-destructive/40 p-3 text-xs text-destructive">
+					<div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] border border-destructive/40 p-3 text-xs text-destructive">
 						The saved override file is invalid, so Hlið is using built-ins only.
 						{"\n"}
 						{catalog.error}

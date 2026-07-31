@@ -25,8 +25,14 @@ import { reducer } from "./chatReducer";
 import { MessageList } from "./MessageList";
 import { useMessageListView } from "./useMessageListView";
 
+const projectPreviewState = vi.hoisted(() => ({
+	live: null as
+		| import("#/lib/serverFns/projectPreviews").ProjectPreviewSnapshot
+		| null,
+}));
+
 vi.mock("#/hooks/projectPreviewStore", () => ({
-	useProjectPreview: () => null,
+	useProjectPreview: () => projectPreviewState.live,
 }));
 vi.mock("./ChatMessageRow", () => ({
 	ChatMessageRow: ({
@@ -104,6 +110,7 @@ vi.mock("./ProjectPreviewToolBlock", async (importOriginal) => {
 afterEach(cleanup);
 
 beforeEach(() => {
+	projectPreviewState.live = null;
 	privacyStore.__resetForTesting();
 	Object.defineProperty(navigator, "clipboard", {
 		value: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -146,6 +153,25 @@ function previewAssistantMsg(
 			},
 		],
 	};
+}
+
+function previewResult(id: string, state: "ready" | "stopped", label: string) {
+	return JSON.stringify({
+		id,
+		session_id: "s1",
+		label,
+		command: "bun run dev",
+		cwd: "/work",
+		port: 4173,
+		path: "/",
+		url: "http://127.0.0.1:4173/",
+		relay_url: `/api/project-previews/${id}/relay/`,
+		state,
+		present: true,
+		started_at: "2026-07-24T10:00:00.000Z",
+		expires_at: "2026-07-24T14:00:00.000Z",
+		logs: [],
+	});
 }
 
 function queued(
@@ -476,8 +502,14 @@ describe("MessageList — bounded history rendering", () => {
 
 describe("MessageList — bounded tool rendering", () => {
 	it("keeps durable Hlid children at the session bottom after Preview activity", () => {
+		const start = previewAssistantMsg("start", "start_project_preview");
+		start.toolEvents[0] = {
+			...start.toolEvents[0],
+			result: previewResult("active-preview", "ready", "Active"),
+		};
+		projectPreviewState.live = JSON.parse(start.toolEvents[0].result ?? "null");
 		const { container } = renderList({
-			messages: [previewAssistantMsg("start", "start_project_preview")],
+			messages: [start],
 		});
 
 		const message = screen.getByTestId("message-start");
@@ -496,9 +528,15 @@ describe("MessageList — bounded tool rendering", () => {
 	});
 
 	it("collects Preview calls from multiple turns into one session card", () => {
+		const start = previewAssistantMsg("start", "start_project_preview");
+		start.toolEvents[0] = {
+			...start.toolEvents[0],
+			result: previewResult("active-preview", "ready", "Active"),
+		};
+		projectPreviewState.live = JSON.parse(start.toolEvents[0].result ?? "null");
 		renderList({
 			messages: [
-				previewAssistantMsg("start", "start_project_preview"),
+				start,
 				previewAssistantMsg("capture", "capture_project_preview"),
 			],
 		});
@@ -514,27 +552,6 @@ describe("MessageList — bounded tool rendering", () => {
 	});
 
 	it("returns a stopped Preview card to transcript order when a new one starts", () => {
-		const previewResult = (
-			id: string,
-			state: "ready" | "stopped",
-			label: string,
-		) =>
-			JSON.stringify({
-				id,
-				session_id: "s1",
-				label,
-				command: "bun run dev",
-				cwd: "/work",
-				port: 4173,
-				path: "/",
-				url: "http://127.0.0.1:4173/",
-				relay_url: `/api/project-previews/${id}/relay/`,
-				state,
-				present: true,
-				started_at: "2026-07-24T10:00:00.000Z",
-				expires_at: "2026-07-24T14:00:00.000Z",
-				logs: [],
-			});
 		const old = previewAssistantMsg("old", "start_project_preview");
 		old.toolEvents[0] = {
 			...old.toolEvents[0],
@@ -551,6 +568,9 @@ describe("MessageList — bounded tool rendering", () => {
 			...current.toolEvents[0],
 			result: previewResult("new-preview", "ready", "New"),
 		};
+		projectPreviewState.live = JSON.parse(
+			current.toolEvents[0].result ?? "null",
+		);
 
 		renderList({ messages: [old, stopped, current] });
 
@@ -562,6 +582,27 @@ describe("MessageList — bounded tool rendering", () => {
 		expect(screen.getByTestId("message-current").dataset.previewGrouped).toBe(
 			"2",
 		);
+	});
+
+	it("does not pin an interrupted Preview card when the session resumes", () => {
+		const interrupted = previewAssistantMsg(
+			"interrupted",
+			"start_project_preview",
+		);
+		const resumed = {
+			...assistantMsg("resumed", 0),
+			streaming: true,
+		};
+
+		renderList({
+			messages: [interrupted, resumed],
+			sessionState: "running",
+		});
+
+		expect(screen.queryByTestId("preview-activity")).toBeNull();
+		expect(
+			screen.getByTestId("message-interrupted").dataset.previewHistory,
+		).toBe("1");
 	});
 
 	it("allocates the latest 200 tool calls across assistant messages", () => {

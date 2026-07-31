@@ -127,7 +127,6 @@ export const MessageList = memo(function MessageList({
 	const projectPreviewEvents = selectActiveProjectPreviewEvents(
 		allProjectPreviewEvents,
 		liveProjectPreview,
-		sessionState === "running",
 	);
 	const groupedProjectPreviewEventIds = useMemo(() => {
 		const ids = new Set(projectPreviewEvents.map((event) => event.id));

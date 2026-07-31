@@ -165,7 +165,7 @@ export function TailscaleFields({
 				</button>
 			</Field>
 			{status?.error && (
-				<div className="px-4 py-2 text-xs text-destructive/80">
+				<div className="break-words [overflow-wrap:anywhere] px-4 py-2 text-xs text-destructive/80">
 					{status.error}
 				</div>
 			)}

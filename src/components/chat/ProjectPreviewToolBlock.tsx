@@ -381,7 +381,6 @@ function isActivePreviewState(state: ProjectPreviewSnapshot["state"]): boolean {
 export function selectActiveProjectPreviewEvents(
 	events: ToolEventMessage[],
 	livePreview: ProjectPreviewSnapshot | null,
-	sessionActive: boolean,
 ): ToolEventMessage[] {
 	const latestStartIndex = events.findLastIndex((event) =>
 		event.name.endsWith("start_project_preview"),
@@ -394,22 +393,10 @@ export function selectActiveProjectPreviewEvents(
 				? events.slice(latestStartIndex)
 				: [];
 		}
-		if (
-			!livePreview &&
-			latestSnapshot &&
-			isActivePreviewState(latestSnapshot.state)
-		) {
-			return events.slice(latestStartIndex);
-		}
-		if (
-			latestStart &&
-			!latestStart.result &&
-			!latestStart.isError &&
-			sessionActive
-		) {
-			return events.slice(latestStartIndex);
-		}
 	}
+	// Transcript snapshots describe what was true when a tool call completed.
+	// They are not authoritative after Hlid or a provider turn resumes. Pin a
+	// lifecycle only when the live Preview manager confirms it is still active.
 	if (!livePreview || !isActivePreviewState(livePreview.state)) return [];
 	const matchingStartIndex = events.findLastIndex(
 		(event) =>

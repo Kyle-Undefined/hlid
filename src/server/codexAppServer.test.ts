@@ -560,6 +560,43 @@ describe("CodexAppServer idle lifecycle", () => {
 		});
 	});
 
+	it("keeps chat threads alive when an account rate-limit read times out", async () => {
+		const { server, proc, writes } = await create();
+		const handler: ThreadHandler = {
+			onNotification: vi.fn(),
+			onRequest: vi.fn(async () => ({})),
+			onExit: vi.fn(),
+		};
+		server.attachThread("thread-1", handler);
+
+		const read = server
+			.readAccountRateLimits()
+			.catch((error: unknown) => error);
+		await vi.advanceTimersByTimeAsync(15_000);
+
+		expect(await read).toEqual(
+			expect.objectContaining({
+				message: expect.stringMatching(/account\/rateLimits\/read timed out/i),
+			}),
+		);
+		expect(server.alive).toBe(true);
+		expect(proc.kill).not.toHaveBeenCalled();
+		expect(handler.onExit).not.toHaveBeenCalled();
+
+		const retry = server.readAccountRateLimits();
+		const retryRequest = writes
+			.map((line) => JSON.parse(line) as { id?: number; method?: string })
+			.filter((message) => message.method === "account/rateLimits/read")
+			.at(-1);
+		respond(proc, retryRequest?.id ?? 0, {
+			rateLimits: { primary: { usedPercent: 27 } },
+		});
+		await expect(retry).resolves.toEqual({
+			status: "current",
+			snapshot: { primary: { usedPercent: 27 } },
+		});
+	});
+
 	it("rejects an older read after a native rate-limit update", async () => {
 		const { server, proc, writes } = await create();
 

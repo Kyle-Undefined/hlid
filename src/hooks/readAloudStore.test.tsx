@@ -381,4 +381,21 @@ describe("readAloudStore", () => {
 			},
 		]);
 	});
+
+	it("deduplicates browser voices with the same URI", () => {
+		speech.getVoices.mockReturnValue([
+			remoteVoice,
+			localVoice,
+			{ ...localVoice, name: "Duplicate David" },
+		]);
+		const { result } = renderHook(() => useLocalReadAloudVoices());
+		expect(result.current).toEqual([
+			{
+				voiceURI: localVoice.voiceURI,
+				name: localVoice.name,
+				lang: localVoice.lang,
+				default: localVoice.default,
+			},
+		]);
+	});
 });

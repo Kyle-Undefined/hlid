@@ -27,6 +27,7 @@ describe("existingVoiceRuntime", () => {
 			"ggml-cpu.dll",
 			"ggml-vulkan.dll",
 			"whisper.dll",
+			"LICENSE",
 		];
 		for (const file of files) writeFileSync(join(dir, file), file);
 		writeFileSync(join(dir, "ffmpeg.cmd"), "shim");
@@ -35,6 +36,33 @@ describe("existingVoiceRuntime", () => {
 		expect(existingVoiceRuntime(dir, "reviewed-layout", files)).toBe(
 			join(dir, "whisper-server.exe"),
 		);
+	});
+
+	it("rejects a runtime missing the reviewed upstream license", () => {
+		const dir = runtimeDir();
+		for (const file of [
+			"whisper-server.exe",
+			"ggml.dll",
+			"ggml-base.dll",
+			"ggml-cpu.dll",
+			"ggml-vulkan.dll",
+			"whisper.dll",
+		])
+			writeFileSync(join(dir, file), file);
+		writeFileSync(join(dir, "ffmpeg.cmd"), "shim");
+		writeFileSync(join(dir, ".hash"), "reviewed-layout");
+
+		expect(
+			existingVoiceRuntime(dir, "reviewed-layout", [
+				"whisper-server.exe",
+				"ggml.dll",
+				"ggml-base.dll",
+				"ggml-cpu.dll",
+				"ggml-vulkan.dll",
+				"whisper.dll",
+				"LICENSE",
+			]),
+		).toBeNull();
 	});
 
 	it("rejects a stale CPU-only runtime even when its hash file matches", () => {

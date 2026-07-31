@@ -323,6 +323,8 @@ describe("TLS HTTP proxy limits", () => {
 		const response = await forwarder({ forward })(
 			new Request("https://hlid.test/api/private?q=1", {
 				headers: {
+					origin: "https://hlid.test",
+					"sec-fetch-site": "same-origin",
 					"x-custom": "kept",
 					"x-hlid-preview-origin": "attacker",
 					"x-hlid-proxy-token": "attacker",
@@ -334,6 +336,8 @@ describe("TLS HTTP proxy limits", () => {
 		const [target, init] = forward.mock.calls[0];
 		const headers = new Headers(init.headers);
 		expect(target).toBe("http://127.0.0.1:3000/api/private?q=1");
+		expect(headers.get("origin")).toBe("https://hlid.test");
+		expect(headers.get("sec-fetch-site")).toBe("same-origin");
 		expect(headers.get("x-custom")).toBe("kept");
 		expect(headers.get("x-hlid-preview-origin")).toBeNull();
 		expect(headers.get(PROJECT_PREVIEW_AUTH_HEADER)).toBeNull();

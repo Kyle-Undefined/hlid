@@ -34,6 +34,7 @@ export type StartProjectPreviewInput = {
 type PreviewEntry = {
 	snapshot: ProjectPreviewSnapshot;
 	child: ChildProcess;
+	wslTermination: ProjectPreviewWslTermination | null;
 	input: StartProjectPreviewInput;
 	bridge: LoopbackBridge | null;
 	capability: ProjectPreviewCapability | null;
@@ -127,9 +128,26 @@ export type ProjectPreviewLaunch = {
 	cwd?: string;
 	shell: boolean;
 	detached: boolean;
+	wslTermination?: ProjectPreviewWslTermination;
+};
+
+export type ProjectPreviewWslTermination = {
+	distro: string;
+	processGroupFile: string;
+};
+
+type ProjectPreviewHelperLaunch = {
+	executable: string;
+	args: string[];
 };
 
 const HLID_SKIP_SELF_INSTALL = "HLID_SKIP_SELF_INSTALL";
+const WSL_PREVIEW_PROCESS_GROUP_PREFIX = "/tmp/hlid-project-preview-";
+const WSL_PREVIEW_LAUNCH_SCRIPT =
+	'umask 077; printf "%s\\n" "$$" > "$2"; exec sh -lc "$1"';
+const WSL_PREVIEW_TERMINATE_SCRIPT =
+	'process_group_file=$1; if [ ! -r "$process_group_file" ]; then exit 0; fi; IFS= read -r process_group_id < "$process_group_file" || process_group_id=; rm -f -- "$process_group_file"; case "$process_group_id" in ""|*[!0-9]*) exit 0 ;; esac; /bin/kill -TERM -- "-$process_group_id" 2>/dev/null || exit 0; sleep 0.5; /bin/kill -KILL -- "-$process_group_id" 2>/dev/null || true';
+const PROCESS_HELPER_TIMEOUT_MS = 2_500;
 
 export function projectPreviewEnvironment(
 	environment: NodeJS.ProcessEnv = process.env,
@@ -164,9 +182,13 @@ export function projectPreviewLaunch(
 	command: string,
 	cwd: string,
 	platform: NodeJS.Platform = process.platform,
+	processGroupFile?: string,
 ): ProjectPreviewLaunch {
 	const wsl = parseWslUncSyntax(cwd);
 	if (platform === "win32" && wsl) {
+		const receipt =
+			processGroupFile ??
+			`${WSL_PREVIEW_PROCESS_GROUP_PREFIX}${crypto.randomUUID()}.pid`;
 		return {
 			executable: "wsl.exe",
 			args: [
@@ -174,13 +196,22 @@ export function projectPreviewLaunch(
 				wsl.distro,
 				"--cd",
 				wsl.posixPath,
-				"--",
+				"--exec",
+				"setsid",
+				"-w",
 				"sh",
-				"-lc",
+				"-c",
+				WSL_PREVIEW_LAUNCH_SCRIPT,
+				"hlid-project-preview",
 				command,
+				receipt,
 			],
 			shell: false,
 			detached: false,
+			wslTermination: {
+				distro: wsl.distro,
+				processGroupFile: receipt,
+			},
 		};
 	}
 	return {
@@ -196,9 +227,12 @@ function spawnPreview(
 	command: string,
 	cwd: string,
 	capability: ProjectPreviewCapability,
-): ChildProcess {
+): {
+	child: ChildProcess;
+	wslTermination: ProjectPreviewWslTermination | null;
+} {
 	const launch = projectPreviewLaunch(command, cwd);
-	return spawn(launch.executable, launch.args, {
+	const child = spawn(launch.executable, launch.args, {
 		cwd: launch.cwd,
 		shell: launch.shell,
 		detached: launch.detached,
@@ -206,6 +240,7 @@ function spawnPreview(
 		stdio: ["ignore", "pipe", "pipe"],
 		env: projectPreviewEnvironment(process.env, capability),
 	});
+	return { child, wslTermination: launch.wslTermination ?? null };
 }
 
 export function parseWslIpv4Address(output: string): string | undefined {
@@ -221,7 +256,7 @@ async function resolveWslIpv4Address(
 	distro: string,
 ): Promise<string | undefined> {
 	return new Promise((resolveResult) => {
-		const child = spawn("wsl.exe", ["-d", distro, "--", "hostname", "-I"], {
+		const child = spawn("wsl.exe", ["-d", distro, "--exec", "hostname", "-I"], {
 			windowsHide: true,
 			stdio: ["ignore", "pipe", "ignore"],
 		});
@@ -322,18 +357,112 @@ async function waitForPortRelease(
 	);
 }
 
-async function terminateProcess(child: ChildProcess): Promise<void> {
-	const pid = child.pid;
-	if (!pid || child.exitCode !== null || child.killed) return;
-	if (process.platform === "win32") {
-		await new Promise<void>((resolveResult) => {
-			const killer = spawn("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
+export function projectPreviewWslTerminationLaunch(
+	termination: ProjectPreviewWslTermination,
+): ProjectPreviewHelperLaunch {
+	return {
+		executable: "wsl.exe",
+		args: [
+			"-d",
+			termination.distro,
+			"--exec",
+			"sh",
+			"-c",
+			WSL_PREVIEW_TERMINATE_SCRIPT,
+			"hlid-project-preview-stop",
+			termination.processGroupFile,
+		],
+	};
+}
+
+async function runBoundedProcessHelper(
+	launch: ProjectPreviewHelperLaunch,
+	timeoutMs = PROCESS_HELPER_TIMEOUT_MS,
+): Promise<void> {
+	await new Promise<void>((resolveResult) => {
+		let settled = false;
+		let helper: ChildProcess | undefined;
+		const finish = () => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			resolveResult();
+		};
+		const timer = setTimeout(() => {
+			try {
+				helper?.kill();
+			} catch {}
+			finish();
+		}, timeoutMs);
+		try {
+			helper = spawn(launch.executable, launch.args, {
 				windowsHide: true,
 				stdio: "ignore",
 			});
-			killer.once("close", () => resolveResult());
-			killer.once("error", () => resolveResult());
-		});
+			helper.once("close", finish);
+			helper.once("error", finish);
+		} catch {
+			finish();
+		}
+	});
+}
+
+function childIsRunning(child: ChildProcess): boolean {
+	return child.exitCode === null && child.signalCode === null;
+}
+
+async function waitForChildExit(
+	child: ChildProcess,
+	timeoutMs: number,
+): Promise<boolean> {
+	if (!childIsRunning(child)) return true;
+	return new Promise((resolveResult) => {
+		let settled = false;
+		const finish = (exited: boolean) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			child.off("close", onClose);
+			resolveResult(exited);
+		};
+		const onClose = () => finish(true);
+		const timer = setTimeout(() => finish(false), timeoutMs);
+		child.once("close", onClose);
+	});
+}
+
+async function terminateWslProcessGroup(
+	termination: ProjectPreviewWslTermination | null,
+): Promise<void> {
+	if (!termination) return;
+	await runBoundedProcessHelper(
+		projectPreviewWslTerminationLaunch(termination),
+	);
+}
+
+async function terminateProcess(
+	child: ChildProcess,
+	wslTermination: ProjectPreviewWslTermination | null,
+): Promise<void> {
+	const pid = child.pid;
+	if (process.platform === "win32" && wslTermination) {
+		// taskkill owns only the Windows wsl.exe process tree. The Linux command
+		// and its descendants live in a separate process namespace, so stop the
+		// exact process group recorded by this preview before cleaning up wsl.exe.
+		await terminateWslProcessGroup(wslTermination);
+		await waitForChildExit(child, 750);
+	}
+	if (!pid || !childIsRunning(child)) {
+		return;
+	}
+	if (process.platform === "win32") {
+		if (childIsRunning(child)) {
+			await runBoundedProcessHelper({
+				executable: "taskkill.exe",
+				args: ["/PID", String(pid), "/T", "/F"],
+			});
+			await waitForChildExit(child, 500);
+		}
 		return;
 	}
 	try {
@@ -341,13 +470,13 @@ async function terminateProcess(child: ChildProcess): Promise<void> {
 	} catch {
 		child.kill("SIGTERM");
 	}
-	await new Promise((resolveResult) => setTimeout(resolveResult, 500));
-	if (child.exitCode === null) {
+	if (!(await waitForChildExit(child, 500))) {
 		try {
 			process.kill(-pid, "SIGKILL");
 		} catch {
 			child.kill("SIGKILL");
 		}
+		await waitForChildExit(child, 500);
 	}
 }
 
@@ -470,7 +599,8 @@ export class ProjectPreviewManager {
 		const path = normalizePreviewPath(input.path);
 		const id = crypto.randomUUID();
 		const capability = this.capabilityFactory();
-		const child = spawnPreview(input.command, cwd, capability);
+		const spawned = spawnPreview(input.command, cwd, capability);
+		const { child } = spawned;
 		const startedAt = new Date();
 		const snapshot: ProjectPreviewSnapshot = {
 			id,
@@ -495,6 +625,7 @@ export class ProjectPreviewManager {
 		const entry: PreviewEntry = {
 			snapshot,
 			child,
+			wslTermination: spawned.wslTermination,
 			input: { ...input, path, workingDirectory: input.workingDirectory },
 			bridge: null,
 			capability,
@@ -519,6 +650,9 @@ export class ProjectPreviewManager {
 			this.publish(entry, true);
 		});
 		child.once("exit", (code) => {
+			// A wrapper can exit while a server it started remains alive. The WSL
+			// receipt lets Hlid reap that exact process group even after wsl.exe exits.
+			void terminateWslProcessGroup(entry.wslTermination);
 			void this.browserManager.close(snapshot.id);
 			void entry.bridge?.close();
 			entry.bridge = null;
@@ -575,7 +709,7 @@ export class ProjectPreviewManager {
 			entry.snapshot.ended_at = new Date().toISOString();
 			clearTimeout(entry.lifetimeTimer);
 			this.publish(entry);
-			await terminateProcess(child);
+			await terminateProcess(child, entry.wslTermination);
 			entry.capability = null;
 			await this.persist(entry);
 		}
@@ -618,7 +752,7 @@ export class ProjectPreviewManager {
 		await this.browserManager.close(entry.snapshot.id);
 		await entry.bridge?.close();
 		entry.bridge = null;
-		await terminateProcess(entry.child);
+		await terminateProcess(entry.child, entry.wslTermination);
 		entry.capability = null;
 		entry.snapshot.state = "stopped";
 		entry.snapshot.ended_at ??= new Date().toISOString();

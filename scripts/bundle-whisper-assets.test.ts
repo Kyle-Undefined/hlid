@@ -1,14 +1,28 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	copyVerifiedArchive,
-	downloadVerifiedArchive,
-	resolveLocalRuntimeArchive,
+	parseRuntimeArtifactManifest,
+	resolveLocalRuntimeArtifact,
+	type RuntimeArtifactManifest,
 	type RuntimeManifestEntry,
 	verifyRuntimeTree,
+	WHISPER_BUILD_FLAGS,
+	WHISPER_LICENSE_SHA256,
+	WHISPER_RUNTIME_ARTIFACT,
+	WHISPER_RUNTIME_PATHS,
+	WHISPER_SOURCE_COMMIT,
+	WHISPER_VERSION,
+	WHISPER_VULKAN_SDK_VERSION,
 } from "./bundle-whisper-assets";
 
 const tempDirs: string[] = [];
@@ -18,6 +32,26 @@ function fixtureDir(): string {
 	mkdirSync(dir);
 	tempDirs.push(dir);
 	return dir;
+}
+
+function runtimeArtifactManifest(): RuntimeArtifactManifest {
+	return {
+		schemaVersion: 1,
+		whisperVersion: WHISPER_VERSION,
+		whisperSourceCommit: WHISPER_SOURCE_COMMIT,
+		vulkanSdkVersion: WHISPER_VULKAN_SDK_VERSION,
+		buildFlags: [...WHISPER_BUILD_FLAGS],
+		archive: WHISPER_RUNTIME_ARTIFACT,
+		archiveSha256: "a".repeat(64),
+		files: WHISPER_RUNTIME_PATHS.map((path) => ({
+			path,
+			sha256:
+				path === "Release/LICENSE"
+					? WHISPER_LICENSE_SHA256
+					: "b".repeat(64),
+			size: 1,
+		})),
+	};
 }
 
 afterEach(async () => {
@@ -32,15 +66,42 @@ describe("verifyRuntimeTree", () => {
 		const dir = fixtureDir();
 		mkdirSync(join(dir, "Release"));
 		writeFileSync(join(dir, "Release", "server.exe"), "reviewed");
+		writeFileSync(join(dir, "Release", "LICENSE"), "license");
 		const manifest: RuntimeManifestEntry[] = [
 			{
 				path: "Release/server.exe",
 				sha256: createHash("sha256").update("reviewed").digest("hex"),
 			},
+			{
+				path: "Release/LICENSE",
+				sha256: createHash("sha256").update("license").digest("hex"),
+			},
 		];
 
 		expect(verifyRuntimeTree(dir, manifest)).toBe(true);
 		writeFileSync(join(dir, "Release", "server.exe"), "tampered");
+		expect(verifyRuntimeTree(dir, manifest)).toBe(false);
+	});
+
+	it("requires the reviewed license and rejects a tampered copy", () => {
+		const dir = fixtureDir();
+		mkdirSync(join(dir, "Release"));
+		writeFileSync(join(dir, "Release", "server.exe"), "reviewed");
+		writeFileSync(join(dir, "Release", "LICENSE"), "license");
+		const manifest: RuntimeManifestEntry[] = [
+			{
+				path: "Release/server.exe",
+				sha256: createHash("sha256").update("reviewed").digest("hex"),
+			},
+			{
+				path: "Release/LICENSE",
+				sha256: createHash("sha256").update("license").digest("hex"),
+			},
+		];
+
+		rmSync(join(dir, "Release", "LICENSE"));
+		expect(verifyRuntimeTree(dir, manifest)).toBe(false);
+		writeFileSync(join(dir, "Release", "LICENSE"), "tampered");
 		expect(verifyRuntimeTree(dir, manifest)).toBe(false);
 	});
 
@@ -73,62 +134,75 @@ describe("verifyRuntimeTree", () => {
 
 		expect(verifyRuntimeTree(dir, manifest)).toBe(false);
 	});
+
+	it("rejects unreviewed non-binary runtime files", () => {
+		const dir = fixtureDir();
+		mkdirSync(join(dir, "Release"));
+		writeFileSync(join(dir, "Release", "server.exe"), "reviewed");
+		const manifest: RuntimeManifestEntry[] = [
+			{
+				path: "Release/server.exe",
+				sha256: createHash("sha256").update("reviewed").digest("hex"),
+			},
+		];
+		writeFileSync(join(dir, "Release", "notes.txt"), "unreviewed");
+
+		expect(verifyRuntimeTree(dir, manifest)).toBe(false);
+	});
+
+	it("checks reviewed file sizes when the release manifest provides them", () => {
+		const dir = fixtureDir();
+		mkdirSync(join(dir, "Release"));
+		writeFileSync(join(dir, "Release", "server.exe"), "reviewed");
+		const manifest: RuntimeManifestEntry[] = [
+			{
+				path: "Release/server.exe",
+				sha256: createHash("sha256").update("reviewed").digest("hex"),
+				size: 7,
+			},
+		];
+
+		expect(verifyRuntimeTree(dir, manifest)).toBe(false);
+		manifest[0].size = 8;
+		expect(verifyRuntimeTree(dir, manifest)).toBe(true);
+	});
 });
 
-describe("downloadVerifiedArchive", () => {
-	it("writes a response only after its digest is verified", async () => {
-		const dir = fixtureDir();
-		const destination = join(dir, "runtime.zip");
-		const bytes = new TextEncoder().encode("reviewed archive");
-		const digest = createHash("sha256").update(bytes).digest("hex");
-
-		await downloadVerifiedArchive(
-			"https://example.invalid/runtime.zip",
-			destination,
-			digest,
-			1024,
-			async () => new Response(bytes),
+describe("parseRuntimeArtifactManifest", () => {
+	it("accepts the pinned automatic-release contract", () => {
+		expect(parseRuntimeArtifactManifest(runtimeArtifactManifest())).toEqual(
+			runtimeArtifactManifest(),
 		);
-
-		expect(readFileSync(destination)).toEqual(Buffer.from(bytes));
 	});
 
-	it("rejects mismatched archives without writing them", async () => {
-		const dir = fixtureDir();
-		const destination = join(dir, "runtime.zip");
+	it("rejects unknown fields and changed provenance", () => {
+		const extra = { ...runtimeArtifactManifest(), unexpected: true };
+		expect(() => parseRuntimeArtifactManifest(extra)).toThrow("top-level");
 
-		await expect(
-			downloadVerifiedArchive(
-				"https://example.invalid/runtime.zip",
-				destination,
-				"0".repeat(64),
-				1024,
-				async () => new Response("tampered"),
-			),
-		).rejects.toThrow("SHA-256 mismatch");
-		expect(() => readFileSync(destination)).toThrow();
+		const changedSource = runtimeArtifactManifest();
+		changedSource.whisperSourceCommit = "0".repeat(40);
+		expect(() => parseRuntimeArtifactManifest(changedSource)).toThrow(
+			"source commit",
+		);
 	});
 
-	it("stops streamed downloads that exceed the strict size cap", async () => {
-		const dir = fixtureDir();
-		const destination = join(dir, "runtime.zip");
-		const body = new ReadableStream({
-			start(controller) {
-				controller.enqueue(new Uint8Array(6));
-				controller.enqueue(new Uint8Array(6));
-				controller.close();
-			},
-		});
+	it("rejects reordered paths, invalid sizes, and a changed license", () => {
+		const reordered = runtimeArtifactManifest();
+		[reordered.files[0], reordered.files[1]] = [
+			reordered.files[1],
+			reordered.files[0],
+		];
+		expect(() => parseRuntimeArtifactManifest(reordered)).toThrow("path mismatch");
 
-		await expect(
-			downloadVerifiedArchive(
-				"https://example.invalid/runtime.zip",
-				destination,
-				"0".repeat(64),
-				10,
-				async () => new Response(body),
-			),
-		).rejects.toThrow("exceeds 10 byte limit");
+		const invalidSize = runtimeArtifactManifest();
+		invalidSize.files[0].size = 0;
+		expect(() => parseRuntimeArtifactManifest(invalidSize)).toThrow("size");
+
+		const changedLicense = runtimeArtifactManifest();
+		changedLicense.files.at(-1)!.sha256 = "c".repeat(64);
+		expect(() => parseRuntimeArtifactManifest(changedLicense)).toThrow(
+			"license mismatch",
+		);
 	});
 });
 
@@ -158,22 +232,55 @@ describe("copyVerifiedArchive", () => {
 	});
 });
 
-describe("resolveLocalRuntimeArchive", () => {
-	it("prefers an explicit reviewed archive override", () => {
+describe("resolveLocalRuntimeArtifact", () => {
+	it("requires explicit archive and manifest overrides together", () => {
 		expect(
-			resolveLocalRuntimeArchive("/tmp/override.zip", "/tmp/cache.zip", () => true),
-		).toBe("/tmp/override.zip");
+			resolveLocalRuntimeArtifact(
+				"/tmp/override.zip",
+				"/tmp/manifest.json",
+				"/tmp/cache.zip",
+				"/tmp/cache.json",
+				() => true,
+			),
+		).toEqual({
+			archive: "/tmp/override.zip",
+			manifest: "/tmp/manifest.json",
+		});
+		expect(() =>
+			resolveLocalRuntimeArtifact(
+				"/tmp/override.zip",
+				undefined,
+				"/tmp/cache.zip",
+				"/tmp/cache.json",
+				() => true,
+			),
+		).toThrow("provided together");
 	});
 
-	it("uses the ignored dev cache when it exists", () => {
+	it("uses the ignored dev cache only when the pair exists", () => {
 		expect(
-			resolveLocalRuntimeArchive(undefined, "/tmp/cache.zip", () => true),
-		).toBe("/tmp/cache.zip");
+			resolveLocalRuntimeArtifact(
+				undefined,
+				undefined,
+				"/tmp/cache.zip",
+				"/tmp/cache.json",
+				() => true,
+			),
+		).toEqual({
+			archive: "/tmp/cache.zip",
+			manifest: "/tmp/cache.json",
+		});
 	});
 
-	it("falls back to the reviewed release download without a local archive", () => {
+	it("ignores a partial cache", () => {
 		expect(
-			resolveLocalRuntimeArchive(undefined, "/tmp/cache.zip", () => false),
+			resolveLocalRuntimeArtifact(
+				undefined,
+				undefined,
+				"/tmp/cache.zip",
+				"/tmp/cache.json",
+				(path) => path.endsWith(".zip"),
+			),
 		).toBeUndefined();
 	});
 });

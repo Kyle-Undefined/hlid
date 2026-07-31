@@ -418,7 +418,11 @@ function handleGlobalMessage(msg: ServerMessage): boolean {
 			replaceDataRevisions(msg.revisions);
 			return true;
 		case "project_preview_status":
-			applyProjectPreview(msg.preview);
+			if (msg.preview) {
+				applyProjectPreview(msg.preview);
+			} else {
+				clearProjectPreview(msg.session_id);
+			}
 			return true;
 		default:
 			return false;
@@ -664,7 +668,8 @@ export function subscribeMessage(fn: (msg: ServerMessage) => void): () => void {
 	return () => messageSubs.delete(fn);
 }
 
-export function send(msg: ClientMessage): void {
+/** Send immediately, returning whether the socket accepted the message. */
+export function send(msg: ClientMessage): boolean {
 	if (msg.type === "chat") setPendingSessionToday(true);
 	if (msg.type === "chat" || msg.type === "clear") _messageBuffer = [];
 	if (msg.type === "clear") {
@@ -684,7 +689,9 @@ export function send(msg: ClientMessage): void {
 	// causes a double-decrement that under-counts concurrent permissions.
 	if (_ws?.readyState === WS_OPEN) {
 		_ws.send(JSON.stringify(msg));
+		return true;
 	}
+	return false;
 }
 
 // ─── Public API — Message buffer ─────────────────────────────────────────────

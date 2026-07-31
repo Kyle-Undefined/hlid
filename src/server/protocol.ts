@@ -14,6 +14,8 @@ export const TOOL_RESULT_PREVIEW_CHARS = 256;
 // Server → client messages
 export type StatusMessage = {
 	type: "status";
+	/** Pool or durable session identity used to reject cross-chat status races. */
+	session_id?: string;
 	state: "idle" | "running" | "error";
 	model: string;
 	/**
@@ -788,7 +790,7 @@ export type ProjectPreviewFeedbackResult = {
 export type ProjectPreviewStatusMessage = {
 	type: "project_preview_status";
 	session_id: string;
-	preview: ProjectPreviewSnapshot;
+	preview: ProjectPreviewSnapshot | null;
 };
 
 export type ServerMessage =

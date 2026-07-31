@@ -26,7 +26,7 @@ function ProviderInspectionErrors({
 			key={`${item.environmentLabel}-${item.message}`}
 			className="flex flex-wrap items-center justify-between gap-2 border border-status-warning/20 bg-status-warning/5 px-3 py-2 text-xs text-status-warning"
 		>
-			<span>
+			<span className="min-w-0 break-words [overflow-wrap:anywhere]">
 				{item.environmentLabel}: {item.message}
 			</span>
 			{item.recovery === "retry_inventory" && (
@@ -82,7 +82,7 @@ export function ExtensionsSection() {
 						: "Browse local snapshots from the marketplaces configured in this provider environment. Review one package at a time before installing it through the provider CLI."}
 				</p>
 				{controller.inventoryError && (
-					<p className="text-xs text-destructive">
+					<p className="break-words [overflow-wrap:anywhere] text-xs text-destructive">
 						{controller.inventoryError}
 					</p>
 				)}
@@ -98,9 +98,9 @@ export function ExtensionsSection() {
 						<div
 							key={item.operationId}
 							role="alert"
-							className="flex items-start justify-between gap-3 text-xs text-destructive"
+							className="flex min-w-0 items-start justify-between gap-3 text-xs text-destructive"
 						>
-							<span>{item.message}</span>
+							<span className="min-w-0 break-all">{item.message}</span>
 							<button
 								type="button"
 								aria-label="Dismiss extension action error"

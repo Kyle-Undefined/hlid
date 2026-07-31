@@ -6,6 +6,7 @@ import {
 	parseWslIpv4Address,
 	projectPreviewEnvironment,
 	projectPreviewLaunch,
+	projectPreviewWslTerminationLaunch,
 	resolveProjectPreviewCwd,
 } from "./projectPreview";
 import { PROJECT_PREVIEW_AUTH_ENV } from "./projectPreviewTrust";
@@ -129,6 +130,36 @@ describe("ProjectPreviewManager", () => {
 		expect(JSON.stringify(restarted)).not.toContain(secondCapability.token);
 	});
 
+	it("replaces a preview whose listening server is a descendant process", async () => {
+		const manager = new ProjectPreviewManager({ persist });
+		managers.push(manager);
+		const port = await freePort();
+		const serverScript =
+			"require('node:http').createServer((_request,response)=>response.end('ready')).listen(" +
+			port +
+			",'127.0.0.1')";
+		const wrapperScript = `const { spawn } = require("node:child_process"); spawn(${JSON.stringify(process.execPath)}, ["-e", ${JSON.stringify(serverScript)}], { stdio: "ignore" }); setInterval(() => {}, 1_000);`;
+		const first = await manager.start({
+			sessionId: "descendant-session",
+			runtimeCwd: process.cwd(),
+			command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(wrapperScript)}`,
+			port,
+			readinessTimeoutSeconds: 5,
+		});
+
+		const restarted = await manager.restart("descendant-session", first.id);
+
+		expect(restarted).toMatchObject({
+			session_id: "descendant-session",
+			port,
+			state: "ready",
+		});
+		expect(manager.inspect("descendant-session", first.id)).toMatchObject({
+			state: "stopped",
+			stop_reason: "replaced",
+		});
+	});
+
 	it("rejects working directories outside the active workspace", async () => {
 		const manager = new ProjectPreviewManager({ persist });
 		managers.push(manager);
@@ -173,7 +204,7 @@ describe("ProjectPreviewManager", () => {
 			"require('node:http').createServer((_request,response)=>response.end('ready')).listen(" +
 			port +
 			",'127.0.0.1')";
-		await manager.start({
+		const preview = await manager.start({
 			sessionId: "session-expiry",
 			runtimeCwd: process.cwd(),
 			command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
@@ -181,9 +212,11 @@ describe("ProjectPreviewManager", () => {
 			readinessTimeoutSeconds: 5,
 		});
 		await expect
-			.poll(() => manager.inspect("session-expiry").state, { timeout: 2_000 })
+			.poll(() => manager.inspect("session-expiry", preview.id).state, {
+				timeout: 2_000,
+			})
 			.toBe("stopped");
-		expect(manager.inspect("session-expiry").stop_reason).toBe(
+		expect(manager.inspect("session-expiry", preview.id).stop_reason).toBe(
 			"lifetime_expired",
 		);
 	});
@@ -277,6 +310,7 @@ describe("Project Preview Windows and WSL launch plans", () => {
 
 	it("launches a WSL UNC workspace inside the owning distro", () => {
 		const cwd = "\\\\wsl.localhost\\Ubuntu\\home\\kyle\\hlid\\apps\\web";
+		const processGroupFile = "/tmp/hlid-project-preview-test.pid";
 		expect(
 			resolveProjectPreviewCwd(
 				"\\\\wsl.localhost\\Ubuntu\\home\\kyle\\hlid",
@@ -284,21 +318,54 @@ describe("Project Preview Windows and WSL launch plans", () => {
 				"win32",
 			),
 		).toBe(cwd);
-		expect(projectPreviewLaunch("bun run dev", cwd, "win32")).toEqual({
+		expect(
+			projectPreviewLaunch("bun run dev", cwd, "win32", processGroupFile),
+		).toEqual({
 			executable: "wsl.exe",
 			args: [
 				"-d",
 				"Ubuntu",
 				"--cd",
 				"/home/kyle/hlid/apps/web",
-				"--",
+				"--exec",
+				"setsid",
+				"-w",
 				"sh",
-				"-lc",
+				"-c",
+				expect.stringContaining('printf "%s\\n" "$$" > "$2"'),
+				"hlid-project-preview",
 				"bun run dev",
+				processGroupFile,
 			],
 			shell: false,
 			detached: false,
+			wslTermination: {
+				distro: "Ubuntu",
+				processGroupFile,
+			},
 		});
+	});
+
+	it("terminates only the recorded WSL preview process group", () => {
+		const launch = projectPreviewWslTerminationLaunch({
+			distro: "Ubuntu",
+			processGroupFile: "/tmp/hlid-project-preview-test.pid",
+		});
+
+		expect(launch).toEqual({
+			executable: "wsl.exe",
+			args: [
+				"-d",
+				"Ubuntu",
+				"--exec",
+				"sh",
+				"-c",
+				expect.stringContaining('/bin/kill -TERM -- "-$process_group_id"'),
+				"hlid-project-preview-stop",
+				"/tmp/hlid-project-preview-test.pid",
+			],
+		});
+		expect(launch.args.join(" ")).not.toContain("--terminate");
 	});
 
 	it("rejects WSL traversal outside the active workspace", () => {

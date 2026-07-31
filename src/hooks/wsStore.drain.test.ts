@@ -357,6 +357,17 @@ describe("wsStore — Slice A: immediate-send drain", () => {
 		expect(currentWs.send).not.toHaveBeenCalled();
 	});
 
+	it("reports whether an immediate message reached the socket", () => {
+		currentWs.readyState = WS_STATES.CLOSED;
+		expect(wsStore.send({ type: "sync" })).toBe(false);
+
+		currentWs.readyState = WS_STATES.OPEN;
+		expect(wsStore.send({ type: "sync" })).toBe(true);
+		expect(currentWs.send).toHaveBeenLastCalledWith(
+			JSON.stringify({ type: "sync" }),
+		);
+	});
+
 	it("multiple enqueues send each chat as a separate message (no \\n\\n batching)", () => {
 		wsStore.enqueueChat({ id: "m1", text: "first", session_id: "s1" });
 		wsStore.enqueueChat({ id: "m2", text: "second", session_id: "s1" });

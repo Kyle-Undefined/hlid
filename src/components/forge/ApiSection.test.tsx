@@ -1,11 +1,5 @@
 // @vitest-environment jsdom
-import {
-	cleanup,
-	fireEvent,
-	render,
-	screen,
-	waitFor,
-} from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -14,6 +8,11 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../lib/dbClient", () => ({ dbFetch: mocks.dbFetch }));
+vi.mock("@tanstack/react-start", () => ({
+	createServerFn: () => ({
+		handler: (handler: (...args: never[]) => unknown) => handler,
+	}),
+}));
 vi.mock("@tanstack/react-router", () => ({
 	useNavigate: () => mocks.navigate,
 }));
@@ -57,11 +56,10 @@ describe("Forge API Reference", () => {
 	it("renders endpoint groups and ports from the live catalog", async () => {
 		render(<ApiSection />);
 
-		await waitFor(() =>
-			expect(
-				screen.getByText("/db/sessions?size=", { exact: false }),
-			).toBeTruthy(),
-		);
+		const sessionEndpoint = await screen.findByText("/db/sessions?size=", {
+			exact: false,
+		});
+		expect(sessionEndpoint.classList.contains("break-all")).toBe(true);
 		expect(mocks.dbFetch).toHaveBeenCalledWith("/api-index");
 		expect(screen.getByText("127.0.0.1:4311")).toBeTruthy();
 		expect(screen.getByText("127.0.0.1:4310")).toBeTruthy();

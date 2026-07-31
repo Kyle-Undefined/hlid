@@ -111,7 +111,11 @@ import {
 	responsiveComposerMaxHeight,
 	runComposerPickerAction,
 } from "#/lib/composer";
-import { deriveModelMismatch, fmtModel } from "#/lib/formatters";
+import {
+	deriveModelMismatch,
+	fmtModel,
+	modelComparisonKey,
+} from "#/lib/formatters";
 import type { HlidContextReceiptTarget } from "#/lib/hlidContext";
 import { loaderValueOrFallback } from "#/lib/loaderFallback";
 import { mapMcpServer } from "#/lib/mcp";
@@ -453,20 +457,22 @@ function restoredRavenSessionSelection(
 	initialSessionEffort: string | null,
 	initialSessionPermissionMode: string | null,
 ): RavenSessionSelection {
-	return existingSessionId &&
-		agentSkillContext === initialAgentSkillContext &&
-		initialSessionModel
-		? {
-				model: initialSessionModel,
-				...(initialSessionProviderId
-					? { providerId: initialSessionProviderId }
-					: {}),
-				...(initialSessionEffort ? { effort: initialSessionEffort } : {}),
-				...(initialSessionPermissionMode
-					? { permissionMode: initialSessionPermissionMode }
-					: {}),
-			}
-		: {};
+	if (!existingSessionId || agentSkillContext !== initialAgentSkillContext) {
+		return {};
+	}
+	return {
+		// Empty is the durable provider-default sentinel. Preserve it separately
+		// from NULL (no saved selection) so a reconnect cannot turn an explicit
+		// provider default into today's configured Vault model.
+		...(initialSessionModel !== null ? { model: initialSessionModel } : {}),
+		...(initialSessionProviderId
+			? { providerId: initialSessionProviderId }
+			: {}),
+		...(initialSessionEffort ? { effort: initialSessionEffort } : {}),
+		...(initialSessionPermissionMode
+			? { permissionMode: initialSessionPermissionMode }
+			: {}),
+	};
 }
 
 function useRavenSessionIdentity({
@@ -2075,8 +2081,14 @@ function deriveRavenComposerState({
 		null;
 	const { effectiveActualModel, mismatch: runtimeModelMismatch } =
 		deriveModelMismatch(configuredSelection.model, actualModel, selectedModel);
+	const actualSelectionMismatch =
+		!!actualModel &&
+		!!selectedModel &&
+		modelComparisonKey(actualModel) !== modelComparisonKey(selectedModel);
 	const modelMismatch =
-		activeProviderId !== configuredProviderId || runtimeModelMismatch;
+		activeProviderId !== configuredProviderId ||
+		runtimeModelMismatch ||
+		actualSelectionMismatch;
 	const provider = providers.find(
 		(candidate) => candidate.id === activeProviderId,
 	);
@@ -2094,6 +2106,7 @@ function deriveRavenComposerState({
 			? fmtModel(effectiveActualModel)
 			: null,
 		modelMismatch,
+		actualSelectionMismatch,
 		activeProviderLabel: provider?.label ?? activeProviderId,
 		configuredProviderLabel: configuredProvider?.label ?? configuredProviderId,
 		configuredModelShort: configuredSelection.model
@@ -2230,8 +2243,12 @@ export function ChatPage() {
 		null,
 	);
 	const pendingProviderIdRef = useRef<string | null>(null);
+	const pendingSessionControlsRef = useRef<
+		Partial<Omit<RavenSessionSelection, "providerId">>
+	>({});
 	useEffect(() => {
 		pendingProviderIdRef.current = null;
+		pendingSessionControlsRef.current = {};
 		setPendingProviderId(null);
 		setSessionSelection(
 			restoredRavenSessionSelection(
@@ -2260,9 +2277,7 @@ export function ChatPage() {
 		liveSessionStatus.provider_id
 			? {
 					providerId: liveSessionStatus.provider_id,
-					...(liveSessionStatus.model
-						? { model: liveSessionStatus.model }
-						: {}),
+					model: liveSessionStatus.model,
 					...(liveSessionStatus.effort
 						? { effort: liveSessionStatus.effort }
 						: {}),
@@ -2280,6 +2295,27 @@ export function ChatPage() {
 			pendingProviderIdRef.current = null;
 			setPendingProviderId(null);
 		}
+		const pendingControls = pendingSessionControlsRef.current;
+		const applyModel =
+			pendingControls.model === undefined ||
+			pendingControls.model === liveSessionStatus.model;
+		const applyEffort =
+			pendingControls.effort === undefined ||
+			pendingControls.effort === liveSessionStatus.effort;
+		const applyPermissionMode =
+			pendingControls.permissionMode === undefined ||
+			pendingControls.permissionMode === liveSessionStatus.permission_mode;
+		pendingSessionControlsRef.current = {
+			...(!applyModel && pendingControls.model !== undefined
+				? { model: pendingControls.model }
+				: {}),
+			...(!applyEffort && pendingControls.effort !== undefined
+				? { effort: pendingControls.effort }
+				: {}),
+			...(!applyPermissionMode && pendingControls.permissionMode !== undefined
+				? { permissionMode: pendingControls.permissionMode }
+				: {}),
+		};
 		setSessionSelection((current) => {
 			const providerChanged =
 				liveProviderId !== null && current.providerId !== liveProviderId;
@@ -2288,11 +2324,11 @@ export function ChatPage() {
 				: current;
 			const next = {
 				...base,
-				...(liveSessionStatus.model ? { model: liveSessionStatus.model } : {}),
-				...(liveSessionStatus.effort
+				...(applyModel ? { model: liveSessionStatus.model } : {}),
+				...(applyEffort && liveSessionStatus.effort
 					? { effort: liveSessionStatus.effort }
 					: {}),
-				...(liveSessionStatus.permission_mode
+				...(applyPermissionMode && liveSessionStatus.permission_mode
 					? { permissionMode: liveSessionStatus.permission_mode }
 					: {}),
 			};
@@ -2313,13 +2349,31 @@ export function ChatPage() {
 					? nextProviderId
 					: null;
 			pendingProviderIdRef.current = pending;
+			pendingSessionControlsRef.current = {
+				...(next.model !== undefined ? { model: next.model } : {}),
+				...(next.effort !== undefined ? { effort: next.effort } : {}),
+				...(next.permissionMode !== undefined
+					? { permissionMode: next.permissionMode }
+					: {}),
+			};
 			setPendingProviderId(pending);
 			setSessionSelection(next);
 		},
 		[liveSessionSelection?.providerId],
 	);
+	const selectSessionControls = useCallback(
+		(next: Partial<Omit<RavenSessionSelection, "providerId">>) => {
+			pendingSessionControlsRef.current = {
+				...pendingSessionControlsRef.current,
+				...next,
+			};
+			setSessionSelection((current) => ({ ...current, ...next }));
+		},
+		[],
+	);
 	const resetSessionSelection = useCallback(() => {
 		pendingProviderIdRef.current = null;
+		pendingSessionControlsRef.current = {};
 		setPendingProviderId(null);
 		setSessionSelection({});
 	}, []);
@@ -2357,6 +2411,65 @@ export function ChatPage() {
 		rateLimit,
 		messages,
 	} = runtime;
+	useEffect(() => {
+		if (wsStatus === "connected") return;
+		const pendingControls = pendingSessionControlsRef.current;
+		const hadPendingControls = Object.values(pendingControls).some(
+			(value) => value !== undefined,
+		);
+		if (!pendingProviderIdRef.current && !hadPendingControls) return;
+
+		pendingProviderIdRef.current = null;
+		pendingSessionControlsRef.current = {};
+		setPendingProviderId(null);
+
+		let rollbackSelection: RavenSessionSelection | null = null;
+		if (
+			liveSessionStatus &&
+			liveSessionStatus.mode !== "terminal" &&
+			liveSessionStatus.provider_id
+		) {
+			rollbackSelection = {
+				providerId: liveSessionStatus.provider_id,
+				model: liveSessionStatus.model,
+				...(liveSessionStatus.effort
+					? { effort: liveSessionStatus.effort }
+					: {}),
+				...(liveSessionStatus.permission_mode
+					? { permissionMode: liveSessionStatus.permission_mode }
+					: {}),
+			};
+		} else if (existingSessionId) {
+			rollbackSelection = restoredRavenSessionSelection(
+				existingSessionId,
+				agentSkillContext,
+				initialAgentSkillContext,
+				initialSessionModel,
+				initialSessionProviderId,
+				initialSessionEffort,
+				initialSessionPermissionMode,
+			);
+		}
+		if (!rollbackSelection) return;
+		setSessionSelection((current) =>
+			current.providerId === rollbackSelection.providerId &&
+			current.model === rollbackSelection.model &&
+			current.effort === rollbackSelection.effort &&
+			current.permissionMode === rollbackSelection.permissionMode
+				? current
+				: rollbackSelection,
+		);
+	}, [
+		wsStatus,
+		liveSessionStatus,
+		existingSessionId,
+		agentSkillContext,
+		initialAgentSkillContext,
+		initialSessionModel,
+		initialSessionProviderId,
+		initialSessionEffort,
+		initialSessionPermissionMode,
+	]);
 	const { prompt: seededPrompt } = ravenSearch;
 	const { input, setInput, clearDraft } = useDraft({
 		existingSessionId,
@@ -2494,43 +2607,6 @@ export function ChatPage() {
 		setInput(picker.promptWithoutQuery);
 	}
 
-	// ─── Handlers ─────────────────────────────────────────────────────────────
-
-	const {
-		voice,
-		handleDecide,
-		handleSubmitAnswers,
-		handlePlanDecide,
-		handleSend,
-		handleCancelQueued,
-		handlePromoteQueued,
-		handleSteerQueued,
-		handleClear,
-	} = useRavenActions({
-		config,
-		initialVoiceInfo,
-		activeProviderId,
-		input,
-		setInput,
-		clearDraft,
-		activeSkills,
-		setActiveSkills,
-		commands,
-		planMode,
-		setPlanMode,
-		planHtml,
-		sessionSelection: effectiveSessionSelection,
-		setSessionSelection,
-		resetSessionSelection,
-		session,
-		runtime,
-		upload,
-		vaultPicker,
-		viewport,
-		chatQueue,
-		providers,
-	});
-
 	const {
 		canSend,
 		canQueue,
@@ -2540,6 +2616,7 @@ export function ChatPage() {
 		activePermissionMode,
 		actualModelShort,
 		modelMismatch,
+		actualSelectionMismatch,
 		activeProviderLabel,
 		configuredProviderLabel,
 		configuredModelShort,
@@ -2566,6 +2643,55 @@ export function ChatPage() {
 		selection: effectiveSessionSelection,
 		planMode,
 	});
+	// The badge renders configured/live fallbacks even before a new chat has a
+	// DB row. Submit that same effective tuple so the server never receives an
+	// omitted model while Raven visibly promises a concrete one.
+	const activeSessionSelection: RavenSessionSelection = {
+		providerId: activeProviderId,
+		...(activeModel !== undefined ? { model: activeModel } : {}),
+		...(activeEffort !== null ? { effort: activeEffort } : {}),
+		...(activePermissionMode !== null
+			? { permissionMode: activePermissionMode }
+			: {}),
+	};
+
+	// ─── Handlers ─────────────────────────────────────────────────────────────
+
+	const {
+		voice,
+		handleDecide,
+		handleSubmitAnswers,
+		handlePlanDecide,
+		handleSend,
+		handleCancelQueued,
+		handlePromoteQueued,
+		handleSteerQueued,
+		handleClear,
+	} = useRavenActions({
+		config,
+		initialVoiceInfo,
+		activeProviderId,
+		input,
+		setInput,
+		clearDraft,
+		activeSkills,
+		setActiveSkills,
+		commands,
+		planMode,
+		setPlanMode,
+		planHtml,
+		sessionSelection: activeSessionSelection,
+		setSessionSelection,
+		resetSessionSelection,
+		session,
+		runtime,
+		upload,
+		vaultPicker,
+		viewport,
+		chatQueue,
+		providers,
+	});
+
 	const delegatedNativeSteeringAvailable =
 		delegationControlOwned &&
 		isRunning &&
@@ -2628,10 +2754,11 @@ export function ChatPage() {
 		activeModel,
 		activeEffort,
 		activePermissionMode,
-		setSessionSelection,
+		selectSessionControls,
 		selectSessionProvider,
 		actualModelShort,
 		modelMismatch,
+		actualSelectionMismatch,
 		activeProviderId,
 		activeProviderLabel,
 		configuredProviderId,
@@ -3541,12 +3668,14 @@ function OptionGroup({
 	selectedValue,
 	onSelect,
 	divider = false,
+	disabled = false,
 }: {
 	label: string;
 	options: BadgeOption[];
 	selectedValue: string | null | undefined;
 	onSelect: (value: string) => void;
 	divider?: boolean;
+	disabled?: boolean;
 }) {
 	if (options.length === 0) return null;
 	return (
@@ -3559,8 +3688,9 @@ function OptionGroup({
 					key={o.value}
 					type="button"
 					title={o.title}
+					disabled={disabled}
 					onClick={() => onSelect(o.value)}
-					className={`block w-full text-left normal-case tracking-normal px-1.5 py-1 transition-colors ${
+					className={`block w-full text-left normal-case tracking-normal px-1.5 py-1 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
 						o.value === selectedValue
 							? "text-primary bg-primary/10"
 							: "text-foreground/70 hover:bg-accent"
@@ -3584,10 +3714,11 @@ function ChatModelBadge({
 	activeModel,
 	activeEffort,
 	activePermissionMode,
-	setSessionSelection,
+	selectSessionControls,
 	selectSessionProvider,
 	actualModelShort,
 	modelMismatch,
+	actualSelectionMismatch,
 	activeProviderId,
 	activeProviderLabel,
 	configuredProviderLabel,
@@ -3598,7 +3729,8 @@ function ChatModelBadge({
 	permissionOptions,
 	effortOptions,
 }: ChatComposerProps) {
-	const { model, permissionMode, effort, sessionState, send } = runtime;
+	const { wsStatus, model, permissionMode, effort, sessionState, send } =
+		runtime;
 	const { sessionId } = session;
 	const displayedModel = activeModel ?? model;
 	const displayedEffort = activeEffort ?? effort;
@@ -3611,7 +3743,9 @@ function ChatModelBadge({
 				: displayedPermissionMode === "default"
 					? "ask"
 					: displayedPermissionMode;
-	const rawModelBadge = actualModelShort ?? modelShort;
+	// The primary badge is a control: it must show what the next turn will use.
+	// Provider-reported history remains visible below as a diagnostic.
+	const rawModelBadge = modelShort ?? actualModelShort;
 	const duplicateEffortSuffix = displayedEffort ? `(${displayedEffort})` : null;
 	const modelBadge =
 		rawModelBadge &&
@@ -3694,18 +3828,29 @@ function ChatModelBadge({
 										</span>
 									</div>
 									<div>
-										<span className="text-muted-foreground/50">current </span>
+										<span className="text-muted-foreground/50">selected </span>
 										<span className="text-status-warning">
 											{activeProviderLabel}
-											{actualModelShort || modelShort
-												? ` · ${actualModelShort ?? modelShort}`
+											{modelShort || actualModelShort
+												? ` · ${modelShort ?? actualModelShort}`
 												: ""}
 										</span>
 									</div>
+									{actualSelectionMismatch && actualModelShort && (
+										<div>
+											<span className="text-muted-foreground/50">
+												last used{" "}
+											</span>
+											<span className="text-foreground/60">
+												{actualModelShort}
+											</span>
+										</div>
+									)}
 								</div>
 							)}
 							<OptionGroup
 								label="cli"
+								disabled={wsStatus !== "connected"}
 								options={providers
 									.filter(
 										(provider) =>
@@ -3727,9 +3872,7 @@ function ChatModelBadge({
 										provider,
 										configuredSelection,
 									);
-									selectSessionProvider(next);
-									wsStore.seedActualModel(null);
-									send({
+									const delivered = send({
 										type: "set_provider",
 										provider: value,
 										session_id: sessionId,
@@ -3739,11 +3882,15 @@ function ChatModelBadge({
 											? { permission_mode: next.permissionMode }
 											: {}),
 									});
+									if (!delivered) return;
+									selectSessionProvider(next);
+									wsStore.seedActualModel(null);
 								}}
 							/>
 							<OptionGroup
 								label="model"
 								divider
+								disabled={wsStatus !== "connected"}
 								options={modelPickerOptions.map((m) => ({
 									value: m.value,
 									label: m.label,
@@ -3756,21 +3903,20 @@ function ChatModelBadge({
 								}))}
 								selectedValue={displayedModel}
 								onSelect={(value) => {
-									setSessionSelection((current) => ({
-										...current,
-										model: value,
-									}));
-									wsStore.seedActualModel(null);
-									send({
+									const delivered = send({
 										type: "set_model",
 										model: value,
 										session_id: sessionId,
 									});
+									if (!delivered) return;
+									selectSessionControls({ model: value });
+									wsStore.seedActualModel(null);
 								}}
 							/>
 							<OptionGroup
 								label="effort"
 								divider
+								disabled={wsStatus !== "connected"}
 								options={effortOptions.map((e) => ({
 									value: e.value,
 									label: e.label,
@@ -3781,20 +3927,19 @@ function ChatModelBadge({
 								}))}
 								selectedValue={displayedEffort}
 								onSelect={(value) => {
-									setSessionSelection((current) => ({
-										...current,
-										effort: value,
-									}));
-									send({
+									const delivered = send({
 										type: "set_effort",
 										effort: value,
 										session_id: sessionId,
 									});
+									if (!delivered) return;
+									selectSessionControls({ effort: value });
 								}}
 							/>
 							<OptionGroup
 								label="permission"
 								divider
+								disabled={wsStatus !== "connected"}
 								options={permissionOptions.map((p) => ({
 									value: p.value,
 									label: p.label,
@@ -3802,15 +3947,13 @@ function ChatModelBadge({
 								}))}
 								selectedValue={displayedPermissionMode}
 								onSelect={(value) => {
-									setSessionSelection((current) => ({
-										...current,
-										permissionMode: value,
-									}));
-									send({
+									const delivered = send({
 										type: "set_permission_mode",
 										mode: value,
 										session_id: sessionId,
 									});
+									if (!delivered) return;
+									selectSessionControls({ permissionMode: value });
 								}}
 							/>
 							<div className="normal-case tracking-normal text-muted-foreground/30 pt-1 border-t border-border/50">
@@ -3902,7 +4045,7 @@ function ChatInputNotices({
 	onToggleTerminal,
 	activeProviderId,
 	activeEffort,
-	setSessionSelection,
+	selectSessionControls,
 	activeSkills,
 	clearActiveSkill,
 	vaultPicker,
@@ -4025,15 +4168,14 @@ function ChatInputNotices({
 									activeEffort ?? effort,
 								);
 								if (normalized && normalized !== (activeEffort ?? effort)) {
-									setSessionSelection((current) => ({
-										...current,
-										effort: normalized,
-									}));
-									send({
+									const delivered = send({
 										type: "set_effort",
 										effort: normalized,
 										session_id: sessionId,
 									});
+									if (delivered) {
+										selectSessionControls({ effort: normalized });
+									}
 								}
 							}
 							setPlanMode(enabling);
@@ -4587,10 +4729,13 @@ interface ChatComposerProps {
 	activeModel: string | undefined;
 	activeEffort: string | null;
 	activePermissionMode: string | null;
-	setSessionSelection: Dispatch<SetStateAction<RavenSessionSelection>>;
+	selectSessionControls: (
+		selection: Partial<Omit<RavenSessionSelection, "providerId">>,
+	) => void;
 	selectSessionProvider: (selection: RavenSessionSelection) => void;
 	actualModelShort: string | null;
 	modelMismatch: boolean;
+	actualSelectionMismatch: boolean;
 	activeProviderId: string;
 	activeProviderLabel: string;
 	configuredProviderId: string;

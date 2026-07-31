@@ -131,7 +131,7 @@ export function AgentCard({
 			)}
 
 			{agent.mode === "cwd" && agent.dirExists && showMcp && (
-				<div className="border-t border-border/50 px-4 py-3">
+				<div className="@container min-w-0 border-t border-border/50 px-4 py-3">
 					<AgentMcpSection agentPath={agent.path} />
 				</div>
 			)}

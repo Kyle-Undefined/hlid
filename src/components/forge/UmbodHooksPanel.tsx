@@ -36,7 +36,7 @@ export function UmbodHooksPanel() {
 	}
 
 	return (
-		<section className="border border-border bg-card p-4 space-y-4">
+		<section className="min-w-0 space-y-4 border border-border bg-card p-4">
 			<div>
 				<h3 className="text-sm font-medium">Generate agent hooks</h3>
 				<p className="text-xs text-muted-foreground mt-1">
@@ -78,15 +78,19 @@ export function UmbodHooksPanel() {
 					</label>
 				))}
 			</div>
-			<button
-				type="button"
-				disabled={hookAgents.length === 0}
-				onClick={() => void generateHooks()}
-				className="px-3 py-1.5 border border-border text-[10px] tracking-widest uppercase hover:bg-accent"
-			>
-				Generate
-			</button>
-			<span className="ml-3 text-xs text-muted-foreground">{hookStatus}</span>
+			<div className="flex min-w-0 flex-wrap items-center gap-3">
+				<button
+					type="button"
+					disabled={hookAgents.length === 0}
+					onClick={() => void generateHooks()}
+					className="shrink-0 border border-border px-3 py-1.5 text-[10px] tracking-widest uppercase hover:bg-accent"
+				>
+					Generate
+				</button>
+				<span className="min-w-0 break-words [overflow-wrap:anywhere] text-xs text-muted-foreground">
+					{hookStatus}
+				</span>
+			</div>
 			{hookTarget === "wsl" && (
 				<p className="border-l-2 border-primary/40 pl-3 text-xs text-muted-foreground">
 					These wrappers call the Umbod server hosted by Windows. No Umbod CLI
@@ -101,8 +105,8 @@ export function UmbodHooksPanel() {
 					<h4 className="text-xs font-medium">{artifact.displayName}</h4>
 					{artifact.assets.map((asset) => (
 						<div key={asset.relativePath} className="space-y-1">
-							<div className="flex justify-between gap-3 text-[10px] text-muted-foreground">
-								<span>
+							<div className="flex min-w-0 flex-col items-start gap-1 text-[10px] text-muted-foreground @xl:flex-row @xl:justify-between @xl:gap-3">
+								<span className="min-w-0 break-all">
 									Save as{" "}
 									{hookTarget === "wsl"
 										? `~/.umbod/${asset.relativePath}`
@@ -125,8 +129,10 @@ export function UmbodHooksPanel() {
 						</div>
 					))}
 					<div className="space-y-1">
-						<div className="flex justify-between gap-3 text-[10px] text-muted-foreground">
-							<span>Merge into {artifact.config.settingsPath}</span>
+						<div className="flex min-w-0 flex-col items-start gap-1 text-[10px] text-muted-foreground @xl:flex-row @xl:justify-between @xl:gap-3">
+							<span className="min-w-0 break-all">
+								Merge into {artifact.config.settingsPath}
+							</span>
 							<button
 								type="button"
 								onClick={() =>

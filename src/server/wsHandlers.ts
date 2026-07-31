@@ -74,6 +74,13 @@ interface MessageContext {
 	shellPool?: ShellSessionPool;
 }
 
+const KNOWN_RAVEN_PERMISSION_MODES = new Set([
+	"default",
+	"acceptEdits",
+	"bypassPermissions",
+	"plan",
+]);
+
 function delegationMutationTarget(
 	context: MessageContext,
 	msg: ClientMessage,
@@ -343,7 +350,10 @@ async function handleRealtimeControl(
 		createdForRealtime = true;
 		subscribeToEntry(context, entry);
 		sendSessionCreated(context, entry);
-		send(context.ws, { type: "status", ...entry.manager.getStatus() });
+		entry.runState.send(context.ws, {
+			type: "status",
+			...entry.manager.getStatus(),
+		});
 		broadcastSessionsStatus(context);
 	}
 	if (!entry) {
@@ -412,13 +422,13 @@ function sendPendingInteractions(
 	entry: PoolEntry,
 ): void {
 	for (const request of entry.manager.getPendingPermissionRequests()) {
-		send(ws, request);
+		entry.runState.send(ws, request);
 	}
 	for (const question of entry.manager.getPendingAskUserQuestions()) {
-		send(ws, question);
+		entry.runState.send(ws, question);
 	}
 	for (const exit of entry.manager.getPendingPlanModeExits()) {
-		send(ws, exit);
+		entry.runState.send(ws, exit);
 	}
 }
 
@@ -451,13 +461,12 @@ async function restoreDetachedStatus(
 	}
 }
 
-async function sendRestoredPreview(
+function sendRestoredPreview(
 	ws: ServerWebSocket<WsData>,
 	sessionId: string,
-): Promise<boolean> {
+): boolean {
 	try {
-		const preview = await db.getLatestProjectPreviewForSession(sessionId);
-		if (!preview) return false;
+		const preview = projectPreviewManager.inspect(sessionId);
 		send(ws, {
 			type: "project_preview_status",
 			session_id: preview.session_id,
@@ -465,7 +474,13 @@ async function sendRestoredPreview(
 		});
 		return true;
 	} catch {
-		// Preview restoration is supplemental to the session subscription.
+		// Absence is authoritative during subscription. Tell the client to discard
+		// any ready snapshot cached before a disconnect, expiry, or Hlid restart.
+		send(ws, {
+			type: "project_preview_status",
+			session_id: sessionId,
+			preview: null,
+		});
 		return false;
 	}
 }
@@ -481,6 +496,7 @@ async function subscribeToDetachedSession(
 	ws.data.subscribedSessionId = sessionId;
 	send(ws, {
 		type: "status",
+		session_id: sessionId,
 		...(await restoreDetachedStatus(pool, sessionId)),
 	});
 	send(ws, {
@@ -489,7 +505,7 @@ async function subscribeToDetachedSession(
 		pending_turn_ids: [],
 		running_turn_id: null,
 	});
-	await sendRestoredPreview(ws, sessionId);
+	sendRestoredPreview(ws, sessionId);
 }
 
 function subscribeToLiveSession(
@@ -498,12 +514,12 @@ function subscribeToLiveSession(
 ): void {
 	entry.runState.addSubscriber(ws);
 	ws.data.subscribedSessionId = entry.sessionId;
-	send(ws, { type: "status", ...entry.manager.getStatus() });
+	entry.runState.send(ws, { type: "status", ...entry.manager.getStatus() });
 	const cachedMcp = entry.manager.getLastMcpStatus();
 	if (cachedMcp) {
 		const providerId = entry.manager.getProviderId();
 		const agentCwd = entry.manager.getAgentCwd();
-		send(ws, {
+		entry.runState.send(ws, {
 			type: "mcp_status",
 			...(providerId ? { provider_id: providerId } : {}),
 			...(agentCwd ? { agent_cwd: agentCwd } : {}),
@@ -516,14 +532,16 @@ function subscribeToLiveSession(
 	const context = entry.runState.getContextSnapshot?.();
 	if (context) entry.runState.send(ws, context);
 	if (entry.manager.isRunning()) {
-		for (const buffered of entry.runState.getReplayBuffer()) send(ws, buffered);
+		for (const buffered of entry.runState.getReplayBuffer()) {
+			entry.runState.send(ws, buffered);
+		}
 		sendPendingInteractions(ws, entry);
 	}
 	// Auto-sleep is transient session state rather than a transcript event, so
 	// it is not part of the normal replay buffer. Re-send it when Raven switches
 	// to an already-sleeping live session just as we do on connect and sync.
 	const sleep = entry.manager.getSleepState();
-	if (sleep) send(ws, sleep);
+	if (sleep) entry.runState.send(ws, sleep);
 	sendQueueState(ws, entry);
 }
 
@@ -538,7 +556,7 @@ async function restoreLiveSessionPreview(
 		entry.sessionId,
 	].filter((sessionId): sessionId is string => Boolean(sessionId));
 	for (const sessionId of new Set(previewSessionIds)) {
-		if (await sendRestoredPreview(ws, sessionId)) break;
+		if (sendRestoredPreview(ws, sessionId)) break;
 	}
 }
 
@@ -623,14 +641,14 @@ function handleRoutingMessage(
 }
 
 function handleSync(ws: ServerWebSocket<WsData>, entry: PoolEntry): void {
-	send(ws, { type: "status", ...entry.manager.getStatus() });
+	entry.runState.send(ws, { type: "status", ...entry.manager.getStatus() });
 	sendQueueState(ws, entry);
 	const context = entry.runState.getContextSnapshot?.();
 	if (context) entry.runState.send(ws, context);
 	// Informational — every syncing client gets the sleep banner, not just the
 	// prompt owner.
 	const sleep = entry.manager.getSleepState();
-	if (sleep) send(ws, sleep);
+	if (sleep) entry.runState.send(ws, sleep);
 	if (!entry.manager.isRunning()) return;
 	if (entry.runState.ownerWs === null) entry.runState.ownerWs = ws;
 	// Ownership controls which connection launched the turn, not whether another
@@ -964,11 +982,7 @@ async function handleChat(
 	// Once a chat is already live, the dedicated set_* messages are authoritative.
 	// Reapplying an older render's payload here can race a just-clicked effort/model
 	// change and visibly snap the control back as the turn starts.
-	if (
-		msg.provider &&
-		!chatEntry.manager.isRunning() &&
-		(currentSessionId === null || providerChanged)
-	) {
+	if (msg.provider && !chatEntry.manager.isRunning() && providerChanged) {
 		await chatEntry.manager.setProvider(msg.provider, {
 			model: msg.model,
 			effort: msg.effort,
@@ -993,7 +1007,10 @@ async function handleChat(
 	if (created) {
 		// Do not publish the manager's configured defaults between session_created
 		// and the first-turn overrides; that transient status resets Raven's picker.
-		send(context.ws, { type: "status", ...chatEntry.manager.getStatus() });
+		chatEntry.runState.send(context.ws, {
+			type: "status",
+			...chatEntry.manager.getStatus(),
+		});
 		broadcastSessionsStatus(context);
 	}
 	broadcastUserMessage(context.ws, chatEntry, msg);
@@ -1471,10 +1488,70 @@ async function handleMessage(
 		const requestedEntry =
 			context.pool.get(requestedTargetSession) ??
 			context.pool.findByDbSessionId(requestedTargetSession);
-		// Archived/new chats have no live manager yet. Their chat payload repeats
-		// the selection and applies it atomically after the entry is created.
+		// Persist controls for an existing detached chat without reviving a provider
+		// process. A genuinely new chat has no row yet; its first chat payload still
+		// carries and applies the effective controls atomically.
 		if (!requestedEntry) {
-			if (msg.type === "workflow_control") {
+			if (
+				msg.type === "set_provider" ||
+				msg.type === "set_model" ||
+				msg.type === "set_effort" ||
+				msg.type === "set_permission_mode"
+			) {
+				const saved = await db
+					.getSessionSelection(requestedTargetSession)
+					.catch(() => null);
+				if (!saved) return;
+				const permissionMode =
+					msg.type === "set_permission_mode"
+						? msg.mode
+						: msg.type === "set_provider"
+							? msg.permission_mode
+							: undefined;
+				if (
+					permissionMode &&
+					!KNOWN_RAVEN_PERMISSION_MODES.has(permissionMode)
+				) {
+					send(context.ws, {
+						type: "error",
+						message: `Unknown permission mode: ${permissionMode}`,
+					});
+					return;
+				}
+				if (msg.type === "set_provider") {
+					if (!context.pool.getProvider(msg.provider)) {
+						send(context.ws, {
+							type: "error",
+							message: `Unknown or unavailable provider: ${msg.provider}`,
+						});
+						return;
+					}
+					await db.setSessionProviderSelection(
+						requestedTargetSession,
+						msg.provider,
+						{
+							model: msg.model,
+							effort: msg.effort,
+							permissionMode: msg.permission_mode,
+						},
+					);
+				} else if (msg.type === "set_model") {
+					await db.setSessionModel(requestedTargetSession, msg.model ?? "");
+				} else if (msg.type === "set_effort") {
+					await db.setSessionEffort(requestedTargetSession, msg.effort);
+				} else {
+					await db.setSessionPermissionMode(requestedTargetSession, msg.mode);
+				}
+				bumpDataRevision("sessions");
+				send(context.ws, {
+					type: "status",
+					session_id: requestedTargetSession,
+					...(await restoreDetachedStatus(
+						context.pool,
+						requestedTargetSession,
+					)),
+				});
+			} else if (msg.type === "workflow_control") {
 				send(context.ws, {
 					type: "error",
 					message: "This workflow session is not live.",
@@ -1550,21 +1627,24 @@ export function createWsHandlers(
 
 			// Send vault session status and (if relevant) last error.
 			const status = vault.manager.getStatus();
-			send(ws, { type: "status", ...status });
+			vault.runState.send(ws, { type: "status", ...status });
 			const context = vault.runState.getContextSnapshot?.();
 			if (context) vault.runState.send(ws, context);
 			if (vault.runState.lastError !== null && status.state === "error") {
-				send(ws, { type: "error", message: vault.runState.lastError });
+				vault.runState.send(ws, {
+					type: "error",
+					message: vault.runState.lastError,
+				});
 			}
 
 			if (vault.manager.isRunning()) {
 				// Replay buffered run events (chunks, tool_events, permission events)
 				// so new connections see what happened since the run started.
 				for (const msg of vault.runState.getReplayBuffer()) {
-					send(ws, msg);
+					vault.runState.send(ws, msg);
 				}
 				const sleep = vault.manager.getSleepState();
-				if (sleep) send(ws, sleep);
+				if (sleep) vault.runState.send(ws, sleep);
 				// A reconnecting client may claim an unowned run, but every connected
 				// client should see the prompt currently blocking that run.
 				if (vault.runState.ownerWs === null) vault.runState.ownerWs = ws;
@@ -1575,7 +1655,7 @@ export function createWsHandlers(
 			const cachedMcp = vault.manager.getLastMcpStatus();
 			if (cachedMcp) {
 				const providerId = vault.manager.getProviderId();
-				send(ws, {
+				vault.runState.send(ws, {
 					type: "mcp_status",
 					...(providerId ? { provider_id: providerId } : {}),
 					servers: cachedMcp.map(mapMcpServer),
