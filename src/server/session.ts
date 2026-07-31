@@ -191,6 +191,10 @@ function hookToolContext(call: ToolCall): {
 /** Mutable accumulator for per-turn SDK event state, threaded through the event loop. */
 type TurnState = {
 	startedAtMs: number;
+	/** Exact persisted provider/model selection that owns runtime observations. */
+	selectedModel: string;
+	/** In-memory provider ownership epoch captured before the provider turn. */
+	providerOwnershipGeneration: number;
 	receivedAny: boolean;
 	receivedUsage: boolean;
 	queryRecorded: boolean;
@@ -712,9 +716,14 @@ export function resolveDeclaredSessionDefaults(
 	);
 }
 
-function createTurnState(): TurnState {
+function createTurnState(
+	selectedModel: string,
+	providerOwnershipGeneration: number,
+): TurnState {
 	return {
 		startedAtMs: Date.now(),
+		selectedModel,
+		providerOwnershipGeneration,
 		receivedAny: false,
 		receivedUsage: false,
 		queryRecorded: false,
@@ -789,6 +798,13 @@ export class SessionManager {
 	// on subsequent turns so the provider manages history natively.
 	private providerSessionId: string | null = null;
 	private providerSessionProviderId: string | null = null;
+	/**
+	 * Invalidates async provider results across A→B→A ownership round trips.
+	 * DB ownership mutations are also serialized so an accepted old write always
+	 * lands before the switch that retires it.
+	 */
+	private providerOwnershipGeneration = 0;
+	private providerOwnershipWriteTail: Promise<void> = Promise.resolve();
 	private historyResumeMode: AgentQueryParams["historyResumeMode"] = "none";
 	private unregisterUmbodApprovalSession: (() => void) | null = null;
 	private permissions = new PermissionManager();
@@ -955,6 +971,7 @@ export class SessionManager {
 		this.clearCurrentSessionIdentity();
 		this.providerSessionId = null;
 		this.providerSessionProviderId = null;
+		this.providerOwnershipGeneration += 1;
 		this.historyResumeMode = "none";
 		this.providerHandoffPending = false;
 		this.operatingBriefProviderKey = null;
@@ -1048,6 +1065,50 @@ export class SessionManager {
 		return this.currentGoal;
 	}
 
+	private selectedModelFor(agentSettings?: AgentSettings): string {
+		return this.modelOverride !== null
+			? (this.modelOverride.value ?? "")
+			: (agentSettings?.model ?? this.model);
+	}
+
+	private enqueueProviderOwnershipWrite<T>(
+		write: () => Promise<T>,
+	): Promise<T> {
+		const operation = this.providerOwnershipWriteTail.then(write, write);
+		this.providerOwnershipWriteTail = operation.then(
+			() => undefined,
+			() => undefined,
+		);
+		return operation;
+	}
+
+	private ownsProviderGeneration(
+		providerId: string,
+		generation: number,
+	): boolean {
+		return (
+			this.providerOwnershipGeneration === generation &&
+			this.providerSessionProviderId === providerId
+		);
+	}
+
+	private persistProviderSession(
+		sessionId: string,
+		providerId: string,
+		providerSessionId: string,
+		generation: number,
+	): Promise<boolean> {
+		return this.enqueueProviderOwnershipWrite(async () => {
+			if (!this.ownsProviderGeneration(providerId, generation)) return false;
+			const accepted = await db.setSessionProviderSession(
+				sessionId,
+				providerId,
+				providerSessionId,
+			);
+			return accepted && this.ownsProviderGeneration(providerId, generation);
+		});
+	}
+
 	getActiveRoutine(): { routineId: string; runId: string } | null {
 		return this.activeRoutineContext
 			? {
@@ -1072,8 +1133,8 @@ export class SessionManager {
 		this.model = model ?? "";
 		await Promise.all([
 			this.agentSession?.setModel?.(model),
-			this.currentSessionId && model !== undefined
-				? db.setSessionModel(this.currentSessionId, model)
+			this.currentSessionId
+				? db.setSessionModel(this.currentSessionId, model ?? "")
 				: Promise.resolve(),
 		]);
 	}
@@ -1109,9 +1170,12 @@ export class SessionManager {
 			throw new Error(`Unknown permission mode: ${selection.permissionMode}`);
 		}
 
-		const currentProviderId = this.resolveProvider(this.agentCwd).providerId;
+		const currentProviderId =
+			this.providerSessionProviderId ??
+			this.resolveProvider(this.agentCwd).providerId;
 		const providerChanged = currentProviderId !== providerId;
 		if (providerChanged) {
+			this.providerOwnershipGeneration += 1;
 			this.agentSession?.cancel();
 			this.agentSession = null;
 			this.agentSessionKey = null;
@@ -1136,22 +1200,15 @@ export class SessionManager {
 		this.permissionMode =
 			(selection.permissionMode as PermissionMode | undefined) ?? "default";
 
-		if (this.currentSessionId && selection.persistSessionSelection !== false) {
-			await Promise.all([
-				db.setSessionProviderId(this.currentSessionId, providerId),
-				selection.model
-					? db.setSessionModel(this.currentSessionId, selection.model)
-					: Promise.resolve(),
-				selection.effort
-					? db.setSessionEffort(this.currentSessionId, selection.effort)
-					: Promise.resolve(),
-				selection.permissionMode
-					? db.setSessionPermissionMode(
-							this.currentSessionId,
-							selection.permissionMode,
-						)
-					: Promise.resolve(),
-			]);
+		const currentSessionId = this.currentSessionId;
+		if (currentSessionId && selection.persistSessionSelection !== false) {
+			await this.enqueueProviderOwnershipWrite(() =>
+				db.setSessionProviderSelection(currentSessionId, providerId, {
+					model: selection.model,
+					effort: selection.effort,
+					permissionMode: selection.permissionMode,
+				}),
+			);
 		}
 	}
 
@@ -1273,6 +1330,13 @@ export class SessionManager {
 	}
 
 	getProviderId(agentCwd?: string): string {
+		if (
+			agentCwd === undefined &&
+			this.providerSessionProviderId &&
+			this.providers.has(this.providerSessionProviderId)
+		) {
+			return this.providerSessionProviderId;
+		}
 		return this.resolveProvider(agentCwd ?? this.agentCwd).providerId;
 	}
 
@@ -1647,8 +1711,12 @@ export class SessionManager {
 			options.agentCwd,
 			control.action === "set" ? control.objective : "",
 		);
-		const { provider, agentSettings, resumeProviderSessionId } =
-			this.prepareProviderForTurn(options.sessionId);
+		const {
+			provider,
+			agentSettings,
+			resumeProviderSessionId,
+			ownershipGeneration,
+		} = await this.prepareProviderForTurn(options.sessionId);
 		if (!isCodexRuntimeProvider(provider.providerId)) {
 			throw new Error("/goal is only available for Codex sessions.");
 		}
@@ -1713,14 +1781,20 @@ export class SessionManager {
 			}
 			const result: ProviderGoalControlResult =
 				await agentSession.controlGoal(control);
-			this.currentGoal = result.goal;
-			this.providerSessionId = result.providerSessionId;
-			this.providerSessionProviderId = provider.providerId;
-			await db.setSessionProviderSession(
+			const accepted = await this.persistProviderSession(
 				options.sessionId,
 				provider.providerId,
 				result.providerSessionId,
+				ownershipGeneration,
 			);
+			if (!accepted) {
+				throw new Error(
+					"The provider changed while goal control was in progress.",
+				);
+			}
+			this.currentGoal = result.goal;
+			this.providerSessionId = result.providerSessionId;
+			this.providerSessionProviderId = provider.providerId;
 			if (ownsContinuationDrain) {
 				this.runGoalContinuation({
 					agentSession,
@@ -1728,6 +1802,7 @@ export class SessionManager {
 					emit: options.emit,
 					provider,
 					agentSettings,
+					ownershipGeneration,
 					objective: result.goal?.objective ?? "Goal continuation",
 				});
 				continuationLaunched = true;
@@ -1786,8 +1861,12 @@ export class SessionManager {
 			options.agentCwd,
 			control.mode === "live" ? "Live voice" : "Voice",
 		);
-		const { provider, agentSettings, resumeProviderSessionId } =
-			this.prepareProviderForTurn(options.sessionId);
+		const {
+			provider,
+			agentSettings,
+			resumeProviderSessionId,
+			ownershipGeneration,
+		} = await this.prepareProviderForTurn(options.sessionId);
 		if (provider.providerId !== "codex") {
 			throw new Error(
 				"Codex voice is only available in native Codex sessions.",
@@ -1899,13 +1978,20 @@ export class SessionManager {
 			this.realtimeMode = null;
 			throw error;
 		}
-		this.providerSessionId = result.providerSessionId;
-		this.providerSessionProviderId = provider.providerId;
-		await db.setSessionProviderSession(
+		const accepted = await this.persistProviderSession(
 			options.sessionId,
 			provider.providerId,
 			result.providerSessionId,
+			ownershipGeneration,
 		);
+		if (!accepted) {
+			this.realtimeMode = null;
+			throw new Error(
+				"The provider changed while realtime startup was in progress.",
+			);
+		}
+		this.providerSessionId = result.providerSessionId;
+		this.providerSessionProviderId = provider.providerId;
 	}
 
 	private stopRealtimeSession(): Promise<void> {
@@ -1934,6 +2020,7 @@ export class SessionManager {
 		emit: (msg: ServerMessage) => void;
 		provider: AgentProvider;
 		agentSettings: AgentSettings | undefined;
+		ownershipGeneration: number;
 		objective: string;
 	}): void {
 		const {
@@ -1942,9 +2029,13 @@ export class SessionManager {
 			emit,
 			provider,
 			agentSettings,
+			ownershipGeneration,
 			objective,
 		} = options;
-		const turn = createTurnState();
+		const turn = createTurnState(
+			this.selectedModelFor(agentSettings),
+			ownershipGeneration,
+		);
 		void (async () => {
 			try {
 				await this.iterateConversation(
@@ -2073,6 +2164,7 @@ export class SessionManager {
 			this.restartAgentSessionForEffort = false;
 		}
 		if (retiresResumeSession) {
+			this.providerOwnershipGeneration += 1;
 			this.providerSessionId = null;
 			this.providerSessionProviderId = null;
 			this.historyResumeMode = "none";
@@ -2139,6 +2231,7 @@ export class SessionManager {
 		sessionId: string,
 		updateGlobalFocus = true,
 	): Promise<boolean> {
+		this.providerOwnershipGeneration += 1;
 		this.clearSessionProvenance();
 		const [
 			savedSession,
@@ -2210,7 +2303,9 @@ export class SessionManager {
 		// vault/Einherjar model.
 		if (savedModel !== null && this.modelOverride === null) {
 			this.model = savedModel;
-			this.modelOverride = { value: savedModel };
+			this.modelOverride = {
+				value: savedModel === "" ? undefined : savedModel,
+			};
 		}
 		if (savedSession?.selected_effort && this.effortOverride === null) {
 			this.effort = savedSession.selected_effort;
@@ -2305,25 +2400,42 @@ export class SessionManager {
 	}
 
 	/** Handle session_start: capture and persist the provider session ID. */
-	private handleSessionStart(
+	private async handleSessionStart(
 		event: Extract<AgentEvent, { type: "session_start" }>,
 		sessionId: string | undefined,
 		provider: AgentProvider,
+		ownershipGeneration: number,
 		emit: (msg: ServerMessage) => void,
-	): void {
+	): Promise<void> {
 		const newId = event.sessionId;
+		if (
+			!this.ownsProviderGeneration(provider.providerId, ownershipGeneration)
+		) {
+			return;
+		}
 		// Always update on every session_start — the provider may reassign on
 		// compaction/fork, and we want the latest valid id persisted for the next
 		// turn's resume.
 		if (newId) {
 			if (newId !== this.providerSessionId) {
+				if (sessionId) {
+					const accepted = await this.persistProviderSession(
+						sessionId,
+						provider.providerId,
+						newId,
+						ownershipGeneration,
+					).catch((e) => {
+						logDbError("setSessionProviderSession", e);
+						return false;
+					});
+					if (!accepted) return;
+				} else if (
+					!this.ownsProviderGeneration(provider.providerId, ownershipGeneration)
+				) {
+					return;
+				}
 				this.providerSessionId = newId;
 				this.providerSessionProviderId = provider.providerId;
-				if (sessionId) {
-					void db
-						.setSessionProviderSession(sessionId, provider.providerId, newId)
-						.catch((e) => logDbError("setSessionProviderSession", e));
-				}
 			}
 			this.unregisterUmbodApprovalSession?.();
 			this.unregisterUmbodApprovalSession = registerUmbodApprovalSession(
@@ -2628,9 +2740,16 @@ export class SessionManager {
 			if (recorded) queryData.estimated_cost = recorded.estimatedCost;
 			bumpDataRevision("stats", "sessions");
 			if (turn.lastActualModel) {
-				db.setSessionActualModel(sessionId, turn.lastActualModel).catch((e) => {
-					console.error("[db] setSessionActualModel failed:", e);
-				});
+				await db
+					.setSessionActualModelForProvider(
+						sessionId,
+						provider.providerId,
+						turn.selectedModel,
+						turn.lastActualModel,
+					)
+					.catch((error) =>
+						logDbError("setSessionActualModelForProvider", error),
+					);
 			}
 			if (turn.assistantText) {
 				turn.lastAssistantText = turn.assistantText;
@@ -3142,7 +3261,13 @@ export class SessionManager {
 	): Promise<boolean> {
 		switch (event.type) {
 			case "session_start":
-				this.handleSessionStart(event, sessionId, provider, emit);
+				await this.handleSessionStart(
+					event,
+					sessionId,
+					provider,
+					turn.providerOwnershipGeneration,
+					emit,
+				);
 				break;
 			case "transport_error":
 				throw new Error(event.message);
@@ -4776,11 +4901,12 @@ export class SessionManager {
 		return session;
 	}
 
-	private prepareProviderForTurn(sessionId: string | undefined): {
+	private async prepareProviderForTurn(sessionId: string | undefined): Promise<{
 		provider: AgentProvider;
 		agentSettings: AgentSettings | undefined;
 		resumeProviderSessionId: string | null;
-	} {
+		ownershipGeneration: number;
+	}> {
 		const configuredProvider = this.resolveProvider(this.agentCwd);
 		// Provider identity is part of conversation continuity. A restored Claude
 		// thread must stay on Claude even if the vault or agent is configured to use
@@ -4802,16 +4928,28 @@ export class SessionManager {
 			? this.providerSessionId
 			: null;
 		if (!sameProvider) {
+			this.providerOwnershipGeneration += 1;
 			this.providerSessionId = null;
 			this.providerSessionProviderId = provider.providerId;
 			this.historyResumeMode = "none";
 		}
+		const ownershipGeneration = this.providerOwnershipGeneration;
 		if (sessionId) {
-			void db
-				.setSessionProviderId(sessionId, provider.providerId)
-				.catch((error) => logDbError("setSessionProviderId", error));
+			await this.enqueueProviderOwnershipWrite(() =>
+				db.setSessionProviderId(sessionId, provider.providerId),
+			);
+			if (
+				!this.ownsProviderGeneration(provider.providerId, ownershipGeneration)
+			) {
+				throw new Error("The provider changed while preparing the turn.");
+			}
 		}
-		return { provider, agentSettings, resumeProviderSessionId };
+		return {
+			provider,
+			agentSettings,
+			resumeProviderSessionId,
+			ownershipGeneration,
+		};
 	}
 
 	private scheduleTurnRecap(options: {
@@ -4974,7 +5112,8 @@ export class SessionManager {
 			provider: currentProvider,
 			agentSettings,
 			resumeProviderSessionId,
-		} = this.prepareProviderForTurn(sessionId);
+			ownershipGeneration,
+		} = await this.prepareProviderForTurn(sessionId);
 		const configuredPermissionMode = this.activeRoutineContext
 			? this.activeRoutineContext.mode === "full_access"
 				? "bypassPermissions"
@@ -4990,7 +5129,10 @@ export class SessionManager {
 			return;
 		}
 
-		const turn = createTurnState();
+		const turn = createTurnState(
+			this.selectedModelFor(agentSettings),
+			ownershipGeneration,
+		);
 		this.currentTurnState = turn;
 		this.currentTurnPermissionMode = planMode
 			? "plan"
@@ -5245,16 +5387,22 @@ export class SessionManager {
 						? { tokenBudget: goalStart.tokenBudget }
 						: {}),
 				});
-				this.currentGoal = result.goal;
-				this.providerSessionId = result.providerSessionId;
-				this.providerSessionProviderId = currentProvider.providerId;
 				if (sessionId) {
-					await db.setSessionProviderSession(
+					const accepted = await this.persistProviderSession(
 						sessionId,
 						currentProvider.providerId,
 						result.providerSessionId,
+						ownershipGeneration,
 					);
+					if (!accepted) {
+						throw new Error(
+							"The provider changed while goal startup was in progress.",
+						);
+					}
 				}
+				this.currentGoal = result.goal;
+				this.providerSessionId = result.providerSessionId;
+				this.providerSessionProviderId = currentProvider.providerId;
 				emit({
 					type: "goal_state",
 					session_id: sessionId ?? result.providerSessionId,

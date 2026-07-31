@@ -24,6 +24,7 @@ import {
 	handleProjectPreviewRelayRequest,
 	projectPreviewSelectionRedirect,
 } from "./projectPreviewRelay";
+import type { ProjectPreviewCapability } from "./projectPreviewTrust";
 
 const startSchema = z.object({
 	session_id: z.string().trim().min(1),
@@ -121,6 +122,7 @@ type ControlBase = {
 	previewId: string;
 	sessionId: string;
 	port: number;
+	capability: ProjectPreviewCapability;
 	initialPath: string;
 };
 type ControlAction<Action extends ProjectPreviewControlAction["action"]> =
@@ -262,7 +264,7 @@ async function resolveBrowserPreview(rawPreviewId: string, sessionId: string) {
 		rawPreviewId === "session" ? undefined : decodeURIComponent(rawPreviewId);
 	const preview = await inspectPreview(sessionId, previewId);
 	const target = projectPreviewManager.relayTarget(preview.id);
-	return { preview, port: target.port };
+	return { preview, ...target };
 }
 
 type ProjectPreviewRouteContext = {
@@ -337,7 +339,7 @@ async function handleCaptureRoute({
 	);
 	if (!match || req.method !== "POST") return null;
 	const body = captureSchema.parse(await req.json());
-	const { preview, port } = await resolveBrowserPreview(
+	const { preview, port, capability } = await resolveBrowserPreview(
 		match[1],
 		body.session_id,
 	);
@@ -345,6 +347,7 @@ async function handleCaptureRoute({
 		previewId: preview.id,
 		sessionId: preview.session_id,
 		port,
+		capability,
 		path: body.path ?? preview.path,
 		viewport: body.viewport,
 		...(body.width !== undefined && body.height !== undefined
@@ -369,7 +372,7 @@ async function handleControlRoute({
 	);
 	if (!match || req.method !== "POST") return null;
 	const body = controlSchema.parse(await req.json());
-	const { preview, port } = await resolveBrowserPreview(
+	const { preview, port, capability } = await resolveBrowserPreview(
 		match[1],
 		body.session_id,
 	);
@@ -378,6 +381,7 @@ async function handleControlRoute({
 			previewId: preview.id,
 			sessionId: preview.session_id,
 			port,
+			capability,
 			initialPath: preview.path,
 		}),
 	);

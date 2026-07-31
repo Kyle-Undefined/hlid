@@ -3,6 +3,7 @@ import { getRequestIP } from "@tanstack/react-start/server";
 import { forbiddenResponse } from "#/lib/originGate";
 import { loadToken } from "#/lib/token";
 import {
+	authenticateSessionRequest,
 	authState,
 	changePassword,
 	clearSessionCookie,
@@ -143,6 +144,15 @@ async function authenticatedActionResponse(
 	peerIp: string,
 	secure: boolean,
 ): Promise<Response> {
+	if (!(await authenticateSessionRequest(request))) {
+		return json(
+			{
+				error:
+					"Credential administration requires a signed-in browser session.",
+			},
+			403,
+		);
+	}
 	switch (action) {
 		case "logout":
 			await revokeSession(readCookie(request));

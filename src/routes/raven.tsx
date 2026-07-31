@@ -89,7 +89,11 @@ import {
 	subscribeSessionsStatus,
 } from "#/hooks/wsSessionStatusStore";
 import * as wsStore from "#/hooks/wsStore";
-import { agentDisplayName } from "#/lib/agentDisplay";
+import {
+	type AgentDisplayCandidate,
+	agentDisplayName,
+	sameAgentDisplayPath,
+} from "#/lib/agentDisplay";
 import {
 	addCommandSelection,
 	type CommandDescriptor,
@@ -212,6 +216,20 @@ function interactiveModeForAgent(
 	);
 }
 
+function configuredRavenAgentPath(
+	candidate: string | null | undefined,
+	configuredAgents: readonly AgentDisplayCandidate[],
+): string | undefined {
+	if (!candidate) return undefined;
+	const match = configuredAgents.find(
+		(agent) =>
+			sameAgentDisplayPath(agent.path, candidate) ||
+			(agent.resolvedPath != null &&
+				sameAgentDisplayPath(agent.resolvedPath, candidate)),
+	);
+	return match?.path;
+}
+
 async function resolveSdkSession(
 	explicitSession: string | undefined,
 	interactiveMode: boolean,
@@ -288,13 +306,18 @@ async function loadRavenRoute(session?: string, agent?: string) {
 	// Keeping it out of the loader removes a second provider round trip from the
 	// route's interactive critical path.
 	const providerUsages: Awaited<ReturnType<typeof loadProviderUsages>> = [];
-	const routeInteractiveMode = interactiveModeForAgent(config, agent);
+	const configuredAgents = [
+		...agentList,
+		...(config.agents ?? []),
+	] satisfies AgentDisplayCandidate[];
+	const explicitAgent = configuredRavenAgentPath(agent, configuredAgents);
+	const routeInteractiveMode = interactiveModeForAgent(config, explicitAgent);
 	let resolvedSessionId = await resolveSdkSession(
 		session,
 		routeInteractiveMode,
 		liveSessions,
 	);
-	let agentSkillContext = agent;
+	let agentSkillContext = explicitAgent;
 	let sessionModel: string | null = null;
 	let sessionProviderId: string | null = null;
 	let sessionEffort: string | null = null;
@@ -314,7 +337,9 @@ async function loadRavenRoute(session?: string, agent?: string) {
 				? explicitSessionRow
 				: getSessionRowFn({ data: resolvedSessionId }),
 		]);
-		agentSkillContext ||= savedSelection?.agentCwd ?? undefined;
+		agentSkillContext ||=
+			configuredRavenAgentPath(savedSelection?.agentCwd, configuredAgents) ??
+			undefined;
 		sessionModel = savedSelection?.model ?? null;
 		sessionProviderId = savedSelection?.providerId ?? null;
 		sessionEffort = savedSelection?.effort ?? null;
@@ -446,19 +471,27 @@ function restoredRavenSessionSelection(
 
 function useRavenSessionIdentity({
 	config,
+	agentList,
 	existingSessionId,
 	initialAgentSkillContext,
 	routeSessionId,
+	routeAgent,
 	navigate,
 }: {
 	config: RavenConfig;
+	agentList: RavenAgentList;
 	existingSessionId: string | null;
 	initialAgentSkillContext: string | undefined;
 	routeSessionId: string | undefined;
+	routeAgent: string | undefined;
 	navigate: RavenNavigate;
 }) {
-	const [agentSkillContext, setAgentSkillContext] = useState(
-		initialAgentSkillContext,
+	const configuredAgents = useMemo(
+		() => [...agentList, ...(config.agents ?? [])],
+		[agentList, config.agents],
+	);
+	const [agentSkillContext, setAgentSkillContext] = useState(() =>
+		configuredRavenAgentPath(initialAgentSkillContext, configuredAgents),
 	);
 	const interactiveMode = interactiveModeForAgent(config, agentSkillContext);
 	const agentContextSentRef = useRef(false);
@@ -470,7 +503,7 @@ function useRavenSessionIdentity({
 	const [sessionId, setSessionId] = useState(
 		() =>
 			existingSessionId ??
-			(interactiveModeForAgent(config, initialAgentSkillContext) ? "" : uid()),
+			(interactiveModeForAgent(config, agentSkillContext) ? "" : uid()),
 	);
 	const sessionIdRef = useRef(sessionId);
 
@@ -497,11 +530,15 @@ function useRavenSessionIdentity({
 		activateNewSession(newId, false);
 	}, [activateNewSession]);
 
-	const selectAgent = useCallback((agent: string | undefined) => {
-		setAgentSkillContext(agent);
-		agentContextSentRef.current = false;
-		rememberRavenSessionId(sessionIdRef.current, agent);
-	}, []);
+	const selectAgent = useCallback(
+		(agent: string | undefined) => {
+			const configuredAgent = configuredRavenAgentPath(agent, configuredAgents);
+			setAgentSkillContext(configuredAgent);
+			agentContextSentRef.current = false;
+			rememberRavenSessionId(sessionIdRef.current, configuredAgent);
+		},
+		[configuredAgents],
+	);
 
 	useEffect(() => {
 		sessionIdRef.current = sessionId;
@@ -509,10 +546,12 @@ function useRavenSessionIdentity({
 
 	useEffect(() => {
 		if (!sessionId) return;
-		const storedAgent =
+		const storedAgent = configuredRavenAgentPath(
 			initialAgentSkillContext === undefined && agentSkillContext === undefined
 				? rememberedRavenAgent(sessionId)
-				: undefined;
+				: undefined,
+			configuredAgents,
+		);
 		if (storedAgent) {
 			setAgentSkillContext(storedAgent);
 			agentContextSentRef.current = false;
@@ -523,7 +562,8 @@ function useRavenSessionIdentity({
 		// previous chat during that transition.
 		if (existingSessionId && existingSessionId !== sessionId) return;
 		rememberRavenSessionId(sessionId, agentSkillContext);
-		if (routeSessionId === sessionId) return;
+		if (routeSessionId === sessionId && routeAgent === agentSkillContext)
+			return;
 		void navigate({
 			to: "/raven",
 			search: (previous) => ({
@@ -537,7 +577,9 @@ function useRavenSessionIdentity({
 		agentSkillContext,
 		existingSessionId,
 		initialAgentSkillContext,
+		configuredAgents,
 		navigate,
+		routeAgent,
 		routeSessionId,
 		sessionId,
 	]);
@@ -576,17 +618,20 @@ function useRavenSessionIdentity({
 		config.vault.path,
 	]);
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: intentional reset on session navigation only
 	useEffect(() => {
 		if (existingSessionId) {
 			setSessionId(existingSessionId);
 			sessionIdRef.current = existingSessionId;
 		}
 		setAgentSkillContext(
-			initialAgentSkillContext ?? rememberedRavenAgent(existingSessionId ?? ""),
+			configuredRavenAgentPath(
+				initialAgentSkillContext ??
+					rememberedRavenAgent(existingSessionId ?? ""),
+				configuredAgents,
+			),
 		);
 		agentContextSentRef.current = false;
-	}, [existingSessionId]);
+	}, [existingSessionId, configuredAgents, initialAgentSkillContext]);
 
 	useEffect(() => {
 		if (!interactiveMode || !sessionId) return;
@@ -2156,9 +2201,11 @@ export function ChatPage() {
 	}, [delegationParentSessionId, existingSessionId, sessionsDataRevision]);
 	const session = useRavenSessionIdentity({
 		config,
+		agentList,
 		existingSessionId,
 		initialAgentSkillContext,
 		routeSessionId: ravenSearch.session,
+		routeAgent: ravenSearch.agent,
 		navigate,
 	});
 	const { agentSkillContext, sessionId, sessionIdRef, interactiveMode } =

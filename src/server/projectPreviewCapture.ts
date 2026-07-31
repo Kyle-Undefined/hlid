@@ -1,3 +1,5 @@
+import type { ProjectPreviewCapability } from "./projectPreviewTrust";
+
 export const PROJECT_PREVIEW_CAPTURE_VIEWPORTS = {
 	desktop: { width: 1440, height: 1000 },
 	tablet: { width: 768, height: 1024 },
@@ -16,6 +18,7 @@ export type ProjectPreviewCaptureInput = {
 	previewId: string;
 	sessionId: string;
 	port: number;
+	capability: ProjectPreviewCapability;
 	path: string;
 	viewport: ProjectPreviewCaptureViewport;
 	size?: ProjectPreviewCaptureSize;
@@ -133,26 +136,32 @@ export function normalizeProjectPreviewCapturePath(path: string): string {
 	return `${url.pathname}${url.search}${url.hash}`;
 }
 
-export function isAllowedProjectPreviewBrowserUrl(
+export function isAllowedProjectPreviewBrowserOrigin(
 	value: string,
-	port: number,
+	allowedOrigin: string,
 ): boolean {
 	let url: URL;
+	let allowed: URL;
 	try {
 		url = new URL(value);
+		allowed = new URL(allowedOrigin);
 	} catch {
 		return false;
 	}
-	if (url.protocol === "data:" || url.protocol === "blob:") return true;
-	if (!["http:", "https:", "ws:", "wss:"].includes(url.protocol)) {
+	if (allowed.protocol !== "http:" && allowed.protocol !== "https:") {
 		return false;
 	}
-	const loopback =
-		url.hostname === "127.0.0.1" ||
-		url.hostname === "localhost" ||
-		url.hostname === "[::1]";
-	const effectivePort =
-		url.port ||
-		(url.protocol === "https:" || url.protocol === "wss:" ? "443" : "80");
-	return loopback && effectivePort === String(port);
+	if (url.protocol === "data:" || url.protocol === "blob:") return true;
+	const requestProtocol =
+		url.protocol === "ws:"
+			? "http:"
+			: url.protocol === "wss:"
+				? "https:"
+				: url.protocol;
+	return (
+		requestProtocol === allowed.protocol &&
+		url.hostname === allowed.hostname &&
+		(url.port || (requestProtocol === "https:" ? "443" : "80")) ===
+			(allowed.port || (allowed.protocol === "https:" ? "443" : "80"))
+	);
 }

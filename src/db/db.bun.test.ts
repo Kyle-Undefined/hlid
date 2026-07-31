@@ -74,7 +74,7 @@ import {
 	getSessionsPaginated,
 	recordQuery,
 	renameSession,
-	setSessionActualModel,
+	setSessionActualModelForProvider,
 	setSessionAgentCwd,
 	setSessionArchived,
 	setSessionEffort,
@@ -82,6 +82,7 @@ import {
 	setSessionPermissionMode,
 	setSessionPinned,
 	setSessionProviderId,
+	setSessionProviderSelection,
 	setSessionProviderSession,
 } from "./sessions";
 import {
@@ -114,6 +115,17 @@ function baseQuery(overrides: Partial<QueryData> = {}): QueryData {
 		tokens_in_context: null,
 		...overrides,
 	};
+}
+
+async function setActualModelForTest(
+	sessionId: string,
+	actualModel: string,
+): Promise<void> {
+	const database = await getDb();
+	database.run(`UPDATE sessions SET actual_model = ? WHERE id = ?`, [
+		actualModel,
+		sessionId,
+	]);
 }
 
 describe("session creation", () => {
@@ -171,11 +183,7 @@ describe("analytics revisions", () => {
 			() => setSessionAgentCwd("revision-session", "/agents/raven"),
 			() => setSessionProviderId("revision-session", "codex"),
 			() =>
-				setSessionProviderSession(
-					"revision-session",
-					"claude",
-					"claude-session",
-				),
+				setSessionProviderSession("revision-session", "codex", "codex-session"),
 		]) {
 			resetAnalyticsRevisionForTest();
 			await mutate();
@@ -372,7 +380,9 @@ describe("sessions — create & fetch", () => {
 
 	it("preserves renamed fork provenance through archive and restore", async () => {
 		freshDb();
-		await createSession("source", "Original parent", "gpt-test");
+		await createSession("source", "Original parent", "gpt-test", {
+			providerId: "codex",
+		});
 		await setSessionProviderSession("source", "codex", "thread-source");
 		await setSessionAgentCwd("source", "/work/project");
 		await renameSession("source", "Renamed parent");
@@ -454,7 +464,7 @@ describe("sessions — create & fetch", () => {
 		await createSession("vault", "Vault chat", "claude-sonnet");
 		await createSession("raven-fast", "Raven fast", "configured-model");
 		await setSessionAgentCwd("raven-fast", "/agents/raven");
-		await setSessionActualModel("raven-fast", "gpt-5.4");
+		await setActualModelForTest("raven-fast", "gpt-5.4");
 		await createSession("raven-deep", "Raven deep", "gpt-5.4-pro");
 		await setSessionAgentCwd("raven-deep", "/agents/raven");
 		await createSession("forge", "Forge chat", "claude-opus");
@@ -594,8 +604,10 @@ describe("sessions — provider sessions", () => {
 	});
 
 	it("stores and gates resume ids by provider", async () => {
-		await createSession("s1", "L", "m");
-		await setSessionProviderSession("s1", "codex", "codex-thread-123");
+		await createSession("s1", "L", "m", { providerId: "codex" });
+		expect(
+			await setSessionProviderSession("s1", "codex", "codex-thread-123"),
+		).toBe(true);
 		expect(await getSessionProviderId("s1")).toBe("codex");
 		expect(await getSessionProviderSession("s1")).toBe("codex-thread-123");
 		expect(await getSessionProviderSession("s1", "codex")).toBe(
@@ -603,6 +615,17 @@ describe("sessions — provider sessions", () => {
 		);
 		expect(await getSessionProviderSession("s1", "claude")).toBeNull();
 		expect(await getSessionClaudeId("s1")).toBeNull();
+	});
+
+	it("rejects a provider-native session write after ownership changes", async () => {
+		await createSession("s1", "L", "m", { providerId: "codex" });
+		await setSessionProviderId("s1", "claude");
+
+		expect(
+			await setSessionProviderSession("s1", "codex", "stale-codex-thread"),
+		).toBe(false);
+		expect(await getSessionProviderId("s1")).toBe("claude");
+		expect(await getSessionProviderSession("s1")).toBeNull();
 	});
 
 	it("keeps the legacy Claude getter compatible with provider sessions", async () => {
@@ -667,6 +690,54 @@ describe("sessions — agent_cwd & actual_model", () => {
 		expect(await getSessionModel("s1")).toBe("claude-fable-5");
 	});
 
+	it("invalidates an observed model only when the selected model changes", async () => {
+		await createSession("s1", "L", "gpt-5.6-sol", {
+			providerId: "codex",
+		});
+		await setActualModelForTest("s1", "gpt-5.6-sol-20260701");
+
+		await setSessionModel("s1", "gpt-5.6-sol");
+		expect(await getSessionActualModel("s1")).toBe("gpt-5.6-sol-20260701");
+
+		await setSessionModel("s1", "gpt-5.6-terra");
+		expect(await getSessionActualModel("s1")).toBeNull();
+		expect(
+			await setSessionActualModelForProvider(
+				"s1",
+				"codex",
+				"gpt-5.6-sol",
+				"stale-sol-runtime",
+			),
+		).toBe(false);
+		expect(await getSessionActualModel("s1")).toBeNull();
+	});
+
+	it("keeps an explicit provider-default model selection across observations", async () => {
+		await createSession("s1", "L", "gpt-5.6-sol", {
+			providerId: "codex",
+		});
+		await setActualModelForTest("s1", "gpt-5.6-sol-20260701");
+
+		await setSessionProviderSelection("s1", "codex", {
+			model: undefined,
+			effort: "medium",
+			permissionMode: "default",
+		});
+		expect(await getSessionSelection("s1")).toMatchObject({ model: "" });
+		expect(await getSessionActualModel("s1")).toBeNull();
+
+		expect(
+			await setSessionActualModelForProvider(
+				"s1",
+				"codex",
+				"",
+				"gpt-5.6-default-20260701",
+			),
+		).toBe(true);
+		expect(await getSessionActualModel("s1")).toBe("gpt-5.6-default-20260701");
+		expect(await getSessionModel("s1")).toBe("");
+	});
+
 	it("persists and reads all Raven session controls together", async () => {
 		await createSession("s1", "L", "gpt-5.6-sol", {
 			effort: "high",
@@ -714,10 +785,138 @@ describe("sessions — agent_cwd & actual_model", () => {
 		expect(await getSessionModel("s1")).toBe("claude-fable-5");
 	});
 
-	it("sets and gets actual_model", async () => {
-		await createSession("s1", "L", "m");
-		await setSessionActualModel("s1", "claude-opus-4-5");
+	it("sets and gets actual_model for the matching ownership tuple", async () => {
+		await createSession("s1", "L", "m", { providerId: "claude" });
+		expect(
+			await setSessionActualModelForProvider(
+				"s1",
+				"claude",
+				"m",
+				"claude-opus-4-5",
+			),
+		).toBe(true);
 		expect(await getSessionActualModel("s1")).toBe("claude-opus-4-5");
+	});
+
+	it("atomically transfers provider-owned controls and rejects delayed actual models", async () => {
+		await createSession("round-trip", "Round trip", "gpt-5.5", {
+			providerId: "codex",
+			effort: "medium",
+			permissionMode: "bypassPermissions",
+		});
+		await setSessionProviderSession("round-trip", "codex", "codex-thread");
+		await setSessionActualModelForProvider(
+			"round-trip",
+			"codex",
+			"gpt-5.5",
+			"gpt-5.5",
+		);
+
+		await setSessionProviderSelection("round-trip", "codex", {
+			model: "gpt-5.5-mini",
+			effort: "low",
+			permissionMode: "default",
+		});
+		expect(await getSessionActualModel("round-trip")).toBeNull();
+		expect(await getSessionProviderSession("round-trip", "codex")).toBe(
+			"codex-thread",
+		);
+		await setSessionActualModelForProvider(
+			"round-trip",
+			"codex",
+			"gpt-5.5-mini",
+			"gpt-5.5-mini-20260701",
+		);
+		await setSessionProviderSelection("round-trip", "codex", {
+			model: "gpt-5.5-mini",
+			effort: "medium",
+			permissionMode: "default",
+		});
+		expect(await getSessionActualModel("round-trip")).toBe(
+			"gpt-5.5-mini-20260701",
+		);
+
+		await setSessionProviderSelection("round-trip", "claude", {
+			model: "claude-sonnet-5",
+			effort: "high",
+			permissionMode: "default",
+		});
+
+		expect(await getSessionSelection("round-trip")).toEqual({
+			agentCwd: null,
+			providerId: "claude",
+			model: "claude-sonnet-5",
+			effort: "high",
+			permissionMode: "default",
+		});
+		expect(await getSessionActualModel("round-trip")).toBeNull();
+		expect(await getSessionProviderSession("round-trip", "claude")).toBeNull();
+
+		// A completion from the retired Codex runtime cannot reclaim Claude's
+		// current-session presentation after the provider switch.
+		await setSessionActualModelForProvider(
+			"round-trip",
+			"codex",
+			"gpt-5.5-mini",
+			"gpt-5.5",
+		);
+		expect(await getSessionActualModel("round-trip")).toBeNull();
+
+		await setSessionActualModelForProvider(
+			"round-trip",
+			"claude",
+			"claude-sonnet-5",
+			"claude-sonnet-5",
+		);
+		expect(await getSessionActualModel("round-trip")).toBe("claude-sonnet-5");
+
+		await setSessionProviderSelection("round-trip", "codex", {
+			model: "gpt-5.5",
+			effort: "medium",
+			permissionMode: "bypassPermissions",
+		});
+		expect(await getSessionSelection("round-trip")).toEqual({
+			agentCwd: null,
+			providerId: "codex",
+			model: "gpt-5.5",
+			effort: "medium",
+			permissionMode: "bypassPermissions",
+		});
+		expect(await getSessionActualModel("round-trip")).toBeNull();
+	});
+
+	it("keeps legacy selected controls while invalidating changed-provider runtime metadata", async () => {
+		await createSession("legacy-switch", "Legacy switch", "claude-sonnet-5", {
+			providerId: "claude",
+			effort: "high",
+			permissionMode: "acceptEdits",
+		});
+		await setSessionProviderSession("legacy-switch", "claude", "claude-thread");
+		await setSessionActualModelForProvider(
+			"legacy-switch",
+			"claude",
+			"claude-sonnet-5",
+			"claude-sonnet-5",
+		);
+
+		await setSessionProviderId("legacy-switch", "codex");
+
+		expect(await getSessionSelection("legacy-switch")).toEqual({
+			agentCwd: null,
+			providerId: "codex",
+			model: "claude-sonnet-5",
+			effort: "high",
+			permissionMode: "acceptEdits",
+		});
+		expect(await getSessionActualModel("legacy-switch")).toBeNull();
+		expect(
+			await getSessionProviderSession("legacy-switch", "codex"),
+		).toBeNull();
+		expect(await getSessionClaudeId("legacy-switch")).toBeNull();
+		await setSessionProviderId("legacy-switch", "claude");
+		expect(
+			await getSessionProviderSession("legacy-switch", "claude"),
+		).toBeNull();
 	});
 });
 
@@ -1372,6 +1571,7 @@ describe("messages", () => {
 		await createSession("source", "Codex work", "gpt-5.6-sol", {
 			effort: "high",
 			permissionMode: "default",
+			providerId: "codex",
 		});
 		await setSessionAgentCwd("source", "/work/project");
 		await setSessionProviderSession("source", "codex", "thread-source");

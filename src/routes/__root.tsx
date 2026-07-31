@@ -23,27 +23,20 @@ import {
 } from "#/hooks/wsDataRevisionStore";
 import { shouldRevalidateRouteData } from "#/lib/routeDataRevalidation";
 import { isRavenPath } from "#/lib/scrollContainers";
+import { getConfig } from "#/lib/serverFns/config";
 import { logClientErrorFn } from "#/lib/serverFns/logging";
 import {
 	serviceWorkerBuild,
 	shouldReloadForServiceWorkerBuild,
 } from "#/lib/serviceWorkerUpdate";
-import {
-	applyThemeToDocument,
-	type CustomThemePalette,
-	DARK_THEME,
-	THEME_COLOR_KEYS,
-	type ThemeName,
-} from "#/lib/theme";
+import { themeBootstrapConfig, themeBootstrapScript } from "#/lib/theme";
 
 import appCss from "../styles.css?url";
 
 export const Route = createRootRoute({
-	loader: () => {
-		return {
-			theme: "tan" as const,
-			mobileTheme: undefined,
-		};
+	loader: async () => {
+		const { ui } = await getConfig();
+		return themeBootstrapConfig(ui);
 	},
 	head: () => ({
 		meta: [
@@ -150,45 +143,6 @@ function SyncServerData({ pathname }: { pathname: string }) {
 	return null;
 }
 
-function SyncThemeFromConfig() {
-	useEffect(() => {
-		fetch("/api/config", { cache: "no-store" })
-			.then((response) => (response.ok ? response.json() : null))
-			.then(
-				(
-					config: {
-						ui?: {
-							theme?: ThemeName;
-							mobile_theme?: ThemeName;
-							custom_theme?: CustomThemePalette;
-							mobile_custom_theme?: CustomThemePalette;
-						};
-					} | null,
-				) => {
-					if (!config?.ui?.theme) return;
-					const mobile = window.matchMedia("(pointer: coarse)").matches;
-					const selected =
-						config.ui.mobile_theme && mobile
-							? config.ui.mobile_theme
-							: config.ui.theme;
-					const palette =
-						selected === "custom"
-							? mobile && config.ui.mobile_theme === "custom"
-								? (config.ui.mobile_custom_theme ?? config.ui.custom_theme)
-								: config.ui.custom_theme
-							: undefined;
-					localStorage.setItem("hlid-theme", selected);
-					if (palette)
-						localStorage.setItem("hlid-theme-palette", JSON.stringify(palette));
-					else localStorage.removeItem("hlid-theme-palette");
-					applyThemeToDocument(selected, palette ?? DARK_THEME);
-				},
-			)
-			.catch(() => {});
-	}, []);
-	return null;
-}
-
 function AuthSessionGuard() {
 	useEffect(() => {
 		let active = true;
@@ -234,7 +188,8 @@ function RegisterErrorLogger() {
 }
 
 function RootDocument({ children }: { children: React.ReactNode }) {
-	const { theme, mobileTheme } = Route.useLoaderData();
+	const { theme, mobileTheme, customTheme, mobileCustomTheme } =
+		Route.useLoaderData();
 	const pathname = useRouterState({
 		select: (state) => state.location.pathname,
 	});
@@ -247,9 +202,15 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 	useVisualViewportGuard(pathname, [shellRef, wrapperRef]);
 	const ravenRoute = isRavenPath(pathname);
 
-	// JSON.stringify on enum strings and the fixed color-key list is XSS-safe.
-	// Runs before first paint to prevent flash when mobile theme differs from desktop.
-	const themeInitScript = `(function(){var t=${JSON.stringify(theme)},m=${JSON.stringify(mobileTheme ?? null)},k=${JSON.stringify(THEME_COLOR_KEYS)};try{var s=localStorage.getItem("hlid-theme");if(s==="dark"||s==="tan"||s==="custom")t=s;}catch(e){}if(m&&m!=="same"&&window.matchMedia("(pointer: coarse)").matches)t=m;var r=document.documentElement;r.setAttribute("data-theme",t);r.setAttribute("data-theme-appearance",t==="tan"?"light":"dark");r.className=t;if(t==="custom"){try{var p=JSON.parse(localStorage.getItem("hlid-theme-palette")||"null");if(p&&(p.color_scheme==="dark"||p.color_scheme==="light")){r.setAttribute("data-theme-appearance",p.color_scheme);r.style.colorScheme=p.color_scheme;k.forEach(function(x){var v=p[x];if(typeof v==="string"&&/^#[0-9a-fA-F]{6}$/.test(v))r.style.setProperty("--"+x.replaceAll("_","-"),v);});if(typeof p.status_info!=="string"&&typeof p.primary==="string")r.style.setProperty("--status-info",p.primary);}}catch(e){}}})();`;
+	// The config is schema-validated and JSON-serialized by themeBootstrapScript.
+	// This runs before first paint so clean origins and mobile overrides start on
+	// their configured theme without waiting for a client-side config request.
+	const themeInitScript = themeBootstrapScript({
+		theme,
+		mobileTheme,
+		customTheme,
+		mobileCustomTheme,
+	});
 
 	return (
 		// suppressHydrationWarning: inline script mutates data-theme/className before
@@ -312,7 +273,6 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 					<>
 						<AuthSessionGuard key={pathname} />
 						<RegisterSW />
-						<SyncThemeFromConfig />
 						<SyncPrivacyStore />
 						<SyncServerData pathname={pathname} />
 						<RegisterErrorLogger />

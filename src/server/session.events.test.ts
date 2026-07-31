@@ -304,6 +304,60 @@ describe("SessionManager — native Codex realtime", () => {
 		).rejects.toThrow("Enable the Developer Preview in Forge");
 	});
 
+	it("rejects a delayed Codex native session after an A-to-B-to-A switch", async () => {
+		let finishRealtimeStart: (value: { providerSessionId: string }) => void =
+			() => {};
+		const realtimeStart = new Promise<{ providerSessionId: string }>(
+			(resolve) => {
+				finishRealtimeStart = resolve;
+			},
+		);
+		const startRealtime = vi.fn(() => realtimeStart);
+		const { provider: codex } = makeSwitchableProvider(
+			{ startRealtime },
+			"codex",
+		);
+		const { provider: claude } = makeSwitchableProvider({}, "claude");
+		const base = makeConfig("gpt-5.6-sol");
+		const config = {
+			...base,
+			vault_provider: "codex",
+			codex: {
+				model: "gpt-5.6-sol",
+				effort: "high",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+			voice: { codex_live_mode: true } as HlidConfig["voice"],
+		} as HlidConfig;
+		const sm = new SessionManager(
+			config,
+			new Map([
+				["codex", codex],
+				["claude", claude],
+			]),
+		);
+
+		const starting = sm.controlRealtime(
+			{ action: "start", mode: "live", sdp: "v=0\r\no=hlid" },
+			{ sessionId: "voice-aba", emit: vi.fn() },
+		);
+		await vi.waitFor(() => expect(startRealtime).toHaveBeenCalledOnce());
+
+		await sm.setProvider("claude", { model: "claude-sonnet-5" });
+		await sm.setProvider("codex", { model: "gpt-5.6-sol" });
+		finishRealtimeStart({ providerSessionId: "stale-codex-native" });
+
+		await expect(starting).rejects.toThrow(
+			"The provider changed while realtime startup was in progress.",
+		);
+		expect(dbMock.setSessionProviderSession).not.toHaveBeenCalledWith(
+			"voice-aba",
+			"codex",
+			"stale-codex-native",
+		);
+	});
+
 	it("tears down the provider on error and coalesces a browser stop", async () => {
 		let publishRealtime:
 			| ((event: { type: "error"; message: string }) => void)

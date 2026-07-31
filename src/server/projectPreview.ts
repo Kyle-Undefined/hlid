@@ -10,6 +10,11 @@ import { isAbsolute, posix, resolve, win32 } from "node:path";
 import { parseWslUncSyntax } from "#/lib/paths";
 import { projectPreviewBrowserManager } from "./projectPreviewBrowser";
 import { disposeProjectPreviewRelay } from "./projectPreviewRelay";
+import {
+	createProjectPreviewCapability,
+	PROJECT_PREVIEW_AUTH_ENV,
+	type ProjectPreviewCapability,
+} from "./projectPreviewTrust";
 import type { ProjectPreviewSnapshot } from "./protocol";
 import { broadcast } from "./runState";
 
@@ -31,6 +36,7 @@ type PreviewEntry = {
 	child: ChildProcess;
 	input: StartProjectPreviewInput;
 	bridge: LoopbackBridge | null;
+	capability: ProjectPreviewCapability | null;
 	stopping: boolean;
 	lifetimeTimer: ReturnType<typeof setTimeout>;
 	persistTimer: ReturnType<typeof setTimeout> | null;
@@ -53,6 +59,7 @@ type ProjectPreviewManagerOptions = {
 		typeof projectPreviewBrowserManager,
 		"close" | "closeAll"
 	>;
+	capabilityFactory?: () => ProjectPreviewCapability;
 };
 
 function normalizePreviewPath(value = "/"): string {
@@ -126,19 +133,31 @@ const HLID_SKIP_SELF_INSTALL = "HLID_SKIP_SELF_INSTALL";
 
 export function projectPreviewEnvironment(
 	environment: NodeJS.ProcessEnv = process.env,
+	capability?: ProjectPreviewCapability,
 ): NodeJS.ProcessEnv {
+	const forwardedNames = new Set([
+		HLID_SKIP_SELF_INSTALL,
+		PROJECT_PREVIEW_AUTH_ENV,
+	]);
 	const wslEnvironment = (environment.WSLENV ?? "")
 		.split(":")
 		.filter(
 			(entry) =>
 				entry &&
-				entry.split("/", 1)[0]?.toUpperCase() !== HLID_SKIP_SELF_INSTALL,
+				!forwardedNames.has(entry.split("/", 1)[0]?.toUpperCase() ?? ""),
 		);
-	return {
+	const result: NodeJS.ProcessEnv = {
 		...environment,
 		[HLID_SKIP_SELF_INSTALL]: "1",
-		WSLENV: [`${HLID_SKIP_SELF_INSTALL}/u`, ...wslEnvironment].join(":"),
+		WSLENV: [
+			`${HLID_SKIP_SELF_INSTALL}/u`,
+			...(capability ? [`${PROJECT_PREVIEW_AUTH_ENV}/u`] : []),
+			...wslEnvironment,
+		].join(":"),
 	};
+	if (capability) result[PROJECT_PREVIEW_AUTH_ENV] = capability.token;
+	else delete result[PROJECT_PREVIEW_AUTH_ENV];
+	return result;
 }
 
 export function projectPreviewLaunch(
@@ -173,7 +192,11 @@ export function projectPreviewLaunch(
 	};
 }
 
-function spawnPreview(command: string, cwd: string): ChildProcess {
+function spawnPreview(
+	command: string,
+	cwd: string,
+	capability: ProjectPreviewCapability,
+): ChildProcess {
 	const launch = projectPreviewLaunch(command, cwd);
 	return spawn(launch.executable, launch.args, {
 		cwd: launch.cwd,
@@ -181,7 +204,7 @@ function spawnPreview(command: string, cwd: string): ChildProcess {
 		detached: launch.detached,
 		windowsHide: true,
 		stdio: ["ignore", "pipe", "pipe"],
-		env: projectPreviewEnvironment(),
+		env: projectPreviewEnvironment(process.env, capability),
 	});
 }
 
@@ -339,6 +362,7 @@ export class ProjectPreviewManager {
 		typeof projectPreviewBrowserManager,
 		"close" | "closeAll"
 	>;
+	private readonly capabilityFactory: () => ProjectPreviewCapability;
 
 	constructor(options: ProjectPreviewManagerOptions = {}) {
 		this.lifetimeMs = options.lifetimeMs ?? PROJECT_PREVIEW_LIFETIME_MS;
@@ -350,6 +374,8 @@ export class ProjectPreviewManager {
 			});
 		this.browserManager =
 			options.browserManager ?? projectPreviewBrowserManager;
+		this.capabilityFactory =
+			options.capabilityFactory ?? createProjectPreviewCapability;
 	}
 
 	private async persist(entry: PreviewEntry): Promise<void> {
@@ -442,8 +468,9 @@ export class ProjectPreviewManager {
 			? resolveWslIpv4Address(wsl.distro)
 			: Promise.resolve(undefined);
 		const path = normalizePreviewPath(input.path);
-		const child = spawnPreview(input.command, cwd);
 		const id = crypto.randomUUID();
+		const capability = this.capabilityFactory();
+		const child = spawnPreview(input.command, cwd, capability);
 		const startedAt = new Date();
 		const snapshot: ProjectPreviewSnapshot = {
 			id,
@@ -470,6 +497,7 @@ export class ProjectPreviewManager {
 			child,
 			input: { ...input, path, workingDirectory: input.workingDirectory },
 			bridge: null,
+			capability,
 			stopping: false,
 			lifetimeTimer,
 			persistTimer: null,
@@ -486,6 +514,7 @@ export class ProjectPreviewManager {
 			entry.snapshot.error = error.message;
 			entry.snapshot.stop_reason = "launch_error";
 			entry.snapshot.ended_at = new Date().toISOString();
+			entry.capability = null;
 			clearTimeout(entry.lifetimeTimer);
 			this.publish(entry, true);
 		});
@@ -497,6 +526,7 @@ export class ProjectPreviewManager {
 			entry.snapshot.state = entry.stopping ? "stopped" : "failed";
 			entry.snapshot.exit_code = code ?? undefined;
 			entry.snapshot.ended_at = new Date().toISOString();
+			entry.capability = null;
 			clearTimeout(entry.lifetimeTimer);
 			if (!entry.stopping) {
 				entry.snapshot.error = `Preview command exited${code == null ? "" : ` with code ${code}`}.`;
@@ -546,6 +576,7 @@ export class ProjectPreviewManager {
 			clearTimeout(entry.lifetimeTimer);
 			this.publish(entry);
 			await terminateProcess(child);
+			entry.capability = null;
 			await this.persist(entry);
 		}
 		return this.inspect(input.sessionId, snapshot.id);
@@ -556,12 +587,18 @@ export class ProjectPreviewManager {
 		return { ...entry.snapshot, logs: [...entry.snapshot.logs] };
 	}
 
-	relayTarget(previewId: string): { port: number } {
+	relayTarget(previewId: string): {
+		port: number;
+		capability: ProjectPreviewCapability;
+	} {
 		const entry = this.entries.get(previewId);
-		if (!entry || entry.snapshot.state !== "ready") {
+		if (!entry || entry.snapshot.state !== "ready" || !entry.capability) {
 			throw new Error("Project preview is not running.");
 		}
-		return { port: entry.snapshot.port };
+		return {
+			port: entry.snapshot.port,
+			capability: entry.capability,
+		};
 	}
 
 	async stop(
@@ -582,6 +619,7 @@ export class ProjectPreviewManager {
 		await entry.bridge?.close();
 		entry.bridge = null;
 		await terminateProcess(entry.child);
+		entry.capability = null;
 		entry.snapshot.state = "stopped";
 		entry.snapshot.ended_at ??= new Date().toISOString();
 		this.bySession.delete(sessionId);

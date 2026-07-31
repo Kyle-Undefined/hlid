@@ -8,6 +8,7 @@ vi.mock("./embedded-server-fn-names", () => ({
 	},
 }));
 
+import { PROJECT_PREVIEW_AUTH_HEADER } from "./projectPreviewTrust";
 import { createTlsHttpForwarder, MAX_TLS_PUBLIC_BODY_BYTES } from "./tlsProxy";
 
 function request(
@@ -325,6 +326,7 @@ describe("TLS HTTP proxy limits", () => {
 					"x-custom": "kept",
 					"x-hlid-preview-origin": "attacker",
 					"x-hlid-proxy-token": "attacker",
+					[PROJECT_PREVIEW_AUTH_HEADER]: "attacker",
 				},
 			}),
 			"192.0.2.5",
@@ -334,6 +336,7 @@ describe("TLS HTTP proxy limits", () => {
 		expect(target).toBe("http://127.0.0.1:3000/api/private?q=1");
 		expect(headers.get("x-custom")).toBe("kept");
 		expect(headers.get("x-hlid-preview-origin")).toBeNull();
+		expect(headers.get(PROJECT_PREVIEW_AUTH_HEADER)).toBeNull();
 		expect(headers.get("x-hlid-proxy-token")).toBe("internal-secret");
 		expect(headers.get("x-hlid-forwarded-proto")).toBe("https");
 		expect(headers.get("x-hlid-forwarded-client-ip")).toBe("192.0.2.5");

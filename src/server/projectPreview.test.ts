@@ -8,6 +8,7 @@ import {
 	projectPreviewLaunch,
 	resolveProjectPreviewCwd,
 } from "./projectPreview";
+import { PROJECT_PREVIEW_AUTH_ENV } from "./projectPreviewTrust";
 
 const persist = async () => {};
 
@@ -75,7 +76,19 @@ describe("ProjectPreviewManager", () => {
 			close: vi.fn(async () => {}),
 			closeAll: vi.fn(async () => {}),
 		};
-		const manager = new ProjectPreviewManager({ persist, browserManager });
+		const firstCapability = { token: "first-preview-auth-token" };
+		const secondCapability = { token: "second-preview-auth-token" };
+		const capabilities = [firstCapability, secondCapability];
+		let capabilityIndex = 0;
+		const manager = new ProjectPreviewManager({
+			persist,
+			browserManager,
+			capabilityFactory: () => {
+				const capability = capabilities[capabilityIndex++];
+				if (!capability) throw new Error("Unexpected capability request");
+				return capability;
+			},
+		});
 		managers.push(manager);
 		const port = await freePort();
 		const script =
@@ -89,6 +102,11 @@ describe("ProjectPreviewManager", () => {
 			port,
 			readinessTimeoutSeconds: 5,
 		});
+		expect(manager.relayTarget(first.id)).toEqual({
+			port,
+			capability: firstCapability,
+		});
+		expect(JSON.stringify(first)).not.toContain(firstCapability.token);
 
 		const restarted = await manager.restart("restart-session", first.id);
 
@@ -103,6 +121,12 @@ describe("ProjectPreviewManager", () => {
 			stop_reason: "replaced",
 		});
 		expect(manager.inspect("restart-session").id).toBe(restarted.id);
+		expect(() => manager.relayTarget(first.id)).toThrow("not running");
+		expect(manager.relayTarget(restarted.id)).toEqual({
+			port,
+			capability: secondCapability,
+		});
+		expect(JSON.stringify(restarted)).not.toContain(secondCapability.token);
 	});
 
 	it("rejects working directories outside the active workspace", async () => {
@@ -176,6 +200,24 @@ describe("Project Preview Windows and WSL launch plans", () => {
 			PATH: "C:\\Windows",
 			HLID_SKIP_SELF_INSTALL: "1",
 			WSLENV: "HLID_SKIP_SELF_INSTALL/u:PATH/l:OTHER/u",
+		});
+	});
+
+	it("replaces stale child credentials and forwards the fresh token into WSL", () => {
+		expect(
+			projectPreviewEnvironment(
+				{
+					PATH: "C:\\Windows",
+					[PROJECT_PREVIEW_AUTH_ENV]: "stale",
+					WSLENV: `PATH/l:${PROJECT_PREVIEW_AUTH_ENV}/w:OTHER/u`,
+				},
+				{ token: "fresh-preview-auth-token" },
+			),
+		).toEqual({
+			PATH: "C:\\Windows",
+			HLID_SKIP_SELF_INSTALL: "1",
+			[PROJECT_PREVIEW_AUTH_ENV]: "fresh-preview-auth-token",
+			WSLENV: `HLID_SKIP_SELF_INSTALL/u:${PROJECT_PREVIEW_AUTH_ENV}/u:PATH/l:OTHER/u`,
 		});
 	});
 

@@ -73,7 +73,7 @@ import {
 	createProjectPreviewRelayWsHandlers,
 	type ProjectPreviewRelayWsData,
 	parseProjectPreviewRelayWebSocket,
-	projectPreviewUpstreamCookieHeader,
+	projectPreviewRelayWebSocketHeaders,
 	projectPreviewUpstreamTarget,
 	projectPreviewWebSocketProtocols,
 	selectedProjectPreviewRelayUrl,
@@ -647,7 +647,7 @@ async function handleWebSocketRoute(
 		return new Response("Unauthorized", { status: 401 });
 	}
 	if (previewRelay) {
-		let target: { port: number };
+		let target: ReturnType<typeof projectPreviewManager.relayTarget>;
 		try {
 			target = projectPreviewManager.relayTarget(previewRelay.previewId);
 		} catch {
@@ -665,15 +665,11 @@ async function handleWebSocketRoute(
 					back: null,
 					queue: [],
 					protocols: projectPreviewWebSocketProtocols(req),
-					upstreamHeaders: (() => {
-						const cookie = projectPreviewUpstreamCookieHeader(
-							req.headers.get("cookie"),
-							previewRelay.previewId,
-						);
-						const headers: Record<string, string> = {};
-						if (cookie) headers.cookie = cookie;
-						return headers;
-					})(),
+					upstreamHeaders: projectPreviewRelayWebSocketHeaders(
+						req,
+						previewRelay.previewId,
+						target.capability,
+					),
 				},
 			})
 		) {

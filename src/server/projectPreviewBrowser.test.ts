@@ -73,9 +73,23 @@ function fakeBrowserSession() {
 	const factory = vi.fn(
 		async () => browser,
 	) satisfies ProjectPreviewBrowserSessionFactory;
+	const relay = {
+		browserAccess: {
+			origin: "http://hlid-browser-test.localhost:6173",
+			cookieName: "__hlid_agent_preview_test",
+			cookieToken: "agent-relay-test-token",
+		},
+		close: vi.fn(async () => {}),
+	};
+	const relayFactory = vi.fn(async () => relay);
 	return {
 		browser,
 		factory,
+		relay,
+		relayFactory,
+		disconnect: () => {
+			connected = false;
+		},
 		viewport: () => viewport,
 	};
 }
@@ -84,6 +98,7 @@ const base = {
 	previewId: "123e4567-e89b-12d3-a456-426614174000",
 	sessionId: "session-1",
 	port: 5173,
+	capability: { token: "preview-auth-test-token" },
 	initialPath: "/",
 };
 
@@ -92,12 +107,14 @@ describe("ProjectPreviewBrowserManager", () => {
 		const fake = fakeBrowserSession();
 		const manager = new ProjectPreviewBrowserManager({
 			browserFactory: fake.factory,
+			relayFactory: fake.relayFactory,
 		});
 
 		const first = await manager.capture({
 			previewId: base.previewId,
 			sessionId: base.sessionId,
 			port: base.port,
+			capability: base.capability,
 			path: "/app",
 			viewport: "mobile",
 			fullPage: false,
@@ -106,12 +123,21 @@ describe("ProjectPreviewBrowserManager", () => {
 			previewId: base.previewId,
 			sessionId: base.sessionId,
 			port: base.port,
+			capability: base.capability,
 			path: "/app",
 			viewport: "mobile",
 			fullPage: false,
 		});
 
 		expect(fake.factory).toHaveBeenCalledOnce();
+		expect(fake.factory).toHaveBeenCalledWith(
+			fake.relay.browserAccess,
+			expect.any(AbortSignal),
+		);
+		expect(fake.relayFactory).toHaveBeenCalledWith({
+			targetPort: base.port,
+			capability: base.capability,
+		});
 		expect(fake.browser.setViewport).toHaveBeenCalledWith("mobile");
 		expect(fake.viewport()).toBe("mobile");
 		expect(first.frame_id).not.toBe(second.frame_id);
@@ -138,6 +164,7 @@ describe("ProjectPreviewBrowserManager", () => {
 				?.frame_id,
 		).toBe(first.frame_id);
 		expect(fake.browser.close).toHaveBeenCalledOnce();
+		expect(fake.relay.close).toHaveBeenCalledOnce();
 		await manager.closeAll();
 	});
 
@@ -145,12 +172,14 @@ describe("ProjectPreviewBrowserManager", () => {
 		const fake = fakeBrowserSession();
 		const manager = new ProjectPreviewBrowserManager({
 			browserFactory: fake.factory,
+			relayFactory: fake.relayFactory,
 		});
 
 		const frame = await manager.capture({
 			previewId: base.previewId,
 			sessionId: base.sessionId,
 			port: base.port,
+			capability: base.capability,
 			path: "/settings?tab=ui",
 			viewport: "mobile",
 			size: { width: 412, height: 715 },
@@ -177,11 +206,13 @@ describe("ProjectPreviewBrowserManager", () => {
 		const fake = fakeBrowserSession();
 		const manager = new ProjectPreviewBrowserManager({
 			browserFactory: fake.factory,
+			relayFactory: fake.relayFactory,
 		});
 		const observed = await manager.capture({
 			previewId: base.previewId,
 			sessionId: base.sessionId,
 			port: base.port,
+			capability: base.capability,
 			path: "/",
 			viewport: "desktop",
 			fullPage: false,
@@ -214,6 +245,7 @@ describe("ProjectPreviewBrowserManager", () => {
 		const fake = fakeBrowserSession();
 		const manager = new ProjectPreviewBrowserManager({
 			browserFactory: fake.factory,
+			relayFactory: fake.relayFactory,
 		});
 
 		await expect(
@@ -238,11 +270,13 @@ describe("ProjectPreviewBrowserManager", () => {
 		const fake = fakeBrowserSession();
 		const manager = new ProjectPreviewBrowserManager({
 			browserFactory: fake.factory,
+			relayFactory: fake.relayFactory,
 		});
 		let frame = await manager.capture({
 			previewId: base.previewId,
 			sessionId: base.sessionId,
 			port: base.port,
+			capability: base.capability,
 			path: "/",
 			viewport: "desktop",
 			fullPage: false,
@@ -297,11 +331,13 @@ describe("ProjectPreviewBrowserManager", () => {
 		const fake = fakeBrowserSession();
 		const manager = new ProjectPreviewBrowserManager({
 			browserFactory: fake.factory,
+			relayFactory: fake.relayFactory,
 		});
 		const frame = await manager.capture({
 			previewId: base.previewId,
 			sessionId: base.sessionId,
 			port: base.port,
+			capability: base.capability,
 			path: "/",
 			viewport: "desktop",
 			fullPage: false,
@@ -333,7 +369,7 @@ describe("ProjectPreviewBrowserManager", () => {
 
 	it("aborts an in-progress browser launch when the Preview stops", async () => {
 		const factory: ProjectPreviewBrowserSessionFactory = vi.fn(
-			(_port, signal) =>
+			(_relay, signal) =>
 				new Promise<ProjectPreviewBrowserSession>((_resolve, reject) => {
 					signal.addEventListener(
 						"abort",
@@ -342,13 +378,23 @@ describe("ProjectPreviewBrowserManager", () => {
 					);
 				}),
 		);
+		const relay = {
+			browserAccess: {
+				origin: "http://hlid-abort-test.localhost:6174",
+				cookieName: "__hlid_agent_preview_abort",
+				cookieToken: "agent-relay-abort-token",
+			},
+			close: vi.fn(async () => {}),
+		};
 		const manager = new ProjectPreviewBrowserManager({
 			browserFactory: factory,
+			relayFactory: vi.fn(async () => relay),
 		});
 		const capture = manager.capture({
 			previewId: base.previewId,
 			sessionId: base.sessionId,
 			port: base.port,
+			capability: base.capability,
 			path: "/",
 			viewport: "desktop",
 			fullPage: false,
@@ -357,5 +403,91 @@ describe("ProjectPreviewBrowserManager", () => {
 
 		await manager.close(base.previewId);
 		await expect(capture).rejects.toThrow("launch cancelled");
+		expect(relay.close).toHaveBeenCalledOnce();
+	});
+
+	it("closes the private relay when initial navigation fails", async () => {
+		const fake = fakeBrowserSession();
+		vi.mocked(fake.browser.navigate).mockRejectedValueOnce(
+			new Error("navigation failed"),
+		);
+		const manager = new ProjectPreviewBrowserManager({
+			browserFactory: fake.factory,
+			relayFactory: fake.relayFactory,
+		});
+
+		await expect(
+			manager.capture({
+				previewId: base.previewId,
+				sessionId: base.sessionId,
+				port: base.port,
+				capability: base.capability,
+				path: "/",
+				viewport: "desktop",
+				fullPage: false,
+			}),
+		).rejects.toThrow("navigation failed");
+		expect(fake.browser.close).toHaveBeenCalledOnce();
+		expect(fake.relay.close).toHaveBeenCalledOnce();
+	});
+
+	it("evicts a disconnected browser after preserving its timeout error", async () => {
+		const first = fakeBrowserSession();
+		const second = fakeBrowserSession();
+		let browserLaunches = 0;
+		const factory: ProjectPreviewBrowserSessionFactory = vi.fn(async () => {
+			browserLaunches += 1;
+			return browserLaunches === 1 ? first.browser : second.browser;
+		});
+		let relayLaunches = 0;
+		const relayFactory = vi.fn(async () => {
+			relayLaunches += 1;
+			return relayLaunches === 1 ? first.relay : second.relay;
+		});
+		const manager = new ProjectPreviewBrowserManager({
+			browserFactory: factory,
+			relayFactory,
+		});
+		const frame = await manager.capture({
+			previewId: base.previewId,
+			sessionId: base.sessionId,
+			port: base.port,
+			capability: base.capability,
+			path: "/",
+			viewport: "desktop",
+			fullPage: false,
+		});
+		vi.mocked(first.browser.clickRef).mockImplementationOnce(async () => {
+			first.disconnect();
+			throw new Error("Preview browser command Runtime.evaluate timed out.");
+		});
+
+		await expect(
+			manager.control({
+				...base,
+				action: "click",
+				frameId: frame.frame_id,
+				ref: "e1",
+			}),
+		).rejects.toThrow("Preview browser command Runtime.evaluate timed out.");
+		expect(first.browser.close).toHaveBeenCalledOnce();
+		expect(first.relay.close).toHaveBeenCalledOnce();
+
+		const recovered = await manager.capture({
+			previewId: base.previewId,
+			sessionId: base.sessionId,
+			port: base.port,
+			capability: base.capability,
+			path: "/recovered",
+			viewport: "desktop",
+			fullPage: false,
+		});
+		expect(factory).toHaveBeenCalledTimes(2);
+		expect(relayFactory).toHaveBeenCalledTimes(2);
+		expect(recovered.path).toBe("/recovered");
+
+		await manager.closeAll();
+		expect(second.browser.close).toHaveBeenCalledOnce();
+		expect(second.relay.close).toHaveBeenCalledOnce();
 	});
 });

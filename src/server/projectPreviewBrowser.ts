@@ -1,5 +1,10 @@
 import {
-	isAllowedProjectPreviewBrowserUrl,
+	createProjectPreviewAgentRelay,
+	type ProjectPreviewAgentRelay,
+	type ProjectPreviewAgentRelayFactory,
+} from "./projectPreviewAgentRelay";
+import {
+	isAllowedProjectPreviewBrowserOrigin,
 	normalizeProjectPreviewCapturePath,
 	PROJECT_PREVIEW_CAPTURE_VIEWPORTS,
 	type ProjectPreviewCaptureInput,
@@ -10,6 +15,7 @@ import {
 	type ProjectPreviewBrowserSession,
 	type ProjectPreviewBrowserSessionFactory,
 } from "./projectPreviewCdp";
+import type { ProjectPreviewCapability } from "./projectPreviewTrust";
 import type { ProjectPreviewAgentFrame } from "./protocol";
 
 export type { ProjectPreviewAgentFrame } from "./protocol";
@@ -24,6 +30,7 @@ type ProjectPreviewControlBase = {
 	previewId: string;
 	sessionId: string;
 	port: number;
+	capability: ProjectPreviewCapability;
 	initialPath: string;
 };
 
@@ -66,6 +73,8 @@ type BrowserEntry = {
 	previewId: string;
 	sessionId: string;
 	port: number;
+	capability: ProjectPreviewCapability;
+	relay: ProjectPreviewAgentRelay;
 	browser: ProjectPreviewBrowserSession;
 	viewport: ProjectPreviewCaptureViewport;
 	width: number;
@@ -76,15 +85,18 @@ type BrowserEntry = {
 
 type BrowserManagerOptions = {
 	browserFactory?: ProjectPreviewBrowserSessionFactory;
+	relayFactory?: ProjectPreviewAgentRelayFactory;
 	idleMs?: number;
 };
 async function currentPath(
 	browser: ProjectPreviewBrowserSession,
-	port: number,
+	origin: string,
 ): Promise<string> {
 	try {
 		const url = new URL(await browser.currentUrl());
-		if (!isAllowedProjectPreviewBrowserUrl(url.toString(), port)) return "/";
+		if (!isAllowedProjectPreviewBrowserOrigin(url.toString(), origin)) {
+			return "/";
+		}
 		return `${url.pathname}${url.search}${url.hash}`;
 	} catch {
 		return "/";
@@ -130,11 +142,13 @@ export class ProjectPreviewBrowserManager {
 	private readonly frameHistory = new Map<string, ProjectPreviewAgentFrame[]>();
 	private retainedFrameBytes = 0;
 	private readonly browserFactory: ProjectPreviewBrowserSessionFactory;
+	private readonly relayFactory: ProjectPreviewAgentRelayFactory;
 	private readonly idleMs: number;
 
 	constructor(options: BrowserManagerOptions = {}) {
 		this.browserFactory =
 			options.browserFactory ?? createProjectPreviewBrowserSession;
+		this.relayFactory = options.relayFactory ?? createProjectPreviewAgentRelay;
 		this.idleMs = options.idleMs ?? AGENT_BROWSER_IDLE_MS;
 	}
 
@@ -173,6 +187,12 @@ export class ProjectPreviewBrowserManager {
 		try {
 			this.assertGeneration(previewId, generation);
 			return await operation(generation);
+		} catch (error) {
+			const entry = this.entries.get(previewId);
+			if (entry && !entry.browser.isConnected()) {
+				await this.closeEntry(entry);
+			}
+			throw error;
 		} finally {
 			release();
 			const remaining = (this.pending.get(previewId) ?? 1) - 1;
@@ -192,16 +212,23 @@ export class ProjectPreviewBrowserManager {
 	): Promise<BrowserEntry> {
 		const launch = new AbortController();
 		this.launches.set(input.previewId, launch);
+		let relay: ProjectPreviewAgentRelay | null = null;
 		let browser: ProjectPreviewBrowserSession | null = null;
 		try {
-			browser = await this.browserFactory(input.port, launch.signal);
+			relay = await this.relayFactory({
+				targetPort: input.port,
+				capability: input.capability,
+			});
+			browser = await this.browserFactory(relay.browserAccess, launch.signal);
 			await browser.navigate(
-				`http://127.0.0.1:${input.port}${normalizeProjectPreviewCapturePath(input.initialPath)}`,
+				`${relay.browserAccess.origin}${normalizeProjectPreviewCapturePath(input.initialPath)}`,
 			);
 			const entry: BrowserEntry = {
 				previewId: input.previewId,
 				sessionId: input.sessionId,
 				port: input.port,
+				capability: input.capability,
+				relay,
 				browser,
 				viewport: "desktop",
 				width: PROJECT_PREVIEW_CAPTURE_VIEWPORTS.desktop.width,
@@ -211,7 +238,6 @@ export class ProjectPreviewBrowserManager {
 			};
 			entry.idleTimer.unref?.();
 			if ((this.generations.get(input.previewId) ?? 0) !== generation) {
-				await browser.close().catch(() => {});
 				throw new Error("Project Preview browser was closed.");
 			}
 			this.entries.set(input.previewId, entry);
@@ -219,6 +245,7 @@ export class ProjectPreviewBrowserManager {
 			return entry;
 		} catch (error) {
 			await browser?.close().catch(() => {});
+			await relay?.close().catch(() => {});
 			throw error;
 		} finally {
 			if (this.launches.get(input.previewId) === launch) {
@@ -236,6 +263,7 @@ export class ProjectPreviewBrowserManager {
 			current &&
 			current.sessionId === input.sessionId &&
 			current.port === input.port &&
+			current.capability.token === input.capability.token &&
 			current.browser.isConnected()
 		) {
 			this.resetIdle(current);
@@ -255,7 +283,7 @@ export class ProjectPreviewBrowserManager {
 		const frame: ProjectPreviewAgentFrame = {
 			preview_id: entry.previewId,
 			session_id: entry.sessionId,
-			path: await currentPath(entry.browser, entry.port),
+			path: await currentPath(entry.browser, entry.relay.browserAccess.origin),
 			viewport: entry.viewport,
 			width: entry.width,
 			height: entry.height,
@@ -319,6 +347,7 @@ export class ProjectPreviewBrowserManager {
 					previewId: input.previewId,
 					sessionId: input.sessionId,
 					port: input.port,
+					capability: input.capability,
 					initialPath: input.path,
 				},
 				generation,
@@ -340,8 +369,13 @@ export class ProjectPreviewBrowserManager {
 				entry.height = size.height;
 			}
 			const path = normalizeProjectPreviewCapturePath(input.path);
-			if ((await currentPath(entry.browser, entry.port)) !== path) {
-				await entry.browser.navigate(`http://127.0.0.1:${entry.port}${path}`);
+			if (
+				(await currentPath(entry.browser, entry.relay.browserAccess.origin)) !==
+				path
+			) {
+				await entry.browser.navigate(
+					`${entry.relay.browserAccess.origin}${path}`,
+				);
 			}
 			if (input.scrollX !== undefined || input.scrollY !== undefined) {
 				await entry.browser.settle();
@@ -391,7 +425,9 @@ export class ProjectPreviewBrowserManager {
 				await entry.browser.scroll(input.deltaX, input.deltaY);
 			} else if (input.action === "navigate") {
 				const path = normalizeProjectPreviewCapturePath(input.path);
-				await entry.browser.navigate(`http://127.0.0.1:${entry.port}${path}`);
+				await entry.browser.navigate(
+					`${entry.relay.browserAccess.origin}${path}`,
+				);
 			} else if (input.action === "reload") {
 				await entry.browser.reload();
 			} else {
@@ -432,6 +468,7 @@ export class ProjectPreviewBrowserManager {
 			this.entries.delete(entry.previewId);
 		}
 		await entry.browser.close().catch(() => {});
+		await entry.relay.close().catch(() => {});
 	}
 
 	async close(previewId: string): Promise<void> {

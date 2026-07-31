@@ -11,6 +11,7 @@ import { getDb } from "../db";
 import { writeFileAtomicSync } from "../lib/atomicFile";
 import { APP_DIR } from "../lib/paths";
 import { verifyToken } from "../lib/token";
+import { isTrustedProjectPreviewRequest } from "./projectPreviewTrust";
 
 export const AUTH_COOKIE = "hlid_session";
 export const AUTH_PATH = resolve(
@@ -250,12 +251,21 @@ export async function validateSessionToken(
 }
 
 export async function authenticateRequest(request: Request): Promise<boolean> {
+	return (
+		isTrustedProjectPreviewRequest(request) ||
+		validateSessionToken(readCookie(request))
+	);
+}
+
+export async function authenticateSessionRequest(
+	request: Request,
+): Promise<boolean> {
 	return validateSessionToken(readCookie(request));
 }
 
 export async function authState(request: Request): Promise<AuthState> {
-	if (!hasCredential()) return "setup-required";
-	return (await authenticateRequest(request)) ? "authenticated" : "locked";
+	if (await authenticateRequest(request)) return "authenticated";
+	return hasCredential() ? "locked" : "setup-required";
 }
 
 function pruneAttempts(values: number[], now: number): number[] {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-	isAllowedProjectPreviewBrowserUrl,
+	isAllowedProjectPreviewBrowserOrigin,
 	MAX_PROJECT_PREVIEW_CAPTURE_BYTES,
 	MAX_PROJECT_PREVIEW_CAPTURE_PIXEL_DIMENSION,
 	MAX_PROJECT_PREVIEW_CAPTURE_PIXELS,
@@ -28,24 +28,44 @@ describe("Project Preview capture boundaries", () => {
 	});
 
 	it("allows only the exact loopback Preview port and local data", () => {
+		const origin = "http://127.0.0.1:5173";
 		expect(
-			isAllowedProjectPreviewBrowserUrl("http://127.0.0.1:5173/app", 5173),
+			isAllowedProjectPreviewBrowserOrigin("http://127.0.0.1:5173/app", origin),
 		).toBe(true);
 		expect(
-			isAllowedProjectPreviewBrowserUrl("ws://localhost:5173/hmr", 5173),
+			isAllowedProjectPreviewBrowserOrigin("data:text/plain,ok", origin),
 		).toBe(true);
-		expect(isAllowedProjectPreviewBrowserUrl("data:text/plain,ok", 5173)).toBe(
-			true,
-		);
 		expect(
-			isAllowedProjectPreviewBrowserUrl("http://127.0.0.1:5174/app", 5173),
+			isAllowedProjectPreviewBrowserOrigin("http://127.0.0.1:5174/app", origin),
 		).toBe(false);
 		expect(
-			isAllowedProjectPreviewBrowserUrl("https://example.com/app", 5173),
+			isAllowedProjectPreviewBrowserOrigin("https://example.com/app", origin),
 		).toBe(false);
-		expect(isAllowedProjectPreviewBrowserUrl("file:///tmp/secret", 5173)).toBe(
-			false,
-		);
+		expect(
+			isAllowedProjectPreviewBrowserOrigin("file:///tmp/secret", origin),
+		).toBe(false);
+	});
+
+	it("pins agent-browser traffic to the exact private relay origin", () => {
+		const origin = "http://hlid-a1b2.localhost:6173";
+		expect(
+			isAllowedProjectPreviewBrowserOrigin(
+				"http://hlid-a1b2.localhost:6173/settings",
+				origin,
+			),
+		).toBe(true);
+		expect(
+			isAllowedProjectPreviewBrowserOrigin(
+				"http://hlid-a1b2.localhost:6174/settings",
+				origin,
+			),
+		).toBe(false);
+		expect(
+			isAllowedProjectPreviewBrowserOrigin(
+				"http://hlid-other.localhost:6173/settings",
+				origin,
+			),
+		).toBe(false);
 	});
 
 	it("keeps named viewport captures at 2x and bounds tall full-page output", () => {

@@ -4,8 +4,9 @@ import { homedir, tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import type { Subprocess } from "bun";
 import { loadConfig } from "./config";
+import type { ProjectPreviewAgentRelayBrowserAccess } from "./projectPreviewAgentRelay";
 import {
-	isAllowedProjectPreviewBrowserUrl,
+	isAllowedProjectPreviewBrowserOrigin,
 	MAX_PROJECT_PREVIEW_CAPTURE_ATTEMPTS,
 	MAX_PROJECT_PREVIEW_CAPTURE_BYTES,
 	MAX_PROJECT_PREVIEW_FULL_PAGE_HEIGHT,
@@ -22,6 +23,8 @@ import type { ProjectPreviewAgentElement } from "./protocol";
 
 export const PROJECT_PREVIEW_BROWSER_LAUNCH_TIMEOUT_MS = 12_000;
 export const PROJECT_PREVIEW_REAL_PROFILE_CONNECT_TIMEOUT_MS = 30_000;
+export const PROJECT_PREVIEW_NAVIGATION_QUIET_MS = 200;
+export const PROJECT_PREVIEW_NAVIGATION_SETTLE_TIMEOUT_MS = 5_000;
 export const PROJECT_PREVIEW_ATTACHED_TARGET_PARAMS = {
 	url: "about:blank",
 	background: true,
@@ -29,6 +32,82 @@ export const PROJECT_PREVIEW_ATTACHED_TARGET_PARAMS = {
 } as const;
 export const PROJECT_PREVIEW_SETTLE_EXPRESSION =
 	"new Promise((resolve) => setTimeout(() => resolve(true), 100))";
+const PROJECT_PREVIEW_REF_STORE_SYMBOL = "hlid.project-preview.semantic-refs";
+
+export function projectPreviewSemanticSnapshotExpression(
+	limit: number,
+): string {
+	const boundedLimit = Number.isFinite(limit)
+		? Math.max(0, Math.floor(limit))
+		: 0;
+	return `(() => {
+		const refs = new Map();
+		Object.defineProperty(
+			globalThis,
+			Symbol.for(${JSON.stringify(PROJECT_PREVIEW_REF_STORE_SYMBOL)}),
+			{ configurable: true, value: refs }
+		);
+		const selector = [
+			"a[href]", "button", "input", "textarea", "select", "[role]",
+			"[contenteditable='true']", "[tabindex]"
+		].join(",");
+		const elements = [];
+		for (const candidate of document.querySelectorAll(selector)) {
+			if (elements.length >= ${boundedLimit}) break;
+			const rect = candidate.getBoundingClientRect();
+			const style = getComputedStyle(candidate);
+			if (
+				rect.width <= 0 || rect.height <= 0 ||
+				style.visibility === "hidden" || style.display === "none" ||
+				rect.bottom < 0 || rect.right < 0 ||
+				rect.top > innerHeight || rect.left > innerWidth
+			) continue;
+			const ref = "e" + (elements.length + 1);
+			refs.set(ref, candidate);
+			const tag = candidate.tagName.toLowerCase();
+			const input = candidate;
+			const explicitRole = candidate.getAttribute("role");
+			const role = explicitRole || (
+				tag === "a" ? "link" :
+				tag === "button" ? "button" :
+				tag === "input" ? (
+					input.type === "checkbox" ? "checkbox" :
+					input.type === "radio" ? "radio" : "textbox"
+				) : tag
+			);
+			const labelledBy = candidate.getAttribute("aria-labelledby");
+			const labelledText = labelledBy?.split(/\\s+/)
+				.map((id) => document.getElementById(id)?.textContent ?? "")
+				.join(" ");
+			const name = (
+				candidate.getAttribute("aria-label") || labelledText ||
+				candidate.getAttribute("title") ||
+				(input.labels ? Array.from(input.labels).map((label) => label.textContent ?? "").join(" ") : "") ||
+				input.placeholder || candidate.textContent || ""
+			).replace(/\\s+/g, " ").trim().slice(0, 160);
+			elements.push({
+				ref, role, name, tag,
+				...(tag === "input" && input.type ? { type: input.type } : {}),
+				...(candidate.matches(":disabled, [aria-disabled='true']") ? { disabled: true } : {}),
+				x: Math.round(rect.x), y: Math.round(rect.y),
+				width: Math.round(rect.width), height: Math.round(rect.height)
+			});
+		}
+		return elements;
+	})()`;
+}
+
+export function projectPreviewRefElementExpression(ref: string): string {
+	return `(() => {
+		const refs = globalThis[
+			Symbol.for(${JSON.stringify(PROJECT_PREVIEW_REF_STORE_SYMBOL)})
+		];
+		const element = refs instanceof Map
+			? refs.get(${JSON.stringify(ref)})
+			: null;
+		return element instanceof Element && element.isConnected ? element : null;
+	})()`;
+}
 
 const SUPPORTED_BROWSER_EXECUTABLES = new Set([
 	"brave.exe",
@@ -241,13 +320,87 @@ export interface ProjectPreviewBrowserSession {
 }
 
 export type ProjectPreviewBrowserSessionFactory = (
-	port: number,
+	relay: ProjectPreviewAgentRelayBrowserAccess,
 	signal: AbortSignal,
 ) => Promise<ProjectPreviewBrowserSession>;
+
+type ProjectPreviewCdpSender = {
+	send(
+		method: string,
+		params?: Record<string, unknown>,
+		timeoutMs?: number,
+	): Promise<Record<string, unknown>>;
+};
+
+export async function configureProjectPreviewNetwork(
+	sender: ProjectPreviewCdpSender,
+	relay: ProjectPreviewAgentRelayBrowserAccess,
+): Promise<void> {
+	await sender.send("Network.enable");
+	await sender.send("Network.setBypassServiceWorker", { bypass: true });
+	const cookie = await sender.send("Network.setCookie", {
+		name: relay.cookieName,
+		value: relay.cookieToken,
+		url: relay.origin,
+		httpOnly: true,
+		sameSite: "Strict",
+	});
+	if (cookie.success === false) {
+		throw new Error("Could not authorize the Project Preview browser relay.");
+	}
+}
+
+export async function waitForProjectPreviewNetworkQuiet(
+	pendingRequests: () => number,
+	options: {
+		quietMs?: number;
+		timeoutMs?: number;
+		pollMs?: number;
+	} = {},
+): Promise<void> {
+	const quietMs = options.quietMs ?? PROJECT_PREVIEW_NAVIGATION_QUIET_MS;
+	const timeoutMs =
+		options.timeoutMs ?? PROJECT_PREVIEW_NAVIGATION_SETTLE_TIMEOUT_MS;
+	const pollMs = options.pollMs ?? 25;
+	const startedAt = Date.now();
+	let quietStartedAt: number | null = null;
+	while (Date.now() - startedAt < timeoutMs) {
+		const now = Date.now();
+		if (pendingRequests() === 0) {
+			quietStartedAt ??= now;
+			if (now - quietStartedAt >= quietMs) return;
+		} else {
+			quietStartedAt = null;
+		}
+		const remaining = timeoutMs - (now - startedAt);
+		await new Promise((resolve) =>
+			setTimeout(resolve, Math.max(1, Math.min(pollMs, remaining))),
+		);
+	}
+}
+
+export function isExpectedProjectPreviewRequestCancellation(params: {
+	canceled?: unknown;
+	errorText?: unknown;
+}): boolean {
+	return (
+		params.canceled === true ||
+		String(params.errorText ?? "").includes("ERR_ABORTED")
+	);
+}
 
 function appendBounded(target: string[], value: string): void {
 	const text = value.replace(/\s+/g, " ").trim().slice(0, MAX_DIAGNOSTIC_CHARS);
 	if (!text) return;
+	target.push(text);
+	if (target.length > MAX_DIAGNOSTICS) {
+		target.splice(0, target.length - MAX_DIAGNOSTICS);
+	}
+}
+
+function appendUniqueBounded(target: string[], value: string): void {
+	const text = value.replace(/\s+/g, " ").trim().slice(0, MAX_DIAGNOSTIC_CHARS);
+	if (!text || target.includes(text)) return;
 	target.push(text);
 	if (target.length > MAX_DIAGNOSTICS) {
 		target.splice(0, target.length - MAX_DIAGNOSTICS);
@@ -539,7 +692,7 @@ export function createProjectPreviewEventWaiter(
 	};
 }
 
-class CdpClient {
+export class CdpClient {
 	private nextId = 0;
 	private readonly pending = new Map<number, CdpPending>();
 	private readonly listeners = new Map<string, Set<CdpEventListener>>();
@@ -620,6 +773,10 @@ class CdpClient {
 			const timer = setTimeout(() => {
 				this.pending.delete(id);
 				reject(new Error(`Preview browser command ${method} timed out.`));
+				// A CDP command timeout means the target can no longer be trusted.
+				// Close the transport so concurrent commands fail immediately and the
+				// browser manager replaces this session on its next operation.
+				this.close();
 			}, timeoutMs);
 			this.pending.set(id, { resolve, reject, timer });
 			this.socket.send(JSON.stringify({ id, method, params }));
@@ -694,6 +851,94 @@ function runtimeValue<T>(result: Record<string, unknown>): T {
 		throw new Error(remote?.description ?? "Preview page returned no value.");
 	}
 	return remote.value as T;
+}
+
+type TrackedProjectPreviewRequest = {
+	method: string;
+	url: string;
+	failureRecorded: boolean;
+};
+
+function projectPreviewRequestTarget(urlValue: string): string {
+	try {
+		const url = new URL(urlValue);
+		return `${url.origin}${url.pathname}`;
+	} catch {
+		return "invalid URL";
+	}
+}
+
+export class ProjectPreviewRequestDiagnostics {
+	private readonly requests = new Map<string, TrackedProjectPreviewRequest>();
+	private readonly failures: string[] = [];
+
+	requestWillBeSent(params: Record<string, unknown>): void {
+		const requestId = String(params.requestId ?? "");
+		const request = params.request as
+			| { method?: string; url?: string }
+			| undefined;
+		if (!requestId || !request?.url) return;
+		this.requests.set(requestId, {
+			method: request.method ?? "GET",
+			url: request.url,
+			failureRecorded: false,
+		});
+		if (this.requests.size > 500) {
+			this.requests.delete(this.requests.keys().next().value ?? "");
+		}
+	}
+
+	responseReceived(params: Record<string, unknown>): void {
+		const request = this.requests.get(String(params.requestId ?? ""));
+		const response = params.response as
+			| { status?: number; statusText?: string; url?: string }
+			| undefined;
+		const status = Number(response?.status);
+		if (
+			!request ||
+			request.failureRecorded ||
+			!Number.isFinite(status) ||
+			status < 400 ||
+			status >= 600
+		) {
+			return;
+		}
+		request.failureRecorded = true;
+		const statusText = String(response?.statusText ?? "").trim();
+		appendUniqueBounded(
+			this.failures,
+			`${request.method} ${projectPreviewRequestTarget(response?.url ?? request.url)} · HTTP ${status}${statusText ? ` ${statusText}` : ""}`,
+		);
+	}
+
+	loadingFinished(params: Record<string, unknown>): void {
+		this.requests.delete(String(params.requestId ?? ""));
+	}
+
+	loadingFailed(params: Record<string, unknown>): void {
+		const requestId = String(params.requestId ?? "");
+		const request = this.requests.get(requestId);
+		this.requests.delete(requestId);
+		if (
+			!request ||
+			request.failureRecorded ||
+			isExpectedProjectPreviewRequestCancellation(params)
+		) {
+			return;
+		}
+		appendUniqueBounded(
+			this.failures,
+			`${request.method} ${projectPreviewRequestTarget(request.url)} · ${String(params.errorText ?? "request failed")}`,
+		);
+	}
+
+	pendingCount(): number {
+		return this.requests.size;
+	}
+
+	snapshot(): string[] {
+		return [...this.failures];
+	}
 }
 
 function keyDescriptor(key: string): {
@@ -774,17 +1019,13 @@ function keyDescriptor(key: string): {
 
 class CdpBrowserSession implements ProjectPreviewBrowserSession {
 	private readonly consoleMessages: string[] = [];
-	private readonly failedRequests: string[] = [];
-	private readonly requests = new Map<
-		string,
-		{ method: string; url: string }
-	>();
+	private readonly requestDiagnostics = new ProjectPreviewRequestDiagnostics();
 	private viewportSize: ProjectPreviewCaptureSize =
 		PROJECT_PREVIEW_CAPTURE_VIEWPORTS.desktop;
 	private closed = false;
 
 	constructor(
-		private readonly port: number,
+		private readonly relay: ProjectPreviewAgentRelayBrowserAccess,
 		private readonly page: CdpClient,
 		private readonly browser: CdpClient,
 		private readonly mainTargetId: string,
@@ -795,16 +1036,16 @@ class CdpBrowserSession implements ProjectPreviewBrowserSession {
 		await Promise.all([
 			this.page.send("Page.enable"),
 			this.page.send("Runtime.enable"),
-			this.page.send("Network.enable"),
 			this.page.send("Log.enable"),
 			this.browser.send("Target.setDiscoverTargets", { discover: true }),
 		]);
+		await configureProjectPreviewNetwork(this.page, this.relay);
 		this.page.on("Fetch.requestPaused", (params) => {
 			const requestId = String(params.requestId ?? "");
 			const request = params.request as { url?: string } | undefined;
 			const allowed =
 				request?.url &&
-				isAllowedProjectPreviewBrowserUrl(request.url, this.port);
+				isAllowedProjectPreviewBrowserOrigin(request.url, this.relay.origin);
 			void this.page
 				.send(
 					allowed ? "Fetch.continueRequest" : "Fetch.failRequest",
@@ -842,36 +1083,16 @@ class CdpBrowserSession implements ProjectPreviewBrowserSession {
 			);
 		});
 		this.page.on("Network.requestWillBeSent", (params) => {
-			const requestId = String(params.requestId ?? "");
-			const request = params.request as
-				| { method?: string; url?: string }
-				| undefined;
-			if (!requestId || !request?.url) return;
-			this.requests.set(requestId, {
-				method: request.method ?? "GET",
-				url: request.url,
-			});
-			if (this.requests.size > 500) {
-				this.requests.delete(this.requests.keys().next().value ?? "");
-			}
+			this.requestDiagnostics.requestWillBeSent(params);
+		});
+		this.page.on("Network.responseReceived", (params) => {
+			this.requestDiagnostics.responseReceived(params);
 		});
 		this.page.on("Network.loadingFinished", (params) => {
-			this.requests.delete(String(params.requestId ?? ""));
+			this.requestDiagnostics.loadingFinished(params);
 		});
 		this.page.on("Network.loadingFailed", (params) => {
-			const requestId = String(params.requestId ?? "");
-			const request = this.requests.get(requestId);
-			this.requests.delete(requestId);
-			if (!request) return;
-			let target = "invalid URL";
-			try {
-				const url = new URL(request.url);
-				target = `${url.origin}${url.pathname}`;
-			} catch {}
-			appendBounded(
-				this.failedRequests,
-				`${request.method} ${target} · ${String(params.errorText ?? "request failed")}`,
-			);
+			this.requestDiagnostics.loadingFailed(params);
 		});
 		this.page.on("Page.javascriptDialogOpening", () => {
 			void this.page
@@ -941,6 +1162,9 @@ class CdpBrowserSession implements ProjectPreviewBrowserSession {
 				);
 			}
 			await loaded.promise;
+			await waitForProjectPreviewNetworkQuiet(() =>
+				this.requestDiagnostics.pendingCount(),
+			);
 		} finally {
 			loaded.cancel();
 		}
@@ -951,6 +1175,9 @@ class CdpBrowserSession implements ProjectPreviewBrowserSession {
 		try {
 			await this.page.send("Page.reload", { ignoreCache: false });
 			await loaded.promise;
+			await waitForProjectPreviewNetworkQuiet(() =>
+				this.requestDiagnostics.pendingCount(),
+			);
 		} finally {
 			loaded.cancel();
 		}
@@ -1081,58 +1308,7 @@ class CdpBrowserSession implements ProjectPreviewBrowserSession {
 
 	async semanticSnapshot(limit: number): Promise<ProjectPreviewAgentElement[]> {
 		return this.evaluate<ProjectPreviewAgentElement[]>(
-			`(() => {
-				for (const existing of document.querySelectorAll("[data-hlid-preview-ref]")) {
-					existing.removeAttribute("data-hlid-preview-ref");
-				}
-				const selector = [
-					"a[href]", "button", "input", "textarea", "select", "[role]",
-					"[contenteditable='true']", "[tabindex]"
-				].join(",");
-				const elements = [];
-				for (const candidate of document.querySelectorAll(selector)) {
-					if (elements.length >= ${limit}) break;
-					const rect = candidate.getBoundingClientRect();
-					const style = getComputedStyle(candidate);
-					if (
-						rect.width <= 0 || rect.height <= 0 ||
-						style.visibility === "hidden" || style.display === "none" ||
-						rect.bottom < 0 || rect.right < 0 ||
-						rect.top > innerHeight || rect.left > innerWidth
-					) continue;
-					const ref = "e" + (elements.length + 1);
-					candidate.setAttribute("data-hlid-preview-ref", ref);
-					const tag = candidate.tagName.toLowerCase();
-					const input = candidate;
-					const explicitRole = candidate.getAttribute("role");
-					const role = explicitRole || (
-						tag === "a" ? "link" :
-						tag === "button" ? "button" :
-						tag === "input" ? (
-							input.type === "checkbox" ? "checkbox" :
-							input.type === "radio" ? "radio" : "textbox"
-						) : tag
-					);
-					const labelledBy = candidate.getAttribute("aria-labelledby");
-					const labelledText = labelledBy?.split(/\\s+/)
-						.map((id) => document.getElementById(id)?.textContent ?? "")
-						.join(" ");
-					const name = (
-						candidate.getAttribute("aria-label") || labelledText ||
-						candidate.getAttribute("title") ||
-						(input.labels ? Array.from(input.labels).map((label) => label.textContent ?? "").join(" ") : "") ||
-						input.placeholder || candidate.textContent || ""
-					).replace(/\\s+/g, " ").trim().slice(0, 160);
-					elements.push({
-						ref, role, name, tag,
-						...(tag === "input" && input.type ? { type: input.type } : {}),
-						...(candidate.matches(":disabled, [aria-disabled='true']") ? { disabled: true } : {}),
-						x: Math.round(rect.x), y: Math.round(rect.y),
-						width: Math.round(rect.width), height: Math.round(rect.height)
-					});
-				}
-				return elements;
-			})()`,
+			projectPreviewSemanticSnapshotExpression(limit),
 		);
 	}
 
@@ -1143,7 +1319,7 @@ class CdpBrowserSession implements ProjectPreviewBrowserSession {
 			error?: string;
 		}>(
 			`(() => {
-				const element = document.querySelector('[data-hlid-preview-ref="${ref}"]');
+				const element = ${projectPreviewRefElementExpression(ref)};
 				if (!element || element.matches(":disabled, [aria-disabled='true']")) {
 					return { error: "Preview element ${ref} is unavailable." };
 				}
@@ -1189,7 +1365,7 @@ class CdpBrowserSession implements ProjectPreviewBrowserSession {
 	async fillRef(ref: string, text: string): Promise<void> {
 		const result = await this.evaluate<{ error?: string }>(
 			`(() => {
-				const element = document.querySelector('[data-hlid-preview-ref="${ref}"]');
+				const element = ${projectPreviewRefElementExpression(ref)};
 				if (!element || element.matches(":disabled, [aria-disabled='true']")) {
 					return { error: "Preview element ${ref} is unavailable." };
 				}
@@ -1267,13 +1443,23 @@ class CdpBrowserSession implements ProjectPreviewBrowserSession {
 	diagnostics(): ProjectPreviewBrowserDiagnostics {
 		return {
 			consoleMessages: [...this.consoleMessages],
-			failedRequests: [...this.failedRequests],
+			failedRequests: this.requestDiagnostics.snapshot(),
 		};
 	}
 
 	async close(): Promise<void> {
 		if (this.closed) return;
 		this.closed = true;
+		await this.page
+			.send(
+				"Network.deleteCookies",
+				{
+					name: this.relay.cookieName,
+					url: this.relay.origin,
+				},
+				1_000,
+			)
+			.catch(() => {});
 		await this.browser
 			.send("Target.closeTarget", { targetId: this.mainTargetId }, 1_000)
 			.catch(() => {});
@@ -1407,7 +1593,7 @@ async function fetchPageTarget(
 
 async function launchCandidate(
 	candidate: BrowserCandidate,
-	port: number,
+	relay: ProjectPreviewAgentRelayBrowserAccess,
 	signal: AbortSignal,
 	deadline: number,
 ): Promise<ProjectPreviewBrowserSession> {
@@ -1464,7 +1650,7 @@ async function launchCandidate(
 				remaining,
 			),
 		]);
-		const session = new CdpBrowserSession(port, page, browser, target.id, {
+		const session = new CdpBrowserSession(relay, page, browser, target.id, {
 			child,
 			userDataDir,
 		});
@@ -1487,7 +1673,7 @@ async function launchCandidate(
 async function attachCandidate(
 	candidate: BrowserCandidate,
 	userDataDir: string,
-	port: number,
+	relay: ProjectPreviewAgentRelayBrowserAccess,
 	signal: AbortSignal,
 	deadline: number,
 ): Promise<ProjectPreviewBrowserSession> {
@@ -1507,7 +1693,13 @@ async function attachCandidate(
 			signal,
 			Math.max(1, deadline - Date.now()),
 		);
-		const session = new CdpBrowserSession(port, page, browser, target.id, null);
+		const session = new CdpBrowserSession(
+			relay,
+			page,
+			browser,
+			target.id,
+			null,
+		);
 		await session.initialize();
 		return session;
 	} catch (error) {
@@ -1523,7 +1715,7 @@ async function attachCandidate(
 }
 
 async function attachRealProjectPreviewBrowserProfile(
-	port: number,
+	relay: ProjectPreviewAgentRelayBrowserAccess,
 	signal: AbortSignal,
 ): Promise<ProjectPreviewBrowserSession> {
 	const connectSignal = withTimeoutSignal(
@@ -1545,7 +1737,7 @@ async function attachRealProjectPreviewBrowserProfile(
 			return await attachCandidate(
 				candidate,
 				userDataDir,
-				port,
+				relay,
 				connectSignal,
 				deadline,
 			);
@@ -1559,9 +1751,9 @@ async function attachRealProjectPreviewBrowserProfile(
 }
 
 export const createProjectPreviewBrowserSession: ProjectPreviewBrowserSessionFactory =
-	async (port, signal) => {
+	async (relay, signal) => {
 		if (loadConfig().project_preview.use_real_browser_profile) {
-			return attachRealProjectPreviewBrowserProfile(port, signal);
+			return attachRealProjectPreviewBrowserProfile(relay, signal);
 		}
 		const launchSignal = withTimeoutSignal(
 			signal,
@@ -1578,7 +1770,7 @@ export const createProjectPreviewBrowserSession: ProjectPreviewBrowserSessionFac
 		for (const candidate of candidates) {
 			if (launchSignal.aborted || Date.now() >= deadline) break;
 			try {
-				return await launchCandidate(candidate, port, launchSignal, deadline);
+				return await launchCandidate(candidate, relay, launchSignal, deadline);
 			} catch (error) {
 				failures.push(errorMessage(error));
 			}

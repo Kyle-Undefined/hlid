@@ -65,11 +65,17 @@ export async function setSessionModel(
 	model: string,
 ): Promise<void> {
 	const db = await getDb();
-	db.run(`UPDATE sessions SET model = ?, selected_model = ? WHERE id = ?`, [
-		model,
-		model,
-		sessionId,
-	]);
+	db.run(
+		`UPDATE sessions
+		 SET actual_model = CASE
+		       WHEN COALESCE(selected_model, model, '') = ? THEN actual_model
+		       ELSE NULL
+		     END,
+		     model = ?,
+		     selected_model = ?
+		 WHERE id = ?`,
+		[model, model, model, sessionId],
+	);
 	markAnalyticsChanged(["stats", "activity"], "session_model");
 }
 
@@ -148,20 +154,29 @@ export async function getSessionClaudeId(
 	return getSessionProviderSession(sessionId, "claude");
 }
 
+/**
+ * Persist provider-native continuity without transferring provider ownership.
+ * Callers must establish provider_id first; a delayed retired-provider write is
+ * rejected instead of reclaiming the session row.
+ */
 export async function setSessionProviderSession(
 	sessionId: string,
 	providerId: string,
 	providerSessionId: string | null,
-): Promise<void> {
+): Promise<boolean> {
 	const db = await getDb();
-	db.run(
+	const result = db.run(
 		`UPDATE sessions
-		 SET provider_id = ?, provider_session_id = ?,
+		 SET provider_session_id = ?,
 		     claude_session_id = CASE WHEN ? = 'claude' THEN ? ELSE claude_session_id END
-		 WHERE id = ?`,
-		[providerId, providerSessionId, providerId, providerSessionId, sessionId],
+		 WHERE id = ? AND provider_id = ?`,
+		[providerSessionId, providerId, providerSessionId, sessionId, providerId],
 	);
-	markAnalyticsChanged(["stats", "activity"], "session_provider_session");
+	if (result.changes > 0) {
+		markAnalyticsChanged(["stats", "activity"], "session_provider_session");
+		return true;
+	}
+	return false;
 }
 
 export async function getSessionProviderSession(
@@ -183,7 +198,10 @@ export async function getSessionProviderSession(
 		.get(sessionId);
 	if (!row) return null;
 	if (providerId && row.provider_id !== providerId) return null;
-	return row.provider_session_id ?? row.claude_session_id ?? null;
+	return (
+		row.provider_session_id ??
+		(row.provider_id === "claude" ? row.claude_session_id : null)
+	);
 }
 
 export async function setSessionProviderId(
@@ -191,11 +209,76 @@ export async function setSessionProviderId(
 	providerId: string,
 ): Promise<void> {
 	const db = await getDb();
-	db.run(`UPDATE sessions SET provider_id = ? WHERE id = ?`, [
-		providerId,
-		sessionId,
-	]);
+	// Legacy callers only own provider identity. Preserve their selected
+	// controls, but invalidate runtime values owned by the previous provider.
+	db.run(
+		`UPDATE sessions
+		 SET actual_model = CASE WHEN provider_id = ? THEN actual_model ELSE NULL END,
+		     provider_session_id = CASE
+		       WHEN provider_id = ? THEN provider_session_id
+		       ELSE NULL
+		     END,
+		     claude_session_id = CASE
+		       WHEN provider_id = ? THEN claude_session_id
+		       ELSE NULL
+		     END,
+		     provider_id = ?
+		 WHERE id = ?`,
+		[providerId, providerId, providerId, providerId, sessionId],
+	);
 	markAnalyticsChanged(["stats", "activity"], "session_provider");
+}
+
+export async function setSessionProviderSelection(
+	sessionId: string,
+	providerId: string,
+	selection: {
+		model?: string;
+		effort?: string;
+		permissionMode?: string;
+	},
+): Promise<void> {
+	const db = await getDb();
+	const selectedModel = selection.model ?? "";
+	// Provider plus controls form one current-session ownership tuple. Native
+	// thread continuity survives a same-provider model change, but the observed
+	// runtime model belongs to the exact provider/model selection that produced it.
+	db.run(
+		`UPDATE sessions
+		 SET actual_model = CASE
+		       WHEN provider_id = ?
+		        AND COALESCE(selected_model, model, '') = ?
+		       THEN actual_model
+		       ELSE NULL
+		     END,
+		     provider_session_id = CASE
+		       WHEN provider_id = ? THEN provider_session_id
+		       ELSE NULL
+		     END,
+		     claude_session_id = CASE
+		       WHEN provider_id = ? THEN claude_session_id
+		       ELSE NULL
+		     END,
+		     provider_id = ?,
+		     model = ?,
+		     selected_model = ?,
+		     selected_effort = ?,
+		     selected_permission_mode = ?
+		 WHERE id = ?`,
+		[
+			providerId,
+			selectedModel,
+			providerId,
+			providerId,
+			providerId,
+			selectedModel,
+			selectedModel,
+			selection.effort ?? null,
+			selection.permissionMode ?? null,
+			sessionId,
+		],
+	);
+	markAnalyticsChanged(["stats", "activity"], "session_provider_selection");
 }
 
 export async function getSessionProviderId(
@@ -210,16 +293,25 @@ export async function getSessionProviderId(
 	return row?.provider_id ?? null;
 }
 
-export async function setSessionActualModel(
+export async function setSessionActualModelForProvider(
 	sessionId: string,
+	providerId: string,
+	selectedModel: string,
 	actualModel: string,
-): Promise<void> {
+): Promise<boolean> {
 	const db = await getDb();
-	db.run(`UPDATE sessions SET actual_model = ? WHERE id = ?`, [
-		actualModel,
-		sessionId,
-	]);
-	markAnalyticsChanged(["stats", "activity"], "session_actual_model");
+	const result = db.run(
+		`UPDATE sessions SET actual_model = ?
+		 WHERE id = ?
+		   AND provider_id = ?
+		   AND COALESCE(selected_model, model, '') = ?`,
+		[actualModel, sessionId, providerId, selectedModel],
+	);
+	if (result.changes > 0) {
+		markAnalyticsChanged(["stats", "activity"], "session_actual_model");
+		return true;
+	}
+	return false;
 }
 
 export async function getSessionActualModel(
@@ -301,6 +393,7 @@ export async function createForkedSessionRow(
 		{
 			effort: source.selected_effort ?? undefined,
 			permissionMode: source.selected_permission_mode ?? undefined,
+			providerId: source.provider_id ?? "claude",
 		},
 	);
 	if (source.agent_cwd) await setSessionAgentCwd(newId, source.agent_cwd);

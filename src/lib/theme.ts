@@ -48,6 +48,49 @@ export type CustomThemePalette = { color_scheme: "dark" | "light" } & Record<
 >;
 export type ThemeName = "dark" | "tan" | "custom";
 
+export type ThemeBootstrapConfig = {
+	theme: ThemeName;
+	mobileTheme?: ThemeName;
+	customTheme?: CustomThemePalette;
+	mobileCustomTheme?: CustomThemePalette;
+};
+
+type StoredThemeConfig = {
+	theme: ThemeName;
+	mobile_theme?: ThemeName;
+	custom_theme?: CustomThemePalette;
+	mobile_custom_theme?: CustomThemePalette;
+};
+
+export function themeBootstrapConfig(
+	ui: StoredThemeConfig,
+): ThemeBootstrapConfig {
+	return {
+		theme: ui.theme,
+		...(ui.mobile_theme ? { mobileTheme: ui.mobile_theme } : {}),
+		...(ui.custom_theme ? { customTheme: ui.custom_theme } : {}),
+		...(ui.mobile_custom_theme
+			? { mobileCustomTheme: ui.mobile_custom_theme }
+			: {}),
+	};
+}
+
+/**
+ * Build the parser-blocking theme bootstrap used by the root document.
+ * Config is authoritative; browser storage is synchronized as a cache for
+ * surfaces that apply the theme before config is available.
+ */
+export function themeBootstrapScript(config: ThemeBootstrapConfig): string {
+	const serialized = JSON.stringify({
+		...config,
+		mobileTheme: config.mobileTheme ?? null,
+		customTheme: config.customTheme ?? null,
+		mobileCustomTheme: config.mobileCustomTheme ?? null,
+		colorKeys: THEME_COLOR_KEYS,
+	});
+	return `(function(){var c=${serialized},r=document.documentElement,k=c.colorKeys,m=typeof window.matchMedia==="function"&&window.matchMedia("(pointer: coarse)").matches,t=m&&c.mobileTheme?c.mobileTheme:c.theme,p=t==="custom"?(m&&c.mobileTheme==="custom"?(c.mobileCustomTheme||c.customTheme):c.customTheme):null,a=t==="custom"&&p&&(p.color_scheme==="dark"||p.color_scheme==="light")?p.color_scheme:t==="tan"?"light":"dark";r.setAttribute("data-theme",t);r.setAttribute("data-theme-appearance",a);r.className=t;r.style.removeProperty("color-scheme");k.forEach(function(x){r.style.removeProperty("--"+x.replaceAll("_","-"));});if(t==="custom"&&p){r.style.colorScheme=a;k.forEach(function(x){var v=p[x];if(typeof v==="string"&&/^#[0-9a-fA-F]{6}$/.test(v))r.style.setProperty("--"+x.replaceAll("_","-"),v);});if(typeof p.status_info!=="string"&&typeof p.primary==="string")r.style.setProperty("--status-info",p.primary);}try{localStorage.setItem("hlid-theme",t);if(t==="custom"&&p)localStorage.setItem("hlid-theme-palette",JSON.stringify(p));else localStorage.removeItem("hlid-theme-palette");}catch(e){}})();`;
+}
+
 export const DARK_THEME: CustomThemePalette = {
 	color_scheme: "dark",
 	background: "#0f0f12",

@@ -11,6 +11,7 @@ vi.mock("#/server/config", () => ({
 }));
 vi.mock("#/server/auth", () => ({
 	authState: vi.fn(),
+	authenticateSessionRequest: vi.fn(),
 	changePassword: vi.fn(),
 	clearSessionCookie: vi.fn(() => "hlid_session=; Max-Age=0"),
 	createInitialPassword: vi.fn(),
@@ -63,6 +64,7 @@ beforeEach(() => {
 	vi.mocked(auth.loginRetryAfterSeconds).mockReturnValue(0);
 	vi.mocked(auth.effectivePeerIp).mockReturnValue("127.0.0.1");
 	vi.mocked(auth.createSession).mockResolvedValue("tok-1");
+	vi.mocked(auth.authenticateSessionRequest).mockResolvedValue(true);
 	vi.mocked(auth.sessionCookie).mockReturnValue("hlid_session=tok-1");
 	vi.mocked(auth.clearSessionCookie).mockReturnValue(
 		"hlid_session=; Max-Age=0",
@@ -174,6 +176,19 @@ describe("POST authenticated actions", () => {
 		expect(res.status).toBe(200);
 		expect(auth.revokeSession).toHaveBeenCalledWith("cookie-token");
 		expect(res.headers.get("set-cookie")).toBe("hlid_session=; Max-Age=0");
+	});
+
+	it("denies credential administration to capability-only authentication", async () => {
+		vi.mocked(auth.authState).mockResolvedValue("authenticated" as never);
+		vi.mocked(auth.authenticateSessionRequest).mockResolvedValue(false);
+
+		const res = await post("revoke-all");
+
+		expect(res.status).toBe(403);
+		expect(await res.json()).toEqual({
+			error: "Credential administration requires a signed-in browser session.",
+		});
+		expect(auth.revokeAllSessions).not.toHaveBeenCalled();
 	});
 
 	it("revoke-all revokes every session", async () => {

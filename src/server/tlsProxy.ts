@@ -13,6 +13,7 @@ import {
 	projectPreviewWebSocketProtocols,
 	selectedProjectPreviewId,
 } from "./projectPreviewRelay";
+import { PROJECT_PREVIEW_AUTH_HEADER } from "./projectPreviewTrust";
 import { createRequestObserver } from "./requestDiagnostics";
 import { createConcurrencyGate, readRequestBodyLimited } from "./requestLimits";
 import type { UiForward } from "./uiServer";
@@ -68,6 +69,7 @@ const SKIP_REQ = new Set([
 	"connection",
 	"keep-alive",
 	"x-hlid-internal",
+	PROJECT_PREVIEW_AUTH_HEADER,
 	"x-hlid-preview-origin",
 	"x-hlid-proxy-token",
 	"x-hlid-forwarded-proto",

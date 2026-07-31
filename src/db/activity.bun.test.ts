@@ -16,7 +16,7 @@ import {
 import { freshDb } from "./db.test-utils";
 import { appendMessage, appendToolEvent, setToolEventResult } from "./messages";
 import { getDb } from "./schema";
-import { createSession, recordQuery, setSessionActualModel } from "./sessions";
+import { createSession, recordQuery } from "./sessions";
 import type { QueryData } from "./types";
 
 function baseQuery(overrides: Partial<QueryData> = {}): QueryData {
@@ -68,6 +68,17 @@ async function addToolEvent(
 	if (isError !== null) {
 		await setToolEventResult(sessionId, toolId, "result", isError);
 	}
+}
+
+async function setActualModelForTest(
+	sessionId: string,
+	actualModel: string,
+): Promise<void> {
+	const db = await getDb();
+	db.run(`UPDATE sessions SET actual_model = ? WHERE id = ?`, [
+		actualModel,
+		sessionId,
+	]);
 }
 
 // ── getTopToolCalls ───────────────────────────────────────────────────────────
@@ -245,7 +256,7 @@ describe("activity — getModelSplit", () => {
 
 	it("actual_model overrides model", async () => {
 		await createSession("s1", "L", "claude-sonnet-4-5");
-		await setSessionActualModel("s1", "claude-opus-4-7");
+		await setActualModelForTest("s1", "claude-opus-4-7");
 		await createSession("s2", "L", "claude-sonnet-4-5");
 
 		const split = await getModelSplit();

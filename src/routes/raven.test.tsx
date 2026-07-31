@@ -2543,6 +2543,39 @@ describe("Raven composed submission behavior", () => {
 		);
 	});
 
+	it("discards a remembered agent that is no longer configured", async () => {
+		localStorage.setItem("hlid:raven:last-session", "stale-agent-chat");
+		localStorage.setItem("hlid:raven:last-agent", "/tmp/removed-test-agent");
+		state.search = {
+			session: "stale-agent-chat",
+			agent: "/tmp/removed-test-agent",
+		};
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: "stale-agent-chat",
+			isExplicitSession: true,
+			agentSkillContext: undefined,
+			agentList: [
+				{ path: "/current-project", name: "Current", provider: "claude" },
+			],
+		};
+
+		render(<ChatPage />);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("agent-select").dataset.value).toBe("");
+			expect(localStorage.getItem("hlid:raven:last-agent")).toBeNull();
+		});
+		const normalizedNavigation = state.navigate.mock.calls
+			.map(([options]) => options as { search?: unknown })
+			.find((options) => {
+				if (typeof options.search !== "function") return false;
+				const next = options.search(state.search) as Record<string, unknown>;
+				return next.session === "stale-agent-chat" && next.agent === undefined;
+			});
+		expect(normalizedNavigation).toBeTruthy();
+	});
+
 	it("does not swap a newly selected route back to the previous chat", () => {
 		state.search = { session: "chat-a" };
 		state.loaderData = {
@@ -2687,6 +2720,13 @@ describe("raven route loader", () => {
 		expect(getLiveSessionsFn).not.toHaveBeenCalled();
 	});
 
+	it("discards an explicit route agent that is no longer configured", async () => {
+		const data = await route.loader({
+			deps: { session: "s1", agent: "/tmp/removed-test-agent" },
+		});
+		expect(data.agentSkillContext).toBeUndefined();
+	});
+
 	it("does not let a stalled provider catalog hold Raven navigation pending", async () => {
 		vi.useFakeTimers();
 		try {
@@ -2793,6 +2833,9 @@ describe("raven route loader", () => {
 	});
 
 	it("derives the agent skill context from the resolved session cwd", async () => {
+		vi.mocked(getConfig).mockResolvedValue(
+			makeLoaderConfig({ agents: [{ path: "/proj" }] }) as never,
+		);
 		vi.mocked(getCurrentSessionFn).mockResolvedValue("cur" as never);
 		vi.mocked(getSessionSelectionFn).mockResolvedValue({
 			agentCwd: "/proj",
@@ -2806,7 +2849,30 @@ describe("raven route loader", () => {
 		expect(getSessionSelectionFn).toHaveBeenCalledWith({ data: "cur" });
 	});
 
+	it("normalizes an equivalent saved WSL path to the configured agent path", async () => {
+		vi.mocked(getConfig).mockResolvedValue(
+			makeLoaderConfig({
+				agents: [{ path: "/home/kyle/project" }],
+			}) as never,
+		);
+		vi.mocked(getCurrentSessionFn).mockResolvedValue("cur" as never);
+		vi.mocked(getSessionSelectionFn).mockResolvedValue({
+			agentCwd: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\project",
+			providerId: null,
+			model: null,
+			effort: null,
+			permissionMode: null,
+		} as never);
+
+		const data = await route.loader({ deps: {} });
+
+		expect(data.agentSkillContext).toBe("/home/kyle/project");
+	});
+
 	it("restores all controls selected for the resolved session", async () => {
+		vi.mocked(getConfig).mockResolvedValue(
+			makeLoaderConfig({ agents: [{ path: "/proj" }] }) as never,
+		);
 		vi.mocked(getCurrentSessionFn).mockResolvedValue("cur" as never);
 		vi.mocked(getSessionSelectionFn).mockResolvedValue({
 			agentCwd: "/proj",
@@ -2818,6 +2884,28 @@ describe("raven route loader", () => {
 		const data = await route.loader({ deps: {} });
 		expect(data).toMatchObject({
 			agentSkillContext: "/proj",
+			sessionModel: "gpt-5.6-sol",
+			sessionProviderId: "codex",
+			sessionEffort: "high",
+			sessionPermissionMode: "bypassPermissions",
+		});
+		expect(getSessionSelectionFn).toHaveBeenCalledWith({ data: "cur" });
+	});
+
+	it("does not reactivate a saved agent cwd that is no longer configured", async () => {
+		vi.mocked(getCurrentSessionFn).mockResolvedValue("cur" as never);
+		vi.mocked(getSessionSelectionFn).mockResolvedValue({
+			agentCwd: "/tmp/removed-test-agent",
+			providerId: "codex",
+			model: "gpt-5.6-sol",
+			effort: "high",
+			permissionMode: "bypassPermissions",
+		} as never);
+
+		const data = await route.loader({ deps: {} });
+
+		expect(data).toMatchObject({
+			agentSkillContext: undefined,
 			sessionModel: "gpt-5.6-sol",
 			sessionProviderId: "codex",
 			sessionEffort: "high",

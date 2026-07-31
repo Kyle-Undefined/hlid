@@ -141,7 +141,7 @@ export {
 	recordQuery,
 	renameSession,
 	rollbackHlidDelegationSetup,
-	setSessionActualModel,
+	setSessionActualModelForProvider,
 	setSessionAgentCwd,
 	setSessionArchived,
 	setSessionEffort,
@@ -149,6 +149,7 @@ export {
 	setSessionPermissionMode,
 	setSessionPinned,
 	setSessionProviderId,
+	setSessionProviderSelection,
 	setSessionProviderSession,
 } from "./sessions";
 // Settings

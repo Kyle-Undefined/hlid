@@ -10,6 +10,7 @@ import {
 	handleProjectPreviewRelayRequest,
 	parseProjectPreviewRelayPath,
 	parseProjectPreviewRelayWebSocket,
+	projectPreviewRelayWebSocketHeaders,
 	projectPreviewSelectionCookieHeader,
 	projectPreviewSelectionRedirect,
 	projectPreviewUpstreamTarget,
@@ -17,6 +18,9 @@ import {
 	selectedProjectPreviewId,
 	selectedProjectPreviewRelayUrl,
 } from "./projectPreviewRelay";
+import { PROJECT_PREVIEW_AUTH_HEADER } from "./projectPreviewTrust";
+
+const capability = { token: "preview-auth-test-token" };
 
 describe("Project Preview relay", () => {
 	const servers: ReturnType<typeof createServer>[] = [];
@@ -41,11 +45,12 @@ describe("Project Preview relay", () => {
 			body: string;
 			contentType: string;
 			headers?: OutgoingHttpHeaders;
+			status?: number;
 		},
 	): Promise<number> {
 		const server = createServer((request, response) => {
 			const result = handler(request.url ?? "/", request.headers);
-			response.writeHead(200, {
+			response.writeHead(result.status ?? 200, {
 				"content-type": result.contentType,
 				...result.headers,
 			});
@@ -116,19 +121,22 @@ describe("Project Preview relay", () => {
 	it("rewrites root assets and injects the WebSocket relay bootstrap", async () => {
 		const port = await upstream(() => ({
 			contentType: "text/html; charset=utf-8",
-			body: '<!doctype html><head></head><script class = "$tsr">window.$_TSR={router:{manifest:$R[1]={routes:{__root__:{preloads:$R[4]=["/@id/virtual:tanstack-start-dev-client-entry","/assets/app.js"],scripts:[{attrs:{type:"module",src:"/@id/virtual:tanstack-start-dev-client-entry"}}],css:[{href:"/@tanstack-start/styles.css?routes=__root__"}]}}},matches:$R[10]=[$R[11]={loaderData:$R[12]={href:"/docs",src:"/avatar.png",preloads:["/semantic"]}}]}}</script><script type="module" src="/@id/virtual:tanstack-start-dev-client-entry"></script><script src="/assets/app.js"></script><link href="/src/app.css">',
+			body: '<!doctype html><head></head><body><a href="/settings">Settings</a><script class = "$tsr">window.$_TSR={router:{manifest:$R[1]={routes:{__root__:{preloads:$R[4]=["/@id/virtual:tanstack-start-dev-client-entry","/assets/app.js"],scripts:[{attrs:{type:"module",src:"/@id/virtual:tanstack-start-dev-client-entry"}}],css:[{href:"/@tanstack-start/styles.css?routes=__root__"}]}}},matches:$R[10]=[$R[11]={loaderData:$R[12]={href:"/docs",src:"/avatar.png",preloads:["/semantic"]}}]}}</script><script type="module" src="/@id/virtual:tanstack-start-dev-client-entry"></script><script src="/assets/app.js"></script><link href="/src/app.css"></body>',
 		}));
 		const response = await handleProjectPreviewRelayRequest(
 			new URL(
 				"http://hlid/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/",
 			),
 			new Request("http://hlid/relay"),
-			() => ({ port }),
+			() => ({ port, capability }),
 		);
 		const text = await response?.text();
 		expect(response?.status).toBe(200);
 		expect(text).toContain(
 			'src="/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/assets/app.js"',
+		);
+		expect(text).toContain(
+			'href="/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/settings"',
 		);
 		expect(text).not.toContain('src:"/assets/app.js"');
 		expect(text).toContain(
@@ -153,9 +161,8 @@ describe("Project Preview relay", () => {
 		expect(text).toContain(
 			'url.pathname==="/ws"||url.pathname.startsWith("/ws/")',
 		);
-		expect(text).toContain(
-			'url.pathname=p+(backendSocket?"/__hlid_backend__":"")+url.pathname',
-		);
+		expect(text).toContain('b=c?"/__hlid_backend__":p+"/__hlid_backend__"');
+		expect(text).toContain("url.pathname=b+url.pathname");
 		expect(text).toContain("hlid:project-preview-state");
 		expect(text).toContain("scroll_x");
 		expect(text?.match(/document\.currentScript\?\.remove\(\)/g)).toHaveLength(
@@ -173,6 +180,42 @@ describe("Project Preview relay", () => {
 		expect(guardIndex).toBeLessThan(appScriptIndex);
 	});
 
+	it("keeps isolated-origin SSR URLs app-local through hydration", async () => {
+		const previewId = "123e4567-e89b-12d3-a456-426614174000";
+		const relayPrefix = `/api/project-previews/${previewId}/relay`;
+		const port = await upstream(() => ({
+			contentType: "text/html; charset=utf-8",
+			body: '<!doctype html><html><head><link rel="stylesheet" href="/src/app.css"></head><body><a href="/settings">Settings</a><form action="/save"><button>Save</button></form><script class="$tsr">window.$_TSR={router:{manifest:$R[1]={routes:{__root__:{preloads:$R[4]=["/@id/client","/assets/app.js"],scripts:[{attrs:{src:"/@id/client"}}],css:[{href:"/src/app.css"}]}}}}}</script><script type="module" src="/@id/client"></script></body></html>',
+		}));
+		const response = await handleProjectPreviewRelayRequest(
+			new URL(`http://hlid${relayPrefix}/settings`),
+			new Request("https://preview.test/settings", {
+				headers: { "x-hlid-preview-origin": "1" },
+			}),
+			() => ({ port, capability }),
+		);
+		const text = await response?.text();
+
+		expect(response?.status).toBe(200);
+		expect(text).toContain('<link rel="stylesheet" href="/src/app.css">');
+		expect(text).toContain('<a href="/settings">Settings</a>');
+		expect(text).toContain('<form action="/save">');
+		expect(text).toContain('<script type="module" src="/@id/client">');
+		expect(text).toContain('preloads:$R[4]=["/@id/client","/assets/app.js"]');
+		expect(text).toContain('scripts:[{attrs:{src:"/@id/client"}}]');
+		expect(text).toContain('css:[{href:"/src/app.css"}]');
+		expect(text).toContain(
+			`const p=${JSON.stringify(relayPrefix)},i=${JSON.stringify(previewId)},c=true`,
+		);
+		expect(text).toContain('b=c?"/__hlid_backend__":p+"/__hlid_backend__"');
+		expect(text).toContain("url.pathname=b+url.pathname");
+		expect(text).toContain("if(!c&&!url.pathname.startsWith(p))");
+		expect(text).toContain("preview_id:i");
+		expect(text).toContain(
+			'const pathname=!c&&location.pathname.startsWith(p)?location.pathname.slice(p.length)||"/":location.pathname',
+		);
+	});
+
 	it("rewrites module imports without corrupting regular expressions", async () => {
 		const port = await upstream(() => ({
 			contentType: "text/javascript",
@@ -183,7 +226,7 @@ describe("Project Preview relay", () => {
 				"http://hlid/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/src/main.js",
 			),
 			new Request("http://hlid/relay"),
-			() => ({ port }),
+			() => ({ port, capability }),
 		);
 		const text = await response?.text();
 		expect(text).toContain(
@@ -193,6 +236,69 @@ describe("Project Preview relay", () => {
 			'import("/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/src/routes/login.tsx?tsr-split=component")',
 		);
 		expect(text).toContain("const fenced = /```[\\s\\S]*?```/g");
+	});
+
+	it("keeps isolated module URLs app-local without sharing prefixed cache entries", async () => {
+		const previewId = "123e4567-e89b-12d3-a456-426614174000";
+		const relayPrefix = `/api/project-previews/${previewId}/relay`;
+		let requests = 0;
+		const port = await upstream(() => {
+			requests++;
+			return {
+				contentType: "text/javascript",
+				body: 'import value from "/src/value.js"; export default value;',
+				headers: { etag: '"shared-between-relay-modes"' },
+			};
+		});
+		const url = new URL(`http://hlid${relayPrefix}/src/main.js`);
+		const isolated = await handleProjectPreviewRelayRequest(
+			url,
+			new Request("https://preview.test/src/main.js", {
+				headers: { "x-hlid-preview-origin": "1" },
+			}),
+			() => ({ port, capability }),
+		);
+		const prefixed = await handleProjectPreviewRelayRequest(
+			url,
+			new Request("http://hlid/relay/src/main.js"),
+			() => ({ port, capability }),
+		);
+
+		expect(await isolated?.text()).toContain(
+			'import value from "/src/value.js"',
+		);
+		expect(await prefixed?.text()).toContain(
+			`import value from "${relayPrefix}/src/value.js"`,
+		);
+		expect(requests).toBe(2);
+	});
+
+	it("keeps isolated root redirects app-local", async () => {
+		const previewId = "123e4567-e89b-12d3-a456-426614174000";
+		const relayPrefix = `/api/project-previews/${previewId}/relay`;
+		const port = await upstream(() => ({
+			status: 302,
+			contentType: "text/plain; charset=utf-8",
+			body: "",
+			headers: { location: "/login?next=%2Fsettings" },
+		}));
+		const isolated = await handleProjectPreviewRelayRequest(
+			new URL(`http://hlid${relayPrefix}/settings`),
+			new Request("https://preview.test/settings", {
+				headers: { "x-hlid-preview-origin": "1" },
+			}),
+			() => ({ port, capability }),
+		);
+		const prefixed = await handleProjectPreviewRelayRequest(
+			new URL(`http://hlid${relayPrefix}/settings`),
+			new Request("http://hlid/relay/settings"),
+			() => ({ port, capability }),
+		);
+
+		expect(isolated?.headers.get("location")).toBe("/login?next=%2Fsettings");
+		expect(prefixed?.headers.get("location")).toBe(
+			`${relayPrefix}/login?next=%2Fsettings`,
+		);
 	});
 
 	it("reuses bounded transformed modules while the upstream ETag is stable", async () => {
@@ -212,12 +318,12 @@ describe("Project Preview relay", () => {
 		const first = await handleProjectPreviewRelayRequest(
 			url,
 			new Request("http://hlid/relay"),
-			() => ({ port }),
+			() => ({ port, capability }),
 		);
 		const second = await handleProjectPreviewRelayRequest(
 			url,
 			new Request("http://hlid/relay"),
-			() => ({ port }),
+			() => ({ port, capability }),
 		);
 
 		expect(await first?.text()).toContain("export default 1");
@@ -228,7 +334,7 @@ describe("Project Preview relay", () => {
 		const afterDispose = await handleProjectPreviewRelayRequest(
 			url,
 			new Request("http://hlid/relay"),
-			() => ({ port }),
+			() => ({ port, capability }),
 		);
 		expect(await afterDispose?.text()).toContain("export default 3");
 	});
@@ -254,7 +360,7 @@ describe("Project Preview relay", () => {
 				`http://hlid/api/project-previews/${previewId}/relay/src/slow.js`,
 			),
 			new Request("http://hlid/relay"),
-			() => ({ port: address.port }),
+			() => ({ port: address.port, capability }),
 		);
 		await started;
 		disposeProjectPreviewRelay(previewId);
@@ -317,7 +423,17 @@ describe("Project Preview relay", () => {
 				wsTarget: "ws://127.0.0.1:5173/hmr",
 				back: null,
 				queue: [],
-				upstreamHeaders: { cookie: "app_session=preview-secret" },
+				upstreamHeaders: projectPreviewRelayWebSocketHeaders(
+					new Request("http://hlid/relay", {
+						headers: {
+							cookie:
+								"__hlid_preview_123e4567e89b12d3a456426614174000__app_session=preview-secret",
+							[PROJECT_PREVIEW_AUTH_HEADER]: "spoofed",
+						},
+					}),
+					"123e4567-e89b-12d3-a456-426614174000",
+					capability,
+				),
 				protocols: ["vite-hmr"],
 			},
 			readyState: FakeWebSocket.OPEN,
@@ -330,6 +446,7 @@ describe("Project Preview relay", () => {
 		if (!backend) throw new Error("Preview backend was not opened.");
 		expect(backend.headers).toEqual({
 			cookie: "app_session=preview-secret",
+			[PROJECT_PREVIEW_AUTH_HEADER]: capability.token,
 		});
 		expect(backend.protocols).toEqual(["vite-hmr"]);
 		handlers.message(front as never, "before-open");
@@ -364,13 +481,15 @@ describe("Project Preview relay", () => {
 					authorization: "Bearer secret",
 					cookie: "hlid_session=secret",
 					"x-hlid-internal": "secret",
+					[PROJECT_PREVIEW_AUTH_HEADER]: "spoofed",
 				},
 			}),
-			() => ({ port }),
+			() => ({ port, capability }),
 		);
 		expect(receivedHeaders.authorization).toBeUndefined();
 		expect(receivedHeaders.cookie).toBeUndefined();
 		expect(receivedHeaders["x-hlid-internal"]).toBeUndefined();
+		expect(receivedHeaders[PROJECT_PREVIEW_AUTH_HEADER]).toBe(capability.token);
 		expect(receivedHeaders.origin).toBe(`http://127.0.0.1:${port}`);
 	});
 
@@ -394,7 +513,7 @@ describe("Project Preview relay", () => {
 		const initial = await handleProjectPreviewRelayRequest(
 			new URL(`http://hlid${relayPrefix}/login`),
 			new Request("http://hlid/relay"),
-			() => ({ port }),
+			() => ({ port, capability }),
 		);
 		const setCookies = (
 			initial?.headers as Headers & { getSetCookie?: () => string[] }
@@ -420,7 +539,7 @@ describe("Project Preview relay", () => {
 						"hlid_session=parent-secret; __hlid_preview_123e4567e89b12d3a456426614174000__app_session=preview-secret; unrelated=private",
 				},
 			}),
-			() => ({ port }),
+			() => ({ port, capability }),
 		);
 		expect(receivedHeaders.cookie).toBe("app_session=preview-secret");
 	});
@@ -432,6 +551,7 @@ describe("Project Preview relay", () => {
 		);
 		const redirect = projectPreviewSelectionRedirect(opening, () => ({
 			port: 4173,
+			capability,
 		}));
 		expect(redirect?.status).toBe(302);
 		expect(redirect?.headers.get("location")).toBe("/settings?tab=display");

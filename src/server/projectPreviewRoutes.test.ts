@@ -53,10 +53,12 @@ import {
 	parseControlInput,
 } from "./projectPreviewRoutes";
 
+const capability = { token: "preview-auth-test-token" };
 const controlBase = {
 	previewId: "7c0eea4d-f74e-45c8-8674-a535fbb4412b",
 	sessionId: "session-1",
 	port: 5173,
+	capability,
 	initialPath: "/app",
 };
 
@@ -225,7 +227,7 @@ describe("Project Preview route dispatch", () => {
 			path: "/app",
 			state: "ready",
 		});
-		mocks.relayTarget.mockReturnValue({ port: 5173 });
+		mocks.relayTarget.mockReturnValue({ port: 5173, capability });
 	});
 
 	it("ignores paths outside the Project Preview API before routing", async () => {
@@ -399,7 +401,7 @@ describe("Project Preview capture route", () => {
 			path: "/app",
 			state: "ready",
 		});
-		mocks.relayTarget.mockReturnValue({ port: 5173 });
+		mocks.relayTarget.mockReturnValue({ port: 5173, capability });
 		mocks.getFrame.mockReturnValue(null);
 	});
 
@@ -513,6 +515,7 @@ describe("Project Preview capture route", () => {
 			previewId: "7c0eea4d-f74e-45c8-8674-a535fbb4412b",
 			sessionId: "session-1",
 			port: 5173,
+			capability,
 			path: "/app",
 			viewport: "tablet",
 			size: { width: 740, height: 900 },
@@ -587,6 +590,7 @@ describe("Project Preview capture route", () => {
 			previewId: "7c0eea4d-f74e-45c8-8674-a535fbb4412b",
 			sessionId: "session-1",
 			port: 5173,
+			capability,
 			initialPath: "/app",
 			action: "click",
 			frameId,

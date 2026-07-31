@@ -4,6 +4,10 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setDbForTest } from "../db/schema";
+import {
+	PROJECT_PREVIEW_AUTH_ENV,
+	PROJECT_PREVIEW_AUTH_HEADER,
+} from "./projectPreviewTrust";
 
 const directory = mkdtempSync(join(tmpdir(), "hlid-auth-"));
 process.env.HLID_AUTH_PATH = directory;
@@ -17,6 +21,36 @@ afterAll(() => {
 });
 
 describe("server-side authentication lifecycle", () => {
+	test("accepts the private child capability without granting session administration", async () => {
+		process.env[PROJECT_PREVIEW_AUTH_ENV] = "preview-auth-test-token";
+		try {
+			const trusted = new Request("http://127.0.0.1:5173", {
+				headers: {
+					[PROJECT_PREVIEW_AUTH_HEADER]: "preview-auth-test-token",
+				},
+			});
+			const wrong = new Request("http://127.0.0.1:5173", {
+				headers: { [PROJECT_PREVIEW_AUTH_HEADER]: "wrong" },
+			});
+
+			expect(auth.hasCredential()).toBe(false);
+			expect(await auth.authenticateRequest(trusted)).toBe(true);
+			expect(await auth.authState(trusted)).toBe("authenticated");
+			expect(await auth.authenticateSessionRequest(trusted)).toBe(false);
+			expect(
+				await auth.authorizeServiceRequest(
+					trusted,
+					"192.0.2.5",
+					"internal-secret",
+				),
+			).toBe(true);
+			expect(await auth.authenticateRequest(wrong)).toBe(false);
+			expect(await auth.authState(wrong)).toBe("setup-required");
+		} finally {
+			delete process.env[PROJECT_PREVIEW_AUTH_ENV];
+		}
+	});
+
 	test("hashes credentials, stores opaque sessions, revokes, changes, and resets", async () => {
 		expect(auth.hasCredential()).toBe(false);
 		await expect(auth.createInitialPassword("short")).rejects.toThrow("12-256");

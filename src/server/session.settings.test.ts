@@ -101,6 +101,78 @@ describe("SessionManager — setModel", () => {
 		expect(dbMock.setSessionModel).toHaveBeenCalledWith("sess-1", "model-b");
 	});
 
+	it("persists a provider-default reset as an empty selected model", async () => {
+		const { provider } = makeSwitchableProvider();
+		const sm = new SessionManager(
+			makeConfig("model-a"),
+			makeProviders(provider),
+		);
+		await sm.runQuery("hi", () => {}, { sessionId: "sess-reset" });
+		vi.mocked(dbMock.setSessionModel).mockClear();
+
+		await sm.setModel(undefined);
+
+		expect(dbMock.setSessionModel).toHaveBeenCalledWith("sess-reset", "");
+	});
+
+	it("reloads the empty selected-model sentinel as the provider default", async () => {
+		const { provider, captured } = makeCaptureProvider("claude");
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "default-model-session",
+			label: "Default model",
+		} as never);
+		vi.mocked(dbMock.getSessionModel).mockResolvedValueOnce("");
+		vi.mocked(dbMock.getSessionProviderId).mockResolvedValueOnce("claude");
+		const sm = new SessionManager(
+			makeConfig("configured-model"),
+			makeProviders(provider),
+		);
+
+		await sm.runQuery("continue", () => {}, {
+			sessionId: "default-model-session",
+		});
+
+		expect(captured.params?.model).toBeUndefined();
+		expect(sm.getStatus().model).toBe("");
+	});
+
+	it("guards an old turn's observed model when the picker changes mid-turn", async () => {
+		let releaseTurn: () => void = () => {};
+		const turnGate = new Promise<void>((resolve) => {
+			releaseTurn = resolve;
+		});
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{
+					type: "usage",
+					inputTokens: 10,
+					outputTokens: 2,
+					model: "model-a-runtime",
+				},
+			],
+			turnGate,
+		);
+		const sm = new SessionManager(
+			makeConfig("model-a"),
+			makeProviders(provider),
+		);
+
+		const turn = sm.runQuery("first", () => {}, {
+			sessionId: "model-ownership",
+		});
+		await gateReached;
+		await sm.setModel("model-b");
+		releaseTurn();
+		await turn;
+
+		expect(dbMock.setSessionActualModelForProvider).toHaveBeenCalledWith(
+			"model-ownership",
+			"claude",
+			"model-a",
+			"model-a-runtime",
+		);
+	});
+
 	it("restores a saved session model instead of the current config model", async () => {
 		const { provider, captured } = makeCaptureProvider("claude");
 		vi.mocked(dbMock.getSessionModel).mockResolvedValueOnce("claude-fable-5");
@@ -324,6 +396,303 @@ describe("SessionManager — setModel", () => {
 });
 
 describe("SessionManager — setProvider", () => {
+	it("switches from the restored provider owner even when config already names the target", async () => {
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "config-drift-session",
+			label: "Config drift",
+		} as never);
+		vi.mocked(dbMock.getSessionMessages).mockResolvedValueOnce([
+			{ role: "user", text: "prior" },
+		] as never);
+		vi.mocked(dbMock.getSessionModel).mockResolvedValueOnce("claude-sonnet-5");
+		vi.mocked(dbMock.getSessionProviderId).mockResolvedValueOnce("claude");
+		vi.mocked(dbMock.getSessionProviderSession).mockResolvedValueOnce(
+			"claude-native",
+		);
+		const queryCounts = new Map<string, number>();
+		const provider = (providerId: string): AgentProvider => ({
+			providerId,
+			query: (): AgentSession => {
+				queryCounts.set(providerId, (queryCounts.get(providerId) ?? 0) + 1);
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield {
+						type: "session_start",
+						sessionId: `${providerId}-native`,
+					};
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		});
+		const config = {
+			...makeConfig("claude-sonnet-5"),
+			vault_provider: "codex",
+			codex: {
+				model: "gpt-5.5",
+				effort: "medium",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+		} as HlidConfig;
+		const sm = new SessionManager(
+			config,
+			new Map([
+				["claude", provider("claude")],
+				["codex", provider("codex")],
+			]),
+		);
+
+		await sm.runQuery("continue", () => {}, {
+			sessionId: "config-drift-session",
+		});
+		expect(sm.getProviderId()).toBe("claude");
+		await sm.setProvider("codex", { model: "gpt-5.5" });
+		await sm.runQuery("now use Codex", () => {}, {
+			sessionId: "config-drift-session",
+		});
+
+		expect(queryCounts).toEqual(
+			new Map([
+				["claude", 1],
+				["codex", 1],
+			]),
+		);
+	});
+
+	it("awaits provider identity before starting a provider runtime", async () => {
+		let releaseIdentity: () => void = () => {};
+		const identityGate = new Promise<void>((resolve) => {
+			releaseIdentity = resolve;
+		});
+		vi.mocked(dbMock.setSessionProviderId).mockImplementationOnce(
+			() => identityGate,
+		);
+		const query = vi.fn((): AgentSession => {
+			const gen = (async function* (): AsyncGenerator<AgentEvent> {
+				yield {
+					type: "done",
+					cost: 0,
+					turns: 1,
+					durationMs: 0,
+					usage: { inputTokens: 1, outputTokens: 1 },
+				};
+			})();
+			return {
+				[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+				cancel: vi.fn(),
+				send: vi.fn().mockResolvedValue(undefined),
+			};
+		});
+		const provider: AgentProvider = { providerId: "codex", query };
+		const sm = new SessionManager(
+			{ ...makeConfig("gpt-5.5"), vault_provider: "codex" },
+			makeProviders(provider),
+		);
+
+		const turn = sm.runQuery("first", () => {}, {
+			sessionId: "identity-before-runtime",
+		});
+		await vi.waitFor(() =>
+			expect(dbMock.setSessionProviderId).toHaveBeenCalledWith(
+				"identity-before-runtime",
+				"codex",
+			),
+		);
+		expect(query).not.toHaveBeenCalled();
+
+		releaseIdentity();
+		await turn;
+		expect(query).toHaveBeenCalledOnce();
+	});
+
+	it("settles a native-session write before allowing an A-to-B-to-A switch", async () => {
+		let releaseNativeSession: () => void = () => {};
+		let nativeSessionSettled = false;
+		const nativeSessionGate = new Promise<void>((resolve) => {
+			releaseNativeSession = resolve;
+		});
+		vi.mocked(dbMock.setSessionProviderSession).mockImplementationOnce(
+			async () => {
+				await nativeSessionGate;
+				nativeSessionSettled = true;
+				return true;
+			},
+		);
+		const provider = (providerId: string): AgentProvider => ({
+			providerId,
+			query: (): AgentSession => {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: `${providerId}-native` };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		});
+		const sm = new SessionManager(
+			{ ...makeConfig("gpt-5.5"), vault_provider: "codex" },
+			new Map([
+				["codex", provider("codex")],
+				["claude", provider("claude")],
+			]),
+		);
+
+		const firstTurn = sm.runQuery("first", () => {}, {
+			sessionId: "aba-session",
+		});
+		await vi.waitFor(() =>
+			expect(dbMock.setSessionProviderSession).toHaveBeenCalledWith(
+				"aba-session",
+				"codex",
+				"codex-native",
+			),
+		);
+		await expect(
+			sm.setProvider("claude", { model: "claude-sonnet-5" }),
+		).rejects.toThrow("Cannot switch CLI while a turn is running");
+
+		releaseNativeSession();
+		await firstTurn;
+		expect(nativeSessionSettled).toBe(true);
+
+		await sm.setProvider("claude", { model: "claude-sonnet-5" });
+		await sm.setProvider("codex", { model: "gpt-5.5" });
+		expect(dbMock.setSessionProviderSelection).toHaveBeenLastCalledWith(
+			"aba-session",
+			"codex",
+			{
+				model: "gpt-5.5",
+				effort: undefined,
+				permissionMode: undefined,
+			},
+		);
+	});
+
+	it("persists provider controls through one tuple mutation", async () => {
+		const provider = (providerId: string): AgentProvider => ({
+			providerId,
+			query: (): AgentSession => {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: `${providerId}-session` };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		});
+		const sm = new SessionManager(
+			makeConfig("claude-sonnet-4-6"),
+			new Map([
+				["claude", provider("claude")],
+				["codex", provider("codex")],
+			]),
+		);
+		await sm.runQuery("first", () => {}, { sessionId: "tuple-chat" });
+		vi.mocked(dbMock.setSessionProviderSelection).mockClear();
+		vi.mocked(dbMock.setSessionModel).mockClear();
+		vi.mocked(dbMock.setSessionEffort).mockClear();
+		vi.mocked(dbMock.setSessionPermissionMode).mockClear();
+
+		await sm.setProvider("codex", {
+			model: "gpt-5.5",
+			effort: "medium",
+			permissionMode: "bypassPermissions",
+		});
+
+		expect(dbMock.setSessionProviderSelection).toHaveBeenCalledOnce();
+		expect(dbMock.setSessionProviderSelection).toHaveBeenCalledWith(
+			"tuple-chat",
+			"codex",
+			{
+				model: "gpt-5.5",
+				effort: "medium",
+				permissionMode: "bypassPermissions",
+			},
+		);
+		expect(dbMock.setSessionModel).not.toHaveBeenCalled();
+		expect(dbMock.setSessionEffort).not.toHaveBeenCalled();
+		expect(dbMock.setSessionPermissionMode).not.toHaveBeenCalled();
+	});
+
+	it("guards persisted actual models with the provider that produced them", async () => {
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query: (): AgentSession => {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "codex-session" };
+					yield {
+						type: "usage",
+						inputTokens: 10,
+						outputTokens: 2,
+						model: "gpt-5.5",
+					};
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 2 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		};
+		const config = {
+			...makeConfig("gpt-5.5"),
+			vault_provider: "codex",
+			codex: {
+				model: "gpt-5.5",
+				effort: "medium",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+		} as HlidConfig;
+		const sm = new SessionManager(config, makeProviders(provider));
+
+		await sm.runQuery("record model", () => {}, {
+			sessionId: "actual-model-chat",
+		});
+
+		expect(dbMock.setSessionActualModelForProvider).toHaveBeenCalledWith(
+			"actual-model-chat",
+			"codex",
+			"gpt-5.5",
+			"gpt-5.5",
+		);
+	});
+
 	it("switches CLI per chat and hands the persisted transcript to the new provider", async () => {
 		const claudeSend = vi.fn().mockResolvedValue(undefined);
 		const piSend = vi.fn().mockResolvedValue(undefined);
@@ -387,22 +756,18 @@ describe("SessionManager — setProvider", () => {
 			handoff.indexOf("ASSISTANT: prior answer"),
 		);
 		expect(piSend.mock.calls[0]?.[0]).toContain("test prompt");
-		expect(dbMock.setSessionProviderId).toHaveBeenCalledWith(
+		expect(dbMock.setSessionProviderSelection).toHaveBeenCalledWith(
 			"switch-chat",
 			"pi",
+			{
+				model: "pi-pro",
+				effort: "medium",
+				permissionMode: "default",
+			},
 		);
-		expect(dbMock.setSessionModel).toHaveBeenCalledWith(
-			"switch-chat",
-			"pi-pro",
-		);
-		expect(dbMock.setSessionEffort).toHaveBeenCalledWith(
-			"switch-chat",
-			"medium",
-		);
-		expect(dbMock.setSessionPermissionMode).toHaveBeenCalledWith(
-			"switch-chat",
-			"default",
-		);
+		expect(dbMock.setSessionModel).not.toHaveBeenCalled();
+		expect(dbMock.setSessionEffort).not.toHaveBeenCalled();
+		expect(dbMock.setSessionPermissionMode).not.toHaveBeenCalled();
 	});
 
 	it("rejects unavailable CLI identifiers", async () => {
