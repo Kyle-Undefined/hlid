@@ -12,7 +12,7 @@
         "@tanstack/react-router": "1.170.16",
         "@tanstack/react-start": "1.168.26",
         "@tanstack/router-plugin": "1.168.18",
-        "@umbod/core": "https://github.com/Kyle-Undefined/umbodsmadr/releases/download/0.0.11/umbod-core-0.0.11.tgz",
+        "@umbod/core": "https://github.com/Kyle-Undefined/umbodsmadr/releases/download/0.0.12/umbod-core-0.0.12.tgz",
         "@xterm/addon-fit": "0.11.0",
         "@xterm/addon-web-links": "0.12.0",
         "@xterm/xterm": "6.0.0",
@@ -569,7 +569,7 @@
 
     "@types/unist": ["@types/unist@3.0.3", "", {}, "sha512-ko/gIFJRv177XgZsZcBwnqJN5x/Gien8qNOn0D5bQU/zAzVf9Zt3BlcUiLqhV9y4ARk0GbT3tnUiPNgnTXzc/Q=="],
 
-    "@umbod/core": ["@umbod/core@https://github.com/Kyle-Undefined/umbodsmadr/releases/download/0.0.11/umbod-core-0.0.11.tgz", {}, "sha512-5n0/qvehRhqOJk0S/qfxaSSmF42bjbosjQnGXXINrnJWksb8CpeSdDn5kNWqhtnfA86gEToOi5M7+/aZSut9ww=="],
+    "@umbod/core": ["@umbod/core@https://github.com/Kyle-Undefined/umbodsmadr/releases/download/0.0.12/umbod-core-0.0.12.tgz", {}, "sha512-FIiR9yHpXKgTEjQqVIniNNTuOG+L2Inn+65EGJ6OhC/MC0kNWefulvnrK2KfvR8cTxScGj3zdK0QQI5yIXGupw=="],
 
     "@ungap/structured-clone": ["@ungap/structured-clone@1.3.0", "", {}, "sha512-WmoN8qaIAo7WTYWbAZuG8PYEhn5fkz7dZrqTBZ7dtt//lL2Gwms1IcnQ5yHqjDfX8Ft5j4YzDM23f87zBfDe9g=="],
 
