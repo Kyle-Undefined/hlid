@@ -327,12 +327,12 @@ describe("readAloudStore", () => {
 		const fetch = vi
 			.fn()
 			.mockResolvedValueOnce(
-				new Response(new Blob(["first"]), {
+				new Response("first", {
 					headers: { "x-hlid-has-next-chunk": "1" },
 				}),
 			)
 			.mockResolvedValueOnce(
-				new Response(new Blob(["second"]), {
+				new Response("second", {
 					headers: { "x-hlid-has-next-chunk": "0" },
 				}),
 			);
