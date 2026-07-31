@@ -39,6 +39,13 @@ describe("automatic Whisper release workflow", () => {
 		expect(build.if).toBeUndefined();
 		expect(build["runs-on"]).toBe("windows-2022");
 		expect(build.permissions).toEqual({ contents: "read" });
+		const checkout = build.steps?.find(
+			(step) => step.name === "Checkout the pinned whisper.cpp source",
+		);
+		expect(checkout?.run).toContain("core.autocrlf=false clone --no-checkout");
+		expect(checkout?.run).toContain(
+			"core.autocrlf=false checkout --detach $env:WHISPER_SOURCE_COMMIT",
+		);
 		expect(
 			build.steps?.some(
 				(step) => step.name === "Generate and verify the runtime manifest",

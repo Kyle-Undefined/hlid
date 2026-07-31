@@ -63,8 +63,8 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $source = Join-Path $env:RUNNER_TEMP "whisper.cpp"
-          git clone --filter=blob:none https://github.com/ggml-org/whisper.cpp.git $source
-          git -C $source checkout --detach $env:WHISPER_SOURCE_COMMIT
+          git -c core.autocrlf=false clone --no-checkout --filter=blob:none https://github.com/ggml-org/whisper.cpp.git $source
+          git -C $source -c core.autocrlf=false checkout --detach $env:WHISPER_SOURCE_COMMIT
           $actual = git -C $source rev-parse HEAD
           if ($actual -ne $env:WHISPER_SOURCE_COMMIT) {
             throw "whisper.cpp source mismatch: $actual"
