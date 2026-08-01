@@ -10,7 +10,11 @@ import {
 	registerInternalApiBase,
 	registerInternalApiHandler,
 } from "../lib/internalApiTransport";
-import { registerBunServer } from "../lib/lifecycle";
+import {
+	exitAfterShutdownCleanup,
+	registerBunServer,
+	registerShutdownCleanup,
+} from "../lib/lifecycle";
 import {
 	CLIPROXY_CODEX_HARNESS_PROVIDER_ID,
 	CLIPROXY_CODEX_PROVIDER_ID,
@@ -487,7 +491,7 @@ void db.getSetting("mcp_status_cache").then((cached) => {
 	} catch {}
 });
 
-function shutdown(): never {
+async function cleanupForShutdown(): Promise<void> {
 	stopRoutineScheduler();
 	cliProxy.close();
 	voice.close();
@@ -495,15 +499,16 @@ function shutdown(): never {
 	pool.closeAll();
 	terminalPool.closeAll();
 	shellPool.closeAll();
-	void projectPreviewManager.closeAll();
 	closeAllCodexAppServers();
 	closeUmbod();
-	process.exit(0);
+	await projectPreviewManager.closeAll();
 }
 
+registerShutdownCleanup(cleanupForShutdown);
+
 // Graceful shutdown: stop providers while retaining durable pre-dispatch turns.
-process.on("SIGTERM", shutdown);
-process.on("SIGINT", shutdown);
+process.on("SIGTERM", exitAfterShutdownCleanup);
+process.on("SIGINT", exitAfterShutdownCleanup);
 
 const PORT = config.server.port + 1; // 3001 when TanStack Start is on 3000
 const UI_PORT = config.server.port;

@@ -96,6 +96,7 @@ export async function uninstallAutostart(): Promise<LifecycleResult> {
 }
 
 type BunServer = { stop(force?: boolean): void };
+type ShutdownCleanup = () => void | Promise<void>;
 
 // Bun's entry bundle and TanStack Start's SSR bundle are separate module
 // instances. A plain module-level array would be duplicated — registerBunServer
@@ -105,17 +106,53 @@ type BunServer = { stop(force?: boolean): void };
 const G = globalThis as Record<string, unknown>;
 if (!G.__hlidServers) G.__hlidServers = [] as BunServer[];
 const registeredServers = G.__hlidServers as BunServer[];
+const SHUTDOWN_CLEANUP_TIMEOUT_MS = 5_000;
 
 export function registerBunServer(s: BunServer): void {
 	registeredServers.push(s);
 }
 
+export function registerShutdownCleanup(cleanup: ShutdownCleanup): void {
+	G.__hlidShutdownCleanup = cleanup;
+	G.__hlidShutdownCleanupPromise = undefined;
+	G.__hlidExitRequested = false;
+}
+
+export function runShutdownCleanup(): Promise<void> {
+	const existing = G.__hlidShutdownCleanupPromise as Promise<void> | undefined;
+	if (existing) return existing;
+	const cleanup = G.__hlidShutdownCleanup as ShutdownCleanup | undefined;
+	const pending = Promise.resolve().then(() => cleanup?.());
+	G.__hlidShutdownCleanupPromise = pending;
+	return pending;
+}
+
+export function exitAfterShutdownCleanup(): void {
+	if (G.__hlidExitRequested) return;
+	G.__hlidExitRequested = true;
+	const forceExit = setTimeout(
+		() => process.exit(0),
+		SHUTDOWN_CLEANUP_TIMEOUT_MS,
+	);
+	void runShutdownCleanup()
+		.catch((error) => {
+			console.error(
+				"[lifecycle] shutdown cleanup failed:",
+				error instanceof Error ? error.message : String(error),
+			);
+		})
+		.finally(() => {
+			clearTimeout(forceExit);
+			process.exit(0);
+		});
+}
+
 export function shutdown(): LifecycleResult {
-	// Delay exit so the HTTP response (the apply result) has time to flush
-	// before the process dies. process.exit(0) releases all ports and handles;
-	// calling stop(true) first can block the event loop on Windows when SSE or
-	// WS connections are active, preventing this timer from ever firing.
-	setTimeout(() => process.exit(0), 250);
+	// Delay cleanup so the HTTP response has time to flush. Provider processes
+	// and PTYs must stop before Hlid exits or they can retain inherited Windows
+	// socket handles. exitAfterShutdownCleanup keeps a hard timeout so an SSE or
+	// WebSocket cleanup cannot block shutdown forever.
+	setTimeout(exitAfterShutdownCleanup, 250);
 	return { ok: true };
 }
 
@@ -215,7 +252,7 @@ export function restart(): LifecycleResult {
 			broker.once("exit", (code) => {
 				// Never kill the working server unless Windows confirmed that the
 				// independent waiter was created successfully.
-				if (code === 0) process.exit(0);
+				if (code === 0) exitAfterShutdownCleanup();
 			});
 			return;
 		}
@@ -227,7 +264,7 @@ export function restart(): LifecycleResult {
 			windowsHide: true,
 		});
 		child.unref();
-		process.exit(0);
+		exitAfterShutdownCleanup();
 	}, 250);
 	return { ok: true };
 }

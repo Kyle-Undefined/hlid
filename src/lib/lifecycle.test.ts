@@ -1,10 +1,19 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const spawnMock = vi.hoisted(() => vi.fn());
 
 vi.mock("node:child_process", () => ({ spawn: spawnMock }));
 
-import { buildRestartAppArgs, restart } from "./lifecycle";
+import {
+	buildRestartAppArgs,
+	registerShutdownCleanup,
+	restart,
+	shutdown,
+} from "./lifecycle";
+
+beforeEach(() => {
+	registerShutdownCleanup(() => {});
+});
 
 afterEach(() => {
 	vi.useRealTimers();
@@ -35,16 +44,18 @@ describe("restart", () => {
 		).toEqual(["--restart", "--background", "--restart-parent=1234"]);
 	});
 
-	it("detaches a replacement that waits for the current process", () => {
+	it("detaches a replacement and cleans up before exiting", async () => {
 		vi.useFakeTimers();
 		const unref = vi.fn();
+		const cleanup = vi.fn();
+		registerShutdownCleanup(cleanup);
 		spawnMock.mockReturnValue({ unref });
 		const exit = vi
 			.spyOn(process, "exit")
 			.mockImplementation((() => undefined) as never);
 
 		expect(restart()).toEqual({ ok: true });
-		vi.advanceTimersByTime(250);
+		await vi.advanceTimersByTimeAsync(250);
 
 		expect(spawnMock).toHaveBeenCalledWith(
 			process.execPath,
@@ -56,6 +67,24 @@ describe("restart", () => {
 			expect.objectContaining({ detached: true, stdio: "ignore" }),
 		);
 		expect(unref).toHaveBeenCalledOnce();
+		expect(cleanup).toHaveBeenCalledOnce();
+		expect(exit).toHaveBeenCalledWith(0);
+	});
+});
+
+describe("shutdown", () => {
+	it("cleans up once after acknowledging the request", async () => {
+		vi.useFakeTimers();
+		const cleanup = vi.fn();
+		registerShutdownCleanup(cleanup);
+		const exit = vi
+			.spyOn(process, "exit")
+			.mockImplementation((() => undefined) as never);
+
+		expect(shutdown()).toEqual({ ok: true });
+		await vi.advanceTimersByTimeAsync(250);
+
+		expect(cleanup).toHaveBeenCalledOnce();
 		expect(exit).toHaveBeenCalledWith(0);
 	});
 });
