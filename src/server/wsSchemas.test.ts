@@ -215,6 +215,37 @@ describe("chat WebSocket runtime schema", () => {
 		).toBeNull();
 	});
 
+	it("accepts only bounded Claude MCP control requests", () => {
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "mcp_control",
+					request_id: "request-1",
+					session_id: "session-1",
+					server_name: "github",
+					action: "reconnect",
+				}),
+			),
+		).toEqual({
+			type: "mcp_control",
+			request_id: "request-1",
+			session_id: "session-1",
+			server_name: "github",
+			action: "reconnect",
+		});
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "mcp_control",
+					request_id: "request-1",
+					session_id: "session-1",
+					server_name: "github",
+					action: "restart",
+				}),
+			),
+		).toBeNull();
+	});
+
 	it("accepts only bounded text-only active steering", () => {
 		expect(
 			parseClientMessage(

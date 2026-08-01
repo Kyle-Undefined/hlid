@@ -306,6 +306,8 @@ export type McpStatusMessage = {
 	inventory?: boolean;
 	/** Provider that produced this runtime snapshot. Optional for legacy cached payloads. */
 	provider_id?: string;
+	/** Provider-native controls ready on this live session. */
+	operations?: McpControlOperation[];
 	servers: Array<{
 		name: string;
 		status: "connected" | "failed" | "needs-auth" | "pending" | "disabled";
@@ -318,6 +320,19 @@ export type McpStatusMessage = {
 	agent_cwd?: string;
 	/** Set when the snapshot belongs to a specific live Raven session. */
 	session_id?: string;
+};
+
+export type McpControlOperation = "reconnect" | "toggle";
+export type McpControlAction = "reconnect" | "enable" | "disable";
+
+export type McpControlResultMessage = {
+	type: "mcp_control_result";
+	request_id: string;
+	session_id: string;
+	provider_id?: string;
+	server_name: string;
+	action: McpControlAction;
+	error?: string;
 };
 
 export type AttachmentCreatedMessage = {
@@ -822,6 +837,7 @@ export type ServerMessage =
 	| QueueStateMessage
 	| TurnSteeredMessage
 	| McpStatusMessage
+	| McpControlResultMessage
 	| AttachmentCreatedMessage
 	| ToolUseSummaryMessage
 	| AskUserQuestionMessage
@@ -953,6 +969,14 @@ export type ClientProbeMcpMessage = {
 	type: "probe_mcp";
 	agent_cwd?: string;
 	session_id?: string;
+};
+
+export type ClientMcpControlMessage = {
+	type: "mcp_control";
+	request_id: string;
+	session_id: string;
+	server_name: string;
+	action: McpControlAction;
 };
 
 export type ClientProbeSlashCommandsMessage = {
@@ -1136,6 +1160,7 @@ export type ClientMessage =
 	| ClientPermissionResponseMessage
 	| ClientSyncMessage
 	| ClientProbeMcpMessage
+	| ClientMcpControlMessage
 	| ClientProbeSlashCommandsMessage
 	| ClientProbeWorkflowsMessage
 	| ClientSaveWorkflowMessage

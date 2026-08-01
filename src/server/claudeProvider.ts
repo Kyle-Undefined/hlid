@@ -2035,6 +2035,20 @@ class ClaudeAgentSession implements AgentSession {
 		return this.sdkQuery.mcpServerStatus() as Promise<McpServerStatus[]>;
 	}
 
+	async reconnectMcpServer(serverName: string): Promise<void> {
+		if (!this.sdkQuery) {
+			throw new Error("Claude session is not active");
+		}
+		await this.sdkQuery.reconnectMcpServer(serverName);
+	}
+
+	async toggleMcpServer(serverName: string, enabled: boolean): Promise<void> {
+		if (!this.sdkQuery) {
+			throw new Error("Claude session is not active");
+		}
+		await this.sdkQuery.toggleMcpServer(serverName, enabled);
+	}
+
 	async supportedCommands(): Promise<SlashCommand[]> {
 		if (!this.sdkQuery) return [];
 		return this.sdkQuery.supportedCommands() as Promise<SlashCommand[]>;

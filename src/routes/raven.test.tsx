@@ -574,6 +574,45 @@ describe("Raven composed submission behavior", () => {
 		});
 	});
 
+	it("routes live Claude MCP controls without changing persistent MCP config", () => {
+		state.send.mockReturnValue(true);
+		render(<ChatPage />);
+		act(() => {
+			state.onMessage?.({
+				type: "mcp_status",
+				provider_id: "claude",
+				operations: ["reconnect", "toggle"],
+				servers: [{ name: "github", status: "failed", scope: "project" }],
+			});
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "MCP server status" }));
+		fireEvent.click(screen.getByRole("button", { name: "Reconnect github" }));
+
+		const request = state.send.mock.calls
+			.map(([message]) => message)
+			.find((message) => message.type === "mcp_control");
+		expect(request).toMatchObject({
+			type: "mcp_control",
+			session_id: expect.any(String),
+			server_name: "github",
+			action: "reconnect",
+		});
+
+		act(() => {
+			state.onMessage?.({
+				type: "mcp_control_result",
+				request_id: request.request_id,
+				session_id: request.session_id,
+				provider_id: "claude",
+				server_name: "github",
+				action: "reconnect",
+				error: "Claude could not reconnect github.",
+			});
+		});
+		expect(screen.getByText("Claude could not reconnect github.")).toBeTruthy();
+	});
+
 	it("opens the Claude workflow manager without forwarding /workflows as a prompt", () => {
 		render(<ChatPage />);
 		fireEvent.change(screen.getByRole("combobox"), {

@@ -94,6 +94,8 @@ import type {
 	AskUserQuestionAnswers,
 	AskUserQuestionNotes,
 	ChatAttachment,
+	McpControlAction,
+	McpControlOperation,
 	QueueStateSnapshot,
 	ServerMessage,
 } from "./protocol";
@@ -1490,6 +1492,13 @@ export class SessionManager {
 		return this.mcpStatusByProvider.get(providerId) ?? null;
 	}
 
+	getMcpControlOperations(): McpControlOperation[] {
+		const operations: McpControlOperation[] = [];
+		if (this.agentSession?.reconnectMcpServer) operations.push("reconnect");
+		if (this.agentSession?.toggleMcpServer) operations.push("toggle");
+		return operations;
+	}
+
 	// fallow-ignore-next-line unused-class-member -- Read by Cockpit inventory aggregation in wsHandlers.
 	getMcpSnapshots(): Array<{
 		providerId: string;
@@ -1633,6 +1642,7 @@ export class SessionManager {
 		const { activeAgentCwd, provider, providerId, targetsLiveScope } =
 			this.resolveProbeContext(scope);
 		const publish = (statuses: McpServerStatus[]) => {
+			const operations = targetsLiveScope ? this.getMcpControlOperations() : [];
 			// Archived-session probes may be proxied through the vault manager. Keep
 			// their scoped result out of the vault cache or Watch will inherit the
 			// wrong provider context on its next connection.
@@ -1642,6 +1652,7 @@ export class SessionManager {
 			emit({
 				type: "mcp_status",
 				provider_id: providerId,
+				...(operations.length ? { operations } : {}),
 				...(scope.agentCwd ? { agent_cwd: scope.agentCwd } : {}),
 				...(scope.sessionId ? { session_id: scope.sessionId } : {}),
 				servers: statuses.map(mapMcpServer),
@@ -1730,6 +1741,61 @@ export class SessionManager {
 			...(scope.sessionId ? { session_id: scope.sessionId } : {}),
 			...catalog,
 		});
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Called through SessionPool entries by the WebSocket MCP control dispatch.
+	async controlMcpServer(
+		request: { serverName: string; action: McpControlAction },
+		options: {
+			sessionId: string;
+			emit: (msg: ServerMessage) => void;
+		},
+	): Promise<{ providerId: string; statuses: McpServerStatus[] }> {
+		const provider = this.resolveProvider(this.agentCwd);
+		const session = this.agentSession;
+		if (!session) {
+			throw new Error(
+				`${provider.label ?? provider.providerId} MCP controls require a live session.`,
+			);
+		}
+		if (request.action === "reconnect") {
+			if (!session.reconnectMcpServer) {
+				throw new Error(
+					`${provider.label ?? provider.providerId} does not expose native MCP reconnect.`,
+				);
+			}
+			await session.reconnectMcpServer(request.serverName);
+		} else {
+			if (!session.toggleMcpServer) {
+				throw new Error(
+					`${provider.label ?? provider.providerId} does not expose native MCP toggle.`,
+				);
+			}
+			await session.toggleMcpServer(
+				request.serverName,
+				request.action === "enable",
+			);
+		}
+		let statuses = this.getLastMcpStatus(provider.providerId) ?? [];
+		if (session.mcpServerStatus) {
+			try {
+				statuses = await session.mcpServerStatus();
+			} catch {
+				// The native control already succeeded. Keep the last known snapshot
+				// instead of misreporting a follow-up status refresh as action failure.
+			}
+		}
+		this.mcpStatusByProvider.set(provider.providerId, statuses);
+		const operations = this.getMcpControlOperations();
+		options.emit({
+			type: "mcp_status",
+			provider_id: provider.providerId,
+			...(operations.length ? { operations } : {}),
+			...(this.agentCwd ? { agent_cwd: this.agentCwd } : {}),
+			session_id: options.sessionId,
+			servers: statuses.map(mapMcpServer),
+		});
+		return { providerId: provider.providerId, statuses };
 	}
 
 	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket save_workflow dispatch in wsHandlers.
@@ -3470,13 +3536,17 @@ export class SessionManager {
 				break;
 			case "mcp_status":
 				this.mcpStatusByProvider.set(provider.providerId, event.servers);
-				emit({
-					type: "mcp_status",
-					provider_id: provider.providerId,
-					...(this.agentCwd ? { agent_cwd: this.agentCwd } : {}),
-					...(sessionId ? { session_id: sessionId } : {}),
-					servers: event.servers.map(mapMcpServer),
-				});
+				{
+					const operations = this.getMcpControlOperations();
+					emit({
+						type: "mcp_status",
+						provider_id: provider.providerId,
+						...(operations.length ? { operations } : {}),
+						...(this.agentCwd ? { agent_cwd: this.agentCwd } : {}),
+						...(sessionId ? { session_id: sessionId } : {}),
+						servers: event.servers.map(mapMcpServer),
+					});
+				}
 				break;
 			case "done":
 				this.settleIncompleteSubagents(turn, sessionId, emit);
@@ -3496,9 +3566,11 @@ export class SessionManager {
 		try {
 			const statuses = await session.mcpServerStatus();
 			this.mcpStatusByProvider.set(provider.providerId, statuses);
+			const operations = this.getMcpControlOperations();
 			emit({
 				type: "mcp_status",
 				provider_id: provider.providerId,
+				...(operations.length ? { operations } : {}),
 				...(this.agentCwd ? { agent_cwd: this.agentCwd } : {}),
 				...(sessionId ? { session_id: sessionId } : {}),
 				servers: statuses.map(mapMcpServer),

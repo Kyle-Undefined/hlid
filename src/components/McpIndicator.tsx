@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { McpServerEntry } from "#/lib/mcp";
 import { semanticStatusClass } from "#/lib/themeClasses";
+import type { McpControlAction, McpControlOperation } from "#/server/protocol";
 
 const STATUS_ORDER: Record<McpServerEntry["status"], number> = {
 	failed: 0,
@@ -74,12 +75,22 @@ export function McpIndicator({
 	align = "right",
 	label = "MCP runtime · active provider",
 	openSignal,
+	operations = [],
+	pendingControl,
+	controlError,
+	controlHint,
+	onControl,
 }: {
 	servers: McpServerEntry[];
 	align?: "left" | "right" | "mobile-left";
 	label?: string;
 	/** Increment to open the scoped MCP popover from a command surface. */
 	openSignal?: number;
+	operations?: readonly McpControlOperation[];
+	pendingControl?: { serverName: string; action: McpControlAction } | null;
+	controlError?: string | null;
+	controlHint?: string;
+	onControl?: (serverName: string, action: McpControlAction) => void;
 }) {
 	const [open, setOpen] = useState(false);
 	const [popoverPosition, setPopoverPosition] = useState<{
@@ -97,6 +108,8 @@ export function McpIndicator({
 		(server) => server.status === "connected",
 	).length;
 	const status = aggregateStatus(servers);
+	const canReconnect = operations.includes("reconnect") && Boolean(onControl);
+	const canToggle = operations.includes("toggle") && Boolean(onControl);
 
 	useEffect(() => {
 		if (
@@ -200,32 +213,83 @@ export function McpIndicator({
 							</div>
 						) : (
 							<div className="max-h-64 overflow-y-auto">
-								{sorted.map((server) => (
-									<div
-										key={`${server.providerId ?? "active"}:${server.name}`}
-										className="px-3 py-2 border-b border-border/40 last:border-b-0"
-									>
-										<div className="flex items-center gap-2">
-											<span
-												className={`w-1.5 h-1.5 rounded-full ${dotClass(server.status)}`}
-											/>
-											<span className="min-w-0 flex-1 truncate text-[10px] text-foreground/80">
-												{server.displayName}
-											</span>
-											<span className="text-[8px] tracking-widest uppercase text-muted-foreground/40">
-												{server.status}
-											</span>
-										</div>
-										<div className="pl-3.5 mt-1 text-[8px] tracking-wider text-muted-foreground/35">
-											{server.providerId ?? "provider"} · {server.source}
-										</div>
-										{server.error && (
-											<div className="pl-3.5 mt-1 text-[9px] text-destructive/70 line-clamp-2">
-												{server.error}
+								{sorted.map((server) => {
+									const pending = pendingControl?.serverName === server.name;
+									const controlBusy = Boolean(pendingControl);
+									const toggleAction =
+										server.status === "disabled" ? "enable" : "disable";
+									return (
+										<div
+											key={`${server.providerId ?? "active"}:${server.name}`}
+											className="px-3 py-2 border-b border-border/40 last:border-b-0"
+										>
+											<div className="flex items-center gap-2">
+												<span
+													className={`w-1.5 h-1.5 rounded-full ${dotClass(server.status)}`}
+												/>
+												<span className="min-w-0 flex-1 truncate text-[10px] text-foreground/80">
+													{server.displayName}
+												</span>
+												<span className="text-[8px] tracking-widest uppercase text-muted-foreground/40">
+													{server.status}
+												</span>
 											</div>
-										)}
-									</div>
-								))}
+											<div className="pl-3.5 mt-1 text-[8px] tracking-wider text-muted-foreground/35">
+												{server.providerId ?? "provider"} · {server.source}
+											</div>
+											{server.error && (
+												<div className="pl-3.5 mt-1 text-[9px] text-destructive/70 line-clamp-2">
+													{server.error}
+												</div>
+											)}
+											{(canReconnect || canToggle) && (
+												<div className="pl-3.5 mt-2 flex items-center gap-3">
+													{canReconnect && server.status !== "disabled" && (
+														<button
+															type="button"
+															disabled={controlBusy}
+															onClick={() =>
+																onControl?.(server.name, "reconnect")
+															}
+															className="text-[8px] tracking-widest uppercase text-muted-foreground/45 hover:text-foreground disabled:opacity-30"
+															aria-label={`Reconnect ${server.displayName}`}
+														>
+															{pending && pendingControl?.action === "reconnect"
+																? "reconnecting…"
+																: "reconnect"}
+														</button>
+													)}
+													{canToggle && (
+														<button
+															type="button"
+															disabled={controlBusy}
+															onClick={() =>
+																onControl?.(server.name, toggleAction)
+															}
+															className="text-[8px] tracking-widest uppercase text-muted-foreground/45 hover:text-foreground disabled:opacity-30"
+															aria-label={`${toggleAction === "enable" ? "Enable" : "Disable"} ${server.displayName}`}
+														>
+															{pending &&
+															pendingControl?.action === toggleAction
+																? `${toggleAction === "enable" ? "enabling" : "disabling"}…`
+																: toggleAction}
+														</button>
+													)}
+												</div>
+											)}
+										</div>
+									);
+								})}
+							</div>
+						)}
+						{controlError && (
+							<div className="px-3 py-2 border-t border-destructive/30 text-[9px] text-destructive/70">
+								{controlError}
+							</div>
+						)}
+						{controlHint && operations.length === 0 && (
+							<div className="px-3 py-2 border-t border-border/40 text-[8px] leading-relaxed text-muted-foreground/40">
+								{controlHint}
 							</div>
 						)}
 					</div>,

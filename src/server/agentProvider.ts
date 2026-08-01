@@ -487,6 +487,10 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	closeInput?(): void;
 	/** Available on providers that expose MCP server connectivity info. */
 	mcpServerStatus?(): Promise<McpServerStatus[]>;
+	/** Reconnect one provider-owned MCP server inside this live session. */
+	reconnectMcpServer?(serverName: string): Promise<void>;
+	/** Enable or disable one provider-owned MCP server inside this live session. */
+	toggleMcpServer?(serverName: string, enabled: boolean): Promise<void>;
 	/** Available on providers that expose the list of supported slash commands. */
 	supportedCommands?(): Promise<SlashCommand[]>;
 	/** Execute a provider capability without relying on prompt-parsed CLI syntax. */

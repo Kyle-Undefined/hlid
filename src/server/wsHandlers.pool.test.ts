@@ -87,6 +87,7 @@ function makeManager(
 	getPendingAskUserQuestions: ReturnType<typeof vi.fn>;
 	getPendingPlanModeExits: ReturnType<typeof vi.fn>;
 	getLastMcpStatus: ReturnType<typeof vi.fn>;
+	getMcpControlOperations: ReturnType<typeof vi.fn>;
 	syncConfig: ReturnType<typeof vi.fn>;
 	reinitialize: ReturnType<typeof vi.fn>;
 	getQueueState: ReturnType<typeof vi.fn>;
@@ -102,6 +103,7 @@ function makeManager(
 		getStatus: vi.fn().mockReturnValue({ state: "idle", model: "test-model" }),
 		isRunning: vi.fn().mockReturnValue(false),
 		getLastMcpStatus: vi.fn().mockReturnValue(null),
+		getMcpControlOperations: vi.fn().mockReturnValue([]),
 		getAgentCwd: vi.fn().mockReturnValue(undefined),
 		getProviderId: vi.fn().mockReturnValue("claude"),
 		getPendingPermissionRequests: vi.fn().mockReturnValue([]),
@@ -124,6 +126,9 @@ function makeManager(
 		handleAskUserQuestionResponse: vi.fn(),
 		handlePlanModeExitResponse: vi.fn(),
 		probeMcpStatus: vi.fn().mockResolvedValue(undefined),
+		controlMcpServer: vi
+			.fn()
+			.mockResolvedValue({ providerId: "claude", statuses: [] }),
 		steerActiveTurn: vi.fn().mockResolvedValue({
 			targetTurnId: "child-active-turn",
 			targetAssistantSeq: 4,

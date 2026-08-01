@@ -113,6 +113,7 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		getStatus: vi.fn().mockReturnValue({ state: "idle", model: "test-model" }),
 		isRunning: vi.fn().mockReturnValue(false),
 		getLastMcpStatus: vi.fn().mockReturnValue(null),
+		getMcpControlOperations: vi.fn().mockReturnValue([]),
 		getMcpSnapshots: vi.fn().mockReturnValue([]),
 		getAgentCwd: vi.fn().mockReturnValue(undefined),
 		getProviderId: vi.fn().mockReturnValue("claude"),
@@ -137,6 +138,9 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		handleAskUserQuestionResponse: vi.fn(),
 		handlePlanModeExitResponse: vi.fn(),
 		probeMcpStatus: vi.fn().mockResolvedValue(undefined),
+		controlMcpServer: vi
+			.fn()
+			.mockResolvedValue({ providerId: "claude", statuses: [] }),
 		probeSlashCommands: vi.fn().mockResolvedValue(undefined),
 		probeWorkflowCatalog: vi.fn().mockResolvedValue(undefined),
 		saveProviderWorkflow: vi.fn().mockResolvedValue({
@@ -572,6 +576,85 @@ describe("message — provider probes", () => {
 		expect(mockSend).not.toHaveBeenCalledWith(
 			ws,
 			expect.objectContaining({ type: "mcp_status" }),
+		);
+	});
+});
+
+describe("message — provider-native MCP controls", () => {
+	it("routes a live Claude control and reports the native result", async () => {
+		const controlMcpServer = vi.fn(
+			async (
+				_request: unknown,
+				options: { emit: (message: ServerMessage) => void },
+			) => {
+				options.emit({
+					type: "mcp_status",
+					provider_id: "claude",
+					operations: ["reconnect", "toggle"],
+					servers: [{ name: "github", status: "connected" }],
+				});
+				return { providerId: "claude", statuses: [] };
+			},
+		);
+		const session = makeSession({ controlMcpServer });
+		const { pool, entry, runState } = wrapSession(session);
+		pool.findByDbSessionId.mockReturnValue(entry);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "mcp_control",
+				request_id: "request-1",
+				session_id: "db-session",
+				server_name: "github",
+				action: "reconnect",
+			}),
+		);
+
+		expect(controlMcpServer).toHaveBeenCalledWith(
+			{ serverName: "github", action: "reconnect" },
+			expect.objectContaining({ sessionId: "db-session" }),
+		);
+		expect(runState.broadcast).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "mcp_status", provider_id: "claude" }),
+		);
+		expect(mockSend).toHaveBeenCalledWith(ws, {
+			type: "mcp_control_result",
+			request_id: "request-1",
+			session_id: "db-session",
+			provider_id: "claude",
+			server_name: "github",
+			action: "reconnect",
+		});
+	});
+
+	it("fails closed instead of reviving a detached session", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "mcp_control",
+				request_id: "request-2",
+				session_id: "archived-session",
+				server_name: "github",
+				action: "disable",
+			}),
+		);
+
+		expect(session.controlMcpServer).not.toHaveBeenCalled();
+		expect(mockSend).toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({
+				type: "mcp_control_result",
+				request_id: "request-2",
+				error: "This MCP session is not live.",
+			}),
 		);
 	});
 });

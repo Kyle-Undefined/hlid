@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	McpIndicator,
 	mcpPopoverOffset,
@@ -76,5 +76,71 @@ describe("McpIndicator", () => {
 		);
 		expect(button.getAttribute("aria-pressed")).toBe("true");
 		expect(screen.getByText("MCP runtime · Vault")).toBeTruthy();
+	});
+
+	it("offers only the provider-native controls advertised by the live session", () => {
+		const onControl = vi.fn();
+		render(
+			<McpIndicator
+				servers={[
+					{
+						name: "github",
+						displayName: "GitHub",
+						source: "vault",
+						providerId: "claude",
+						status: "connected",
+					},
+					{
+						name: "notion",
+						displayName: "Notion",
+						source: "global",
+						providerId: "claude",
+						status: "disabled",
+					},
+				]}
+				operations={["reconnect", "toggle"]}
+				onControl={onControl}
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "MCP server status" }));
+
+		fireEvent.click(screen.getByRole("button", { name: "Reconnect GitHub" }));
+		fireEvent.click(screen.getByRole("button", { name: "Disable GitHub" }));
+		fireEvent.click(screen.getByRole("button", { name: "Enable Notion" }));
+
+		expect(onControl).toHaveBeenNthCalledWith(1, "github", "reconnect");
+		expect(onControl).toHaveBeenNthCalledWith(2, "github", "disable");
+		expect(onControl).toHaveBeenNthCalledWith(3, "notion", "enable");
+		expect(
+			screen.queryByRole("button", { name: "Reconnect Notion" }),
+		).toBeNull();
+	});
+
+	it("shows live-control progress, errors, and the cold-session hint", () => {
+		const { rerender } = render(
+			<McpIndicator
+				servers={[
+					{
+						name: "github",
+						displayName: "GitHub",
+						source: "vault",
+						providerId: "claude",
+						status: "connected",
+					},
+				]}
+				operations={["reconnect"]}
+				pendingControl={{ serverName: "github", action: "reconnect" }}
+				controlError="Reconnect failed"
+				onControl={vi.fn()}
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "MCP server status" }));
+		expect(screen.getByText("reconnecting…")).toBeTruthy();
+		expect(screen.getByText("Reconnect failed")).toBeTruthy();
+
+		rerender(
+			<McpIndicator servers={[]} controlHint="Start a live Claude session." />,
+		);
+		expect(screen.getByText("Start a live Claude session.")).toBeTruthy();
 	});
 });

@@ -169,6 +169,9 @@ import {
 	type GoalErrorMessage,
 	type GoalState,
 	type GoalStateMessage,
+	type McpControlAction,
+	type McpControlOperation,
+	type McpControlResultMessage,
 	type McpStatusMessage,
 	type RateLimitMessage,
 	type SlashCommandsMessage,
@@ -697,11 +700,19 @@ function useRavenChatRuntime({
 	const goalStartPendingRef = useRef(false);
 	const [mcpSnapshot, setMcpSnapshot] = useState<{
 		providerId: string | null;
+		operations: McpControlOperation[];
 		servers: ReturnType<typeof mapMcpServer>[];
 	}>({
 		providerId: null,
+		operations: [],
 		servers: [],
 	});
+	const [mcpPendingControl, setMcpPendingControl] = useState<{
+		serverName: string;
+		action: McpControlAction;
+	} | null>(null);
+	const [mcpControlError, setMcpControlError] = useState<string | null>(null);
+	const mcpControlRequestIdRef = useRef<string | null>(null);
 	const [mcpOpenSignal, setMcpOpenSignal] = useState(0);
 	const [contextInspectorOpen, setContextInspectorOpen] = useState(false);
 	const [contextInspectorTarget, setContextInspectorTarget] =
@@ -816,6 +827,7 @@ function useRavenChatRuntime({
 				return;
 			setMcpSnapshot({
 				providerId: messageProviderId ?? expectedProviderId ?? null,
+				operations: message.operations ?? [],
 				servers: message.servers.map((server) =>
 					mapMcpServer({
 						...server,
@@ -825,6 +837,20 @@ function useRavenChatRuntime({
 			});
 		},
 		[agentCwd, expectedProviderId],
+	);
+	const handleMcpControlResultMessage = useCallback(
+		function handleMcpControlResultMessage(message: McpControlResultMessage) {
+			if (
+				canonicalSessionId(message.session_id) !==
+					canonicalSessionId(sessionIdRef.current) ||
+				message.request_id !== mcpControlRequestIdRef.current
+			)
+				return;
+			mcpControlRequestIdRef.current = null;
+			setMcpPendingControl(null);
+			setMcpControlError(message.error ?? null);
+		},
+		[sessionIdRef],
 	);
 	const handleSlashCommandsMessage = useCallback(
 		function handleSlashCommandsMessage(message: SlashCommandsMessage) {
@@ -897,12 +923,17 @@ function useRavenChatRuntime({
 	const handleAllMessages = useCallback(
 		function handleAllMessages(message: Parameters<typeof handleWsMessage>[0]) {
 			if (handleGoalMessage(message)) return;
+			if (message.type === "mcp_control_result") {
+				handleMcpControlResultMessage(message);
+				return;
+			}
 			if (handleRuntimeMetadataMessage(message)) return;
 			if (handleWorkflowResultMessage(message)) return;
 			handleWsMessage(message);
 		},
 		[
 			handleGoalMessage,
+			handleMcpControlResultMessage,
 			handleRuntimeMetadataMessage,
 			handleWorkflowResultMessage,
 			handleWsMessage,
@@ -949,6 +980,26 @@ function useRavenChatRuntime({
 		});
 		setMcpOpenSignal((value) => value + 1);
 	}, [agentCwd, connection.send, sessionIdRef]);
+	const controlMcp = useCallback(
+		(serverName: string, action: McpControlAction) => {
+			const requestId = uid();
+			mcpControlRequestIdRef.current = requestId;
+			setMcpPendingControl({ serverName, action });
+			setMcpControlError(null);
+			const delivered = connection.send({
+				type: "mcp_control",
+				request_id: requestId,
+				session_id: sessionIdRef.current,
+				server_name: serverName,
+				action,
+			});
+			if (delivered) return;
+			mcpControlRequestIdRef.current = null;
+			setMcpPendingControl(null);
+			setMcpControlError("MCP control is unavailable while Raven is offline.");
+		},
+		[connection.send, sessionIdRef],
+	);
 	const openContext = useCallback((target?: HlidContextReceiptTarget) => {
 		setContextInspectorTarget(target ?? null);
 		setContextInspectorOpen(true);
@@ -988,7 +1039,10 @@ function useRavenChatRuntime({
 	useEffect(() => {
 		setSdkSlashCommands([]);
 		setSdkSlashCommandProviderId(null);
-		setMcpSnapshot({ providerId: null, servers: [] });
+		setMcpSnapshot({ providerId: null, operations: [], servers: [] });
+		setMcpPendingControl(null);
+		setMcpControlError(null);
+		mcpControlRequestIdRef.current = null;
 		setContextInspectorOpen(false);
 		setContextInspectorTarget(null);
 		setWorkflowManagerOpen(false);
@@ -1066,6 +1120,13 @@ function useRavenChatRuntime({
 			!expectedProviderId || mcpSnapshot.providerId === expectedProviderId
 				? mcpSnapshot.servers
 				: [],
+		mcpOperations:
+			!expectedProviderId || mcpSnapshot.providerId === expectedProviderId
+				? mcpSnapshot.operations
+				: [],
+		mcpPendingControl,
+		mcpControlError,
+		controlMcp,
 		mcpOpenSignal,
 		openMcp,
 		contextInspectorOpen,
@@ -4151,6 +4212,15 @@ function ChatInputNotices({
 						servers={runtime.mcpServers}
 						align="mobile-left"
 						openSignal={runtime.mcpOpenSignal}
+						operations={runtime.mcpOperations}
+						pendingControl={runtime.mcpPendingControl}
+						controlError={runtime.mcpControlError}
+						controlHint={
+							isClaudeRuntimeProvider(activeProviderId)
+								? "Native reconnect and toggle become available while this Claude session is live."
+								: undefined
+						}
+						onControl={runtime.controlMcp}
 						label={`MCP runtime · ${
 							agentList.find((agent) => agent.path === agentSkillContext)
 								?.name ??

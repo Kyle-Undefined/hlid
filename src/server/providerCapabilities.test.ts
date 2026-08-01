@@ -227,7 +227,13 @@ describe("Claude capability discovery", () => {
 			agents: [{ name: "reviewer" }],
 			mcpServers: [{ name: "github", status: "connected" }],
 			modelCount: 2,
-			controlMethods: ["interrupt", "rewindFiles", "backgroundTasks"],
+			controlMethods: [
+				"interrupt",
+				"reconnectMcpServer",
+				"toggleMcpServer",
+				"rewindFiles",
+				"backgroundTasks",
+			],
 			cwd: "/work",
 			warmedAt: 123,
 			durationMs: 10,
@@ -243,6 +249,16 @@ describe("Claude capability discovery", () => {
 		expect(
 			discovery.evidence.find((item) => item.operations?.includes("interrupt")),
 		).toMatchObject({ integration: "integrated" });
+		expect(
+			discovery.evidence.find((item) =>
+				item.operations?.includes("reconnectMcpServer"),
+			),
+		).toMatchObject({ integration: "integrated", readiness: "ready" });
+		expect(
+			discovery.evidence.find((item) =>
+				item.operations?.includes("toggleMcpServer"),
+			),
+		).toMatchObject({ integration: "integrated", readiness: "ready" });
 		expect(
 			discovery.evidence.find((item) =>
 				item.operations?.includes("rewindFiles"),

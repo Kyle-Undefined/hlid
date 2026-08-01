@@ -112,6 +112,13 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 		session_id: id.optional(),
 	}),
 	z.strictObject({
+		type: z.literal("mcp_control"),
+		request_id: id,
+		session_id: id,
+		server_name: z.string().trim().min(1).max(512),
+		action: z.enum(["reconnect", "enable", "disable"]),
+	}),
+	z.strictObject({
 		type: z.literal("probe_slash_commands"),
 		agent_cwd: path.optional(),
 		session_id: id.optional(),

@@ -13,6 +13,8 @@ const CONTROL_INTEGRATION = new Map<string, ProviderCapabilityIntegration>([
 	["supportedCommands", "integrated"],
 	["supportedModels", "integrated"],
 	["mcpServerStatus", "integrated"],
+	["reconnectMcpServer", "integrated"],
+	["toggleMcpServer", "integrated"],
 	["getContextUsage", "integrated"],
 	["stopTask", "integrated"],
 	["accountInfo", "integrated"],

@@ -883,6 +883,92 @@ describe("SessionManager — deferred MCP discovery", () => {
 	});
 });
 
+describe("SessionManager — provider-native MCP controls", () => {
+	it("runs Claude reconnect and toggle, then broadcasts refreshed status", async () => {
+		let statuses: McpServerStatus[] = [
+			{ name: "github", status: "failed", scope: "project" },
+		];
+		const reconnectMcpServer = vi.fn(async () => {
+			statuses = [{ name: "github", status: "connected", scope: "project" }];
+		});
+		const toggleMcpServer = vi.fn(async (_name: string, enabled: boolean) => {
+			statuses = [
+				{
+					name: "github",
+					status: enabled ? "connected" : "disabled",
+					scope: "project",
+				},
+			];
+		});
+		const provider: AgentProvider = {
+			providerId: "claude",
+			label: "Claude",
+			probeRequiresTurn: true,
+			query(): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-mcp-control" };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: vi.fn(async () => statuses),
+					reconnectMcpServer,
+					toggleMcpServer,
+				};
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("hello", vi.fn(), { sessionId: "db-session" });
+		expect(sm.getMcpControlOperations()).toEqual(["reconnect", "toggle"]);
+
+		const emitted: ServerMessage[] = [];
+		await sm.controlMcpServer(
+			{ serverName: "github", action: "reconnect" },
+			{ sessionId: "db-session", emit: (message) => emitted.push(message) },
+		);
+		await sm.controlMcpServer(
+			{ serverName: "github", action: "disable" },
+			{ sessionId: "db-session", emit: (message) => emitted.push(message) },
+		);
+
+		expect(reconnectMcpServer).toHaveBeenCalledWith("github");
+		expect(toggleMcpServer).toHaveBeenCalledWith("github", false);
+		expect(sm.getLastMcpStatus("claude")?.[0].status).toBe("disabled");
+		expect(emitted.at(-1)).toMatchObject({
+			type: "mcp_status",
+			provider_id: "claude",
+			operations: ["reconnect", "toggle"],
+			session_id: "db-session",
+			servers: [{ name: "github", status: "disabled" }],
+		});
+	});
+
+	it("fails closed when no live provider session owns the controls", async () => {
+		const provider: AgentProvider = {
+			providerId: "claude",
+			label: "Claude",
+			query: vi.fn(),
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		expect(sm.getMcpControlOperations()).toEqual([]);
+		await expect(
+			sm.controlMcpServer(
+				{ serverName: "github", action: "reconnect" },
+				{ sessionId: "db-session", emit: vi.fn() },
+			),
+		).rejects.toThrow("Claude MCP controls require a live session");
+	});
+});
+
 // ── probeSlashCommands ────────────────────────────────────────────────────────
 
 describe("SessionManager — probeSlashCommands", () => {

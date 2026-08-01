@@ -104,6 +104,7 @@ function delegationMutationTarget(
 		case "set_effort":
 		case "set_permission_mode":
 		case "workflow_control":
+		case "mcp_control":
 			return msg.session_id ?? subscribedSessionId;
 		case "goal_control":
 			return msg.action === "get" ? null : msg.session_id;
@@ -413,6 +414,40 @@ async function handleRealtimeControl(
 			type: "error",
 			message:
 				error instanceof Error ? error.message : "Codex voice control failed",
+		});
+	}
+}
+
+async function handleMcpControl(
+	context: MessageContext,
+	entry: PoolEntry,
+	msg: MessageOf<"mcp_control">,
+): Promise<void> {
+	try {
+		const result = await entry.manager.controlMcpServer(
+			{ serverName: msg.server_name, action: msg.action },
+			{
+				sessionId: msg.session_id,
+				emit: (event) => entry.runState.broadcast(event),
+			},
+		);
+		send(context.ws, {
+			type: "mcp_control_result",
+			request_id: msg.request_id,
+			session_id: msg.session_id,
+			provider_id: result.providerId,
+			server_name: msg.server_name,
+			action: msg.action,
+		});
+	} catch (error) {
+		send(context.ws, {
+			type: "mcp_control_result",
+			request_id: msg.request_id,
+			session_id: msg.session_id,
+			server_name: msg.server_name,
+			action: msg.action,
+			error:
+				error instanceof Error ? error.message : "MCP server control failed",
 		});
 	}
 }
@@ -1258,9 +1293,11 @@ async function handleSetProvider(
 	const providerId = entry.manager.getProviderId();
 	const agentCwd = entry.manager.getAgentCwd();
 	const cachedMcp = entry.manager.getLastMcpStatus(providerId) ?? [];
+	const mcpOperations = entry.manager.getMcpControlOperations();
 	entry.runState.broadcast({
 		type: "mcp_status",
 		...(providerId ? { provider_id: providerId } : {}),
+		...(mcpOperations.length ? { operations: mcpOperations } : {}),
 		...(agentCwd ? { agent_cwd: agentCwd } : {}),
 		servers: cachedMcp.map(mapMcpServer),
 	});
@@ -1349,6 +1386,9 @@ async function handleSessionMessage(
 				sendProbeResult,
 				await resolveProbeScope(msg),
 			);
+			return;
+		case "mcp_control":
+			await handleMcpControl(context, entry, msg);
 			return;
 		case "probe_slash_commands":
 			await entry.manager.probeSlashCommands(
@@ -1479,6 +1519,7 @@ async function handleMessage(
 			msg.type === "set_effort" ||
 			msg.type === "set_permission_mode" ||
 			msg.type === "workflow_control" ||
+			msg.type === "mcp_control" ||
 			msg.type === "save_workflow" ||
 			msg.type === "delete_workflow" ||
 			msg.type === "read_workflow_source") &&
@@ -1556,6 +1597,15 @@ async function handleMessage(
 				send(context.ws, {
 					type: "error",
 					message: "This workflow session is not live.",
+				});
+			} else if (msg.type === "mcp_control") {
+				send(context.ws, {
+					type: "mcp_control_result",
+					request_id: msg.request_id,
+					session_id: msg.session_id,
+					server_name: msg.server_name,
+					action: msg.action,
+					error: "This MCP session is not live.",
 				});
 			} else if (
 				msg.type === "save_workflow" ||
@@ -1656,9 +1706,11 @@ export function createWsHandlers(
 			const cachedMcp = vault.manager.getLastMcpStatus();
 			if (cachedMcp) {
 				const providerId = vault.manager.getProviderId();
+				const operations = vault.manager.getMcpControlOperations();
 				vault.runState.send(ws, {
 					type: "mcp_status",
 					...(providerId ? { provider_id: providerId } : {}),
+					...(operations.length ? { operations } : {}),
 					servers: cachedMcp.map(mapMcpServer),
 				});
 			}

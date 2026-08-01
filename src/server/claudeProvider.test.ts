@@ -90,6 +90,8 @@ function sdkGen(events: unknown[], mcpStatuses: unknown[] = []) {
 	})();
 	Object.assign(gen, {
 		mcpServerStatus: vi.fn().mockResolvedValue(mcpStatuses),
+		reconnectMcpServer: vi.fn().mockResolvedValue(undefined),
+		toggleMcpServer: vi.fn().mockResolvedValue(undefined),
 	});
 	// Cast to the SDK's Query type: our generator satisfies the async-iterable
 	// contract; the extra SDK-internal methods (interrupt, setPendingMessageId)
@@ -3419,6 +3421,42 @@ describe("ClaudeProvider — mcpServerStatus", () => {
 
 		const statuses = await session.mcpServerStatus?.();
 		expect(statuses).toEqual(mockStatuses);
+	});
+});
+
+describe("ClaudeProvider — MCP controls", () => {
+	it("delegates reconnect and toggle to the live SDK query", async () => {
+		const gen = sdkGen([
+			{
+				type: "result",
+				subtype: "success",
+				total_cost_usd: 0,
+				num_turns: 1,
+				duration_ms: 100,
+				usage: { input_tokens: 10, output_tokens: 5 },
+			},
+		]);
+		vi.mocked(query).mockReturnValueOnce(gen);
+
+		const session = new ClaudeProvider().query(baseParams());
+		await session[Symbol.asyncIterator]().next();
+
+		await session.reconnectMcpServer?.("github");
+		await session.toggleMcpServer?.("github", false);
+
+		expect(gen.reconnectMcpServer).toHaveBeenCalledWith("github");
+		expect(gen.toggleMcpServer).toHaveBeenCalledWith("github", false);
+	});
+
+	it("fails closed before the Claude SDK query is live", async () => {
+		const session = new ClaudeProvider().query(baseParams());
+
+		await expect(session.reconnectMcpServer?.("github")).rejects.toThrow(
+			"Claude session is not active",
+		);
+		await expect(session.toggleMcpServer?.("github", true)).rejects.toThrow(
+			"Claude session is not active",
+		);
 	});
 });
 
