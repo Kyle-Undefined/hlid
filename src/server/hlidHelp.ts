@@ -143,6 +143,9 @@ export type HlidCapabilityManifest = {
 	runtime: {
 		providerId: string;
 		providerRuntime: "claude" | "codex" | "acp" | "external";
+		hostEnvironment: "windows" | "wsl" | "host";
+		providerEnvironment: "windows" | "wsl" | "host" | "unknown";
+		/** @deprecated Use providerEnvironment. */
 		environment: "windows" | "wsl" | "host" | "unknown";
 		model?: string;
 		effort?: string;

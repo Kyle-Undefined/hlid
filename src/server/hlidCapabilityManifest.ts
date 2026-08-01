@@ -2,6 +2,7 @@ import {
 	COMMAND_CAPABILITY_REGISTRY,
 	type CommandAction,
 } from "../lib/commands";
+import { explicitPathEnvironment } from "../lib/paths";
 import {
 	isClaudeRuntimeProvider,
 	isCodexRuntimeProvider,
@@ -271,20 +272,48 @@ function buildVoiceState(state: ManifestState): VoiceState {
 	};
 }
 
-function runtimeEnvironment(
+type RuntimeEnvironment =
+	HlidCapabilityManifest["runtime"]["providerEnvironment"];
+
+type RuntimeEnvironmentDependencies = {
+	platform: string;
+	environment: {
+		WSL_DISTRO_NAME?: string;
+		WSL_INTEROP?: string;
+	};
+};
+
+export function runtimeEnvironments(
 	runtimeCwd: string | undefined,
-): HlidCapabilityManifest["runtime"]["environment"] {
-	if (
-		process.platform === "win32" ||
-		/^[A-Za-z]:[\\/]/.test(runtimeCwd ?? "")
-	) {
-		return "windows";
-	}
-	if (process.env.WSL_DISTRO_NAME || (runtimeCwd ?? "").startsWith("/mnt/")) {
-		return "wsl";
-	}
-	if (runtimeCwd) return "host";
-	return "unknown";
+	dependencies: RuntimeEnvironmentDependencies = {
+		platform: process.platform,
+		environment: {
+			WSL_DISTRO_NAME: process.env.WSL_DISTRO_NAME,
+			WSL_INTEROP: process.env.WSL_INTEROP,
+		},
+	},
+): {
+	hostEnvironment: Exclude<RuntimeEnvironment, "unknown">;
+	providerEnvironment: RuntimeEnvironment;
+} {
+	const hostEnvironment =
+		dependencies.platform === "win32"
+			? "windows"
+			: dependencies.environment.WSL_DISTRO_NAME ||
+					dependencies.environment.WSL_INTEROP
+				? "wsl"
+				: "host";
+	if (!runtimeCwd) return { hostEnvironment, providerEnvironment: "unknown" };
+
+	const explicitProviderEnvironment = explicitPathEnvironment(runtimeCwd, {
+		platform: dependencies.platform,
+		allowWindowsUnc: true,
+	});
+	return {
+		hostEnvironment,
+		providerEnvironment:
+			explicitProviderEnvironment?.environment ?? hostEnvironment,
+	};
 }
 
 function providerGuidance(
@@ -659,10 +688,16 @@ function manifestRuntime(
 	state: ManifestState,
 ): HlidCapabilityManifest["runtime"] {
 	const { context } = state;
+	const { hostEnvironment, providerEnvironment } = runtimeEnvironments(
+		context.runtimeCwd,
+	);
 	return {
 		providerId: boundedValue(state.providerId, 120),
 		providerRuntime: state.runtime,
-		environment: runtimeEnvironment(context.runtimeCwd),
+		hostEnvironment,
+		providerEnvironment,
+		// Compatibility alias for the pre-split runtime environment field.
+		environment: providerEnvironment,
 		...(context.model ? { model: boundedValue(context.model, 200) } : {}),
 		...(context.effort ? { effort: boundedValue(context.effort, 80) } : {}),
 		sessionScoped: state.sessionScoped,

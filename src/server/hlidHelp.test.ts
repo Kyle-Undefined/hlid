@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { runtimeEnvironments } from "./hlidCapabilityManifest";
 import {
 	buildHlidCapabilityManifest,
 	buildHlidHelpResponse,
@@ -11,6 +12,68 @@ import {
 } from "./hlidHelp";
 
 describe("Hlid operating guidance", () => {
+	it.each([
+		{
+			name: "a WSL provider on a Windows host",
+			runtimeCwd: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\hlid",
+			platform: "win32",
+			environment: {},
+			expected: {
+				hostEnvironment: "windows",
+				providerEnvironment: "wsl",
+			},
+		},
+		{
+			name: "a Windows provider on a Windows host",
+			runtimeCwd: "C:\\work\\hlid",
+			platform: "win32",
+			environment: {},
+			expected: {
+				hostEnvironment: "windows",
+				providerEnvironment: "windows",
+			},
+		},
+		{
+			name: "a provider on a WSL host",
+			runtimeCwd: "/home/kyle/hlid",
+			platform: "linux",
+			environment: { WSL_DISTRO_NAME: "Ubuntu-24.04" },
+			expected: {
+				hostEnvironment: "wsl",
+				providerEnvironment: "wsl",
+			},
+		},
+		{
+			name: "a provider on a native host",
+			runtimeCwd: "/srv/hlid",
+			platform: "linux",
+			environment: {},
+			expected: {
+				hostEnvironment: "host",
+				providerEnvironment: "host",
+			},
+		},
+		{
+			name: "a missing provider working directory",
+			runtimeCwd: undefined,
+			platform: "win32",
+			environment: {},
+			expected: {
+				hostEnvironment: "windows",
+				providerEnvironment: "unknown",
+			},
+		},
+	])("distinguishes $name", ({
+		runtimeCwd,
+		platform,
+		environment,
+		expected,
+	}) => {
+		expect(runtimeEnvironments(runtimeCwd, { platform, environment })).toEqual(
+			expected,
+		);
+	});
+
 	it("publishes the complete source topic registry through overview help", () => {
 		const manifest = buildHlidCapabilityManifest({});
 		const overview = JSON.parse(buildHlidHelpResponse("overview", {}));
@@ -77,6 +140,9 @@ describe("Hlid operating guidance", () => {
 				relatedExpansion: "only-when-requested",
 			},
 		});
+		expect(manifest.runtime.environment).toBe(
+			manifest.runtime.providerEnvironment,
+		);
 		expect(
 			manifest.capabilities.find((item) => item.id === "goals"),
 		).toMatchObject({
