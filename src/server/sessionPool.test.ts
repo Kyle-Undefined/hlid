@@ -28,6 +28,8 @@ import type { AgentProvider } from "./agentProvider";
  */
 const mockInstances: {
 	abort: ReturnType<typeof vi.fn>;
+	suspendForRestart: ReturnType<typeof vi.fn>;
+	restoreDurableTurns: ReturnType<typeof vi.fn>;
 	syncConfig: ReturnType<typeof vi.fn>;
 	retireProviderSessions: ReturnType<typeof vi.fn>;
 	getStatus: ReturnType<typeof vi.fn>;
@@ -49,6 +51,8 @@ vi.mock("./session", () => ({
 	SessionManager: vi.fn().mockImplementation(function () {
 		const instance = {
 			abort: vi.fn(),
+			suspendForRestart: vi.fn(),
+			restoreDurableTurns: vi.fn((rows: unknown[]) => rows.length),
 			syncConfig: vi.fn().mockReturnValue(false),
 			retireProviderSessions: vi.fn().mockReturnValue(false),
 			getStatus: vi.fn().mockReturnValue({
@@ -94,6 +98,8 @@ vi.mock("../db", () => ({
 	listHlidDelegationAncestorLineage: vi.fn().mockResolvedValue([]),
 	listHlidDelegationLifecycleRollups: vi.fn().mockResolvedValue([]),
 	getSessionById: vi.fn().mockResolvedValue(null),
+	discardDispatchingSessionTurnsAfterRestart: vi.fn().mockResolvedValue(0),
+	listRecoverablePendingSessionTurns: vi.fn().mockResolvedValue([]),
 }));
 
 // ── import after mocks ────────────────────────────────────────────────────────
@@ -672,7 +678,7 @@ describe("SessionPool.close", () => {
 // ── closeAll ──────────────────────────────────────────────────────────────────
 
 describe("SessionPool.closeAll", () => {
-	it("calls abort() on every manager", () => {
+	it("suspends every manager for restart", () => {
 		const pool = makePool();
 		const a = pool.create("/a", "A");
 		const b = pool.create("/b", "B");
@@ -680,9 +686,9 @@ describe("SessionPool.closeAll", () => {
 
 		pool.closeAll();
 
-		expect(a.manager.abort).toHaveBeenCalledOnce();
-		expect(b.manager.abort).toHaveBeenCalledOnce();
-		expect(c.manager.abort).toHaveBeenCalledOnce();
+		expect(a.manager.suspendForRestart).toHaveBeenCalledOnce();
+		expect(b.manager.suspendForRestart).toHaveBeenCalledOnce();
+		expect(c.manager.suspendForRestart).toHaveBeenCalledOnce();
 	});
 
 	it("empties the pool", () => {
@@ -698,6 +704,50 @@ describe("SessionPool.closeAll", () => {
 	it("is a no-op on empty pool (does not throw)", () => {
 		const pool = makePool();
 		expect(() => pool.closeAll()).not.toThrow();
+	});
+});
+
+describe("SessionPool.restoreDurableTurns", () => {
+	it("recreates the owning session and restores recoverable rows", async () => {
+		const row = {
+			turn_id: "turn-1",
+			session_id: "db-session-1",
+			position: 1,
+			payload_json: '{"userMessage":"resume","options":{}}',
+			state: "sleeping",
+			provider_id: "claude",
+			window_id: "five_hour",
+			sleep_reason: "threshold",
+			sleep_until: 2_000,
+			sleep_target: 2_000,
+			sleep_utilization: 0.99,
+			cap_deadline: null,
+			created_at: 1_000,
+			updated_at: 1_000,
+		} as const;
+		vi.mocked(
+			dbMock.discardDispatchingSessionTurnsAfterRestart,
+		).mockResolvedValue(2);
+		vi.mocked(dbMock.listRecoverablePendingSessionTurns).mockResolvedValue([
+			row,
+		]);
+		vi.mocked(dbMock.getSessionById).mockResolvedValue({
+			id: "db-session-1",
+			label: "Restored",
+			agent_cwd: "/restored",
+			archived_at: null,
+		} as never);
+		const pool = makePool();
+
+		expect(await pool.restoreDurableTurns()).toEqual({
+			restored: 1,
+			discarded: 2,
+		});
+		expect(pool.getSize()).toBe(1);
+		expect(mockInstances[0].restoreDurableTurns).toHaveBeenCalledWith(
+			[row],
+			expect.any(Function),
+		);
 	});
 });
 

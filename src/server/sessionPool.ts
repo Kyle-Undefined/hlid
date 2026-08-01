@@ -156,16 +156,55 @@ export class SessionPool {
 	}
 
 	/**
-	 * Abort and remove all sessions.
-	 * Intended for graceful server shutdown (SIGTERM / SIGINT).
+	 * Suspend and remove all sessions for process shutdown. Provider work is
+	 * stopped while durable pre-dispatch turns remain available after restart.
 	 */
 	closeAll(): void {
 		for (const entry of this.entries.values()) {
-			entry.manager.abort();
+			entry.manager.suspendForRestart();
 		}
 		this.entries.clear();
 		this.attentionBySession.clear();
 		this._vaultSessionId = null;
+	}
+
+	/** Recreate every durable pre-dispatch Raven queue after process startup. */
+	async restoreDurableTurns(
+		onStatusChange?: () => void,
+	): Promise<{ restored: number; discarded: number }> {
+		const discarded = await db.discardDispatchingSessionTurnsAfterRestart();
+		const rows = await db.listRecoverablePendingSessionTurns();
+		const bySession = new Map<string, db.PendingSessionTurnRow[]>();
+		for (const row of rows) {
+			const grouped = bySession.get(row.session_id) ?? [];
+			grouped.push(row);
+			bySession.set(row.session_id, grouped);
+		}
+		let restored = 0;
+		for (const [sessionId, turns] of bySession) {
+			const session = await db.getSessionById(sessionId);
+			if (!session || session.archived_at != null) continue;
+			let entry: PoolEntry;
+			try {
+				const cwd = session.agent_cwd ?? this.config.vault.path;
+				const created = this.create(cwd, session.label ?? "Restored session");
+				entry = this.claimDbSessionId(created, sessionId);
+				if (entry !== created) this.close(created.sessionId);
+			} catch (error) {
+				console.warn(
+					`[sessionPool] could not restore durable queue for ${sessionId}:`,
+					error,
+				);
+				continue;
+			}
+			const count = entry.manager.restoreDurableTurns(turns, (message) => {
+				entry.runState.broadcast(message);
+				onStatusChange?.();
+			});
+			restored += count;
+			if (count === 0) this.close(entry.sessionId);
+		}
+		return { restored, discarded };
 	}
 
 	/**

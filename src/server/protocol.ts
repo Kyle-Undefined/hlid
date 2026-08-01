@@ -271,6 +271,8 @@ export type QueueStateSnapshot = {
 	pending_turns?: PendingTurnSnapshot[];
 	/** turn_id of the turn the server is running, if any. */
 	running_turn_id: string | null;
+	/** Full pre-dispatch running payload, retained while an active turn sleeps. */
+	running_turn?: PendingTurnSnapshot;
 };
 
 export type QueueStateMessage = QueueStateSnapshot & {

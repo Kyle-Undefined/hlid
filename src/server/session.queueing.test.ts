@@ -62,6 +62,127 @@ import {
 } from "./session.test-utils";
 
 describe("SessionManager — runQuery queueing", () => {
+	it("persists an interactive turn through the dispatch boundary", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+		const run = sm.runQuery("durable prompt", () => {}, {
+			sessionId: "durable-session",
+			turnId: "durable-turn",
+		});
+
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		expect(dbMock.enqueuePendingSessionTurn).toHaveBeenCalledWith({
+			turnId: "durable-turn",
+			sessionId: "durable-session",
+			payloadJson: expect.stringContaining('"userMessage":"durable prompt"'),
+		});
+		expect(dbMock.markPendingSessionTurnDispatching).toHaveBeenCalledWith(
+			"durable-turn",
+		);
+		ctl.turns[0].resolveDone();
+		await run;
+		expect(dbMock.deletePendingSessionTurn).toHaveBeenCalledWith(
+			"durable-turn",
+		);
+	});
+
+	it("restores durable turns in FIFO order after a restart", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+		const emitted: ServerMessage[] = [];
+		const now = Math.floor(Date.now() / 1_000);
+		const row = (
+			turnId: string,
+			position: number,
+			message: string,
+		): dbMock.PendingSessionTurnRow => ({
+			turn_id: turnId,
+			session_id: "restored-session",
+			position,
+			payload_json: JSON.stringify({ userMessage: message, options: {} }),
+			state: "queued",
+			provider_id: null,
+			window_id: null,
+			sleep_reason: null,
+			sleep_until: null,
+			sleep_target: null,
+			sleep_utilization: null,
+			cap_deadline: null,
+			created_at: now,
+			updated_at: now,
+		});
+
+		expect(
+			sm.restoreDurableTurns(
+				[row("turn-1", 1, "first"), row("turn-2", 2, "second")],
+				(message) => emitted.push(message),
+			),
+		).toBe(2);
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		expect(emitted).toContainEqual(
+			expect.objectContaining({
+				type: "status",
+				state: "running",
+				turn_id: "turn-1",
+			}),
+		);
+		ctl.turns[0].resolveDone();
+		await waitFor(() => expect(ctl.getSendCount()).toBe(2));
+		expect(emitted).toContainEqual(
+			expect.objectContaining({
+				type: "status",
+				state: "running",
+				turn_id: "turn-2",
+			}),
+		);
+		ctl.turns[1].resolveDone();
+		await waitFor(() => expect(sm.getStatus().state).toBe("idle"));
+	});
+
+	it("reuses a transcript row written before a pre-dispatch restart", async () => {
+		const ctl = makeControllableProvider();
+		vi.mocked(dbMock.getUserMessageSeqByTurnId).mockResolvedValueOnce(7);
+		vi.mocked(dbMock.appendMessage).mockClear();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+		const now = Math.floor(Date.now() / 1_000);
+
+		sm.restoreDurableTurns(
+			[
+				{
+					turn_id: "turn-restart",
+					session_id: "session-restart",
+					position: 1,
+					payload_json: JSON.stringify({
+						userMessage: "survive once",
+						options: {},
+					}),
+					state: "queued",
+					provider_id: null,
+					window_id: null,
+					sleep_reason: null,
+					sleep_until: null,
+					sleep_target: null,
+					sleep_utilization: null,
+					cap_deadline: null,
+					created_at: now,
+					updated_at: now,
+				},
+			],
+			() => {},
+		);
+
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		expect(
+			vi
+				.mocked(dbMock.appendMessage)
+				.mock.calls.some(
+					(call) => call[0] === "session-restart" && call[2] === "user",
+				),
+		).toBe(false);
+		ctl.turns[0].resolveDone();
+		await waitFor(() => expect(sm.getStatus().state).toBe("idle"));
+	});
+
 	it.each([
 		{ label: "foreground", backgroundSession: false },
 		{ label: "background", backgroundSession: true },

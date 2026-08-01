@@ -1539,4 +1539,46 @@ function applyMigrations(db: Db): void {
 			 ON session_delegations(routine_run_id, status)`,
 		);
 	});
+
+	// Raven turns that have not crossed the provider-dispatch boundary remain
+	// Hlid-owned work. Keep their exact payload and sleep decision in SQLite so
+	// a process restart can rebuild the FIFO queue without one browser's state.
+	runMigration(db, "_migrated_session_pending_turns_v1", (db) => {
+		db.run(`
+			CREATE TABLE session_pending_turns (
+				turn_id TEXT PRIMARY KEY,
+				session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+				position INTEGER NOT NULL,
+				payload_json TEXT NOT NULL,
+				state TEXT NOT NULL CHECK(state IN (
+					'queued', 'sleeping', 'dispatching'
+				)),
+				provider_id TEXT,
+				window_id TEXT,
+				sleep_reason TEXT CHECK(
+					sleep_reason IS NULL OR sleep_reason IN ('threshold', 'limit_reached')
+				),
+				sleep_until INTEGER,
+				sleep_target INTEGER,
+				sleep_utilization REAL,
+				cap_deadline INTEGER,
+				created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+				updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+			)
+		`);
+		db.run(
+			`CREATE INDEX idx_session_pending_turns_session_position
+			 ON session_pending_turns(session_id, position)`,
+		);
+		db.run(
+			`CREATE INDEX idx_session_pending_turns_state
+			 ON session_pending_turns(state)`,
+		);
+	});
+	runMigration(db, "_migrated_messages_session_turn_id_index", (db) => {
+		db.run(
+			`CREATE INDEX idx_messages_session_turn_id
+			 ON messages(session_id, turn_id) WHERE turn_id IS NOT NULL`,
+		);
+	});
 }

@@ -667,6 +667,37 @@ describe("wsStore — Slice A: immediate-send drain", () => {
 		);
 	});
 
+	it("reconstructs a sleeping running prompt from durable queue state", () => {
+		const messages: unknown[] = [];
+		const unsubscribe = wsStore.subscribeMessage((message) =>
+			messages.push(message),
+		);
+		currentWs.onmessage?.({
+			data: JSON.stringify({
+				type: "queue_state",
+				session_id: "chat-db-id",
+				pending_turn_ids: [],
+				pending_turns: [],
+				running_turn_id: "sleeping-turn",
+				running_turn: {
+					id: "sleeping-turn",
+					text: "wait for my usage reset",
+					session_id: "chat-db-id",
+				},
+			}),
+		});
+		unsubscribe();
+
+		expect(messages).toContainEqual(
+			expect.objectContaining({
+				type: "user_message",
+				id: "sleeping-turn",
+				text: "wait for my usage reset",
+			}),
+		);
+		expect(wsStore.getQueue()).toEqual([]);
+	});
+
 	it("accepts a DB queue snapshot while subscribed by live pool id", () => {
 		currentWs.onmessage?.({
 			data: JSON.stringify({

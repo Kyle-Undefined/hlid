@@ -51,10 +51,11 @@ import type {
 } from "./agentProvider";
 import { loadConfig } from "./config";
 import type { RateLimitMessage, ServerMessage } from "./protocol";
-import { getWindowMark } from "./proxy";
+import { getWindowMark, updateWindowMark } from "./proxy";
 import { SessionManager } from "./session";
 import {
 	makeConfig,
+	makeControllableProvider,
 	makeProviders,
 	makeSwitchableProvider,
 	waitFor,
@@ -527,6 +528,69 @@ describe("SessionManager — auto-sleep gates", () => {
 		expect(emitted.some((m) => m.type === "done")).toBe(true);
 	});
 
+	it("registers a Claude session-limit transport error before the next turn", async () => {
+		let queryCount = 0;
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(): AgentSession {
+				queryCount += 1;
+				const current = queryCount;
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: `sdk-limit-${current}` };
+					if (current === 1) {
+						yield {
+							type: "transport_error",
+							message:
+								"You've hit your session limit · resets 12:30am (America/New_York)",
+						};
+						return;
+					}
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		const firstEvents: ServerMessage[] = [];
+		const sm = new SessionManager(sleepConfig(), makeProviders(provider));
+		await sm.runQuery("probe", (message) => firstEvents.push(message), {
+			sessionId: "transport-limit-session",
+		});
+		expect(firstEvents).toContainEqual(
+			expect.objectContaining({
+				type: "rate_limit",
+				status: "rejected",
+				rateLimitType: "five_hour",
+				providerId: "claude",
+			}),
+		);
+
+		const second = sm.runQuery("wait for reset", () => {}, {
+			sessionId: "transport-limit-session",
+			turnId: "transport-limit-turn",
+		});
+		await waitFor(() =>
+			expect(sm.getSleepState()).toMatchObject({
+				state: "sleeping",
+				reason: "limit_reached",
+			}),
+		);
+		expect(queryCount).toBe(1);
+		sm.skipSleep();
+		await second;
+		expect(queryCount).toBe(2);
+	});
+
 	it("abort during a turn-gate sleep cancels without dispatching", async () => {
 		reportRateLimitSignal("claude", "five_hour", "rejected", epochNow() + 3600);
 		const emitted: ServerMessage[] = [];
@@ -743,6 +807,74 @@ describe("SessionManager — auto-sleep gates", () => {
 		sm.skipSleep();
 		await turn;
 		expect(sm.getSleepState()).toBeNull();
+	});
+
+	it("rehydrates a durable sleeping prompt without provider spend", async () => {
+		const ctl = makeControllableProvider();
+		const emitted: ServerMessage[] = [];
+		const now = epochNow();
+		// Match the persisted hard limit to the currently hydrated provider window.
+		updateWindowMark("claude", "five_hour", 0.2, now + 3_600);
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		expect(
+			sm.restoreDurableTurns(
+				[
+					{
+						turn_id: "restored-sleep-turn",
+						session_id: "restored-sleep-session",
+						position: 1,
+						payload_json: JSON.stringify({
+							userMessage: "continue after reset",
+							options: {},
+						}),
+						state: "sleeping",
+						provider_id: "claude",
+						window_id: "five_hour",
+						sleep_reason: "limit_reached",
+						sleep_until: now + 3_600,
+						sleep_target: now + 3_600,
+						sleep_utilization: null,
+						cap_deadline: now + 3_600,
+						created_at: now,
+						updated_at: now,
+					},
+				],
+				(message) => emitted.push(message),
+			),
+		).toBe(1);
+		await waitFor(() =>
+			expect(sm.getSleepState()).toMatchObject({
+				state: "sleeping",
+				reason: "limit_reached",
+			}),
+		);
+		expect(ctl.getSendCount()).toBe(0);
+		expect(sm.getQueueState()).toMatchObject({
+			running_turn_id: "restored-sleep-turn",
+			running_turn: {
+				id: "restored-sleep-turn",
+				text: "continue after reset",
+			},
+		});
+
+		sm.skipSleep();
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		expect(dbMock.markPendingSessionTurnSleeping).toHaveBeenCalledWith(
+			expect.objectContaining({
+				turnId: "restored-sleep-turn",
+				capDeadline: expect.any(Number),
+			}),
+		);
+		expect(dbMock.markPendingSessionTurnDispatching).toHaveBeenCalledWith(
+			"restored-sleep-turn",
+		);
+		ctl.turns[0].resolveDone();
+		await waitFor(() =>
+			expect(dbMock.deletePendingSessionTurn).toHaveBeenCalledWith(
+				"restored-sleep-turn",
+			),
+		);
 	});
 });
 

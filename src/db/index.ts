@@ -79,6 +79,7 @@ export {
 	getSessionPlanProposals,
 	getSessionToolEventDetail,
 	getSessionToolEventSummaries,
+	getUserMessageSeqByTurnId,
 	insertForkedMessages,
 	setAskUserQuestionResolution,
 	setMessageProviderTurnId,
@@ -91,6 +92,17 @@ export {
 	setToolEventResult,
 	setToolEventSubagent,
 } from "./messages";
+export type { PendingSessionTurnRow } from "./pendingTurns";
+export {
+	deletePendingSessionTurn,
+	deletePendingSessionTurns,
+	discardDispatchingSessionTurnsAfterRestart,
+	enqueuePendingSessionTurn,
+	listRecoverablePendingSessionTurns,
+	markPendingSessionTurnDispatching,
+	markPendingSessionTurnSleeping,
+	promotePendingSessionTurn,
+} from "./pendingTurns";
 // Permissions
 export {
 	getSessionPermissionEvents,

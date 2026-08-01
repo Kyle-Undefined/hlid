@@ -252,9 +252,8 @@ function consumeRunningQueuedUser(turnId: string | undefined): void {
 /**
  * Slice C polish: reconcile chatQueue against the server's authoritative
  * queue state. Sent items not in the server's pending list (and not the
- * currently running one) are orphans — e.g. server restarted, lost the
- * QueuedTurn — and get pruned. Not-yet-sent items (still in the local
- * outbox awaiting ws connect) are preserved.
+ * currently running one) are orphans and get pruned. Not-yet-sent items
+ * (still in the local outbox awaiting ws connect) are preserved.
  */
 // ─── WebSocket connection ─────────────────────────────────────────────────────
 
@@ -480,11 +479,15 @@ function applySessionMessage(msg: ServerMessage): boolean {
 				const rawSessionId = msg.session_id ?? getSubscribedSessionId();
 				const sessionId = rawSessionId ? canonicalSessionId(rawSessionId) : "";
 				if (sessionId) {
+					const durableTurns = [
+						...(msg.pending_turns ?? []),
+						...(msg.running_turn ? [msg.running_turn] : []),
+					];
 					reconcileLocalQueue(
 						sessionId,
 						msg.pending_turn_ids,
 						msg.running_turn_id,
-						(msg.pending_turns ?? []).map((turn) => ({
+						durableTurns.map((turn) => ({
 							...turn,
 							session_id: canonicalSessionId(turn.session_id),
 							_sent: true,

@@ -45,6 +45,23 @@ export async function appendMessage(
 	return Number(result.lastInsertRowid);
 }
 
+/** Find a Raven user row already persisted for an idempotent client turn. */
+export async function getUserMessageSeqByTurnId(
+	sessionId: string,
+	turnId: string,
+): Promise<number | null> {
+	const db = await getDb();
+	return (
+		db
+			.query<{ seq: number }, [string, string]>(
+				`SELECT seq FROM messages
+				 WHERE session_id = ? AND turn_id = ? AND role = 'user'
+				 ORDER BY seq LIMIT 1`,
+			)
+			.get(sessionId, turnId)?.seq ?? null
+	);
+}
+
 /**
  * Backfill a steering row that was accepted before the active response had
  * allocated its assistant transcript sequence.

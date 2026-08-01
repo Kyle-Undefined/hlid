@@ -29,6 +29,7 @@ import {
 	authorizeRoutineCapability,
 	type RoutinePermissionContext,
 } from "../lib/routinePermissions";
+import { nextRoutineOccurrence } from "../lib/routineSchedule";
 import { orderSteeredTranscript } from "../lib/steeredTranscript";
 import { SESSION_LABEL_LENGTH } from "../lib/utils";
 import {
@@ -108,6 +109,7 @@ import { authorizeHlidTool, registerUmbodApprovalSession } from "./umbod";
 import {
 	evaluateSleep,
 	reportRateLimitSignal,
+	restoreSleepDecision,
 	type SleepDecision,
 	skipSleep as skipProviderSleep,
 	sleepUntilAllowed,
@@ -116,6 +118,37 @@ import type { ResolvedWorkspaceReference } from "./workspaceReferences";
 
 /** Fallback context window size when the SDK omits it from result metadata. */
 const DEFAULT_CONTEXT_WINDOW = 200_000;
+
+function providerTransportLimit(message: string): {
+	windowId?: "five_hour";
+	resetsAt: number | null;
+} | null {
+	const sessionLimit = /\bsession limit\b/i.test(message);
+	if (!sessionLimit && !/\b(?:usage|rate) limit\b/i.test(message)) return null;
+	const reset = message.match(
+		/\bresets?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([^)]+)\)/i,
+	);
+	let resetsAt: number | null = null;
+	if (reset) {
+		let hour = Number(reset[1]) % 12;
+		if (reset[3].toLowerCase() === "pm") hour += 12;
+		const time = `${String(hour).padStart(2, "0")}:${reset[2] ?? "00"}`;
+		try {
+			resetsAt = nextRoutineOccurrence(
+				{ kind: "daily", time },
+				reset[4],
+				Math.floor(Date.now() / 1_000),
+			);
+		} catch {
+			// The explicit provider rejection remains useful even when its timezone
+			// text is not a valid IANA identifier.
+		}
+	}
+	return {
+		...(sessionLimit ? { windowId: "five_hour" as const } : {}),
+		resetsAt,
+	};
+}
 
 /** Fire-and-forget DB error: console.error + append to log table. */
 function logDbError(operation: string, err: unknown): void {
@@ -299,7 +332,61 @@ type RunQueryArgs = {
 	userMessage: string;
 	emit: (msg: ServerMessage) => void;
 	options: RunQueryOptions;
+	durableReady?: Promise<boolean>;
 };
+
+type DurableRunQueryPayload = {
+	userMessage: string;
+	options: Pick<
+		RunQueryOptions,
+		| "skillContexts"
+		| "attachments"
+		| "agentCwd"
+		| "planMode"
+		| "planHtml"
+		| "commandAction"
+		| "vaultReferences"
+		| "goalStart"
+		| "workspaceReferences"
+	>;
+};
+
+function durableTurnPayload(args: RunQueryArgs): DurableRunQueryPayload {
+	const o = args.options;
+	return {
+		userMessage: args.userMessage,
+		options: {
+			...(o.skillContexts !== undefined
+				? { skillContexts: o.skillContexts }
+				: {}),
+			...(o.attachments !== undefined ? { attachments: o.attachments } : {}),
+			...(o.agentCwd !== undefined ? { agentCwd: o.agentCwd } : {}),
+			...(o.planMode !== undefined ? { planMode: o.planMode } : {}),
+			...(o.planHtml !== undefined ? { planHtml: o.planHtml } : {}),
+			...(o.commandAction !== undefined
+				? { commandAction: o.commandAction }
+				: {}),
+			...(o.vaultReferences !== undefined
+				? { vaultReferences: o.vaultReferences }
+				: {}),
+			...(o.goalStart !== undefined ? { goalStart: o.goalStart } : {}),
+			...(o.workspaceReferences !== undefined
+				? { workspaceReferences: o.workspaceReferences }
+				: {}),
+		},
+	};
+}
+
+function isDurableInteractiveTurn(args: RunQueryArgs): boolean {
+	const o = args.options;
+	return Boolean(
+		o.sessionId &&
+			o.turnId &&
+			!o.routineContext &&
+			!o.backgroundSession &&
+			!o.delegationContext,
+	);
+}
 
 export type CurrentDelegationHandoff = {
 	skillContexts: string[];
@@ -857,6 +944,10 @@ export class SessionManager {
 	// fully drains.
 	private turnQueue = new SessionTurnQueue<RunQueryArgs>();
 	private isDraining = false;
+	private durableTurns = new Map<string, db.PendingSessionTurnRow>();
+	private cancelledDurableTurns = new Set<string>();
+	private currentTurnArgs: RunQueryArgs | null = null;
+	private suspendingForRestart = false;
 	// Slice B: long-lived AgentSession per chat. Cached by chat-scoped key so
 	// consecutive turns reuse one provider.query() invocation. Tear down on
 	// chat switch / abort.
@@ -2129,8 +2220,24 @@ export class SessionManager {
 		this.askUserQuestions.clearAll();
 		this.planModeManager.clearAll();
 		this.currentDelegationHandoff = null;
-		// Drop queued turns so abort cancels everything in flight, not just
-		// the currently running turn.
+		// Explicit abort cancels durable work too. A process restart uses
+		// suspendForRestart() instead so pre-dispatch turns remain recoverable.
+		const durableIds = [
+			...(this.currentTurnId &&
+			this.currentTurnArgs &&
+			isDurableInteractiveTurn(this.currentTurnArgs)
+				? [this.currentTurnId]
+				: []),
+			...this.turnQueue
+				.pendingTurns()
+				.filter((turn) => isDurableInteractiveTurn(turn.args))
+				.flatMap((turn) => (turn.turnId ? [turn.turnId] : [])),
+		];
+		for (const id of durableIds) this.cancelledDurableTurns.add(id);
+		for (const id of durableIds) this.durableTurns.delete(id);
+		void db
+			.deletePendingSessionTurns(durableIds)
+			.catch((error) => logDbError("cancel pending turns", error));
 		this.turnQueue.resolveAll();
 		this.abortController?.abort();
 		// Slice B: tear down the long-lived AgentSession so the next runQuery
@@ -2141,6 +2248,22 @@ export class SessionManager {
 		this.realtimeMode = null;
 		this.realtimeStopPromise = null;
 		this.restartAgentSessionForEffort = false;
+	}
+
+	/** Stop native processes while retaining every pre-dispatch durable turn. */
+	suspendForRestart(): void {
+		this.suspendingForRestart = true;
+		this.unregisterUmbodApprovalSession?.();
+		this.unregisterUmbodApprovalSession = null;
+		this.permissions.clearAll();
+		this.askUserQuestions.clearAll();
+		this.planModeManager.clearAll();
+		this.abortController?.abort();
+		this.agentSession?.cancel();
+		this.agentSession = null;
+		this.agentSessionKey = null;
+		this.realtimeMode = null;
+		this.realtimeStopPromise = null;
 	}
 
 	/**
@@ -3286,8 +3409,22 @@ export class SessionManager {
 					emit,
 				);
 				break;
-			case "transport_error":
+			case "transport_error": {
+				const limit = providerTransportLimit(event.message);
+				if (limit) {
+					this.handleRateLimit(
+						{
+							type: "rate_limit",
+							status: "rejected",
+							rateLimitType: limit.windowId,
+							resetsAt: limit.resetsAt,
+						},
+						emit,
+						provider,
+					);
+				}
 				throw new Error(event.message);
+			}
 			case "commands_changed":
 				emit({
 					type: "slash_commands",
@@ -3507,12 +3644,119 @@ export class SessionManager {
 		emit: (msg: ServerMessage) => void,
 		options: RunQueryOptions = {},
 	): Promise<void> {
-		const completion = this.turnQueue.enqueue(
-			{ userMessage, emit, options },
-			options.turnId,
-		);
+		const args: RunQueryArgs = { userMessage, emit, options };
+		if (isDurableInteractiveTurn(args)) {
+			args.durableReady = this.persistDurableTurn(args);
+		}
+		const completion = this.turnQueue.enqueue(args, options.turnId);
 		if (!this.isDraining) void this.drainTurnQueue();
 		return completion;
+	}
+
+	private async persistDurableTurn(args: RunQueryArgs): Promise<boolean> {
+		const { sessionId, agentCwd, turnId } = args.options;
+		if (!sessionId || !turnId) return false;
+		// The pending-turn table owns a real Raven session FK. Create or restore
+		// that row before acknowledging durable queue ownership.
+		await this.initSessionContext(sessionId, agentCwd, args.userMessage);
+		const inserted = await db.enqueuePendingSessionTurn({
+			turnId,
+			sessionId,
+			payloadJson: JSON.stringify(durableTurnPayload(args)),
+		});
+		if (!inserted) return false;
+		if (this.cancelledDurableTurns.delete(turnId)) {
+			await db.deletePendingSessionTurn(turnId);
+			return false;
+		}
+		const now = Math.floor(Date.now() / 1_000);
+		this.durableTurns.set(turnId, {
+			turn_id: turnId,
+			session_id: sessionId,
+			position: this.durableTurns.size + 1,
+			payload_json: JSON.stringify(durableTurnPayload(args)),
+			state: "queued",
+			provider_id: null,
+			window_id: null,
+			sleep_reason: null,
+			sleep_until: null,
+			sleep_target: null,
+			sleep_utilization: null,
+			cap_deadline: null,
+			created_at: now,
+			updated_at: now,
+		});
+		return true;
+	}
+
+	private async settleDurableTurn(turnId: string | undefined): Promise<void> {
+		if (!turnId || !this.durableTurns.has(turnId)) return;
+		this.durableTurns.delete(turnId);
+		this.cancelledDurableTurns.delete(turnId);
+		await db.deletePendingSessionTurn(turnId);
+	}
+
+	/** Rebuild pre-dispatch work loaded from SQLite after a Hlid restart. */
+	restoreDurableTurns(
+		rows: readonly db.PendingSessionTurnRow[],
+		emit: (msg: ServerMessage) => void,
+	): number {
+		let restored = 0;
+		for (const row of rows) {
+			let payload: DurableRunQueryPayload;
+			try {
+				payload = JSON.parse(row.payload_json) as DurableRunQueryPayload;
+			} catch {
+				void db.deletePendingSessionTurn(row.turn_id);
+				continue;
+			}
+			if (
+				typeof payload?.userMessage !== "string" ||
+				!payload.userMessage.trim() ||
+				typeof payload.options !== "object" ||
+				payload.options === null
+			) {
+				void db.deletePendingSessionTurn(row.turn_id);
+				continue;
+			}
+			this.durableTurns.set(row.turn_id, row);
+			if (
+				row.state === "sleeping" &&
+				row.provider_id &&
+				(row.window_id === "five_hour" ||
+					row.window_id === "weekly" ||
+					row.window_id === "spend_control") &&
+				row.sleep_reason
+			) {
+				restoreSleepDecision(
+					row.provider_id,
+					{
+						reason: row.sleep_reason,
+						windowId: row.window_id,
+						targetResetsAt: row.sleep_target,
+						utilization: row.sleep_utilization,
+					},
+					loadConfig()?.auto_sleep ?? { resume_buffer_seconds: 0 },
+					row.created_at,
+				);
+			}
+			const args: RunQueryArgs = {
+				userMessage: payload.userMessage,
+				emit,
+				options: {
+					...payload.options,
+					sessionId: row.session_id,
+					turnId: row.turn_id,
+				},
+				durableReady: Promise.resolve(true),
+			};
+			void this.turnQueue
+				.enqueue(args, row.turn_id)
+				.catch((error) => logDbError("restore pending turn", error));
+			restored += 1;
+		}
+		if (restored > 0 && !this.isDraining) void this.drainTurnQueue();
+		return restored;
 	}
 
 	/**
@@ -3811,6 +4055,7 @@ export class SessionManager {
 					accepted = true;
 				},
 			);
+			await this.settleDurableTurn(turnId);
 			extracted.turn.resolve();
 			return receipt;
 		} catch (error) {
@@ -3818,6 +4063,9 @@ export class SessionManager {
 				this.turnQueue.restore(extracted);
 				if (!this.isDraining) void this.drainTurnQueue();
 			} else {
+				await this.settleDurableTurn(turnId).catch((settleError) =>
+					logDbError("settle steered pending turn", settleError),
+				);
 				extracted.turn.resolve();
 			}
 			throw error;
@@ -3853,61 +4101,80 @@ export class SessionManager {
 
 	/**
 	 * Slice C polish: snapshot of the server's queue state. Used by clients
-	 * (on connect / sync) to prune orphan chatQueue entries — e.g. items
-	 * that were _sent before a server restart and have no matching QueuedTurn
-	 * anymore.
+	 * (on connect / sync) to prune orphan chatQueue entries that no longer have
+	 * a matching durable or in-memory turn.
 	 */
 	getQueueState(): QueueStateSnapshot {
 		const pendingTurns = this.turnQueue.pendingTurns().flatMap((turn) => {
 			const id = turn.turnId;
-			const o = turn.args.options;
-			const sessionId = o.sessionId ?? this.currentSessionId;
-			if (!id || !sessionId) return [];
-			return [
-				{
-					id,
-					text: turn.args.userMessage,
-					session_id: sessionId,
-					...(typeof o.skillContexts === "string"
-						? { skill_context: o.skillContexts }
-						: o.skillContexts?.length
-							? { skill_contexts: o.skillContexts }
-							: {}),
-					...(o.attachments ? { attachments: o.attachments } : {}),
-					...(o.agentCwd ? { agent_cwd: o.agentCwd } : {}),
-					...(o.planMode !== undefined ? { plan_mode: o.planMode } : {}),
-					...(o.planHtml !== undefined ? { plan_html: o.planHtml } : {}),
-					...(o.commandAction ? { command_action: o.commandAction } : {}),
-					...(o.vaultReferences?.length
-						? { vault_references: o.vaultReferences }
-						: {}),
-					steerable: this.queuedTurnSteeringBlocker(turn.args) === null,
-					...(o.workspaceReferences?.length
-						? { workspace_references: o.workspaceReferences }
-						: {}),
-					...(o.goalStart
-						? {
-								goal: {
-									objective: o.goalStart.objective,
-									...(o.goalStart.tokenBudget !== undefined
-										? { token_budget: o.goalStart.tokenBudget }
-										: {}),
-								},
-							}
-						: {}),
-				},
-			];
+			return id ? [this.queueTurnSnapshot(turn.args, id)] : [];
 		});
+		const runningTurn =
+			this.currentTurnId && this.currentTurnArgs
+				? this.queueTurnSnapshot(this.currentTurnArgs, this.currentTurnId)
+				: undefined;
 		return {
 			pending_turn_ids: this.turnQueue.pendingTurnIds(),
 			pending_turns: pendingTurns,
 			running_turn_id:
 				this.state === "running" ? (this.currentTurnId ?? null) : null,
+			...(runningTurn ? { running_turn: runningTurn } : {}),
+		};
+	}
+
+	private queueTurnSnapshot(
+		args: RunQueryArgs,
+		id: string,
+	): NonNullable<QueueStateSnapshot["pending_turns"]>[number] {
+		const o = args.options;
+		const sessionId = o.sessionId ?? this.currentSessionId ?? "";
+		return {
+			id,
+			text: args.userMessage,
+			session_id: sessionId,
+			...(typeof o.skillContexts === "string"
+				? { skill_context: o.skillContexts }
+				: o.skillContexts?.length
+					? { skill_contexts: o.skillContexts }
+					: {}),
+			...(o.attachments ? { attachments: o.attachments } : {}),
+			...(o.agentCwd ? { agent_cwd: o.agentCwd } : {}),
+			...(o.planMode !== undefined ? { plan_mode: o.planMode } : {}),
+			...(o.planHtml !== undefined ? { plan_html: o.planHtml } : {}),
+			...(o.commandAction ? { command_action: o.commandAction } : {}),
+			...(o.vaultReferences?.length
+				? { vault_references: o.vaultReferences }
+				: {}),
+			steerable: this.queuedTurnSteeringBlocker(args) === null,
+			...(o.workspaceReferences?.length
+				? { workspace_references: o.workspaceReferences }
+				: {}),
+			...(o.goalStart
+				? {
+						goal: {
+							objective: o.goalStart.objective,
+							...(o.goalStart.tokenBudget !== undefined
+								? { token_budget: o.goalStart.tokenBudget }
+								: {}),
+						},
+					}
+				: {}),
 		};
 	}
 
 	cancelQueued(turnId: string): boolean {
-		return this.turnQueue.cancel(turnId);
+		const pending = this.turnQueue
+			.pendingTurns()
+			.find((turn) => turn.turnId === turnId);
+		if (!pending || !this.turnQueue.cancel(turnId)) return false;
+		if (isDurableInteractiveTurn(pending.args)) {
+			this.cancelledDurableTurns.add(turnId);
+			this.durableTurns.delete(turnId);
+			void db
+				.deletePendingSessionTurn(turnId)
+				.catch((error) => logDbError("cancel pending turn", error));
+		}
+		return true;
 	}
 
 	/**
@@ -3919,7 +4186,20 @@ export class SessionManager {
 	 * in the same session.
 	 */
 	promoteQueued(turnId: string): boolean {
-		if (!this.turnQueue.promote(turnId)) return false;
+		const pending = this.turnQueue
+			.pendingTurns()
+			.find((turn) => turn.turnId === turnId);
+		if (!pending || !this.turnQueue.promote(turnId)) return false;
+		const sessionId = pending.args.options.sessionId;
+		if (sessionId && isDurableInteractiveTurn(pending.args)) {
+			void (pending.args.durableReady ?? Promise.resolve(true))
+				.then((accepted) =>
+					accepted
+						? db.promotePendingSessionTurn({ sessionId, turnId })
+						: undefined,
+				)
+				.catch((error) => logDbError("promote pending turn", error));
+		}
 		// Interrupt current — drain loop's await iterateConversation returns,
 		// drain proceeds to the next queue head (the promoted turn).
 		void this.agentSession?.interrupt?.();
@@ -3944,20 +4224,33 @@ export class SessionManager {
 			while (this.turnQueue.length > 0) {
 				const next = this.turnQueue.shift();
 				if (!next) break;
+				if (this.suspendingForRestart) break;
 				// Recover from a prior turn's error so the next queued turn runs
 				// cleanly. Per-turn errors are already signaled to the UI via the
 				// "error" event emitted from runOneTurn.
 				if (this.state === "error") this.state = "running";
 				lastEmit = next.args.emit;
+				this.currentTurnId = next.turnId;
+				this.currentTurnArgs = next.args;
 				try {
+					if (next.args.durableReady && !(await next.args.durableReady)) {
+						next.resolve();
+						continue;
+					}
 					await this.runOneTurn(next.args);
 					next.resolve();
 				} catch (err) {
+					if (!this.suspendingForRestart) {
+						await this.settleDurableTurn(next.turnId).catch((error) =>
+							logDbError("settle pending turn", error),
+						);
+					}
 					next.reject(err instanceof Error ? err : new Error(String(err)));
 				}
 			}
 		} finally {
 			this.isDraining = false;
+			this.currentTurnArgs = null;
 			this.abortController = null;
 			// Settle final state. Per-turn errors set state="error" via the
 			// runOneTurn catch; preserve that. Otherwise return to idle.
@@ -3994,15 +4287,78 @@ export class SessionManager {
 		const cfg = loadConfig()?.auto_sleep;
 		if (!cfg?.enabled) return "proceeded";
 		const providerId = provider.providerId;
+		const durable = this.currentTurnId
+			? this.durableTurns.get(this.currentTurnId)
+			: undefined;
+		let recoverable = durable?.state !== "dispatching" ? durable : undefined;
 		return sleepUntilAllowed({
 			providerId,
 			cfg,
 			signal: this.abortController?.signal ?? undefined,
-			onSleep: (decision: SleepDecision) => {
+			capDeadline: recoverable?.cap_deadline,
+			onSleep: async (decision: SleepDecision) => {
 				this.publishSleepState(providerId, decision, emit);
+				if (!recoverable) return;
+				const capDeadline = decision.capApplied
+					? (recoverable.cap_deadline ?? decision.until)
+					: recoverable.cap_deadline;
+				const updated: db.PendingSessionTurnRow = {
+					...recoverable,
+					state: "sleeping",
+					provider_id: providerId,
+					window_id: decision.windowId,
+					sleep_reason: decision.reason,
+					sleep_until: decision.until,
+					sleep_target: decision.targetResetsAt,
+					sleep_utilization: decision.utilization,
+					cap_deadline: capDeadline,
+					updated_at: Math.floor(Date.now() / 1_000),
+				};
+				this.durableTurns.set(recoverable.turn_id, updated);
+				recoverable = updated;
+				await db.markPendingSessionTurnSleeping({
+					turnId: recoverable.turn_id,
+					providerId,
+					windowId: decision.windowId,
+					reason: decision.reason,
+					until: decision.until,
+					target: decision.targetResetsAt,
+					utilization: decision.utilization,
+					capDeadline,
+				});
 			},
-			onWake: (cause) => {
+			onWake: async (cause) => {
 				this.clearSleepState(providerId, cause, emit);
+				if (!recoverable || this.suspendingForRestart) return;
+				// Keep the last sleep decision durable until the provider-dispatch
+				// boundary. If Hlid stops while prompt construction is underway, the
+				// restored gate can still prove whether this turn may proceed. A manual
+				// Resume now becomes an expired cap so that choice also survives.
+				const sleepingProviderId = recoverable.provider_id;
+				const sleepingWindowId = recoverable.window_id;
+				const sleepingReason = recoverable.sleep_reason;
+				const sleepingUntil = recoverable.sleep_until;
+				if (
+					cause === "skipped" &&
+					sleepingProviderId &&
+					sleepingWindowId &&
+					sleepingReason &&
+					sleepingUntil != null
+				) {
+					const capDeadline = Math.floor(Date.now() / 1_000);
+					recoverable = { ...recoverable, cap_deadline: capDeadline };
+					this.durableTurns.set(recoverable.turn_id, recoverable);
+					await db.markPendingSessionTurnSleeping({
+						turnId: recoverable.turn_id,
+						providerId: sleepingProviderId,
+						windowId: sleepingWindowId,
+						reason: sleepingReason,
+						until: sleepingUntil,
+						target: recoverable.sleep_target,
+						utilization: recoverable.sleep_utilization,
+						capDeadline,
+					});
+				}
 			},
 		});
 	}
@@ -4745,7 +5101,11 @@ export class SessionManager {
 		contextManifest?: HlidTurnContextManifest,
 		steerToolEventIndex?: number,
 	): Promise<number> {
-		const userSeq = this.messageSeq++;
+		const existingUserSeq =
+			sessionId && turnId
+				? await db.getUserMessageSeqByTurnId(sessionId, turnId)
+				: null;
+		const userSeq = existingUserSeq ?? this.messageSeq++;
 		if (!sessionId) return userSeq;
 		const persistedMessage = formatVaultReferencedMessage(
 			userMessage,
@@ -4755,7 +5115,10 @@ export class SessionManager {
 				.map((attachment) => attachment.filename),
 			workspaceReferences,
 		);
-		if (turnId && steerToolEventIndex !== undefined) {
+		if (existingUserSeq !== null) {
+			// A restart can occur after the transcript write but before provider
+			// dispatch. Reuse that row rather than duplicating the visible prompt.
+		} else if (turnId && steerToolEventIndex !== undefined) {
 			await db.appendMessage(
 				sessionId,
 				userSeq,
@@ -4808,6 +5171,20 @@ export class SessionManager {
 				});
 		}
 		return userSeq;
+	}
+
+	private async markDurableTurnDispatching(
+		turnId: string | undefined,
+	): Promise<void> {
+		if (!turnId) return;
+		const durable = this.durableTurns.get(turnId);
+		if (!durable || durable.state === "dispatching") return;
+		await db.markPendingSessionTurnDispatching(turnId);
+		this.durableTurns.set(turnId, {
+			...durable,
+			state: "dispatching",
+			updated_at: Math.floor(Date.now() / 1_000),
+		});
 	}
 
 	private getOrCreateAgentSession(options: {
@@ -5143,6 +5520,9 @@ export class SessionManager {
 		// State stays "running" while sleeping; agent_sleep carries the nuance.
 		if ((await this.gateOnUsage(currentProvider, emit)) === "aborted") {
 			this.activeRoutineContext = null;
+			if (!this.suspendingForRestart) {
+				await this.settleDurableTurn(turnId);
+			}
 			return;
 		}
 
@@ -5391,6 +5771,7 @@ export class SessionManager {
 					: undefined,
 			});
 			if (goalStart) {
+				await this.markDurableTurnDispatching(turnId);
 				if (!isCodexRuntimeProvider(currentProvider.providerId)) {
 					throw new Error("/goal is only available for Codex sessions.");
 				}
@@ -5437,6 +5818,7 @@ export class SessionManager {
 			// onto the SDK's input AsyncIterable and the next assistant turn
 			// runs inside the same SDK query.
 			if (commandAction) {
+				await this.markDurableTurnDispatching(turnId);
 				if (!agentSession.executeCommand) {
 					throw new Error(
 						`/${commandAction} is not supported by the active provider`,
@@ -5444,6 +5826,7 @@ export class SessionManager {
 				}
 				await agentSession.executeCommand(commandAction, commandArgs);
 			} else {
+				await this.markDurableTurnDispatching(turnId);
 				const audioPaths =
 					currentProvider.providerId === "codex"
 						? safeAttachments
@@ -5554,6 +5937,11 @@ export class SessionManager {
 				this.currentTurnState = null;
 				this.currentTurnPermissionMode = null;
 				this.currentDelegationHandoff = null;
+			}
+			if (!this.suspendingForRestart) {
+				await this.settleDurableTurn(turnId).catch((error) =>
+					logDbError("settle pending turn", error),
+				);
 			}
 		}
 	}

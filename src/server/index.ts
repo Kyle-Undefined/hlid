@@ -85,7 +85,7 @@ import {
 	type ProviderCatalogSnapshot,
 	providerCatalogRequestOptions,
 } from "./providerCatalog";
-import { startProviderProxy } from "./proxy";
+import { seedWindowMarks, startProviderProxy } from "./proxy";
 import { bootstrapPtyRuntime } from "./pty-bootstrap";
 import { createReadAloudRouteHandler } from "./readAloudRoutes";
 import {
@@ -501,7 +501,7 @@ function shutdown(): never {
 	process.exit(0);
 }
 
-// Graceful shutdown: abort all running sessions on SIGTERM / SIGINT
+// Graceful shutdown: stop providers while retaining durable pre-dispatch turns.
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
 
@@ -535,6 +535,16 @@ const providerProxyStarts: Promise<void>[] = [];
 for (const provider of providers.values()) {
 	if (provider.proxyConfig) {
 		providerProxyStarts.push(startProviderProxy(provider, anthropicUpstream));
+	} else if (provider.usageWindows?.length) {
+		// Providers such as Codex report windows through their control API rather
+		// than an HTTP proxy. Hydrate their last durable reading before Raven can
+		// submit the first post-restart turn.
+		providerProxyStarts.push(
+			seedWindowMarks(
+				provider.providerId,
+				provider.usageWindows.map((window) => window.windowId),
+			),
+		);
 	}
 }
 
@@ -1218,6 +1228,16 @@ for (const result of providerProxyResults) {
 			result.reason,
 		);
 	}
+}
+const restoredPendingTurns = await pool.restoreDurableTurns(() => {
+	bumpDataRevision("sessions");
+	broadcast({
+		type: "sessions_status",
+		sessions: getLiveSessionsStatus(pool, terminalPool),
+	});
+});
+if (restoredPendingTurns.restored > 0 || restoredPendingTurns.discarded > 0) {
+	bumpDataRevision("sessions");
 }
 // Populate provider metadata while the splash is visible, but never hold it
 // for more than three seconds. Codex keeps its shared app-server available for

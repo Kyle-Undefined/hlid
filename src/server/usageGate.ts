@@ -1,5 +1,5 @@
 import type { AutoSleepConfig } from "../config";
-import { getWindowMark } from "./proxy";
+import { getWindowMark, updateWindowMark } from "./proxy";
 
 /**
  * Auto-sleep gate for provider usage windows.
@@ -260,26 +260,29 @@ export async function sleepUntilAllowed(options: {
 	providerId: string;
 	cfg: AutoSleepConfig | undefined;
 	signal?: AbortSignal;
-	onSleep?: (decision: SleepDecision) => void;
-	onWake?: (cause: "reset" | "skipped" | "aborted") => void;
+	capDeadline?: number | null;
+	onSleep?: (decision: SleepDecision) => unknown | Promise<unknown>;
+	onWake?: (
+		cause: "reset" | "skipped" | "aborted",
+	) => unknown | Promise<unknown>;
 }): Promise<"proceeded" | "aborted"> {
 	const { providerId, cfg, signal, onSleep, onWake } = options;
 	let lastEmitted: SleepDecision | null = null;
 	// evaluateSleep computes its cap from the current clock, which would slide
 	// forward on every re-evaluation; anchor the deadline at the first capped
 	// decision so max_sleep bounds the whole sleep, not each re-check.
-	let capDeadline: number | null = null;
+	let capDeadline: number | null = options.capDeadline ?? null;
 	let sleeping = false;
 	let skipped = false;
 	for (;;) {
 		if (signal?.aborted) {
-			if (sleeping) onWake?.("aborted");
+			if (sleeping) await onWake?.("aborted");
 			return "aborted";
 		}
 		const now = epochNow();
 		const decision = evaluateSleep(providerId, cfg, now);
 		if (!decision) {
-			if (sleeping) onWake?.(skipped ? "skipped" : "reset");
+			if (sleeping) await onWake?.(skipped ? "skipped" : "reset");
 			return "proceeded";
 		}
 		if (decision.capApplied && capDeadline === null)
@@ -296,7 +299,7 @@ export async function sleepUntilAllowed(options: {
 				windowKey(providerId, effective.windowId),
 				effective.targetResetsAt ?? now + SKIP_FALLBACK_SECONDS,
 			);
-			if (sleeping) onWake?.("reset");
+			if (sleeping) await onWake?.("reset");
 			return "proceeded";
 		}
 		if (
@@ -305,7 +308,7 @@ export async function sleepUntilAllowed(options: {
 			lastEmitted.reason !== effective.reason ||
 			lastEmitted.windowId !== effective.windowId
 		) {
-			onSleep?.(effective);
+			await onSleep?.(effective);
 			lastEmitted = effective;
 		}
 		sleeping = true;
@@ -315,11 +318,62 @@ export async function sleepUntilAllowed(options: {
 		);
 		const result = await waitChunk(providerId, waitMs, signal);
 		if (result === "aborted") {
-			onWake?.("aborted");
+			await onWake?.("aborted");
 			return "aborted";
 		}
 		if (result === "woken") skipped = true;
 	}
+}
+
+/**
+ * Rebuild the provider-global gate signal behind a durable sleeping turn.
+ * Threshold readings normally come from the persisted provider window mark;
+ * the explicit update is a fallback for providers without proxy hydration.
+ */
+export function restoreSleepDecision(
+	providerId: string,
+	decision: Pick<
+		SleepDecision,
+		"reason" | "windowId" | "targetResetsAt" | "utilization"
+	>,
+	cfg: Pick<AutoSleepConfig, "resume_buffer_seconds">,
+	reportedAt: number,
+): void {
+	const existing = getWindowMark(providerId, decision.windowId);
+	if (decision.reason === "threshold") {
+		// Provider usage hydration is newer and authoritative when available.
+		// The sleeping row is only a fallback for providers without that reading.
+		if (existing) return;
+		if (decision.utilization == null || decision.targetResetsAt == null) return;
+		updateWindowMark(
+			providerId,
+			decision.windowId,
+			decision.utilization,
+			Math.max(
+				reportedAt + 1,
+				decision.targetResetsAt - cfg.resume_buffer_seconds,
+			),
+		);
+		return;
+	}
+	const resetsAt =
+		decision.targetResetsAt == null
+			? null
+			: Math.max(
+					reportedAt + 1,
+					decision.targetResetsAt - cfg.resume_buffer_seconds,
+				);
+	if (
+		existing?.resetsAt != null &&
+		resetsAt != null &&
+		existing.resetsAt !== resetsAt
+	) {
+		return;
+	}
+	hardLimits.set(windowKey(providerId, decision.windowId), {
+		resetsAt,
+		reportedAt,
+	});
 }
 
 /**

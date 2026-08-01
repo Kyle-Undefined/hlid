@@ -5,6 +5,7 @@ import {
 	_resetForTests,
 	evaluateSleep,
 	reportRateLimitSignal,
+	restoreSleepDecision,
 	skipSleep,
 	sleepUntilAllowed,
 } from "./usageGate";
@@ -190,6 +191,47 @@ describe("evaluateSleep", () => {
 		const far = `${provider}-far`;
 		reportRateLimitSignal(far, undefined, "rejected", now() + 8 * 3600, cfg());
 		expect(evaluateSleep(far, cfg())).toBeNull();
+	});
+});
+
+describe("restoreSleepDecision", () => {
+	it("uses a sleeping threshold row when no provider reading was hydrated", () => {
+		const resetsAt = now() + 1_200;
+		restoreSleepDecision(
+			provider,
+			{
+				reason: "threshold",
+				windowId: "five_hour",
+				targetResetsAt: resetsAt + 60,
+				utilization: 0.98,
+			},
+			cfg(),
+			now() - 10,
+		);
+
+		expect(evaluateSleep(provider, cfg())).toMatchObject({
+			windowId: "five_hour",
+			utilization: 0.98,
+			targetResetsAt: resetsAt + 60,
+		});
+	});
+
+	it("does not overwrite a fresher provider reading", () => {
+		const currentReset = now() + 600;
+		updateWindowMark(provider, "five_hour", 0.2, currentReset);
+		restoreSleepDecision(
+			provider,
+			{
+				reason: "threshold",
+				windowId: "five_hour",
+				targetResetsAt: now() + 1_260,
+				utilization: 0.99,
+			},
+			cfg(),
+			now() - 10,
+		);
+
+		expect(evaluateSleep(provider, cfg())).toBeNull();
 	});
 });
 

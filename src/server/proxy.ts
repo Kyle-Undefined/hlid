@@ -108,7 +108,7 @@ export function applyReading(
 }
 
 /** Seed in-memory high-water marks from DB on cold start. */
-async function seedWindowMarks(
+export async function seedWindowMarks(
 	providerId: string,
 	windowIds: string[],
 ): Promise<void> {
