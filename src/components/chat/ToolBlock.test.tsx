@@ -100,6 +100,84 @@ describe("ToolBlock — collapsed", () => {
 });
 
 describe("ToolBlock — specialized event dispatch", () => {
+	it("renders Hlid visualization results inline without raw tool chrome", () => {
+		const result = JSON.stringify({
+			type: "hlid_visualization",
+			attachment_id: "0591f46e-b4b3-4bfb-9aa2-14f65d625209",
+			filename: "latency-explorer.html",
+			title: "Latency explorer",
+		});
+		render(
+			<ToolBlock
+				providerId="codex"
+				sessionId="session-1"
+				expandedVisualizationEventId="te1"
+				event={makeEvent({
+					name: "mcp__hlid__create_visualization",
+					input: { prompt: "Show the response path" },
+					result,
+					subagent: {
+						provider: "codex",
+						agentId: "visualization-worker-1",
+						label: "Windows Visualize",
+						status: "completed",
+						currentStep: "Visualization ready",
+						startedAtMs: 1,
+						endedAtMs: 2,
+					},
+				})}
+			/>,
+		);
+
+		const frame = screen.getByTitle("Latency explorer");
+		expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
+		expect(screen.queryByText("mcp__hlid__create_visualization")).toBeNull();
+		expect(screen.queryByText(result)).toBeNull();
+		expect(screen.queryByText(/prompt:/)).toBeNull();
+	});
+
+	it("does not specialize another tool that returns visualization-shaped JSON", () => {
+		const result = JSON.stringify({
+			type: "hlid_visualization",
+			attachment_id: "attachment-1",
+			filename: "latency-explorer.html",
+			title: "Latency explorer",
+		});
+		render(
+			<ToolBlock
+				event={makeEvent({
+					name: "mcp__other__render",
+					result,
+				})}
+			/>,
+		);
+
+		expect(screen.getByText("mcp__other__render")).not.toBeNull();
+		expect(screen.queryByTitle("Latency explorer")).toBeNull();
+	});
+
+	it("does not specialize visualization tool names outside Codex sessions", () => {
+		const result = JSON.stringify({
+			type: "hlid_visualization",
+			attachment_id: "attachment-1",
+			filename: "latency-explorer.html",
+			title: "Latency explorer",
+		});
+		render(
+			<ToolBlock
+				providerId="claude"
+				sessionId="session-1"
+				event={makeEvent({
+					name: "mcp__hlid__create_visualization",
+					result,
+				})}
+			/>,
+		);
+
+		expect(screen.getByText("mcp__hlid__create_visualization")).not.toBeNull();
+		expect(screen.queryByTitle("Latency explorer")).toBeNull();
+	});
+
 	it("routes capture and control events to the Project Preview capture row", () => {
 		render(
 			<ToolBlock

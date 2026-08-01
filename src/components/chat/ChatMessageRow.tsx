@@ -22,6 +22,9 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 	acceptedSteers,
 	sessionId,
 	providerId,
+	expandedVisualizationEventId,
+	onToggleVisualization,
+	onVisualizationInactive,
 	toolEventStartIndex = 0,
 	olderToolEventCount = 0,
 	onLoadOlderToolEvents,
@@ -49,6 +52,9 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 	acceptedSteers?: readonly UserMessage[];
 	sessionId?: string;
 	providerId?: string;
+	expandedVisualizationEventId?: string | null;
+	onToggleVisualization?: (eventId: string) => void;
+	onVisualizationInactive?: (eventId: string) => void;
 	toolEventStartIndex?: number;
 	olderToolEventCount?: number;
 	onLoadOlderToolEvents?: () => void;
@@ -127,6 +133,9 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 				acceptedSteers={acceptedSteers}
 				sessionId={sessionId}
 				providerId={providerId}
+				expandedVisualizationEventId={expandedVisualizationEventId}
+				onToggleVisualization={onToggleVisualization}
+				onVisualizationInactive={onVisualizationInactive}
 				permissionLabels={permissionLabels}
 				toolEventStartIndex={toolEventStartIndex}
 				olderToolEventCount={olderToolEventCount}

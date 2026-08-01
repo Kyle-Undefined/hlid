@@ -1,7 +1,8 @@
-import { mkdirSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, rmSync } from "node:fs";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, posix, resolve, win32 } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { resolveCodexExecutable } from "../lib/codexPath";
 import {
@@ -12,9 +13,11 @@ import {
 import {
 	buildHlidToolLoadingSummary,
 	describeHlidToolLoading,
+	HLID_CREATE_VISUALIZATION_TOOL,
 	HLID_WINDOWS_COMPUTER_USE_TOOL,
 } from "../lib/hlidContext";
 import { APP_DIR, toLogical } from "../lib/paths";
+import { runBoundedProcess } from "../lib/process";
 import type {
 	AgentEvent,
 	AgentProvider,
@@ -37,6 +40,7 @@ import type {
 	SlashCommand,
 	SubagentSnapshot,
 } from "./agentProvider";
+import { ingestVisualizationHtml } from "./attachments";
 import {
 	acquireCodexAppServer,
 	CodexAppServer,
@@ -100,12 +104,20 @@ import {
 } from "./hlidAgentTools";
 import { isHtmlPlanPath } from "./htmlPlanPath";
 import {
+	prepareLibrary,
+	visualizationStagingJobDirectory,
+} from "./libraryStore";
+import {
 	executeObsidianAgentTool,
 	isObsidianAgentToolReadOnly,
 	OBSIDIAN_AGENT_NAMESPACE,
 	OBSIDIAN_AGENT_NAMESPACE_DESCRIPTION,
 	OBSIDIAN_AGENT_TOOL_SPECS,
 } from "./obsidianAgentTools";
+import {
+	createWindowsVisualizeRenderInput,
+	extractWindowsVisualizeArtifact,
+} from "./windowsVisualizeArtifact";
 
 /**
  * Union of the RESPONSE shapes hlid can send back for the server-initiated
@@ -185,9 +197,21 @@ function skillsFromListResponse(value: unknown): Record<string, unknown>[] {
 
 const WINDOWS_COMPUTER_USE_NAMESPACE = HLID_AGENT_NAMESPACE;
 const WINDOWS_COMPUTER_USE_TOOL = HLID_WINDOWS_COMPUTER_USE_TOOL;
+const WINDOWS_VISUALIZE_NAMESPACE = HLID_AGENT_NAMESPACE;
+const WINDOWS_VISUALIZE_TOOL = HLID_CREATE_VISUALIZATION_TOOL;
 const DEFAULT_WINDOWS_COMPUTER_USE_MODEL = "gpt-5.4";
 const DEFAULT_WINDOWS_COMPUTER_USE_EFFORT = "medium";
 const CODEX_CHILD_SETTLE_TIMEOUT_MS = 10 * 60_000;
+const WINDOWS_VISUALIZE_RENDER_TIMEOUT_MS = 30_000;
+const WINDOWS_VISUALIZE_WORKER_TIMEOUT_MS = 5 * 60_000;
+const WINDOWS_VISUALIZE_FAILURE_MESSAGE =
+	"Hlid could not create the visualization.";
+
+type WindowsVisualizeSkill = {
+	name: "visualize:visualize";
+	path: string;
+	renderScript: string;
+};
 
 type WindowsComputerUseResult = {
 	text: string;
@@ -206,6 +230,108 @@ class WindowsComputerUseError extends Error {
 		super(message);
 		this.name = "WindowsComputerUseError";
 	}
+}
+
+type WindowsVisualizeResult = WindowsComputerUseResult & {
+	attachmentId: string;
+	filename: string;
+	title: string;
+};
+
+class WindowsVisualizeError extends Error {
+	constructor(
+		message: string,
+		readonly completion?: WindowsComputerUseResult,
+	) {
+		super(message);
+		this.name = "WindowsVisualizeError";
+	}
+}
+
+type DelegatedWindowsWorker =
+	| { kind: "computer-use"; task: string }
+	| { kind: "visualize"; task: string };
+
+type CodexDoneEvent = Extract<AgentEvent, { type: "done" }>;
+
+function windowsWorkerCompletion(
+	completion: CodexDoneEvent,
+	text: string,
+	threadId: string,
+): WindowsComputerUseResult {
+	return {
+		text,
+		threadId,
+		usage: {
+			inputTokens: completion.usage?.inputTokens ?? 0,
+			outputTokens: completion.usage?.outputTokens ?? 0,
+			cacheReadTokens: completion.usage?.cacheReadTokens ?? 0,
+			cacheCreationTokens: completion.usage?.cacheCreationTokens ?? 0,
+		},
+		turns: completion.turns,
+		durationMs: completion.durationMs,
+		estimatedCost: completion.estimatedCost,
+	};
+}
+
+function windowsWorkerUsage(
+	event: Extract<AgentEvent, { type: "usage" }>,
+): CanonicalTokenUsage {
+	return event.queryUsage
+		? { ...event.queryUsage }
+		: {
+				inputTokens: event.inputTokens,
+				outputTokens: event.outputTokens,
+				cacheReadTokens: event.cacheReadTokens ?? 0,
+				cacheCreationTokens: event.cacheCreationTokens ?? 0,
+			};
+}
+
+function partialWindowsWorkerCompletion(opts: {
+	usage: CanonicalTokenUsage;
+	model: string;
+	threadId: string;
+	startedAtMs: number;
+}): WindowsComputerUseResult {
+	return {
+		text: "",
+		threadId: opts.threadId,
+		usage: opts.usage,
+		turns: 1,
+		durationMs: Math.max(0, Date.now() - opts.startedAtMs),
+		estimatedCost: estimateCodexCost(opts.model, opts.usage),
+	};
+}
+
+function updateWindowsWorkerText(
+	text: string,
+	event: AgentEvent,
+): string | null {
+	if (event.type === "text_delta") return text + event.text;
+	if (event.type !== "text_replace" || !text.endsWith(event.previousText)) {
+		return null;
+	}
+	return text.slice(0, text.length - event.previousText.length) + event.text;
+}
+
+function attachedWindowsWorkerSnapshot(
+	snapshot: SubagentSnapshot,
+	agentId: string,
+	currentStep: string,
+): SubagentSnapshot {
+	return { ...snapshot, agentId, currentStep };
+}
+
+function dynamicToolFailure(error: unknown): DynamicToolCallResponse {
+	return {
+		success: false,
+		contentItems: [
+			{
+				type: "inputText",
+				text: error instanceof Error ? error.message : String(error),
+			},
+		],
+	};
 }
 
 type PendingCodexDone = {
@@ -320,10 +446,255 @@ function windowsComputerUseWorkspace(): string {
 	);
 }
 
+function windowsPathApi(path: string): typeof posix | typeof win32 {
+	return /^[a-zA-Z]:[\\/]/.test(path) || path.includes("\\") ? win32 : posix;
+}
+
+function codexHomeDirectory(): string {
+	return process.env.CODEX_HOME?.trim() || resolve(homedir(), ".codex");
+}
+
+function pathComparisonKey(
+	pathApi: typeof posix | typeof win32,
+	path: string,
+): string {
+	const normalized = pathApi.normalize(path);
+	if (pathApi !== win32) return normalized;
+	const withoutNamespace = normalized.startsWith("\\\\?\\")
+		? normalized.slice(4)
+		: normalized;
+	return withoutNamespace.toLowerCase();
+}
+
+function pathRelativeWithin(
+	pathApi: typeof posix | typeof win32,
+	root: string,
+	target: string,
+): string | null {
+	const relative = pathApi.relative(root, target);
+	if (
+		!relative ||
+		relative === ".." ||
+		relative.startsWith(`..${pathApi.sep}`) ||
+		pathApi.isAbsolute(relative)
+	) {
+		return null;
+	}
+	return relative;
+}
+
+async function assertRegularUnlinkedPath(
+	pathApi: typeof posix | typeof win32,
+	root: string,
+	relative: string,
+): Promise<void> {
+	const rootStat = await lstat(root);
+	if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+		throw new Error("Visualize package cache root is not a regular directory");
+	}
+	const segments = relative.split(/[\\/]+/).filter(Boolean);
+	let current = root;
+	for (const [index, segment] of segments.entries()) {
+		current = pathApi.resolve(current, segment);
+		const stat = await lstat(current);
+		if (stat.isSymbolicLink()) {
+			throw new Error("Visualize package contains a symbolic link");
+		}
+		const final = index === segments.length - 1;
+		if ((final && !stat.isFile()) || (!final && !stat.isDirectory())) {
+			throw new Error(
+				final
+					? "Visualize package entry is not a regular file"
+					: "Visualize package entry is not a regular directory",
+			);
+		}
+	}
+}
+
+async function trustedWindowsVisualizeSkill(
+	candidate: Record<string, unknown>,
+): Promise<WindowsVisualizeSkill | null> {
+	if (
+		String(candidate.name ?? "").trim() !== "visualize:visualize" ||
+		candidate.enabled !== true ||
+		typeof candidate.path !== "string" ||
+		!candidate.path.trim()
+	) {
+		return null;
+	}
+
+	const requestedSkillPath = candidate.path.trim();
+	const pathApi = windowsPathApi(requestedSkillPath);
+	if (!pathApi.isAbsolute(requestedSkillPath)) return null;
+	const cacheRoot = pathApi.resolve(
+		codexHomeDirectory(),
+		"plugins",
+		"cache",
+		"openai-bundled",
+		"visualize",
+	);
+	try {
+		const configuredCacheStat = await lstat(cacheRoot);
+		if (
+			configuredCacheStat.isSymbolicLink() ||
+			!configuredCacheStat.isDirectory()
+		) {
+			return null;
+		}
+		const [canonicalCacheRoot, canonicalSkillPath] = await Promise.all([
+			realpath(cacheRoot),
+			realpath(requestedSkillPath),
+		]);
+		if (
+			pathComparisonKey(pathApi, canonicalSkillPath) !==
+			pathComparisonKey(pathApi, pathApi.resolve(requestedSkillPath))
+		) {
+			return null;
+		}
+		const skillRelative = pathRelativeWithin(
+			pathApi,
+			canonicalCacheRoot,
+			canonicalSkillPath,
+		);
+		if (!skillRelative) return null;
+		const skillParts = skillRelative.split(/[\\/]+/);
+		const normalizedSkillParts =
+			pathApi === win32
+				? skillParts.map((part) => part.toLowerCase())
+				: skillParts;
+		if (
+			skillParts.length !== 4 ||
+			!/^[a-zA-Z0-9._-]+$/.test(skillParts[0] ?? "") ||
+			[".", ".."].includes(skillParts[0] ?? "") ||
+			normalizedSkillParts[1] !== "skills" ||
+			normalizedSkillParts[2] !== "visualize" ||
+			normalizedSkillParts[3] !== (pathApi === win32 ? "skill.md" : "SKILL.md")
+		) {
+			return null;
+		}
+		await assertRegularUnlinkedPath(pathApi, canonicalCacheRoot, skillRelative);
+
+		const requestedRenderScript = pathApi.resolve(
+			pathApi.dirname(canonicalSkillPath),
+			"scripts",
+			"render.py",
+		);
+		const canonicalRenderScript = await realpath(requestedRenderScript);
+		if (
+			pathComparisonKey(pathApi, canonicalRenderScript) !==
+			pathComparisonKey(pathApi, requestedRenderScript)
+		) {
+			return null;
+		}
+		const renderRelative = pathRelativeWithin(
+			pathApi,
+			canonicalCacheRoot,
+			canonicalRenderScript,
+		);
+		if (!renderRelative) return null;
+		await assertRegularUnlinkedPath(
+			pathApi,
+			canonicalCacheRoot,
+			renderRelative,
+		);
+		return {
+			name: "visualize:visualize",
+			path: canonicalSkillPath,
+			renderScript: canonicalRenderScript,
+		};
+	} catch {
+		return null;
+	}
+}
+
+async function renderWindowsVisualization(
+	skill: WindowsVisualizeSkill,
+	fragmentPath: string,
+	destinationPath: string,
+	title: string,
+	jobRoot: string,
+): Promise<void> {
+	const configured = process.env.HLID_WINDOWS_VISUALIZE_PYTHON?.trim();
+	const candidates = configured
+		? [{ executable: configured, prefix: [] as string[] }]
+		: [
+				{ executable: "python", prefix: [] as string[] },
+				{ executable: "py", prefix: ["-3"] },
+				{ executable: "python3", prefix: [] as string[] },
+			];
+	const failures: string[] = [];
+	for (const candidate of candidates) {
+		try {
+			const result = await runBoundedProcess(
+				candidate.executable,
+				[
+					...candidate.prefix,
+					skill.renderScript,
+					fragmentPath,
+					destinationPath,
+					"--title",
+					title,
+				],
+				{
+					cwd: jobRoot,
+					timeoutMs: WINDOWS_VISUALIZE_RENDER_TIMEOUT_MS,
+					timeoutError: "Visualize renderer timed out",
+					maxOutputChars: 4_096,
+				},
+			);
+			if (result.code === 0) return;
+			failures.push(
+				`${candidate.executable} exited ${String(result.code)}${result.output ? `: ${result.output.trim()}` : ""}`,
+			);
+		} catch (error) {
+			if (
+				error instanceof Error &&
+				error.message === "Visualize renderer timed out"
+			) {
+				throw error;
+			}
+			failures.push(
+				`${candidate.executable}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+	throw new Error(`Visualize renderer failed (${failures.join("; ")})`);
+}
+
+function cleanupWindowsVisualizeJobRoot(
+	jobRoot: string,
+	attemptsRemaining = 3,
+): void {
+	try {
+		rmSync(jobRoot, { recursive: true, force: true });
+	} catch (error) {
+		if (attemptsRemaining > 1) {
+			const retry = setTimeout(
+				() => cleanupWindowsVisualizeJobRoot(jobRoot, attemptsRemaining - 1),
+				500,
+			);
+			retry.unref();
+			return;
+		}
+		console.warn(
+			"[codex] failed to clean Windows Visualize staging:",
+			error instanceof Error ? error.message : String(error),
+		);
+	}
+}
+
+function visualizationTitle(filename: string): string {
+	return filename
+		.replace(/\.html$/i, "")
+		.split("-")
+		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+		.join(" ");
+}
+
 export function windowsComputerUseHostAvailable(
 	platform = process.platform,
 	executable = resolveCodexExecutable(),
-): boolean {
+): executable is string {
 	return platform === "win32" && Boolean(executable);
 }
 
@@ -333,8 +704,20 @@ type WindowsComputerUseCapability = {
 	reason?: string;
 };
 
+type WindowsVisualizeCapability = {
+	label: string;
+	available: boolean;
+	reason?: string;
+};
+
+type WindowsVisualizeProbeResult = {
+	capability: WindowsVisualizeCapability;
+	skill: WindowsVisualizeSkill | null;
+};
+
 export type CodexHostCapabilities = {
 	windowsComputerUse: WindowsComputerUseCapability;
+	windowsVisualize: WindowsVisualizeCapability;
 };
 
 async function probeWindowsComputerUseCapability(): Promise<WindowsComputerUseCapability> {
@@ -351,18 +734,7 @@ async function probeWindowsComputerUseCapability(): Promise<WindowsComputerUseCa
 		return { label, available: false, reason: "Native Codex CLI not found" };
 	}
 	try {
-		const codexHome =
-			process.env.CODEX_HOME?.trim() || resolve(homedir(), ".codex");
-		const config = parseToml(
-			await readFile(resolve(codexHome, "config.toml"), "utf8"),
-		) as {
-			plugins?: Record<string, { enabled?: unknown }>;
-		};
-		const loaded = Object.entries(config.plugins ?? {}).some(
-			([id, plugin]) =>
-				id.split("@", 1)[0]?.toLowerCase() === "computer-use" &&
-				plugin?.enabled === true,
-		);
+		const loaded = await codexPluginEnabled("computer-use");
 		return {
 			label,
 			available: loaded,
@@ -375,6 +747,111 @@ async function probeWindowsComputerUseCapability(): Promise<WindowsComputerUseCa
 	}
 }
 
+let windowsVisualizeSkill: WindowsVisualizeSkill | null = null;
+
+async function codexPluginEnabled(
+	name: string,
+	marketplace?: string,
+): Promise<boolean> {
+	const codexHome = codexHomeDirectory();
+	const config = parseToml(
+		await readFile(resolve(codexHome, "config.toml"), "utf8"),
+	) as {
+		plugins?: Record<string, { enabled?: unknown }>;
+	};
+	const expectedId = marketplace
+		? `${name}@${marketplace}`.toLowerCase()
+		: null;
+	return Object.entries(config.plugins ?? {}).some(
+		([id, plugin]) =>
+			(expectedId
+				? id.toLowerCase() === expectedId
+				: id.split("@", 1)[0]?.toLowerCase() === name) &&
+			plugin?.enabled === true,
+	);
+}
+
+async function probeWindowsVisualizeCapability(): Promise<WindowsVisualizeProbeResult> {
+	const label = "Windows Visualize";
+	if (process.platform !== "win32") {
+		return {
+			capability: {
+				label,
+				available: false,
+				reason: "Hlid is not running on Windows",
+			},
+			skill: null,
+		};
+	}
+	const executable = resolveCodexExecutable();
+	if (!executable) {
+		return {
+			capability: {
+				label,
+				available: false,
+				reason: "Native Codex CLI not found",
+			},
+			skill: null,
+		};
+	}
+
+	const configured = await codexPluginEnabled("visualize", "openai-bundled");
+	if (!configured) {
+		return {
+			capability: {
+				label,
+				available: false,
+				reason: "Visualize plugin is not installed or enabled",
+			},
+			skill: null,
+		};
+	}
+
+	const workspace = resolve(APP_DIR, "windows-visualize");
+	mkdirSync(workspace, { recursive: true });
+	const launch = codexLaunchConfig({ cwd: workspace, executable });
+	const conn = new CodexAppServer(launch.appServer);
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		const result = await Promise.race([
+			(async () => {
+				await conn.ready;
+				return conn.request(
+					"skills/list",
+					{ cwds: [launch.rpcCwd], forceReload: true },
+					HOST_CAPABILITY_TIMEOUT_MS,
+				);
+			})(),
+			new Promise<never>((_, reject) => {
+				timer = setTimeout(() => {
+					const error = new Error("Visualize native skills probe timed out");
+					conn.kill(error);
+					reject(error);
+				}, HOST_CAPABILITY_TIMEOUT_MS);
+			}),
+		]);
+		let skill: WindowsVisualizeSkill | null = null;
+		for (const candidate of skillsFromListResponse(result)) {
+			skill = await trustedWindowsVisualizeSkill(candidate);
+			if (skill) break;
+		}
+		if (!skill) {
+			return {
+				capability: {
+					label,
+					available: false,
+					reason: "Native Codex did not load the trusted Visualize skill",
+				},
+				skill: null,
+			};
+		}
+		return { capability: { label, available: true }, skill };
+	} finally {
+		if (timer !== undefined) clearTimeout(timer);
+		conn.kill(new Error("Windows Visualize capability probe complete"));
+	}
+}
+
 const HOST_CAPABILITY_TTL_MS = 60_000;
 const HOST_CAPABILITY_FAILURE_TTL_MS = 15_000;
 const HOST_CAPABILITY_TIMEOUT_MS = 5_000;
@@ -382,11 +859,43 @@ let hostCapabilitySnapshot: WindowsComputerUseCapability | null = null;
 let hostCapabilityRefreshedAt = 0;
 let hostCapabilityFailedAt = 0;
 let hostCapabilityInflight: Promise<WindowsComputerUseCapability> | null = null;
+let visualizeCapabilitySnapshot: WindowsVisualizeCapability | null = null;
+let visualizeCapabilityRefreshedAt = 0;
+let visualizeCapabilityFailedAt = 0;
+let visualizeCapabilityFailure: WindowsVisualizeCapability | null = null;
+let visualizeCapabilityInflight: Promise<WindowsVisualizeCapability> | null =
+	null;
+let visualizeCapabilityInflightForced = false;
+let visualizeCapabilityGeneration = 0;
 
 function fallbackWindowsComputerUseCapability(
 	error?: unknown,
 ): WindowsComputerUseCapability {
 	const label = "Windows Computer Use";
+	if (process.platform !== "win32") {
+		return {
+			label,
+			available: false,
+			reason: "Hlid is not running on Windows",
+		};
+	}
+	if (!resolveCodexExecutable()) {
+		return { label, available: false, reason: "Native Codex CLI not found" };
+	}
+	return {
+		label,
+		available: false,
+		reason:
+			error instanceof Error
+				? error.message
+				: "Capability status is refreshing",
+	};
+}
+
+function fallbackWindowsVisualizeCapability(
+	error?: unknown,
+): WindowsVisualizeCapability {
+	const label = "Windows Visualize";
 	if (process.platform !== "win32") {
 		return {
 			label,
@@ -425,6 +934,21 @@ async function boundedWindowsComputerUseProbe(): Promise<WindowsComputerUseCapab
 		new Promise<never>((_, reject) => {
 			timer = setTimeout(
 				() => reject(new Error("Capability check timed out")),
+				HOST_CAPABILITY_TIMEOUT_MS,
+			);
+		}),
+	]).finally(() => {
+		if (timer !== undefined) clearTimeout(timer);
+	});
+}
+
+async function boundedWindowsVisualizeProbe(): Promise<WindowsVisualizeProbeResult> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	return Promise.race([
+		probeWindowsVisualizeCapability(),
+		new Promise<never>((_, reject) => {
+			timer = setTimeout(
+				() => reject(new Error("Visualize capability check timed out")),
 				HOST_CAPABILITY_TIMEOUT_MS,
 			);
 		}),
@@ -490,21 +1014,138 @@ function cachedWindowsComputerUseCapability(): WindowsComputerUseCapability {
 	return capability;
 }
 
-/** Force a bounded live refresh for an explicit provider-catalog refresh. */
-export async function refreshCodexHostCapabilities(): Promise<CodexHostCapabilities> {
-	return {
-		windowsComputerUse: await refreshWindowsComputerUseCapability(true),
-	};
+async function refreshWindowsVisualizeCapability(
+	force = false,
+): Promise<WindowsVisualizeCapability> {
+	// A direct Windows-side plugin toggle can happen outside Hlid's extension
+	// mutation route. An explicit use/new thread must not inherit an older
+	// background probe or the normal capability TTL. Concurrent explicit
+	// callers share the same fresh probe instead of superseding each other.
+	if (force && visualizeCapabilityInflight) {
+		if (visualizeCapabilityInflightForced) {
+			return visualizeCapabilityInflight;
+		}
+		visualizeCapabilityGeneration += 1;
+		visualizeCapabilityInflight = null;
+		visualizeCapabilityInflightForced = false;
+	}
+	const now = Date.now();
+	if (
+		!force &&
+		visualizeCapabilitySnapshot &&
+		now - visualizeCapabilityRefreshedAt < HOST_CAPABILITY_TTL_MS
+	) {
+		return visualizeCapabilitySnapshot;
+	}
+	if (
+		!force &&
+		!visualizeCapabilitySnapshot &&
+		visualizeCapabilityFailedAt > 0 &&
+		now - visualizeCapabilityFailedAt < HOST_CAPABILITY_FAILURE_TTL_MS
+	) {
+		return visualizeCapabilityFailure ?? fallbackWindowsVisualizeCapability();
+	}
+	if (visualizeCapabilityInflight) return visualizeCapabilityInflight;
+
+	const generation = visualizeCapabilityGeneration;
+	const refresh = boundedWindowsVisualizeProbe()
+		.then((result) => {
+			const { capability, skill } = result;
+			if (generation !== visualizeCapabilityGeneration) {
+				return (
+					visualizeCapabilitySnapshot ??
+					visualizeCapabilityFailure ??
+					fallbackWindowsVisualizeCapability()
+				);
+			}
+			const previous = visualizeCapabilitySnapshot;
+			visualizeCapabilitySnapshot = capability;
+			visualizeCapabilityRefreshedAt = Date.now();
+			visualizeCapabilityFailedAt = 0;
+			visualizeCapabilityFailure = null;
+			windowsVisualizeSkill = skill;
+			if (capabilityChanged(previous, capability)) {
+				bumpDataRevision("providers");
+			}
+			return capability;
+		})
+		.catch((error) => {
+			const failure = fallbackWindowsVisualizeCapability(error);
+			if (generation !== visualizeCapabilityGeneration) {
+				return (
+					visualizeCapabilitySnapshot ??
+					visualizeCapabilityFailure ??
+					fallbackWindowsVisualizeCapability()
+				);
+			}
+			const previous = visualizeCapabilitySnapshot;
+			visualizeCapabilitySnapshot = null;
+			visualizeCapabilityFailedAt = Date.now();
+			visualizeCapabilityFailure = failure;
+			windowsVisualizeSkill = null;
+			if (capabilityChanged(previous, failure)) {
+				bumpDataRevision("providers");
+			}
+			return failure;
+		})
+		.finally(() => {
+			if (visualizeCapabilityInflight === refresh) {
+				visualizeCapabilityInflight = null;
+				visualizeCapabilityInflightForced = false;
+			}
+		});
+	visualizeCapabilityInflight = refresh;
+	visualizeCapabilityInflightForced = force;
+	return refresh;
 }
 
-// fallow-ignore-next-line unused-export -- Test-only reset for module-level cache isolation.
-export function __resetCodexHostCapabilitiesForTesting(): void {
+function cachedWindowsVisualizeCapability(): WindowsVisualizeCapability {
+	const capability =
+		visualizeCapabilitySnapshot ??
+		visualizeCapabilityFailure ??
+		fallbackWindowsVisualizeCapability();
+	if (
+		!visualizeCapabilitySnapshot ||
+		Date.now() - visualizeCapabilityRefreshedAt >= HOST_CAPABILITY_TTL_MS
+	) {
+		void refreshWindowsVisualizeCapability().catch(() => {});
+	}
+	return capability;
+}
+
+/** Force a bounded live refresh for an explicit provider-catalog refresh. */
+export async function refreshCodexHostCapabilities(): Promise<CodexHostCapabilities> {
+	const [windowsComputerUse, windowsVisualize] = await Promise.all([
+		refreshWindowsComputerUseCapability(true),
+		refreshWindowsVisualizeCapability(true),
+	]);
+	return { windowsComputerUse, windowsVisualize };
+}
+
+/** Drop cached host-plugin readiness after a provider extension mutation. */
+export function invalidateCodexHostCapabilities(): void {
+	visualizeCapabilityGeneration += 1;
 	hostCapabilitySnapshot = null;
 	hostCapabilityRefreshedAt = 0;
 	hostCapabilityFailedAt = 0;
 	hostCapabilityInflight = null;
+	visualizeCapabilitySnapshot = null;
+	visualizeCapabilityRefreshedAt = 0;
+	visualizeCapabilityFailedAt = 0;
+	visualizeCapabilityFailure = null;
+	visualizeCapabilityInflight = null;
+	visualizeCapabilityInflightForced = false;
+	windowsVisualizeSkill = null;
 }
-function hlidHostTools(computerUseAvailable: boolean): DynamicToolSpec[] {
+
+// fallow-ignore-next-line unused-export -- Test-only reset for module-level cache isolation.
+export function __resetCodexHostCapabilitiesForTesting(): void {
+	invalidateCodexHostCapabilities();
+}
+function hlidHostTools(
+	computerUseAvailable: boolean,
+	visualizeAvailable: boolean,
+): DynamicToolSpec[] {
 	return [
 		{
 			type: "namespace",
@@ -545,6 +1186,33 @@ function hlidHostTools(computerUseAvailable: boolean): DynamicToolSpec[] {
 							},
 						]
 					: []),
+				...(visualizeAvailable
+					? [
+							{
+								type: "function" as const,
+								name: WINDOWS_VISUALIZE_TOOL,
+								description:
+									"Create an interactive in-conversation visualization through a fresh Windows-native Codex Visualize worker and attach it inline in Raven. Use this instead of emitting ::codex-inline-vis text directly.",
+								inputSchema: {
+									type: "object",
+									properties: {
+										request: {
+											type: "string",
+											description:
+												"What the visualization should help the user see or explore.",
+										},
+										context: {
+											type: "string",
+											description:
+												"Optional data, constraints, or visual context needed by the worker.",
+										},
+									},
+									required: ["request"],
+									additionalProperties: false,
+								},
+							},
+						]
+					: []),
 			],
 		},
 	];
@@ -567,8 +1235,14 @@ function obsidianTools(): DynamicToolSpec[] {
 	];
 }
 
-function hlidDynamicTools(computerUseAvailable: boolean): DynamicToolSpec[] {
-	return [...obsidianTools(), ...hlidHostTools(computerUseAvailable)];
+function hlidDynamicTools(
+	computerUseAvailable: boolean,
+	visualizeAvailable: boolean,
+): DynamicToolSpec[] {
+	return [
+		...obsidianTools(),
+		...hlidHostTools(computerUseAvailable, visualizeAvailable),
+	];
 }
 
 function findNestedString(
@@ -831,6 +1505,16 @@ export function codexSandboxPolicy(
 	};
 }
 
+function windowsVisualizeSandboxPolicy(jobRoot: string): CodexSandboxPolicy {
+	return {
+		type: "workspaceWrite",
+		writableRoots: [jobRoot],
+		networkAccess: false,
+		excludeTmpdirEnvVar: true,
+		excludeSlashTmp: true,
+	};
+}
+
 export type CodexLaunchConfig = {
 	executable: string;
 	rpcCwd: string;
@@ -1016,13 +1700,17 @@ export async function fetchCodexModels(opts?: {
 	executable?: string;
 	cwd?: string;
 	profile?: CodexProviderProfile;
+	/** Use a disposable transport when the caller may already occupy the shared one. */
+	dedicated?: boolean;
 }): Promise<ProviderModelInfo[]> {
 	const launch = codexLaunchConfig({
 		cwd: opts?.cwd ?? process.cwd(),
 		executable: opts?.executable,
 		profile: opts?.profile,
 	});
-	const conn = acquireCodexAppServer(launch.appServer);
+	const conn = opts?.dedicated
+		? new CodexAppServer(launch.appServer)
+		: acquireCodexAppServer(launch.appServer);
 	const timeoutMs = opts?.timeoutMs ?? 10_000;
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
@@ -1050,6 +1738,9 @@ export async function fetchCodexModels(opts?: {
 			: models.filter((m) => m.hidden !== true);
 	} finally {
 		if (timer) clearTimeout(timer);
+		if (opts?.dedicated) {
+			conn.kill(new Error("Dedicated Codex model catalog lookup complete"));
+		}
 	}
 }
 
@@ -1259,7 +1950,8 @@ class CodexAgentSession implements AgentSession {
 	private cumulativeUsageTurns = new Set<string>();
 	private resolvedModel: string | null = null;
 	private elicitationSequence = 0;
-	/** Dedicated transport owned by a one-shot Windows Computer Use worker. */
+	private nextSkillInput: WindowsVisualizeSkill | null = null;
+	/** Dedicated transport owned by a one-shot Windows-native worker. */
 	private ownedConnection: CodexAppServer | null = null;
 	private goalChangeHandler: AgentQueryParams["onGoalChange"];
 	private realtimeEventHandler:
@@ -1271,8 +1963,7 @@ class CodexAgentSession implements AgentSession {
 
 	constructor(
 		private params: AgentQueryParams,
-		private readonly delegatedWindowsComputerUse = false,
-		private readonly delegatedWindowsComputerUseTask?: string,
+		private readonly delegatedWindowsWorker?: DelegatedWindowsWorker,
 		private readonly providerProfile?: CodexProviderProfile,
 	) {
 		this.goalChangeHandler = params.onGoalChange;
@@ -1283,9 +1974,7 @@ class CodexAgentSession implements AgentSession {
 	}
 
 	private canUseWindowsComputerUse(): boolean {
-		return (
-			!this.delegatedWindowsComputerUse && windowsComputerUseHostAvailable()
-		);
+		return !this.delegatedWindowsWorker && windowsComputerUseHostAvailable();
 	}
 
 	cancel(): void {
@@ -1293,8 +1982,8 @@ class CodexAgentSession implements AgentSession {
 		this.clearPendingDone();
 		this.events.close();
 		// Normal sessions share an app-server and must only detach. Delegated
-		// Computer Use workers own a fresh app-server so every task reloads the
-		// desktop app's current plugin path, Node REPL, and native approval pipe.
+		// Windows workers own a fresh app-server so every task reloads the
+		// native provider's current plugin paths and runtime state.
 		if (this.conn && this.threadId) {
 			if (this.realtimeEventHandler) {
 				void this.conn
@@ -1311,7 +2000,7 @@ class CodexAgentSession implements AgentSession {
 			}
 		}
 		this.detachAllThreads();
-		this.ownedConnection?.kill(new Error("Windows Computer Use worker closed"));
+		this.ownedConnection?.kill(new Error("Windows worker closed"));
 		this.ownedConnection = null;
 		this.conn = null;
 		this.realtimeEventHandler = null;
@@ -1384,7 +2073,18 @@ class CodexAgentSession implements AgentSession {
 						},
 					}
 				: undefined;
+		const selectedSkill = this.nextSkillInput;
+		this.nextSkillInput = null;
 		const input: UserInput[] = [
+			...(selectedSkill
+				? [
+						{
+							type: "skill" as const,
+							name: selectedSkill.name,
+							path: selectedSkill.path,
+						},
+					]
+				: []),
 			{ type: "text", text: message, text_elements: [] },
 			...(opts?.audioPaths ?? []).map(
 				(path): UserInput => ({ type: "localAudio", path }),
@@ -1393,16 +2093,20 @@ class CodexAgentSession implements AgentSession {
 		const params: TurnStartParamsWithCollaboration = {
 			threadId: this.threadId,
 			input,
-			additionalContext: {
-				hlid: {
-					kind: "application",
-					value: HLID_AGENT_NAMESPACE_DESCRIPTION,
-				},
-				hlid_obsidian: {
-					kind: "application",
-					value: OBSIDIAN_AGENT_NAMESPACE_DESCRIPTION,
-				},
-			},
+			...(this.delegatedWindowsWorker?.kind === "visualize"
+				? {}
+				: {
+						additionalContext: {
+							hlid: {
+								kind: "application" as const,
+								value: HLID_AGENT_NAMESPACE_DESCRIPTION,
+							},
+							hlid_obsidian: {
+								kind: "application" as const,
+								value: OBSIDIAN_AGENT_NAMESPACE_DESCRIPTION,
+							},
+						},
+					}),
 			// Native Codex Plan Mode forbids every write at the instruction layer,
 			// even when the sandbox grants the HTML plan directory. HTML plans use
 			// Hlið-managed planning while plain Markdown plans stay native. A thread
@@ -1410,6 +2114,9 @@ class CodexAgentSession implements AgentSession {
 			// sending an empty model makes Codex warn and fall back anyway.
 			...(collaborationMode ? { collaborationMode } : {}),
 			...(cwd ? { cwd } : {}),
+			...(this.delegatedWindowsWorker?.kind === "visualize" && cwd
+				? { runtimeWorkspaceRoots: [cwd] }
+				: {}),
 			...(this.params.model ? { model: this.params.model } : {}),
 			...(this.params.effort ? { effort: this.params.effort } : {}),
 			...(this.params.serviceTier
@@ -1417,13 +2124,19 @@ class CodexAgentSession implements AgentSession {
 				: {}),
 			...(this.params.permissionMode
 				? {
-						approvalPolicy: effectiveApprovalPolicy(this.params),
-						sandboxPolicy: codexSandboxPolicy(
-							this.params.permissionMode,
-							this.params.additionalDirectories ?? [],
-							this.params.planHtmlPath,
-							this.params.sandboxModeOverride,
-						),
+						approvalPolicy:
+							this.delegatedWindowsWorker?.kind === "visualize"
+								? "never"
+								: effectiveApprovalPolicy(this.params),
+						sandboxPolicy:
+							this.delegatedWindowsWorker?.kind === "visualize" && cwd
+								? windowsVisualizeSandboxPolicy(cwd)
+								: codexSandboxPolicy(
+										this.params.permissionMode,
+										this.params.additionalDirectories ?? [],
+										this.params.planHtmlPath,
+										this.params.sandboxModeOverride,
+									),
 					}
 				: {}),
 		};
@@ -1431,6 +2144,18 @@ class CodexAgentSession implements AgentSession {
 		const result = asObj(await this.request("turn/start", params));
 		const turn = asObj(result.turn);
 		if (typeof turn.id === "string") this.activeTurnId = turn.id;
+	}
+
+	private async sendWithSkill(
+		message: string,
+		skill: WindowsVisualizeSkill,
+	): Promise<void> {
+		this.nextSkillInput = skill;
+		try {
+			await this.send(message);
+		} finally {
+			this.nextSkillInput = null;
+		}
 	}
 
 	private async assertAudioInputSupported(): Promise<void> {
@@ -1882,10 +2607,10 @@ class CodexAgentSession implements AgentSession {
 			enableRealtime: this.params.codexRealtimeEnabled,
 		});
 		this.launch = launch;
-		const conn = this.delegatedWindowsComputerUse
+		const conn = this.delegatedWindowsWorker
 			? new CodexAppServer(launch.appServer)
 			: acquireCodexAppServer(launch.appServer);
-		if (this.delegatedWindowsComputerUse) this.ownedConnection = conn;
+		if (this.delegatedWindowsWorker) this.ownedConnection = conn;
 		this.conn = conn;
 		if (this.params.signal) {
 			if (this.params.signal.aborted) this.cancel();
@@ -1898,28 +2623,45 @@ class CodexAgentSession implements AgentSession {
 		// The one-shot delegated worker validates the current plugin/runtime on a
 		// fresh transport. Do not bind tool availability to a long-lived snapshot.
 		const computerUseAvailable = this.canUseWindowsComputerUse();
+		const visualizeAvailable =
+			!this.delegatedWindowsWorker && this.params.providerId === "codex"
+				? (await refreshWindowsVisualizeCapability(true)).available
+				: false;
 
 		const threadParams: ThreadStartParams = {
 			cwd: launch.rpcCwd,
+			...(this.delegatedWindowsWorker?.kind === "visualize"
+				? { runtimeWorkspaceRoots: [launch.rpcCwd] }
+				: {}),
 			ephemeral: this.params.persistSession === false,
 			// The Windows Computer Use host only emits per-app approval
 			// elicitations for user-owned threads. Without this source marker it
 			// treats the standalone app-server worker as an internal/background
 			// thread and performs app actions without asking its client.
-			...(this.delegatedWindowsComputerUse ? { threadSource: "user" } : {}),
+			...(this.delegatedWindowsWorker?.kind === "computer-use"
+				? { threadSource: "user" }
+				: {}),
 			...(this.params.model ? { model: this.params.model } : {}),
 			...(this.params.serviceTier
 				? { serviceTier: this.params.serviceTier }
 				: {}),
 			...(this.params.permissionMode
 				? {
-						approvalPolicy: effectiveApprovalPolicy(this.params),
+						approvalPolicy:
+							this.delegatedWindowsWorker?.kind === "visualize"
+								? "never"
+								: effectiveApprovalPolicy(this.params),
 						sandbox:
-							this.params.sandboxModeOverride ??
-							sandboxMode(this.params.permissionMode),
+							this.delegatedWindowsWorker?.kind === "visualize"
+								? "workspace-write"
+								: (this.params.sandboxModeOverride ??
+									sandboxMode(this.params.permissionMode)),
 					}
 				: {}),
-			dynamicTools: hlidDynamicTools(computerUseAvailable),
+			dynamicTools:
+				this.delegatedWindowsWorker?.kind === "visualize"
+					? []
+					: hlidDynamicTools(computerUseAvailable, visualizeAvailable),
 		};
 		let rawResult: unknown;
 		let replacedMissingRollout = false;
@@ -2119,6 +2861,31 @@ class CodexAgentSession implements AgentSession {
 		return this.conn.request(method, params);
 	}
 
+	private async resolveWindowsWorkerSettings(
+		executable: string,
+		cwd: string,
+		dedicatedCatalog = false,
+	): Promise<WindowsComputerUseResolution> {
+		let nativeModels: ProviderModelInfo[] = [];
+		let catalogError: string | undefined;
+		try {
+			nativeModels = await fetchCodexModels({
+				executable,
+				cwd,
+				dedicated: dedicatedCatalog,
+			});
+		} catch (error) {
+			catalogError = error instanceof Error ? error.message : String(error);
+		}
+		return resolveWindowsComputerUseSettings({
+			configured: this.params.windowsComputerUse,
+			sessionModel: this.resolvedModel ?? this.params.model,
+			sessionEffort: this.params.effort,
+			nativeModels,
+			catalogError,
+		});
+	}
+
 	private async runWindowsComputerUse(
 		task: string,
 		context: string | undefined,
@@ -2132,20 +2899,7 @@ class CodexAgentSession implements AgentSession {
 		}
 		const cwd = windowsComputerUseWorkspace();
 		mkdirSync(cwd, { recursive: true });
-		let nativeModels: ProviderModelInfo[] = [];
-		let catalogError: string | undefined;
-		try {
-			nativeModels = await fetchCodexModels({ executable, cwd });
-		} catch (error) {
-			catalogError = error instanceof Error ? error.message : String(error);
-		}
-		const resolved = resolveWindowsComputerUseSettings({
-			configured: this.params.windowsComputerUse,
-			sessionModel: this.resolvedModel ?? this.params.model,
-			sessionEffort: this.params.effort,
-			nativeModels,
-			catalogError,
-		});
+		const resolved = await this.resolveWindowsWorkerSettings(executable, cwd);
 		const startedAtMs = Date.now();
 		let snapshot: SubagentSnapshot = {
 			provider: "codex",
@@ -2178,8 +2932,7 @@ class CodexAgentSession implements AgentSession {
 				// leave this worker on an obsolete plugin path or native approval pipe.
 				persistSession: false,
 			},
-			true,
-			task,
+			{ kind: "computer-use", task },
 		);
 		let text = "";
 		let threadId = "";
@@ -2198,22 +2951,17 @@ class CodexAgentSession implements AgentSession {
 			await child.send(prompt);
 			child.closeInput();
 			for await (const event of child) {
+				const updatedText = updateWindowsWorkerText(text, event);
 				if (event.type === "session_start") {
 					threadId = event.sessionId;
-					snapshot = {
-						...snapshot,
-						agentId: threadId,
-						currentStep: "Working in the Windows desktop",
-					};
+					snapshot = attachedWindowsWorkerSnapshot(
+						snapshot,
+						threadId,
+						"Working in the Windows desktop",
+					);
 					this.emitSubagentUpdate(toolId, snapshot);
-				} else if (event.type === "text_delta") {
-					text += event.text;
-				} else if (
-					event.type === "text_replace" &&
-					text.endsWith(event.previousText)
-				) {
-					text =
-						text.slice(0, text.length - event.previousText.length) + event.text;
+				} else if (updatedText !== null) {
+					text = updatedText;
 				} else if (event.type === "local_command_output") {
 					text += `${text ? "\n" : ""}${event.content}`;
 				} else if (event.type === "tool_start") {
@@ -2244,44 +2992,23 @@ class CodexAgentSession implements AgentSession {
 				endedAtMs: Date.now(),
 			};
 			this.emitSubagentUpdate(toolId, snapshot);
-			return {
-				text: resolved.notice
+			return windowsWorkerCompletion(
+				completion,
+				resolved.notice
 					? `Configuration note: ${resolved.notice}\n\n${text.trim()}`
 					: text.trim(),
 				threadId,
-				usage: {
-					inputTokens: completion.usage?.inputTokens ?? 0,
-					outputTokens: completion.usage?.outputTokens ?? 0,
-					cacheReadTokens: completion.usage?.cacheReadTokens ?? 0,
-					cacheCreationTokens: completion.usage?.cacheCreationTokens ?? 0,
-				},
-				turns: completion.turns,
-				durationMs: completion.durationMs,
-				estimatedCost: completion.estimatedCost,
-			};
+			);
 		} catch (error) {
-			const usage = completion
-				? {
-						inputTokens: completion.usage?.inputTokens ?? 0,
-						outputTokens: completion.usage?.outputTokens ?? 0,
-						cacheReadTokens: completion.usage?.cacheReadTokens ?? 0,
-						cacheCreationTokens: completion.usage?.cacheCreationTokens ?? 0,
-					}
+			const workerCompletion = completion
+				? windowsWorkerCompletion(completion, text.trim(), threadId)
 				: null;
-			const enrichedError =
-				completion && usage
-					? new WindowsComputerUseError(
-							error instanceof Error ? error.message : String(error),
-							{
-								text: text.trim(),
-								threadId,
-								usage,
-								turns: completion.turns,
-								durationMs: completion.durationMs,
-								estimatedCost: completion.estimatedCost,
-							},
-						)
-					: error;
+			const enrichedError = workerCompletion
+				? new WindowsComputerUseError(
+						error instanceof Error ? error.message : String(error),
+						workerCompletion,
+					)
+				: error;
 			snapshot = {
 				...snapshot,
 				status: this.canceled ? "interrupted" : "failed",
@@ -2300,6 +3027,273 @@ class CodexAgentSession implements AgentSession {
 			await child.resetNodeRepl().catch(() => {});
 			child.cancel();
 		}
+	}
+
+	private async runWindowsVisualize(
+		request: string,
+		context: string | undefined,
+		toolId: string,
+	): Promise<WindowsVisualizeResult> {
+		const sessionId = this.params.hostSessionId;
+		if (this.params.providerId !== "codex") {
+			throw new Error(
+				"The Windows Visualize bridge is available only to Codex",
+			);
+		}
+		if (!sessionId) {
+			throw new Error(
+				"Visualizations require an owning Hlid conversation session",
+			);
+		}
+		const executable = resolveCodexExecutable();
+		if (!windowsComputerUseHostAvailable(process.platform, executable)) {
+			throw new Error(
+				"Visualize requires the Windows Hlid host and a native Codex CLI",
+			);
+		}
+		const capability = await refreshWindowsVisualizeCapability(true);
+		const skill = windowsVisualizeSkill;
+		if (!capability.available || !skill) {
+			throw new Error(
+				`Windows Visualize is unavailable${capability.reason ? `: ${capability.reason}` : ""}`,
+			);
+		}
+
+		await prepareLibrary();
+		const jobRoot = visualizationStagingJobDirectory(randomUUID());
+		mkdirSync(jobRoot, { mode: 0o700 });
+		const resolved = await this.resolveWindowsWorkerSettings(
+			executable,
+			jobRoot,
+			true,
+		);
+		let snapshot: SubagentSnapshot = {
+			provider: "codex",
+			agentId: toolId,
+			label: "Windows Visualize",
+			prompt: request,
+			model: resolved.model,
+			effort: resolved.effort,
+			status: "running",
+			currentStep:
+				resolved.notice ??
+				`Starting Windows Visualize · ${resolved.model} · ${resolved.effort}`,
+			startedAtMs: Date.now(),
+		};
+		this.emitSubagentUpdate(toolId, snapshot);
+		const child = new CodexAgentSession(
+			{
+				...this.params,
+				cwd: jobRoot,
+				hostSessionId: undefined,
+				sessionId: undefined,
+				executable,
+				model: resolved.model,
+				effort: resolved.effort,
+				permissionMode: "default",
+				implementationPermissionMode: undefined,
+				sandboxModeOverride: undefined,
+				policyEnforced: false,
+				usageGateEnforced: false,
+				beforeToolUse: undefined,
+				planHtmlPath: undefined,
+				additionalDirectories: undefined,
+				vaultName: undefined,
+				agentMode: undefined,
+				codexRealtimeEnabled: false,
+				onGoalChange: undefined,
+				canUseTool: async () => ({
+					behavior: "deny",
+					message:
+						"The isolated Visualize worker cannot request permissions outside its job root.",
+				}),
+				persistSession: false,
+			},
+			{ kind: "visualize", task: request },
+		);
+		const workerStartedAtMs = Date.now();
+		let text = "";
+		let threadId = "";
+		let completion: Extract<AgentEvent, { type: "done" }> | null = null;
+		let latestUsage: CanonicalTokenUsage | null = null;
+		let latestUsageModel = resolved.model;
+		let timedOut = false;
+		let workerTimer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			workerTimer = setTimeout(() => {
+				timedOut = true;
+				child.cancel();
+			}, WINDOWS_VISUALIZE_WORKER_TIMEOUT_MS);
+			const prompt = [
+				"You are a Windows-native Codex Visualize worker delegated by Hlid.",
+				"Use the selected visualize:visualize skill to create exactly one in-conversation HTML visualization fragment for the request below.",
+				`Your isolated writable root is:\n${jobRoot}`,
+				"Write the fragment beneath that root, follow the skill's lowercase filename and 2 MiB contract, and finish with exactly one standalone ::codex-inline-vis directive naming it.",
+				"Create the fragment directly with apply_patch. Do not call exec_command, PowerShell, cmd, bash, or another shell in this worker; Hlid will read, validate, and render the fragment after you finish.",
+				"Mobile interaction requirement: keep one-finger scrolling available over the dominant visual down to 320px. Never use touch-action: none, viewport-height layouts, or internal vertical scrolling. If a custom pointer surface needs an explicit touch-action, use pan-x pan-y pinch-zoom so browser scrolling still works.",
+				"Do not start Project Preview, publish a Relic, edit the user's vault or repository, delegate work, run the bundled renderer, or use window.openai follow-up actions.",
+				context ? `Context and source data:\n${context}` : "",
+				`Visualization request:\n${request}`,
+			]
+				.filter(Boolean)
+				.join("\n\n");
+			await child.sendWithSkill(prompt, skill);
+			child.closeInput();
+			for await (const event of child) {
+				const updatedText = updateWindowsWorkerText(text, event);
+				if (updatedText !== null) {
+					text = updatedText;
+				} else if (event.type === "session_start") {
+					threadId = event.sessionId;
+					snapshot = attachedWindowsWorkerSnapshot(
+						snapshot,
+						threadId,
+						"Building visualization…",
+					);
+					this.emitSubagentUpdate(toolId, snapshot);
+				} else if (event.type === "tool_start") {
+					snapshot = {
+						...snapshot,
+						lastTool: event.name,
+						currentStep: event.name.toLowerCase().includes("apply_patch")
+							? "Writing visualization…"
+							: "Building visualization…",
+					};
+					this.emitSubagentUpdate(toolId, snapshot);
+				} else if (event.type === "tool_result" && event.isError) {
+					const sandboxLaunchFailed =
+						/windows sandbox[\s\S]*(?:windows error|error)\s*1312/i.test(
+							event.content,
+						);
+					snapshot = {
+						...snapshot,
+						currentStep: sandboxLaunchFailed
+							? "Windows sandbox launch failed; Visualize is retrying…"
+							: "Visualize tool failed; worker is retrying…",
+					};
+					this.emitSubagentUpdate(toolId, snapshot);
+				} else if (event.type === "usage") {
+					latestUsage = windowsWorkerUsage(event);
+					latestUsageModel = event.model ?? resolved.model;
+				} else if (event.type === "transport_error") {
+					throw new Error(event.message);
+				} else if (event.type === "done") {
+					completion = event;
+				}
+			}
+			if (timedOut) {
+				throw new Error("Windows Visualize worker timed out");
+			}
+			if (workerTimer !== undefined) {
+				clearTimeout(workerTimer);
+				workerTimer = undefined;
+			}
+			if (!threadId)
+				throw new Error("Windows Codex did not return a thread id");
+			if (!completion || completion.stopReason !== "completed") {
+				throw new Error("Windows Visualize did not complete");
+			}
+			if (!text.trim()) {
+				throw new Error(
+					"Windows Visualize completed without an artifact directive",
+				);
+			}
+
+			// Stop the native worker before Hlid validates and persists its output.
+			child.cancel();
+			snapshot = {
+				...snapshot,
+				currentStep: "Validating visualization…",
+			};
+			this.emitSubagentUpdate(toolId, snapshot);
+			const artifact = await extractWindowsVisualizeArtifact({
+				text,
+				jobRoot,
+			});
+			const title = visualizationTitle(artifact.filename).slice(0, 80);
+			const renderInputPath = await createWindowsVisualizeRenderInput({
+				sourcePath: artifact.sourcePath,
+				jobRoot,
+				validatedSha256: artifact.validatedSha256,
+			});
+			const renderedPath = resolve(jobRoot, "visualization-rendered.html");
+			await renderWindowsVisualization(
+				skill,
+				renderInputPath,
+				renderedPath,
+				title,
+				jobRoot,
+			);
+			const ingested = await ingestVisualizationHtml({
+				sourcePath: renderedPath,
+				sessionId,
+				title: "visualization",
+				agentCwd: this.params.cwd,
+			});
+			if (!ingested) {
+				throw new Error("Hlid could not persist the rendered visualization");
+			}
+			snapshot = {
+				...snapshot,
+				status: "completed",
+				currentStep: "Visualization ready",
+				endedAtMs: Date.now(),
+			};
+			this.emitSubagentUpdate(toolId, snapshot);
+			return {
+				...windowsWorkerCompletion(
+					completion,
+					"Visualization created and attached in Raven.",
+					threadId,
+				),
+				attachmentId: ingested.id,
+				filename: ingested.filename,
+				title,
+			};
+		} catch (error) {
+			const failure = timedOut
+				? new Error("Windows Visualize worker timed out")
+				: error;
+			const workerCompletion = completion
+				? windowsWorkerCompletion(completion, "", threadId)
+				: latestUsage
+					? partialWindowsWorkerCompletion({
+							usage: latestUsage,
+							model: latestUsageModel,
+							threadId,
+							startedAtMs: workerStartedAtMs,
+						})
+					: null;
+			snapshot = {
+				...snapshot,
+				status: "failed",
+				currentStep: "Visualization failed",
+				endedAtMs: Date.now(),
+			};
+			this.emitSubagentUpdate(toolId, snapshot);
+			throw workerCompletion
+				? new WindowsVisualizeError(
+						failure instanceof Error ? failure.message : String(failure),
+						workerCompletion,
+					)
+				: failure;
+		} finally {
+			if (workerTimer !== undefined) clearTimeout(workerTimer);
+			child.cancel();
+			// jobRoot is returned only by Hlid's containment-enforcing library helper.
+			cleanupWindowsVisualizeJobRoot(jobRoot);
+		}
+	}
+
+	private addWindowsWorkerErrorUsage(error: unknown): void {
+		const completion =
+			error instanceof WindowsComputerUseError ||
+			error instanceof WindowsVisualizeError
+				? error.completion
+				: undefined;
+		if (!completion) return;
+		this.addQueryUsage(completion.usage, completion.estimatedCost);
+		this.queryTurns += completion.turns;
 	}
 
 	private async handleDynamicToolCall(
@@ -2437,6 +3431,53 @@ class CodexAgentSession implements AgentSession {
 			}
 		}
 		if (
+			params.namespace === WINDOWS_VISUALIZE_NAMESPACE &&
+			params.tool === WINDOWS_VISUALIZE_TOOL
+		) {
+			const args = asObj(params.arguments);
+			const request =
+				typeof args.request === "string" ? args.request.trim() : "";
+			const context =
+				typeof args.context === "string" ? args.context.trim() : undefined;
+			if (!request) {
+				return {
+					success: false,
+					contentItems: [
+						{ type: "inputText", text: "A non-empty request is required." },
+					],
+				};
+			}
+			try {
+				const toolId = String(
+					params.callId ?? `windows-visualize-${Date.now()}`,
+				);
+				const result = await this.runWindowsVisualize(request, context, toolId);
+				this.addQueryUsage(result.usage, result.estimatedCost);
+				this.queryTurns += result.turns;
+				return {
+					success: true,
+					contentItems: [
+						{
+							type: "inputText",
+							text: JSON.stringify({
+								type: "hlid_visualization",
+								attachment_id: result.attachmentId,
+								filename: result.filename,
+								title: result.title,
+							}),
+						},
+					],
+				};
+			} catch (error) {
+				this.addWindowsWorkerErrorUsage(error);
+				console.warn(
+					"[codex] Windows Visualize failed:",
+					error instanceof Error ? error.message : String(error),
+				);
+				return dynamicToolFailure(new Error(WINDOWS_VISUALIZE_FAILURE_MESSAGE));
+			}
+		}
+		if (
 			params.namespace !== WINDOWS_COMPUTER_USE_NAMESPACE ||
 			params.tool !== WINDOWS_COMPUTER_USE_TOOL
 		) {
@@ -2479,22 +3520,8 @@ class CodexAgentSession implements AgentSession {
 				],
 			};
 		} catch (error) {
-			if (error instanceof WindowsComputerUseError && error.completion) {
-				this.addQueryUsage(
-					error.completion.usage,
-					error.completion.estimatedCost,
-				);
-				this.queryTurns += error.completion.turns;
-			}
-			return {
-				success: false,
-				contentItems: [
-					{
-						type: "inputText",
-						text: error instanceof Error ? error.message : String(error),
-					},
-				],
-			};
+			this.addWindowsWorkerErrorUsage(error);
+			return dynamicToolFailure(error);
 		}
 	}
 
@@ -2506,7 +3533,7 @@ class CodexAgentSession implements AgentSession {
 		}
 		const serialized = JSON.stringify(params).toLowerCase();
 		if (
-			!this.delegatedWindowsComputerUse &&
+			this.delegatedWindowsWorker?.kind !== "computer-use" &&
 			!String(params.serverName ?? "")
 				.toLowerCase()
 				.includes("computer-use") &&
@@ -2524,7 +3551,10 @@ class CodexAgentSession implements AgentSession {
 		const details = computerUseApprovalDetails(params);
 		const serverName = String(params.serverName ?? "MCP server");
 		const appKey = details.appId ?? details.displayName;
-		const task = this.delegatedWindowsComputerUseTask;
+		const task =
+			this.delegatedWindowsWorker?.kind === "computer-use"
+				? this.delegatedWindowsWorker.task
+				: undefined;
 		const decision = await this.params.canUseTool(
 			`hlid.windows_computer_use:${appKey}`,
 			{
@@ -2568,6 +3598,21 @@ class CodexAgentSession implements AgentSession {
 		rawParams: unknown,
 	): Promise<unknown> {
 		const params = asObj(rawParams);
+		// Visualize runs as a no-tools, job-root-only worker. Never let generic
+		// bypass-permissions handling widen that contract, even if Codex asks for
+		// a permission or attempts a dynamic/MCP call that was not advertised.
+		if (this.delegatedWindowsWorker?.kind === "visualize") {
+			if (method === "item/tool/requestUserInput") return { answers: {} };
+			if (method === "item/tool/call") {
+				return dynamicToolFailure(
+					new Error("Tools are unavailable in the isolated Visualize worker"),
+				);
+			}
+			if (method === "mcpServer/elicitation/request") {
+				return { action: "decline", content: null, _meta: null };
+			}
+			return this.deniedServerRequestResult(method);
+		}
 		if (method === "item/tool/requestUserInput") {
 			return this.handleRequestUserInput(params);
 		}
@@ -3575,12 +4620,23 @@ export class CodexProvider implements AgentProvider {
 	} as const;
 	hlidToolLoading() {
 		const computerUseAvailable = windowsComputerUseHostAvailable();
+		const visualizeAvailable =
+			this.providerId === "codex" &&
+			cachedWindowsVisualizeCapability().available;
 		const hlidTools = [
 			...describeHlidToolLoading(HLID_AGENT_TOOL_SPECS, true),
 			...(computerUseAvailable
 				? [
 						{
 							name: HLID_WINDOWS_COMPUTER_USE_TOOL,
+							delivery: "loaded" as const,
+						},
+					]
+				: []),
+			...(visualizeAvailable
+				? [
+						{
+							name: HLID_CREATE_VISUALIZATION_TOOL,
 							delivery: "loaded" as const,
 						},
 					]
@@ -3707,7 +4763,17 @@ export class CodexProvider implements AgentProvider {
 	async hostCapabilities(): Promise<
 		Record<string, { label: string; available: boolean; reason?: string }>
 	> {
-		return { windowsComputerUse: cachedWindowsComputerUseCapability() };
+		return {
+			windowsComputerUse: cachedWindowsComputerUseCapability(),
+			windowsVisualize:
+				this.providerId === "codex"
+					? cachedWindowsVisualizeCapability()
+					: {
+							label: "Windows Visualize",
+							available: false,
+							reason: "The Hlid Visualize bridge is available only to Codex",
+						},
+		};
 	}
 
 	async listModels(): Promise<ProviderModelInfo[]> {
@@ -3756,8 +4822,7 @@ export class CodexProvider implements AgentProvider {
 
 	query(params: AgentQueryParams): AgentSession {
 		return new CodexAgentSession(
-			params,
-			false,
+			{ ...params, providerId: params.providerId ?? this.providerId },
 			undefined,
 			this.providerProfile,
 		);

@@ -50,7 +50,11 @@ import {
 	listCodexAppServers,
 	prewarmCodexAppServer,
 } from "./codexAppServer";
-import { CodexProvider, refreshCodexHostCapabilities } from "./codexProvider";
+import {
+	CodexProvider,
+	invalidateCodexHostCapabilities,
+	refreshCodexHostCapabilities,
+} from "./codexProvider";
 import { loadConfig } from "./config";
 import { formatPersistentConsoleMessage } from "./consoleLog";
 import {
@@ -265,6 +269,13 @@ const handleExtensionRoute = createExtensionRouteHandler({
 	onChanged: async (latest) => {
 		invalidateVaultSnapshot("provider-extension-mutation", latest);
 		providerCatalogSnapshot.invalidate();
+		invalidateCodexHostCapabilities();
+		void refreshCodexHostCapabilities().catch((error) => {
+			console.warn(
+				"[extensions] Codex host capability refresh deferred:",
+				error instanceof Error ? error.message : String(error),
+			);
+		});
 		const idleEntries = [...pool.getAllEntries()].filter((entry) =>
 			entry.manager.retireProviderRuntime(),
 		);

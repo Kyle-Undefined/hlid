@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useProjectPreview } from "#/hooks/projectPreviewStore";
 import type { HlidContextReceiptTarget } from "#/lib/hlidContext";
 import { formatVaultReferencedMessage } from "#/lib/vaultReferences";
@@ -11,6 +11,7 @@ import {
 } from "./ChatMessageRow";
 import type { ChatMessage, PermissionMessage } from "./chatReducer";
 import { HlidDelegationActivityPanel } from "./HlidDelegationActivityPanel";
+import { isHlidVisualizationToolEvent } from "./HlidVisualizationToolBlock";
 import {
 	groupProjectPreviewEventLifecycles,
 	isProjectPreviewToolEvent,
@@ -22,6 +23,30 @@ import {
 	type QueuedChatMessage,
 	useMessageListView,
 } from "./useMessageListView";
+
+function latestHlidVisualizationEvent(
+	messages: ChatMessage[],
+	providerId?: string,
+): ToolEventMessage | null {
+	if (providerId !== "codex") return null;
+	for (
+		let messageIndex = messages.length - 1;
+		messageIndex >= 0;
+		messageIndex--
+	) {
+		const message = messages[messageIndex];
+		if (message.role !== "assistant") continue;
+		for (
+			let eventIndex = message.toolEvents.length - 1;
+			eventIndex >= 0;
+			eventIndex--
+		) {
+			const event = message.toolEvents[eventIndex];
+			if (isHlidVisualizationToolEvent(event)) return event;
+		}
+	}
+	return null;
+}
 
 /**
  * Renders the full message thread: history, permission cards, queued messages,
@@ -110,6 +135,45 @@ export const MessageList = memo(function MessageList({
 		isLoadingOlderHistory,
 		onLoadOlderHistory,
 	});
+	const latestVisualizationEvent = useMemo(
+		() => latestHlidVisualizationEvent(messages, providerId),
+		[messages, providerId],
+	);
+	const [expandedVisualizationEventId, setExpandedVisualizationEventId] =
+		useState<string | null>(null);
+	const visualizationSessionIdRef = useRef<string | null>(null);
+	const latestVisualizationEventIdRef = useRef<string | null>(null);
+	useEffect(() => {
+		const latestEventId = latestVisualizationEvent?.id ?? null;
+		if (visualizationSessionIdRef.current !== sessionId) {
+			visualizationSessionIdRef.current = sessionId;
+			latestVisualizationEventIdRef.current = latestEventId;
+			setExpandedVisualizationEventId(
+				sessionState === "running" &&
+					latestVisualizationEvent?.result === undefined
+					? latestEventId
+					: null,
+			);
+			return;
+		}
+		if (latestVisualizationEventIdRef.current === latestEventId) return;
+		latestVisualizationEventIdRef.current = latestEventId;
+		if (latestVisualizationEvent && sessionState === "running") {
+			setExpandedVisualizationEventId(latestVisualizationEvent.id);
+		} else if (!latestVisualizationEvent) {
+			setExpandedVisualizationEventId(null);
+		}
+	}, [latestVisualizationEvent, sessionId, sessionState]);
+	const handleToggleVisualization = useCallback((eventId: string) => {
+		setExpandedVisualizationEventId((current) =>
+			current === eventId ? null : eventId,
+		);
+	}, []);
+	const handleVisualizationInactive = useCallback((eventId: string) => {
+		setExpandedVisualizationEventId((current) =>
+			current === eventId ? null : current,
+		);
+	}, []);
 	const allProjectPreviewEvents = useMemo(
 		() =>
 			messages
@@ -222,6 +286,9 @@ export const MessageList = memo(function MessageList({
 					}
 					sessionId={sessionId}
 					providerId={providerId}
+					expandedVisualizationEventId={expandedVisualizationEventId}
+					onToggleVisualization={handleToggleVisualization}
+					onVisualizationInactive={handleVisualizationInactive}
 					toolEventStartIndex={toolEventStartByMessageId.get(m.id) ?? 0}
 					olderToolEventCount={
 						m.id === toolEventRevealMessageId ? olderToolEventCount : 0

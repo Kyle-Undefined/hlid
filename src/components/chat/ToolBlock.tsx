@@ -12,6 +12,10 @@ import {
 	HlidDelegationToolBlock,
 	isHlidDelegationToolEvent,
 } from "./HlidDelegationToolBlock";
+import {
+	HlidVisualizationToolBlock,
+	isHlidVisualizationToolEvent,
+} from "./HlidVisualizationToolBlock";
 import type { PermissionDecisionHandler } from "./PermissionCard";
 import {
 	ProjectPreviewCaptureToolBlock,
@@ -85,6 +89,9 @@ type ToolBlockProps = {
 	permissionLabel?: string;
 	sessionId?: string;
 	providerId?: string;
+	expandedVisualizationEventId?: string | null;
+	onToggleVisualization?: (eventId: string) => void;
+	onVisualizationInactive?: (eventId: string) => void;
 	childSubagents?: ReadonlyArray<SubagentSnapshot>;
 	pendingPermissions?: ReadonlyArray<PermissionMessage>;
 	onDecidePermission?: PermissionDecisionHandler;
@@ -92,12 +99,17 @@ type ToolBlockProps = {
 
 type SpecializedToolEventKind =
 	| "subagent"
+	| "visualization"
 	| "project-preview-capture"
 	| "project-preview-lifecycle";
 
 function specializedToolEventKind(
 	event: ToolEventMessage,
+	providerId?: string,
 ): SpecializedToolEventKind | null {
+	if (providerId === "codex" && isHlidVisualizationToolEvent(event)) {
+		return "visualization";
+	}
 	if (event.subagent) return "subagent";
 	if (
 		event.name.endsWith("capture_project_preview") ||
@@ -121,10 +133,33 @@ function SpecializedToolEvent({
 	permissionLabel,
 	sessionId,
 	providerId,
+	expandedVisualizationEventId,
+	onToggleVisualization,
+	onVisualizationInactive,
 	childSubagents,
 	pendingPermissions,
 	onDecidePermission,
 }: ToolBlockProps & { kind: SpecializedToolEventKind }) {
+	if (kind === "visualization") {
+		return (
+			<HlidVisualizationToolBlock
+				event={event}
+				permissionLabel={permissionLabel}
+				sessionId={sessionId}
+				expanded={expandedVisualizationEventId === event.id}
+				onToggle={
+					onToggleVisualization
+						? () => onToggleVisualization(event.id)
+						: undefined
+				}
+				onInactive={
+					onVisualizationInactive
+						? () => onVisualizationInactive(event.id)
+						: undefined
+				}
+			/>
+		);
+	}
 	if (kind === "project-preview-capture") {
 		return (
 			<ProjectPreviewCaptureToolBlock
@@ -480,7 +515,7 @@ function ExpandableToolEventBlock({
 }
 
 export const ToolBlock = memo(function ToolBlock(props: ToolBlockProps) {
-	const kind = specializedToolEventKind(props.event);
+	const kind = specializedToolEventKind(props.event, props.providerId);
 	return kind ? (
 		<SpecializedToolEvent {...props} kind={kind} />
 	) : (

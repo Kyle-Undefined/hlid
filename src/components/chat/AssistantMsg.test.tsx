@@ -105,6 +105,64 @@ describe("normalizeMd", () => {
 });
 
 describe("AssistantMsg", () => {
+	it("renders Codex visualizations below the agent response while normal tools stay above it", () => {
+		const read = {
+			type: "tool_event" as const,
+			id: "tool-read",
+			name: "Read",
+			input: { path: "/before" },
+		};
+		const visualization = {
+			type: "tool_event" as const,
+			id: "tool-visualization",
+			name: "create_visualization",
+			input: { request: "Show the response path" },
+			result: JSON.stringify({
+				type: "hlid_visualization",
+				attachment_id: "visualization-1",
+				filename: "response-path.html",
+				title: "Response path",
+			}),
+		};
+		const message = makeMsg({ toolEvents: [read, visualization] });
+		const { rerender } = render(
+			<AssistantMsg
+				message={message}
+				providerId="codex"
+				sessionId="session-1"
+			/>,
+		);
+		expect(screen.queryByTitle("Response path")).toBeNull();
+		expect(
+			screen.getByRole("button", {
+				name: "Expand visualization: Response path",
+			}),
+		).not.toBeNull();
+
+		rerender(
+			<AssistantMsg
+				message={message}
+				providerId="codex"
+				sessionId="session-1"
+				expandedVisualizationEventId="tool-visualization"
+			/>,
+		);
+
+		const readTool = screen.getByRole("button", {
+			name: /^Read path: \/before/,
+		});
+		const response = screen.getByText("hello world");
+		const frame = screen.getByTitle("Response path");
+		expect(
+			readTool.compareDocumentPosition(response) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(
+			response.compareDocumentPosition(frame) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+	});
+
 	it("keeps the accepted steer at its tool boundary as later tools resume below it", () => {
 		const before = {
 			type: "tool_event" as const,

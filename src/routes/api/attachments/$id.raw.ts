@@ -21,8 +21,15 @@ export async function handleRawAttachment(
 	const forbidden = forbiddenResponse(request);
 	if (forbidden) return forbidden;
 	try {
+		const visualizationSessionId = new URL(request.url).searchParams.get(
+			"visualization_session_id",
+		);
+		const query =
+			visualizationSessionId === null
+				? ""
+				: `?visualization_session_id=${encodeURIComponent(visualizationSessionId)}`;
 		const res = await dbFetch(
-			`/api/attachments/${encodeURIComponent(id)}/raw`,
+			`/api/attachments/${encodeURIComponent(id)}/raw${query}`,
 			{ signal: AbortSignal.timeout(RAW_ATTACHMENT_TIMEOUT_MS) },
 		);
 		const headers = new Headers();

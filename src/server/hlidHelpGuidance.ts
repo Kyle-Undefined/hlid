@@ -71,6 +71,7 @@ export const TOPIC_GUIDANCE: Record<HlidHelpTopic, string[]> = {
 		"Selected Vault, library, or provider skills are prompt context for the current turn; package instructions remain the package author's contract.",
 		"Hlid-managed skills are staged and reviewed before installation, stored in Hlid's managed library, and can be selected in Raven or Watch.",
 		"Claude and Codex extensions remain provider-native packages with their own marketplaces, scopes, enablement, executable behavior, and update limits.",
+		"When live capability discovery proves the Windows Visualize skill ready, Codex sessions can use Hlid's create_visualization bridge from WSL or Windows. The bridge is not exposed to Claude or ACP.",
 		"Do not flatten skills, extensions, MCP servers, commands, hooks, or agents into one universal plugin model.",
 	],
 	api: [

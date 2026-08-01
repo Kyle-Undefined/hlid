@@ -170,7 +170,12 @@ export type AggStats = {
 };
 
 export type AttachmentKind = "ephemeral" | "vault";
-export type AttachmentCategory = "upload" | "plan" | "report" | "other";
+export type AttachmentCategory =
+	| "upload"
+	| "plan"
+	| "report"
+	| "visualization"
+	| "other";
 export type AttachmentRetention = "session" | "retained" | "linked";
 export type AttachmentOrigin =
 	| "upload"

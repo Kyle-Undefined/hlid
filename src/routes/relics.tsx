@@ -28,7 +28,7 @@ import { createPortal } from "react-dom";
 import { ConfirmAction } from "#/components/ConfirmAction";
 import { ImageViewerModal } from "#/components/ImageViewerModal";
 import { PrivacyMask } from "#/components/PrivacyMask";
-import { RelicPreview } from "#/components/relics/RelicPreview";
+import { RelicPreview, relicRawUrl } from "#/components/relics/RelicPreview";
 import {
 	type ManagedAgentSkill,
 	type RemoteSkillDiscovery,
@@ -60,7 +60,13 @@ type ListResult = {
 };
 
 type TypeFilter = "all" | "image" | "pdf" | "text" | "other";
-type CategoryFilter = "all" | "upload" | "plan" | "report" | "other";
+type CategoryFilter =
+	| "all"
+	| "upload"
+	| "plan"
+	| "report"
+	| "visualization"
+	| "other";
 type SortCol = "created_at" | "size_bytes";
 type SortDir = "asc" | "desc";
 
@@ -296,6 +302,7 @@ const CATEGORY_FILTERS: { value: CategoryFilter; label: string }[] = [
 	{ value: "upload", label: "Uploads" },
 	{ value: "plan", label: "Plans" },
 	{ value: "report", label: "Reports" },
+	{ value: "visualization", label: "Visualizations" },
 	{ value: "other", label: "Other" },
 ];
 
@@ -1301,7 +1308,10 @@ function RelicThumb({
 	row: AttachmentRow;
 	onView: (img: ViewerImage) => void;
 }) {
-	const rawUrl = `/api/attachments/${row.id}/raw`;
+	const rawUrl = relicRawUrl(
+		row.id,
+		row.category === "visualization" ? row.session_id : undefined,
+	);
 	if (!row.mime.startsWith("image/"))
 		return <FileIcon className="w-3 h-3 shrink-0 opacity-60" />;
 	return (
@@ -1329,7 +1339,10 @@ function RelicName({
 	/** table: inline with a max width; card: block filling the row. */
 	variant: "table" | "card";
 }) {
-	const rawUrl = `/api/attachments/${row.id}/raw`;
+	const rawUrl = relicRawUrl(
+		row.id,
+		row.category === "visualization" ? row.session_id : undefined,
+	);
 	// `truncate` needs a block-ish box — plain inline anchors never clip,
 	// which let long filenames run under the delete button on mobile.
 	const base = `font-mono truncate text-foreground hover:text-primary ${
@@ -1463,6 +1476,7 @@ function RelicObsidianButton({
 	busy: boolean;
 	onAction: () => void;
 }) {
+	if (row.category === "visualization") return null;
 	if (row.kind !== "vault" && !capture) return null;
 	const label =
 		row.kind === "vault"
@@ -1751,7 +1765,15 @@ function RelicsTable({
 									<td />
 									<td colSpan={6} className="px-4 py-4">
 										<PrivacyMask>
-											<RelicPreview id={r.id} mime={r.mime} />
+											<RelicPreview
+												id={r.id}
+												mime={r.mime}
+												visualizationSessionId={
+													r.category === "visualization"
+														? r.session_id
+														: undefined
+												}
+											/>
 										</PrivacyMask>
 									</td>
 								</tr>
@@ -1831,7 +1853,13 @@ function RelicCard({
 			{expanded && (
 				<div className="px-4 pb-4 bg-secondary/20">
 					<PrivacyMask>
-						<RelicPreview id={row.id} mime={row.mime} />
+						<RelicPreview
+							id={row.id}
+							mime={row.mime}
+							visualizationSessionId={
+								row.category === "visualization" ? row.session_id : undefined
+							}
+						/>
 					</PrivacyMask>
 				</div>
 			)}

@@ -29,6 +29,7 @@ export type RelicReferenceItem = {
 	kind: string;
 	createdAt: number;
 	category: string;
+	sessionId?: string | null;
 };
 
 export type WorkspaceReferenceEnvironment = "host" | "windows" | "wsl";

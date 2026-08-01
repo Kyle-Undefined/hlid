@@ -6,6 +6,7 @@
  * calls are fully mocked so no disk I/O occurs.
  */
 
+import { dirname } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeConfig as makeBaseConfig } from "#/test/fixtures";
 
@@ -49,7 +50,14 @@ vi.mock("node:crypto", () => {
 
 // ── imports after mocks ───────────────────────────────────────────────────────
 
-import { copyFile, lstat, mkdir, readFile, unlink } from "node:fs/promises";
+import {
+	copyFile,
+	lstat,
+	mkdir,
+	readFile,
+	rmdir,
+	unlink,
+} from "node:fs/promises";
 import type { HlidConfig } from "../config";
 
 import { DEFAULT_ATTACHMENTS_CONFIG } from "../config";
@@ -61,6 +69,7 @@ import {
 	removeAttachment,
 	unlinkPaths,
 } from "./attachments";
+import { artifactPath } from "./libraryStore";
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -634,6 +643,14 @@ describe("unlinkPaths", () => {
 			unlinkPaths(["/tmp/ok.txt", "/tmp/gone.txt"]),
 		).resolves.toBeUndefined();
 	});
+
+	it("removes an empty Hlid artifact directory after unlinking its file", async () => {
+		const path = artifactPath("visualization-1", "visualization.html");
+
+		await unlinkPaths([path]);
+
+		expect(rmdir).toHaveBeenCalledWith(dirname(path));
+	});
 });
 
 // ── removeAttachment ──────────────────────────────────────────────────────────
@@ -761,6 +778,27 @@ describe("removeAttachment", () => {
 });
 
 describe("promoteAttachmentToObsidian", () => {
+	it("keeps visualizations attached to their Raven session", async () => {
+		vi.mocked(db.getAttachment).mockResolvedValueOnce({
+			id: "visual-1",
+			kind: "ephemeral",
+			category: "visualization",
+		} as never);
+
+		const response = await promoteAttachmentToObsidian(
+			"visual-1",
+			makeConfig(),
+		);
+
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({
+			message:
+				"Visualizations stay attached to their Raven session and cannot be promoted to Obsidian.",
+		});
+		expect(copyFile).not.toHaveBeenCalled();
+		expect(db.promoteAttachmentToVault).not.toHaveBeenCalled();
+	});
+
 	it("moves an ephemeral Relic into the configured PARA Inbox", async () => {
 		vi.mocked(db.getAttachment).mockResolvedValueOnce({
 			id: "att-promote",

@@ -2,6 +2,7 @@ export const HLID_CONTEXT_CONTRACT_VERSION = 1 as const;
 export const HLID_AGENT_TOOL_COUNT = 16;
 export const HLID_OBSIDIAN_TOOL_COUNT = 28;
 export const HLID_WINDOWS_COMPUTER_USE_TOOL = "windows_computer_use";
+export const HLID_CREATE_VISUALIZATION_TOOL = "create_visualization";
 
 export type HlidContextBlockKind =
 	| "operating_brief"

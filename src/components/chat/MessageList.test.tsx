@@ -47,6 +47,9 @@ vi.mock("./ChatMessageRow", () => ({
 		requesterSubagents,
 		pendingPermissionsByWorkflow,
 		embeddedPermissionIds,
+		expandedVisualizationEventId,
+		onToggleVisualization,
+		onVisualizationInactive,
 	}: {
 		message: ChatMessage;
 		acceptedSteers?: readonly UserMessage[];
@@ -59,6 +62,9 @@ vi.mock("./ChatMessageRow", () => ({
 		requesterSubagents?: ReadonlyMap<string, unknown>;
 		pendingPermissionsByWorkflow?: ReadonlyMap<string, unknown[]>;
 		embeddedPermissionIds?: ReadonlySet<string>;
+		expandedVisualizationEventId?: string | null;
+		onToggleVisualization?: (eventId: string) => void;
+		onVisualizationInactive?: (eventId: string) => void;
 	}) => (
 		<div
 			data-testid={`message-${message.id}`}
@@ -80,8 +86,28 @@ vi.mock("./ChatMessageRow", () => ({
 			data-embedded-permission={String(
 				embeddedPermissionIds?.has(message.id) ?? false,
 			)}
+			data-expanded-visualization={expandedVisualizationEventId ?? ""}
 		>
 			{"text" in message ? message.text : message.id}
+			{message.role === "assistant" &&
+				message.toolEvents
+					.filter((event) => event.name.includes("create_visualization"))
+					.map((event) => (
+						<span key={event.id}>
+							<button
+								type="button"
+								onClick={() => onToggleVisualization?.(event.id)}
+							>
+								Toggle {event.id}
+							</button>
+							<button
+								type="button"
+								onClick={() => onVisualizationInactive?.(event.id)}
+							>
+								Expire {event.id}
+							</button>
+						</span>
+					))}
 			{Boolean(olderToolEventCount && onLoadOlderToolEvents) && (
 				<button type="button" onClick={onLoadOlderToolEvents}>
 					Show {olderToolEventCount} earlier tool{" "}
@@ -138,6 +164,25 @@ function assistantMsg(id: string, toolCount: number): AssistantMessage {
 	};
 }
 
+function visualizationAssistantMsg(
+	id: string,
+	eventId: string,
+	result?: string,
+): AssistantMessage {
+	return {
+		...assistantMsg(id, 0),
+		toolEvents: [
+			{
+				type: "tool_event",
+				id: eventId,
+				name: "mcp__hlid__create_visualization",
+				input: {},
+				result,
+			},
+		],
+	};
+}
+
 function previewAssistantMsg(
 	id: string,
 	toolName: "start_project_preview" | "capture_project_preview",
@@ -190,6 +235,7 @@ type RenderListArgs = {
 	messages?: ChatMessage[];
 	chatQueue?: QueuedChatMessage[];
 	sessionId?: string;
+	providerId?: string;
 	sessionState?: "idle" | "running" | "error";
 	runningTurnId?: string | null;
 	hasOlderHistory?: boolean;
@@ -203,6 +249,7 @@ function listElement(args: RenderListArgs) {
 			messages={args.messages ?? []}
 			chatQueue={args.chatQueue ?? []}
 			sessionId={args.sessionId ?? "s1"}
+			providerId={args.providerId}
 			sessionState={args.sessionState ?? "running"}
 			runningTurnId={args.runningTurnId ?? null}
 			hasOlderHistory={args.hasOlderHistory}
@@ -225,6 +272,94 @@ function renderList(args: RenderListArgs) {
 }
 
 describe("MessageList — orphan queue rendering", () => {
+	it("keeps an expanded visualization open when a normal follow-up starts", () => {
+		const message = visualizationAssistantMsg(
+			"visualization",
+			"visualization-event-1",
+			"ready",
+		);
+		const { rerender } = renderList({
+			messages: [message],
+			sessionState: "idle",
+			providerId: "codex",
+		});
+		fireEvent.click(screen.getByText("Toggle visualization-event-1"));
+		expect(
+			screen
+				.getByTestId("message-visualization")
+				.getAttribute("data-expanded-visualization"),
+		).toBe("visualization-event-1");
+
+		rerender(
+			listElement({
+				messages: [message],
+				sessionState: "running",
+				providerId: "codex",
+			}),
+		);
+		expect(
+			screen
+				.getByTestId("message-visualization")
+				.getAttribute("data-expanded-visualization"),
+		).toBe("visualization-event-1");
+	});
+
+	it("moves expansion to a newly started visualization", () => {
+		const first = visualizationAssistantMsg(
+			"visualization-1",
+			"visualization-event-1",
+			"ready",
+		);
+		const { rerender } = renderList({
+			messages: [first],
+			sessionState: "idle",
+			providerId: "codex",
+		});
+		fireEvent.click(screen.getByText("Toggle visualization-event-1"));
+
+		const second = visualizationAssistantMsg(
+			"visualization-2",
+			"visualization-event-2",
+		);
+		rerender(
+			listElement({
+				messages: [first, second],
+				sessionState: "running",
+				providerId: "codex",
+			}),
+		);
+		expect(
+			screen
+				.getByTestId("message-visualization-1")
+				.getAttribute("data-expanded-visualization"),
+		).toBe("visualization-event-2");
+		expect(
+			screen
+				.getByTestId("message-visualization-2")
+				.getAttribute("data-expanded-visualization"),
+		).toBe("visualization-event-2");
+	});
+
+	it("collapses only the visualization that reports itself inactive", () => {
+		const message = visualizationAssistantMsg(
+			"visualization",
+			"visualization-event-1",
+			"ready",
+		);
+		renderList({
+			messages: [message],
+			sessionState: "idle",
+			providerId: "codex",
+		});
+		fireEvent.click(screen.getByText("Toggle visualization-event-1"));
+		fireEvent.click(screen.getByText("Expire visualization-event-1"));
+		expect(
+			screen
+				.getByTestId("message-visualization")
+				.getAttribute("data-expanded-visualization"),
+		).toBe("");
+	});
+
 	it("renders a queued msg from chatQueue when it is not in the transcript (post-nav remount case)", () => {
 		// Reducer is empty (DB load returned nothing for the not-yet-running turn);
 		// chatQueue still has the queued item.

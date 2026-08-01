@@ -85,6 +85,26 @@ describe("attachment route dispatch", () => {
 		).toBeNull();
 	});
 
+	it("scopes visualization reads to a validated owning session", async () => {
+		const scoped = new URL(
+			"http://localhost/api/attachments/item_1/raw?visualization_session_id=session-1",
+		);
+		await handleAttachmentRoute(scoped, new Request(scoped), fallbackConfig);
+		expect(mocks.serveAttachment).toHaveBeenCalledWith("item_1", {
+			visualizationSessionId: "session-1",
+		});
+
+		const malformed = new URL(
+			"http://localhost/api/attachments/item_1/raw?visualization_session_id=../source",
+		);
+		const response = await handleAttachmentRoute(
+			malformed,
+			new Request(malformed),
+			fallbackConfig,
+		);
+		expect(response?.status).toBe(400);
+	});
+
 	it("uses fallback config when live config cannot be read", async () => {
 		mocks.loadConfig.mockImplementation(() => {
 			throw new Error("missing");

@@ -2,7 +2,17 @@ import { useEffect, useState } from "react";
 import { ClickableImage } from "#/components/ImageViewerModal";
 import { MarkdownBody } from "#/components/MarkdownBody";
 
-function TextPreview({ id, mime }: { id: string; mime: string }) {
+export function relicRawUrl(
+	id: string,
+	visualizationSessionId?: string | null,
+): string {
+	const base = `/api/attachments/${encodeURIComponent(id)}/raw`;
+	return visualizationSessionId
+		? `${base}?visualization_session_id=${encodeURIComponent(visualizationSessionId)}`
+		: base;
+}
+
+function TextPreview({ rawUrl, mime }: { rawUrl: string; mime: string }) {
 	const [text, setText] = useState<string | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -10,7 +20,7 @@ function TextPreview({ id, mime }: { id: string; mime: string }) {
 	useEffect(() => {
 		const controller = new AbortController();
 		setLoading(true);
-		fetch(`/api/attachments/${id}/raw`, { signal: controller.signal })
+		fetch(rawUrl, { signal: controller.signal })
 			.then((response) => {
 				if (!response.ok) {
 					throw new Error(
@@ -26,7 +36,7 @@ function TextPreview({ id, mime }: { id: string; mime: string }) {
 			})
 			.finally(() => setLoading(false));
 		return () => controller.abort();
-	}, [id]);
+	}, [rawUrl]);
 
 	if (loading) {
 		return (
@@ -45,8 +55,16 @@ function TextPreview({ id, mime }: { id: string; mime: string }) {
 	);
 }
 
-export function RelicPreview({ id, mime }: { id: string; mime: string }) {
-	const rawUrl = `/api/attachments/${id}/raw`;
+export function RelicPreview({
+	id,
+	mime,
+	visualizationSessionId,
+}: {
+	id: string;
+	mime: string;
+	visualizationSessionId?: string | null;
+}) {
+	const rawUrl = relicRawUrl(id, visualizationSessionId);
 	if (mime.startsWith("image/")) {
 		return (
 			<ClickableImage src={rawUrl} alt="" className="max-h-96 max-w-full" />
@@ -73,7 +91,7 @@ export function RelicPreview({ id, mime }: { id: string; mime: string }) {
 		);
 	}
 	if (mime.startsWith("text/") || mime === "application/json") {
-		return <TextPreview id={id} mime={mime} />;
+		return <TextPreview rawUrl={rawUrl} mime={mime} />;
 	}
 	return (
 		<span className="text-[11px] text-muted-foreground/50">no preview</span>

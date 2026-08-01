@@ -21,6 +21,7 @@ import {
 } from "./providerHistorySync";
 import { getWindowMark } from "./proxy";
 import { broadcast } from "./runState";
+import { copyForkedVisualizationAttachments } from "./sessionForkAttachments";
 import type { SessionPool } from "./sessionPool";
 import type { TerminalSessionPool } from "./terminalSessionPool";
 
@@ -531,6 +532,7 @@ export function parseAttachmentListFilter(url: URL): AttachmentListFilter {
 		categoryParam === "upload" ||
 		categoryParam === "plan" ||
 		categoryParam === "report" ||
+		categoryParam === "visualization" ||
 		categoryParam === "other"
 			? categoryParam
 			: undefined;
@@ -931,6 +933,7 @@ async function forkSession({
 		if (copied === 0 && messages?.length) {
 			await db.insertForkedMessages(newId, messages);
 		}
+		await copyForkedVisualizationAttachments(sourceId, newId);
 	} catch (error) {
 		// The provider fork has already succeeded. Keep Hlid atomic even when
 		// persistence or transcript hydration fails after that point.

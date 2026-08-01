@@ -515,13 +515,30 @@ function mcpCapability(state: ManifestState): Capability {
 	};
 }
 
-function skillsExtensionsCapability(): Capability {
+function skillsExtensionsCapability(state: ManifestState): Capability {
+	const visualize = state.provider?.hostCapabilities?.windowsVisualize;
+	const codexVisualize = state.runtime === "codex";
 	return {
 		id: "skills_extensions",
 		owner: "hlid",
 		availability: "available",
 		summary:
 			"Hlid keeps selected prompt skills, managed skill packages, and provider-native extensions distinct while supplying shared discovery and review flows.",
+		modes: {
+			windows_visualize_bridge: {
+				owner: "hlid",
+				availability:
+					codexVisualize && visualize?.available === true
+						? "available"
+						: visualize
+							? "unavailable"
+							: "conditional",
+				summary:
+					codexVisualize && visualize?.available === true
+						? "Codex can create inline Raven visualizations through a fresh Windows-native worker using the enabled provider-native Visualize skill."
+						: `The Windows Visualize bridge is Codex-only and is not currently proven available${visualize?.reason ? `: ${boundedValue(visualize.reason, 300)}` : "."}`,
+			},
+		},
 	};
 }
 
@@ -676,7 +693,7 @@ function buildCapabilities(
 		relicsCapability(state),
 		projectPreviewCapability(state),
 		mcpCapability(state),
-		skillsExtensionsCapability(),
+		skillsExtensionsCapability(state),
 		apiCapability(state),
 		computerUseCapability(state),
 		voiceCapability(state, voice),

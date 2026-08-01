@@ -12,6 +12,7 @@ import { bumpDataRevision } from "./dataRevision";
 import { broadcast } from "./runState";
 
 const MAX_CONCURRENT_UPLOADS = 4;
+const SESSION_ID_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/;
 let activeUploads = 0;
 
 /**
@@ -94,6 +95,18 @@ export async function handleAttachmentRoute(
 	if (rawMatch) {
 		if (req.method !== "GET")
 			return new Response("Method Not Allowed", { status: 405 });
+		const visualizationSessionId = url.searchParams.get(
+			"visualization_session_id",
+		);
+		if (
+			visualizationSessionId !== null &&
+			!SESSION_ID_PATTERN.test(visualizationSessionId)
+		) {
+			return new Response("Invalid visualization session", { status: 400 });
+		}
+		if (visualizationSessionId) {
+			return serveAttachment(rawMatch[1], { visualizationSessionId });
+		}
 		return serveAttachment(rawMatch[1]);
 	}
 

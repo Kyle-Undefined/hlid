@@ -340,7 +340,15 @@ export function VaultReferencePicker({
 						</button>
 					</div>
 					<div className="min-h-0 flex-1 overflow-auto bg-background/50 px-3 py-3">
-						<RelicPreview id={relicPreview.id} mime={relicPreview.mime} />
+						<RelicPreview
+							id={relicPreview.id}
+							mime={relicPreview.mime}
+							visualizationSessionId={
+								relicPreview.category === "visualization"
+									? relicPreview.sessionId
+									: undefined
+							}
+						/>
 					</div>
 					<div className="flex items-center justify-between gap-3 border-t border-border px-3 py-2">
 						<span className="text-[8px] text-muted-foreground/45">

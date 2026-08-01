@@ -40,6 +40,7 @@ const {
 	mockGetMessageForFork,
 	mockInsertForkedMessages,
 	mockCopyForkedSessionTranscript,
+	mockCopyForkedVisualizationAttachments,
 	mockGetHlidDelegationByChildSession,
 	mockAbandonInterruptedHlidDelegation,
 	mockCloseProjectPreviewSession,
@@ -74,6 +75,7 @@ const {
 	mockGetMessageForFork: vi.fn(),
 	mockInsertForkedMessages: vi.fn(),
 	mockCopyForkedSessionTranscript: vi.fn(),
+	mockCopyForkedVisualizationAttachments: vi.fn(),
 	mockGetHlidDelegationByChildSession: vi.fn(),
 	mockAbandonInterruptedHlidDelegation: vi.fn(),
 	mockCloseProjectPreviewSession: vi.fn(),
@@ -114,6 +116,10 @@ vi.mock("../db", () => ({
 // dbRoutes also imports from ./attachments and ./proxy — stub them out.
 vi.mock("./attachments", () => ({
 	unlinkPaths: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("./sessionForkAttachments", () => ({
+	copyForkedVisualizationAttachments: mockCopyForkedVisualizationAttachments,
 }));
 
 vi.mock("./proxy", () => ({
@@ -566,6 +572,18 @@ describe("handleDbRoute — GET /db/attachments", () => {
 		).toMatchObject({ type });
 	});
 
+	it.each([
+		"upload",
+		"plan",
+		"report",
+		"visualization",
+		"other",
+	] as const)("accepts the %s attachment category", (category) => {
+		expect(
+			parseAttachmentListFilter(makeUrl("/db/attachments", { category })),
+		).toMatchObject({ category });
+	});
+
 	it("accepts whitelisted sort columns and directions", () => {
 		expect(
 			parseAttachmentListFilter(
@@ -1011,6 +1029,8 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		mockInsertForkedMessages.mockReset();
 		mockCopyForkedSessionTranscript.mockReset();
 		mockCopyForkedSessionTranscript.mockResolvedValue(2);
+		mockCopyForkedVisualizationAttachments.mockReset();
+		mockCopyForkedVisualizationAttachments.mockResolvedValue(0);
 	});
 
 	function forkRequest(body: unknown): Request {
@@ -1388,6 +1408,10 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 			json.id,
 			undefined,
 		);
+		expect(mockCopyForkedVisualizationAttachments).toHaveBeenCalledWith(
+			"abc-123",
+			json.id,
+		);
 		expect(mockInsertForkedMessages).not.toHaveBeenCalled();
 	});
 
@@ -1428,6 +1452,42 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		expect(newId).toEqual(expect.any(String));
 		expect(mockDeleteSession).toHaveBeenCalledWith(newId);
 		expect(mockInsertForkedMessages).not.toHaveBeenCalled();
+	});
+
+	it("rolls back the fork when visualization attachment copying fails", async () => {
+		mockGetSessionById.mockResolvedValue({
+			...sampleRow,
+			provider_id: "codex",
+			agent_cwd: "/work/project",
+			history_resume_mode: "none",
+		});
+		mockGetSessionProviderSession.mockResolvedValue("thread-source");
+		mockCopyForkedVisualizationAttachments.mockRejectedValue(
+			new Error("Visualization copy failed"),
+		);
+		const pool = makePool({
+			getProvider: vi.fn().mockReturnValue({
+				providerId: "codex",
+				forkCapability: {
+					kind: "exact",
+					cutoff: "turn",
+					wholeSession: true,
+					throughMessage: true,
+				},
+				forkSession: vi.fn().mockResolvedValue({ sessionId: "thread-fork" }),
+			}),
+		});
+
+		await expect(
+			handleDbRoute(
+				makeUrl("/db/session/fork"),
+				forkRequest({ id: "abc-123" }),
+				pool,
+			),
+		).rejects.toThrow("Visualization copy failed");
+		const newId = mockCreateForkedSessionRow.mock.calls[0]?.[1];
+		expect(newId).toEqual(expect.any(String));
+		expect(mockDeleteSession).toHaveBeenCalledWith(newId);
 	});
 
 	it("hydrates hlid's messages table when the provider's fork result includes a transcript read-back", async () => {

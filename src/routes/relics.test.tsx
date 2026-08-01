@@ -767,6 +767,20 @@ describe("RelicPreview", () => {
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
+	it("keeps visualization previews scoped to their owning session", () => {
+		render(
+			<RelicPreview
+				id="visual-1"
+				mime="text/html"
+				visualizationSessionId="session-1"
+			/>,
+		);
+
+		expect(screen.getByTitle("html preview").getAttribute("src")).toBe(
+			"/api/attachments/visual-1/raw?visualization_session_id=session-1",
+		);
+	});
+
 	it("fetches and renders text previews", async () => {
 		vi.spyOn(globalThis, "fetch").mockResolvedValue(
 			new Response("hello relic"),

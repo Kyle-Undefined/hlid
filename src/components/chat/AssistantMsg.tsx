@@ -12,6 +12,7 @@ import type {
 	PermissionMessage,
 	UserMessage,
 } from "./chatReducer";
+import { isHlidVisualizationToolEvent } from "./HlidVisualizationToolBlock";
 import { ObsidianVaultChangeReview } from "./ObsidianVaultChangeReview";
 import type { PermissionDecisionHandler } from "./PermissionCard";
 import {
@@ -131,6 +132,9 @@ export function AssistantMsg({
 	permissionLabels,
 	sessionId,
 	providerId,
+	expandedVisualizationEventId,
+	onToggleVisualization,
+	onVisualizationInactive,
 	toolEventStartIndex = 0,
 	olderToolEventCount = 0,
 	onLoadOlderToolEvents,
@@ -148,6 +152,9 @@ export function AssistantMsg({
 	permissionLabels?: Map<string, string>;
 	sessionId?: string;
 	providerId?: string;
+	expandedVisualizationEventId?: string | null;
+	onToggleVisualization?: (eventId: string) => void;
+	onVisualizationInactive?: (eventId: string) => void;
 	toolEventStartIndex?: number;
 	olderToolEventCount?: number;
 	onLoadOlderToolEvents?: () => void;
@@ -191,6 +198,9 @@ export function AssistantMsg({
 				permissionLabel={permissionLabels?.get(event.id)}
 				sessionId={sessionId}
 				providerId={providerId}
+				expandedVisualizationEventId={expandedVisualizationEventId}
+				onToggleVisualization={onToggleVisualization}
+				onVisualizationInactive={onVisualizationInactive}
 				childSubagents={
 					event.subagent?.kind === "workflow"
 						? transcriptPlan.workflowChildEventIndices
@@ -214,16 +224,26 @@ export function AssistantMsg({
 			/>
 		);
 	};
-	const transcriptItems = transcriptPlan.items.map((item) =>
-		item.kind === "steer" ? (
-			<AcceptedSteerReceipt
-				key={item.key}
-				message={acceptedSteers[item.steerIndex]}
-				responseId={message.id}
-			/>
-		) : (
-			renderTool(message.toolEvents[item.eventIndex])
-		),
+	const trailingVisualizationEventIndices: number[] = [];
+	const transcriptItems = transcriptPlan.items.flatMap((item) => {
+		if (item.kind === "steer") {
+			return [
+				<AcceptedSteerReceipt
+					key={item.key}
+					message={acceptedSteers[item.steerIndex]}
+					responseId={message.id}
+				/>,
+			];
+		}
+		const event = message.toolEvents[item.eventIndex];
+		if (providerId === "codex" && isHlidVisualizationToolEvent(event)) {
+			trailingVisualizationEventIndices.push(item.eventIndex);
+			return [];
+		}
+		return [renderTool(event)];
+	});
+	const trailingVisualizationEvents = trailingVisualizationEventIndices.map(
+		(eventIndex) => message.toolEvents[eventIndex],
 	);
 	const activeSubagentEvents = transcriptPlan.activeSubagentEventIndices.map(
 		(eventIndex) => message.toolEvents[eventIndex],
@@ -361,6 +381,7 @@ export function AssistantMsg({
 					)}
 				</div>
 			)}
+			{trailingVisualizationEvents.map(renderTool)}
 			{!message.streaming && (
 				<ObsidianVaultChangeReview toolEvents={message.toolEvents} />
 			)}

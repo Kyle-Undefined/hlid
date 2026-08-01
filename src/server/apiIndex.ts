@@ -382,7 +382,7 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		method: "GET",
 		path: "/db/attachments?kind=&category=&retention=&session_id=&search=&type=&since=&until=&sort=&dir=&limit=&offset=",
 		server: "api",
-		desc: "Paginated attachments with total count and bytes. Filters: kind (ephemeral|vault), category (upload|plan|report|other), retention (session|retained|linked), session ID, filename search, MIME class (image|pdf|text|other), and inclusive Unix-second since/until. Sort by created_at|size_bytes with asc|desc; limit is 1–500 (default 100) plus offset.",
+		desc: "Paginated attachments with total count and bytes. Filters: kind (ephemeral|vault), category (upload|plan|report|visualization|other), retention (session|retained|linked), session ID, filename search, MIME class (image|pdf|text|other), and inclusive Unix-second since/until. Sort by created_at|size_bytes with asc|desc; limit is 1–500 (default 100) plus offset.",
 	},
 	{
 		method: "POST",

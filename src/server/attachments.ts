@@ -27,9 +27,11 @@ import {
 import {
 	artifactDirectory,
 	artifactPath,
+	artifactsDirectory,
 	planStagingDirectory,
 	prepareLibrary,
 	storageKey,
+	visualizationStagingDirectory,
 } from "./libraryStore";
 import {
 	contentLengthExceeds,
@@ -537,28 +539,266 @@ const HTML_ATTACHMENT_CSP = [
 	"media-src data:",
 ].join("; ");
 
-export async function serveAttachment(id: string): Promise<Response> {
+const VISUALIZATION_STATIC_SOURCES = [
+	"blob:",
+	"data:",
+	"https://cdnjs.cloudflare.com",
+	"https://cdn.jsdelivr.net",
+	"https://esm.sh",
+	"https://fonts.bunny.net",
+	"https://fonts.googleapis.com",
+	"https://fonts.gstatic.com",
+	"https://unpkg.com",
+].join(" ");
+
+// Visualize's renderer produces an iframe shell. Mirror its shell CSP so the
+// srcdoc frame and blob-backed runtime work while external resources remain
+// restricted to the bundled skill's fixed CDN allowlist.
+const VISUALIZATION_HTML_ATTACHMENT_CSP = [
+	"sandbox allow-scripts",
+	"default-src 'none'",
+	`script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' ${VISUALIZATION_STATIC_SOURCES}`,
+	`style-src 'unsafe-inline' ${VISUALIZATION_STATIC_SOURCES}`,
+	`img-src ${VISUALIZATION_STATIC_SOURCES}`,
+	`font-src ${VISUALIZATION_STATIC_SOURCES}`,
+	`media-src ${VISUALIZATION_STATIC_SOURCES}`,
+	"worker-src blob:",
+	"connect-src blob: data:",
+	"frame-src 'self'",
+	"object-src 'none'",
+	"base-uri 'none'",
+	"form-action 'none'",
+].join("; ");
+
+const VISUALIZATION_ZOOM_RELAY = `<script data-hlid-visualization-zoom-relay>
+(() => {
+  const MESSAGE_TYPE = "hlid:visualization-zoom";
+  let lastZoom = null;
+  const valid = (data) =>
+    data &&
+    data.type === MESSAGE_TYPE &&
+    data.version === 1 &&
+    typeof data.zoom === "number" &&
+    Number.isFinite(data.zoom) &&
+    data.zoom >= 0.5 &&
+    data.zoom <= 1.5;
+  const send = (frame) => {
+    if (!lastZoom) return;
+    frame.contentWindow?.postMessage(lastZoom, "*");
+  };
+  addEventListener("message", (event) => {
+    if (event.source !== parent || !valid(event.data)) return;
+    lastZoom = event.data;
+    for (const frame of document.querySelectorAll("iframe")) send(frame);
+  });
+  addEventListener("load", (event) => {
+    if (event.target instanceof HTMLIFrameElement) send(event.target);
+  }, true);
+  document.currentScript?.remove();
+})();
+</script>`;
+
+/** Relay Hlid zoom messages from the rendered shell into its sandboxed frame. */
+export function applyVisualizationZoomRelay(html: string): string {
+	const bodyCloseIndex = html.toLowerCase().lastIndexOf("</body>");
+	if (bodyCloseIndex === -1) {
+		return `${html.trimEnd()}\n${VISUALIZATION_ZOOM_RELAY}\n`;
+	}
+	return `${html.slice(0, bodyCloseIndex)}${VISUALIZATION_ZOOM_RELAY}\n${html.slice(bodyCloseIndex)}`;
+}
+
+export async function serveAttachment(
+	id: string,
+	opts: { visualizationSessionId?: string } = {},
+): Promise<Response> {
 	const row = await db.getAttachment(id);
 	if (!row) return new Response("Not found", { status: 404 });
+	if (
+		(row.category === "visualization" && !opts.visualizationSessionId) ||
+		(opts.visualizationSessionId !== undefined &&
+			(row.session_id !== opts.visualizationSessionId ||
+				row.kind !== "ephemeral" ||
+				row.category !== "visualization" ||
+				row.retention !== "session" ||
+				row.origin !== "generated" ||
+				row.mime !== "text/html"))
+	) {
+		return new Response("Not found", { status: 404 });
+	}
 	const file = Bun.file(row.path);
 	if (!(await file.exists())) {
 		return new Response("File missing on disk", { status: 410 });
 	}
+	let body: BodyInit = file;
+	if (row.category === "visualization") {
+		try {
+			const bytes = Buffer.from(await readFile(row.path));
+			const sha256 = createHash("sha256").update(bytes).digest("hex");
+			if (bytes.byteLength !== row.size_bytes || sha256 !== row.sha256) {
+				return new Response("Attachment integrity check failed", {
+					status: 410,
+				});
+			}
+			body = Uint8Array.from(bytes);
+		} catch {
+			return new Response("File missing on disk", { status: 410 });
+		}
+	}
 	const safeName = row.filename.replace(/[\r\n\\"]/g, "");
 	const encodedName = encodeURIComponent(row.filename);
-	return new Response(file, {
+	const htmlCsp =
+		row.mime !== "text/html"
+			? null
+			: row.category === "visualization"
+				? VISUALIZATION_HTML_ATTACHMENT_CSP
+				: HTML_ATTACHMENT_CSP;
+	return new Response(body, {
 		headers: {
 			"content-type": row.mime,
 			"content-disposition": `inline; filename="${safeName}"; filename*=UTF-8''${encodedName}`,
 			"x-content-type-options": "nosniff",
-			...(row.mime === "text/html"
-				? { "content-security-policy": HTML_ATTACHMENT_CSP }
-				: {}),
+			...(htmlCsp ? { "content-security-policy": htmlCsp } : {}),
 		},
 	});
 }
 
+// The selected Visualize skill caps its source fragment at 2 MiB. Its bundled
+// renderer embeds and HTML-escapes that fragment into a standalone shell, so
+// the trusted rendered document needs bounded expansion headroom.
+const VISUALIZATION_HTML_MAX_BYTES = 16 * 1024 * 1024;
 const PLAN_HTML_MAX_BYTES = 5 * 1024 * 1024;
+
+function visualizationFilename(sourcePath: string, title?: string): string {
+	const requested = title?.trim();
+	const stem = requested
+		? requested.replace(/\.html?$/i, "")
+		: basename(sourcePath, extname(sourcePath));
+	const normalized = stem
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.slice(0, 180)
+		.replace(/-+$/g, "");
+	return `${normalized || "visualization"}.html`;
+}
+
+async function persistGeneratedHtmlAttachment(opts: {
+	buf: Buffer;
+	sessionId: string;
+	filename: string;
+	category: "plan" | "visualization";
+	retention: "retained" | "session";
+	agentCwd?: string;
+}): Promise<{ id: string; path: string; filename: string }> {
+	const id = randomUUID();
+	await prepareLibrary();
+	const targetDir = artifactDirectory(id);
+	await mkdir(targetDir, { recursive: true, mode: 0o700 });
+	const path = artifactPath(id, opts.filename);
+	let created = false;
+	try {
+		await writeFile(path, opts.buf, { flag: "wx", mode: 0o600 });
+		await db.createAttachment({
+			id,
+			session_id: opts.sessionId,
+			kind: "ephemeral",
+			filename: basename(path),
+			path,
+			mime: "text/html",
+			size_bytes: opts.buf.byteLength,
+			sha256: createHash("sha256").update(opts.buf).digest("hex"),
+			storage_key: storageKey(path),
+			category: opts.category,
+			retention: opts.retention,
+			origin: "generated",
+			...(opts.agentCwd ? { agent_cwd: opts.agentCwd } : {}),
+		});
+		created = true;
+		return { id, path, filename: basename(path) };
+	} catch (error) {
+		if (created) await db.deleteAttachment(id).catch(() => {});
+		await unlink(path).catch(() => {});
+		throw error;
+	}
+}
+
+/**
+ * Consume trusted, rendered Visualize HTML from Hlid-owned staging and persist
+ * it as a session-scoped generated attachment. The source remains unlinked
+ * from the transcript and is removed only after persistence succeeds.
+ */
+export async function ingestVisualizationHtml(opts: {
+	sourcePath: string;
+	sessionId: string;
+	title?: string;
+	agentCwd?: string;
+}): Promise<{ id: string; filename: string } | null> {
+	try {
+		const stat = await lstat(opts.sourcePath);
+		if (!stat.isFile()) return null;
+		if (stat.size === 0 || stat.size > VISUALIZATION_HTML_MAX_BYTES) {
+			console.warn(
+				`[attachments] visualization html rejected: size ${stat.size} outside (0, ${VISUALIZATION_HTML_MAX_BYTES}]`,
+			);
+			return null;
+		}
+
+		const [real, stagingRoot] = await Promise.all([
+			realpath(opts.sourcePath),
+			realpath(visualizationStagingDirectory()),
+		]);
+		if (!pathStartsWith(stagingRoot, real)) {
+			console.warn(
+				`[attachments] visualization html rejected: ${real} escapes Hlid visualization staging`,
+			);
+			return null;
+		}
+
+		const sourceBytes = Buffer.from(await readFile(real));
+		if (
+			sourceBytes.byteLength === 0 ||
+			sourceBytes.byteLength > VISUALIZATION_HTML_MAX_BYTES
+		) {
+			console.warn(
+				`[attachments] visualization html rejected after read: size ${sourceBytes.byteLength} outside (0, ${VISUALIZATION_HTML_MAX_BYTES}]`,
+			);
+			return null;
+		}
+		let renderedHtml: string;
+		try {
+			renderedHtml = new TextDecoder("utf-8", { fatal: true }).decode(
+				sourceBytes,
+			);
+		} catch {
+			console.warn(
+				"[attachments] visualization html rejected: rendered document is not valid UTF-8",
+			);
+			return null;
+		}
+		const buf = Buffer.from(applyVisualizationZoomRelay(renderedHtml));
+		if (buf.byteLength > VISUALIZATION_HTML_MAX_BYTES) {
+			console.warn(
+				`[attachments] visualization html rejected after host bridge: size ${buf.byteLength} exceeds ${VISUALIZATION_HTML_MAX_BYTES}`,
+			);
+			return null;
+		}
+
+		const filename = visualizationFilename(real, opts.title);
+		const persisted = await persistGeneratedHtmlAttachment({
+			buf,
+			sessionId: opts.sessionId,
+			filename,
+			category: "visualization",
+			retention: "session",
+			agentCwd: opts.agentCwd?.trim() || undefined,
+		});
+		await unlink(real).catch(() => {});
+		return { id: persisted.id, filename: persisted.filename };
+	} catch (err) {
+		console.warn("[attachments] visualization html ingestion failed:", err);
+		return null;
+	}
+}
 
 /**
  * Ingest an agent-written HTML plan document as an ephemeral attachment.
@@ -573,8 +813,9 @@ export async function ingestPlanHtml(opts: {
 	planSeq: number;
 	maxBytes: number;
 }): Promise<string | null> {
-	let finalPath: string | null = null;
-	let createdId: string | null = null;
+	let persisted: Awaited<
+		ReturnType<typeof persistGeneratedHtmlAttachment>
+	> | null = null;
 	try {
 		const stat = await lstat(opts.sourcePath);
 		if (!stat.isFile()) return null;
@@ -594,38 +835,24 @@ export async function ingestPlanHtml(opts: {
 		}
 
 		const buf = Buffer.from(await readFile(real));
-		const id = randomUUID();
-		await prepareLibrary();
-		const targetDir = artifactDirectory(id);
-		await mkdir(targetDir, { recursive: true, mode: 0o700 });
-		finalPath = artifactPath(id, `plan-${opts.planSeq}.html`);
-		await writeFile(finalPath, buf, { flag: "wx", mode: 0o600 });
-		await db.createAttachment({
-			id,
-			session_id: opts.sessionId,
-			kind: "ephemeral",
-			filename: basename(finalPath),
-			path: finalPath,
-			mime: "text/html",
-			size_bytes: buf.byteLength,
-			sha256: createHash("sha256").update(buf).digest("hex"),
-			storage_key: storageKey(finalPath),
+		persisted = await persistGeneratedHtmlAttachment({
+			buf,
+			sessionId: opts.sessionId,
+			filename: `plan-${opts.planSeq}.html`,
 			category: "plan",
 			retention: "retained",
-			origin: "generated",
 		});
-		createdId = id;
 		const linked = await db.linkAttachmentToMessage(
-			id,
+			persisted.id,
 			opts.sessionId,
 			opts.planSeq,
 		);
 		if (!linked) throw new Error("plan attachment could not be linked");
 		await unlink(real).catch(() => {});
-		return id;
+		return persisted.id;
 	} catch (err) {
-		if (createdId) await db.deleteAttachment(createdId).catch(() => {});
-		if (finalPath) await unlink(finalPath).catch(() => {});
+		if (persisted) await db.deleteAttachment(persisted.id).catch(() => {});
+		if (persisted) await unlink(persisted.path).catch(() => {});
 		console.warn("[attachments] plan html ingestion failed:", err);
 		return null;
 	}
@@ -719,6 +946,12 @@ export async function promoteAttachmentToObsidian(
 ): Promise<Response> {
 	const row = await db.getAttachment(id);
 	if (!row) return new Response("Not found", { status: 404 });
+	if (row.category === "visualization") {
+		return attachmentPromotionError(
+			"Visualizations stay attached to their Raven session and cannot be promoted to Obsidian.",
+			409,
+		);
+	}
 	const destination = configuredObsidianCapture(config.vault);
 	if (!destination) {
 		return attachmentPromotionError(
@@ -848,14 +1081,20 @@ export async function openAttachmentInObsidian(
 }
 
 export async function unlinkPaths(paths: string[]): Promise<void> {
+	const artifactsRoot = resolve(artifactsDirectory());
 	await Promise.all(
 		paths.map(async (p) => {
+			const absolute = resolve(p);
 			try {
-				await unlink(p);
+				await unlink(absolute);
 			} catch (err: unknown) {
 				if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-					console.warn(`[attachments] unlink failed for ${p}:`, err);
+					console.warn(`[attachments] unlink failed for ${absolute}:`, err);
 				}
+			}
+			const parent = dirname(absolute);
+			if (parent !== artifactsRoot && pathStartsWith(artifactsRoot, parent)) {
+				await rmdir(parent).catch(() => {});
 			}
 		}),
 	);

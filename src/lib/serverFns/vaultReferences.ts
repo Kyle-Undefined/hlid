@@ -37,6 +37,7 @@ function relicReferenceItem(row: {
 	kind: string;
 	created_at: number;
 	category?: string;
+	session_id?: string | null;
 }) {
 	return {
 		id: row.id,
@@ -46,6 +47,7 @@ function relicReferenceItem(row: {
 		kind: row.kind,
 		createdAt: row.created_at,
 		category: row.category ?? "other",
+		...(row.session_id !== undefined ? { sessionId: row.session_id } : {}),
 	};
 }
 

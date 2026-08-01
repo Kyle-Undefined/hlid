@@ -12,7 +12,10 @@ import {
 import { z } from "zod";
 import { dbFetch, requireDbOk } from "#/lib/dbClient";
 import { parseHlidApiIndex } from "../lib/apiIndex";
-import { HLID_WINDOWS_COMPUTER_USE_TOOL } from "../lib/hlidContext";
+import {
+	HLID_CREATE_VISUALIZATION_TOOL,
+	HLID_WINDOWS_COMPUTER_USE_TOOL,
+} from "../lib/hlidContext";
 import type { ProviderInfo } from "../lib/providerTypes";
 import type { AgentToolPayload } from "./agentToolResult";
 import { buildHlidApiDiscoveryResponse } from "./hlidApiDiscovery";
@@ -797,6 +800,9 @@ async function liveHlidOperatingContext(
 			...HLID_AGENT_TOOL_SPECS.map((spec) => spec.name),
 			...(providerSnapshot?.hostCapabilities?.windowsComputerUse?.available
 				? [HLID_WINDOWS_COMPUTER_USE_TOOL]
+				: []),
+			...(providerSnapshot?.hostCapabilities?.windowsVisualize?.available
+				? [HLID_CREATE_VISUALIZATION_TOOL]
 				: []),
 		],
 		...(providerSnapshot ? { providerSnapshot } : {}),

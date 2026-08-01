@@ -66,6 +66,22 @@ describe("raw attachment route adapter", () => {
 		);
 	});
 
+	it("forwards visualization session ownership to the internal route", async () => {
+		mockDbFetch.mockResolvedValue(new Response("<p>visual</p>"));
+
+		await handleRawAttachment(
+			new Request(
+				"http://localhost/api/attachments/visual-1/raw?visualization_session_id=session-1",
+			),
+			"visual-1",
+		);
+
+		expect(mockDbFetch).toHaveBeenCalledWith(
+			"/api/attachments/visual-1/raw?visualization_session_id=session-1",
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
+		);
+	});
+
 	it("applies the browser-facing origin gate first", async () => {
 		mockForbidden.mockReturnValue(new Response("Forbidden", { status: 403 }));
 

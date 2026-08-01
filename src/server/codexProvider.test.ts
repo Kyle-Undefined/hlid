@@ -2,8 +2,29 @@ import { EventEmitter } from "node:events";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
-vi.mock("node:fs/promises", () => ({ readFile: vi.fn() }));
+vi.mock("node:fs/promises", () => ({
+	readFile: vi.fn(),
+	realpath: vi.fn(async (path: string) => path),
+	lstat: vi.fn(async (path: string) => {
+		const isFile = /(?:SKILL\.md|render\.py)$/i.test(path);
+		return {
+			isSymbolicLink: () => false,
+			isFile: () => isFile,
+			isDirectory: () => !isFile,
+		};
+	}),
+}));
 vi.mock("../lib/codexPath", () => ({ resolveCodexExecutable: vi.fn() }));
+vi.mock("../lib/process", () => ({ runBoundedProcess: vi.fn() }));
+vi.mock("./attachments", () => ({ ingestVisualizationHtml: vi.fn() }));
+vi.mock("./libraryStore", () => ({
+	prepareLibrary: vi.fn().mockResolvedValue(undefined),
+	visualizationStagingJobDirectory: vi.fn(() => "/tmp/hlid-visualization-job"),
+}));
+vi.mock("./windowsVisualizeArtifact", () => ({
+	createWindowsVisualizeRenderInput: vi.fn(),
+	extractWindowsVisualizeArtifact: vi.fn(),
+}));
 vi.mock("./obsidianAgentTools", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./obsidianAgentTools")>();
 	return { ...actual, executeObsidianAgentTool: vi.fn() };
@@ -17,11 +38,13 @@ import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { resolveCodexExecutable } from "../lib/codexPath";
 import { HLID_AGENT_TOOL_COUNT } from "../lib/hlidContext";
+import { runBoundedProcess } from "../lib/process";
 import type {
 	AgentEvent,
 	AgentQueryParams,
 	AgentSession,
 } from "./agentProvider";
+import { ingestVisualizationHtml } from "./attachments";
 import {
 	__resetCodexAppServersForTesting,
 	acquireCodexAppServer,
@@ -40,6 +63,7 @@ import {
 	codexSubagentStatus,
 	computerUseApprovalDetails,
 	fetchCodexModels,
+	invalidateCodexHostCapabilities,
 	mapCodexModels,
 	refreshCodexHostCapabilities,
 	resolveWindowsComputerUseSettings,
@@ -50,6 +74,10 @@ import {
 import { executeHlidAgentToolRich } from "./hlidAgentTools";
 import { HLID_HELP_TOPICS } from "./hlidHelp";
 import { executeObsidianAgentTool } from "./obsidianAgentTools";
+import {
+	createWindowsVisualizeRenderInput,
+	extractWindowsVisualizeArtifact,
+} from "./windowsVisualizeArtifact";
 
 // ── fetchCodexModels test helpers ──────────────────────────────────────────
 
@@ -391,6 +419,7 @@ describe("CodexProvider host capabilities", () => {
 	beforeEach(() => {
 		__resetCodexAppServersForTesting();
 		__resetCodexHostCapabilitiesForTesting();
+		vi.mocked(spawn).mockReset();
 		vi.mocked(spawn).mockClear();
 		vi.mocked(readFile).mockResolvedValue(
 			'[plugins."computer-use@openai-bundled"]\nenabled = true\n',
@@ -411,11 +440,21 @@ describe("CodexProvider host capabilities", () => {
 					label: "Windows Computer Use",
 					available: true,
 				},
+				windowsVisualize: {
+					label: "Windows Visualize",
+					available: false,
+					reason: "Visualize plugin is not installed or enabled",
+				},
 			});
 			expect(await new CodexProvider().hostCapabilities()).toEqual({
 				windowsComputerUse: {
 					label: "Windows Computer Use",
 					available: true,
+				},
+				windowsVisualize: {
+					label: "Windows Visualize",
+					available: false,
+					reason: "Visualize plugin is not installed or enabled",
 				},
 			});
 			expect(spawn).not.toHaveBeenCalled();
@@ -423,6 +462,225 @@ describe("CodexProvider host capabilities", () => {
 			if (previousCwd === undefined)
 				delete process.env.HLID_WINDOWS_COMPUTER_USE_CWD;
 			else process.env.HLID_WINDOWS_COMPUTER_USE_CWD = previousCwd;
+			platform.mockRestore();
+		}
+	});
+
+	it("proves Visualize readiness through a fresh native skills list", async () => {
+		const platform = vi
+			.spyOn(process, "platform", "get")
+			.mockReturnValue("win32");
+		try {
+			vi.mocked(readFile).mockResolvedValue(
+				[
+					'[plugins."computer-use@openai-bundled"]',
+					"enabled = true",
+					'[plugins."visualize@openai-bundled"]',
+					"enabled = true",
+				].join("\n"),
+			);
+			vi.mocked(resolveCodexExecutable).mockReturnValue("C:\\bin\\codex.exe");
+			vi.stubEnv("CODEX_HOME", "C:\\Users\\test\\.codex");
+			const native = makeFakeSessionProc({
+				skills: [
+					{
+						name: "visualize:visualize",
+						enabled: true,
+						path: "C:\\Users\\test\\.codex\\plugins\\cache\\openai-bundled\\visualize\\1.0.16\\skills\\visualize\\SKILL.md",
+					},
+				],
+			});
+			vi.mocked(spawn).mockReturnValue(native.proc as never);
+
+			await expect(refreshCodexHostCapabilities()).resolves.toEqual({
+				windowsComputerUse: {
+					label: "Windows Computer Use",
+					available: true,
+				},
+				windowsVisualize: {
+					label: "Windows Visualize",
+					available: true,
+				},
+			});
+			const skillsCall = native.writes
+				.map((line) => JSON.parse(line))
+				.find((message) => message.method === "skills/list");
+			expect(skillsCall?.params).toMatchObject({ forceReload: true });
+			expect(native.proc.kill).toHaveBeenCalledOnce();
+		} finally {
+			vi.unstubAllEnvs();
+			platform.mockRestore();
+		}
+	});
+
+	it("shares one fresh Visualize probe across concurrent explicit refreshes", async () => {
+		const platform = vi
+			.spyOn(process, "platform", "get")
+			.mockReturnValue("win32");
+		try {
+			vi.stubEnv("CODEX_HOME", "C:\\Users\\test\\.codex");
+			vi.mocked(readFile).mockResolvedValue(
+				'[plugins."visualize@openai-bundled"]\nenabled = true\n',
+			);
+			vi.mocked(resolveCodexExecutable).mockReturnValue("C:\\bin\\codex.exe");
+			const skillPath =
+				"C:\\Users\\test\\.codex\\plugins\\cache\\openai-bundled\\visualize\\1.0.16\\skills\\visualize\\SKILL.md";
+			const native = makeFakeSessionProc({ deferSkills: true });
+			vi.mocked(spawn).mockReturnValue(native.proc as never);
+
+			const first = refreshCodexHostCapabilities();
+			await vi.waitFor(() =>
+				expect(writeMethods(native.writes)).toContain("skills/list"),
+			);
+			const second = refreshCodexHostCapabilities();
+			expect(spawn).toHaveBeenCalledTimes(1);
+
+			const request = native.writes
+				.map((line) => JSON.parse(line) as { id?: number; method?: string })
+				.find((message) => message.method === "skills/list");
+			emitSessionResponse(native.proc, request?.id ?? -1, {
+				data: [
+					{
+						cwd: "/tmp/codex-test",
+						skills: [
+							{
+								name: "visualize:visualize",
+								enabled: true,
+								path: skillPath,
+							},
+						],
+					},
+				],
+			});
+
+			await expect(Promise.all([first, second])).resolves.toEqual([
+				expect.objectContaining({
+					windowsVisualize: { label: "Windows Visualize", available: true },
+				}),
+				expect.objectContaining({
+					windowsVisualize: { label: "Windows Visualize", available: true },
+				}),
+			]);
+			expect(native.proc.kill).toHaveBeenCalledOnce();
+		} finally {
+			vi.unstubAllEnvs();
+			platform.mockRestore();
+		}
+	});
+
+	it("does not trust a Visualize plugin from another marketplace", async () => {
+		const platform = vi
+			.spyOn(process, "platform", "get")
+			.mockReturnValue("win32");
+		try {
+			vi.mocked(readFile).mockResolvedValue(
+				[
+					'[plugins."computer-use@openai-bundled"]',
+					"enabled = true",
+					'[plugins."visualize@third-party"]',
+					"enabled = true",
+				].join("\n"),
+			);
+			vi.mocked(resolveCodexExecutable).mockReturnValue("C:\\bin\\codex.exe");
+
+			const capability = await refreshCodexHostCapabilities();
+
+			expect(capability.windowsVisualize).toEqual({
+				label: "Windows Visualize",
+				available: false,
+				reason: "Visualize plugin is not installed or enabled",
+			});
+			expect(spawn).not.toHaveBeenCalled();
+		} finally {
+			platform.mockRestore();
+		}
+	});
+
+	it("rejects a loaded Visualize skill outside the bundled cache", async () => {
+		const platform = vi
+			.spyOn(process, "platform", "get")
+			.mockReturnValue("win32");
+		try {
+			vi.stubEnv("CODEX_HOME", "C:\\Users\\test\\.codex");
+			vi.mocked(readFile).mockResolvedValue(
+				'[plugins."visualize@openai-bundled"]\nenabled = true\n',
+			);
+			vi.mocked(resolveCodexExecutable).mockReturnValue("C:\\bin\\codex.exe");
+			const native = makeFakeSessionProc({
+				skills: [
+					{
+						name: "visualize:visualize",
+						enabled: true,
+						path: "C:\\tmp\\visualize\\skills\\visualize\\SKILL.md",
+					},
+				],
+			});
+			vi.mocked(spawn).mockReturnValue(native.proc as never);
+
+			const capability = await refreshCodexHostCapabilities();
+
+			expect(capability.windowsVisualize).toEqual({
+				label: "Windows Visualize",
+				available: false,
+				reason: "Native Codex did not load the trusted Visualize skill",
+			});
+			expect(native.proc.kill).toHaveBeenCalledOnce();
+		} finally {
+			vi.unstubAllEnvs();
+			platform.mockRestore();
+		}
+	});
+
+	it("does not let a stale Visualize probe overwrite a post-mutation refresh", async () => {
+		const platform = vi
+			.spyOn(process, "platform", "get")
+			.mockReturnValue("win32");
+		try {
+			vi.stubEnv("CODEX_HOME", "C:\\Users\\test\\.codex");
+			vi.mocked(readFile).mockResolvedValue(
+				'[plugins."visualize@openai-bundled"]\nenabled = true\n',
+			);
+			vi.mocked(resolveCodexExecutable).mockReturnValue("C:\\bin\\codex.exe");
+			const skillPath =
+				"C:\\Users\\test\\.codex\\plugins\\cache\\openai-bundled\\visualize\\1.0.16\\skills\\visualize\\SKILL.md";
+			const stale = makeFakeSessionProc({ deferSkills: true });
+			const current = makeFakeSessionProc({
+				skills: [
+					{
+						name: "visualize:visualize",
+						enabled: true,
+						path: skillPath,
+					},
+				],
+			});
+			vi.mocked(spawn)
+				.mockReturnValueOnce(stale.proc as never)
+				.mockReturnValueOnce(current.proc as never);
+
+			const staleRefresh = refreshCodexHostCapabilities();
+			await vi.waitFor(() =>
+				expect(writeMethods(stale.writes)).toContain("skills/list"),
+			);
+			invalidateCodexHostCapabilities();
+			await expect(refreshCodexHostCapabilities()).resolves.toMatchObject({
+				windowsVisualize: { available: true },
+			});
+
+			const staleRequest = stale.writes
+				.map((line) => JSON.parse(line) as { id?: number; method?: string })
+				.find((message) => message.method === "skills/list");
+			emitSessionResponse(stale.proc, staleRequest?.id ?? -1, {
+				data: [{ cwd: "/tmp/codex-test", skills: [] }],
+			});
+			await staleRefresh;
+
+			await expect(
+				new CodexProvider().hostCapabilities(),
+			).resolves.toMatchObject({
+				windowsVisualize: { available: true },
+			});
+		} finally {
+			vi.unstubAllEnvs();
 			platform.mockRestore();
 		}
 	});
@@ -445,6 +703,11 @@ describe("CodexProvider host capabilities", () => {
 					available: false,
 					reason: "Capability status is refreshing",
 				},
+				windowsVisualize: {
+					label: "Windows Visualize",
+					available: false,
+					reason: "Capability status is refreshing",
+				},
 			});
 			expect(spawn).not.toHaveBeenCalled();
 			const refresh = refreshCodexHostCapabilities();
@@ -454,6 +717,11 @@ describe("CodexProvider host capabilities", () => {
 					label: "Windows Computer Use",
 					available: false,
 					reason: "Capability check timed out",
+				},
+				windowsVisualize: {
+					label: "Windows Visualize",
+					available: false,
+					reason: "Visualize capability check timed out",
 				},
 			});
 		} finally {
@@ -982,6 +1250,7 @@ function makeFakeSessionProc(
 		uniqueThreadIds?: boolean;
 		missingRolloutOnResume?: boolean;
 		threadModel?: string | null;
+		deferSkills?: boolean;
 	} = {},
 ): {
 	proc: FakeProc;
@@ -1147,7 +1416,7 @@ function makeFakeSessionProc(
 							`${JSON.stringify({ id: msg.id, result: { cleared: true } })}\n`,
 						),
 					);
-				} else if (msg.method === "skills/list") {
+				} else if (msg.method === "skills/list" && !opts.deferSkills) {
 					stdout.emit(
 						"data",
 						Buffer.from(
@@ -1227,6 +1496,39 @@ function emitSessionResponse(
 	proc.stdout.emit("data", Buffer.from(`${JSON.stringify({ id, result })}\n`));
 }
 
+function emitVisualizeToolRequest(
+	proc: FakeProc,
+	id: number,
+	callId: string,
+	request: string,
+): void {
+	emitSessionNotification(proc, "item/started", {
+		threadId: "thread-1",
+		item: {
+			id: callId,
+			type: "dynamicToolCall",
+			tool: "create_visualization",
+			arguments: { request },
+		},
+	});
+	proc.stdout.emit(
+		"data",
+		Buffer.from(
+			`${JSON.stringify({
+				id,
+				method: "item/tool/call",
+				params: {
+					threadId: "thread-1",
+					callId,
+					namespace: "hlid",
+					tool: "create_visualization",
+					arguments: { request },
+				},
+			})}\n`,
+		),
+	);
+}
+
 async function nextSessionEvent(
 	iterator: AsyncIterator<AgentEvent>,
 ): Promise<AgentEvent> {
@@ -1256,10 +1558,82 @@ function baseCodexParams(
 	};
 }
 
+function configureVisualizeBridgeProcesses(): {
+	skillPath: string;
+	parent: ReturnType<typeof makeFakeSessionProc>;
+	readinessProbe: ReturnType<typeof makeFakeSessionProc>;
+	invocationProbe: ReturnType<typeof makeFakeSessionProc>;
+	modelCatalog: ReturnType<typeof makeFakeSessionProc>;
+	child: ReturnType<typeof makeFakeSessionProc>;
+} {
+	vi.mocked(extractWindowsVisualizeArtifact).mockClear();
+	vi.mocked(createWindowsVisualizeRenderInput).mockClear();
+	vi.mocked(ingestVisualizationHtml).mockClear();
+	vi.stubEnv("CODEX_HOME", "C:\\Users\\test\\.codex");
+	vi.mocked(readFile).mockResolvedValue(
+		'[plugins."visualize@openai-bundled"]\nenabled = true\n',
+	);
+	vi.mocked(resolveCodexExecutable).mockReturnValue("C:\\bin\\codex.exe");
+	const skillPath =
+		"C:\\Users\\test\\.codex\\plugins\\cache\\openai-bundled\\visualize\\1.0.16\\skills\\visualize\\SKILL.md";
+	const parent = makeFakeSessionProc();
+	const readinessProbe = makeFakeSessionProc({
+		skills: [
+			{
+				name: "visualize:visualize",
+				enabled: true,
+				path: skillPath,
+			},
+		],
+	});
+	const invocationProbe = makeFakeSessionProc({
+		skills: [
+			{
+				name: "visualize:visualize",
+				enabled: true,
+				path: skillPath,
+			},
+		],
+	});
+	const modelCatalog = makeFakeSessionProc();
+	const child = makeFakeSessionProc();
+	vi.mocked(spawn)
+		.mockReturnValueOnce(parent.proc as never)
+		.mockReturnValueOnce(readinessProbe.proc as never)
+		.mockReturnValueOnce(invocationProbe.proc as never)
+		.mockReturnValueOnce(modelCatalog.proc as never)
+		.mockReturnValueOnce(child.proc as never);
+	return {
+		skillPath,
+		parent,
+		readinessProbe,
+		invocationProbe,
+		modelCatalog,
+		child,
+	};
+}
+
 describe("CodexAgentSession — commands", () => {
 	beforeEach(() => {
 		__resetCodexAppServersForTesting();
 		__resetCodexHostCapabilitiesForTesting();
+		vi.mocked(spawn).mockReset();
+		vi.mocked(readFile).mockResolvedValue(
+			'[plugins."computer-use@openai-bundled"]\nenabled = true\n',
+		);
+		vi.mocked(runBoundedProcess).mockResolvedValue({ output: "", code: 0 });
+		vi.mocked(extractWindowsVisualizeArtifact).mockResolvedValue({
+			filename: "system-flow.html",
+			sourcePath: "/tmp/hlid-visualization-job/system-flow.html",
+			validatedSha256: "a".repeat(64),
+		});
+		vi.mocked(createWindowsVisualizeRenderInput).mockResolvedValue(
+			"/tmp/hlid-visualization-job/.hlid-visualize-render-input.html",
+		);
+		vi.mocked(ingestVisualizationHtml).mockResolvedValue({
+			id: "visualization-attachment-1",
+			filename: "visualization.html",
+		});
 		vi.mocked(executeObsidianAgentTool).mockResolvedValue("obsidian result");
 	});
 
@@ -1480,6 +1854,460 @@ describe("CodexAgentSession — commands", () => {
 					}),
 				]),
 			);
+			session.cancel();
+		} finally {
+			vi.unstubAllEnvs();
+			platform.mockRestore();
+		}
+	});
+
+	it("bridges Visualize from a WSL-backed Codex session into an inline attachment", async () => {
+		const platform = vi
+			.spyOn(process, "platform", "get")
+			.mockReturnValue("win32");
+		try {
+			const { skillPath, parent, modelCatalog, child } =
+				configureVisualizeBridgeProcesses();
+
+			const session = new CodexProvider().query(
+				baseCodexParams({
+					executable: "C:\\bin\\codex-wsl.cmd",
+					hostSessionId: "hlid-session-1",
+				}),
+			);
+			const events = session[Symbol.asyncIterator]();
+			await session.send("Show me the system flow");
+			expect(
+				(
+					threadStartParams(parent.writes)[0].dynamicTools as Array<{
+						name: string;
+						tools?: Array<{ name: string }>;
+					}>
+				)
+					.find((namespace) => namespace.name === "hlid")
+					?.tools?.map((tool) => tool.name),
+			).toContain("create_visualization");
+			expect(vi.mocked(spawn).mock.calls[0]?.[0]).toBe(
+				"C:\\bin\\codex-wsl.cmd",
+			);
+			expect(vi.mocked(spawn).mock.calls[1]?.[0]).toBe("C:\\bin\\codex.exe");
+
+			emitVisualizeToolRequest(
+				parent.proc,
+				96,
+				"visualize-call-1",
+				"Show the system flow",
+			);
+
+			await vi.waitFor(() =>
+				expect(threadStartParams(child.writes)).toHaveLength(1),
+			);
+			expect(threadStartParams(child.writes)[0]).toMatchObject({
+				cwd: "/tmp/hlid-visualization-job",
+				ephemeral: true,
+				runtimeWorkspaceRoots: ["/tmp/hlid-visualization-job"],
+				approvalPolicy: "never",
+				sandbox: "workspace-write",
+				dynamicTools: [],
+			});
+			expect(turnStartParams(child.writes)[0]).toMatchObject({
+				input: [
+					{
+						type: "skill",
+						name: "visualize:visualize",
+						path: skillPath,
+					},
+					expect.objectContaining({
+						type: "text",
+						text: expect.stringContaining("Show the system flow"),
+					}),
+				],
+				runtimeWorkspaceRoots: ["/tmp/hlid-visualization-job"],
+				approvalPolicy: "never",
+				sandboxPolicy: {
+					type: "workspaceWrite",
+					writableRoots: ["/tmp/hlid-visualization-job"],
+					networkAccess: false,
+					excludeTmpdirEnvVar: true,
+					excludeSlashTmp: true,
+				},
+			});
+			const visualizeInput = turnStartParams(child.writes)[0]?.input as
+				| Array<{ type?: string; text?: string }>
+				| undefined;
+			const visualizePrompt = visualizeInput?.find(
+				(item) => item.type === "text",
+			)?.text;
+			expect(visualizePrompt).toContain("Never use touch-action: none");
+			expect(visualizePrompt).toContain("down to 320px");
+			expect(visualizePrompt).toContain(
+				"Create the fragment directly with apply_patch",
+			);
+			expect(visualizePrompt).toContain("Do not call exec_command");
+
+			child.proc.stdout.emit(
+				"data",
+				Buffer.from(
+					`${JSON.stringify({
+						id: 95,
+						method: "item/permissions/requestApproval",
+						params: {
+							threadId: "thread-1",
+							permissions: {
+								network: true,
+								writableRoots: ["C:\\Users\\test"],
+							},
+						},
+					})}\n`,
+				),
+			);
+			await vi.waitFor(() =>
+				expect(
+					child.writes
+						.map((line) => JSON.parse(line))
+						.find((message) => message.id === 95)?.result,
+				).toEqual({ scope: "turn", permissions: {} }),
+			);
+
+			emitSessionNotification(child.proc, "item/agentMessage/delta", {
+				threadId: "thread-1",
+				itemId: "visualize-result",
+				delta: '::codex-inline-vis{file="system-flow.html"}',
+			});
+			emitSessionNotification(child.proc, "thread/tokenUsage/updated", {
+				threadId: "thread-1",
+				usage: {
+					inputTokens: 120,
+					cachedInputTokens: 40,
+					outputTokens: 30,
+				},
+			});
+			emitSessionNotification(child.proc, "turn/completed", {
+				threadId: "thread-1",
+				turn: { id: "turn-1", status: "completed" },
+			});
+
+			let response:
+				| {
+						result?: {
+							success?: boolean;
+							contentItems?: Array<{ text?: string }>;
+						};
+				  }
+				| undefined;
+			await vi.waitFor(() => {
+				response = parent.writes
+					.map(
+						(line) =>
+							JSON.parse(line) as {
+								id?: number;
+								result?: {
+									success?: boolean;
+									contentItems?: Array<{ text?: string }>;
+								};
+							},
+					)
+					.find((message) => message.id === 96);
+				expect(response?.result?.success).toBe(true);
+			});
+			const marker = response?.result?.contentItems?.[0]?.text as string;
+			expect(marker.length).toBeLessThanOrEqual(256);
+			expect(marker).not.toContain("codex-inline-vis");
+			expect(JSON.parse(marker)).toEqual({
+				type: "hlid_visualization",
+				attachment_id: "visualization-attachment-1",
+				filename: "visualization.html",
+				title: "System Flow",
+			});
+			expect(extractWindowsVisualizeArtifact).toHaveBeenCalledWith({
+				text: '::codex-inline-vis{file="system-flow.html"}',
+				jobRoot: "/tmp/hlid-visualization-job",
+			});
+			expect(createWindowsVisualizeRenderInput).toHaveBeenCalledWith({
+				sourcePath: "/tmp/hlid-visualization-job/system-flow.html",
+				jobRoot: "/tmp/hlid-visualization-job",
+				validatedSha256: "a".repeat(64),
+			});
+			expect(runBoundedProcess).toHaveBeenCalledWith(
+				"python",
+				expect.arrayContaining([
+					"C:\\Users\\test\\.codex\\plugins\\cache\\openai-bundled\\visualize\\1.0.16\\skills\\visualize\\scripts\\render.py",
+					"/tmp/hlid-visualization-job/.hlid-visualize-render-input.html",
+					"/tmp/hlid-visualization-job/visualization-rendered.html",
+				]),
+				expect.objectContaining({ cwd: "/tmp/hlid-visualization-job" }),
+			);
+			expect(ingestVisualizationHtml).toHaveBeenCalledWith({
+				sourcePath: "/tmp/hlid-visualization-job/visualization-rendered.html",
+				sessionId: "hlid-session-1",
+				title: "visualization",
+				agentCwd: "/tmp/codex-test",
+			});
+			expect(child.proc.kill).toHaveBeenCalledOnce();
+			expect(modelCatalog.proc.kill).toHaveBeenCalledOnce();
+
+			emitSessionNotification(parent.proc, "item/completed", {
+				threadId: "thread-1",
+				item: {
+					id: "visualize-call-1",
+					type: "dynamicToolCall",
+					tool: "create_visualization",
+					status: "completed",
+					contentItems: [{ type: "inputText", text: marker }],
+					success: true,
+				},
+			});
+			emitSessionNotification(parent.proc, "item/agentMessage/delta", {
+				threadId: "thread-1",
+				itemId: "parent-result",
+				delta: "Here is the system flow.",
+			});
+			emitSessionNotification(parent.proc, "thread/tokenUsage/updated", {
+				threadId: "thread-1",
+				usage: {
+					inputTokens: 50,
+					cachedInputTokens: 20,
+					outputTokens: 10,
+				},
+			});
+			emitSessionNotification(parent.proc, "turn/completed", {
+				threadId: "thread-1",
+				turn: { id: "turn-1", status: "completed" },
+			});
+			expect(await nextDoneEvent(events)).toMatchObject({
+				type: "done",
+				turns: 2,
+				usage: {
+					inputTokens: 110,
+					outputTokens: 40,
+					cacheReadTokens: 60,
+					cacheCreationTokens: 0,
+				},
+			});
+			session.cancel();
+		} finally {
+			vi.unstubAllEnvs();
+			platform.mockRestore();
+		}
+	});
+
+	it("does not expose the Visualize bridge through another Codex-protocol provider", async () => {
+		const platform = vi
+			.spyOn(process, "platform", "get")
+			.mockReturnValue("win32");
+		try {
+			vi.mocked(readFile).mockResolvedValue(
+				'[plugins."visualize@openai-bundled"]\nenabled = true\n',
+			);
+			vi.mocked(resolveCodexExecutable).mockReturnValue("C:\\bin\\codex.exe");
+			const parent = makeFakeSessionProc();
+			vi.mocked(spawn).mockReturnValue(parent.proc as never);
+			const provider = new CodexProvider({
+				providerId: "cliproxy-codex",
+				label: "Codex · CLIProxy",
+			});
+
+			await expect(provider.hostCapabilities()).resolves.toMatchObject({
+				windowsVisualize: {
+					available: false,
+					reason: "The Hlid Visualize bridge is available only to Codex",
+				},
+			});
+			expect(
+				provider
+					.hlidToolLoading()
+					.flatMap((namespace) => namespace.tools)
+					.map((tool) => tool?.name),
+			).not.toContain("create_visualization");
+
+			const session = provider.query(baseCodexParams());
+			await session.send("hello");
+			const hlidNamespace = (
+				threadStartParams(parent.writes)[0].dynamicTools as Array<{
+					name: string;
+					tools?: Array<{ name: string }>;
+				}>
+			).find((namespace) => namespace.name === "hlid");
+			expect(hlidNamespace?.tools?.map((tool) => tool.name)).not.toContain(
+				"create_visualization",
+			);
+			expect(spawn).toHaveBeenCalledTimes(1);
+			session.cancel();
+		} finally {
+			platform.mockRestore();
+		}
+	});
+
+	it.each([
+		"failed",
+		"interrupted",
+	] as const)("rejects a %s Visualize turn without returning its raw directive", async (status) => {
+		const platform = vi
+			.spyOn(process, "platform", "get")
+			.mockReturnValue("win32");
+		try {
+			const { parent, child } = configureVisualizeBridgeProcesses();
+			const session = new CodexProvider().query(
+				baseCodexParams({
+					executable: "C:\\bin\\codex-wsl.cmd",
+					hostSessionId: "hlid-session-1",
+				}),
+			);
+			await session.send("Show me the system flow");
+			emitVisualizeToolRequest(
+				parent.proc,
+				98,
+				`visualize-call-${status}`,
+				"Show the system flow",
+			);
+			await vi.waitFor(() =>
+				expect(turnStartParams(child.writes)).toHaveLength(1),
+			);
+			emitSessionNotification(child.proc, "item/agentMessage/delta", {
+				threadId: "thread-1",
+				itemId: "visualize-result",
+				delta: '::codex-inline-vis{file="system-flow.html"}',
+			});
+			emitSessionNotification(child.proc, "turn/completed", {
+				threadId: "thread-1",
+				turn: { id: "turn-1", status },
+			});
+
+			let response:
+				| {
+						result?: {
+							success?: boolean;
+							contentItems?: Array<{ text?: string }>;
+						};
+				  }
+				| undefined;
+			await vi.waitFor(() => {
+				response = parent.writes
+					.map(
+						(line) =>
+							JSON.parse(line) as {
+								id?: number;
+								result?: {
+									success?: boolean;
+									contentItems?: Array<{ text?: string }>;
+								};
+							},
+					)
+					.find((message) => message.id === 98);
+				expect(response?.result?.success).toBe(false);
+			});
+			expect(response?.result?.contentItems?.[0]?.text).toBe(
+				"Hlid could not create the visualization.",
+			);
+			expect(response?.result?.contentItems?.[0]?.text).not.toContain(
+				"codex-inline-vis",
+			);
+			expect(extractWindowsVisualizeArtifact).not.toHaveBeenCalled();
+			expect(ingestVisualizationHtml).not.toHaveBeenCalled();
+			session.cancel();
+		} finally {
+			vi.unstubAllEnvs();
+			platform.mockRestore();
+		}
+	});
+
+	it("settles a crashed Visualize worker and preserves its reported usage", async () => {
+		const platform = vi
+			.spyOn(process, "platform", "get")
+			.mockReturnValue("win32");
+		try {
+			const { parent, child } = configureVisualizeBridgeProcesses();
+			const session = new CodexProvider().query(
+				baseCodexParams({
+					executable: "C:\\bin\\codex-wsl.cmd",
+					hostSessionId: "hlid-session-1",
+				}),
+			);
+			const events = session[Symbol.asyncIterator]();
+			await session.send("Show me the system flow");
+			emitVisualizeToolRequest(
+				parent.proc,
+				97,
+				"visualize-call-crash",
+				"Show the system flow",
+			);
+			await vi.waitFor(() =>
+				expect(turnStartParams(child.writes)).toHaveLength(1),
+			);
+
+			emitSessionNotification(child.proc, "thread/tokenUsage/updated", {
+				threadId: "thread-1",
+				usage: {
+					inputTokens: 120,
+					cachedInputTokens: 40,
+					outputTokens: 30,
+				},
+			});
+			child.proc.emit("exit", 1);
+
+			let response:
+				| {
+						result?: {
+							success?: boolean;
+							contentItems?: Array<{ text?: string }>;
+						};
+				  }
+				| undefined;
+			await vi.waitFor(() => {
+				response = parent.writes
+					.map(
+						(line) =>
+							JSON.parse(line) as {
+								id?: number;
+								result?: {
+									success?: boolean;
+									contentItems?: Array<{ text?: string }>;
+								};
+							},
+					)
+					.find((message) => message.id === 97);
+				expect(response?.result?.success).toBe(false);
+			});
+			expect(response?.result?.contentItems?.[0]?.text).toBe(
+				"Hlid could not create the visualization.",
+			);
+			expect(extractWindowsVisualizeArtifact).not.toHaveBeenCalled();
+			expect(ingestVisualizationHtml).not.toHaveBeenCalled();
+
+			emitSessionNotification(parent.proc, "item/completed", {
+				threadId: "thread-1",
+				item: {
+					id: "visualize-call-crash",
+					type: "dynamicToolCall",
+					tool: "create_visualization",
+					status: "failed",
+					contentItems: response?.result?.contentItems ?? [],
+					success: false,
+				},
+			});
+			emitSessionNotification(parent.proc, "thread/tokenUsage/updated", {
+				threadId: "thread-1",
+				usage: {
+					inputTokens: 50,
+					cachedInputTokens: 20,
+					outputTokens: 10,
+				},
+			});
+			emitSessionNotification(parent.proc, "turn/completed", {
+				threadId: "thread-1",
+				turn: { id: "turn-1", status: "completed" },
+			});
+
+			expect(await nextDoneEvent(events)).toMatchObject({
+				type: "done",
+				turns: 2,
+				usage: {
+					inputTokens: 110,
+					outputTokens: 40,
+					cacheReadTokens: 60,
+					cacheCreationTokens: 0,
+				},
+			});
 			session.cancel();
 		} finally {
 			vi.unstubAllEnvs();
