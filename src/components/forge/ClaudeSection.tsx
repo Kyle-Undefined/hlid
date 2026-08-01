@@ -59,6 +59,92 @@ function ProviderField({
 	);
 }
 
+function ProviderCapabilitySnapshotField({
+	provider,
+}: {
+	provider: ProviderInfo;
+}) {
+	const snapshot = provider.capabilitySnapshot;
+	if (!snapshot) return null;
+	const integrated = snapshot.capabilities.filter(
+		(item) => item.integration === "integrated",
+	).length;
+	const providerNative = snapshot.capabilities.filter(
+		(item) => item.integration === "provider-native",
+	).length;
+	const notIntegrated = snapshot.capabilities.filter(
+		(item) => item.integration === "not-integrated",
+	).length;
+	const inspectable = [...snapshot.capabilities]
+		.sort((a, b) => {
+			const rank = (integration: (typeof a)["integration"]) =>
+				integration === "not-integrated"
+					? 0
+					: integration === "integrated"
+						? 1
+						: 2;
+			return (
+				rank(a.integration) - rank(b.integration) || a.id.localeCompare(b.id)
+			);
+		})
+		.slice(0, 12);
+	return (
+		<Field
+			label="Capability snapshot"
+			hint="provider evidence resolved by Hlid"
+		>
+			<div className="w-full max-w-2xl text-[10px] text-muted-foreground">
+				<div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+					<span
+						className={
+							snapshot.status === "current"
+								? "text-status-success/80"
+								: "text-status-warning/80"
+						}
+					>
+						{snapshot.status}
+					</span>
+					<span>{snapshot.capabilities.length} observed</span>
+					<span>{integrated} integrated</span>
+					<span>{providerNative} provider-native</span>
+					<span>{notIntegrated} not integrated</span>
+				</div>
+				<div className="mt-1 break-all font-mono text-[9px] text-muted-foreground/60">
+					{snapshot.revision} · {snapshot.source}
+				</div>
+				<details className="mt-2">
+					<summary className="cursor-pointer select-none text-foreground/70 hover:text-foreground">
+						Inspect capability evidence
+					</summary>
+					<div className="mt-2 space-y-2 border-l border-border/60 pl-3">
+						{inspectable.map((item) => (
+							<div key={item.id}>
+								<div className="text-foreground/80">
+									{item.label} · {item.availability}
+								</div>
+								<div className="text-muted-foreground/70">
+									{item.support} · {item.integration} · {item.scope}
+								</div>
+								{item.reason && (
+									<div className="mt-0.5 break-words [overflow-wrap:anywhere] text-muted-foreground/60">
+										{item.reason}
+									</div>
+								)}
+							</div>
+						))}
+						{snapshot.capabilities.length > inspectable.length && (
+							<div className="text-muted-foreground/60">
+								Showing {inspectable.length} of {snapshot.capabilities.length}.
+								Use `hlid_help` or the provider API for the bounded catalog.
+							</div>
+						)}
+					</div>
+				</details>
+			</div>
+		</Field>
+	);
+}
+
 function WindowsComputerUseFields({
 	claude,
 	onChange,
@@ -404,6 +490,9 @@ export function ClaudeSection({
 					onChange={onChange}
 					providers={providers}
 				/>
+			)}
+			{activeProvider && (
+				<ProviderCapabilitySnapshotField provider={activeProvider} />
 			)}
 			{activeProvider?.hostCapabilities &&
 				Object.entries(activeProvider.hostCapabilities).map(

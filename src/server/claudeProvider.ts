@@ -19,7 +19,11 @@ import {
 	buildHlidToolLoadingSummary,
 	describeHlidToolLoading,
 } from "../lib/hlidContext";
-import { parseWslUnc, toHostRuntimePath } from "../lib/paths";
+import {
+	parseWslUnc,
+	toHostRuntimePath,
+	toProviderRuntimePath,
+} from "../lib/paths";
 import type {
 	AgentEvent,
 	AgentProvider,
@@ -45,7 +49,9 @@ import type {
 	SubagentSnapshot,
 } from "./agentProvider";
 import { toAgentToolCallResult } from "./agentToolResult";
+import { discoverClaudeProviderCapabilities } from "./claudeCapabilityDiscovery";
 import { createClaudeHistorySessionStore } from "./claudeHistorySessionStore";
+import { getClaudeWarmupSnapshot } from "./claudeWarmup";
 import {
 	deleteClaudeWorkflow,
 	listClaudeWorkflows,
@@ -2867,6 +2873,14 @@ export class ClaudeProvider implements AgentProvider {
 			return { available: false, reason: "Claude Code CLI not found" };
 		}
 		return { available: true };
+	}
+
+	async discoverCapabilities(context: { cwd: string }) {
+		return discoverClaudeProviderCapabilities({
+			providerId: this.providerId,
+			cwd: toProviderRuntimePath(context.cwd, context.cwd),
+			snapshot: getClaudeWarmupSnapshot(context.cwd),
+		});
 	}
 
 	/**

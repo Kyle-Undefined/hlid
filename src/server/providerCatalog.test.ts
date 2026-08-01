@@ -24,6 +24,7 @@ import type { AgentProvider, ProviderModelInfo } from "./agentProvider";
 import {
 	createCachedList,
 	createModelCatalog,
+	createProviderCapabilityCatalog,
 	createProviderCatalogSnapshot,
 	loadProviderCatalog,
 	providerCatalogRequestOptions,
@@ -345,6 +346,72 @@ describe("createModelCatalog", () => {
 	});
 });
 
+describe("createProviderCapabilityCatalog", () => {
+	it("caches bounded live discovery and notifies the provider snapshot", async () => {
+		const onChange = vi.fn();
+		const discoverCapabilities = vi.fn().mockResolvedValue({
+			observedAt: 1,
+			evidence: [],
+		});
+		const provider = makeProvider({
+			providerId: "codex",
+			discoverCapabilities,
+		});
+		const catalog = createProviderCapabilityCatalog(
+			new Map([[provider.providerId, provider]]),
+			"/work/project",
+			onChange,
+		);
+
+		expect(await catalog.capabilitiesFor(provider)).toMatchObject({
+			source: "live",
+			discovery: { observedAt: 1 },
+		});
+		expect(await catalog.capabilitiesFor(provider)).toMatchObject({
+			source: "memory",
+		});
+		expect(discoverCapabilities).toHaveBeenCalledOnce();
+		expect(discoverCapabilities).toHaveBeenCalledWith({ cwd: "/work/project" });
+		expect(onChange).toHaveBeenCalledWith("codex");
+		expect(mockSaveSetting).toHaveBeenCalledWith(
+			expect.stringMatching(/^provider_capabilities:codex:[0-9a-f]{16}$/),
+			expect.any(String),
+		);
+	});
+
+	it("isolates provider evidence by normalized workspace", async () => {
+		const discoverCapabilities = vi.fn().mockImplementation(({ cwd }) =>
+			Promise.resolve({
+				observedAt: 1,
+				context: { cwd },
+				evidence: [],
+			}),
+		);
+		const provider = makeProvider({
+			providerId: "codex",
+			discoverCapabilities,
+		});
+		const catalog = createProviderCapabilityCatalog(
+			new Map([[provider.providerId, provider]]),
+			"/work/default",
+		);
+
+		expect(
+			(await catalog.capabilitiesFor(provider, "/work/one"))?.discovery.context,
+		).toEqual({ cwd: "/work/one" });
+		expect((await catalog.capabilitiesFor(provider, "/work/one"))?.source).toBe(
+			"memory",
+		);
+		expect(
+			(await catalog.capabilitiesFor(provider, "/work/two"))?.discovery.context,
+		).toEqual({ cwd: "/work/two" });
+		expect(discoverCapabilities).toHaveBeenCalledTimes(2);
+		expect(mockSaveSetting.mock.calls[0]?.[0]).not.toBe(
+			mockSaveSetting.mock.calls[1]?.[0],
+		);
+	});
+});
+
 describe("loadProviderCatalog", () => {
 	it("publishes exact fork capabilities to Raven and Ledger", async () => {
 		const provider = makeProvider({
@@ -471,6 +538,51 @@ describe("loadProviderCatalog", () => {
 			provider.capabilities?.structuredActivities,
 		);
 	});
+
+	it("only discovers provider evidence for an explicitly requested surface", async () => {
+		const discoverCapabilities = vi.fn().mockResolvedValue({
+			observedAt: 100,
+			evidence: [
+				{
+					id: "codex:experimental-feature:apps",
+					label: "Apps",
+					scope: "provider",
+					support: "advertised",
+					integration: "provider-native",
+					readiness: "ready",
+					source: "provider-runtime",
+				},
+			],
+		});
+		const provider = makeProvider({
+			providerId: "codex",
+			capabilities: { goalControl: true },
+			discoverCapabilities,
+		});
+		const catalog = { modelsFor: vi.fn().mockResolvedValue([]) };
+
+		expect(
+			(await loadProviderCatalog([provider], catalog))[0]?.capabilitySnapshot,
+		).toBeUndefined();
+		expect(discoverCapabilities).not.toHaveBeenCalled();
+
+		const result = await loadProviderCatalog([provider], catalog, {
+			includeProviderCapabilities: true,
+			discoveryCwd: "/work/project",
+		});
+		expect(discoverCapabilities).toHaveBeenCalledWith({ cwd: "/work/project" });
+		expect(result[0]?.capabilitySnapshot).toMatchObject({
+			status: "current",
+			source: "live",
+			context: { cwd: "/work/project" },
+			capabilities: expect.arrayContaining([
+				expect.objectContaining({
+					id: "codex:experimental-feature:apps",
+					availability: "provider-native",
+				}),
+			]),
+		});
+	});
 });
 
 describe("createProviderCatalogSnapshot", () => {
@@ -503,6 +615,61 @@ describe("createProviderCatalogSnapshot", () => {
 		expect(check).toHaveBeenCalledOnce();
 		expect(cachedModelsFor).toHaveBeenCalledOnce();
 		expect(hostCapabilities).toHaveBeenCalledOnce();
+	});
+
+	it("does not reuse a provider capability snapshot across workspaces", async () => {
+		const load = vi
+			.fn()
+			.mockImplementation(
+				(
+					_providers: AgentProvider[],
+					_catalog: unknown,
+					options: { discoveryCwd?: string },
+				) =>
+					Promise.resolve([
+						{
+							id: "codex",
+							label: "Codex",
+							available: true,
+							models: [],
+							capabilitySnapshot: {
+								contractVersion: 1 as const,
+								providerId: "codex",
+								status: "current" as const,
+								source: "live" as const,
+								revision: options.discoveryCwd ?? "unknown",
+								observedAt: 1,
+								context: { cwd: options.discoveryCwd ?? "unknown" },
+								capabilities: [],
+							},
+						},
+					]),
+			);
+		const snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "codex" })],
+			{ modelsFor: vi.fn() },
+			{ load },
+		);
+
+		const first = await snapshot.get({
+			includeProviderCapabilities: true,
+			discoveryCwd: "/work/one",
+		});
+		const second = await snapshot.get({
+			includeProviderCapabilities: true,
+			discoveryCwd: "/work/two",
+		});
+		const repeated = await snapshot.get({
+			includeProviderCapabilities: true,
+			discoveryCwd: "/work/one",
+		});
+
+		expect(first[0]?.capabilitySnapshot?.context).toEqual({ cwd: "/work/one" });
+		expect(second[0]?.capabilitySnapshot?.context).toEqual({
+			cwd: "/work/two",
+		});
+		expect(repeated).toBe(first);
+		expect(load).toHaveBeenCalledTimes(2);
 	});
 
 	it("returns stale data immediately and revalidates it in the background", async () => {
@@ -631,7 +798,9 @@ describe("providerCatalogRequestOptions", () => {
 		expect(providerCatalogRequestOptions(new URLSearchParams())).toEqual({
 			refresh: false,
 			preferCachedModels: true,
+			preferCachedProviderCapabilities: true,
 			includeHostCapabilities: false,
+			includeProviderCapabilities: false,
 		});
 	});
 
@@ -643,7 +812,48 @@ describe("providerCatalogRequestOptions", () => {
 		).toEqual({
 			refresh: true,
 			preferCachedModels: false,
+			preferCachedProviderCapabilities: true,
 			includeHostCapabilities: true,
+			includeProviderCapabilities: false,
 		});
+	});
+
+	it("requests provider capability evidence independently", () => {
+		expect(
+			providerCatalogRequestOptions(
+				new URLSearchParams("provider_capabilities=1"),
+			),
+		).toEqual({
+			refresh: false,
+			preferCachedModels: true,
+			preferCachedProviderCapabilities: true,
+			includeHostCapabilities: false,
+			includeProviderCapabilities: true,
+		});
+	});
+
+	it("accepts an exact workspace and can await its first provider snapshot", () => {
+		expect(
+			providerCatalogRequestOptions(
+				new URLSearchParams(
+					"provider_capabilities=1&provider_capabilities_wait=1&capability_cwd=%2Fwork%2Fproject",
+				),
+			),
+		).toEqual({
+			refresh: false,
+			preferCachedModels: true,
+			preferCachedProviderCapabilities: false,
+			includeHostCapabilities: false,
+			includeProviderCapabilities: true,
+			discoveryCwd: "/work/project",
+		});
+	});
+
+	it("rejects a relative capability workspace", () => {
+		expect(() =>
+			providerCatalogRequestOptions(
+				new URLSearchParams("capability_cwd=relative%2Fproject"),
+			),
+		).toThrow(/absolute path/i);
 	});
 });

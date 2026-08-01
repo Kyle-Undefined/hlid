@@ -18,6 +18,8 @@ function sdkQuery(options?: {
 	mcp?: Array<{ name: string; status: string; error?: string; scope?: string }>;
 }) {
 	return {
+		interrupt: vi.fn(),
+		rewindFiles: vi.fn(),
 		initializationResult: vi.fn().mockResolvedValue({
 			commands: options?.commands ?? [],
 			agents: [{ name: "reviewer" }],
@@ -82,6 +84,7 @@ describe("Claude startup metadata cache", () => {
 					{ name: "figma", status: "needs-auth" },
 				],
 				modelCount: 1,
+				controlMethods: expect.arrayContaining(["interrupt", "rewindFiles"]),
 				cwd: "/tmp/project",
 			}),
 		);

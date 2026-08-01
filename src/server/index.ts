@@ -89,6 +89,7 @@ import {
 import { handleProjectPreviewRoute } from "./projectPreviewRoutes";
 import {
 	createModelCatalog,
+	createProviderCapabilityCatalog,
 	createProviderCatalogSnapshot,
 	type ProviderCatalogSnapshot,
 	providerCatalogRequestOptions,
@@ -360,9 +361,23 @@ const modelCatalog = createModelCatalog(providers, () => {
 	providerCatalogSnapshot.invalidate();
 	bumpDataRevision("providers");
 });
+const providerCapabilityCatalog = createProviderCapabilityCatalog(
+	providers,
+	config.vault.path || process.cwd(),
+	() => {
+		providerCatalogSnapshot.invalidate();
+		bumpDataRevision("providers");
+	},
+);
 providerCatalogSnapshot = createProviderCatalogSnapshot(
 	() => providers.values(),
-	modelCatalog,
+	{
+		modelsFor: modelCatalog.modelsFor,
+		cachedModelsFor: modelCatalog.cachedModelsFor,
+		capabilitiesFor: providerCapabilityCatalog.capabilitiesFor,
+		cachedCapabilitiesFor: providerCapabilityCatalog.cachedCapabilitiesFor,
+	},
+	{ discoveryCwd: config.vault.path || process.cwd() },
 );
 let cliProxyAccountsKey = JSON.stringify(cliProxy.status().accounts);
 let providerCatalogRevision = getDataRevisions().providers;
@@ -744,9 +759,16 @@ async function handleProviderRoute(url: URL, req: Request) {
 	) {
 		await refreshCodexHostCapabilities();
 	}
-	const list = await providerCatalogSnapshot.get(
-		providerCatalogRequestOptions(url.searchParams),
-	);
+	let requestOptions: ReturnType<typeof providerCatalogRequestOptions>;
+	try {
+		requestOptions = providerCatalogRequestOptions(url.searchParams);
+	} catch (error) {
+		return Response.json(
+			{ error: error instanceof Error ? error.message : String(error) },
+			{ status: 400 },
+		);
+	}
+	const list = await providerCatalogSnapshot.get(requestOptions);
 	return Response.json({ providers: list });
 }
 
@@ -881,6 +903,7 @@ async function syncCliProxyRuntime(): Promise<void> {
 			for (const provider of cliProxyProviders(connection)) {
 				providers.set(provider.providerId, provider);
 				modelCatalog.register(provider);
+				providerCapabilityCatalog.register(provider);
 				db.registerProvider(
 					provider.providerId,
 					provider.label ?? provider.providerId,
@@ -905,7 +928,10 @@ function syncCliProxyAccountCatalogs(): void {
 		CLIPROXY_OPENCODE_PROVIDER_ID,
 	]) {
 		const provider = providers.get(providerId);
-		if (provider) modelCatalog.register(provider);
+		if (provider) {
+			modelCatalog.register(provider);
+			providerCapabilityCatalog.register(provider);
+		}
 	}
 	providerCatalogSnapshot.invalidate();
 	bumpDataRevision("providers");
@@ -1335,5 +1361,6 @@ if (isCompiled) {
 			}),
 	);
 	await Promise.all(warmups);
+	providerCapabilityCatalog.warm();
 	markUiServerReady();
 }

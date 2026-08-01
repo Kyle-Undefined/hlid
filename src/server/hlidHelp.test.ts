@@ -800,6 +800,69 @@ describe("Hlid operating guidance", () => {
 		expect(manifest.registry.providerSnapshot).toBe("unavailable");
 	});
 
+	it("returns a bounded focused provider capability inventory", () => {
+		const response = JSON.parse(
+			buildHlidHelpResponse("providers", {
+				providerId: "claude",
+				sessionId: "session-1",
+				providerSnapshot: {
+					id: "claude",
+					label: "Claude",
+					available: true,
+					capabilitySnapshot: {
+						contractVersion: 1,
+						providerId: "claude",
+						status: "current",
+						source: "live",
+						revision: "v1-provider-test",
+						observedAt: 1,
+						context: { cwd: "/work/project" },
+						capabilities: [
+							{
+								id: "claude:sdk-control:interrupt",
+								label: "SDK control: interrupt",
+								scope: "session",
+								support: "advertised",
+								integration: "integrated",
+								readiness: "ready",
+								source: "provider-sdk",
+								availability: "available",
+							},
+							{
+								id: "claude:sdk-control:rewindfiles",
+								label: "SDK control: rewind files",
+								scope: "session",
+								support: "advertised",
+								integration: "not-integrated",
+								readiness: "ready",
+								source: "provider-sdk",
+								availability: "unavailable",
+								reason: "Hlid does not integrate it yet.",
+							},
+						],
+					},
+				},
+			}),
+		);
+
+		expect(response.registry.providerCapabilities).toMatchObject({
+			status: "current",
+			total: 2,
+			integrated: 1,
+			notIntegrated: 1,
+		});
+		expect(response.providerCapabilities).toMatchObject({
+			snapshot: "current",
+			total: 2,
+			returned: 2,
+			context: { cwd: "/work/project" },
+		});
+		expect(response.providerCapabilities.items[0]).toMatchObject({
+			integration: "not-integrated",
+			availability: "unavailable",
+		});
+	});
+
 	it("removes provider-owned actions when the live provider is unavailable", () => {
 		const manifest = buildHlidCapabilityManifest({
 			providerId: "codex",
@@ -823,6 +886,44 @@ describe("Hlid operating guidance", () => {
 		).toMatchObject({ availability: "unavailable" });
 		expect(
 			manifest.capabilities.find((item) => item.id === "providers"),
+		).toMatchObject({ availability: "unavailable" });
+	});
+
+	it("uses resolved provider evidence before legacy command flags", () => {
+		const manifest = buildHlidCapabilityManifest({
+			providerId: "codex",
+			sessionId: "session-1",
+			providerSnapshot: {
+				id: "codex",
+				label: "Codex",
+				available: true,
+				capabilities: { goalControl: true },
+				capabilitySnapshot: {
+					contractVersion: 1,
+					providerId: "codex",
+					status: "current",
+					source: "live",
+					revision: "v1-goal-gated",
+					observedAt: 1,
+					capabilities: [
+						{
+							id: "codex:goal-control",
+							label: "Durable goal control",
+							scope: "session",
+							support: "advertised",
+							integration: "not-integrated",
+							readiness: "ready",
+							source: "provider-runtime",
+							availability: "unavailable",
+						},
+					],
+				},
+			},
+		});
+
+		expect(manifest.registry.commandActions).not.toContain("goal");
+		expect(
+			manifest.capabilities.find((item) => item.id === "goals"),
 		).toMatchObject({ availability: "unavailable" });
 	});
 

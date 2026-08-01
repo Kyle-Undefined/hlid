@@ -740,6 +740,7 @@ async function liveHlidOperatingContext(
 					model?: string | null;
 					selected_effort?: string | null;
 					selected_permission_mode?: string | null;
+					agent_cwd?: string | null;
 				} | null;
 				if (row) {
 					live = {
@@ -748,6 +749,7 @@ async function liveHlidOperatingContext(
 						model: row.selected_model ?? row.model ?? live.model,
 						effort: row.selected_effort ?? live.effort,
 						permissionMode: row.selected_permission_mode ?? live.permissionMode,
+						runtimeCwd: row.agent_cwd ?? live.runtimeCwd,
 					};
 				}
 			}
@@ -758,7 +760,17 @@ async function liveHlidOperatingContext(
 	const [providerCatalog, voiceSnapshot, ttsSnapshot] = await Promise.all([
 		(async () => {
 			try {
-				const response = await dbFetch("/providers?host_capabilities=1");
+				const providerParams = new URLSearchParams({
+					host_capabilities: "1",
+					provider_capabilities: "1",
+				});
+				if (live.runtimeCwd) {
+					providerParams.set("capability_cwd", live.runtimeCwd);
+					providerParams.set("provider_capabilities_wait", "1");
+				}
+				const response = await dbFetch(
+					`/providers?${providerParams.toString()}`,
+				);
 				if (!response.ok) return undefined;
 				const body = (await response.json()) as { providers?: ProviderInfo[] };
 				return body.providers;

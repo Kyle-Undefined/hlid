@@ -24,6 +24,18 @@ describe("providerCatalogPath", () => {
 			}),
 		).toBe("/providers?refresh=1&host_capabilities=1");
 	});
+
+	it("opts focused surfaces into provider capability evidence", () => {
+		expect(providerCatalogPath({ includeProviderCapabilities: true })).toBe(
+			"/providers?provider_capabilities=1",
+		);
+		expect(
+			providerCatalogPath({
+				includeHostCapabilities: true,
+				includeProviderCapabilities: true,
+			}),
+		).toBe("/providers?host_capabilities=1&provider_capabilities=1");
+	});
 });
 
 describe("providerUsageIds", () => {

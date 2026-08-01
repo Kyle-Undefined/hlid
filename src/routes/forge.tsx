@@ -56,6 +56,7 @@ export const Route = createFileRoute("/forge")({
 				getProvidersFn({
 					data: {
 						includeHostCapabilities: true,
+						includeProviderCapabilities: true,
 						preferCachedModels: true,
 					},
 				}),
@@ -129,6 +130,7 @@ function SettingsPage() {
 						data: {
 							refresh: force,
 							includeHostCapabilities: true,
+							includeProviderCapabilities: true,
 							preferCachedModels: !force,
 						},
 					}),

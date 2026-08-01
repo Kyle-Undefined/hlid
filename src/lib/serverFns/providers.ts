@@ -10,6 +10,7 @@ const providerCatalogQuerySchema = z
 	.object({
 		refresh: z.boolean().optional(),
 		includeHostCapabilities: z.boolean().optional(),
+		includeProviderCapabilities: z.boolean().optional(),
 		preferCachedModels: z.boolean().optional(),
 	})
 	.optional();
@@ -25,6 +26,8 @@ export function providerCatalogPath(
 	const path = withRefreshQuery("/providers", data);
 	const params = new URLSearchParams();
 	if (data?.includeHostCapabilities) params.set("host_capabilities", "1");
+	if (data?.includeProviderCapabilities)
+		params.set("provider_capabilities", "1");
 	if (data?.preferCachedModels) params.set("cached_models", "1");
 	if (params.size === 0) return path;
 	return `${path}${path.includes("?") ? "&" : "?"}${params}`;

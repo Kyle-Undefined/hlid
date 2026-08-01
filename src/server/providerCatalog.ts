@@ -5,9 +5,17 @@
  * "model" or "provider" semantics. The provider-specific wrapper lives below
  * as `createModelCatalog`.
  */
+import { createHash } from "node:crypto";
+import { posix, win32 } from "node:path";
 import * as db from "../db";
+import { declaredPathKey } from "../lib/paths";
+import type { ProviderCapabilityDiscovery } from "../lib/providerCapabilityTypes";
 import type { ProviderInfo } from "../lib/providerTypes";
 import type { AgentProvider, ProviderModelInfo } from "./agentProvider";
+import {
+	buildProviderCapabilitySnapshot,
+	isProviderCapabilityDiscovery,
+} from "./providerCapabilities";
 import { createSlowOperationObserver } from "./requestDiagnostics";
 
 /** Where a `CachedList.get()` result came from. */
@@ -27,6 +35,7 @@ export type CachedList<T> = {
 const DEFAULT_TTL_MS = 6 * 3600_000;
 const DEFAULT_FAILURE_TTL_MS = 60_000;
 const PROVIDER_SNAPSHOT_TTL_MS = 60_000;
+const MAX_PROVIDER_CAPABILITY_WORKSPACES = 64;
 const observeCatalogStep = createSlowOperationObserver({
 	scope: "provider catalog",
 });
@@ -197,6 +206,125 @@ export function createModelCatalog(
 	};
 }
 
+export type ProviderCapabilityDiscoveryRead = {
+	discovery: ProviderCapabilityDiscovery;
+	source: CatalogSource;
+};
+
+/**
+ * Cache provider-described capability evidence separately from the assembled
+ * provider response. Normal route loaders receive last-good evidence and start
+ * revalidation in the background; explicit refreshes perform bounded live
+ * discovery.
+ */
+export function createProviderCapabilityCatalog(
+	providers: Map<string, AgentProvider>,
+	defaultDiscoveryCwd: string,
+	onChange?: (providerId: string) => void,
+): {
+	capabilitiesFor(
+		provider: AgentProvider,
+		discoveryCwd?: string,
+		refresh?: boolean,
+	): Promise<ProviderCapabilityDiscoveryRead | undefined>;
+	cachedCapabilitiesFor(
+		provider: AgentProvider,
+		discoveryCwd?: string,
+	): Promise<ProviderCapabilityDiscoveryRead | undefined>;
+	register(provider: AgentProvider): void;
+	warm(): void;
+} {
+	type CapabilityCache = {
+		providerId: string;
+		cache: CachedList<ProviderCapabilityDiscovery>;
+	};
+	const registered = new Map(providers);
+	const caches = new Map<string, CapabilityCache>();
+	const workspaceKey = (providerId: string, cwd: string) =>
+		`${providerId}\0${declaredPathKey(cwd)}`;
+	const cacheFor = (
+		provider: AgentProvider,
+		discoveryCwd = defaultDiscoveryCwd,
+	): CachedList<ProviderCapabilityDiscovery> | undefined => {
+		if (!provider.discoverCapabilities) return undefined;
+		const cwd = discoveryCwd.trim() || defaultDiscoveryCwd;
+		const key = workspaceKey(provider.providerId, cwd);
+		const existing = caches.get(key);
+		if (existing) return existing.cache;
+		if (caches.size >= MAX_PROVIDER_CAPABILITY_WORKSPACES) {
+			const oldest = caches.keys().next().value;
+			if (oldest !== undefined) caches.delete(oldest);
+		}
+		const discover = provider.discoverCapabilities.bind(provider);
+		const workspaceHash = createHash("sha256")
+			.update(declaredPathKey(cwd))
+			.digest("hex")
+			.slice(0, 16);
+		const cache = createCachedList<ProviderCapabilityDiscovery>({
+			persistKey: `provider_capabilities:${encodeURIComponent(provider.providerId)}:${workspaceHash}`,
+			fetcher: () => discover({ cwd }),
+			fallback: {
+				observedAt: 0,
+				evidence: [],
+				issues: ["No provider capability discovery snapshot is cached yet."],
+			},
+			fetchTimeoutMs: 12_000,
+			ttlMs: 60_000,
+			failureTtlMs: 15_000,
+			validate: isProviderCapabilityDiscovery,
+			onChange: () => onChange?.(provider.providerId),
+		});
+		caches.set(key, { providerId: provider.providerId, cache });
+		return cache;
+	};
+	const register = (provider: AgentProvider) => {
+		registered.set(provider.providerId, provider);
+		for (const [key, value] of caches) {
+			if (value.providerId === provider.providerId) caches.delete(key);
+		}
+	};
+
+	return {
+		register,
+		async capabilitiesFor(provider, discoveryCwd, refresh) {
+			const cache = cacheFor(provider, discoveryCwd);
+			if (!cache) return undefined;
+			const result = await cache.get(refresh);
+			return { discovery: result.value, source: result.source };
+		},
+		async cachedCapabilitiesFor(provider, discoveryCwd) {
+			const cache = cacheFor(provider, discoveryCwd);
+			if (!cache) return undefined;
+			const result = await cache.getCached();
+			void cache.get().catch(() => {});
+			return { discovery: result.value, source: result.source };
+		},
+		warm() {
+			for (const provider of registered.values()) {
+				const cache = cacheFor(provider, defaultDiscoveryCwd);
+				if (cache) void cache.get().catch(() => {});
+			}
+		},
+	};
+}
+
+type ProviderCatalogSources = {
+	modelsFor(
+		provider: AgentProvider,
+		refresh?: boolean,
+	): Promise<ProviderModelInfo[]>;
+	cachedModelsFor?(provider: AgentProvider): Promise<ProviderModelInfo[]>;
+	capabilitiesFor?(
+		provider: AgentProvider,
+		discoveryCwd: string,
+		refresh?: boolean,
+	): Promise<ProviderCapabilityDiscoveryRead | undefined>;
+	cachedCapabilitiesFor?(
+		provider: AgentProvider,
+		discoveryCwd: string,
+	): Promise<ProviderCapabilityDiscoveryRead | undefined>;
+};
+
 /**
  * Build the UI provider catalog without probing host-only capabilities unless
  * the requesting surface explicitly needs them. Capability probes can involve
@@ -204,21 +332,19 @@ export function createModelCatalog(
  */
 export async function loadProviderCatalog(
 	providers: Iterable<AgentProvider>,
-	modelCatalog: {
-		modelsFor(
-			provider: AgentProvider,
-			refresh?: boolean,
-		): Promise<ProviderModelInfo[]>;
-		cachedModelsFor?(provider: AgentProvider): Promise<ProviderModelInfo[]>;
-	},
+	catalog: ProviderCatalogSources,
 	options: {
 		refresh?: boolean;
 		includeHostCapabilities?: boolean;
+		includeProviderCapabilities?: boolean;
 		preferCachedModels?: boolean;
+		preferCachedProviderCapabilities?: boolean;
+		discoveryCwd?: string;
 	} = {},
 ): Promise<ProviderInfo[]> {
 	return Promise.all(
 		[...providers].map(async (provider) => {
+			const discoveryCwd = options.discoveryCwd ?? process.cwd();
 			const check = provider.check
 				? await observeCatalogStep(
 						`check:${provider.providerId}`,
@@ -231,30 +357,95 @@ export async function loadProviderCatalog(
 				: null;
 			const providerRefresh =
 				options.refresh === true && check?.available !== false;
-			const [models, hostCapabilities, forkCapability] = await Promise.all([
-				observeCatalogStep(
-					`models:${provider.providerId}`,
-					`${provider.providerId} model snapshot`,
-					() =>
-						options.preferCachedModels && modelCatalog.cachedModelsFor
-							? modelCatalog.cachedModelsFor(provider)
-							: modelCatalog.modelsFor(provider, providerRefresh),
-				),
-				options.includeHostCapabilities && provider.hostCapabilities
-					? observeCatalogStep(
-							`capabilities:${provider.providerId}`,
-							`${provider.providerId} host-capability snapshot`,
-							() => provider.hostCapabilities?.().catch(() => ({})),
-						)
-					: undefined,
-				provider.resolveForkCapability && check?.available !== false
-					? observeCatalogStep(
-							`fork:${provider.providerId}`,
-							`${provider.providerId} fork-capability negotiation`,
-							() => provider.resolveForkCapability?.().catch(() => undefined),
-						)
-					: provider.forkCapability,
-			]);
+			const [models, hostCapabilities, forkCapability, capabilityDiscovery] =
+				await Promise.all([
+					observeCatalogStep(
+						`models:${provider.providerId}`,
+						`${provider.providerId} model snapshot`,
+						() =>
+							options.preferCachedModels && catalog.cachedModelsFor
+								? catalog.cachedModelsFor(provider)
+								: catalog.modelsFor(provider, providerRefresh),
+					),
+					options.includeHostCapabilities && provider.hostCapabilities
+						? observeCatalogStep(
+								`capabilities:${provider.providerId}`,
+								`${provider.providerId} host-capability snapshot`,
+								() => provider.hostCapabilities?.().catch(() => ({})),
+							)
+						: undefined,
+					provider.resolveForkCapability && check?.available !== false
+						? observeCatalogStep(
+								`fork:${provider.providerId}`,
+								`${provider.providerId} fork-capability negotiation`,
+								() => provider.resolveForkCapability?.().catch(() => undefined),
+							)
+						: provider.forkCapability,
+					options.includeProviderCapabilities && check?.available !== false
+						? observeCatalogStep(
+								`provider-capabilities:${provider.providerId}`,
+								`${provider.providerId} provider-capability snapshot`,
+								async () => {
+									if (
+										!options.refresh &&
+										options.preferCachedProviderCapabilities !== false &&
+										catalog.cachedCapabilitiesFor
+									) {
+										return catalog.cachedCapabilitiesFor(
+											provider,
+											discoveryCwd,
+										);
+									}
+									if (catalog.capabilitiesFor) {
+										return catalog.capabilitiesFor(
+											provider,
+											discoveryCwd,
+											options.refresh,
+										);
+									}
+									if (!provider.discoverCapabilities) return undefined;
+									try {
+										return {
+											discovery: await provider.discoverCapabilities({
+												cwd: discoveryCwd,
+											}),
+											source: "live" as const,
+										};
+									} catch (error) {
+										return {
+											discovery: {
+												observedAt: Date.now(),
+												evidence: [],
+												issues: [
+													`Provider capability discovery failed: ${
+														error instanceof Error
+															? error.message
+															: String(error)
+													}`,
+												],
+											},
+											source: "fallback" as const,
+										};
+									}
+								},
+							)
+						: undefined,
+				]);
+			const capabilitySnapshot = options.includeProviderCapabilities
+				? buildProviderCapabilitySnapshot({
+						providerId: provider.providerId,
+						providerAvailable: check?.available ?? true,
+						providerUnavailableReason:
+							check?.available === false ? check.reason : undefined,
+						capabilities: provider.capabilities,
+						forkCapability,
+						models,
+						permissionModes: provider.permissionModes,
+						discovery: capabilityDiscovery?.discovery,
+						discoverySource: capabilityDiscovery?.source,
+						discoveryCwd,
+					})
+				: undefined;
 			return {
 				id: provider.providerId,
 				label: provider.label ?? provider.providerId,
@@ -279,12 +470,15 @@ export async function loadProviderCatalog(
 					: {}),
 				forkCapability,
 				hostCapabilities,
+				...(capabilitySnapshot ? { capabilitySnapshot } : {}),
 			};
 		}),
 	);
 }
 
-type ProviderCatalogLoadOptions = Parameters<typeof loadProviderCatalog>[2];
+type ProviderCatalogLoadOptions = NonNullable<
+	Parameters<typeof loadProviderCatalog>[2]
+>;
 
 export type ProviderCatalogSnapshot = {
 	get(options?: ProviderCatalogLoadOptions): Promise<ProviderInfo[]>;
@@ -298,11 +492,12 @@ export type ProviderCatalogSnapshot = {
  */
 export function createProviderCatalogSnapshot(
 	providers: Iterable<AgentProvider> | (() => Iterable<AgentProvider>),
-	modelCatalog: Parameters<typeof loadProviderCatalog>[1],
+	catalog: Parameters<typeof loadProviderCatalog>[1],
 	options: {
 		ttlMs?: number;
 		now?: () => number;
 		load?: typeof loadProviderCatalog;
+		discoveryCwd?: string;
 	} = {},
 ): ProviderCatalogSnapshot {
 	const providerList = () => [
@@ -317,22 +512,51 @@ export function createProviderCatalogSnapshot(
 	>();
 	const inflight = new Map<string, Promise<ProviderInfo[]>>();
 	let generation = 0;
-	const keyFor = (includeHostCapabilities: boolean) =>
-		includeHostCapabilities ? "with-capabilities" : "base";
+	const keyFor = (
+		includeHostCapabilities: boolean,
+		includeProviderCapabilities: boolean,
+		discoveryCwd: string,
+	) =>
+		`${includeHostCapabilities ? "host" : "base"}:${
+			includeProviderCapabilities ? "provider" : "static"
+		}${includeProviderCapabilities ? `:${declaredPathKey(discoveryCwd)}` : ""}`;
+	const effectiveDiscoveryCwd = (loadOptions: ProviderCatalogLoadOptions) =>
+		loadOptions.discoveryCwd ?? options.discoveryCwd ?? process.cwd();
 
 	function store(
 		includeHostCapabilities: boolean,
+		includeProviderCapabilities: boolean,
+		discoveryCwd: string,
 		value: ProviderInfo[],
 	): ProviderInfo[] {
 		const refreshedAt = now();
-		snapshots.set(keyFor(includeHostCapabilities), { value, refreshedAt });
-		if (includeHostCapabilities) {
-			snapshots.set(keyFor(false), {
-				value: value.map(
-					({ hostCapabilities: _ignored, ...provider }) => provider,
-				),
-				refreshedAt,
-			});
+		for (const withHost of [false, true]) {
+			if (withHost && !includeHostCapabilities) continue;
+			for (const withProvider of [false, true]) {
+				if (withProvider && !includeProviderCapabilities) continue;
+				const projected =
+					withHost === includeHostCapabilities &&
+					withProvider === includeProviderCapabilities
+						? value
+						: value.map((provider) => {
+								const {
+									hostCapabilities,
+									capabilitySnapshot,
+									...baseProvider
+								} = provider;
+								return {
+									...baseProvider,
+									...(withHost && hostCapabilities ? { hostCapabilities } : {}),
+									...(withProvider && capabilitySnapshot
+										? { capabilitySnapshot }
+										: {}),
+								};
+							});
+				snapshots.set(keyFor(withHost, withProvider, discoveryCwd), {
+					value: projected,
+					refreshedAt,
+				});
+			}
 		}
 		return value;
 	}
@@ -342,15 +566,34 @@ export function createProviderCatalogSnapshot(
 	): Promise<ProviderInfo[]> {
 		const includeHostCapabilities =
 			loadOptions?.includeHostCapabilities === true;
-		const snapshotKey = keyFor(includeHostCapabilities);
-		const flightKey = `${snapshotKey}:${loadOptions?.refresh ? "live" : "cached"}`;
+		const includeProviderCapabilities =
+			loadOptions?.includeProviderCapabilities === true;
+		const discoveryCwd = effectiveDiscoveryCwd(loadOptions);
+		const snapshotKey = keyFor(
+			includeHostCapabilities,
+			includeProviderCapabilities,
+			discoveryCwd,
+		);
+		const flightKey = `${snapshotKey}:${loadOptions?.refresh ? "live" : "cached"}:${
+			loadOptions.preferCachedProviderCapabilities === false
+				? "await-provider"
+				: "cached-provider"
+		}`;
 		const current = inflight.get(flightKey);
 		if (current) return current;
 		const refreshGeneration = generation;
-		const pending = load(providerList(), modelCatalog, loadOptions)
+		const pending = load(providerList(), catalog, {
+			...loadOptions,
+			discoveryCwd,
+		})
 			.then((value) =>
 				refreshGeneration === generation
-					? store(includeHostCapabilities, value)
+					? store(
+							includeHostCapabilities,
+							includeProviderCapabilities,
+							discoveryCwd,
+							value,
+						)
 					: value,
 			)
 			.finally(() => inflight.delete(flightKey));
@@ -363,7 +606,16 @@ export function createProviderCatalogSnapshot(
 			if (loadOptions.refresh) return refresh(loadOptions);
 			const includeHostCapabilities =
 				loadOptions.includeHostCapabilities === true;
-			const snapshot = snapshots.get(keyFor(includeHostCapabilities));
+			const includeProviderCapabilities =
+				loadOptions.includeProviderCapabilities === true;
+			const discoveryCwd = effectiveDiscoveryCwd(loadOptions);
+			const snapshot = snapshots.get(
+				keyFor(
+					includeHostCapabilities,
+					includeProviderCapabilities,
+					discoveryCwd,
+				),
+			);
 			const cachedOptions = {
 				...loadOptions,
 				refresh: false,
@@ -392,12 +644,32 @@ export function createProviderCatalogSnapshot(
 export function providerCatalogRequestOptions(searchParams: URLSearchParams): {
 	refresh: boolean;
 	preferCachedModels: boolean;
+	preferCachedProviderCapabilities: boolean;
 	includeHostCapabilities: boolean;
+	includeProviderCapabilities: boolean;
+	discoveryCwd?: string;
 } {
 	const refresh = searchParams.get("refresh") === "1";
+	const rawDiscoveryCwd = searchParams.get("capability_cwd");
+	const discoveryCwd = rawDiscoveryCwd?.trim();
+	if (
+		rawDiscoveryCwd !== null &&
+		(!discoveryCwd ||
+			discoveryCwd.length > 4_096 ||
+			(!posix.isAbsolute(discoveryCwd) && !win32.isAbsolute(discoveryCwd)))
+	) {
+		throw new Error(
+			"capability_cwd must be an absolute path up to 4096 characters",
+		);
+	}
 	return {
 		refresh,
 		preferCachedModels: !refresh,
+		preferCachedProviderCapabilities:
+			searchParams.get("provider_capabilities_wait") !== "1",
 		includeHostCapabilities: searchParams.get("host_capabilities") === "1",
+		includeProviderCapabilities:
+			searchParams.get("provider_capabilities") === "1",
+		...(discoveryCwd ? { discoveryCwd } : {}),
 	};
 }

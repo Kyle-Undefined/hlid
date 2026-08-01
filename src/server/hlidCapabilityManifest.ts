@@ -15,6 +15,7 @@ import type {
 } from "./hlidHelp";
 import { boundedValue, revisionFor } from "./hlidHelpValue";
 import { buildOrchestrationTargetCatalog } from "./hlidOrchestrationTargets";
+import { providerCapabilityId } from "./providerCapabilities";
 
 type Capability = HlidCapabilityManifest["capabilities"][number];
 type Availability = Capability["availability"];
@@ -77,6 +78,22 @@ function commandAllowedForProvider(
 	return !capability.providerIds || capability.providerIds.includes(providerId);
 }
 
+function resolvedProviderCapability(
+	provider: ProviderInfo | undefined,
+	fallback: boolean,
+	...segments: string[]
+): boolean {
+	const snapshot = provider?.capabilitySnapshot;
+	if (!snapshot) return fallback;
+	const id = providerCapabilityId(provider.id, ...segments);
+	const capability = snapshot.capabilities.find((item) => item.id === id);
+	if (!capability) return fallback;
+	return (
+		capability.integration === "integrated" &&
+		capability.availability === "available"
+	);
+}
+
 function activeCommandActions(
 	providerId: string,
 	provider: ProviderInfo | undefined,
@@ -90,17 +107,30 @@ function activeCommandActions(
 				if (capability.name === "workflows") {
 					return (
 						provider?.available !== false &&
-						providerCapabilities?.workflowCatalog === true
+						resolvedProviderCapability(
+							provider,
+							providerCapabilities?.workflowCatalog === true,
+							"workflow-catalog",
+						)
 					);
 				}
 				return true;
 			}
 			if (provider?.available === false) return false;
 			if (capability.name === "goal") {
-				return providerCapabilities?.goalControl === true;
+				return resolvedProviderCapability(
+					provider,
+					providerCapabilities?.goalControl === true,
+					"goal-control",
+				);
 			}
 			if (capability.name === "compact" || capability.name === "review") {
-				return providerCapabilities?.structuredActivities?.includes(
+				return resolvedProviderCapability(
+					provider,
+					providerCapabilities?.structuredActivities?.includes(
+						capability.name,
+					) ?? false,
+					"structured-activity",
 					capability.name,
 				);
 			}
@@ -326,6 +356,29 @@ function providerGuidance(
 	};
 }
 
+function providerCapabilitySummary(provider: ProviderInfo | undefined) {
+	const snapshot = provider?.capabilitySnapshot;
+	if (!snapshot) return undefined;
+	const capabilities = snapshot.capabilities;
+	const count = (predicate: (item: (typeof capabilities)[number]) => boolean) =>
+		capabilities.filter(predicate).length;
+	return {
+		status: snapshot.status,
+		revision: boundedValue(snapshot.revision, 80),
+		total: capabilities.length,
+		integrated: count((item) => item.integration === "integrated"),
+		providerNative: count((item) => item.integration === "provider-native"),
+		notIntegrated: count((item) => item.integration === "not-integrated"),
+		available: count(
+			(item) =>
+				item.availability === "available" ||
+				item.availability === "provider-native",
+		),
+		conditional: count((item) => item.availability === "conditional"),
+		unavailable: count((item) => item.availability === "unavailable"),
+	};
+}
+
 function buildRegistrySnapshot(state: ManifestState) {
 	const { context, provider, selectedModel } = state;
 	return {
@@ -344,6 +397,7 @@ function buildRegistrySnapshot(state: ManifestState) {
 							}
 						: undefined,
 					forkCapability: provider.forkCapability,
+					providerCapabilities: providerCapabilitySummary(provider),
 					hostCapabilities: state.hostCapabilities,
 					selectedModel: selectedModel
 						? {
@@ -662,6 +716,7 @@ function voiceCapability(state: ManifestState, voice: VoiceState): Capability {
 }
 
 function providersCapability(state: ManifestState): Capability {
+	const snapshot = providerCapabilitySummary(state.provider);
 	return {
 		id: "providers",
 		owner: "provider",
@@ -672,8 +727,9 @@ function providersCapability(state: ManifestState): Capability {
 					? "provider-native"
 					: "conditional",
 		providerGuidance: providerGuidance(state, "provider-capability-catalog"),
-		summary:
-			"Claude, Codex, ACP, and future providers retain their own commands, hidden context, forks, models, and lifecycle limits.",
+		summary: snapshot
+			? `The ${state.providerId} provider capability snapshot is ${snapshot.status}: ${snapshot.total} observed, ${snapshot.integrated} integrated, ${snapshot.providerNative} provider-native, and ${snapshot.notIntegrated} not integrated. Provider commands, hidden context, forks, models, and lifecycle limits retain their native semantics.`
+			: "Claude, Codex, ACP, and future providers retain their own commands, hidden context, forks, models, and lifecycle limits. A provider capability snapshot is not available in this context.",
 	};
 }
 
@@ -751,6 +807,11 @@ export function buildHlidCapabilityManifestImpl(
 			commandActions: state.commandActions,
 			hlidTools: state.toolNames,
 			providerSnapshot: state.provider ? "current" : "unavailable",
+			...(providerCapabilitySummary(state.provider)
+				? {
+						providerCapabilities: providerCapabilitySummary(state.provider),
+					}
+				: {}),
 		},
 		capabilities: buildCapabilities(state, buildVoiceState(state)),
 		orchestrationTargets: state.orchestrationTargets,

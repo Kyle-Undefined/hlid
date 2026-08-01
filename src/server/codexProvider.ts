@@ -47,6 +47,7 @@ import {
 	type CodexAppServerLaunch,
 	type ThreadHandler,
 } from "./codexAppServer";
+import { discoverCodexProviderCapabilities } from "./codexCapabilityDiscovery";
 import type {
 	CollabAgentState,
 	CollabAgentStatus,
@@ -4774,6 +4775,20 @@ export class CodexProvider implements AgentProvider {
 							reason: "The Hlid Visualize bridge is available only to Codex",
 						},
 		};
+	}
+
+	async discoverCapabilities(context: { cwd: string }) {
+		const launch = codexLaunchConfig({
+			cwd: context.cwd,
+			profile: this.providerProfile,
+		});
+		const conn = acquireCodexAppServer(launch.appServer);
+		await conn.ready;
+		return discoverCodexProviderCapabilities({
+			providerId: this.providerId,
+			cwd: launch.rpcCwd,
+			request: (method, params) => conn.requestOptional(method, params, 5_000),
+		});
 	}
 
 	async listModels(): Promise<ProviderModelInfo[]> {

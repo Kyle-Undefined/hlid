@@ -3,6 +3,8 @@
  * Kept separate from the createServerFn modules so components that only
  * need the types don't depend on the fetch layer.
  */
+import type { ProviderCapabilitySnapshot } from "./providerCapabilityTypes";
+
 export type ProviderInfo = {
 	id: string;
 	label: string;
@@ -60,6 +62,8 @@ export type ProviderInfo = {
 		workflowCatalog?: boolean;
 		realtime?: boolean;
 	};
+	/** Bounded provider evidence resolved against Hlid's current integration. */
+	capabilitySnapshot?: ProviderCapabilitySnapshot;
 };
 
 /** Account info for the authenticated agent backing a live claude session. */

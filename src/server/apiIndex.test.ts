@@ -83,10 +83,11 @@ describe("buildApiIndex", () => {
 
 		const providers = endpoint(
 			"GET",
-			"/providers?refresh=1&host_capabilities=1",
+			"/providers?refresh=1&host_capabilities=1&provider_capabilities=1",
 		);
 		expect(providers?.desc).toContain("60-second");
 		expect(providers?.desc).toContain("host_capabilities=1");
+		expect(providers?.desc).toContain("provider_capabilities=1");
 
 		const mcp = endpoint("GET", "/mcp-status");
 		expect(mcp?.desc).toContain("currently selected provider");

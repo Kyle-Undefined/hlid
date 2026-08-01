@@ -167,6 +167,17 @@ export type HlidCapabilityManifest = {
 		commandActions: CommandAction[];
 		hlidTools: string[];
 		providerSnapshot: "current" | "unavailable";
+		providerCapabilities?: {
+			status: "current" | "stale" | "partial" | "unavailable";
+			revision: string;
+			total: number;
+			integrated: number;
+			providerNative: number;
+			notIntegrated: number;
+			available: number;
+			conditional: number;
+			unavailable: number;
+		};
 	};
 	capabilities: HlidCapability[];
 	orchestrationTargets: HlidOrchestrationTargetCatalog;
@@ -192,6 +203,70 @@ function boundedJson(value: unknown, maxChars: number): string {
 	);
 }
 
+function focusedProviderCapabilityCatalog(
+	provider: ProviderInfo | undefined,
+	limit: number,
+) {
+	const snapshot = provider?.capabilitySnapshot;
+	if (!snapshot) {
+		return {
+			source: "live-provider-capability-catalog" as const,
+			snapshot: "unavailable" as const,
+			total: 0,
+			returned: 0,
+			truncated: false,
+			items: [],
+		};
+	}
+	const priority = (item: (typeof snapshot.capabilities)[number]) => {
+		if (item.integration === "not-integrated") return 0;
+		if (item.availability === "conditional") return 1;
+		if (item.integration === "integrated") return 2;
+		return 3;
+	};
+	const sorted = [...snapshot.capabilities].sort(
+		(a, b) => priority(a) - priority(b) || a.id.localeCompare(b.id),
+	);
+	const items = sorted.slice(0, limit).map((item) => ({
+		id: boundedValue(item.id, 180),
+		label: boundedValue(item.label, 120),
+		scope: item.scope,
+		support: item.support,
+		integration: item.integration,
+		readiness: item.readiness,
+		availability: item.availability,
+		maturity: item.maturity ?? "unknown",
+		...(item.operations?.length
+			? {
+					operations: item.operations
+						.slice(0, 6)
+						.map((value) => boundedValue(value, 60)),
+				}
+			: {}),
+		...(item.reason ? { reason: boundedValue(item.reason, 180) } : {}),
+	}));
+	return {
+		source: "live-provider-capability-catalog" as const,
+		snapshot: snapshot.status,
+		revision: boundedValue(snapshot.revision, 80),
+		observedAt: snapshot.observedAt,
+		...(snapshot.context
+			? { context: { cwd: boundedValue(snapshot.context.cwd, 300) } }
+			: {}),
+		total: snapshot.capabilities.length,
+		returned: items.length,
+		truncated: items.length < snapshot.capabilities.length,
+		items,
+		...(snapshot.issues?.length
+			? {
+					issues: snapshot.issues
+						.slice(0, 3)
+						.map((value) => boundedValue(value, 180)),
+				}
+			: {}),
+	};
+}
+
 export function buildHlidHelpResponse(
 	topic: HlidHelpTopic,
 	context: HlidOperatingContext,
@@ -214,6 +289,19 @@ export function buildHlidHelpResponse(
 		guidance: TOPIC_GUIDANCE[topic],
 		relatedTopics: manifest.helpTopics.filter((item) => item !== topic),
 	};
+	if (topic === "providers") {
+		for (let limit = 8; limit >= 0; limit--) {
+			const response = JSON.stringify({
+				...shared,
+				providerCapabilities: focusedProviderCapabilityCatalog(
+					context.providerSnapshot,
+					limit,
+				),
+				...tail,
+			});
+			if (response.length <= MAX_HLID_HELP_RESPONSE_CHARS) return response;
+		}
+	}
 	if (topic !== "orchestration") {
 		return boundedJson({ ...shared, ...tail }, MAX_HLID_HELP_RESPONSE_CHARS);
 	}

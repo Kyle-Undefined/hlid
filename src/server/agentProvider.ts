@@ -1,4 +1,5 @@
 import type { HlidToolLoadingSummary } from "../lib/hlidContext";
+import type { ProviderCapabilityDiscovery } from "../lib/providerCapabilityTypes";
 
 /**
  * A single rate-limit window reading parsed from a provider's HTTP response headers.
@@ -667,6 +668,14 @@ export interface AgentProvider {
 	hostCapabilities?(): Promise<
 		Record<string, { label: string; available: boolean; reason?: string }>
 	>;
+	/**
+	 * Read provider-described capability evidence without starting a chat turn.
+	 * Callers own caching and must keep support, Hlid integration, and runtime
+	 * readiness distinct when building a user-facing snapshot.
+	 */
+	discoverCapabilities?(context: {
+		cwd: string;
+	}): Promise<ProviderCapabilityDiscovery>;
 	/** Live-fetch the provider's model catalog. Falls back to the static `models` list on failure. */
 	listModels?(): Promise<ProviderModelInfo[]>;
 	/** Discover skills visible to this provider for a concrete working directory. */

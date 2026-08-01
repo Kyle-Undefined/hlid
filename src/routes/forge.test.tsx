@@ -76,6 +76,7 @@ describe("forge route loader", () => {
 		expect(getProvidersFn).toHaveBeenCalledWith({
 			data: {
 				includeHostCapabilities: true,
+				includeProviderCapabilities: true,
 				preferCachedModels: true,
 			},
 		});

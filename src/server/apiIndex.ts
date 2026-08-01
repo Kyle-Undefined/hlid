@@ -66,9 +66,9 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 	},
 	{
 		method: "GET",
-		path: "/providers?refresh=1&host_capabilities=1",
+		path: "/providers?refresh=1&host_capabilities=1&provider_capabilities=1",
 		server: "api",
-		desc: "Provider availability and server-owned model and capability catalog. Normal reads use a roughly 60-second stale-while-revalidate snapshot backed by roughly six-hour model caches; refresh=1 forces live discovery and host_capabilities=1 includes host-only readiness. Includes input modalities, per-model effort and service tiers, permission modes, exact-fork support, and structured, realtime, and workflow capabilities.",
+		desc: "Provider availability and server-owned model and capability catalog. Normal reads use a roughly 60-second stale-while-revalidate snapshot backed by cached model and provider evidence; refresh=1 forces live discovery, host_capabilities=1 includes host-only readiness, and provider_capabilities=1 includes the bounded support, integration, readiness, and resolved-availability snapshot. capability_cwd may select an exact absolute workspace for workspace-scoped evidence, while provider_capabilities_wait=1 awaits an uncached discovery result. Includes input modalities, per-model effort and service tiers, permission modes, exact-fork support, and structured, realtime, and workflow capabilities.",
 	},
 	{
 		method: "GET",

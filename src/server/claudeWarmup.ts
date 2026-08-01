@@ -30,6 +30,8 @@ export type ClaudeWarmupSnapshot = {
 	mcpServers: McpServerStatus[];
 	/** Models the CLI reports as available. */
 	modelCount: number;
+	/** Runtime methods advertised by this installed Agent SDK Query object. */
+	controlMethods?: string[];
 	/** Provider scope this metadata belongs to. */
 	cwd: string;
 	warmedAt: number;
@@ -53,6 +55,27 @@ const DISCOVERY_TIMEOUT_MS = 30_000;
 const MCP_SETTLE_TIMEOUT_MS = 10_000;
 const MCP_POLL_INTERVAL_MS = 500;
 const PROVIDER_WIDE_MCP_SCOPES = new Set(["claudeai", "user", "managed"]);
+const CLAUDE_CONTROL_METHODS = [
+	"interrupt",
+	"setPermissionMode",
+	"setMcpPermissionModeOverride",
+	"setModel",
+	"applyFlagSettings",
+	"supportedCommands",
+	"supportedModels",
+	"supportedAgents",
+	"mcpServerStatus",
+	"getContextUsage",
+	"reloadPlugins",
+	"reloadSkills",
+	"rewindFiles",
+	"reconnectMcpServer",
+	"toggleMcpServer",
+	"setMcpServers",
+	"stopTask",
+	"backgroundTasks",
+	"accountInfo",
+] as const;
 
 function cacheKey(cwd: string): string {
 	const expanded = expandTilde(cwd);
@@ -227,6 +250,11 @@ async function runWarmup(options: ClaudeWarmupOptions): Promise<void> {
 				};
 			}),
 			modelCount: (init.models ?? []).length,
+			controlMethods: CLAUDE_CONTROL_METHODS.filter(
+				(method) =>
+					typeof (q as unknown as Record<string, unknown>)[method] ===
+					"function",
+			),
 			cwd: scopedCwd,
 			warmedAt: Date.now(),
 			durationMs: Date.now() - started,

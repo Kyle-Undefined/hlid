@@ -135,6 +135,46 @@ describe("Vault Agent and Computer Use model/effort interplay", () => {
 		expect(screen.getByText("High (default)")).not.toBeNull();
 	});
 
+	it("shows one resolved provider capability snapshot without changing provider controls", () => {
+		const withCapabilities: ProviderInfo = {
+			...provider,
+			capabilitySnapshot: {
+				contractVersion: 1,
+				providerId: "claude",
+				status: "current",
+				source: "live",
+				revision: "v1-test",
+				observedAt: 1,
+				capabilities: [
+					{
+						id: "claude:sdk-control:rewindfiles",
+						label: "SDK control: rewind files",
+						scope: "session",
+						support: "advertised",
+						integration: "not-integrated",
+						readiness: "ready",
+						source: "provider-sdk",
+						availability: "unavailable",
+						reason: "Hlid does not integrate it yet.",
+					},
+				],
+			},
+		};
+		render(
+			<ClaudeSection
+				claude={makeClaude()}
+				onChange={vi.fn()}
+				providers={[withCapabilities]}
+			/>,
+		);
+
+		expect(screen.getByText("Capability snapshot")).not.toBeNull();
+		expect(screen.getByText("1 observed")).not.toBeNull();
+		expect(screen.getByText("1 not integrated")).not.toBeNull();
+		fireEvent.click(screen.getByText("Inspect capability evidence"));
+		expect(screen.getByText(/SDK control: rewind files/)).not.toBeNull();
+	});
+
 	it("keeps Windows Computer Use out of the Vault Agent section", () => {
 		const codexProvider: ProviderInfo = {
 			...provider,

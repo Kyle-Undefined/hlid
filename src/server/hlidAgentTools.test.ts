@@ -518,7 +518,90 @@ describe("Hlid agent tools", () => {
 			],
 		});
 		expect(db.dbFetch).toHaveBeenCalledWith("/db/session-row?id=session-1");
-		expect(db.dbFetch).toHaveBeenCalledWith("/providers?host_capabilities=1");
+		expect(db.dbFetch).toHaveBeenCalledWith(
+			"/providers?host_capabilities=1&provider_capabilities=1&capability_cwd=%2Fwork%2Fproject&provider_capabilities_wait=1",
+		);
+	});
+
+	it("uses the persisted active workspace for provider capability discovery", async () => {
+		db.dbFetch.mockResolvedValueOnce(
+			Response.json({
+				provider_id: "codex",
+				agent_cwd:
+					"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\development\\repos\\hlid",
+			}),
+		);
+		await executeHlidAgentTool(
+			"hlid_help",
+			{ topic: "providers" },
+			{
+				providerId: "codex",
+				runtimeCwd: "C:\\Users\\kyleu\\Documents\\Obsidian\\Fornbok",
+				sessionId: "session-1",
+			},
+		);
+
+		expect(db.dbFetch).toHaveBeenCalledWith(
+			"/providers?host_capabilities=1&provider_capabilities=1&capability_cwd=%5C%5Cwsl.localhost%5CUbuntu-24.04%5Chome%5Ckyle%5Cdevelopment%5Crepos%5Chlid&provider_capabilities_wait=1",
+		);
+	});
+
+	it("keeps Windows host bridges available to a WSL-scoped session", async () => {
+		const runtimeCwd =
+			"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\development\\repos\\hlid";
+		db.dbFetch.mockImplementation((path: string) => {
+			if (path === "/db/session-row?id=session-1") {
+				return Promise.resolve(
+					Response.json({
+						provider_id: "codex",
+						agent_cwd: runtimeCwd,
+					}),
+				);
+			}
+			if (path.startsWith("/providers?")) {
+				return Promise.resolve(
+					Response.json({
+						providers: [
+							{
+								id: "codex",
+								label: "Codex",
+								available: true,
+								models: [],
+								hostCapabilities: {
+									windowsComputerUse: {
+										label: "Windows Computer Use",
+										available: true,
+									},
+									windowsVisualize: {
+										label: "Windows Visualize",
+										available: true,
+									},
+								},
+							},
+						],
+					}),
+				);
+			}
+			return Promise.resolve(Response.json({}));
+		});
+
+		const result = JSON.parse(
+			await executeHlidAgentTool(
+				"hlid_help",
+				{ topic: "overview" },
+				{ providerId: "codex", runtimeCwd, sessionId: "session-1" },
+			),
+		);
+
+		expect(result.runtime.providerEnvironment).toBe("wsl");
+		expect(result.registry.hlidTools).toEqual(
+			expect.arrayContaining(["windows_computer_use", "create_visualization"]),
+		);
+		expect(
+			result.capabilities.find(
+				(capability: { id: string }) => capability.id === "computer_use",
+			),
+		).toMatchObject({ owner: "hlid", availability: "available" });
 	});
 
 	it("uses the full live provider catalog for orchestration target discovery", async () => {
@@ -531,7 +614,10 @@ describe("Hlid agent tools", () => {
 					}),
 				);
 			}
-			if (path === "/providers?host_capabilities=1") {
+			if (
+				path ===
+				"/providers?host_capabilities=1&provider_capabilities=1&capability_cwd=%2Fwork%2Fproject&provider_capabilities_wait=1"
+			) {
 				return Promise.resolve(
 					Response.json({
 						providers: [
