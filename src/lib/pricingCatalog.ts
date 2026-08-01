@@ -187,6 +187,7 @@ export const BUILTIN_PRICING_MODELS: readonly PricingModelRule[] = [
 	},
 	...(
 		[
+			"claude-opus-5",
 			"claude-opus-4-8",
 			"claude-opus-4-7",
 			"claude-opus-4-6",

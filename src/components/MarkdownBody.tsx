@@ -105,6 +105,36 @@ function normalizeLatexSegment(text: string): string {
 	let cursor = 0;
 
 	while (cursor < text.length) {
+		// A pair of ordinary currency amounts such as "$570 ... $500" is a
+		// syntactically valid remark-math span. Escape numeric currency markers
+		// unless the paired content has clear equation syntax. Explicit \(...\)
+		// and ordinary variable-led $...$ math remain unchanged.
+		if (
+			text[cursor] === "$" &&
+			/\d/u.test(text[cursor + 1] ?? "") &&
+			!isEscaped(text, cursor)
+		) {
+			let closeAt = text.indexOf("$", cursor + 1);
+			while (closeAt !== -1 && isEscaped(text, closeAt)) {
+				closeAt = text.indexOf("$", closeAt + 1);
+			}
+			const candidate = closeAt === -1 ? "" : text.slice(cursor + 1, closeAt);
+			const closeStartsAnotherAmount =
+				closeAt !== -1 && /\d/u.test(text[closeAt + 1] ?? "");
+			const explicitLatex = candidate.includes("\\");
+			const hasMathOperator = /[=+*/^<>]/u.test(candidate);
+			const hasProseWord = /[A-Za-z]{3,}/u.test(candidate);
+			if (
+				closeAt === -1 ||
+				closeStartsAnotherAmount ||
+				(!explicitLatex && (!hasMathOperator || hasProseWord))
+			) {
+				output += "\\$";
+				cursor++;
+				continue;
+			}
+		}
+
 		const opener = text.slice(cursor, cursor + 2);
 		if ((opener === "\\(" || opener === "\\[") && !isEscaped(text, cursor)) {
 			const closer = opener === "\\(" ? "\\)" : "\\]";

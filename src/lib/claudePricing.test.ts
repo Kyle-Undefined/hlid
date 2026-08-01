@@ -17,6 +17,7 @@ describe("claude pricing", () => {
 			)
 			.map((entry) => entry.model);
 		expect(models).toContain("claude-fable-5");
+		expect(models).toContain("claude-opus-5");
 		expect(models).toContain("claude-opus-4-8");
 		expect(models).toContain("claude-sonnet-4-6");
 	});
@@ -24,6 +25,7 @@ describe("claude pricing", () => {
 	it("uses disjoint token and five-minute cache-write rates", () => {
 		expect(estimateClaudeCost("claude-fable-5", USAGE)).toBe(73.5);
 		expect(estimateClaudeCost("claude-opus-4-8", USAGE)).toBe(36.75);
+		expect(estimateClaudeCost("claude-opus-5", USAGE)).toBe(36.75);
 	});
 
 	it("applies Sonnet 5 introductory pricing through August 2026", () => {

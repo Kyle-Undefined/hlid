@@ -218,6 +218,33 @@ describe("MarkdownBody", () => {
 			expect(container.querySelector(".katex")).toBeTruthy();
 		});
 
+		it("does not interpret currency amounts as one inline equation", () => {
+			const content =
+				"Hlid displays $570.936842 because it adds `total_cost_usd`. So the $500 figure is inflated.";
+			const { container } = render(<MarkdownBody content={content} />);
+			expect(container.querySelector(".katex")).toBeNull();
+			expect(container.textContent).toContain(
+				"Hlid displays $570.936842 because it adds total_cost_usd. So the $500 figure is inflated.",
+			);
+		});
+
+		it("keeps adjacent currency operands literal", () => {
+			const { container } = render(
+				<MarkdownBody content={"The combined charge was $2 + $3."} />,
+			);
+			expect(container.querySelector(".katex")).toBeNull();
+			expect(container.textContent).toContain(
+				"The combined charge was $2 + $3.",
+			);
+		});
+
+		it("preserves numeric equations with explicit operators", () => {
+			const { container } = render(
+				<MarkdownBody content={"Inline $2 + 2 = 4$ here."} />,
+			);
+			expect(container.querySelector(".katex")).toBeTruthy();
+		});
+
 		it("renders block math", () => {
 			const { container } = render(
 				<MarkdownBody content={"$$\n\\int_0^1 x \\, dx\n$$"} />,

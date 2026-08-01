@@ -2134,7 +2134,7 @@ describe("ClaudeProvider — event mapping", () => {
 				doneEvents[0]?.type === "done"
 					? doneEvents[0].estimatedCost
 					: undefined,
-			).toBeCloseTo(0.3);
+			).toBeCloseTo(0.2);
 			const completionTextIndex = events.findIndex(
 				(event) =>
 					event.type === "text_delta" &&
@@ -4538,7 +4538,7 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			{
 				type: "result",
 				subtype: "success",
-				total_cost_usd: 0,
+				total_cost_usd: 0.1,
 				num_turns: 1,
 				duration_ms: 100,
 				usage: { input_tokens: 1, output_tokens: 1 },
@@ -4553,7 +4553,7 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			{
 				type: "result",
 				subtype: "success",
-				total_cost_usd: 0,
+				total_cost_usd: 0.3,
 				num_turns: 1,
 				duration_ms: 100,
 				usage: { input_tokens: 1, output_tokens: 1 },
@@ -4571,6 +4571,9 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			if (e.type === "done") break;
 		}
 		expect(collected1.some((e) => e.type === "done")).toBe(true);
+		expect(collected1.find((e) => e.type === "done")).toMatchObject({
+			estimatedCost: 0.1,
+		});
 
 		await session.send("turn 2");
 		// Without the wrapper fix, this for-await yields nothing and the
@@ -4581,6 +4584,10 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			if (e.type === "done") break;
 		}
 		expect(collected2.some((e) => e.type === "done")).toBe(true);
+		const secondDone = collected2.find((e) => e.type === "done");
+		expect(
+			secondDone?.type === "done" ? secondDone.estimatedCost : null,
+		).toBeCloseTo(0.2);
 		expect(
 			collected2.some(
 				(e) => e.type === "text_delta" && e.text === "second-turn-marker",

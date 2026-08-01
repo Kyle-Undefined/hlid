@@ -1952,6 +1952,10 @@ class ClaudeAgentSession implements AgentSession {
 	private retriedWithoutResume = false;
 	private subagents = new ClaudeSubagentTracker();
 	private turnUsage = new ClaudeTurnUsageAccumulator();
+	// The streaming Claude SDK query survives across Raven turns and reports
+	// total_cost_usd cumulatively for that query object. Keep the raw boundary
+	// here so every Hlid `done` event exposes only the newly incurred cost.
+	private lastProviderEstimatedCost = 0;
 
 	constructor(
 		makeQuery: (
@@ -2176,6 +2180,21 @@ class ClaudeAgentSession implements AgentSession {
 			{},
 			...messages.map((message) => message.modelUsage ?? {}),
 		) as NonNullable<Extract<AgentEvent, { type: "done" }>["modelUsage"]>;
+		const reportedEstimatedCost = messages.at(-1)?.total_cost_usd;
+		let incrementalEstimatedCost: number | undefined;
+		if (
+			this.includeEstimatedCost &&
+			typeof reportedEstimatedCost === "number" &&
+			Number.isFinite(reportedEstimatedCost)
+		) {
+			incrementalEstimatedCost = Math.max(
+				0,
+				reportedEstimatedCost >= this.lastProviderEstimatedCost
+					? reportedEstimatedCost - this.lastProviderEstimatedCost
+					: reportedEstimatedCost,
+			);
+			this.lastProviderEstimatedCost = reportedEstimatedCost;
+		}
 		const completed: Extract<AgentEvent, { type: "done" }> = {
 			...done,
 			...(Object.keys(modelUsage).length > 0 ? { modelUsage } : {}),
@@ -2184,13 +2203,8 @@ class ClaudeAgentSession implements AgentSession {
 				(total, message) => total + (message.duration_ms ?? 0),
 				0,
 			),
-			...(this.includeEstimatedCost
-				? {
-						estimatedCost: messages.reduce(
-							(total, message) => total + message.total_cost_usd,
-							0,
-						),
-					}
+			...(incrementalEstimatedCost !== undefined
+				? { estimatedCost: incrementalEstimatedCost }
 				: {}),
 		};
 		if (!reconciled) return completed;

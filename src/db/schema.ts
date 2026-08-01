@@ -11,6 +11,7 @@ import {
 	isSyntheticModel,
 } from "../lib/providerPricing";
 import { normalizeSearchText } from "../lib/search";
+import { repairClaudeCumulativeCosts } from "./claudeCumulativeCostRepair";
 
 const DB_PATH = resolve(APP_DIR, "hlid.db");
 
@@ -1580,5 +1581,13 @@ function applyMigrations(db: Db): void {
 			`CREATE INDEX idx_messages_session_turn_id
 			 ON messages(session_id, turn_id) WHERE turn_id IS NOT NULL`,
 		);
+	});
+
+	// Claude's long-lived streaming query reports total_cost_usd cumulatively.
+	// v0.0.128 and later stored those snapshots as per-query estimates. Repair
+	// completed live Raven turns while leaving imported and interrupted rows
+	// untouched; the migration is transactional and runs once per installation.
+	runMigration(db, "_migrated_claude_cumulative_cost_deltas_v2", (db) => {
+		repairClaudeCumulativeCosts(db);
 	});
 }
