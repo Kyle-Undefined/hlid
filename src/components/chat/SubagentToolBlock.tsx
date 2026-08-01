@@ -422,8 +422,7 @@ export function SubagentToolBlock({
 	const [stopRequestedKey, setStopRequestedKey] = useState<string | null>(null);
 	const currentStopKey = `${stateKey}:${subagent.status}`;
 	const stopRequested = stopRequestedKey === currentStopKey;
-	const open =
-		openOverride ?? (active && subagent.kind !== "workflow" && !nested);
+	const open = openOverride ?? false;
 	const durationMs = useSubagentDuration(subagent, active);
 	const workflowAgentSummary =
 		subagent.kind === "workflow"

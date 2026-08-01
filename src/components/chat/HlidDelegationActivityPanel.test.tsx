@@ -113,6 +113,11 @@ describe("HlidDelegationActivityPanel", () => {
 		mockGetHlidDelegationsFn.mockResolvedValue([running, running]);
 		render(<HlidDelegationActivityPanel sessionId="parent-session" />);
 
+		const toggle = await screen.findByRole("button", {
+			name: "Show Hlid delegated children",
+		});
+		expect(screen.queryByRole("listitem")).toBeNull();
+		fireEvent.click(toggle);
 		await waitFor(() =>
 			expect(
 				screen.getByText("Review the orchestration lifecycle"),
@@ -227,7 +232,9 @@ describe("HlidDelegationActivityPanel", () => {
 			]);
 		render(<HlidDelegationActivityPanel sessionId="revision-parent" />);
 
-		await waitFor(() => expect(screen.getByText("RUNNING")).not.toBeNull());
+		await waitFor(() =>
+			expect(screen.getByText(/1 child · 1 running/)).not.toBeNull(),
+		);
 		act(() => {
 			replaceDataRevisions({
 				...getDataRevisionSnapshot(),
@@ -239,9 +246,7 @@ describe("HlidDelegationActivityPanel", () => {
 			expect(screen.getByText(/1 child · 1 settled/)).not.toBeNull(),
 		);
 		fireEvent.click(
-			screen.getByRole("button", {
-				name: "Show Hlid delegated children",
-			}),
+			screen.getByRole("button", { name: "Show Hlid delegated children" }),
 		);
 		expect(screen.getByText("CANCELLED")).not.toBeNull();
 		expect(screen.queryByText("RUNNING")).toBeNull();
@@ -254,6 +259,11 @@ describe("HlidDelegationActivityPanel", () => {
 		]);
 		render(<HlidDelegationActivityPanel sessionId="stopping-parent" />);
 
+		fireEvent.click(
+			await screen.findByRole("button", {
+				name: "Show Hlid delegated children",
+			}),
+		);
 		await waitFor(() => expect(screen.getByText("STOPPING")).not.toBeNull());
 		expect(screen.queryByText("RUNNING")).toBeNull();
 		const status = screen.getByLabelText("stopping delegation status");
@@ -282,6 +292,14 @@ describe("HlidDelegationActivityPanel", () => {
 		]);
 		render(<HlidDelegationActivityPanel sessionId="attention-parent" />);
 
+		const toggle = await screen.findByRole("button", {
+			name: "Show Hlid delegated children",
+		});
+		expect(
+			screen.getByText(/1 child · 1 needs you · 1 running/),
+		).not.toBeNull();
+		expect(screen.queryByRole("listitem")).toBeNull();
+		fireEvent.click(toggle);
 		await waitFor(() => expect(screen.getByRole("listitem")).not.toBeNull());
 		const row = screen.getByRole("listitem");
 		expect(within(row).getAllByText(/Question/).length).toBeGreaterThan(0);

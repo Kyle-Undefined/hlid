@@ -604,13 +604,11 @@ function ProjectPreviewInlineActions({
 export function ProjectPreviewActivityCard({
 	events,
 	permissionLabels,
-	active = false,
 	sessionId: explicitSessionId,
 	historicalGroup = false,
 }: {
 	events: ToolEventMessage[];
 	permissionLabels?: Map<string, string>;
-	active?: boolean;
 	sessionId?: string;
 	historicalGroup?: boolean;
 }) {
@@ -655,12 +653,11 @@ export function ProjectPreviewActivityCard({
 				}
 			: resolvedPreview;
 	const previewId = preview?.id ?? eventPreviewId ?? "";
-	const ready = preview?.state === "ready";
 	const stateKey = `${sessionId}:${previewId}`;
 	const [openOverride, setOpenOverride] = useState<boolean | null>(
 		() => projectPreviewOpenOverrides.get(stateKey) ?? null,
 	);
-	const open = openOverride ?? Boolean(active || ready);
+	const open = openOverride ?? false;
 	const [activityOpen, setActivityOpen] = useState(false);
 	const {
 		error,
@@ -858,4 +855,10 @@ export function ProjectPreviewToolBlock({
 			)}
 		</div>
 	);
+}
+
+/** Test-only reset for module-level navigation state. */
+// fallow-ignore-next-line unused-export -- test-only reset
+export function resetProjectPreviewOpenStateForTest(): void {
+	projectPreviewOpenOverrides.clear();
 }

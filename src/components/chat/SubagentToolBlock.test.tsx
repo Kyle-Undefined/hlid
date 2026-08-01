@@ -140,6 +140,7 @@ describe("SubagentToolBlock", () => {
 		);
 		expect(screen.getByText(name).className).toContain("break-all");
 		expect(screen.getByTitle(/Model:/).className).toContain("break-all");
+		fireEvent.click(button);
 		expect(screen.getByText(agentId).className).toContain("break-all");
 		expect(
 			screen.getByText(
@@ -184,15 +185,37 @@ describe("SubagentToolBlock", () => {
 		}
 	});
 
-	it("can collapse while running and continues advancing elapsed time", () => {
+	it("keeps five running subagents collapsed by default", () => {
+		const agentNames = Array.from(
+			{ length: 5 },
+			(_, index) => `agent-${index + 1}`,
+		);
+		render(
+			agentNames.map((name) => (
+				<SubagentToolBlock
+					key={name}
+					subagent={snapshot({ agentId: name, name })}
+				/>
+			)),
+		);
+
+		const buttons = screen.getAllByRole("button", {
+			name: /agent-\d running/i,
+		});
+		expect(buttons).toHaveLength(5);
+		for (const button of buttons) {
+			expect(button.getAttribute("aria-expanded")).toBe("false");
+		}
+		expect(screen.queryByText("Inspect the authentication flow")).toBeNull();
+	});
+
+	it("starts collapsed and continues advancing elapsed time", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(6_000);
 		render(<SubagentToolBlock subagent={snapshot()} />);
 		const button = screen.getByRole("button", { name: /explorer running/i });
-		expect(button.getAttribute("aria-expanded")).toBe("true");
-		expect(screen.getAllByText("5s").length).toBeGreaterThan(0);
-		fireEvent.click(button);
 		expect(button.getAttribute("aria-expanded")).toBe("false");
+		expect(screen.getAllByText("5s").length).toBeGreaterThan(0);
 		expect(screen.queryByText("Inspect the authentication flow")).toBeNull();
 		act(() => vi.advanceTimersByTime(2_000));
 		expect(screen.getByText("7s")).toBeTruthy();
@@ -201,14 +224,14 @@ describe("SubagentToolBlock", () => {
 		expect(screen.getByText("Inspect the authentication flow")).toBeTruthy();
 	});
 
-	it("restores a running card's collapsed state after navigation remounts it", () => {
+	it("restores a running card's expanded state after navigation remounts it", () => {
 		const first = render(<SubagentToolBlock subagent={snapshot()} />);
 		fireEvent.click(screen.getByRole("button", { name: /explorer running/i }));
 		expect(
 			screen
 				.getByRole("button", { name: /explorer running/i })
 				.getAttribute("aria-expanded"),
-		).toBe("false");
+		).toBe("true");
 
 		first.unmount();
 		render(<SubagentToolBlock subagent={snapshot()} />);
@@ -216,10 +239,10 @@ describe("SubagentToolBlock", () => {
 			screen
 				.getByRole("button", { name: /explorer running/i })
 				.getAttribute("aria-expanded"),
-		).toBe("false");
+		).toBe("true");
 	});
 
-	it("auto-collapses on completion and reopens with retained details", () => {
+	it("stays collapsed on completion and reopens with retained details", () => {
 		const { rerender } = render(<SubagentToolBlock subagent={snapshot()} />);
 		rerender(
 			<SubagentToolBlock

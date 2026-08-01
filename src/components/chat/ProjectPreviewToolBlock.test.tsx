@@ -40,11 +40,13 @@ import {
 	ProjectPreviewActivityCard,
 	ProjectPreviewCaptureToolBlock,
 	ProjectPreviewToolBlock,
+	resetProjectPreviewOpenStateForTest,
 	selectActiveProjectPreviewEvents,
 } from "./ProjectPreviewToolBlock";
 
 afterEach(() => {
 	cleanup();
+	resetProjectPreviewOpenStateForTest();
 	vi.clearAllMocks();
 	vi.mocked(getProjectPreviewAgentFrameFn).mockReset();
 	vi.mocked(getProjectPreviewAgentFrameFn).mockResolvedValue(null);
@@ -237,6 +239,12 @@ describe("ProjectPreviewActivityCard", () => {
 
 		expect(screen.getByText("Web app")).toBeTruthy();
 		expect(screen.getByText("2 actions")).toBeTruthy();
+		expect(
+			screen
+				.getByRole("button", { name: "Web app ready" })
+				.getAttribute("aria-expanded"),
+		).toBe("false");
+		fireEvent.click(screen.getByRole("button", { name: "Web app ready" }));
 		fireEvent.click(screen.getByRole("button", { name: "Preview activity" }));
 		expect(screen.getByText("Start")).toBeTruthy();
 		expect(screen.getByText("Capture")).toBeTruthy();
@@ -257,9 +265,7 @@ describe("ProjectPreviewActivityCard", () => {
 		vi.mocked(restartProjectPreviewFn).mockResolvedValueOnce(restarted);
 		vi.mocked(stopProjectPreviewFn).mockResolvedValueOnce(stopped);
 
-		const grouped = render(
-			<ProjectPreviewActivityCard events={[event]} active />,
-		);
+		const grouped = render(<ProjectPreviewActivityCard events={[event]} />);
 		fireEvent.click(screen.getByLabelText("Show preview"));
 		expect(requestProjectPreviewPresentation).toHaveBeenCalledWith(
 			current.session_id,
@@ -313,7 +319,6 @@ describe("ProjectPreviewActivityCard", () => {
 
 		render(
 			<ProjectPreviewActivityCard
-				active
 				events={[
 					{
 						type: "tool_event",
@@ -337,6 +342,9 @@ describe("ProjectPreviewActivityCard", () => {
 			/>,
 		);
 
+		fireEvent.click(
+			screen.getByRole("button", { name: "Project Preview starting" }),
+		);
 		fireEvent.click(screen.getByRole("button", { name: "Preview activity" }));
 		const captureAction = await screen.findByRole("button", {
 			name: "View Preview capture at /settings",
@@ -405,7 +413,6 @@ describe("ProjectPreviewActivityCard", () => {
 
 		render(
 			<ProjectPreviewActivityCard
-				active
 				events={[
 					{
 						type: "tool_event",
@@ -422,6 +429,9 @@ describe("ProjectPreviewActivityCard", () => {
 		);
 
 		expect(screen.getByText(/1 capture/i)).toBeTruthy();
+		fireEvent.click(
+			screen.getByRole("button", { name: "Project Preview starting" }),
+		);
 		fireEvent.click(screen.getByRole("button", { name: "Preview activity" }));
 		fireEvent.click(
 			await screen.findByRole("button", { name: "View Preview capture" }),
@@ -478,7 +488,6 @@ describe("ProjectPreviewActivityCard", () => {
 
 		render(
 			<ProjectPreviewActivityCard
-				active
 				events={[
 					{
 						type: "tool_event",
@@ -493,6 +502,9 @@ describe("ProjectPreviewActivityCard", () => {
 			/>,
 		);
 
+		fireEvent.click(
+			screen.getByRole("button", { name: "Project Preview starting" }),
+		);
 		fireEvent.click(screen.getByRole("button", { name: "Preview activity" }));
 		fireEvent.click(
 			await screen.findByRole("button", { name: "View Preview capture" }),
@@ -546,7 +558,7 @@ describe("ProjectPreviewActivityCard", () => {
 		expect(screen.queryByText("starting")).toBeNull();
 	});
 
-	it("preserves an explicit collapse when the session card remounts", () => {
+	it("preserves an explicit expansion when the session card remounts", () => {
 		const event = {
 			type: "tool_event" as const,
 			id: "start-1",
@@ -570,22 +582,20 @@ describe("ProjectPreviewActivityCard", () => {
 				logs: [],
 			}),
 		};
-		const first = render(
-			<ProjectPreviewActivityCard events={[event]} active />,
-		);
+		const first = render(<ProjectPreviewActivityCard events={[event]} />);
 		const toggle = screen.getByRole("button", { name: "Web app ready" });
-		expect(toggle.getAttribute("aria-expanded")).toBe("true");
-		fireEvent.click(toggle);
 		expect(toggle.getAttribute("aria-expanded")).toBe("false");
+		fireEvent.click(toggle);
+		expect(toggle.getAttribute("aria-expanded")).toBe("true");
 
 		first.unmount();
-		render(<ProjectPreviewActivityCard events={[event]} active />);
+		render(<ProjectPreviewActivityCard events={[event]} />);
 
 		expect(
 			screen
 				.getByRole("button", { name: "Web app ready" })
 				.getAttribute("aria-expanded"),
-		).toBe("false");
+		).toBe("true");
 	});
 
 	it("keeps the activity log nested and expands full error details", () => {
@@ -593,7 +603,6 @@ describe("ProjectPreviewActivityCard", () => {
 			"Preview control failed because the requested element was detached from the current document.";
 		render(
 			<ProjectPreviewActivityCard
-				active
 				events={[
 					{
 						type: "tool_event",
@@ -630,6 +639,7 @@ describe("ProjectPreviewActivityCard", () => {
 			/>,
 		);
 
+		fireEvent.click(screen.getByRole("button", { name: "Error app ready" }));
 		expect(
 			screen
 				.getByRole("button", { name: "Preview activity" })

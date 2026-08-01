@@ -298,7 +298,13 @@ function ChildRow({
 	);
 }
 
-function panelSummary(children: HlidDelegationListItem[]): string {
+function panelSummary(
+	children: HlidDelegationListItem[],
+	statusByChildSession: ReadonlyMap<string, SessionStatusEntry>,
+): string {
+	const needsAttention = children.filter((child) =>
+		attentionNeeded(statusByChildSession.get(child.child_session_id)),
+	).length;
 	const running = children.filter(active).length;
 	const waiting = children.filter(
 		(child) => child.status === "interrupted" && child.resumable,
@@ -314,6 +320,7 @@ function panelSummary(children: HlidDelegationListItem[]): string {
 	).length;
 	return [
 		`${children.length} ${children.length === 1 ? "child" : "children"}`,
+		needsAttention > 0 ? `${needsAttention} needs you` : null,
 		running > 0 ? `${running} running` : null,
 		waiting > 0 ? `${waiting} waiting` : null,
 		failed > 0 ? `${failed} failed` : null,
@@ -411,19 +418,13 @@ export function HlidDelegationActivityPanel({
 		() => sessionStatuses.find((status) => status.db_session_id === sessionId),
 		[sessionId, sessionStatuses],
 	);
-	const needsOpen = orderedChildren.some(
-		(child) =>
-			active(child) ||
-			(child.status === "interrupted" && child.resumable) ||
-			attentionNeeded(statusByChildSession.get(child.child_session_id)),
-	);
 	const [openOverride, setOpenOverride] = useState<boolean | null>(
 		() => panelOpenOverrides.get(sessionId) ?? null,
 	);
 	useEffect(() => {
 		setOpenOverride(panelOpenOverrides.get(sessionId) ?? null);
 	}, [sessionId]);
-	const open = openOverride ?? needsOpen;
+	const open = openOverride ?? false;
 	const now = useLiveNow(orderedChildren.some(active));
 	const descendantUsageSummary = parentSessionStatus
 		? liveDelegationUsageLabel(parentSessionStatus)
@@ -460,7 +461,7 @@ export function HlidDelegationActivityPanel({
 						Hlid children
 					</div>
 					<div className="truncate font-mono text-[8px] text-muted-foreground/50">
-						{panelSummary(orderedChildren)}
+						{panelSummary(orderedChildren, statusByChildSession)}
 						{refreshFailed ? " · refresh unavailable" : ""}
 					</div>
 					<div

@@ -275,7 +275,6 @@ export const MessageList = memo(function MessageList({
 					key={`project-preview:${liveProjectPreview?.id ?? sessionId}`}
 					events={projectPreviewEvents}
 					permissionLabels={permissionLabels}
-					active={sessionState === "running"}
 					sessionId={sessionId}
 				/>
 			)}

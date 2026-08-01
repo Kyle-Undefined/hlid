@@ -385,7 +385,6 @@ export function AssistantMsg({
 					<ProjectPreviewActivityCard
 						events={groupedPreviewEvents}
 						permissionLabels={permissionLabels}
-						active={message.streaming}
 					/>
 				)}
 		</div>
