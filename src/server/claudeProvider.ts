@@ -1950,6 +1950,7 @@ class ClaudeAgentSession implements AgentSession {
 	private firstSend: SdkUserMessage | null = null;
 	private receivedAnyEvent = false;
 	private retriedWithoutResume = false;
+	private pendingSteerContinuation = false;
 	private subagents = new ClaudeSubagentTracker();
 	private turnUsage = new ClaudeTurnUsageAccumulator();
 	// The streaming Claude SDK query survives across Raven turns and reports
@@ -2015,9 +2016,12 @@ class ClaudeAgentSession implements AgentSession {
 
 	async steer(message: string): Promise<void> {
 		// In streaming-input mode Claude's immediate-priority user message is
-		// folded into the active run instead of waiting for the next turn.
+		// folded into the active run instead of waiting for the next turn. Claude
+		// still emits the interrupted run's result boundary before it starts the
+		// steered continuation, so translateEvents must keep that boundary open.
 		this.ensureSdkQuery();
 		this.inputStream.push(buildSdkUserMessage(message, "now"));
+		this.pendingSteerContinuation = true;
 	}
 
 	async mcpServerStatus(): Promise<McpServerStatus[]> {
@@ -2231,6 +2235,7 @@ class ClaudeAgentSession implements AgentSession {
 			deadlineMs: number;
 			awaitTaskVersion: number | null;
 			usageDrainDeadlineMs: number | null;
+			steerContinuationExpected: boolean;
 			workflowContinuationStarted: boolean;
 			workflowContinuationExpected: boolean;
 			workflowContinuationDeadlineMs: number | null;
@@ -2408,7 +2413,8 @@ class ClaudeAgentSession implements AgentSession {
 				}
 				const continuingPending: PendingClaudeResult | null =
 					pendingResult &&
-					(pendingResult.workflowContinuationStarted ||
+					(pendingResult.steerContinuationExpected ||
+						pendingResult.workflowContinuationStarted ||
 						(pendingResult.workflowContinuationExpected &&
 							!this.subagents.hasUnsettledTasks()))
 						? pendingResult
@@ -2434,20 +2440,30 @@ class ClaudeAgentSession implements AgentSession {
 					continuingPending
 						? [...continuingPending.results, message]
 						: [message];
+				const steerContinuationExpected =
+					this.pendingSteerContinuation && message.subtype === "success";
+				this.pendingSteerContinuation = false;
 				const hasUnsettledTasks = this.subagents.hasUnsettledTasks();
 				const backgroundRequested =
 					message.terminal_reason === "background_requested" &&
 					this.subagents.hasOwnedTaskCandidates();
-				if (hasUnsettledTasks || backgroundRequested) {
+				if (
+					steerContinuationExpected ||
+					hasUnsettledTasks ||
+					backgroundRequested
+				) {
 					pendingResult = {
 						results,
 						done,
-						deadlineMs: Date.now() + CLAUDE_BACKGROUND_SETTLE_TIMEOUT_MS,
+						deadlineMs: steerContinuationExpected
+							? Number.POSITIVE_INFINITY
+							: Date.now() + CLAUDE_BACKGROUND_SETTLE_TIMEOUT_MS,
 						awaitTaskVersion:
 							backgroundRequested && !hasUnsettledTasks
 								? this.subagents.taskVersion()
 								: null,
 						usageDrainDeadlineMs: null,
+						steerContinuationExpected,
 						workflowContinuationStarted: false,
 						workflowContinuationExpected:
 							this.subagents.hasWorkflowContinuationPotential(),

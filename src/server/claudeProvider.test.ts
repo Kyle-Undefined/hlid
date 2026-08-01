@@ -4528,6 +4528,81 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 		session.cancel();
 	});
 
+	it("keeps the active turn open across the result boundary interrupted by a steer", async () => {
+		let releaseInterruptedResult: (() => void) | undefined;
+		const interruptedResultReady = new Promise<void>((resolve) => {
+			releaseInterruptedResult = resolve;
+		});
+		vi.mocked(query).mockReturnValueOnce(
+			sdkStream(async function* () {
+				yield {
+					type: "assistant",
+					message: {
+						content: [{ type: "text", text: "Starting the update." }],
+						usage: { input_tokens: 10, output_tokens: 4 },
+					},
+				};
+				await interruptedResultReady;
+				yield {
+					type: "result",
+					subtype: "success",
+					stop_reason: "tool_use",
+					total_cost_usd: 0.1,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 4 },
+				};
+				yield {
+					type: "assistant",
+					message: {
+						content: [{ type: "text", text: "Status is done. Continuing." }],
+						usage: { input_tokens: 12, output_tokens: 6 },
+					},
+				};
+				yield {
+					type: "result",
+					subtype: "success",
+					stop_reason: "end_turn",
+					total_cost_usd: 0.2,
+					num_turns: 1,
+					duration_ms: 200,
+					usage: { input_tokens: 12, output_tokens: 6 },
+				};
+			}),
+		);
+		const session = new ClaudeProvider().query(baseParams());
+		await session.send("update the note");
+
+		const events: AgentEvent[] = [];
+		const completed = (async () => {
+			for await (const event of session) {
+				events.push(event);
+				if (event.type === "done") return;
+			}
+		})();
+		await vi.waitFor(() => {
+			expect(events).toContainEqual({
+				type: "text_delta",
+				text: "Starting the update.",
+			});
+		});
+		await session.steer?.("also mark the status done");
+		releaseInterruptedResult?.();
+		await completed;
+
+		expect(events.filter((event) => event.type === "done")).toHaveLength(1);
+		expect(events).toContainEqual({
+			type: "text_delta",
+			text: "Status is done. Continuing.",
+		});
+		expect(events.find((event) => event.type === "done")).toMatchObject({
+			turns: 2,
+			durationMs: 300,
+			stopReason: "end_turn",
+		});
+		session.cancel();
+	});
+
 	it("regression: for-await `return` from consumer does not close the cached iterator", async () => {
 		// Real-world bug observed in raven: after turn 1's `done` event,
 		// iterateConversation does an early `return` from the for-await loop.
