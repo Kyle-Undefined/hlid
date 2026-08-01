@@ -1508,6 +1508,30 @@ describe("message — chat routing (pool)", () => {
 		expect(chunkGlobalBroadcasts).toHaveLength(0);
 	});
 
+	it("refreshes pool attention when a session sleeps", async () => {
+		const vault = makeEntry("vault-id");
+		vault.manager.runQuery.mockImplementation(
+			async (
+				_text: string,
+				onEvent: (event: { type: string; state?: string }) => Promise<void>,
+			) => {
+				await onEvent({ type: "agent_sleep", state: "sleeping" });
+			},
+		);
+		const pool = makePool(vault);
+		pool.get.mockImplementation((id: string) =>
+			id === "vault-id" ? vault : undefined,
+		);
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs("vault-id");
+
+		await message(ws as never, JSON.stringify({ type: "chat", text: "hi" }));
+
+		expect(mockBroadcast).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "sessions_status" }),
+		);
+	});
+
 	it("falls back to vault when subscribed session not found", async () => {
 		const vault = makeEntry("vault-id");
 		const pool = makePool(vault);

@@ -20,8 +20,9 @@ export type LiveSessionSwitcherRow = {
 const STATE_PRIORITY: Record<LiveSessionState, number> = {
 	needs_attention: 0,
 	working: 1,
-	queued: 2,
-	recent: 3,
+	sleeping: 2,
+	queued: 3,
+	recent: 4,
 };
 
 export function liveSessionState(
@@ -204,6 +205,7 @@ export type LiveSessionAttentionSummary = {
 	total: number;
 	needsAttention: number;
 	working: number;
+	sleeping: number;
 	queued: number;
 	recent: number;
 };
@@ -217,6 +219,7 @@ export function summarizeLiveSessionAttention(
 		needsAttention: rows.filter((row) => row.state === "needs_attention")
 			.length,
 		working: rows.filter((row) => row.state === "working").length,
+		sleeping: rows.filter((row) => row.state === "sleeping").length,
 		queued: rows.filter((row) => row.state === "queued").length,
 		recent: rows.filter((row) => row.state === "recent").length,
 	};
@@ -226,6 +229,7 @@ export type LiveSessionToggleTone =
 	| "empty"
 	| "needs_attention"
 	| "working"
+	| "sleeping"
 	| "queued"
 	| "recent";
 
@@ -236,6 +240,7 @@ export function liveSessionToggleTone(
 	if (rows.some((row) => row.state === "needs_attention"))
 		return "needs_attention";
 	if (rows.some((row) => row.state === "working")) return "working";
+	if (rows.some((row) => row.state === "sleeping")) return "sleeping";
 	if (rows.some((row) => row.state === "queued")) return "queued";
 	return "recent";
 }
@@ -243,6 +248,7 @@ export function liveSessionToggleTone(
 export function liveSessionStateLabel(state: LiveSessionState): string {
 	if (state === "needs_attention") return "Needs attention";
 	if (state === "working") return "Working";
+	if (state === "sleeping") return "Sleeping";
 	if (state === "queued") return "Queued";
 	return "Recent";
 }
@@ -253,6 +259,7 @@ const REASON_LABELS: Record<SessionAttentionReason, string> = {
 	plan_review: "Plan review",
 	error: "Error",
 	provider_turn: "Working",
+	usage_sleep: "Sleeping",
 	terminal: "Terminal",
 	queued_prompt: "Queued",
 	goal_active: "Goal active",
@@ -270,6 +277,7 @@ const REASON_LABELS: Record<SessionAttentionReason, string> = {
 	delegation_interrupted: "Restart interrupted",
 	delegated_child_attention: "Child needs attention",
 	delegated_child_working: "Children working",
+	delegated_child_sleeping: "Children sleeping",
 	delegated_child_queued: "Children queued",
 	ready: "Ready",
 };
@@ -305,6 +313,9 @@ export function liveDelegationRollupLabel(
 			? `${rollup.needs_attention_count} needs you`
 			: null,
 		rollup.working_count > 0 ? `${rollup.working_count} working` : null,
+		(rollup.sleeping_count ?? 0) > 0
+			? `${rollup.sleeping_count} sleeping`
+			: null,
 		rollup.queued_count > 0 ? `${rollup.queued_count} queued` : null,
 		rollup.waiting_count > 0 ? `${rollup.waiting_count} waiting` : null,
 		rollup.completed_count > 0 ? `${rollup.completed_count} completed` : null,

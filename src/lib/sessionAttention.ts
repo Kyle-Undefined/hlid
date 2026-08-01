@@ -1,5 +1,6 @@
 import type { ProviderGoalStatus } from "#/server/agentProvider";
 import type {
+	AgentSleepMessage,
 	SessionAttentionBucket,
 	SessionAttentionReason,
 	SessionAttentionSnapshot,
@@ -14,6 +15,10 @@ export type SessionAttentionInput = {
 	goalStatus?: ProviderGoalStatus;
 	routine?: boolean;
 	terminal?: boolean;
+	sleepState?: Pick<
+		AgentSleepMessage,
+		"until" | "windowId" | "reason" | "utilization"
+	> | null;
 };
 
 function classifyAttention(input: SessionAttentionInput): {
@@ -37,6 +42,9 @@ function classifyAttention(input: SessionAttentionInput): {
 	}
 	if (input.goalStatus === "budgetLimited") {
 		return { bucket: "needs_attention", reason: "goal_budget" };
+	}
+	if (input.sleepState) {
+		return { bucket: "sleeping", reason: "usage_sleep" };
 	}
 	if (input.goalStatus === "paused") {
 		return { bucket: "recent", reason: "goal_paused" };
@@ -88,5 +96,11 @@ export function deriveSessionAttention(
 		last_activity_at: sameActivity ? previous.last_activity_at : now,
 		queue_count: input.queueCount,
 		pending_count: pendingCount,
+		...(classified.bucket === "sleeping" && input.sleepState?.until != null
+			? { sleep_until: input.sleepState.until }
+			: {}),
+		...(classified.bucket === "sleeping" && input.sleepState?.windowId
+			? { sleep_window_id: input.sleepState.windowId }
+			: {}),
 	};
 }

@@ -540,6 +540,7 @@ export function approvedLabel(decision: string): string | null {
 export type SessionAttentionBucket =
 	| "needs_attention"
 	| "working"
+	| "sleeping"
 	| "queued"
 	| "recent";
 
@@ -549,6 +550,7 @@ export type SessionAttentionReason =
 	| "plan_review"
 	| "error"
 	| "provider_turn"
+	| "usage_sleep"
 	| "terminal"
 	| "queued_prompt"
 	| "goal_active"
@@ -566,6 +568,7 @@ export type SessionAttentionReason =
 	| "delegation_interrupted"
 	| "delegated_child_attention"
 	| "delegated_child_working"
+	| "delegated_child_sleeping"
 	| "delegated_child_queued"
 	| "ready";
 
@@ -582,6 +585,10 @@ export type SessionAttentionSnapshot = {
 	last_activity_at: number;
 	queue_count: number;
 	pending_count: number;
+	/** Epoch seconds when the current usage sleep is expected to end. */
+	sleep_until?: number;
+	/** Usage window responsible for the current sleep. */
+	sleep_window_id?: string;
 };
 
 export type DelegatedAttentionRollup = {
@@ -601,6 +608,8 @@ export type DelegatedAttentionRollup = {
 	elapsed_duration_seconds?: number;
 	needs_attention_count: number;
 	working_count: number;
+	/** Optional for compatibility with snapshots from older Hlid servers. */
+	sleeping_count?: number;
 	queued_count: number;
 	recent_count: number;
 	leading_bucket: SessionAttentionBucket;

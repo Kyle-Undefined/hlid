@@ -90,6 +90,7 @@ const LiveSessionSwitcherBoundaryContext =
 function toneClass(tone: ReturnType<typeof liveSessionToggleTone>): string {
 	if (tone === "needs_attention") return semanticStatusClass.warning.text;
 	if (tone === "working") return "text-primary";
+	if (tone === "sleeping") return "text-muted-foreground/70";
 	if (tone === "queued") return semanticStatusClass.info.text;
 	return "text-muted-foreground/55";
 }
@@ -97,6 +98,7 @@ function toneClass(tone: ReturnType<typeof liveSessionToggleTone>): string {
 function stateClass(state: LiveSessionState): string {
 	if (state === "needs_attention") return semanticStatusClass.warning.text;
 	if (state === "working") return "text-primary";
+	if (state === "sleeping") return "text-muted-foreground/70";
 	if (state === "queued") return semanticStatusClass.info.text;
 	return "text-muted-foreground/55";
 }
@@ -104,6 +106,7 @@ function stateClass(state: LiveSessionState): string {
 function dotClass(state: LiveSessionState): string {
 	if (state === "needs_attention") return semanticStatusClass.warning.dot;
 	if (state === "working") return "bg-primary";
+	if (state === "sleeping") return "bg-muted-foreground/55";
 	if (state === "queued") return semanticStatusClass.info.dot;
 	return "bg-muted-foreground/35";
 }
@@ -127,11 +130,13 @@ function toggleLabel(
 			? "attention needed"
 			: tone === "working"
 				? "work in progress"
-				: tone === "queued"
-					? "work queued"
-					: tone === "recent"
-						? "all ready"
-						: "none active";
+				: tone === "sleeping"
+					? "sessions sleeping"
+					: tone === "queued"
+						? "work queued"
+						: tone === "recent"
+							? "all ready"
+							: "none active";
 	return `${open ? "Close" : "Open"} session attention, ${count} total, ${state}`;
 }
 
@@ -283,6 +288,7 @@ function LiveSessionDrawer({
 							const delegationRollup = liveDelegationRollupLabel(session);
 							const delegationUsage = liveDelegationUsageLabel(session);
 							const attentionSince = session.attention?.since;
+							const sleepUntil = session.attention?.sleep_until;
 							const showGroup =
 								index === 0 ||
 								retainedRows[index - 1]?.groupState !== row.groupState;
@@ -383,11 +389,19 @@ function LiveSessionDrawer({
 													? "Closed"
 													: liveSessionReasonLabel(session)}
 											</span>
-											{!row.closed && attentionSince !== undefined && (
+											{!row.closed && sleepUntil !== undefined ? (
+												<span className="mt-0.5 block text-[7px] tracking-normal text-muted-foreground/40 normal-case">
+													until{" "}
+													{new Date(sleepUntil * 1000).toLocaleTimeString([], {
+														hour: "2-digit",
+														minute: "2-digit",
+													})}
+												</span>
+											) : !row.closed && attentionSince !== undefined ? (
 												<span className="mt-0.5 block text-[7px] tracking-normal text-muted-foreground/40 normal-case">
 													{formatElapsed(attentionSince, now)}
 												</span>
-											)}
+											) : null}
 										</span>
 									</button>
 								</Fragment>

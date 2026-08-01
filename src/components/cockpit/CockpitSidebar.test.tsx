@@ -247,6 +247,7 @@ describe("RecentRunsSidebar — activeSession prop", () => {
 		expect(screen.getByText("Queued").previousElementSibling?.textContent).toBe(
 			"0",
 		);
+		expect(screen.queryByText("Sleeping")).toBeNull();
 
 		screen
 			.getByRole("button", {
@@ -254,6 +255,36 @@ describe("RecentRunsSidebar — activeSession prop", () => {
 			})
 			.click();
 		expect(onRunClick).toHaveBeenCalledWith("chat-approval");
+	});
+
+	it("adds the Sleeping summary only while live sessions are sleeping", () => {
+		replaceSessionsStatus([
+			liveSession("sleeping", {
+				state: "running",
+				attention: {
+					bucket: "sleeping",
+					reason: "usage_sleep",
+					since: 1,
+					last_activity_at: 1,
+					queue_count: 0,
+					pending_count: 0,
+					sleep_until: 1_784_060_475,
+				},
+			}),
+		]);
+		renderSidebar(null, []);
+
+		const sleepingLabels = screen.getAllByText("Sleeping");
+		expect(
+			sleepingLabels.some(
+				(label) => label.previousElementSibling?.textContent === "1",
+			),
+		).toBe(true);
+		expect(
+			screen.getByRole("button", {
+				name: "Open sleeping from attention summary",
+			}).textContent,
+		).toContain("Sleeping");
 	});
 
 	it("includes server-derived Routine attention without double-counting its live session", () => {

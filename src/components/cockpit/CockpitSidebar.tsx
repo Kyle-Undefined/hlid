@@ -169,7 +169,7 @@ function usePersistedRecentRows(
 type AttentionRow = {
 	id: string;
 	label: string;
-	state: "needs_attention" | "working" | "queued";
+	state: "needs_attention" | "working" | "sleeping" | "queued";
 	reason?: Parameters<typeof attentionReasonLabel>[0];
 	sessionId: string | null;
 	pinned: boolean;
@@ -184,8 +184,9 @@ type AttentionRow = {
 const ATTENTION_PRIORITY = {
 	needs_attention: 0,
 	working: 1,
-	queued: 2,
-	recent: 3,
+	sleeping: 2,
+	queued: 3,
+	recent: 4,
 } as const;
 
 // ─── ViewAllLink ──────────────────────────────────────────────────────────────
@@ -320,6 +321,9 @@ function AttentionSummary({
 	const workingCount = actionable.filter(
 		(row) => row.state === "working",
 	).length;
+	const sleepingCount = actionable.filter(
+		(row) => row.state === "sleeping",
+	).length;
 	const queuedCount = actionable.filter((row) => row.state === "queued").length;
 	const durableCount = liveRows.filter(
 		(row) => row.session.durable_only === true,
@@ -338,7 +342,9 @@ function AttentionSummary({
 					{routineRows.length > 0 ? ` · ${routineRows.length} routines` : ""}
 				</span>
 			</div>
-			<div className="grid grid-cols-3 divide-x divide-border/40 border-b border-border/40">
+			<div
+				className={`grid ${sleepingCount > 0 ? "grid-cols-4" : "grid-cols-3"} divide-x divide-border/40 border-b border-border/40`}
+			>
 				<div className="px-2 py-2 text-center">
 					<div className="font-mono text-xs text-status-warning">
 						{attentionCount}
@@ -361,6 +367,16 @@ function AttentionSummary({
 						Queued
 					</div>
 				</div>
+				{sleepingCount > 0 && (
+					<div className="px-2 py-2 text-center">
+						<div className="font-mono text-xs text-muted-foreground">
+							{sleepingCount}
+						</div>
+						<div className="mt-0.5 text-[7px] tracking-wider text-muted-foreground/45 uppercase">
+							Sleeping
+						</div>
+					</div>
+				)}
 			</div>
 			{actionable.length > 0 ? (
 				<div>
@@ -381,7 +397,9 @@ function AttentionSummary({
 											? "bg-status-warning"
 											: row.state === "working"
 												? "bg-primary"
-												: "bg-status-info"
+												: row.state === "sleeping"
+													? "bg-muted-foreground/55"
+													: "bg-status-info"
 									}`}
 								/>
 								{row.pinned && (

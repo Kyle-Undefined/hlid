@@ -6,8 +6,9 @@ import type {
 } from "../server/protocol";
 
 const PRIORITY: Record<SessionAttentionBucket, number> = {
-	needs_attention: 3,
-	working: 2,
+	needs_attention: 4,
+	working: 3,
+	sleeping: 2,
 	queued: 1,
 	recent: 0,
 };
@@ -17,6 +18,7 @@ type MutableRollup = {
 	descendantIds: Set<string>;
 	needsAttentionIds: Set<string>;
 	workingIds: Set<string>;
+	sleepingIds: Set<string>;
 	queuedIds: Set<string>;
 	recentIds: Set<string>;
 	attentionById: Map<string, SessionAttentionSnapshot>;
@@ -48,6 +50,7 @@ function createMutableRollup(): MutableRollup {
 		descendantIds: new Set(),
 		needsAttentionIds: new Set(),
 		workingIds: new Set(),
+		sleepingIds: new Set(),
 		queuedIds: new Set(),
 		recentIds: new Set(),
 		attentionById: new Map(),
@@ -60,6 +63,7 @@ function bucketSet(
 ): Set<string> {
 	if (bucket === "needs_attention") return rollup.needsAttentionIds;
 	if (bucket === "working") return rollup.workingIds;
+	if (bucket === "sleeping") return rollup.sleepingIds;
 	if (bucket === "queued") return rollup.queuedIds;
 	return rollup.recentIds;
 }
@@ -83,9 +87,11 @@ function finalized(
 			? "needs_attention"
 			: rollup.workingIds.size > 0
 				? "working"
-				: rollup.queuedIds.size > 0
-					? "queued"
-					: "recent";
+				: rollup.sleepingIds.size > 0
+					? "sleeping"
+					: rollup.queuedIds.size > 0
+						? "queued"
+						: "recent";
 	const leadingIds = bucketSet(rollup, leadingBucket);
 	const leadingAttention = [...leadingIds]
 		.map((id) => rollup.attentionById.get(id))
@@ -118,6 +124,7 @@ function finalized(
 		),
 		needs_attention_count: rollup.needsAttentionIds.size,
 		working_count: rollup.workingIds.size,
+		sleeping_count: rollup.sleepingIds.size,
 		queued_count: rollup.queuedIds.size,
 		recent_count: rollup.recentIds.size,
 		leading_bucket: leadingBucket,
@@ -224,7 +231,9 @@ export function withDelegatedAttentionRollups(
 				? "delegated_child_attention"
 				: delegatedAttention.leading_bucket === "working"
 					? "delegated_child_working"
-					: "delegated_child_queued";
+					: delegatedAttention.leading_bucket === "sleeping"
+						? "delegated_child_sleeping"
+						: "delegated_child_queued";
 		return {
 			...status,
 			delegated_attention: delegatedAttention,

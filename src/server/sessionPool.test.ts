@@ -40,6 +40,7 @@ const mockInstances: {
 	getCurrentSessionId: ReturnType<typeof vi.fn>;
 	getCurrentGoal: ReturnType<typeof vi.fn>;
 	getActiveRoutine: ReturnType<typeof vi.fn>;
+	getSleepState: ReturnType<typeof vi.fn>;
 	getSessionLabel: ReturnType<typeof vi.fn>;
 	getSessionPresentation: ReturnType<typeof vi.fn>;
 	getProviderId: ReturnType<typeof vi.fn>;
@@ -72,6 +73,7 @@ vi.mock("./session", () => ({
 			getCurrentSessionId: vi.fn().mockReturnValue(null),
 			getCurrentGoal: vi.fn().mockReturnValue(null),
 			getActiveRoutine: vi.fn().mockReturnValue(null),
+			getSleepState: vi.fn().mockReturnValue(null),
 			getSessionLabel: vi.fn().mockReturnValue(null),
 			getSessionPresentation: vi.fn().mockReturnValue({
 				pinned: false,
@@ -943,6 +945,36 @@ describe("SessionPool.getSessionsStatus", () => {
 			bucket: "working",
 			reason: "provider_turn",
 			queue_count: 2,
+		});
+	});
+
+	it("projects a running usage sleep without losing queued prompts", () => {
+		const pool = makePool();
+		pool.create("/code/proj", "Agent");
+		mockInstances[0]?.getStatus.mockReturnValue({
+			state: "running",
+			model: "claude-test",
+		});
+		mockInstances[0]?.getSleepState.mockReturnValue({
+			type: "agent_sleep",
+			state: "sleeping",
+			providerId: "claude",
+			windowId: "five_hour",
+			until: 1_784_060_475,
+			reason: "limit_reached",
+		});
+		mockInstances[0]?.getQueueState.mockReturnValue({
+			pending_turn_ids: ["turn-2"],
+			pending_turns: [],
+			running_turn_id: "turn-1",
+		});
+
+		expect(pool.getSessionsStatus()[0]?.attention).toMatchObject({
+			bucket: "sleeping",
+			reason: "usage_sleep",
+			queue_count: 1,
+			sleep_until: 1_784_060_475,
+			sleep_window_id: "five_hour",
 		});
 	});
 

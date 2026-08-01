@@ -16,6 +16,7 @@ export type AggregateNavStatus = {
 	attentionSessionCount: number;
 	needsAttentionCount: number;
 	workingCount: number;
+	sleepingCount: number;
 	queuedCount: number;
 	recentCount: number;
 };
@@ -28,6 +29,7 @@ let aggregateNavStatus: AggregateNavStatus = {
 	attentionSessionCount: 0,
 	needsAttentionCount: 0,
 	workingCount: 0,
+	sleepingCount: 0,
 	queuedCount: 0,
 	recentCount: 0,
 };
@@ -60,6 +62,7 @@ function recomputeAggregateNavStatus(): void {
 		attention.total !== aggregateNavStatus.attentionSessionCount ||
 		attention.needsAttention !== aggregateNavStatus.needsAttentionCount ||
 		attention.working !== aggregateNavStatus.workingCount ||
+		attention.sleeping !== aggregateNavStatus.sleepingCount ||
 		attention.queued !== aggregateNavStatus.queuedCount ||
 		attention.recent !== aggregateNavStatus.recentCount
 	) {
@@ -71,6 +74,7 @@ function recomputeAggregateNavStatus(): void {
 			attentionSessionCount: attention.total,
 			needsAttentionCount: attention.needsAttention,
 			workingCount: attention.working,
+			sleepingCount: attention.sleeping,
 			queuedCount: attention.queued,
 			recentCount: attention.recent,
 		};
@@ -87,6 +91,7 @@ function reconcileAttentionFromStatus(
 ): SessionStatusEntry["attention"] {
 	const current = session.attention;
 	if (current?.bucket === "needs_attention") return current;
+	if (current?.bucket === "sleeping" && state === "running") return current;
 	const goalStatus =
 		current?.reason === "goal_active"
 			? "active"
@@ -215,6 +220,7 @@ export function resetSessionStatusForTesting(): void {
 		attentionSessionCount: 0,
 		needsAttentionCount: 0,
 		workingCount: 0,
+		sleepingCount: 0,
 		queuedCount: 0,
 		recentCount: 0,
 	};

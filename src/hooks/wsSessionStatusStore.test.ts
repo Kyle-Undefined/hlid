@@ -54,4 +54,34 @@ describe("reconcileSessionStatus", () => {
 		expect(listener).toHaveBeenCalledOnce();
 		unsubscribe();
 	});
+
+	it("preserves a sleeping projection across running heartbeats and clears it on idle", () => {
+		replaceSessionsStatus([
+			{
+				...initialSession,
+				state: "running",
+				attention: {
+					bucket: "sleeping",
+					reason: "usage_sleep",
+					since: 1,
+					last_activity_at: 1,
+					queue_count: 0,
+					pending_count: 0,
+				},
+			},
+		]);
+
+		reconcileSessionStatus("session-a", {
+			state: "running",
+			model: "fake-fast",
+			effort: "high",
+		});
+		expect(getSessionsStatus()[0]?.attention?.bucket).toBe("sleeping");
+
+		reconcileSessionStatus("session-a", {
+			state: "idle",
+			model: "fake-fast",
+		});
+		expect(getSessionsStatus()[0]?.attention?.bucket).toBe("recent");
+	});
 });

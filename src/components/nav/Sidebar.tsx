@@ -59,7 +59,9 @@ export function Sidebar() {
 										? semanticStatusClass.warning.text
 										: attentionTone === "working"
 											? "text-sidebar-primary/70"
-											: semanticStatusClass.info.textMuted
+											: attentionTone === "sleeping"
+												? "text-sidebar-foreground/55"
+												: semanticStatusClass.info.textMuted
 								}`}
 							>
 								{attentionCount > 9 ? "9+" : attentionCount}

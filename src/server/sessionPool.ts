@@ -259,6 +259,7 @@ export class SessionPool {
 			const pendingQuestions = entry.manager.getPendingAskUserQuestions();
 			const pendingPlans = entry.manager.getPendingPlanModeExits();
 			const queueCount = entry.manager.getQueueState().pending_turn_ids.length;
+			const sleepState = entry.manager.getSleepState();
 			const sessionLabel = entry.manager.getSessionLabel();
 			const presentation = entry.manager.getSessionPresentation();
 			const attention = deriveSessionAttention(
@@ -270,6 +271,7 @@ export class SessionPool {
 					queueCount,
 					goalStatus: entry.manager.getCurrentGoal()?.status,
 					routine: entry.manager.getActiveRoutine() !== null,
+					sleepState,
 				},
 				this.attentionBySession.get(entry.sessionId),
 			);

@@ -89,11 +89,23 @@ describe("deriveLiveSessionSwitcherRows", () => {
 		expect(liveSessionState(session("idle"))).toBe("recent");
 	});
 
-	it("orders attention, working, queued, and recent while preserving pool order within groups", () => {
+	it("orders attention, working, sleeping, queued, and recent while preserving pool order within groups", () => {
 		const rows = deriveLiveSessionSwitcherRows([
 			session("ready-a"),
 			session("working-a", { state: "running" }),
 			session("waiting-a", { hasPendingPermissions: true }),
+			session("sleeping", {
+				state: "running",
+				attention: {
+					bucket: "sleeping",
+					reason: "usage_sleep",
+					since: 1,
+					last_activity_at: 1,
+					queue_count: 1,
+					pending_count: 0,
+					sleep_until: 1_784_060_475,
+				},
+			}),
 			session("queued", {
 				attention: {
 					bucket: "queued",
@@ -112,6 +124,7 @@ describe("deriveLiveSessionSwitcherRows", () => {
 			"chat-waiting-a",
 			"chat-working-a",
 			"chat-working-b",
+			"chat-sleeping",
 			"chat-queued",
 			"chat-ready-a",
 			"chat-ready-b",
@@ -192,6 +205,7 @@ describe("live session presentation", () => {
 			},
 		});
 		expect(liveSessionStateLabel("needs_attention")).toBe("Needs attention");
+		expect(liveSessionStateLabel("sleeping")).toBe("Sleeping");
 		expect(liveSessionReasonLabel(queued)).toBe("Working");
 		expect(liveSessionQueueLabel(queued)).toBe("3 queued");
 	});
@@ -242,6 +256,7 @@ describe("live session presentation", () => {
 			total: 4,
 			needsAttention: 1,
 			working: 1,
+			sleeping: 0,
 			queued: 1,
 			recent: 1,
 		});

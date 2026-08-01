@@ -185,6 +185,7 @@ function broadcastSessionsStatus({ pool, terminalPool }: MessageContext): void {
 function changesSessionAttention(event: ServerMessage): boolean {
 	return (
 		event.type === "status" ||
+		event.type === "agent_sleep" ||
 		event.type === "permission_request" ||
 		event.type === "ask_user_question" ||
 		event.type === "plan_mode_exit" ||

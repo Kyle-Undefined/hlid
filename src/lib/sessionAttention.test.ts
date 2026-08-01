@@ -64,6 +64,43 @@ describe("deriveSessionAttention", () => {
 		});
 	});
 
+	it("classifies an exact usage sleep ahead of generic running work", () => {
+		const sleeping = deriveSessionAttention(
+			{
+				...idle,
+				state: "running",
+				queueCount: 1,
+				sleepState: {
+					until: 1_784_060_475,
+					windowId: "five_hour",
+					reason: "limit_reached",
+				},
+			},
+			undefined,
+			10,
+		);
+		expect(sleeping).toMatchObject({
+			bucket: "sleeping",
+			reason: "usage_sleep",
+			queue_count: 1,
+			sleep_until: 1_784_060_475,
+			sleep_window_id: "five_hour",
+		});
+
+		expect(
+			deriveSessionAttention(
+				{
+					...idle,
+					state: "running",
+					questionCount: 1,
+					sleepState: { reason: "threshold" },
+				},
+				sleeping,
+				20,
+			),
+		).toMatchObject({ bucket: "needs_attention", reason: "question" });
+	});
+
 	it("maps known goal and Routine state without making usage waits urgent", () => {
 		expect(
 			deriveSessionAttention({ ...idle, goalStatus: "blocked" }, undefined, 10),

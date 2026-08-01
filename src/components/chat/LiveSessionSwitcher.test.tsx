@@ -144,6 +144,36 @@ describe("LiveSessionSwitcher", () => {
 		).toBeNull();
 	});
 
+	it("shows an exact sleeping group and wake time only while present", () => {
+		replaceSessionsStatus([
+			session("sleeping", {
+				state: "running",
+				attention: {
+					bucket: "sleeping",
+					reason: "usage_sleep",
+					since: 1,
+					last_activity_at: 1,
+					queue_count: 1,
+					pending_count: 0,
+					sleep_until: 1_784_060_475,
+				},
+			}),
+		]);
+		renderSwitcher("chat-sleeping");
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Open session attention, 1 total, sessions sleeping",
+			}),
+		);
+		const row = screen.getByRole("button", {
+			name: "Open sleeping session",
+		});
+		expect(row.textContent).toContain("Sleeping");
+		expect(row.textContent).toContain("1 queued");
+		expect(row.textContent).toContain("until");
+	});
+
 	it("toggles from the configured desktop hotkey unless voice owns it", () => {
 		replaceSessionsStatus([session("ready")]);
 		renderSwitcher();

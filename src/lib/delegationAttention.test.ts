@@ -18,7 +18,7 @@ function status(
 		agent_cwd: "/work/project",
 		agent_name: id,
 		state:
-			bucket === "working"
+			bucket === "working" || bucket === "sleeping"
 				? "running"
 				: bucket === "needs_attention"
 					? "error"
@@ -35,9 +35,11 @@ function status(
 					? "permission"
 					: bucket === "working"
 						? "provider_turn"
-						: bucket === "queued"
-							? "queued_prompt"
-							: "ready",
+						: bucket === "sleeping"
+							? "usage_sleep"
+							: bucket === "queued"
+								? "queued_prompt"
+								: "ready",
 			since: id.length * 100,
 			last_activity_at: id.length * 1_000,
 			queue_count: bucket === "queued" ? 1 : 0,
@@ -47,6 +49,25 @@ function status(
 }
 
 describe("delegated session attention", () => {
+	it("rolls sleeping children up without calling them working or queued", () => {
+		const [root] = withDelegatedAttentionRollups([
+			status("root", "recent"),
+			status("child", "sleeping", "root"),
+		]);
+
+		expect(root).toMatchObject({
+			attention: {
+				bucket: "sleeping",
+				reason: "delegated_child_sleeping",
+			},
+			delegated_attention: {
+				sleeping_count: 1,
+				working_count: 0,
+				queued_count: 0,
+			},
+		});
+	});
+
 	it("rolls three live levels up without replacing stronger direct attention", () => {
 		const [root, child, grandchild] = withDelegatedAttentionRollups([
 			status("root", "recent"),

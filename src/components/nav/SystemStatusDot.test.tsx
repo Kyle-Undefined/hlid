@@ -23,6 +23,7 @@ const agg: AggStatus = {
 	attentionSessionCount: 0,
 	needsAttentionCount: 0,
 	workingCount: 0,
+	sleepingCount: 0,
 	queuedCount: 0,
 	recentCount: 0,
 };
@@ -59,6 +60,7 @@ function setState(snap: Partial<Snapshot>, aggPatch: Partial<AggStatus> = {}) {
 		attentionSessionCount: 0,
 		needsAttentionCount: 0,
 		workingCount: 0,
+		sleepingCount: 0,
 		queuedCount: 0,
 		recentCount: 0,
 		...aggPatch,
@@ -114,6 +116,24 @@ describe("WsStatusDot", () => {
 		expect(dot().textContent).toBe("2");
 	});
 
+	it("uses a non-pulsing sleeping status when every running session is asleep", () => {
+		setState(
+			{},
+			{
+				state: "running",
+				sessionCount: 2,
+				runningCount: 2,
+				attentionSessionCount: 2,
+				sleepingCount: 2,
+			},
+		);
+		render(<WsStatusDot />);
+		expect(statusDot().className).toContain("bg-muted-foreground/55");
+		expect(statusDot().className).not.toContain("animate-pulse");
+		expect(dot().getAttribute("aria-label")).toBe("2 sessions sleeping");
+		expect(dot().textContent).toBe("2");
+	});
+
 	it("falls back to single-session state when the pool snapshot is empty", () => {
 		setState({ sessionState: "running" } as Partial<Snapshot>);
 		render(<WsStatusDot />);
@@ -165,7 +185,7 @@ describe("sessionEntryDotClass", () => {
 		hasPendingPermissions: false,
 	};
 
-	it("covers error, pending, running, and idle states", () => {
+	it("covers error, pending, running, sleeping, and idle states", () => {
 		expect(
 			sessionEntryDotClass({ ...base, state: "error" } as never),
 		).toContain("bg-destructive");
@@ -178,6 +198,13 @@ describe("sessionEntryDotClass", () => {
 		expect(
 			sessionEntryDotClass({ ...base, state: "running" } as never),
 		).toContain("bg-primary");
+		expect(
+			sessionEntryDotClass({
+				...base,
+				state: "running",
+				attention: { bucket: "sleeping" },
+			} as never),
+		).toContain("bg-muted-foreground/55");
 		expect(sessionEntryDotClass({ ...base } as never)).toContain(
 			"bg-muted-foreground/40",
 		);

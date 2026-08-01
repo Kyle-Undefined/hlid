@@ -14,6 +14,7 @@ import type { SessionStatusEntry } from "../../server/protocol";
 export function sessionEntryDotClass(s: SessionStatusEntry): string {
 	if (s.state === "error") return "bg-destructive";
 	if (s.hasPendingPermissions) return "bg-status-warning animate-pulse";
+	if (s.attention?.bucket === "sleeping") return "bg-muted-foreground/55";
 	if (s.state === "running") return "bg-primary animate-pulse";
 	return "bg-muted-foreground/40";
 }
@@ -42,8 +43,9 @@ function aggregateDotClass(
 	if (state === "error") return "bg-destructive";
 	if (pending || agg.needsAttentionCount > 0)
 		return "bg-status-warning animate-pulse";
-	if (state === "running" || agg.workingCount > 0)
+	if (agg.workingCount > 0 || (!hasAggregateSessions && state === "running"))
 		return "bg-primary animate-pulse";
+	if (agg.sleepingCount > 0) return "bg-muted-foreground/55";
 	if (agg.queuedCount > 0) return "bg-status-info";
 	return "bg-status-success";
 }
@@ -51,6 +53,7 @@ function aggregateDotClass(
 export type SystemAttentionTone =
 	| "needs_attention"
 	| "working"
+	| "sleeping"
 	| "queued"
 	| "none";
 
@@ -62,6 +65,7 @@ const SERVER_AGGREGATE_NAV_STATUS: AggregateNavStatus = {
 	attentionSessionCount: 0,
 	needsAttentionCount: 0,
 	workingCount: 0,
+	sleepingCount: 0,
 	queuedCount: 0,
 	recentCount: 0,
 };
@@ -75,6 +79,9 @@ function attentionHeadline(agg: AggregateNavStatus): {
 	}
 	if (agg.workingCount > 0) {
 		return { count: agg.workingCount, tone: "working" };
+	}
+	if (agg.sleepingCount > 0) {
+		return { count: agg.sleepingCount, tone: "sleeping" };
 	}
 	if (agg.queuedCount > 0) {
 		return { count: agg.queuedCount, tone: "queued" };
@@ -142,10 +149,17 @@ export function WsStatusDot() {
 				count === 1 ? "session needs" : "sessions need"
 			} attention`;
 		}
-		if (state === "running" || agg.workingCount > 0) {
+		if (
+			agg.workingCount > 0 ||
+			(!hasAggregateSessions && state === "running")
+		) {
 			const count = agg.workingCount || 1;
 			return `${count} ${count === 1 ? "session" : "sessions"} working`;
 		}
+		if (agg.sleepingCount > 0)
+			return `${agg.sleepingCount} ${
+				agg.sleepingCount === 1 ? "session" : "sessions"
+			} sleeping`;
 		if (agg.queuedCount > 0)
 			return `${agg.queuedCount} ${
 				agg.queuedCount === 1 ? "session" : "sessions"
@@ -157,7 +171,9 @@ export function WsStatusDot() {
 			? "text-status-warning"
 			: attentionTone === "working"
 				? "text-primary"
-				: "text-status-info";
+				: attentionTone === "sleeping"
+					? "text-muted-foreground"
+					: "text-status-info";
 
 	return (
 		<div
