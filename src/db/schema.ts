@@ -12,6 +12,10 @@ import {
 } from "../lib/providerPricing";
 import { normalizeSearchText } from "../lib/search";
 import { repairClaudeCumulativeCosts } from "./claudeCumulativeCostRepair";
+import {
+	CODEX_TERRA_LUNA_PRICING_MIGRATION,
+	repairCodexPricingCutover,
+} from "./codexPricingCutoverRepair";
 
 const DB_PATH = resolve(APP_DIR, "hlid.db");
 
@@ -1589,5 +1593,12 @@ function applyMigrations(db: Db): void {
 	// untouched; the migration is transactional and runs once per installation.
 	runMigration(db, "_migrated_claude_cumulative_cost_deltas_v2", (db) => {
 		repairClaudeCumulativeCosts(db);
+	});
+
+	// OpenAI reduced GPT-5.6 Terra by 20% and Luna by 80% on July 30, 2026.
+	// Reprice only estimates recorded under Hlid's built-in pre-cutover rates;
+	// local effective-dated overrides remain authoritative.
+	runMigration(db, CODEX_TERRA_LUNA_PRICING_MIGRATION, (db) => {
+		repairCodexPricingCutover(db);
 	});
 }

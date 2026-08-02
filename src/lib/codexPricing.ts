@@ -8,7 +8,9 @@ import { type PricingTokenRates, resolvePricing } from "./pricingCatalog";
  * Built-in rates live in the shared effective-dated catalog and can be
  * supplemented by pricing-overrides.toml without changing application code.
  *
- * Sources checked 2026-07-17:
+ * Sources checked 2026-08-01:
+ * https://developers.openai.com/api/docs/pricing
+ * https://developers.openai.com/api/docs/changelog
  * https://developers.openai.com/api/docs/models/gpt-5.6-sol
  * https://developers.openai.com/api/docs/models/gpt-5.6-terra
  * https://developers.openai.com/api/docs/models/gpt-5.6-luna

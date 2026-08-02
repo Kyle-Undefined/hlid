@@ -71,6 +71,8 @@ const LONG_CONTEXT = {
 	longContextOutputMultiplier: 1.5,
 } as const;
 
+export const OPENAI_GPT_56_TERRA_LUNA_PRICE_CUTOVER = "2026-07-30";
+
 export const BUILTIN_PRICING_MODELS: readonly PricingModelRule[] = [
 	{
 		provider: "codex",
@@ -86,6 +88,7 @@ export const BUILTIN_PRICING_MODELS: readonly PricingModelRule[] = [
 	{
 		provider: "codex",
 		model: "gpt-5.6-terra",
+		effectiveUntil: OPENAI_GPT_56_TERRA_LUNA_PRICE_CUTOVER,
 		rates: {
 			input: 2.5,
 			cachedInput: 0.25,
@@ -93,10 +96,25 @@ export const BUILTIN_PRICING_MODELS: readonly PricingModelRule[] = [
 			output: 15,
 			...LONG_CONTEXT,
 		},
+		note: "Original pricing before OpenAI's July 30, 2026 reduction.",
+	},
+	{
+		provider: "codex",
+		model: "gpt-5.6-terra",
+		effectiveFrom: OPENAI_GPT_56_TERRA_LUNA_PRICE_CUTOVER,
+		rates: {
+			input: 2,
+			cachedInput: 0.2,
+			cacheWrite: 2.5,
+			output: 12,
+			...LONG_CONTEXT,
+		},
+		note: "Reduced pricing effective July 30, 2026.",
 	},
 	{
 		provider: "codex",
 		model: "gpt-5.6-luna",
+		effectiveUntil: OPENAI_GPT_56_TERRA_LUNA_PRICE_CUTOVER,
 		rates: {
 			input: 1,
 			cachedInput: 0.1,
@@ -104,6 +122,20 @@ export const BUILTIN_PRICING_MODELS: readonly PricingModelRule[] = [
 			output: 6,
 			...LONG_CONTEXT,
 		},
+		note: "Original pricing before OpenAI's July 30, 2026 reduction.",
+	},
+	{
+		provider: "codex",
+		model: "gpt-5.6-luna",
+		effectiveFrom: OPENAI_GPT_56_TERRA_LUNA_PRICE_CUTOVER,
+		rates: {
+			input: 0.2,
+			cachedInput: 0.02,
+			cacheWrite: 0.25,
+			output: 1.2,
+			...LONG_CONTEXT,
+		},
+		note: "Reduced pricing effective July 30, 2026.",
 	},
 	{
 		provider: "codex",
