@@ -278,5 +278,30 @@ describe("Claude capability discovery", () => {
 				item.operations?.includes("backgroundTasks"),
 			),
 		).toMatchObject({ integration: "not-integrated" });
+		expect(
+			discovery.evidence.find((item) => item.id.includes("mcp-elicitation")),
+		).toMatchObject({
+			integration: "integrated",
+			readiness: "ready",
+			operations: ["form", "respond", "cancel"],
+		});
+		expect(
+			discovery.evidence.find((item) =>
+				item.id.includes("mcp-url-elicitation"),
+			),
+		).toMatchObject({
+			support: "not-advertised",
+			integration: "integrated",
+			readiness: "unavailable",
+			maturity: "experimental",
+			operations: ["url", "respond", "cancel"],
+			reason: expect.stringContaining("does not advertise URL elicitation"),
+		});
+		expect(
+			discovery.evidence.find((item) => item.id.includes("host-dialog")),
+		).toMatchObject({
+			integration: "integrated",
+			operations: ["refusal_fallback_prompt", "respond", "cancel"],
+		});
 	});
 });

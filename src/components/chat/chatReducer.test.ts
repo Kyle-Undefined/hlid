@@ -1609,6 +1609,12 @@ describe("LOAD_HISTORY", () => {
 					questions: [
 						{ question: "Pick?", options: ["A", "B"], multiSelect: false },
 					],
+					provenance: {
+						provider_id: "claude",
+						kind: "mcp_elicitation",
+						source_name: "github",
+						turn_id: "turn-1",
+					},
 					answers: null,
 				},
 			],
@@ -1619,6 +1625,11 @@ describe("LOAD_HISTORY", () => {
 		expect(msg.answers).toBeNull();
 		expect(msg.notes).toBeUndefined();
 		expect(msg.questions[0].question).toBe("Pick?");
+		expect(msg.provenance).toMatchObject({
+			provider_id: "claude",
+			source_name: "github",
+			turn_id: "turn-1",
+		});
 	});
 
 	it("rehydrates resolved ask_user_question items with answers + notes", () => {

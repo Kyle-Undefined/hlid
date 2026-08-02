@@ -3,6 +3,7 @@ import type {
 	AskQuestion,
 	AskUserQuestionAnswers,
 	AskUserQuestionNotes,
+	AskUserQuestionProvenance,
 	ChatAttachment,
 	PermissionDecision,
 	PermissionRequestMessage,
@@ -72,6 +73,7 @@ export type AskUserQuestionChatMessage = {
 	id: string;
 	role: "ask_user_question";
 	questions: AskQuestion[];
+	provenance?: AskUserQuestionProvenance;
 	/** null = unanswered; map keyed by question text, values arrays for multiSelect */
 	answers: AskUserQuestionAnswers | null;
 	/** Free-text notes the user attached per question, keyed by question text. */
@@ -145,6 +147,7 @@ export type HistoryItem =
 			kind: "ask_user_question";
 			id: string;
 			questions: AskQuestion[];
+			provenance?: AskUserQuestionProvenance;
 			answers: AskUserQuestionAnswers | null;
 			notes?: AskUserQuestionNotes;
 	  };
@@ -276,6 +279,7 @@ export type Action =
 			type: "ADD_ASK_USER_QUESTION";
 			id: string;
 			questions: AskQuestion[];
+			provenance?: AskUserQuestionProvenance;
 	  }
 	| {
 			type: "RESOLVE_ASK_USER_QUESTION";
@@ -528,6 +532,7 @@ function historyItemToMessage(item: HistoryItem): ChatMessage {
 			id: item.id,
 			role: "ask_user_question",
 			questions: item.questions,
+			...(item.provenance ? { provenance: item.provenance } : {}),
 			answers: item.answers,
 			...(item.notes !== undefined ? { notes: item.notes } : {}),
 		};
@@ -964,6 +969,7 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 					id: action.id,
 					role: "ask_user_question" as const,
 					questions: action.questions,
+					...(action.provenance ? { provenance: action.provenance } : {}),
 					answers: null,
 				},
 			];

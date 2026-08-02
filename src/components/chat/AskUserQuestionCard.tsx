@@ -3,8 +3,10 @@ import type {
 	AskUserQuestionAnswers,
 	AskUserQuestionNotes,
 } from "#/server/protocol";
+import { ASK_USER_QUESTION_CANCEL_KEY } from "#/server/protocol";
 import { AnsweredQuestionsSummary } from "./AnsweredQuestionsSummary";
 import { AskUserQuestionBlock } from "./AskUserQuestionBlock";
+import { AskUserQuestionProvenance } from "./AskUserQuestionProvenance";
 import type { AskUserQuestionChatMessage } from "./chatReducer";
 
 export function AskUserQuestionCard({
@@ -34,7 +36,10 @@ export function AskUserQuestionCard({
 	const [notes, setNotes] = useState<Record<string, string>>({});
 
 	const allAnswered = useMemo(
-		() => questions.every((q) => (pending[q.question]?.length ?? 0) > 0),
+		() =>
+			questions.every(
+				(q) => q.optional || (pending[q.question]?.length ?? 0) > 0,
+			),
 		[questions, pending],
 	);
 
@@ -73,6 +78,10 @@ export function AskUserQuestionCard({
 		onSubmit(message.id, pending, buildNotesPayload());
 	}
 
+	function cancel() {
+		onSubmit(message.id, { [ASK_USER_QUESTION_CANCEL_KEY]: [] });
+	}
+
 	function setFreeText(question: string, value: string) {
 		setPending((previous) => ({
 			...previous,
@@ -86,6 +95,9 @@ export function AskUserQuestionCard({
 				ASK
 			</div>
 			<div className="flex-1 min-w-0 border border-border bg-card divide-y divide-border">
+				{message.provenance && (
+					<AskUserQuestionProvenance provenance={message.provenance} />
+				)}
 				{questions.map((q, qIdx) => (
 					<AskUserQuestionBlock
 						key={q.question}
@@ -107,21 +119,38 @@ export function AskUserQuestionCard({
 				))}
 
 				{/* Submit bar — appears when auto-submit doesn't apply */}
-				{!autoSubmit && (
+				{(!autoSubmit || message.provenance) && (
 					<div className="px-4 py-3 flex items-center justify-between gap-3">
-						<div className="text-[9px] tracking-widest text-muted-foreground/40 uppercase">
-							{allAnswered
-								? "all answered"
-								: `${Object.values(pending).filter((v) => v.length > 0).length} / ${questions.length} answered`}
+						{!autoSubmit ? (
+							<div className="text-[9px] tracking-widest text-muted-foreground/40 uppercase">
+								{allAnswered
+									? "all required answered"
+									: `${Object.values(pending).filter((v) => v.length > 0).length} answered`}
+							</div>
+						) : (
+							<div />
+						)}
+						<div className="flex items-center gap-2">
+							{message.provenance && (
+								<button
+									type="button"
+									onClick={cancel}
+									className="px-3 py-1.5 border border-border text-muted-foreground text-[10px] tracking-widest font-bold hover:text-foreground hover:border-foreground/30 transition-colors uppercase"
+								>
+									Cancel
+								</button>
+							)}
+							{!autoSubmit && (
+								<button
+									type="button"
+									onClick={submitAll}
+									disabled={!allAnswered}
+									className="px-3 py-1.5 bg-primary text-primary-foreground text-[10px] tracking-widest font-bold hover:opacity-90 transition-opacity disabled:opacity-30 uppercase"
+								>
+									SUBMIT →
+								</button>
+							)}
 						</div>
-						<button
-							type="button"
-							onClick={submitAll}
-							disabled={!allAnswered}
-							className="px-3 py-1.5 bg-primary text-primary-foreground text-[10px] tracking-widest font-bold hover:opacity-90 transition-opacity disabled:opacity-30 uppercase"
-						>
-							SUBMIT →
-						</button>
 					</div>
 				)}
 			</div>

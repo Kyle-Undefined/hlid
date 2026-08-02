@@ -545,6 +545,14 @@ function applyMigrations(db: Db): void {
 			`CREATE INDEX IF NOT EXISTS idx_ask_user_questions_session ON ask_user_questions(session_id)`,
 		);
 	});
+	runMigration(db, "_migrated_ask_user_question_provenance", (db) => {
+		const columns = db
+			.query<{ name: string }, []>("PRAGMA table_info(ask_user_questions)")
+			.all();
+		if (!columns.some((column) => column.name === "provenance_json")) {
+			db.run("ALTER TABLE ask_user_questions ADD COLUMN provenance_json TEXT");
+		}
+	});
 
 	// provider_id: tracks which agent provider recorded each query row so
 	// usage windows can be filtered per-provider in the multi-provider UI.

@@ -85,6 +85,41 @@ function catalogEvidence(
 			maturity: "stable",
 			operations: ["list"],
 		},
+		{
+			id: providerCapabilityId(providerId, "mcp-elicitation"),
+			label: "MCP form elicitation host callbacks",
+			scope: "session",
+			support: "advertised",
+			integration: "integrated",
+			readiness: "ready",
+			source: "provider-sdk",
+			maturity: "beta",
+			operations: ["form", "respond", "cancel"],
+		},
+		{
+			id: providerCapabilityId(providerId, "mcp-url-elicitation"),
+			label: "MCP URL elicitation host callbacks",
+			scope: "session",
+			support: "not-advertised",
+			integration: "integrated",
+			readiness: "unavailable",
+			source: "provider-runtime",
+			maturity: "experimental",
+			operations: ["url", "respond", "cancel"],
+			reason:
+				"The Claude Agent SDK callback type includes URL requests, but this headless Claude MCP client does not advertise URL elicitation to servers.",
+		},
+		{
+			id: providerCapabilityId(providerId, "host-dialog", "refusal-fallback"),
+			label: "Host dialog: refusal fallback prompt",
+			scope: "session",
+			support: "advertised",
+			integration: "integrated",
+			readiness: "ready",
+			source: "provider-sdk",
+			maturity: "experimental",
+			operations: ["refusal_fallback_prompt", "respond", "cancel"],
+		},
 	];
 }
 

@@ -14,6 +14,7 @@ import type {
 	AskQuestion,
 	AskUserQuestionAnswers,
 	AskUserQuestionNotes,
+	AskUserQuestionProvenance,
 	ServerMessage,
 } from "#/server/protocol";
 
@@ -125,6 +126,13 @@ function mapSessionRows(
 		timestamp: a.timestamp,
 		id: a.request_id,
 		questions: safeParseJson<AskQuestion[]>(a.questions_json, []),
+		provenance:
+			a.provenance_json != null
+				? safeParseJson<AskUserQuestionProvenance | undefined>(
+						a.provenance_json,
+						undefined,
+					)
+				: undefined,
 		answers:
 			a.answers_json != null
 				? safeParseJson<AskUserQuestionAnswers | null>(a.answers_json, null)

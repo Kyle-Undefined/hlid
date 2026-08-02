@@ -38,6 +38,9 @@ export function AskUserQuestionBlock({
 					{question.multiSelect && (
 						<span className="ml-2 text-primary/60">· MULTI-SELECT</span>
 					)}
+					{question.optional && (
+						<span className="ml-2 text-muted-foreground/45">· OPTIONAL</span>
+					)}
 				</div>
 				<div className="text-sm text-foreground leading-relaxed">
 					{question.question}

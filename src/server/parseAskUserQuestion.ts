@@ -36,6 +36,7 @@ export function parseAskUserQuestion(
 				...(typeof q.placeholder === "string"
 					? { placeholder: q.placeholder }
 					: {}),
+				...(q.optional === true ? { optional: true } : {}),
 			});
 		}
 		if (out.length > 0) return { questions: out };

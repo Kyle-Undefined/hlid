@@ -244,6 +244,7 @@ type SessionAskUserQuestionRow = {
 	request_id: string;
 	seq: number;
 	questions_json: string;
+	provenance_json?: string | null;
 	answers_json: string | null;
 	notes_json: string | null;
 	timestamp: number;

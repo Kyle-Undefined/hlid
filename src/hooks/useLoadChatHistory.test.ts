@@ -362,6 +362,12 @@ describe("useLoadChatHistory — initial load", () => {
 				questions_json: JSON.stringify([
 					{ question: "Which scope?", options: ["A", "B"], multiSelect: false },
 				]),
+				provenance_json: JSON.stringify({
+					provider_id: "claude",
+					kind: "mcp_elicitation",
+					source_name: "github",
+					turn_id: "turn-1",
+				}),
 				answers_json: null,
 				notes_json: null,
 				timestamp: 3000,
@@ -406,6 +412,11 @@ describe("useLoadChatHistory — initial load", () => {
 				expect.objectContaining({
 					kind: "ask_user_question",
 					id: "question-1",
+					provenance: expect.objectContaining({
+						provider_id: "claude",
+						source_name: "github",
+						turn_id: "turn-1",
+					}),
 				}),
 				expect.objectContaining({ kind: "plan_proposal", id: "plan-1" }),
 			]),

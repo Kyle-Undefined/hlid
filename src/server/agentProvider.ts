@@ -387,6 +387,16 @@ export type ToolMeta = {
 	blockedPath?: string;
 	decisionReason?: string;
 	agentID?: string;
+	/** Provider callback provenance for Hlid's shared blocking-input surface. */
+	interaction?: {
+		provider_id: string;
+		kind: "mcp_elicitation" | "provider_dialog";
+		source_name: string;
+		tool_name?: string;
+		summary?: string;
+		tool_use_id?: string;
+		url?: string;
+	};
 };
 
 export type CanUseTool = (

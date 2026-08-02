@@ -95,6 +95,7 @@ import type {
 	AgentSleepMessage,
 	AskUserQuestionAnswers,
 	AskUserQuestionNotes,
+	AskUserQuestionProvenance,
 	ChatAttachment,
 	McpControlAction,
 	McpControlOperation,
@@ -102,6 +103,7 @@ import type {
 	ServerMessage,
 } from "./protocol";
 import {
+	ASK_USER_QUESTION_CANCEL_KEY,
 	mapMcpServer,
 	mapProviderGoal,
 	TOOL_RESULT_PREVIEW_CHARS,
@@ -2475,7 +2477,7 @@ export class SessionManager {
 		this.unregisterUmbodApprovalSession?.();
 		this.unregisterUmbodApprovalSession = null;
 		this.permissions.clearAll();
-		this.askUserQuestions.clearAll();
+		this.cancelAllAskUserQuestions();
 		this.planModeManager.clearAll();
 		this.currentDelegationHandoff = null;
 		// Explicit abort cancels durable work too. A process restart uses
@@ -2514,7 +2516,7 @@ export class SessionManager {
 		this.unregisterUmbodApprovalSession?.();
 		this.unregisterUmbodApprovalSession = null;
 		this.permissions.clearAll();
-		this.askUserQuestions.clearAll();
+		this.cancelAllAskUserQuestions();
 		this.planModeManager.clearAll();
 		this.abortController?.abort();
 		this.agentSession?.cancel();
@@ -4759,7 +4761,15 @@ export class SessionManager {
 		return async (
 			toolName,
 			input,
-			{ toolUseID, title, displayName, description, agentID },
+			{
+				toolUseID,
+				signal,
+				title,
+				displayName,
+				description,
+				agentID,
+				interaction,
+			},
 		) => {
 			if ((await this.gateOnUsage(provider, emit)) === "aborted") {
 				return {
@@ -4785,6 +4795,8 @@ export class SessionManager {
 						passInput,
 						toolUseID,
 						title,
+						signal,
+						interaction,
 						sessionId,
 						emit,
 						resolve,
@@ -4840,15 +4852,34 @@ export class SessionManager {
 		passInput: Record<string, unknown>,
 		toolUseID: string,
 		title: string | undefined,
+		signal: AbortSignal,
+		interaction:
+			| {
+					provider_id: string;
+					kind: "mcp_elicitation" | "provider_dialog";
+					source_name: string;
+					tool_name?: string;
+					summary?: string;
+					tool_use_id?: string;
+					url?: string;
+			  }
+			| undefined,
 		sessionId: string | undefined,
 		emit: (msg: ServerMessage) => void,
 		resolve: (decision: AgentToolDecision) => void,
 	): void {
 		const { questions } = parseAskUserQuestion(passInput, title);
+		const provenance: AskUserQuestionProvenance | undefined = interaction
+			? {
+					...interaction,
+					...(this.currentTurnId ? { turn_id: this.currentTurnId } : {}),
+				}
+			: undefined;
 		const request = {
 			type: "ask_user_question" as const,
 			id: toolUseID,
 			questions,
+			...(provenance ? { provenance } : {}),
 		};
 		if (sessionId) {
 			void db
@@ -4857,12 +4888,19 @@ export class SessionManager {
 					toolUseID,
 					this.messageSeq++,
 					JSON.stringify(questions),
+					provenance ? JSON.stringify(provenance) : null,
 				)
 				.catch((error) => logDbError("appendAskUserQuestion", error));
 		} else {
 			this.messageSeq++;
 		}
+		const onAbort = () => {
+			if (!this.askUserQuestions.has(toolUseID)) return;
+			this.askUserQuestions.complete(toolUseID, {});
+			this.emitAskUserQuestionCancellation(request, sessionId, emit);
+		};
 		this.askUserQuestions.register(toolUseID, request, (answers, notes) => {
+			signal.removeEventListener("abort", onAbort);
 			const existing = (passInput.answers as Record<string, string>) ?? {};
 			const sdkAnswers: Record<string, string> = { ...existing };
 			for (const [question, picks] of Object.entries(answers)) {
@@ -4876,7 +4914,47 @@ export class SessionManager {
 				updatedInput: { ...passInput, answers: sdkAnswers },
 			});
 		});
+		signal.addEventListener("abort", onAbort, { once: true });
+		if (signal.aborted) {
+			onAbort();
+			return;
+		}
 		emit(request);
+	}
+
+	private emitAskUserQuestionCancellation(
+		request: Extract<ServerMessage, { type: "ask_user_question" }>,
+		sessionId: string | undefined,
+		emit: (msg: ServerMessage) => void,
+	): void {
+		emit({
+			type: "ask_user_question_resolved",
+			id: request.id,
+			answers: { [ASK_USER_QUESTION_CANCEL_KEY]: [] },
+		});
+		if (!sessionId) return;
+		void db
+			.setAskUserQuestionResolution(
+				sessionId,
+				request.id,
+				JSON.stringify({ [ASK_USER_QUESTION_CANCEL_KEY]: [] }),
+				null,
+			)
+			.catch((error) => logDbError("cancel ask user question", error));
+	}
+
+	private cancelAllAskUserQuestions(): void {
+		const pending = this.askUserQuestions.getPending();
+		this.askUserQuestions.clearAll();
+		const emit = this.currentTurnArgs?.emit;
+		if (!emit) return;
+		for (const request of pending) {
+			this.emitAskUserQuestionCancellation(
+				request,
+				this.currentSessionId ?? undefined,
+				emit,
+			);
+		}
 	}
 
 	/**

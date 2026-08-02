@@ -52,6 +52,7 @@ import type {
 import { toAgentToolCallResult } from "./agentToolResult";
 import { discoverClaudeProviderCapabilities } from "./claudeCapabilityDiscovery";
 import { createClaudeHistorySessionStore } from "./claudeHistorySessionStore";
+import { createClaudeHostInteractionHandlers } from "./claudeHostInteractions";
 import { getClaudeWarmupSnapshot } from "./claudeWarmup";
 import {
 	deleteClaudeWorkflow,
@@ -3051,6 +3052,7 @@ export class ClaudeProvider implements AgentProvider {
 	query(params: AgentQueryParams): AgentSession {
 		const abortController = new AbortController();
 		const sdkEnv = claudeSdkEnv(params.cwd, this.sdkEnv);
+		const hostInteractions = createClaudeHostInteractionHandlers(params);
 
 		if (params.signal) {
 			if (params.signal.aborted) {
@@ -3104,6 +3106,7 @@ export class ClaudeProvider implements AgentProvider {
 					allowDangerouslySkipPermissions:
 						params.permissionMode === "bypassPermissions" &&
 						!params.policyEnforced,
+					...hostInteractions,
 					...(params.beforeToolUse && !params.policyEnforced
 						? {
 								hooks: {

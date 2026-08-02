@@ -64,6 +64,7 @@ function dispatchImmediateMessage(
 				type: "ADD_ASK_USER_QUESTION",
 				id: msg.id,
 				questions: msg.questions,
+				provenance: msg.provenance,
 			});
 			return true;
 		case "ask_user_question_resolved":

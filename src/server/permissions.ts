@@ -42,6 +42,10 @@ class PendingRequestManager<TRequest, TArgs extends unknown[]> {
 		this.requests.delete(id);
 	}
 
+	has(id: string): boolean {
+		return this.resolvers.has(id);
+	}
+
 	protected completeRequest(
 		id: string,
 		args: TArgs,

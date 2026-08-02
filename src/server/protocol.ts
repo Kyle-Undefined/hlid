@@ -475,16 +475,38 @@ export type AskQuestion = {
 	question: string;
 	options: string[];
 	multiSelect: boolean;
-	/** Render a direct input instead of choices (used by ACP elicitation forms). */
+	/** Render a direct input instead of choices for provider elicitation forms. */
 	freeText?: boolean;
 	inputType?: "text" | "number";
 	placeholder?: string;
+	/** Optional schema fields do not block submission when left empty. */
+	optional?: boolean;
 };
+
+export type AskUserQuestionProvenance = {
+	provider_id: string;
+	kind: "mcp_elicitation" | "provider_dialog";
+	/** MCP server name or provider-native dialog kind. */
+	source_name: string;
+	/** Provider tool/display label associated with the request, when known. */
+	tool_name?: string;
+	/** Provider-authored prompt context shown above the shared fields. */
+	summary?: string;
+	/** Hlid durable turn that originated the blocking interaction. */
+	turn_id?: string;
+	/** Provider tool invocation tied to the interaction, when supplied. */
+	tool_use_id?: string;
+	/** URL-mode MCP elicitation target, rendered as an explicit external link. */
+	url?: string;
+};
+
+export const ASK_USER_QUESTION_CANCEL_KEY = "__hlid_cancelled__";
 
 export type AskUserQuestionMessage = {
 	type: "ask_user_question";
 	id: string;
 	questions: AskQuestion[];
+	provenance?: AskUserQuestionProvenance;
 };
 
 /** answers keyed by question text; arrays support multiSelect (single-select uses a 1-element array). */

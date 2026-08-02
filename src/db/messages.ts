@@ -579,6 +579,7 @@ export type AskUserQuestionRow = {
 	request_id: string;
 	seq: number;
 	questions_json: string;
+	provenance_json: string | null;
 	answers_json: string | null;
 	notes_json: string | null;
 	timestamp: number;
@@ -589,12 +590,13 @@ export async function appendAskUserQuestion(
 	requestId: string,
 	seq: number,
 	questionsJson: string,
+	provenanceJson?: string | null,
 ): Promise<void> {
 	const db = await getDb();
 	db.run(
-		`INSERT INTO ask_user_questions (session_id, request_id, seq, questions_json, timestamp) VALUES (?, ?, ?, ?, unixepoch())
-     ON CONFLICT(request_id) DO UPDATE SET questions_json = excluded.questions_json`,
-		[sessionId, requestId, seq, questionsJson],
+		`INSERT INTO ask_user_questions (session_id, request_id, seq, questions_json, provenance_json, timestamp) VALUES (?, ?, ?, ?, ?, unixepoch())
+     ON CONFLICT(request_id) DO UPDATE SET questions_json = excluded.questions_json, provenance_json = excluded.provenance_json`,
+		[sessionId, requestId, seq, questionsJson, provenanceJson ?? null],
 	);
 }
 
@@ -625,7 +627,7 @@ export async function getSessionAskUserQuestions(
 	return getSessionSequenceRows<AskUserQuestionRow>({
 		sessionId,
 		select:
-			"request_id, seq, questions_json, answers_json, notes_json, timestamp",
+			"request_id, seq, questions_json, provenance_json, answers_json, notes_json, timestamp",
 		table: "ask_user_questions",
 		sequenceColumn: "seq",
 		minSequence: minSeq,

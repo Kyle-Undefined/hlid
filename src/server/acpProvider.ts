@@ -40,6 +40,7 @@ import {
 import { getObsidianCliStatus } from "./obsidianCli";
 import { isObsidianRunCommandRequest } from "./obsidianCommandApproval";
 import { obsidianMcpProcessCommand } from "./obsidianMcpServer";
+import { providerElicitationQuestions } from "./providerElicitation";
 
 export type AcpProviderOptions = {
 	id: string;
@@ -554,16 +555,7 @@ class AcpSession implements AgentSession {
 		if (request.mode !== "form") return { action: "decline" };
 		const fields = elicitationFields(request);
 		if (fields.length === 0) return { action: "decline" };
-		const questions = fields.map((field) => ({
-			question: field.question,
-			options: [...field.values.keys()],
-			multiSelect: field.type === "array",
-			...(field.freeText ? { freeText: true } : {}),
-			...(field.type === "number" || field.type === "integer"
-				? { inputType: "number" as const }
-				: {}),
-			...(field.placeholder ? { placeholder: field.placeholder } : {}),
-		}));
+		const questions = providerElicitationQuestions(fields);
 		const toolUseID =
 			("toolCallId" in request && request.toolCallId) ||
 			`acp-elicitation-${this.sessionId ?? "request"}-${++this.elicitationSeq}`;

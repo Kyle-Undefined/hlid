@@ -2932,6 +2932,43 @@ describe("ClaudeProvider — event mapping", () => {
 // ── canUseTool pass-through ────────────────────────────────────────────────────
 
 describe("ClaudeProvider — canUseTool pass-through", () => {
+	it("registers Claude MCP elicitation and supported host-dialog callbacks", async () => {
+		let captured:
+			| {
+					onElicitation?: unknown;
+					onUserDialog?: unknown;
+					supportedDialogKinds?: string[];
+			  }
+			| undefined;
+		// biome-ignore lint/suspicious/noExplicitAny: test mock captures SDK options
+		const captureInteractions: any = ({
+			options,
+		}: {
+			options?: typeof captured;
+		}) => {
+			captured = options;
+			return sdkGen([
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 1,
+					usage: { input_tokens: 1, output_tokens: 1 },
+				},
+			]);
+		};
+		vi.mocked(query).mockImplementationOnce(captureInteractions);
+
+		await collectEvents(baseParams());
+
+		expect(captured).toMatchObject({
+			onElicitation: expect.any(Function),
+			onUserDialog: expect.any(Function),
+			supportedDialogKinds: ["refusal_fallback_prompt"],
+		});
+	});
+
 	it("calls canUseTool when SDK fires it and passes allow decision to SDK", async () => {
 		const canUseTool = vi.fn().mockResolvedValue({
 			behavior: "allow",

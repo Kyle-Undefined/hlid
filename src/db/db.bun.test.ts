@@ -2895,8 +2895,30 @@ describe("ask_user_questions", () => {
 		expect(rows).toHaveLength(1);
 		expect(rows[0].request_id).toBe("req-1");
 		expect(rows[0].questions_json).toBe(sampleQuestionsJson);
+		expect(rows[0].provenance_json).toBeNull();
 		expect(rows[0].answers_json).toBeNull();
 		expect(rows[0].notes_json).toBeNull();
+	});
+
+	it("persists and upserts provider interaction provenance", async () => {
+		await createSession("s1", "TEST", "claude-sonnet");
+		const first = JSON.stringify({
+			provider_id: "claude",
+			kind: "mcp_elicitation",
+			source_name: "github",
+			turn_id: "turn-1",
+		});
+		const updated = JSON.stringify({
+			provider_id: "claude",
+			kind: "provider_dialog",
+			source_name: "refusal_fallback_prompt",
+			turn_id: "turn-1",
+		});
+		await appendAskUserQuestion("s1", "req-1", 0, sampleQuestionsJson, first);
+		await appendAskUserQuestion("s1", "req-1", 0, sampleQuestionsJson, updated);
+
+		const rows = await getSessionAskUserQuestions("s1");
+		expect(rows[0].provenance_json).toBe(updated);
 	});
 
 	it("appendAskUserQuestion upserts on the same request_id (retry-safe)", async () => {

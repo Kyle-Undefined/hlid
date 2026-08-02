@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as privacyStore from "#/hooks/privacyStore";
+import { ASK_USER_QUESTION_CANCEL_KEY } from "#/server/protocol";
 import { AskUserQuestionCard } from "./AskUserQuestionCard";
 import type { AskUserQuestionChatMessage } from "./chatReducer";
 
@@ -166,5 +167,87 @@ describe("AskUserQuestionCard — direct form input", () => {
 			{ Replicas: ["3"] },
 			undefined,
 		);
+	});
+
+	it("allows an optional direct field to be omitted", () => {
+		const onSubmit = vi.fn();
+		render(
+			<AskUserQuestionCard
+				message={makeMsg({
+					questions: [
+						{
+							question: "Nickname",
+							options: [],
+							multiSelect: false,
+							freeText: true,
+							optional: true,
+						},
+					],
+				})}
+				onSubmit={onSubmit}
+			/>,
+		);
+		const submit = screen.getByRole("button", { name: /submit/i });
+		expect((submit as HTMLButtonElement).disabled).toBe(false);
+		fireEvent.click(submit);
+		expect(onSubmit).toHaveBeenCalledWith("aq-1", {}, undefined);
+	});
+});
+
+describe("AskUserQuestionCard — provider interaction provenance", () => {
+	const provenance = {
+		provider_id: "claude",
+		kind: "mcp_elicitation" as const,
+		source_name: "github",
+		tool_name: "authenticate",
+		summary: "Authenticate the connector",
+		turn_id: "turn-1234567890",
+		url: "https://example.test/oauth",
+	};
+
+	it("shows Claude, MCP source, originating turn, and URL", () => {
+		render(
+			<AskUserQuestionCard
+				message={makeMsg({ provenance })}
+				onSubmit={vi.fn()}
+			/>,
+		);
+		expect(screen.getByText("claude")).not.toBeNull();
+		expect(screen.getByText("github")).not.toBeNull();
+		expect(screen.getByText("authenticate")).not.toBeNull();
+		expect(screen.getByText("turn turn-123")).not.toBeNull();
+		expect(screen.getByText("Authenticate the connector")).not.toBeNull();
+		expect(
+			screen
+				.getByRole("link", { name: /open provider link/i })
+				.getAttribute("href"),
+		).toBe("https://example.test/oauth");
+	});
+
+	it("returns a deterministic shared cancellation marker", () => {
+		const onSubmit = vi.fn();
+		render(
+			<AskUserQuestionCard
+				message={makeMsg({ provenance })}
+				onSubmit={onSubmit}
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+		expect(onSubmit).toHaveBeenCalledWith("aq-1", {
+			[ASK_USER_QUESTION_CANCEL_KEY]: [],
+		});
+	});
+
+	it("renders a cancelled provider interaction as resolved", () => {
+		render(
+			<AskUserQuestionCard
+				message={makeMsg({
+					provenance,
+					answers: { [ASK_USER_QUESTION_CANCEL_KEY]: [] },
+				})}
+				onSubmit={vi.fn()}
+			/>,
+		);
+		expect(screen.getByText("Cancelled")).not.toBeNull();
 	});
 });

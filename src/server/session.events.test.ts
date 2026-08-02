@@ -49,7 +49,7 @@ import type {
 	AgentQueryParams,
 	AgentSession,
 } from "./agentProvider";
-import type { ServerMessage } from "./protocol";
+import { ASK_USER_QUESTION_CANCEL_KEY, type ServerMessage } from "./protocol";
 import { SessionManager } from "./session";
 import {
 	makeConfig,
@@ -432,6 +432,73 @@ describe("SessionManager — AskUserQuestion", () => {
 		expect(sm.getPendingAskUserQuestions()).toEqual([]);
 	});
 
+	it("abort() resolves a live provider interaction as cancelled", async () => {
+		let providerDecision: unknown;
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					providerDecision = await params.canUseTool(
+						"AskUserQuestion",
+						{
+							questions: [
+								{
+									question: "Continue?",
+									options: ["Yes", "No"],
+									multiSelect: false,
+								},
+							],
+						},
+						{
+							toolUseID: "claude-dialog:sess-1:1",
+							signal: params.signal ?? new AbortController().signal,
+							interaction: {
+								provider_id: "claude",
+								kind: "provider_dialog",
+								source_name: "refusal_fallback_prompt",
+							},
+						},
+					);
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		};
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const turn = sm.runQuery("hi", (message) => emitted.push(message), {
+			sessionId: "sess-1",
+			turnId: "turn-1",
+		});
+		await waitFor(() =>
+			expect(sm.getPendingAskUserQuestions()).toHaveLength(1),
+		);
+
+		sm.abort();
+		await turn;
+
+		expect(providerDecision).toMatchObject({
+			behavior: "allow",
+			updatedInput: {
+				answers: {},
+			},
+		});
+		expect(emitted).toContainEqual({
+			type: "ask_user_question_resolved",
+			id: "claude-dialog:sess-1:1",
+			answers: { [ASK_USER_QUESTION_CANCEL_KEY]: [] },
+		});
+	});
+
 	// SDK contract: AskUserQuestionOutput.answers is keyed by question text.
 	// A flat `answer` field caused the SDK to fall back to a default option
 	// (often the last), making the model act on the wrong choice.
@@ -495,6 +562,7 @@ describe("SessionManager — AskUserQuestion", () => {
 			"tid-ask-1",
 			expect.any(Number),
 			expect.stringContaining(QUESTION),
+			null,
 		);
 
 		sm.handleAskUserQuestionResponse("tid-ask-1", { [QUESTION]: [SELECTED] });
@@ -600,6 +668,12 @@ describe("SessionManager — AskUserQuestion", () => {
 					await params.canUseTool("AskUserQuestion", askInput, {
 						toolUseID: "tid-ask-3",
 						signal: new AbortController().signal,
+						interaction: {
+							provider_id: "claude",
+							kind: "mcp_elicitation",
+							source_name: "github",
+							tool_name: "authenticate",
+						},
 					});
 					yield {
 						type: "done",
@@ -622,6 +696,7 @@ describe("SessionManager — AskUserQuestion", () => {
 		const sm = new SessionManager(makeConfig(), makeProviders(provider));
 		const turn = sm.runQuery("hi", (m) => emitted.push(m), {
 			sessionId: "sess-1",
+			turnId: "turn-origin-1",
 		});
 		await waitFor(() =>
 			expect(sm.getPendingAskUserQuestions()).toHaveLength(1),
@@ -641,6 +716,13 @@ describe("SessionManager — AskUserQuestion", () => {
 						options: string[];
 						multiSelect: boolean;
 					}>;
+					provenance?: {
+						provider_id: string;
+						kind: string;
+						source_name: string;
+						tool_name?: string;
+						turn_id?: string;
+					};
 			  }
 			| undefined;
 		expect(askEvent).toBeDefined();
@@ -652,6 +734,13 @@ describe("SessionManager — AskUserQuestion", () => {
 			"SvelteKit",
 		]);
 		expect(askEvent?.questions[0].multiSelect).toBe(false);
+		expect(askEvent?.provenance).toEqual({
+			provider_id: "claude",
+			kind: "mcp_elicitation",
+			source_name: "github",
+			tool_name: "authenticate",
+			turn_id: "turn-origin-1",
+		});
 	});
 
 	// Multi-question support — single AskUserQuestion call with N questions.
