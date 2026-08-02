@@ -284,6 +284,32 @@ export type SubagentSnapshot = {
 	};
 };
 
+export type TaskActivityStatus =
+	| "pending"
+	| "in_progress"
+	| "completed"
+	| "deleted";
+
+export type TaskActivityItem = {
+	id?: string;
+	subject: string;
+	description?: string;
+	activeForm?: string;
+	status?: TaskActivityStatus;
+	owner?: string;
+	blockedBy?: string[];
+	blocks?: string[];
+};
+
+/** Provider-neutral, read-only task state rendered at the originating tool call. */
+export type TaskActivity = {
+	kind: "tasks";
+	source: "codex-plan" | "claude-todo" | "claude-task-store";
+	operation: "snapshot" | "create" | "update" | "list" | "get";
+	explanation?: string;
+	items: TaskActivityItem[];
+};
+
 export type AgentEvent =
 	| { type: "session_start"; sessionId: string }
 	/** Claude checkpoint attached to the current root user turn. */
@@ -318,8 +344,10 @@ export type AgentEvent =
 			name: string;
 			input: unknown;
 			subagent?: SubagentSnapshot;
+			taskActivity?: TaskActivity;
 	  }
 	| { type: "tool_update"; toolId: string; subagent: SubagentSnapshot }
+	| { type: "tool_activity_update"; toolId: string; taskActivity: TaskActivity }
 	| {
 			type: "tool_result";
 			toolId: string;

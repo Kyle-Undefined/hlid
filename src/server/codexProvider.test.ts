@@ -5076,6 +5076,12 @@ describe("CodexAgentSession — notifications", () => {
 			toolId: "mcp-1",
 			name: "update_plan",
 			input: { plan: [{ step: "Research", status: "in_progress" }] },
+			taskActivity: {
+				kind: "tasks",
+				source: "codex-plan",
+				operation: "snapshot",
+				items: [{ subject: "Research", status: "in_progress" }],
+			},
 		});
 		session.cancel();
 	});

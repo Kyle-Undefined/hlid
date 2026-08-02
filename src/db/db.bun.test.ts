@@ -46,6 +46,7 @@ import {
 	setMessageQueryId,
 	setMessageRecap,
 	setMessageSteerTargetSeq,
+	setToolEventActivity,
 	setToolEventResult,
 	setToolEventSubagent,
 } from "./messages";
@@ -1854,6 +1855,36 @@ describe("tool events", () => {
 			status: "completed",
 			startedAtMs: 1000,
 			endedAtMs: 5000,
+		});
+	});
+
+	it("stores and updates normalized task activity", async () => {
+		await createSession("s1", "L", "m");
+		await appendMessage("s1", 0, "assistant", "");
+		const started = {
+			kind: "tasks" as const,
+			source: "codex-plan" as const,
+			operation: "snapshot" as const,
+			items: [{ subject: "Persist tasks", status: "in_progress" as const }],
+		};
+		await appendToolEvent(
+			"s1",
+			0,
+			"plan-1",
+			"update_plan",
+			{},
+			undefined,
+			undefined,
+			started,
+		);
+		await setToolEventActivity("s1", "plan-1", {
+			...started,
+			items: [{ subject: "Persist tasks", status: "completed" }],
+		});
+		const events = await getSessionToolEventSummaries("s1");
+		expect(JSON.parse(events[0].activity_json ?? "{}")).toEqual({
+			...started,
+			items: [{ subject: "Persist tasks", status: "completed" }],
 		});
 	});
 });

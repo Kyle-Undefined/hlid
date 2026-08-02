@@ -91,6 +91,7 @@ export {
 	setMessageSteerTargetSeq,
 	setMessageText,
 	setPlanProposalDecision,
+	setToolEventActivity,
 	setToolEventResult,
 	setToolEventSubagent,
 } from "./messages";

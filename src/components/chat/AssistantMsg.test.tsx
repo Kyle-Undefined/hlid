@@ -8,6 +8,8 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as privacyStore from "#/hooks/privacyStore";
+import type { TaskActivity } from "#/server/agentProvider";
+import type { ToolEventMessage } from "#/server/protocol";
 import { AssistantMsg, normalizeMd } from "./AssistantMsg";
 import type { AssistantMessage, UserMessage } from "./chatReducer";
 
@@ -33,6 +35,21 @@ function acceptedSteer(overrides?: Partial<UserMessage>): UserMessage {
 		steerTargetSeq: 1,
 		steerToolEventIndex: 1,
 		...overrides,
+	};
+}
+
+function taskEvent(
+	id: string,
+	name: string,
+	taskActivity: TaskActivity,
+): ToolEventMessage {
+	return {
+		type: "tool_event",
+		id,
+		name,
+		input: {},
+		result: "done",
+		taskActivity,
 	};
 }
 
@@ -105,6 +122,281 @@ describe("normalizeMd", () => {
 });
 
 describe("AssistantMsg", () => {
+	it("groups Claude task-store operations into one evolving task card", () => {
+		const base = {
+			kind: "tasks" as const,
+			source: "claude-task-store" as const,
+		};
+		const message = makeMsg({
+			toolEvents: [
+				taskEvent("create", "TaskCreate", {
+					...base,
+					operation: "create",
+					items: [
+						{ id: "1", subject: "Test task integration", status: "pending" },
+					],
+				}),
+				taskEvent("list", "TaskList", {
+					...base,
+					operation: "list",
+					items: [
+						{ id: "1", subject: "Test task integration", status: "pending" },
+					],
+				}),
+				taskEvent("update", "TaskUpdate", {
+					...base,
+					operation: "update",
+					items: [{ id: "1", subject: "Task 1", status: "completed" }],
+				}),
+				taskEvent("get", "TaskGet", {
+					...base,
+					operation: "get",
+					items: [
+						{ id: "1", subject: "Test task integration", status: "completed" },
+					],
+				}),
+			],
+		});
+		render(
+			<AssistantMsg message={message} providerId="claude" sessionId="s" />,
+		);
+
+		const group = screen.getByRole("button", {
+			name: "Tasks task activity details",
+			expanded: false,
+		});
+		expect(screen.getAllByText("Tasks")).toHaveLength(1);
+		expect(screen.getByText("1/1 done")).not.toBeNull();
+		fireEvent.click(group);
+		expect(screen.getByText("Test task integration")).not.toBeNull();
+		expect(screen.queryByText("Task 1")).toBeNull();
+		expect(screen.getByText("Tool details")).not.toBeNull();
+	});
+
+	it("settles a completed task-list call without presenting unfinished rows as live", () => {
+		const base = {
+			kind: "tasks" as const,
+			source: "claude-task-store" as const,
+		};
+		const { container } = render(
+			<AssistantMsg
+				message={makeMsg({
+					toolEvents: [
+						taskEvent("create-live", "TaskCreate", {
+							...base,
+							operation: "create",
+							items: [{ id: "4", subject: "Owner claim", status: "pending" }],
+						}),
+						taskEvent("list-live", "TaskList", {
+							...base,
+							operation: "list",
+							items: [
+								{ id: "4", subject: "Owner claim", status: "in_progress" },
+							],
+						}),
+					],
+				})}
+				providerId="claude"
+				sessionId="s"
+			/>,
+		);
+
+		expect(screen.getByLabelText("Tasks checked")).not.toBeNull();
+		expect(screen.queryByText("ACTIVE")).toBeNull();
+		fireEvent.click(
+			screen.getByRole("button", { name: "Tasks task activity details" }),
+		);
+		expect(screen.getByText("Owner claim")).not.toBeNull();
+		expect(container.querySelector(".animate-spin")).toBeNull();
+	});
+
+	it("ends an unresolved task card when its response has already settled", () => {
+		const { container } = render(
+			<AssistantMsg
+				message={makeMsg({
+					streaming: false,
+					toolEvents: [
+						{
+							type: "tool_event",
+							id: "unresolved-task",
+							name: "TaskUpdate",
+							input: {},
+							taskActivity: {
+								kind: "tasks",
+								source: "claude-task-store",
+								operation: "update",
+								items: [
+									{
+										id: "5",
+										subject: "Interrupted work",
+										status: "in_progress",
+									},
+								],
+							},
+						},
+					],
+				})}
+				providerId="claude"
+				sessionId="s"
+			/>,
+		);
+
+		expect(screen.getByLabelText("Tasks ended")).not.toBeNull();
+		expect(screen.queryByLabelText("Tasks updating")).toBeNull();
+		expect(container.querySelector(".animate-spin")).toBeNull();
+	});
+
+	it("pins active task activity below response text and returns it to transcript position when settled", () => {
+		const taskActivity = {
+			kind: "tasks" as const,
+			source: "claude-task-store" as const,
+			operation: "create" as const,
+			items: [
+				{ id: "9", subject: "First-class task", status: "pending" as const },
+			],
+		};
+		const toolEvents = [
+			taskEvent("single-task", "TaskCreate", taskActivity),
+			{
+				type: "tool_event" as const,
+				id: "later-read",
+				name: "Read",
+				input: { path: "src/app.ts" },
+			},
+		];
+		const { rerender } = render(
+			<AssistantMsg
+				message={makeMsg({ toolEvents, streaming: true })}
+				providerId="claude"
+				sessionId="s"
+			/>,
+		);
+
+		const taskCard = screen.getByRole("button", {
+			name: "Tasks task activity details",
+		});
+		const response = screen.getByText("hello world");
+		expect(
+			response.compareDocumentPosition(taskCard) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+
+		rerender(
+			<AssistantMsg
+				message={makeMsg({ toolEvents, streaming: false })}
+				providerId="claude"
+				sessionId="s"
+			/>,
+		);
+		const settledTaskCard = screen.getByRole("button", {
+			name: "Tasks task activity details",
+		});
+		const laterRead = screen.getByRole("button", { name: /^Read path:/ });
+		expect(
+			settledTaskCard.compareDocumentPosition(laterRead) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(screen.getByLabelText("Tasks created")).not.toBeNull();
+	});
+
+	it("keeps terminal task rows pinned until the streaming response ends", () => {
+		const taskActivity: TaskActivity = {
+			kind: "tasks",
+			source: "claude-task-store",
+			operation: "list",
+			items: [
+				{
+					id: "11",
+					subject: "Finished before response end",
+					status: "completed",
+				},
+			],
+		};
+		const toolEvents: ToolEventMessage[] = [
+			taskEvent("terminal-list", "TaskList", taskActivity),
+			taskEvent("later-get", "TaskGet", {
+				...taskActivity,
+				operation: "get",
+			}),
+			{
+				type: "tool_event",
+				id: "later-read",
+				name: "Read",
+				input: { path: "src/app.ts" },
+			},
+		];
+		const { rerender } = render(
+			<AssistantMsg
+				message={makeMsg({ toolEvents, streaming: true })}
+				providerId="claude"
+				sessionId="s"
+			/>,
+		);
+
+		const taskCard = screen.getByRole("button", {
+			name: "Tasks task activity details",
+		});
+		const response = screen.getByText("hello world");
+		expect(screen.getAllByText("Tasks")).toHaveLength(1);
+		expect(
+			response.compareDocumentPosition(taskCard) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+
+		rerender(
+			<AssistantMsg
+				message={makeMsg({ toolEvents, streaming: false })}
+				providerId="claude"
+				sessionId="s"
+			/>,
+		);
+		const settledTaskCard = screen.getByRole("button", {
+			name: "Tasks task activity details",
+		});
+		const laterRead = screen.getByRole("button", { name: /^Read path:/ });
+		expect(
+			settledTaskCard.compareDocumentPosition(laterRead) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+	});
+
+	it("keeps an active task card visible outside the ordinary tool window", () => {
+		const taskActivity = {
+			kind: "tasks" as const,
+			source: "claude-task-store" as const,
+			operation: "create" as const,
+			items: [
+				{ id: "10", subject: "Windowed task", status: "pending" as const },
+			],
+		};
+		render(
+			<AssistantMsg
+				toolEventStartIndex={1}
+				message={makeMsg({
+					streaming: true,
+					toolEvents: [
+						taskEvent("hidden-task", "TaskCreate", taskActivity),
+						{
+							type: "tool_event",
+							id: "visible-read",
+							name: "Read visible",
+							input: {},
+						},
+					],
+				})}
+				providerId="claude"
+				sessionId="s"
+			/>,
+		);
+
+		expect(
+			screen.getByRole("button", { name: "Tasks task activity details" }),
+		).not.toBeNull();
+		expect(
+			screen.getByRole("button", { name: /read visible/i }),
+		).not.toBeNull();
+	});
+
 	it("renders Codex visualizations below the agent response while normal tools stay above it", () => {
 		const read = {
 			type: "tool_event" as const,

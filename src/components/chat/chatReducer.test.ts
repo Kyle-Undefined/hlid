@@ -591,6 +591,41 @@ describe("ADD_TOOL_EVENT", () => {
 // ── ADD_TOOL_RESULT ───────────────────────────────────────────────────────────
 
 describe("ADD_TOOL_RESULT", () => {
+	it("patches normalized task activity in place", () => {
+		let state = reducer(withAssistant("a1"), {
+			type: "ADD_TOOL_EVENT",
+			id: "a1",
+			event: {
+				type: "tool_event",
+				id: "plan-1",
+				name: "update_plan",
+				input: {},
+				taskActivity: {
+					kind: "tasks",
+					source: "codex-plan",
+					operation: "snapshot",
+					items: [{ subject: "Test", status: "in_progress" }],
+				},
+			},
+		});
+		state = reducer(state, {
+			type: "UPDATE_TOOL_ACTIVITY",
+			toolUseId: "plan-1",
+			taskActivity: {
+				kind: "tasks",
+				source: "codex-plan",
+				operation: "snapshot",
+				items: [{ subject: "Test", status: "completed" }],
+			},
+		});
+		const message = state[0];
+		if (message.role === "assistant") {
+			expect(message.toolEvents[0].taskActivity?.items[0].status).toBe(
+				"completed",
+			);
+		}
+	});
+
 	it("attaches result to matching tool event on assistant message", () => {
 		let state = reducer(withAssistant("a1"), {
 			type: "ADD_TOOL_EVENT",

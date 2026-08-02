@@ -251,6 +251,90 @@ describe("ClaudeProvider — event mapping", () => {
 		expect(textEvents).toEqual([{ type: "text_delta", text: "Hello world" }]);
 	});
 
+	it("surfaces native task tools as normalized task activity", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					uuid: "task-list-message",
+					parent_tool_use_id: null,
+					message: {
+						content: [
+							{
+								type: "tool_use",
+								id: "task-list-1",
+								name: "TaskList",
+								input: {},
+							},
+						],
+						usage: { input_tokens: 10, output_tokens: 5 },
+					},
+				},
+				{
+					type: "user",
+					tool_use_result: {
+						tasks: [
+							{
+								id: "7",
+								subject: "Render Raven card",
+								status: "in_progress",
+								blockedBy: ["3"],
+							},
+						],
+					},
+					message: {
+						content: [
+							{
+								type: "tool_result",
+								tool_use_id: "task-list-1",
+								content: "1 task",
+							},
+						],
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events).toContainEqual({
+			type: "tool_start",
+			toolId: "task-list-1",
+			name: "TaskList",
+			input: {},
+			taskActivity: {
+				kind: "tasks",
+				source: "claude-task-store",
+				operation: "list",
+				items: [],
+			},
+		});
+		expect(events).toContainEqual({
+			type: "tool_activity_update",
+			toolId: "task-list-1",
+			taskActivity: {
+				kind: "tasks",
+				source: "claude-task-store",
+				operation: "list",
+				items: [
+					{
+						id: "7",
+						subject: "Render Raven card",
+						status: "in_progress",
+						blockedBy: ["3"],
+					},
+				],
+			},
+		});
+	});
+
 	it("surfaces structured Claude assistant failures as terminal provider errors", async () => {
 		vi.mocked(query).mockReturnValueOnce(
 			sdkGen([

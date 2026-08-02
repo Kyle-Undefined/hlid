@@ -133,6 +133,7 @@ import {
 	OBSIDIAN_AGENT_NAMESPACE_DESCRIPTION,
 	OBSIDIAN_AGENT_TOOL_SPECS,
 } from "./obsidianAgentTools";
+import { codexPlanActivity } from "./taskActivity";
 import {
 	createWindowsVisualizeRenderInput,
 	extractWindowsVisualizeArtifact,
@@ -4078,11 +4079,14 @@ class CodexAgentSession implements AgentSession {
 			});
 			return;
 		}
+		const taskActivity =
+			toolName === "update_plan" ? codexPlanActivity(input) : undefined;
 		this.events.push({
 			type: "tool_start",
 			toolId: itemId,
 			name: toolName,
 			input,
+			...(taskActivity ? { taskActivity } : {}),
 		});
 	}
 

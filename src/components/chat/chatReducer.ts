@@ -216,6 +216,11 @@ export type Action =
 			subagent: NonNullable<ToolEventMessage["subagent"]>;
 	  }
 	| {
+			type: "UPDATE_TOOL_ACTIVITY";
+			toolUseId: string;
+			taskActivity: NonNullable<ToolEventMessage["taskActivity"]>;
+	  }
+	| {
 			type: "ADD_TOOL_RESULT";
 			toolUseId: string;
 			content: string;
@@ -830,6 +835,11 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 			return patchToolEvent(state, action.toolUseId, (te) => ({
 				...te,
 				subagent: action.subagent,
+			}));
+		case "UPDATE_TOOL_ACTIVITY":
+			return patchToolEvent(state, action.toolUseId, (te) => ({
+				...te,
+				taskActivity: action.taskActivity,
 			}));
 		case "ADD_TOOL_RESULT":
 			return patchToolEvent(state, action.toolUseId, (te) => ({

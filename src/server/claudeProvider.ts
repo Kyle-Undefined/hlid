@@ -48,6 +48,7 @@ import type {
 	SendOptions,
 	SlashCommand,
 	SubagentSnapshot,
+	TaskActivity,
 } from "./agentProvider";
 import { toAgentToolCallResult } from "./agentToolResult";
 import { discoverClaudeProviderCapabilities } from "./claudeCapabilityDiscovery";
@@ -75,6 +76,10 @@ import {
 	OBSIDIAN_AGENT_TOOL_SPECS,
 	obsidianAgentSchemas,
 } from "./obsidianAgentTools";
+import {
+	claudeTaskActivityResult,
+	claudeTaskActivityStart,
+} from "./taskActivity";
 
 /**
  * Permission modes hlid's AgentQueryParams/agent-agnostic layer knows about.
@@ -973,6 +978,33 @@ class ClaudeSubagentTracker {
 	private queryOwnedParentIds = new Set<string>();
 	private ignoredParentIds = new Set<string>();
 	private startedTaskVersion = 0;
+	private taskActivityTools = new Map<
+		string,
+		{ name: string; input: unknown }
+	>();
+
+	recordTaskActivityTool(
+		toolId: string,
+		name: string,
+		input: unknown,
+	): TaskActivity | undefined {
+		const activity = claudeTaskActivityStart(name, input);
+		if (activity) this.taskActivityTools.set(toolId, { name, input });
+		return activity;
+	}
+
+	recordTaskActivityResult(toolId: string, result: unknown): AgentEvent[] {
+		const tool = this.taskActivityTools.get(toolId);
+		if (!tool) return [];
+		const taskActivity = claudeTaskActivityResult(
+			tool.name,
+			tool.input,
+			result,
+		);
+		return taskActivity
+			? [{ type: "tool_activity_update", toolId, taskActivity }]
+			: [];
+	}
 
 	/** Capture fields exposed on Claude's Agent/Workflow tool before task_started. */
 	recordTool(
@@ -1756,14 +1788,14 @@ function translateUserMessage(
 		...content.flatMap((block: Record<string, unknown>) => {
 			if (block.type !== "tool_result") return [];
 			const text = normalizeToolResultContent(block.content);
+			const toolId = String(block.tool_use_id ?? "");
+			const result = structuredToolResult ?? block.content;
 			return [
-				...tracker.recordToolResult(
-					String(block.tool_use_id ?? ""),
-					structuredToolResult ?? block.content,
-				),
+				...tracker.recordTaskActivityResult(toolId, result),
+				...tracker.recordToolResult(toolId, result),
 				{
 					type: "tool_result" as const,
-					toolId: String(block.tool_use_id ?? ""),
+					toolId,
 					content: truncateToolResult(text),
 					...(block.is_error === true ? { isError: true } : {}),
 				},
@@ -1802,6 +1834,11 @@ function translateAssistantMessage(
 			nextHadText = true;
 			events.push({ type: "text_delta", text: block.text });
 		} else if (block.type === "tool_use") {
+			const taskActivity = tracker.recordTaskActivityTool(
+				block.id,
+				block.name,
+				block.input,
+			);
 			const subagent =
 				tracker.recordTool(
 					block.id,
@@ -1815,6 +1852,7 @@ function translateAssistantMessage(
 				name: block.name,
 				input: block.input,
 				...(subagent ? { subagent } : {}),
+				...(taskActivity ? { taskActivity } : {}),
 			});
 		}
 	}

@@ -12,6 +12,11 @@ export type AssistantTranscriptItem =
 			kind: "tool";
 			key: string;
 			eventIndex: number;
+	  }
+	| {
+			kind: "task_group";
+			key: string;
+			eventIndices: readonly number[];
 	  };
 
 export type AssistantTranscriptPlan = {
@@ -19,6 +24,12 @@ export type AssistantTranscriptPlan = {
 	workflowChildEventIndices: ReadonlyMap<string, readonly number[]>;
 	activeSubagentEventIndices: readonly number[];
 	groupedProjectPreviewEventIndices: readonly number[];
+	taskActivityGroups: readonly TaskActivityGroupPlan[];
+};
+
+export type TaskActivityGroupPlan = {
+	key: string;
+	eventIndices: readonly number[];
 };
 
 type PlanAssistantTranscriptOptions = {
@@ -174,7 +185,44 @@ type BuildTranscriptItemsOptions = {
 	nestedEventIds: ReadonlySet<string>;
 	activeSubagentEventIndices: readonly number[];
 	groupedProjectPreviewEventIndices: readonly number[];
+	taskActivityGroupsByAnchor: ReadonlyMap<number, TaskActivityGroupPlan>;
 };
+
+function collectTaskActivityGroups(
+	toolEvents: readonly ToolEventMessage[],
+	acceptedSteerBoundaries: readonly number[],
+): TaskActivityGroupPlan[] {
+	const boundarySet = new Set(acceptedSteerBoundaries);
+	const groupsBySegmentAndSource = new Map<string, number[]>();
+	let segment = 0;
+	for (let eventIndex = 0; eventIndex < toolEvents.length; eventIndex++) {
+		if (boundarySet.has(eventIndex)) segment++;
+		const source = toolEvents[eventIndex].taskActivity?.source;
+		if (!source) continue;
+		const key = `${segment}:${source}`;
+		const indices = groupsBySegmentAndSource.get(key) ?? [];
+		indices.push(eventIndex);
+		groupsBySegmentAndSource.set(key, indices);
+	}
+	return [...groupsBySegmentAndSource.values()].map((eventIndices) => ({
+		key: `task-group:${toolEvents[eventIndices[0]].id}`,
+		eventIndices,
+	}));
+}
+
+function indexVisibleTaskActivityGroups(
+	groups: readonly TaskActivityGroupPlan[],
+	visibleToolStart: number,
+): Map<number, TaskActivityGroupPlan> {
+	const groupsByAnchor = new Map<number, TaskActivityGroupPlan>();
+	for (const group of groups) {
+		const visibleAnchor = group.eventIndices.find(
+			(eventIndex) => eventIndex >= visibleToolStart,
+		);
+		if (visibleAnchor !== undefined) groupsByAnchor.set(visibleAnchor, group);
+	}
+	return groupsByAnchor;
+}
 
 function buildTranscriptItems({
 	toolEvents,
@@ -184,6 +232,7 @@ function buildTranscriptItems({
 	nestedEventIds,
 	activeSubagentEventIndices,
 	groupedProjectPreviewEventIndices,
+	taskActivityGroupsByAnchor,
 }: BuildTranscriptItemsOptions): AssistantTranscriptItem[] {
 	const steerIndicesByBoundary = groupSteersByVisibleBoundary(
 		acceptedSteerBoundaries,
@@ -193,6 +242,11 @@ function buildTranscriptItems({
 	const activeSubagentEventIndexSet = new Set(activeSubagentEventIndices);
 	const groupedProjectPreviewEventIndexSet = new Set(
 		groupedProjectPreviewEventIndices,
+	);
+	const groupedTaskEventIndices = new Set(
+		[...taskActivityGroupsByAnchor.values()].flatMap((group) => [
+			...group.eventIndices,
+		]),
 	);
 	const items: AssistantTranscriptItem[] = [];
 	for (
@@ -209,8 +263,17 @@ function buildTranscriptItems({
 				boundary: eventIndex,
 			});
 		}
+		const taskActivityGroup = taskActivityGroupsByAnchor.get(eventIndex);
+		if (taskActivityGroup) {
+			items.push({
+				kind: "task_group",
+				key: taskActivityGroup.key,
+				eventIndices: taskActivityGroup.eventIndices,
+			});
+		}
 		if (
 			eventIndex < toolEvents.length &&
+			!groupedTaskEventIndices.has(eventIndex) &&
 			!activeSubagentEventIndexSet.has(eventIndex) &&
 			!nestedEventIds.has(toolEvents[eventIndex].id) &&
 			!groupedProjectPreviewEventIndexSet.has(eventIndex)
@@ -254,6 +317,14 @@ export function planAssistantTranscript({
 		Math.max(0, toolEventStartIndex),
 		toolEvents.length,
 	);
+	const taskActivityGroups = collectTaskActivityGroups(
+		toolEvents,
+		acceptedSteerBoundaries,
+	);
+	const taskActivityGroupsByAnchor = indexVisibleTaskActivityGroups(
+		taskActivityGroups,
+		visibleToolStart,
+	);
 	const items = buildTranscriptItems({
 		toolEvents,
 		acceptedSteers,
@@ -262,11 +333,13 @@ export function planAssistantTranscript({
 		nestedEventIds: workflow.nestedEventIds,
 		activeSubagentEventIndices,
 		groupedProjectPreviewEventIndices,
+		taskActivityGroupsByAnchor,
 	});
 	return {
 		items,
 		workflowChildEventIndices: workflow.childEventIndices,
 		activeSubagentEventIndices,
 		groupedProjectPreviewEventIndices,
+		taskActivityGroups,
 	};
 }

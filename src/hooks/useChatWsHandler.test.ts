@@ -512,6 +512,28 @@ describe("useChatWsHandler — immediate messages", () => {
 				},
 			},
 		],
+		[
+			{
+				type: "tool_activity_update",
+				id: "plan-1",
+				taskActivity: {
+					kind: "tasks",
+					source: "codex-plan",
+					operation: "snapshot",
+					items: [{ subject: "Test", status: "in_progress" }],
+				},
+			},
+			{
+				type: "UPDATE_TOOL_ACTIVITY",
+				toolUseId: "plan-1",
+				taskActivity: {
+					kind: "tasks",
+					source: "codex-plan",
+					operation: "snapshot",
+					items: [{ subject: "Test", status: "in_progress" }],
+				},
+			},
+		],
 	])("maps $type to its reducer action", (message, action) => {
 		const { handler, dispatch } = renderHandler({ pendingId: "assistant-1" });
 		handler(message);

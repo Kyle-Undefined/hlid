@@ -163,6 +163,37 @@ describe("planAssistantTranscript", () => {
 		]);
 	});
 
+	it("keeps task activity outside the tool window available for bottom placement", () => {
+		const taskActivity = {
+			kind: "tasks" as const,
+			source: "claude-task-store" as const,
+			operation: "create" as const,
+			items: [{ id: "1", subject: "Hidden task", status: "pending" as const }],
+		};
+		const toolEvents = [
+			tool("hidden-task", { name: "TaskCreate", taskActivity }),
+			tool("hidden"),
+			tool("visible"),
+		];
+
+		const plan = planAssistantTranscript({
+			toolEvents,
+			acceptedSteers: [],
+			toolEventStartIndex: 2,
+			isProjectPreviewEvent,
+		});
+
+		expect(plan.taskActivityGroups).toEqual([
+			{
+				key: "task-group:hidden-task",
+				eventIndices: [0],
+			},
+		]);
+		expect(plan.items).toEqual([
+			{ kind: "tool", key: "visible", eventIndex: 2 },
+		]);
+	});
+
 	it("excludes either all Preview activity or only the externally grouped events", () => {
 		const toolEvents = [
 			tool("preview-start", { name: "mcp__hlid__start_project_preview" }),
@@ -198,6 +229,51 @@ describe("planAssistantTranscript", () => {
 			{ kind: "tool", key: "preview-start", eventIndex: 0 },
 			{ kind: "tool", key: "ordinary", eventIndex: 1 },
 			{ kind: "tool", key: "preview-control", eventIndex: 3 },
+		]);
+	});
+
+	it("groups task activity by provider source without crossing a steer", () => {
+		const taskActivity = {
+			kind: "tasks" as const,
+			source: "claude-task-store" as const,
+			operation: "create" as const,
+			items: [
+				{ id: "1", subject: "Test grouping", status: "pending" as const },
+			],
+		};
+		const toolEvents = [
+			tool("task-create", { name: "TaskCreate", taskActivity }),
+			tool("ordinary"),
+			tool("task-list", {
+				name: "TaskList",
+				taskActivity: { ...taskActivity, operation: "list" },
+			}),
+			tool("task-update-after-steer", {
+				name: "TaskUpdate",
+				taskActivity: { ...taskActivity, operation: "update" },
+			}),
+		];
+
+		const plan = planAssistantTranscript({
+			toolEvents,
+			acceptedSteers: [steer("redirect", 3)],
+			toolEventStartIndex: 0,
+			isProjectPreviewEvent,
+		});
+
+		expect(plan.items).toEqual([
+			{
+				kind: "task_group",
+				key: "task-group:task-create",
+				eventIndices: [0, 2],
+			},
+			{ kind: "tool", key: "ordinary", eventIndex: 1 },
+			{ kind: "steer", key: "steer:redirect", steerIndex: 0, boundary: 3 },
+			{
+				kind: "task_group",
+				key: "task-group:task-update-after-steer",
+				eventIndices: [3],
+			},
 		]);
 	});
 });

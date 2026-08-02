@@ -799,3 +799,76 @@ describe("ToolBlock — permissionLabel", () => {
 		expect(screen.getByText("APPROVED")).not.toBeNull();
 	});
 });
+
+describe("ToolBlock — task activity", () => {
+	it("renders a collapsed progress summary and expands to the task rows", () => {
+		render(
+			<ToolBlock
+				sessionId="task-session-1"
+				event={makeEvent({
+					id: "task-ui-1",
+					name: "update_plan",
+					input: { plan: [] },
+					result: "Plan updated",
+					taskActivity: {
+						kind: "tasks",
+						source: "codex-plan",
+						operation: "snapshot",
+						explanation: "Implementation order",
+						items: [
+							{ subject: "Write parser", status: "completed" },
+							{
+								subject: "Render card",
+								activeForm: "Rendering Raven card",
+								status: "in_progress",
+							},
+						],
+					},
+				})}
+			/>,
+		);
+
+		const button = screen.getByRole("button", {
+			name: "Plan task activity details",
+			expanded: false,
+		});
+		expect(screen.getByText("1/2 done · Rendering Raven card")).not.toBeNull();
+		expect(screen.queryByText("Write parser")).toBeNull();
+		fireEvent.click(button);
+		expect(screen.getByText("Write parser")).not.toBeNull();
+		expect(screen.getByText("Render card")).not.toBeNull();
+		expect(screen.getByText("Implementation order")).not.toBeNull();
+		expect(screen.getByText("Tool details")).not.toBeNull();
+	});
+
+	it("retains a manual task-card expansion across a remount", () => {
+		const event = makeEvent({
+			id: "task-ui-remount",
+			name: "TaskList",
+			input: {},
+			result: "done",
+			taskActivity: {
+				kind: "tasks",
+				source: "claude-task-store",
+				operation: "list",
+				items: [{ id: "8", subject: "Persist open state", status: "pending" }],
+			},
+		});
+		const first = render(
+			<ToolBlock sessionId="task-session-2" event={event} />,
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: "Tasks task activity details" }),
+		);
+		expect(screen.getByText("Persist open state")).not.toBeNull();
+		first.unmount();
+		render(<ToolBlock sessionId="task-session-2" event={event} />);
+		expect(
+			screen.getByRole("button", {
+				name: "Tasks task activity details",
+				expanded: true,
+			}),
+		).not.toBeNull();
+		expect(screen.getByText("Persist open state")).not.toBeNull();
+	});
+});

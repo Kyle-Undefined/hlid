@@ -22,11 +22,13 @@ import {
 	ProjectPreviewToolBlock,
 } from "./ProjectPreviewToolBlock";
 import { SubagentToolBlock } from "./SubagentToolBlock";
+import { TaskActivityToolBlock } from "./TaskActivityToolBlock";
 import { ToolBlockExpandedPanel } from "./ToolBlockExpandedPanel";
 import { resumeNativeWorkflow, stopNativeWorkflow } from "./workflowActions";
 
 const RESULT_PREVIEW_CHARS = 120;
 const INPUT_PREVIEW_CHARS = 140;
+const taskActivityOpenOverrides = new Map<string, boolean>();
 
 function firstLine(text: string): string {
 	const nl = text.indexOf("\n");
@@ -471,13 +473,22 @@ function ToolEventSummary({
 function ExpandableToolEventBlock({
 	event,
 	permissionLabel,
-}: Pick<ToolBlockProps, "event" | "permissionLabel">) {
-	const [open, setOpen] = useState(false);
+	sessionId,
+}: Pick<ToolBlockProps, "event" | "permissionLabel" | "sessionId">) {
+	const taskStateKey = event.taskActivity
+		? `${sessionId ?? event.detailSessionId ?? "unknown"}:${event.id}`
+		: null;
+	const [open, setOpen] = useState(() =>
+		taskStateKey
+			? (taskActivityOpenOverrides.get(taskStateKey) ?? false)
+			: false,
+	);
 	const historical = useHistoricalToolEventDetail(event, open);
 	const presentation = toolEventPresentation(event, open, historical);
 	const toggleOpen = () => {
 		const nextOpen = !open;
 		setOpen(nextOpen);
+		if (taskStateKey) taskActivityOpenOverrides.set(taskStateKey, nextOpen);
 		if (!nextOpen) historical.release();
 	};
 	const detailPanel = (
@@ -498,6 +509,18 @@ function ExpandableToolEventBlock({
 			>
 				{detailPanel}
 			</HlidDelegationToolBlock>
+		);
+	}
+	if (event.taskActivity) {
+		return (
+			<TaskActivityToolBlock
+				event={{ ...event, taskActivity: event.taskActivity }}
+				permissionLabel={permissionLabel}
+				open={open}
+				onToggle={toggleOpen}
+			>
+				{detailPanel}
+			</TaskActivityToolBlock>
 		);
 	}
 	return (
@@ -522,6 +545,7 @@ export const ToolBlock = memo(function ToolBlock(props: ToolBlockProps) {
 		<ExpandableToolEventBlock
 			event={props.event}
 			permissionLabel={props.permissionLabel}
+			sessionId={props.sessionId}
 		/>
 	);
 });

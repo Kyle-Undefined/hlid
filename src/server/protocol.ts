@@ -6,6 +6,7 @@ import type {
 	ProviderWorkflowSaveLocation,
 	ProviderWorkflowSaveScope,
 	SubagentSnapshot,
+	TaskActivity,
 } from "./agentProvider";
 
 /** Maximum tool-result text carried inline in Raven transcript messages. */
@@ -69,12 +70,19 @@ export type ToolEventMessage = {
 	detailSessionId?: string;
 	isError?: boolean;
 	subagent?: SubagentSnapshot;
+	taskActivity?: TaskActivity;
 };
 
 export type ToolUpdateMessage = {
 	type: "tool_update";
 	id: string;
 	subagent: SubagentSnapshot;
+};
+
+export type ToolActivityUpdateMessage = {
+	type: "tool_activity_update";
+	id: string;
+	taskActivity: TaskActivity;
 };
 
 export type ToolResultMessage = {
@@ -871,6 +879,7 @@ export type ServerMessage =
 	| ChunkMessage
 	| ToolEventMessage
 	| ToolUpdateMessage
+	| ToolActivityUpdateMessage
 	| ToolResultMessage
 	| DoneMessage
 	| RateLimitMessage

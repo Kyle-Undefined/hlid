@@ -1,4 +1,4 @@
-import type { SubagentSnapshot } from "../server/agentProvider";
+import type { SubagentSnapshot, TaskActivity } from "../server/agentProvider";
 import { TOOL_RESULT_PREVIEW_CHARS } from "../server/protocol";
 import { markAnalyticsChanged } from "./analyticsRevision";
 import { getDb } from "./schema";
@@ -319,9 +319,9 @@ export async function copyForkedSessionTranscript(
 		db.run(
 			`INSERT INTO tool_events
 			 (session_id, assistant_seq, tool_id, name, input_json, result_text,
-			  is_error, subagent_json, timestamp, provider_id, model, agent_cwd)
+			  is_error, subagent_json, activity_json, timestamp, provider_id, model, agent_cwd)
 			 SELECT ?, assistant_seq, tool_id, name, input_json, result_text,
-			        is_error, subagent_json, timestamp, provider_id, model, agent_cwd
+			        is_error, subagent_json, activity_json, timestamp, provider_id, model, agent_cwd
 			 FROM tool_events WHERE session_id = ?${toolFilter}
 			 ORDER BY assistant_seq ASC, id ASC`,
 			toolParams,
@@ -383,15 +383,16 @@ export async function appendToolEvent(
 	input: unknown,
 	subagent?: SubagentSnapshot,
 	dimensions?: ToolEventDimensions,
+	taskActivity?: TaskActivity,
 ): Promise<void> {
 	const db = await getDb();
 	const hasModelSnapshot = dimensions?.model !== undefined;
 	const hasAgentSnapshot = dimensions?.agentCwd !== undefined;
 	const { changes } = db.run(
 		`INSERT INTO tool_events
-			(session_id, assistant_seq, tool_id, name, input_json, subagent_json,
+			(session_id, assistant_seq, tool_id, name, input_json, subagent_json, activity_json,
 			 timestamp, provider_id, model, agent_cwd)
-		 SELECT s.id, ?, ?, ?, ?, ?, unixepoch(),
+		 SELECT s.id, ?, ?, ?, ?, ?, ?, unixepoch(),
 		        COALESCE(?, s.provider_id, 'claude'),
 		        CASE WHEN ? = 1 THEN ?
 		             ELSE COALESCE(NULLIF(s.selected_model, ''),
@@ -404,6 +405,7 @@ export async function appendToolEvent(
 			name,
 			input !== undefined ? JSON.stringify(input) : null,
 			subagent ? JSON.stringify(subagent) : null,
+			taskActivity ? JSON.stringify(taskActivity) : null,
 			dimensions?.providerId ?? null,
 			hasModelSnapshot ? 1 : 0,
 			dimensions?.model ?? null,
@@ -433,6 +435,23 @@ export async function setToolEventSubagent(
 	if (changes === 0) {
 		throw new Error(
 			`setToolEventSubagent: no row found for session=${sessionId} tool_id=${toolId}`,
+		);
+	}
+}
+
+export async function setToolEventActivity(
+	sessionId: string,
+	toolId: string,
+	taskActivity: TaskActivity,
+): Promise<void> {
+	const db = await getDb();
+	const { changes } = db.run(
+		`UPDATE tool_events SET activity_json = ? WHERE session_id = ? AND tool_id = ?`,
+		[JSON.stringify(taskActivity), sessionId, toolId],
+	);
+	if (changes === 0) {
+		throw new Error(
+			`setToolEventActivity: no row found for session=${sessionId} tool_id=${toolId}`,
 		);
 	}
 }
@@ -814,7 +833,7 @@ export async function getSessionToolEventSummaries(
 			CASE WHEN result_text IS NULL THEN NULL ELSE substr(result_text, 1, ${TOOL_RESULT_PREVIEW_CHARS}) END AS result_text,
 			length(result_text) AS result_length,
 			CASE WHEN length(COALESCE(result_text, '')) > ${TOOL_RESULT_PREVIEW_CHARS} THEN 1 ELSE 0 END AS result_truncated,
-			is_error, subagent_json`,
+			is_error, subagent_json, activity_json`,
 		table: "tool_events",
 		sequenceColumn: "assistant_seq",
 		minSequence: minAssistantSeq,

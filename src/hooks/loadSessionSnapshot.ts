@@ -9,7 +9,7 @@ import {
 	getSessionPlanProposalsFn,
 } from "#/lib/serverFns/sessions";
 import { uid } from "#/lib/utils";
-import type { SubagentSnapshot } from "#/server/agentProvider";
+import type { SubagentSnapshot, TaskActivity } from "#/server/agentProvider";
 import type {
 	AskQuestion,
 	AskUserQuestionAnswers,
@@ -91,6 +91,14 @@ function mapSessionRows(
 				? {
 						subagent: safeParseJson<SubagentSnapshot | undefined>(
 							te.subagent_json,
+							undefined,
+						),
+					}
+				: {}),
+			...(te.activity_json
+				? {
+						taskActivity: safeParseJson<TaskActivity | undefined>(
+							te.activity_json,
 							undefined,
 						),
 					}

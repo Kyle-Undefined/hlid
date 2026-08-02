@@ -21,6 +21,7 @@ import {
 } from "./ProjectPreviewToolBlock";
 import { ReadAloudButton } from "./ReadAloudButton";
 import { SaveToObsidianActions } from "./SaveToObsidianActions";
+import { TaskActivityGroupToolBlock } from "./TaskActivityToolBlock";
 import { ToolBlock } from "./ToolBlock";
 
 export function normalizeMd(text: string): string {
@@ -34,6 +35,11 @@ export function normalizeMd(text: string): string {
 
 function acceptedSteerReceiptId(responseId: string, steerId: string): string {
 	return `accepted-steer-${encodeURIComponent(responseId)}-${encodeURIComponent(steerId)}`;
+}
+
+function withoutTaskActivity(event: ToolEventMessage): ToolEventMessage {
+	const { taskActivity: _taskActivity, ...rawEvent } = event;
+	return rawEvent;
 }
 
 function AcceptedSteerReceipt({
@@ -224,6 +230,36 @@ export function AssistantMsg({
 			/>
 		);
 	};
+	const taskActivityGroups = transcriptPlan.taskActivityGroups.map((group) => ({
+		...group,
+		events: group.eventIndices.map(
+			(eventIndex) => message.toolEvents[eventIndex],
+		),
+	}));
+	const activeTaskActivityGroups = message.streaming ? taskActivityGroups : [];
+	const activeTaskActivityGroupKeys = new Set(
+		activeTaskActivityGroups.map((group) => group.key),
+	);
+	const renderTaskActivityGroup = (
+		group: (typeof taskActivityGroups)[number],
+	) => (
+		<TaskActivityGroupToolBlock
+			key={group.key}
+			events={group.events}
+			sessionId={sessionId}
+			responseSettled={!message.streaming}
+		>
+			{group.events.map((event) => (
+				<ToolBlock
+					key={event.id}
+					event={withoutTaskActivity(event)}
+					permissionLabel={permissionLabels?.get(event.id)}
+					sessionId={sessionId}
+					providerId={providerId}
+				/>
+			))}
+		</TaskActivityGroupToolBlock>
+	);
 	const trailingVisualizationEventIndices: number[] = [];
 	const transcriptItems = transcriptPlan.items.flatMap((item) => {
 		if (item.kind === "steer") {
@@ -234,6 +270,13 @@ export function AssistantMsg({
 					responseId={message.id}
 				/>,
 			];
+		}
+		if (item.kind === "task_group") {
+			if (activeTaskActivityGroupKeys.has(item.key)) return [];
+			const group = taskActivityGroups.find(
+				(candidate) => candidate.key === item.key,
+			);
+			return group ? [renderTaskActivityGroup(group)] : [];
 		}
 		const event = message.toolEvents[item.eventIndex];
 		if (providerId === "codex" && isHlidVisualizationToolEvent(event)) {
@@ -400,6 +443,7 @@ export function AssistantMsg({
 					</div>
 				</div>
 			)}
+			{activeTaskActivityGroups.map(renderTaskActivityGroup)}
 			{activeSubagentEvents.map(renderTool)}
 			{groupedProjectPreviewEventIds === undefined &&
 				groupedPreviewEvents.length > 0 && (

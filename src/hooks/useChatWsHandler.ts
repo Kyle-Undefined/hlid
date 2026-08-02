@@ -129,6 +129,13 @@ function dispatchImmediateMessage(
 				subagent: msg.subagent,
 			});
 			return true;
+		case "tool_activity_update":
+			dispatch({
+				type: "UPDATE_TOOL_ACTIVITY",
+				toolUseId: msg.id,
+				taskActivity: msg.taskActivity,
+			});
+			return true;
 		case "status":
 			if (msg.state === "running") return false;
 			dispatch({

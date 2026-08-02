@@ -474,6 +474,58 @@ describe("useLoadChatHistory — initial load", () => {
 		});
 	});
 
+	it("restores persisted task activity on tool events", async () => {
+		const row = makeRow("assistant", "", 1000);
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			{
+				...row,
+				toolEvents: [
+					{
+						id: 1,
+						session_id: "sess-1",
+						assistant_seq: row.seq,
+						tool_id: "plan-1",
+						name: "update_plan",
+						input_json: JSON.stringify({ plan: [] }),
+						result_text: "updated",
+						result_length: 7,
+						result_truncated: 0,
+						is_error: 0,
+						subagent_json: null,
+						activity_json: JSON.stringify({
+							kind: "tasks",
+							source: "codex-plan",
+							operation: "snapshot",
+							items: [{ subject: "Hydrate Raven", status: "completed" }],
+						}),
+					},
+				],
+			},
+		]);
+		const dispatch = vi.fn();
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+		await act(async () => {});
+
+		const load = dispatch.mock.calls.find(
+			([action]) => action.type === "LOAD_HISTORY",
+		)?.[0];
+		expect(load.items[0].toolEvents[0].taskActivity).toEqual({
+			kind: "tasks",
+			source: "codex-plan",
+			operation: "snapshot",
+			items: [{ subject: "Hydrate Raven", status: "completed" }],
+		});
+	});
+
 	it("maps historical result previews to lazy session-scoped tool events", async () => {
 		const row = makeRow("assistant", "", 1000);
 		vi.mocked(getSessionDataFn).mockResolvedValue([

@@ -104,6 +104,7 @@ type ToolEventRow = {
 	result_text: string | null;
 	is_error: number | null;
 	subagent_json?: string | null;
+	activity_json?: string | null;
 };
 
 /** Lightweight transcript projection; result_text contains only a preview. */

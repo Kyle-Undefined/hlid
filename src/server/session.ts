@@ -65,6 +65,7 @@ import type {
 	ProviderWorkflowSourceInput,
 	SlashCommand,
 	SubagentSnapshot,
+	TaskActivity,
 } from "./agentProvider";
 import { ingestPlanHtml } from "./attachments";
 import { prewarmClaudeCli, waitForClaudeWarmupSnapshot } from "./claudeWarmup";
@@ -266,9 +267,11 @@ type TurnState = {
 		name: string;
 		input: unknown;
 		subagent?: SubagentSnapshot;
+		taskActivity?: TaskActivity;
 	}[];
 	pendingToolResults: Map<string, { content: string; isError: boolean }>;
 	pendingToolUpdates: Map<string, SubagentSnapshot>;
+	pendingToolActivityUpdates: Map<string, TaskActivity>;
 	/** In-flight inserts that tool results await before exposing lazy detail. */
 	pendingToolEventWrites: Map<string, Promise<boolean>>;
 	/**
@@ -878,6 +881,7 @@ function createTurnState(
 		pendingToolEvents: [],
 		pendingToolResults: new Map(),
 		pendingToolUpdates: new Map(),
+		pendingToolActivityUpdates: new Map(),
 		pendingToolEventWrites: new Map(),
 		reservedAssistantSeq: null,
 		assistantRowWrite: null,
@@ -3052,6 +3056,9 @@ export class SessionManager {
 			const result = turn.pendingToolResults.get(toolEvent.toolId);
 			const subagent =
 				turn.pendingToolUpdates.get(toolEvent.toolId) ?? toolEvent.subagent;
+			const taskActivity =
+				turn.pendingToolActivityUpdates.get(toolEvent.toolId) ??
+				toolEvent.taskActivity;
 			if (turn.persistedToolIds.has(toolEvent.toolId)) {
 				if (result) {
 					db.setToolEventResult(
@@ -3069,9 +3076,18 @@ export class SessionManager {
 							logDbError(`setToolEventSubagent (${operationSuffix})`, error),
 					);
 				}
+				if (taskActivity) {
+					db.setToolEventActivity(
+						sessionId,
+						toolEvent.toolId,
+						taskActivity,
+					).catch((error) =>
+						logDbError(`setToolEventActivity (${operationSuffix})`, error),
+					);
+				}
 				continue;
 			}
-			const append = subagent
+			const append = taskActivity
 				? db.appendToolEvent(
 						sessionId,
 						assistantSeq,
@@ -3080,6 +3096,7 @@ export class SessionManager {
 						toolEvent.input,
 						subagent,
 						dimensions,
+						taskActivity,
 					)
 				: db.appendToolEvent(
 						sessionId,
@@ -3087,7 +3104,7 @@ export class SessionManager {
 						toolEvent.toolId,
 						toolEvent.name,
 						toolEvent.input,
-						undefined,
+						subagent,
 						dimensions,
 					);
 			append
@@ -3105,6 +3122,13 @@ export class SessionManager {
 							sessionId,
 							toolEvent.toolId,
 							subagent,
+						);
+					}
+					if (taskActivity) {
+						await db.setToolEventActivity(
+							sessionId,
+							toolEvent.toolId,
+							taskActivity,
 						);
 					}
 				})
@@ -3172,6 +3196,7 @@ export class SessionManager {
 				turn.pendingToolEvents.length = 0;
 				turn.pendingToolResults.clear();
 				turn.pendingToolUpdates.clear();
+				turn.pendingToolActivityUpdates.clear();
 				turn.pendingToolEventWrites.clear();
 				turn.persistedToolIds.clear();
 				turn.reservedAssistantSeq = null;
@@ -3442,6 +3467,7 @@ export class SessionManager {
 			name: event.name,
 			input: event.input,
 			...(event.subagent ? { subagent: event.subagent } : {}),
+			...(event.taskActivity ? { taskActivity: event.taskActivity } : {}),
 		});
 		emit({
 			type: "tool_event",
@@ -3449,6 +3475,7 @@ export class SessionManager {
 			name: event.name,
 			input: event.input,
 			...(event.subagent ? { subagent: event.subagent } : {}),
+			...(event.taskActivity ? { taskActivity: event.taskActivity } : {}),
 		});
 		if (sessionId) {
 			const seq = this.ensureAssistantRow(turn, sessionId);
@@ -3458,7 +3485,7 @@ export class SessionManager {
 				...(turn.lastActualModel ? { model: turn.lastActualModel } : {}),
 				agentCwd: this.agentCwd ?? null,
 			};
-			const append = event.subagent
+			const append = event.taskActivity
 				? db.appendToolEvent(
 						sessionId,
 						seq,
@@ -3467,6 +3494,7 @@ export class SessionManager {
 						event.input,
 						event.subagent,
 						dimensions,
+						event.taskActivity,
 					)
 				: db.appendToolEvent(
 						sessionId,
@@ -3474,7 +3502,7 @@ export class SessionManager {
 						toolId,
 						event.name,
 						event.input,
-						undefined,
+						event.subagent,
 						dimensions,
 					);
 			const persisted = append
@@ -3485,6 +3513,12 @@ export class SessionManager {
 						void db
 							.setToolEventSubagent(sessionId, toolId, latest)
 							.catch((e) => logDbError("setToolEventSubagent (live)", e));
+					}
+					const latestActivity = turn.pendingToolActivityUpdates.get(toolId);
+					if (latestActivity) {
+						void db
+							.setToolEventActivity(sessionId, toolId, latestActivity)
+							.catch((e) => logDbError("setToolEventActivity (live)", e));
 					}
 					return true;
 				})
@@ -3518,6 +3552,29 @@ export class SessionManager {
 			void db
 				.setToolEventSubagent(sessionId, event.toolId, event.subagent)
 				.catch((e) => logDbError("setToolEventSubagent (live)", e));
+		}
+	}
+
+	private handleToolActivityUpdate(
+		event: Extract<AgentEvent, { type: "tool_activity_update" }>,
+		turn: TurnState,
+		sessionId: string | undefined,
+		emit: (msg: ServerMessage) => void,
+	): void {
+		turn.pendingToolActivityUpdates.set(event.toolId, event.taskActivity);
+		const pending = turn.pendingToolEvents.find(
+			(toolEvent) => toolEvent.toolId === event.toolId,
+		);
+		if (pending) pending.taskActivity = event.taskActivity;
+		emit({
+			type: "tool_activity_update",
+			id: event.toolId,
+			taskActivity: event.taskActivity,
+		});
+		if (sessionId && turn.persistedToolIds.has(event.toolId)) {
+			void db
+				.setToolEventActivity(sessionId, event.toolId, event.taskActivity)
+				.catch((e) => logDbError("setToolEventActivity (live)", e));
 		}
 	}
 
@@ -3747,6 +3804,9 @@ export class SessionManager {
 				break;
 			case "tool_update":
 				this.handleToolUpdate(event, turn, sessionId, emit);
+				break;
+			case "tool_activity_update":
+				this.handleToolActivityUpdate(event, turn, sessionId, emit);
 				break;
 			case "tool_result":
 				await this.handleToolResult(event, turn, sessionId, emit);

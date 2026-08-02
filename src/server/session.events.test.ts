@@ -1022,6 +1022,7 @@ describe("SessionManager — live tool_event persistence", () => {
 		vi.mocked(dbMock.appendMessage).mockClear();
 		vi.mocked(dbMock.appendToolEvent).mockClear();
 		vi.mocked(dbMock.setToolEventResult).mockClear();
+		vi.mocked(dbMock.setToolEventActivity).mockClear();
 		vi.mocked(dbMock.setToolEventSubagent).mockClear();
 		vi.mocked(dbMock.setMessageText).mockClear();
 		vi.mocked(dbMock.appendToolEvent).mockResolvedValue(undefined);
@@ -1067,6 +1068,79 @@ describe("SessionManager — live tool_event persistence", () => {
 				undefined,
 				expect.objectContaining({ providerId: "claude", agentCwd: null }),
 			);
+		});
+		release();
+		await runPromise;
+	});
+
+	it("emits and persists normalized task activity updates", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const initial = {
+			kind: "tasks" as const,
+			source: "claude-task-store" as const,
+			operation: "list" as const,
+			items: [],
+		};
+		const updated = {
+			...initial,
+			items: [
+				{
+					id: "4",
+					subject: "Render task card",
+					status: "in_progress" as const,
+				},
+			],
+		};
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "sdk-task-1" },
+				{
+					type: "tool_start",
+					toolId: "task-list-1",
+					name: "TaskList",
+					input: {},
+					taskActivity: initial,
+				},
+				{
+					type: "tool_activity_update",
+					toolId: "task-list-1",
+					taskActivity: updated,
+				},
+			],
+			gate,
+		);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const runPromise = sm.runQuery(
+			"list tasks",
+			(message) => emitted.push(message),
+			{ sessionId: "sess-task-1" },
+		);
+		await gateReached;
+		await waitFor(() => {
+			expect(dbMock.appendToolEvent).toHaveBeenCalledWith(
+				"sess-task-1",
+				expect.any(Number),
+				"task-list-1",
+				"TaskList",
+				{},
+				undefined,
+				expect.objectContaining({ providerId: "claude", agentCwd: null }),
+				initial,
+			);
+			expect(dbMock.setToolEventActivity).toHaveBeenCalledWith(
+				"sess-task-1",
+				"task-list-1",
+				updated,
+			);
+		});
+		expect(emitted).toContainEqual({
+			type: "tool_activity_update",
+			id: "task-list-1",
+			taskActivity: updated,
 		});
 		release();
 		await runPromise;
