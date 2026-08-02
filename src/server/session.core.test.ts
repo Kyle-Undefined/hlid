@@ -969,6 +969,87 @@ describe("SessionManager — provider-native MCP controls", () => {
 	});
 });
 
+describe("SessionManager — provider-native skill refresh", () => {
+	it("reloads an already-live Claude session and publishes the refreshed skill catalog", async () => {
+		const refreshedSkills = [
+			{
+				name: "voice",
+				description: "Apply voice rules",
+				argumentHint: "",
+			},
+		];
+		const reloadSkills = vi.fn().mockResolvedValue(refreshedSkills);
+		const staleInitializationCommands = [
+			{
+				name: "help",
+				description: "Show help",
+				argumentHint: "",
+			},
+		];
+		const supportedCommands = vi
+			.fn()
+			.mockResolvedValue(staleInitializationCommands);
+		const provider: AgentProvider = {
+			providerId: "claude",
+			label: "Claude",
+			query(): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-skill-refresh" };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					reloadSkills,
+					supportedCommands,
+				};
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("hello", vi.fn(), { sessionId: "db-session" });
+		supportedCommands.mockClear();
+		const emitted: ServerMessage[] = [];
+
+		await expect(
+			sm.reloadProviderSkills((message) => emitted.push(message)),
+		).resolves.toEqual({
+			providerId: "claude",
+			status: "reloaded",
+			skillCount: 1,
+		});
+		expect(reloadSkills).toHaveBeenCalledOnce();
+		expect(emitted).toContainEqual({
+			type: "slash_commands",
+			provider_id: "claude",
+			session_id: "db-session",
+			commands: refreshedSkills,
+		});
+		expect(supportedCommands).not.toHaveBeenCalled();
+	});
+
+	it("reports not-live without creating a Claude provider session", async () => {
+		const provider: AgentProvider = {
+			providerId: "claude",
+			label: "Claude",
+			query: vi.fn(),
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await expect(sm.reloadProviderSkills(vi.fn())).resolves.toMatchObject({
+			providerId: "claude",
+			status: "not-live",
+		});
+		expect(provider.query).not.toHaveBeenCalled();
+	});
+});
+
 // ── probeSlashCommands ────────────────────────────────────────────────────────
 
 describe("SessionManager — probeSlashCommands", () => {

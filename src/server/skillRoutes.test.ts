@@ -124,6 +124,64 @@ describe("handleSkillRoute", () => {
 		);
 	});
 
+	it("reloads live Claude skills and returns the rescanned import catalog", async () => {
+		const refreshProviderSkills = vi.fn().mockResolvedValue({
+			providerId: "claude",
+			status: "reloaded",
+			matchingSessions: 1,
+			reloadedSessions: 1,
+			deferredSessions: 0,
+			failedSessions: 0,
+			skillCount: 3,
+			reason:
+				"Claude refreshed 1 session and found 3 native skills. Hlid rescanned installed skills for review and import.",
+		});
+		const response = await handleSkillRoute(
+			new URL("http://localhost/skills/refresh"),
+			request("/skills/refresh"),
+			config,
+			new Map(),
+			{ refreshProviderSkills },
+		);
+
+		expect(response?.status).toBe(200);
+		expect(refreshProviderSkills).toHaveBeenCalledOnce();
+		expect(mocks.refreshVaultSnapshotWithStatus).toHaveBeenCalledWith(
+			"provider-skill-refresh",
+			config,
+		);
+		expect(await response?.json()).toMatchObject({
+			ok: true,
+			providerRefresh: {
+				status: "reloaded",
+				reloadedSessions: 1,
+				skillCount: 3,
+			},
+			skills: [{ id: "a".repeat(24) }],
+		});
+	});
+
+	it("keeps disk discovery available when no live Claude Query exists", async () => {
+		const response = await handleSkillRoute(
+			new URL("http://localhost/skills/refresh"),
+			request("/skills/refresh"),
+			config,
+		);
+
+		expect(response?.status).toBe(200);
+		expect(await response?.json()).toMatchObject({
+			ok: true,
+			providerRefresh: { status: "not-live", reloadedSessions: 0 },
+			skills: [{ id: "a".repeat(24) }],
+		});
+		const methodResponse = await handleSkillRoute(
+			new URL("http://localhost/skills/refresh"),
+			request("/skills/refresh", undefined, "GET"),
+			config,
+		);
+		expect(methodResponse?.status).toBe(405);
+	});
+
 	it("uses the startup config when the live config cannot be loaded", async () => {
 		const startupConfig = {
 			...config,

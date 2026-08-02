@@ -20,6 +20,7 @@ const CONTROL_INTEGRATION = new Map<string, ProviderCapabilityIntegration>([
 	["accountInfo", "integrated"],
 	["supportedAgents", "provider-native"],
 	["reloadPlugins", "provider-native"],
+	["reloadSkills", "integrated"],
 ]);
 
 function controlLabel(method: string): string {

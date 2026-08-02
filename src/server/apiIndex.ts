@@ -101,6 +101,12 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		desc: "Installed-registry and workspace skill packages available for review and import; source paths remain server-side.",
 	},
 	{
+		method: "POST",
+		path: "/skills/refresh",
+		server: "api",
+		desc: "Reload provider-native skills in already-live Claude sessions without starting hidden provider processes, then refresh Hlid's installed-skill catalog and picker snapshot for review and optional import.",
+	},
+	{
 		method: "GET",
 		path: "/extensions/catalog?refresh=1",
 		server: "api",

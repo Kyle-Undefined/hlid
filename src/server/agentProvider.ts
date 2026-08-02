@@ -491,6 +491,12 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	reconnectMcpServer?(serverName: string): Promise<void>;
 	/** Enable or disable one provider-owned MCP server inside this live session. */
 	toggleMcpServer?(serverName: string, enabled: boolean): Promise<void>;
+	/**
+	 * Reload provider-native skills inside an already-live session. Returns the
+	 * refreshed native skill commands, or null when no provider Query is live.
+	 * Implementations must not start a hidden provider process for this control.
+	 */
+	reloadSkills?(): Promise<SlashCommand[] | null>;
 	/** Available on providers that expose the list of supported slash commands. */
 	supportedCommands?(): Promise<SlashCommand[]>;
 	/** Execute a provider capability without relying on prompt-parsed CLI syntax. */

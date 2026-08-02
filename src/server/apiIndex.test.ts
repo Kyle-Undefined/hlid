@@ -128,6 +128,7 @@ describe("buildApiIndex", () => {
 	it("includes the supported agent-facing inspection and management routes", () => {
 		const routes = [
 			["GET", "/skills/managed/content?id="],
+			["POST", "/skills/refresh"],
 			["GET", "/voice?refresh=1"],
 			["POST", "/voice/sync"],
 			["POST", "/voice/download"],

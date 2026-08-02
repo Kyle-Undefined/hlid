@@ -122,6 +122,7 @@ import { SessionPool } from "./sessionPool";
 import { ShellSessionPool } from "./shellSessionPool";
 import { createShellUpgradeHandler } from "./shellUpgrade";
 import { handleSkillRoute } from "./skillRoutes";
+import { refreshLiveClaudeSkills } from "./skillRuntimeRefresh";
 import { probeExistingInstance } from "./startupProbe";
 import { resolveAllowedTerminalCwd } from "./terminalAccess";
 import { TerminalSessionPool } from "./terminalSessionPool";
@@ -1108,7 +1109,11 @@ const handleAuthenticatedRoute = createAuthenticatedRouteHandler({
 		handleRoutineRoute,
 		handleHlidDelegationRoute,
 		handleProjectPreviewRoute,
-		(url, request) => handleSkillRoute(url, request, config, providers),
+		(url, request) =>
+			handleSkillRoute(url, request, config, providers, {
+				refreshProviderSkills: () =>
+					refreshLiveClaudeSkills(pool.getAllEntries()),
+			}),
 	],
 	getMcpStatus: () => pool.vaultEntry().manager.getLastMcpStatus() ?? [],
 	handleDb: (url, req) => handleDbRoute(url, req, pool, terminalPool),

@@ -626,6 +626,61 @@ describe("SkillImportDialog", () => {
 		).toBeDefined();
 	});
 
+	it("reloads live Claude skills before rescanning the import catalog", async () => {
+		const discover = vi.fn().mockResolvedValue({ skills: [] });
+		const refreshInstalled = vi.fn().mockResolvedValue({
+			ok: true,
+			providerRefresh: {
+				providerId: "claude",
+				status: "reloaded",
+				matchingSessions: 1,
+				reloadedSessions: 1,
+				deferredSessions: 0,
+				failedSessions: 0,
+				skillCount: 1,
+				reason:
+					"Claude refreshed 1 session and found 1 native skill. Hlid rescanned installed skills for review and import.",
+			},
+			skills: [
+				{
+					id: "d".repeat(24),
+					name: "new-native-skill",
+					description: "Added outside Hlid",
+					source: "claude",
+					providerId: "claude",
+					providerLabel: "Claude",
+					environment: "wsl",
+					environmentLabel: "WSL · Ubuntu-24.04",
+					scope: "user",
+					enabled: true,
+					alreadyImported: false,
+					managedId: null,
+					fileCount: 1,
+					bytes: 128,
+				},
+			],
+		});
+		render(
+			<SkillImportDialog
+				onClose={vi.fn()}
+				discover={discover}
+				refreshInstalled={refreshInstalled}
+				importSelected={vi.fn()}
+			/>,
+		);
+		await screen.findByText("No importable skills were discovered.");
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Refresh installed skills" }),
+		);
+
+		expect(await screen.findByText("Added outside Hlid")).toBeDefined();
+		expect(refreshInstalled).toHaveBeenCalledOnce();
+		expect(
+			screen.getByText(/Claude refreshed 1 session and found 1 native skill/),
+		).toBeDefined();
+	});
+
 	it("filters the scrollable catalog without selecting hidden rows", async () => {
 		const discover = vi.fn().mockResolvedValue({
 			skills: [

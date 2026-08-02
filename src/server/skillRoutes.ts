@@ -16,6 +16,7 @@ import {
 	readStagedSkillFile,
 	stageGitHubSkill,
 } from "./skillInstalls";
+import type { ClaudeSkillRefreshSummary } from "./skillRuntimeRefresh";
 import {
 	getVaultSnapshot,
 	invalidateVaultSnapshot,
@@ -69,6 +70,7 @@ type SkillRouteContext = {
 	request: Request;
 	config: HlidConfig;
 	providers: ReadonlyMap<string, AgentProvider>;
+	refreshProviderSkills?: () => Promise<ClaudeSkillRefreshSummary>;
 };
 
 function currentSkillConfig(fallbackConfig: HlidConfig): HlidConfig {
@@ -88,14 +90,12 @@ async function refreshSkillSnapshot(
 	await getVaultSnapshot({ refresh: true });
 }
 
-async function refreshCommittedSkillInstall(
+async function refreshSkillPickerSnapshot(
+	reason: string,
 	config: HlidConfig,
 ): Promise<{ code: "skill_snapshot_refresh_failed"; message: string } | null> {
 	try {
-		const refresh = await refreshVaultSnapshotWithStatus(
-			"skill-install",
-			config,
-		);
+		const refresh = await refreshVaultSnapshotWithStatus(reason, config);
 		return refresh.status === "degraded"
 			? {
 					code: "skill_snapshot_refresh_failed",
@@ -111,6 +111,21 @@ async function refreshCommittedSkillInstall(
 					: "The shared skill snapshot could not refresh",
 		};
 	}
+}
+
+function unavailableClaudeSkillRefresh(
+	reason: string,
+): ClaudeSkillRefreshSummary {
+	return {
+		providerId: "claude",
+		status: "not-live",
+		matchingSessions: 0,
+		reloadedSessions: 0,
+		deferredSessions: 0,
+		failedSessions: 0,
+		skillCount: null,
+		reason,
+	};
 }
 
 async function handleSkillCatalogRoute({
@@ -255,7 +270,10 @@ async function handleStagedSkillActionRoute(
 				: Response.json({ error: "staged_skill_not_found" }, { status: 404 });
 		}
 		const installed = await installStagedSkill(id);
-		const warning = await refreshCommittedSkillInstall(context.config);
+		const warning = await refreshSkillPickerSnapshot(
+			"skill-install",
+			context.config,
+		);
 		return Response.json({
 			ok: true,
 			installed,
@@ -269,6 +287,55 @@ async function handleStagedSkillActionRoute(
 						? "skill_install_failed"
 						: "skill_discard_failed",
 				message: error instanceof Error ? error.message : "Skill action failed",
+			},
+			{ status: 400 },
+		);
+	}
+}
+
+async function handleProviderSkillRefreshRoute(
+	context: SkillRouteContext,
+): Promise<Response> {
+	if (context.request.method !== "POST") {
+		return new Response("Method Not Allowed", { status: 405 });
+	}
+	let providerRefresh: ClaudeSkillRefreshSummary;
+	try {
+		providerRefresh = context.refreshProviderSkills
+			? await context.refreshProviderSkills()
+			: unavailableClaudeSkillRefresh(
+					"No live Claude skill-refresh channel is configured. Hlid still rescanned installed skills for review and import.",
+				);
+	} catch (error) {
+		providerRefresh = {
+			...unavailableClaudeSkillRefresh(
+				error instanceof Error
+					? `Claude skill refresh failed: ${error.message}. Hlid still rescanned installed skills for review and import.`
+					: "Claude skill refresh failed. Hlid still rescanned installed skills for review and import.",
+			),
+			status: "failed",
+			failedSessions: 1,
+		};
+	}
+	try {
+		const warning = await refreshSkillPickerSnapshot(
+			"provider-skill-refresh",
+			context.config,
+		);
+		return Response.json({
+			ok: true,
+			providerRefresh,
+			skills: await discoverSkillPackages(context.config, context.providers),
+			...(warning ? { warning } : {}),
+		});
+	} catch (error) {
+		return Response.json(
+			{
+				error: "skill_refresh_failed",
+				message:
+					error instanceof Error
+						? error.message
+						: "Installed skill discovery failed",
 			},
 			{ status: 400 },
 		);
@@ -374,16 +441,22 @@ export async function handleSkillRoute(
 	request: Request,
 	fallbackConfig: HlidConfig,
 	providers: ReadonlyMap<string, AgentProvider> = new Map(),
+	options: {
+		refreshProviderSkills?: () => Promise<ClaudeSkillRefreshSummary>;
+	} = {},
 ): Promise<Response | null> {
 	const context = {
 		url,
 		request,
 		config: currentSkillConfig(fallbackConfig),
 		providers,
+		refreshProviderSkills: options.refreshProviderSkills,
 	};
 	switch (url.pathname) {
 		case "/skills/catalog":
 			return handleSkillCatalogRoute(context);
+		case "/skills/refresh":
+			return handleProviderSkillRefreshRoute(context);
 		case "/skills/managed":
 			return handleManagedSkillListRoute(context);
 		case "/skills/discover":

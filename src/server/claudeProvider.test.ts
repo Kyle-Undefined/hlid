@@ -92,6 +92,7 @@ function sdkGen(events: unknown[], mcpStatuses: unknown[] = []) {
 		mcpServerStatus: vi.fn().mockResolvedValue(mcpStatuses),
 		reconnectMcpServer: vi.fn().mockResolvedValue(undefined),
 		toggleMcpServer: vi.fn().mockResolvedValue(undefined),
+		reloadSkills: vi.fn().mockResolvedValue({ skills: [] }),
 	});
 	// Cast to the SDK's Query type: our generator satisfies the async-iterable
 	// contract; the extra SDK-internal methods (interrupt, setPendingMessageId)
@@ -3151,6 +3152,34 @@ describe("ClaudeProvider — listSkills", () => {
 			new ClaudeProvider().listSkills?.({ cwd: "/work/project" }),
 		).resolves.toEqual([{ name: "voice", description: "Apply voice rules" }]);
 		expect(gen.supportedCommands).toHaveBeenCalledOnce();
+	});
+});
+
+describe("ClaudeProvider — reloadSkills", () => {
+	it("delegates native skill refresh to the already-live SDK query", async () => {
+		const skills = [
+			{
+				name: "voice",
+				description: "Apply voice rules",
+				argumentHint: "",
+			},
+		];
+		const gen = sdkGen([]);
+		gen.reloadSkills = vi.fn().mockResolvedValue({ skills });
+		vi.mocked(query).mockReturnValueOnce(gen);
+		const session = new ClaudeProvider().query(baseParams());
+		void session[Symbol.asyncIterator]().next();
+
+		await expect(session.reloadSkills?.()).resolves.toEqual(skills);
+		expect(gen.reloadSkills).toHaveBeenCalledOnce();
+	});
+
+	it("does not start a hidden Query solely to refresh skills", async () => {
+		const priorQueryCalls = vi.mocked(query).mock.calls.length;
+		const session = new ClaudeProvider().query(baseParams());
+
+		await expect(session.reloadSkills?.()).resolves.toBeNull();
+		expect(query).toHaveBeenCalledTimes(priorQueryCalls);
 	});
 });
 

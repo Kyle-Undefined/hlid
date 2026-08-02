@@ -2049,6 +2049,12 @@ class ClaudeAgentSession implements AgentSession {
 		await this.sdkQuery.toggleMcpServer(serverName, enabled);
 	}
 
+	async reloadSkills(): Promise<SlashCommand[] | null> {
+		if (!this.sdkQuery) return null;
+		const result = await this.sdkQuery.reloadSkills();
+		return result.skills as SlashCommand[];
+	}
+
 	async supportedCommands(): Promise<SlashCommand[]> {
 		if (!this.sdkQuery) return [];
 		return this.sdkQuery.supportedCommands() as Promise<SlashCommand[]>;

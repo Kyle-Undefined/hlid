@@ -125,6 +125,24 @@ type SkillImportResult = {
 	failed: Array<{ id: string; name: string; message: string }>;
 };
 
+type ClaudeSkillRefreshSummary = {
+	providerId: "claude";
+	status: "reloaded" | "not-live" | "partial" | "failed";
+	matchingSessions: number;
+	reloadedSessions: number;
+	deferredSessions: number;
+	failedSessions: number;
+	skillCount: number | null;
+	reason: string;
+};
+
+type SkillCatalogRefreshResult = {
+	ok: true;
+	providerRefresh: ClaudeSkillRefreshSummary;
+	skills: SkillCatalogItem[];
+	warning?: StagedSkillInstallWarning;
+};
+
 type SkillDocumentResult = {
 	id: string;
 	name: string;
@@ -155,6 +173,14 @@ const discoverSkillsFn = createServerFn({ method: "GET" }).handler(async () => {
 	await requireDbOk(response, "Discover skills");
 	return response.json() as Promise<{ skills: SkillCatalogItem[] }>;
 });
+
+const refreshInstalledSkillsFn = createServerFn({ method: "POST" }).handler(
+	async () => {
+		const response = await dbFetch("/skills/refresh", { method: "POST" });
+		await requireDbOk(response, "Refresh installed skills");
+		return response.json() as Promise<SkillCatalogRefreshResult>;
+	},
+);
 
 const readSkillDocumentFn = createServerFn({ method: "GET" })
 	.validator((data: { id: string }) => data)
@@ -884,12 +910,14 @@ export function SkillImportDialog({
 	onClose,
 	onImported,
 	discover = discoverSkillsFn,
+	refreshInstalled = refreshInstalledSkillsFn,
 	readSkill = readSkillDocumentFn,
 	importSelected = importSkillsFn,
 }: {
 	onClose: () => void;
 	onImported?: (message: string) => void;
 	discover?: () => Promise<{ skills: SkillCatalogItem[] }>;
+	refreshInstalled?: () => Promise<SkillCatalogRefreshResult>;
 	readSkill?: (input: { data: { id: string } }) => Promise<SkillDocumentResult>;
 	importSelected?: (input: {
 		data: { ids: string[] };
@@ -904,11 +932,16 @@ export function SkillImportDialog({
 	const [importing, setImporting] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [notice, setNotice] = useState<string | null>(null);
+	const [refreshFeedback, setRefreshFeedback] = useState<{
+		tone: "success" | "warning";
+		message: string;
+	} | null>(null);
 
-	const refresh = useCallback(async () => {
+	const loadCatalog = useCallback(async () => {
 		setLoading(true);
 		setError(null);
 		setNotice(null);
+		setRefreshFeedback(null);
 		try {
 			const result = await discover();
 			setSkills(result.skills);
@@ -923,8 +956,35 @@ export function SkillImportDialog({
 	}, [discover]);
 
 	useEffect(() => {
-		void refresh();
-	}, [refresh]);
+		void loadCatalog();
+	}, [loadCatalog]);
+
+	const refreshProviderCatalog = async () => {
+		if (loading || importing) return;
+		setLoading(true);
+		setError(null);
+		setNotice(null);
+		setRefreshFeedback(null);
+		try {
+			const result = await refreshInstalled();
+			setSkills(result.skills);
+			setSelected(new Set());
+			const snapshotWarning = result.warning
+				? ` Hlid's shared picker refresh is delayed: ${result.warning.message}`
+				: "";
+			setRefreshFeedback({
+				tone:
+					result.providerRefresh.status === "reloaded" && !result.warning
+						? "success"
+						: "warning",
+				message: `${result.providerRefresh.reason}${snapshotWarning}`,
+			});
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : "Skill refresh failed");
+		} finally {
+			setLoading(false);
+		}
+	};
 
 	const query = search.trim().toLowerCase();
 	const visible = skills.filter(
@@ -961,6 +1021,7 @@ export function SkillImportDialog({
 		setImporting(true);
 		setError(null);
 		setNotice(null);
+		setRefreshFeedback(null);
 		try {
 			const result = await importSelected({ data: { ids: [...selected] } });
 			const importedIds = new Set(result.imported.map((item) => item.id));
@@ -1038,7 +1099,7 @@ export function SkillImportDialog({
 					</div>
 					<button
 						type="button"
-						onClick={() => void refresh()}
+						onClick={() => void refreshProviderCatalog()}
 						disabled={loading || importing}
 						aria-label="Refresh installed skills"
 						className="p-2 border border-border text-muted-foreground hover:text-primary disabled:opacity-30"
@@ -1143,6 +1204,13 @@ export function SkillImportDialog({
 				{notice && (
 					<output className="block shrink-0 px-4 py-2 border-t border-border text-[10px] text-status-success">
 						{notice}
+					</output>
+				)}
+				{refreshFeedback && (
+					<output
+						className={`block shrink-0 px-4 py-2 border-t border-border text-[10px] ${refreshFeedback.tone === "success" ? "text-status-success" : "text-status-warning"}`}
+					>
+						{refreshFeedback.message}
 					</output>
 				)}
 				{error && (

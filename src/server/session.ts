@@ -422,6 +422,10 @@ export type SteeringReceipt = {
 
 export type SessionState = "idle" | "running" | "error";
 
+export type ProviderSkillReloadResult =
+	| { providerId: string; status: "reloaded"; skillCount: number }
+	| { providerId: string; status: "not-live"; reason: string };
+
 type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan";
 
 const KNOWN_PERMISSION_MODES: ReadonlySet<string> = new Set([
@@ -1515,6 +1519,49 @@ export class SessionManager {
 		providerId = this.getProviderId(),
 	): void {
 		this.mcpStatusByProvider.set(providerId, statuses);
+	}
+
+	/**
+	 * Reload provider-native skills only through this session's existing Query.
+	 * A missing or cold session reports not-live so callers can still refresh
+	 * Hlid's disk catalog without spawning a hidden provider process.
+	 */
+	// fallow-ignore-next-line unused-class-member -- Called through SessionPool entries by the provider skill refresh coordinator.
+	async reloadProviderSkills(
+		emit: (msg: ServerMessage) => void,
+	): Promise<ProviderSkillReloadResult> {
+		const providerId = this.getProviderId();
+		const session = this.agentSession;
+		if (providerId !== "claude" || !session?.reloadSkills) {
+			return {
+				providerId,
+				status: "not-live",
+				reason:
+					providerId === "claude"
+						? "This Claude session does not have a live native skill-reload channel."
+						: "This session is not owned by the Claude Agent SDK provider.",
+			};
+		}
+		const skills = await session.reloadSkills();
+		if (!skills) {
+			return {
+				providerId,
+				status: "not-live",
+				reason:
+					"This Claude session has not established its native Query yet. Complete a Claude turn before refreshing its live skill catalog.",
+			};
+		}
+		// Claude's supportedCommands() is an initialization snapshot and remains
+		// stale after a mid-session reload. reloadSkills() returns the refreshed
+		// full skill-command list, so publish that response directly.
+		emit({
+			type: "slash_commands",
+			provider_id: providerId,
+			...(this.agentCwd ? { agent_cwd: this.agentCwd } : {}),
+			...(this.currentSessionId ? { session_id: this.currentSessionId } : {}),
+			commands: skills,
+		});
+		return { providerId, status: "reloaded", skillCount: skills.length };
 	}
 
 	/**

@@ -231,6 +231,7 @@ describe("Claude capability discovery", () => {
 				"interrupt",
 				"reconnectMcpServer",
 				"toggleMcpServer",
+				"reloadSkills",
 				"rewindFiles",
 				"backgroundTasks",
 			],
@@ -249,6 +250,11 @@ describe("Claude capability discovery", () => {
 		expect(
 			discovery.evidence.find((item) => item.operations?.includes("interrupt")),
 		).toMatchObject({ integration: "integrated" });
+		expect(
+			discovery.evidence.find((item) =>
+				item.operations?.includes("reloadSkills"),
+			),
+		).toMatchObject({ integration: "integrated", readiness: "ready" });
 		expect(
 			discovery.evidence.find((item) =>
 				item.operations?.includes("reconnectMcpServer"),
