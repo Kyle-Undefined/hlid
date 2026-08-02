@@ -1953,6 +1953,10 @@ class ClaudeAgentSession implements AgentSession {
 	private inputStream: InputStream = new InputStream();
 	private sdkQuery: SdkQuery | null = null;
 	private cachedIter: AsyncIterator<AgentEvent> | null = null;
+	// The SDK's supportedCommands() snapshot is captured at Query initialization.
+	// Retain later full replacements so probes after route navigation do not
+	// resurrect skills that reloadSkills() removed (or omit skills it added).
+	private latestSkillCommands: SlashCommand[] | null = null;
 	private firstSend: SdkUserMessage | null = null;
 	private receivedAnyEvent = false;
 	private retriedWithoutResume = false;
@@ -2052,11 +2056,14 @@ class ClaudeAgentSession implements AgentSession {
 	async reloadSkills(): Promise<SlashCommand[] | null> {
 		if (!this.sdkQuery) return null;
 		const result = await this.sdkQuery.reloadSkills();
-		return result.skills as SlashCommand[];
+		const skills = result.skills as SlashCommand[];
+		this.latestSkillCommands = skills;
+		return skills;
 	}
 
 	async supportedCommands(): Promise<SlashCommand[]> {
 		if (!this.sdkQuery) return [];
+		if (this.latestSkillCommands !== null) return this.latestSkillCommands;
 		return this.sdkQuery.supportedCommands() as Promise<SlashCommand[]>;
 	}
 
@@ -2377,6 +2384,11 @@ class ClaudeAgentSession implements AgentSession {
 					this.includeEstimatedCost,
 					this.normalizeModel,
 				);
+				for (const event of translation.events) {
+					if (event.type === "commands_changed") {
+						this.latestSkillCommands = event.commands;
+					}
+				}
 				hadText = translation.hadText;
 				if (message.type !== "result") {
 					yield* translation.events;

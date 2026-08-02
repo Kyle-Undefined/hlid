@@ -2630,8 +2630,16 @@ export function ChatPage() {
 			sdkSlashCommands,
 		],
 	);
+	const commandVaultSkills = useMemo(
+		() =>
+			isClaudeRuntimeProvider(activeProviderId) &&
+			sdkSlashCommandProviderId === activeProviderId
+				? vaultSkills.filter((skill) => skill.providerId !== activeProviderId)
+				: vaultSkills,
+		[activeProviderId, sdkSlashCommandProviderId, vaultSkills],
+	);
 	const commands = useCommands(
-		vaultSkills,
+		commandVaultSkills,
 		providerCommands,
 		activeProviderId,
 		"raven",

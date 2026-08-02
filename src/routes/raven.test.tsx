@@ -736,6 +736,58 @@ describe("Raven composed submission behavior", () => {
 		expect((composer as HTMLTextAreaElement).value).toBe("keep this context");
 	});
 
+	it("replaces stale Claude loader skills with the live command snapshot", () => {
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as Record<string, unknown>),
+				ui: { enter_to_submit: true, show_provider_entries: true },
+			},
+			vaultSkills: [
+				{
+					file: "SKILL.md",
+					name: "hlid-reload-smoke",
+					description: "Provider skill removed after the loader snapshot",
+					content: "",
+					filePath: "/home/kyle/.claude/skills/hlid-reload-smoke/SKILL.md",
+					providerId: "claude",
+					source: "provider",
+				},
+				{
+					file: "managed.md",
+					name: "managed",
+					description: "Hlid-managed skill",
+					content: "Managed context",
+					filePath: "/vault/.hlid/skills/managed.md",
+					source: "hlid",
+				},
+			],
+		};
+		render(<ChatPage />);
+
+		const composer = screen.getByRole("combobox");
+		fireEvent.change(composer, { target: { value: "/hlid-reload" } });
+		expect(
+			screen.getByRole("button", { name: "Select /hlid-reload-smoke" }),
+		).toBeTruthy();
+
+		act(() => {
+			state.onMessage?.({
+				type: "slash_commands",
+				provider_id: "claude",
+				commands: [],
+			});
+		});
+		expect(
+			screen.queryByRole("button", { name: "Select /hlid-reload-smoke" }),
+		).toBeNull();
+
+		fireEvent.change(composer, { target: { value: "/managed" } });
+		expect(
+			screen.getByRole("button", { name: "Select /managed" }),
+		).toBeTruthy();
+	});
+
 	it("keeps agent selection and all composer modes on-screen at mobile widths", () => {
 		state.loaderData = {
 			...state.loaderData,

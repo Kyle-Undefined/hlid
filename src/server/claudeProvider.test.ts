@@ -3127,6 +3127,43 @@ describe("ClaudeProvider — supportedCommands", () => {
 		expect(commands).toEqual(mockCommands);
 	});
 
+	it("retains commands_changed replacements for later probes", async () => {
+		const refreshedCommands = [
+			{
+				name: "refreshed",
+				description: "Fresh command snapshot",
+				argumentHint: "",
+			},
+		];
+		const gen = sdkGen([
+			{
+				type: "system",
+				subtype: "commands_changed",
+				commands: refreshedCommands,
+				uuid: "uuid-commands",
+				session_id: "sid-abc",
+			},
+		]);
+		gen.supportedCommands = vi.fn().mockResolvedValue([
+			{
+				name: "stale",
+				description: "Initialization snapshot",
+				argumentHint: "",
+			},
+		]);
+		vi.mocked(query).mockReturnValueOnce(gen);
+		const session = new ClaudeProvider().query(baseParams());
+
+		await expect(session[Symbol.asyncIterator]().next()).resolves.toEqual({
+			done: false,
+			value: { type: "commands_changed", commands: refreshedCommands },
+		});
+		await expect(session.supportedCommands?.()).resolves.toEqual(
+			refreshedCommands,
+		);
+		expect(gen.supportedCommands).not.toHaveBeenCalled();
+	});
+
 	it("returns empty array when SDK query not yet initialized", async () => {
 		const provider = new ClaudeProvider();
 		const session = provider.query(baseParams());
@@ -3156,7 +3193,7 @@ describe("ClaudeProvider — listSkills", () => {
 });
 
 describe("ClaudeProvider — reloadSkills", () => {
-	it("delegates native skill refresh to the already-live SDK query", async () => {
+	it("retains the refreshed skill replacement for later session probes", async () => {
 		const skills = [
 			{
 				name: "voice",
@@ -3166,12 +3203,40 @@ describe("ClaudeProvider — reloadSkills", () => {
 		];
 		const gen = sdkGen([]);
 		gen.reloadSkills = vi.fn().mockResolvedValue({ skills });
+		gen.supportedCommands = vi.fn().mockResolvedValue([
+			{
+				name: "removed-skill",
+				description: "Stale initialization snapshot",
+				argumentHint: "",
+			},
+		]);
 		vi.mocked(query).mockReturnValueOnce(gen);
 		const session = new ClaudeProvider().query(baseParams());
 		void session[Symbol.asyncIterator]().next();
 
 		await expect(session.reloadSkills?.()).resolves.toEqual(skills);
+		await expect(session.supportedCommands?.()).resolves.toEqual(skills);
 		expect(gen.reloadSkills).toHaveBeenCalledOnce();
+		expect(gen.supportedCommands).not.toHaveBeenCalled();
+	});
+
+	it("retains an empty refresh so deleted skills stay removed", async () => {
+		const gen = sdkGen([]);
+		gen.reloadSkills = vi.fn().mockResolvedValue({ skills: [] });
+		gen.supportedCommands = vi.fn().mockResolvedValue([
+			{
+				name: "removed-skill",
+				description: "Stale initialization snapshot",
+				argumentHint: "",
+			},
+		]);
+		vi.mocked(query).mockReturnValueOnce(gen);
+		const session = new ClaudeProvider().query(baseParams());
+		void session[Symbol.asyncIterator]().next();
+
+		await expect(session.reloadSkills?.()).resolves.toEqual([]);
+		await expect(session.supportedCommands?.()).resolves.toEqual([]);
+		expect(gen.supportedCommands).not.toHaveBeenCalled();
 	});
 
 	it("does not start a hidden Query solely to refresh skills", async () => {
