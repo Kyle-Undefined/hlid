@@ -40,7 +40,9 @@ export function agentConfigToEntry(agent: Agent) {
 		name: agent.name ?? deriveAgentName(resolved),
 		mode: agent.mode ?? "cwd",
 		provider: agent.provider ?? "claude",
-		instructionFile: isWslAgent ? null : findAgentInstructionFile(resolved),
+		instructionFile: isWslAgent
+			? null
+			: findAgentInstructionFile(resolved, agent.provider ?? "claude"),
 		dirExists: isWslAgent || existsSync(resolved),
 		model: agent.model,
 		effort: agent.effort,

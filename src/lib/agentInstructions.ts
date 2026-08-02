@@ -1,6 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { join } from "node:path";
+import { instructionFileNameForProvider } from "./providerRuntime";
+
+export { instructionFileNameForProvider } from "./providerRuntime";
 
 export const AGENT_INSTRUCTION_FILE_NAMES = ["AGENTS.md", "CLAUDE.md"] as const;
 
@@ -19,8 +22,12 @@ export type AgentInstructions = {
  */
 export function findAgentInstructionFile(
 	agentPath: string,
+	provider?: string,
 ): AgentInstructionFileName | null {
-	for (const filename of AGENT_INSTRUCTION_FILE_NAMES) {
+	const filenames = provider
+		? [instructionFileNameForProvider(provider)]
+		: AGENT_INSTRUCTION_FILE_NAMES;
+	for (const filename of filenames) {
 		if (existsSync(join(agentPath, filename))) return filename;
 	}
 	return null;
@@ -28,13 +35,17 @@ export function findAgentInstructionFile(
 
 export async function findAgentInstructionFileAsync(
 	agentPath: string,
+	provider?: string,
 ): Promise<AgentInstructionFileName | null> {
-	for (const filename of AGENT_INSTRUCTION_FILE_NAMES) {
+	const filenames = provider
+		? [instructionFileNameForProvider(provider)]
+		: AGENT_INSTRUCTION_FILE_NAMES;
+	for (const filename of filenames) {
 		try {
 			await access(join(agentPath, filename));
 			return filename;
 		} catch {
-			// Try the compatibility fallback.
+			// Try the legacy fallback when the caller did not supply a provider.
 		}
 	}
 	return null;
@@ -42,8 +53,9 @@ export async function findAgentInstructionFileAsync(
 
 export function readAgentInstructions(
 	agentPath: string,
+	provider?: string,
 ): AgentInstructions | null {
-	const filename = findAgentInstructionFile(agentPath);
+	const filename = findAgentInstructionFile(agentPath, provider);
 	if (!filename) return null;
 	return {
 		filename,

@@ -1,16 +1,31 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { InstructionFilesPanel } from "#/components/instructions/InstructionFilesPanel";
 import type { InstructionFileTarget } from "#/lib/instructionFileTypes";
 import { getInstructionFileTargetsFn } from "#/lib/serverFns/instructionFiles";
 import { Section } from "./fields";
 
-export function InstructionFilesSection() {
+export function InstructionFilesSection({
+	vaultProvider,
+	savedVaultProvider,
+}: {
+	/** Current form value, used to refresh when the provider selection changes. */
+	vaultProvider: string;
+	/** Persisted config value, used to refresh after the save/route reload. */
+	savedVaultProvider?: string;
+}) {
 	const [targets, setTargets] = useState<InstructionFileTarget[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
+	const refreshKey = useMemo(
+		() => `${vaultProvider}\0${savedVaultProvider ?? ""}`,
+		[vaultProvider, savedVaultProvider],
+	);
 
 	useEffect(() => {
 		let cancelled = false;
+		if (!refreshKey) return;
+		setLoading(true);
+		setError(null);
 		void getInstructionFileTargetsFn()
 			.then((next) => {
 				if (!cancelled)
@@ -30,7 +45,7 @@ export function InstructionFilesSection() {
 		return () => {
 			cancelled = true;
 		};
-	}, []);
+	}, [refreshKey]);
 
 	function updateTarget(updated: InstructionFileTarget) {
 		setTargets((current) =>

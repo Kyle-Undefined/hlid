@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { Plus } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AddAgentPanel } from "#/components/einherjar/AddAgentPanel";
 import type {
 	AgentEntry,
@@ -93,22 +93,28 @@ function EinherjarPage() {
 	const [instructionTargets, setInstructionTargets] = useState<
 		InstructionFileTarget[]
 	>([]);
+	const instructionRefreshRef = useRef(0);
+
+	const refreshInstructionTargets = useCallback(async () => {
+		const refreshId = ++instructionRefreshRef.current;
+		try {
+			const targets = await getInstructionFileTargetsFn();
+			if (refreshId !== instructionRefreshRef.current) return;
+			setInstructionTargets(
+				targets.filter((target) => target.owner === "agent"),
+			);
+		} catch {
+			// Instruction discovery is supplemental to the agent roster. Keep the
+			// last successful result if a refresh is temporarily unavailable.
+		}
+	}, []);
 
 	useEffect(() => {
-		let cancelled = false;
-		void getInstructionFileTargetsFn()
-			.then((targets) => {
-				if (!cancelled) {
-					setInstructionTargets(
-						targets.filter((target) => target.owner === "agent"),
-					);
-				}
-			})
-			.catch(() => {});
+		void refreshInstructionTargets();
 		return () => {
-			cancelled = true;
+			instructionRefreshRef.current += 1;
 		};
-	}, []);
+	}, [refreshInstructionTargets]);
 
 	async function handleAddSubmit(
 		path: string,
@@ -118,12 +124,19 @@ function EinherjarPage() {
 		settings: AgentProviderSettings,
 	) {
 		await handleAdd(path, name, mode, provider, settings);
-		setInstructionTargets(
-			(await getInstructionFileTargetsFn()).filter(
-				(target) => target.owner === "agent",
-			),
-		);
+		await refreshInstructionTargets();
 		setShowAdd(false);
+	}
+
+	async function handleAgentSaveEdit(
+		path: string,
+		name: string,
+		mode: "cwd" | "context",
+		provider: string,
+		settings: AgentProviderSettings,
+	) {
+		await handleSaveEdit(path, name, mode, provider, settings);
+		await refreshInstructionTargets();
 	}
 
 	function handleChat(agent: AgentEntry) {
@@ -185,7 +198,13 @@ function EinherjarPage() {
 								onModeChange={(mode) => void handleModeChange(agent.path, mode)}
 								onChat={() => handleChat(agent)}
 								onSaveEdit={(name, mode, provider, settings) =>
-									handleSaveEdit(agent.path, name, mode, provider, settings)
+									handleAgentSaveEdit(
+										agent.path,
+										name,
+										mode,
+										provider,
+										settings,
+									)
 								}
 								instructionTargets={instructionTargets.filter(
 									(target) => target.agentPath === agent.path,

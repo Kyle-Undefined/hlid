@@ -20,6 +20,7 @@ afterEach(() => {
 function base(overrides: Partial<BuildPromptOptions> = {}): BuildPromptOptions {
 	return {
 		vaultPath: tmp,
+		providerId: "claude",
 		allowedAgentRealPaths: [],
 		agentMode: "cwd",
 		agentCwd: undefined,
@@ -160,6 +161,7 @@ describe("buildPrompt — mixed context parity", async () => {
 
 		const result = await buildPromptAsync(
 			base({
+				providerId: "codex",
 				vaultName: " Fornbok ",
 				operatingBrief,
 				operatingBriefVersion: 1,
@@ -686,12 +688,13 @@ describe("buildPrompt — context mode persona", async () => {
 		}
 	});
 
-	it("injects AGENTS.md when it is the available context instruction file", async () => {
+	it("injects AGENTS.md for a Codex context agent", async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "agent-ctx-agents-"));
 		writeFileSync(join(agentDir, "AGENTS.md"), "# Persona");
 		try {
 			const { prompt } = await buildPromptAsync(
 				base({
+					providerId: "codex",
 					agentMode: "context",
 					agentCwd: agentDir,
 					claudeSessionId: null,
@@ -704,19 +707,59 @@ describe("buildPrompt — context mode persona", async () => {
 		}
 	});
 
-	it("prefers AGENTS.md when both context instruction files exist", async () => {
+	it("uses CLAUDE.md for a Claude context agent when both files exist", async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "agent-ctx-both-"));
 		writeFileSync(join(agentDir, "AGENTS.md"), "# Generic persona");
 		writeFileSync(join(agentDir, "CLAUDE.md"), "# Existing persona");
 		try {
 			const { prompt } = await buildPromptAsync(
 				base({
+					providerId: "claude",
+					agentMode: "context",
+					agentCwd: agentDir,
+					claudeSessionId: null,
+				}),
+			);
+			expect(prompt).toContain("CLAUDE.md");
+			expect(prompt).not.toContain("AGENTS.md");
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true });
+		}
+	});
+
+	it("uses AGENTS.md for a provider-neutral context agent when both files exist", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "agent-ctx-acp-both-"));
+		writeFileSync(join(agentDir, "AGENTS.md"), "# Generic persona");
+		writeFileSync(join(agentDir, "CLAUDE.md"), "# Existing persona");
+		try {
+			const { prompt } = await buildPromptAsync(
+				base({
+					providerId: "acp:example",
 					agentMode: "context",
 					agentCwd: agentDir,
 					claudeSessionId: null,
 				}),
 			);
 			expect(prompt).toContain("AGENTS.md");
+			expect(prompt).not.toContain("CLAUDE.md");
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not load the other provider's instruction file", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "agent-ctx-wrong-provider-"));
+		writeFileSync(join(agentDir, "CLAUDE.md"), "# Claude only");
+		try {
+			const { prompt } = await buildPromptAsync(
+				base({
+					providerId: "codex",
+					agentMode: "context",
+					agentCwd: agentDir,
+					claudeSessionId: null,
+				}),
+			);
+			expect(prompt).not.toContain("adopt its persona");
 			expect(prompt).not.toContain("CLAUDE.md");
 		} finally {
 			rmSync(agentDir, { recursive: true, force: true });

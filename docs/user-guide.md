@@ -496,18 +496,20 @@ and paths. Handy when you need a screenshot without leaking the whole workspace.
 
 ### Einherjar
 
-**EINHERJAR** adds other agent directories. A `context` entry loads `AGENTS.md`
-or `CLAUDE.md` as an instruction or personality layer while keeping the vault
-as the working directory. If both files exist, `AGENTS.md` wins because it is
-the provider-neutral `ACP` contract. `CLAUDE.md` stays as the compatibility
-fallback.
+**EINHERJAR** adds other agent directories. A `context` entry loads the
+instruction file for that entry's configured provider as an instruction or
+personality layer while keeping the vault as the working directory. Claude
+runtimes use `CLAUDE.md`; Codex and provider-neutral runtimes use `AGENTS.md`.
 
 A `cwd` entry runs the agent from the registered directory instead. Paths
 outside the vault need the external-agent switch in `Forge`.
 
-Expand an `Einherjar` entry to preview or edit its root `AGENTS.md` and
-`CLAUDE.md`. Missing files can be created in place. `Hlið` keeps the two files
-separate because `Codex` and `Claude` load different native instruction names.
+Each `Einherjar` entry names the exact instruction file used by its configured
+provider and exposes an **Open AGENTS.md** or **Open CLAUDE.md** action beside
+the entry details. Opening it checks that one location, previews an existing
+file for editing, or opens a missing file directly for creation. The list does
+not scan every registered directory up front, and files for providers that are
+not configured for that entry stay hidden.
 
 ### Forge
 
@@ -524,9 +526,11 @@ separate because `Codex` and `Claude` load different native instruction names.
 - **Agents** holds provider, model, effort, permissions, usage limits, recaps,
   vault and global instruction-file editors, the `Project Preview` browser
   profile boundary, automatic usage-window sleep/resume behavior, and
-  `Codex Computer Use` defaults when the `Windows` capability exists. Global
-  files are grouped by their `Windows` or `WSL` runtime, and edits take effect
-  when the matching provider conversation starts or reloads.
+  `Codex Computer Use` defaults when the `Windows` capability exists. The vault
+  editor follows the configured vault provider. Global files are shown only for
+  provider families configured by the vault or an `Einherjar`, grouped by their
+  `Windows` or `WSL` runtime. Edits take effect when the matching provider
+  conversation starts or reloads.
 - **Access** has network, `TLS`, password, and trusted-device settings.
 - **Experience** has built-in or custom desktop/mobile themes, input behavior,
   the provider-entry visibility toggle for the `/` picker, `HTML` plan defaults,

@@ -30,6 +30,8 @@ import {
 
 export type BuildPromptOptions = {
 	vaultPath: string;
+	/** Active configured provider used to select the matching agent instruction file. */
+	providerId: string;
 	/** Configured Obsidian vault name exposed as first-class agent context. */
 	vaultName?: string;
 	/** Small capability-gated operating contract, sent once per provider conversation. */
@@ -622,7 +624,7 @@ export async function buildPromptAsync(opts: BuildPromptOptions): Promise<{
 		opts.agentMode === "context" &&
 		opts.agentCwd &&
 		opts.claudeSessionId === null
-			? await findAgentInstructionFileAsync(opts.agentCwd)
+			? await findAgentInstructionFileAsync(opts.agentCwd, opts.providerId)
 			: null;
 	return assemblePrompt(
 		opts,

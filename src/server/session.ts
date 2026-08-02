@@ -3936,6 +3936,7 @@ export class SessionManager {
 		const toolLoading = await this.toolLoadingFor(provider);
 		const built = await buildPromptAsync({
 			vaultPath: this.vaultPath,
+			providerId: provider.providerId,
 			vaultName: this.vaultName,
 			allowedAgentRealPaths: this.allowedAgentRealPaths,
 			agentMode: this.agentMode,
@@ -5631,6 +5632,7 @@ export class SessionManager {
 				contextManifest,
 			} = await buildPromptAsync({
 				vaultPath: this.vaultPath,
+				providerId: currentProvider.providerId,
 				vaultName: this.vaultName,
 				allowedAgentRealPaths: this.allowedAgentRealPaths,
 				agentMode: this.agentMode,

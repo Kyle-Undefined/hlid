@@ -11,8 +11,9 @@ import {
 	writeInstructionFileFn,
 } from "#/lib/serverFns/instructionFiles";
 
-function formatSize(bytes: number | null): string {
-	if (bytes === null) return "missing";
+function formatSize(bytes: number | null, exists: boolean | null): string {
+	if (exists === null) return "not checked";
+	if (!exists || bytes === null) return "missing";
 	if (bytes < 1024) return `${bytes} B`;
 	return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KiB`;
 }
@@ -113,7 +114,7 @@ function InstructionFileRow({
 								{providerLabel(target.provider)}
 							</span>
 							<span className="text-[9px] text-muted-foreground/60">
-								{formatSize(current.size)}
+								{formatSize(current.size, current.exists)}
 							</span>
 						</div>
 						<PrivacyMask className="mt-0.5 truncate font-mono text-[9px] text-muted-foreground/40">
@@ -132,7 +133,7 @@ function InstructionFileRow({
 						onClick={() => void open()}
 						className="shrink-0 px-2 py-1 text-[9px] uppercase tracking-widest text-muted-foreground hover:text-foreground"
 					>
-						{target.exists ? "Open" : "Create"}
+						{current.exists === false ? "Create" : "Open"}
 					</button>
 				)}
 			</div>

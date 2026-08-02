@@ -43,7 +43,15 @@ vi.mock("#/components/forge/ExtensionsSection", () => ({
 	ExtensionsSection: () => <div>Extensions content</div>,
 }));
 vi.mock("#/components/forge/InstructionFilesSection", () => ({
-	InstructionFilesSection: () => <div>Agent Instructions content</div>,
+	InstructionFilesSection: (props: {
+		vaultProvider: string;
+		savedVaultProvider?: string;
+	}) => (
+		<div>
+			Agent Instructions content · {props.vaultProvider} ·{" "}
+			{props.savedVaultProvider ?? "unset"}
+		</div>
+	),
 }));
 vi.mock("#/components/forge/McpSection", () => ({
 	McpSection: () => <div>MCP content</div>,
@@ -211,6 +219,7 @@ function renderSettings() {
 					acpCatalog: [],
 					cwd: "/tmp/vault",
 					voiceInfo: null,
+					vault_provider: "claude",
 				} as never
 			}
 			state={
@@ -253,6 +262,18 @@ function renderSettings() {
 }
 
 describe("ForgeSettings category navigation", () => {
+	it("passes current and saved vault provider context to instruction files", () => {
+		renderSettings();
+		fireEvent.change(
+			screen.getByRole("combobox", { name: "Filtered Forge category" }),
+			{ target: { value: "agents" } },
+		);
+
+		expect(
+			screen.getByText("Agent Instructions content · claude · claude"),
+		).toBeTruthy();
+	});
+
 	it("places Browser profile above Computer Use", () => {
 		renderSettings();
 		fireEvent.change(

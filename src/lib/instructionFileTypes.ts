@@ -14,13 +14,15 @@ export type InstructionFileTarget = {
 	environmentLabel: string;
 	path: string;
 	agentPath?: string;
-	exists: boolean;
+	/** Null until the configured target is opened and inspected. */
+	exists: boolean | null;
 	size: number | null;
 	revision: string | null;
 	writable: boolean;
 	error?: string;
 };
 
-export type InstructionFileDocument = InstructionFileTarget & {
+export type InstructionFileDocument = Omit<InstructionFileTarget, "exists"> & {
+	exists: boolean;
 	content: string;
 };

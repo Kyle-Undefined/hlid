@@ -1,6 +1,7 @@
 import {
 	ChevronDown,
 	ChevronRight,
+	FileText,
 	MessageSquare,
 	Pencil,
 	Server,
@@ -13,6 +14,8 @@ import type { AgentEntry } from "./AgentCard";
 /** Name/path row, cwd/context toggle, and the chat/edit/mcp/remove action icons. */
 export function AgentCardHeader({
 	agent,
+	instructionAction,
+	instructionLabel,
 	expanded,
 	showMcp,
 	onToggleView,
@@ -23,6 +26,8 @@ export function AgentCardHeader({
 	onRemove,
 }: {
 	agent: AgentEntry;
+	instructionAction: "Create" | "Edit" | "Open";
+	instructionLabel: string;
 	expanded: boolean;
 	showMcp: boolean;
 	onToggleView: () => void;
@@ -40,8 +45,8 @@ export function AgentCardHeader({
 				aria-expanded={expanded}
 				aria-label={
 					expanded
-						? `Collapse ${agent.instructionFile ?? "instructions"}`
-						: `Expand ${agent.instructionFile ?? "instructions"}`
+						? `Collapse ${instructionLabel}`
+						: `Expand ${instructionLabel}`
 				}
 				className="flex flex-1 items-center gap-3 text-left min-w-0"
 			>
@@ -72,6 +77,12 @@ export function AgentCardHeader({
 							directory missing
 						</div>
 					)}
+					<div className="mt-1 flex items-center gap-1 font-mono text-[9px] text-primary/70">
+						<FileText className="h-3 w-3 shrink-0" />
+						<span>
+							{instructionAction} {instructionLabel}
+						</span>
+					</div>
 				</div>
 			</button>
 			<div className="flex items-center gap-1 shrink-0 self-end sm:self-auto">

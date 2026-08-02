@@ -171,7 +171,10 @@ function AgentSettings({
 				providers={initial.providers}
 				accountInfo={initial.accountInfo}
 			/>
-			<InstructionFilesSection />
+			<InstructionFilesSection
+				vaultProvider={state.claude.vaultProvider}
+				savedVaultProvider={initial.vault_provider}
+			/>
 			<BrowserProfileSection
 				value={state.projectPreview}
 				onChange={(patch) =>

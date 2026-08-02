@@ -212,33 +212,54 @@ describe("AgentCard edit options", () => {
 		expect(onRemove).toHaveBeenCalledOnce();
 	});
 
-	it("shows both provider instruction files, including a missing file", () => {
+	it("shows the returned provider instruction file, including a missing file", () => {
 		renderCard(makeAgent({ instructionFile: "AGENTS.md" }), [claudeProvider], {
-			instructionTargets: [
-				instructionTarget("AGENTS.md"),
-				instructionTarget("CLAUDE.md"),
-			],
+			instructionTargets: [instructionTarget("CLAUDE.md")],
 		});
 
-		fireEvent.click(screen.getByLabelText("Expand AGENTS.md"));
+		fireEvent.click(screen.getByLabelText("Expand CLAUDE.md"));
 
-		expect(screen.getByText("AGENTS.md")).not.toBeNull();
 		expect(screen.getByText("CLAUDE.md")).not.toBeNull();
 		expect(screen.getByText("Create")).not.toBeNull();
+		expect(screen.queryByText("AGENTS.md")).toBeNull();
 	});
 
 	it("keeps instruction expansion available when no file exists yet", () => {
 		renderCard(makeAgent({ instructionFile: null }), [claudeProvider], {
-			instructionTargets: [
-				instructionTarget("AGENTS.md"),
-				instructionTarget("CLAUDE.md"),
-			],
+			instructionTargets: [instructionTarget("CLAUDE.md")],
 		});
 
-		fireEvent.click(screen.getByLabelText("Expand instructions"));
+		expect(screen.getByText("Create CLAUDE.md")).not.toBeNull();
+		fireEvent.click(screen.getByLabelText("Expand CLAUDE.md"));
 
-		expect(screen.getByText("AGENTS.md")).not.toBeNull();
 		expect(screen.getByText("CLAUDE.md")).not.toBeNull();
+		expect(screen.getByText("Create")).not.toBeNull();
+	});
+
+	it("shows the configured provider file action before discovery finishes", () => {
+		const { rerender } = renderCard(makeAgent({ provider: "claude" }), [
+			claudeProvider,
+			codexProvider,
+		]);
+
+		expect(screen.getByText("Open CLAUDE.md")).not.toBeNull();
+		expect(screen.getByLabelText("Expand CLAUDE.md")).not.toBeNull();
+
+		rerender(
+			<AgentCard
+				agent={makeAgent({ provider: "codex" })}
+				onRemove={vi.fn()}
+				onModeChange={vi.fn()}
+				onChat={vi.fn()}
+				onSaveEdit={vi.fn().mockResolvedValue(undefined)}
+				instructionTargets={[]}
+				providers={[claudeProvider, codexProvider]}
+			/>,
+		);
+
+		expect(screen.getByText("Open AGENTS.md")).not.toBeNull();
+		expect(screen.getByLabelText("Expand AGENTS.md")).not.toBeNull();
+		expect(screen.queryByText("Open CLAUDE.md")).toBeNull();
 	});
 
 	it("delegates mode and chat actions without changing persisted props", () => {

@@ -3,6 +3,7 @@ import { lstat, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, relative, resolve, win32 } from "node:path";
 import type { HlidConfig } from "../config";
+import { instructionFileNameForProvider } from "../lib/agentInstructions";
 import { writeFileAtomic } from "../lib/atomicFile";
 import type {
 	InstructionFileDocument,
@@ -26,6 +27,10 @@ type TargetDefinition = {
 	path: string;
 	baseRoot: string;
 	agentPath?: string;
+};
+
+type InspectedInstructionFileTarget = Omit<InstructionFileTarget, "exists"> & {
+	exists: boolean;
 };
 
 export type InstructionDiscoveryOptions = {
@@ -90,31 +95,36 @@ function definitionsForRoot(args: {
 	environmentLabel: string;
 	agentPath?: string;
 	global?: boolean;
+	providers: Iterable<string | undefined>;
 }): TargetDefinition[] {
-	const providers = [
-		{
-			provider: "codex" as const,
-			filename: "AGENTS.md" as const,
-			parts: args.global ? [".codex", "AGENTS.md"] : ["AGENTS.md"],
-		},
-		{
-			provider: "claude" as const,
-			filename: "CLAUDE.md" as const,
-			parts: args.global ? [".claude", "CLAUDE.md"] : ["CLAUDE.md"],
-		},
-	];
-	return providers.map(({ provider, filename, parts }) => ({
-		id: definitionId(args.owner, args.baseRoot, filename),
-		owner: args.owner,
-		provider,
-		filename,
-		scopeLabel: args.scopeLabel,
-		environment: args.environment,
-		environmentLabel: args.environmentLabel,
-		path: joinFilesystemPath(args.baseRoot, ...parts),
-		baseRoot: args.baseRoot,
-		...(args.agentPath ? { agentPath: args.agentPath } : {}),
-	}));
+	const providers = new Set<InstructionFileProvider>();
+	for (const configuredProvider of args.providers) {
+		providers.add(
+			instructionFileNameForProvider(configuredProvider ?? "") === "CLAUDE.md"
+				? "claude"
+				: "codex",
+		);
+	}
+	return [...providers].map((provider) => {
+		const filename = provider === "claude" ? "CLAUDE.md" : "AGENTS.md";
+		const parts = args.global
+			? provider === "claude"
+				? [".claude", filename]
+				: [".codex", filename]
+			: [filename];
+		return {
+			id: definitionId(args.owner, args.baseRoot, filename),
+			owner: args.owner,
+			provider,
+			filename,
+			scopeLabel: args.scopeLabel,
+			environment: args.environment,
+			environmentLabel: args.environmentLabel,
+			path: joinFilesystemPath(args.baseRoot, ...parts),
+			baseRoot: args.baseRoot,
+			...(args.agentPath ? { agentPath: args.agentPath } : {}),
+		};
+	});
 }
 
 function wslProviderHomes(config: HlidConfig): Array<{
@@ -144,6 +154,10 @@ function targetDefinitions(
 	options: InstructionDiscoveryOptions = {},
 ): TargetDefinition[] {
 	const definitions: TargetDefinition[] = [];
+	const configuredProviders = [
+		config.vault_provider,
+		...(config.agents ?? []).map((agent) => agent.provider),
+	];
 	if (config.vault.path) {
 		const baseRoot = expandTilde(config.vault.path);
 		definitions.push(
@@ -152,6 +166,7 @@ function targetDefinitions(
 				baseRoot,
 				scopeLabel: config.vault.name || "Vault",
 				...environmentForPath(baseRoot, options),
+				providers: [config.vault_provider],
 			}),
 		);
 	}
@@ -164,6 +179,7 @@ function targetDefinitions(
 			scopeLabel: "User",
 			...environmentForPath(hostHome, options),
 			global: true,
+			providers: configuredProviders,
 		}),
 	);
 
@@ -177,6 +193,7 @@ function targetDefinitions(
 				environment: "wsl",
 				environmentLabel: `WSL · ${home.distro}`,
 				global: true,
+				providers: configuredProviders,
 			}),
 		);
 	}
@@ -190,6 +207,7 @@ function targetDefinitions(
 				scopeLabel: agent.name || "Agent",
 				...environmentForPath(baseRoot, options),
 				agentPath: agent.path,
+				providers: [agent.provider],
 			}),
 		);
 	}
@@ -200,10 +218,8 @@ function revisionFor(content: string): string {
 	return createHash("sha256").update(content).digest("hex");
 }
 
-async function inspectDefinition(
-	definition: TargetDefinition,
-): Promise<InstructionFileTarget> {
-	const publicTarget = {
+function publicTargetForDefinition(definition: TargetDefinition) {
+	return {
 		id: definition.id,
 		owner: definition.owner,
 		provider: definition.provider,
@@ -214,6 +230,12 @@ async function inspectDefinition(
 		path: definition.path,
 		...(definition.agentPath ? { agentPath: definition.agentPath } : {}),
 	};
+}
+
+async function inspectDefinition(
+	definition: TargetDefinition,
+): Promise<InspectedInstructionFileTarget> {
+	const publicTarget = publicTargetForDefinition(definition);
 	try {
 		const info = await stat(definition.path);
 		if (!info.isFile()) {
@@ -281,11 +303,18 @@ export async function discoverInstructionFileTargets(
 	config: HlidConfig,
 	options: InstructionDiscoveryOptions = {},
 ): Promise<InstructionFileTarget[]> {
-	return Promise.all(
-		targetDefinitions(config, options).map((definition) =>
-			inspectDefinition(definition),
-		),
-	);
+	// Listing is deliberately filesystem-free. Configured targets may live on
+	// cold WSL/UNC mounts, where eager stat/read probes can hold the whole
+	// settings request past the TLS proxy's 30-second budget. Exact existence,
+	// revision, size, and availability are resolved when the user opens one
+	// target through readInstructionFile.
+	return targetDefinitions(config, options).map((definition) => ({
+		...publicTargetForDefinition(definition),
+		exists: null,
+		size: null,
+		revision: null,
+		writable: true,
+	}));
 }
 
 function findDefinition(

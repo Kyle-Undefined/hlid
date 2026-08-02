@@ -8,6 +8,13 @@ export function isClaudeRuntimeProvider(providerId: string): boolean {
 	return providerId === "claude" || providerId === CLIPROXY_CODEX_PROVIDER_ID;
 }
 
+/** Instruction-file convention owned by the configured runtime. */
+export function instructionFileNameForProvider(
+	providerId: string,
+): "AGENTS.md" | "CLAUDE.md" {
+	return isClaudeRuntimeProvider(providerId) ? "CLAUDE.md" : "AGENTS.md";
+}
+
 /** Providers that execute through Codex CLI and therefore use Codex wrappers. */
 export function isCodexRuntimeProvider(providerId: string): boolean {
 	return (

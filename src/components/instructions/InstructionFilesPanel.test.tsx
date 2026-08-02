@@ -48,7 +48,7 @@ function document(
 	targetValue: InstructionFileTarget,
 	content = "# Existing",
 ): InstructionFileDocument {
-	return { ...targetValue, content };
+	return { ...targetValue, exists: targetValue.exists ?? true, content };
 }
 
 beforeEach(() => {
@@ -84,6 +84,21 @@ describe("InstructionFilesPanel", () => {
 		expect(screen.getByText("1.5 KiB")).toBeTruthy();
 		expect(screen.getByText("10 KiB")).toBeTruthy();
 		expect(screen.getByText("missing")).toBeTruthy();
+	});
+
+	it("opens an uninspected configured target before labeling it create or edit", async () => {
+		const uninspected = target({
+			exists: null,
+			size: null,
+			revision: null,
+		});
+		mockRead.mockResolvedValue(document(target()));
+		render(<InstructionFilesPanel targets={[uninspected]} />);
+
+		expect(screen.getByText("not checked")).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "Open" }));
+
+		expect(await screen.findByText("Existing")).not.toBeNull();
 	});
 
 	it("previews and explicitly saves an existing file", async () => {

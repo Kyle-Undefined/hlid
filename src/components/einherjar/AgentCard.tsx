@@ -4,6 +4,7 @@ import { AgentMcpSection } from "#/components/forge/McpSection";
 import { InstructionFilesPanel } from "#/components/instructions/InstructionFilesPanel";
 import type { AgentInstructionFileName } from "#/lib/agentInstructions";
 import type { InstructionFileTarget } from "#/lib/instructionFileTypes";
+import { instructionFileNameForProvider } from "#/lib/providerRuntime";
 import type { ProviderInfo } from "#/lib/providerTypes";
 import {
 	AgentCardEditForm,
@@ -61,6 +62,16 @@ export function AgentCard({
 	const [editing, setEditing] = useState<EditState | null>(null);
 	const [expanded, setExpanded] = useState(false);
 	const [showMcp, setShowMcp] = useState(false);
+	const instructionTarget = instructionTargets[0];
+	const instructionLabel =
+		instructionTarget?.filename ??
+		instructionFileNameForProvider(agent.provider);
+	const instructionAction =
+		instructionTarget?.exists === true
+			? "Edit"
+			: instructionTarget?.exists === false
+				? "Create"
+				: "Open";
 
 	function handleToggleView() {
 		setExpanded((current) => !current);
@@ -96,6 +107,8 @@ export function AgentCard({
 		<div className="divide-y divide-border/50">
 			<AgentCardHeader
 				agent={agent}
+				instructionAction={instructionAction}
+				instructionLabel={instructionLabel}
 				expanded={expanded}
 				showMcp={showMcp}
 				onToggleView={handleToggleView}
