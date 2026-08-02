@@ -212,6 +212,20 @@ describe("useChatWsHandler — session id domains", () => {
 });
 
 describe("useChatWsHandler — immediate messages", () => {
+	it("marks the exact user turn when Claude captures a file checkpoint", () => {
+		const { handler, dispatch } = renderHandler();
+		handler({
+			type: "file_checkpoint",
+			session_id: "session-1",
+			turn_id: "turn-1",
+		});
+
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "MARK_USER_FILE_CHECKPOINT",
+			id: "turn-1",
+		});
+	});
+
 	it("moves an accepted steer before the active assistant response", () => {
 		const { handler, dispatch } = renderHandler({
 			pendingId: "assistant-1",

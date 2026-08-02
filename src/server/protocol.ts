@@ -335,6 +335,31 @@ export type McpControlResultMessage = {
 	error?: string;
 };
 
+/** A provider-native file checkpoint captured for one persisted user turn. */
+export type FileCheckpointMessage = {
+	type: "file_checkpoint";
+	session_id: string;
+	turn_id: string;
+};
+
+export type FileRewindAction = "preview" | "execute";
+
+/** Result of a guarded Claude file-checkpoint preview or rewind. */
+export type FileRewindResultMessage = {
+	type: "file_rewind_result";
+	request_id: string;
+	session_id: string;
+	turn_id: string;
+	action: FileRewindAction;
+	can_rewind: boolean;
+	files_changed: string[];
+	insertions: number;
+	deletions: number;
+	/** Receipt required by the matching execute request. */
+	preview_id?: string;
+	error?: string;
+};
+
 export type AttachmentCreatedMessage = {
 	type: "attachment_created";
 	id: string;
@@ -838,6 +863,8 @@ export type ServerMessage =
 	| TurnSteeredMessage
 	| McpStatusMessage
 	| McpControlResultMessage
+	| FileCheckpointMessage
+	| FileRewindResultMessage
 	| AttachmentCreatedMessage
 	| ToolUseSummaryMessage
 	| AskUserQuestionMessage
@@ -977,6 +1004,17 @@ export type ClientMcpControlMessage = {
 	session_id: string;
 	server_name: string;
 	action: McpControlAction;
+};
+
+export type ClientFileRewindMessage = {
+	type: "file_rewind";
+	request_id: string;
+	session_id: string;
+	/** Hlid user turn; the server resolves the owned native checkpoint. */
+	turn_id: string;
+	action: FileRewindAction;
+	/** Required for execute and issued by the immediately preceding preview. */
+	preview_id?: string;
 };
 
 export type ClientProbeSlashCommandsMessage = {
@@ -1161,6 +1199,7 @@ export type ClientMessage =
 	| ClientSyncMessage
 	| ClientProbeMcpMessage
 	| ClientMcpControlMessage
+	| ClientFileRewindMessage
 	| ClientProbeSlashCommandsMessage
 	| ClientProbeWorkflowsMessage
 	| ClientSaveWorkflowMessage

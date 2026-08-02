@@ -246,6 +246,47 @@ describe("chat WebSocket runtime schema", () => {
 		).toBeNull();
 	});
 
+	it("requires a server-issued preview before executing a file rewind", () => {
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "file_rewind",
+					request_id: "request-1",
+					session_id: "session-1",
+					turn_id: "turn-1",
+					action: "preview",
+				}),
+			),
+		).toMatchObject({ type: "file_rewind", action: "preview" });
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "file_rewind",
+					request_id: "request-2",
+					session_id: "session-1",
+					turn_id: "turn-1",
+					action: "execute",
+					preview_id: "preview-1",
+				}),
+			),
+		).toMatchObject({
+			type: "file_rewind",
+			action: "execute",
+			preview_id: "preview-1",
+		});
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "file_rewind",
+					request_id: "request-3",
+					session_id: "session-1",
+					turn_id: "turn-1",
+					action: "execute",
+				}),
+			),
+		).toBeNull();
+	});
+
 	it("accepts only bounded text-only active steering", () => {
 		expect(
 			parseClientMessage(

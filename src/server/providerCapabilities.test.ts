@@ -266,10 +266,13 @@ describe("Claude capability discovery", () => {
 			),
 		).toMatchObject({ integration: "integrated", readiness: "ready" });
 		expect(
-			discovery.evidence.find((item) =>
-				item.operations?.includes("rewindFiles"),
-			),
-		).toMatchObject({ integration: "not-integrated" });
+			discovery.evidence.find((item) => item.id.includes("rewindfiles")),
+		).toMatchObject({
+			integration: "integrated",
+			readiness: "gated",
+			maturity: "beta",
+			operations: ["preview", "rewind"],
+		});
 		expect(
 			discovery.evidence.find((item) =>
 				item.operations?.includes("backgroundTasks"),

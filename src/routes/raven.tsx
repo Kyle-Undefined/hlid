@@ -33,6 +33,7 @@ import { AttachmentStrip } from "#/components/AttachmentStrip";
 import { ActiveCommandBadges } from "#/components/chat/ActiveCommandBadge";
 import { ContextInspectorDialog } from "#/components/chat/ContextInspectorDialog";
 import { reducer } from "#/components/chat/chatReducer";
+import { FileRewindDialog } from "#/components/chat/FileRewindDialog";
 import {
 	LiveSessionSwitcher,
 	LiveSessionToggle,
@@ -166,6 +167,7 @@ import {
 	type ChatAttachment,
 	decisionFromScope,
 	type ErrorMessage,
+	type FileRewindResultMessage,
 	type GoalErrorMessage,
 	type GoalState,
 	type GoalStateMessage,
@@ -713,6 +715,13 @@ function useRavenChatRuntime({
 	} | null>(null);
 	const [mcpControlError, setMcpControlError] = useState<string | null>(null);
 	const mcpControlRequestIdRef = useRef<string | null>(null);
+	const [fileRewindTurnId, setFileRewindTurnId] = useState<string | null>(null);
+	const [fileRewindPending, setFileRewindPending] = useState<
+		"preview" | "execute" | null
+	>(null);
+	const [fileRewindResult, setFileRewindResult] =
+		useState<FileRewindResultMessage | null>(null);
+	const fileRewindRequestIdRef = useRef<string | null>(null);
 	const [mcpOpenSignal, setMcpOpenSignal] = useState(0);
 	const [contextInspectorOpen, setContextInspectorOpen] = useState(false);
 	const [contextInspectorTarget, setContextInspectorTarget] =
@@ -852,6 +861,20 @@ function useRavenChatRuntime({
 		},
 		[sessionIdRef],
 	);
+	const handleFileRewindResultMessage = useCallback(
+		function handleFileRewindResultMessage(message: FileRewindResultMessage) {
+			if (
+				canonicalSessionId(message.session_id) !==
+					canonicalSessionId(sessionIdRef.current) ||
+				message.request_id !== fileRewindRequestIdRef.current
+			)
+				return;
+			fileRewindRequestIdRef.current = null;
+			setFileRewindPending(null);
+			setFileRewindResult(message);
+		},
+		[sessionIdRef],
+	);
 	const handleSlashCommandsMessage = useCallback(
 		function handleSlashCommandsMessage(message: SlashCommandsMessage) {
 			if ((message.agent_cwd ?? "") !== (agentCwd ?? "")) return;
@@ -923,6 +946,10 @@ function useRavenChatRuntime({
 	const handleAllMessages = useCallback(
 		function handleAllMessages(message: Parameters<typeof handleWsMessage>[0]) {
 			if (handleGoalMessage(message)) return;
+			if (message.type === "file_rewind_result") {
+				handleFileRewindResultMessage(message);
+				return;
+			}
 			if (message.type === "mcp_control_result") {
 				handleMcpControlResultMessage(message);
 				return;
@@ -933,6 +960,7 @@ function useRavenChatRuntime({
 		},
 		[
 			handleGoalMessage,
+			handleFileRewindResultMessage,
 			handleMcpControlResultMessage,
 			handleRuntimeMetadataMessage,
 			handleWorkflowResultMessage,
@@ -1000,6 +1028,80 @@ function useRavenChatRuntime({
 		},
 		[connection.send, sessionIdRef],
 	);
+	const previewFileRewind = useCallback(
+		(turnId: string) => {
+			const requestId = uid();
+			fileRewindRequestIdRef.current = requestId;
+			setFileRewindTurnId(turnId);
+			setFileRewindPending("preview");
+			setFileRewindResult(null);
+			const delivered = connection.send({
+				type: "file_rewind",
+				request_id: requestId,
+				session_id: sessionIdRef.current,
+				turn_id: turnId,
+				action: "preview",
+			});
+			if (delivered) return;
+			fileRewindRequestIdRef.current = null;
+			setFileRewindPending(null);
+			setFileRewindResult({
+				type: "file_rewind_result",
+				request_id: requestId,
+				session_id: sessionIdRef.current,
+				turn_id: turnId,
+				action: "preview",
+				can_rewind: false,
+				files_changed: [],
+				insertions: 0,
+				deletions: 0,
+				error: "File rewind is unavailable while Raven is offline.",
+			});
+		},
+		[connection.send, sessionIdRef],
+	);
+	const executeFileRewind = useCallback(() => {
+		const turnId = fileRewindTurnId;
+		const previewId = fileRewindResult?.preview_id;
+		if (!turnId || !previewId || fileRewindPending !== null) return;
+		const requestId = uid();
+		fileRewindRequestIdRef.current = requestId;
+		setFileRewindPending("execute");
+		const delivered = connection.send({
+			type: "file_rewind",
+			request_id: requestId,
+			session_id: sessionIdRef.current,
+			turn_id: turnId,
+			action: "execute",
+			preview_id: previewId,
+		});
+		if (delivered) return;
+		fileRewindRequestIdRef.current = null;
+		setFileRewindPending(null);
+		setFileRewindResult({
+			type: "file_rewind_result",
+			request_id: requestId,
+			session_id: sessionIdRef.current,
+			turn_id: turnId,
+			action: "execute",
+			can_rewind: false,
+			files_changed: [],
+			insertions: 0,
+			deletions: 0,
+			error: "File rewind is unavailable while Raven is offline.",
+		});
+	}, [
+		connection.send,
+		fileRewindPending,
+		fileRewindResult?.preview_id,
+		fileRewindTurnId,
+		sessionIdRef,
+	]);
+	const closeFileRewind = useCallback(() => {
+		if (fileRewindPending !== null) return;
+		setFileRewindTurnId(null);
+		setFileRewindResult(null);
+	}, [fileRewindPending]);
 	const openContext = useCallback((target?: HlidContextReceiptTarget) => {
 		setContextInspectorTarget(target ?? null);
 		setContextInspectorOpen(true);
@@ -1043,6 +1145,10 @@ function useRavenChatRuntime({
 		setMcpPendingControl(null);
 		setMcpControlError(null);
 		mcpControlRequestIdRef.current = null;
+		setFileRewindTurnId(null);
+		setFileRewindPending(null);
+		setFileRewindResult(null);
+		fileRewindRequestIdRef.current = null;
 		setContextInspectorOpen(false);
 		setContextInspectorTarget(null);
 		setWorkflowManagerOpen(false);
@@ -1127,6 +1233,12 @@ function useRavenChatRuntime({
 		mcpPendingControl,
 		mcpControlError,
 		controlMcp,
+		fileRewindTurnId,
+		fileRewindPending,
+		fileRewindResult,
+		previewFileRewind,
+		executeFileRewind,
+		closeFileRewind,
 		mcpOpenSignal,
 		openMcp,
 		contextInspectorOpen,
@@ -3352,6 +3464,14 @@ function ChatPageContent(props: ChatPageContentProps) {
 					onClose={props.runtime.closeContext}
 				/>
 			)}
+			{props.runtime.fileRewindTurnId && (
+				<FileRewindDialog
+					result={props.runtime.fileRewindResult}
+					pending={props.runtime.fileRewindPending}
+					onExecute={props.runtime.executeFileRewind}
+					onClose={props.runtime.closeFileRewind}
+				/>
+			)}
 			{props.runtime.workflowManagerOpen && (
 				<WorkflowManagerDialog
 					messages={props.runtime.messages}
@@ -3631,6 +3751,9 @@ function RavenMessagePane({
 		runtime.isRunning &&
 		(isClaudeRuntimeProvider(composerProps.activeProviderId) ||
 			isCodexRuntimeProvider(composerProps.activeProviderId));
+	const canPreviewFileRewind =
+		isClaudeRuntimeProvider(composerProps.activeProviderId) &&
+		!runtime.isRunning;
 	// Below md, the Terminal tab fully replaces chat (RavenShellTabBar); md+
 	// always shows chat regardless (desktop split panel is chunk 4).
 	const mobileHideChat = terminalOpen && shellTab === "terminal";
@@ -3699,6 +3822,9 @@ function RavenMessagePane({
 									handlePromoteQueued={handlePromoteQueued}
 									handleSteerQueued={handleSteerQueued}
 									onViewContext={runtime.openContext}
+									onPreviewFileRewind={
+										canPreviewFileRewind ? runtime.previewFileRewind : undefined
+									}
 									canSteerQueued={canSteerQueued}
 									bottomRef={bottomRef}
 									canBranch={canBranch}

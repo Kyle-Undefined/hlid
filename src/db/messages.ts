@@ -62,6 +62,61 @@ export async function getUserMessageSeqByTurnId(
 	);
 }
 
+export async function setMessageCheckpointUuid(
+	sessionId: string,
+	seq: number,
+	checkpointUuid: string,
+	providerSessionId: string,
+): Promise<void> {
+	const db = await getDb();
+	const { changes } = db.run(
+		`UPDATE messages
+		 SET checkpoint_uuid = ?, checkpoint_provider_session_id = ?
+		 WHERE session_id = ? AND seq = ? AND role = 'user'`,
+		[checkpointUuid, providerSessionId, sessionId, seq],
+	);
+	if (changes === 0) {
+		throw new Error(
+			`setMessageCheckpointUuid: no user row found for session=${sessionId} seq=${seq}`,
+		);
+	}
+}
+
+/** Resolve a client-visible Hlid turn to its exact same-session checkpoint. */
+export async function getUserMessageCheckpoint(
+	sessionId: string,
+	turnId: string,
+): Promise<{
+	seq: number;
+	checkpointUuid: string;
+	providerSessionId: string;
+} | null> {
+	const db = await getDb();
+	const row = db
+		.query<
+			{
+				seq: number;
+				checkpoint_uuid: string;
+				checkpoint_provider_session_id: string;
+			},
+			[string, string]
+		>(
+			`SELECT seq, checkpoint_uuid, checkpoint_provider_session_id FROM messages
+			 WHERE session_id = ? AND turn_id = ? AND role = 'user'
+			   AND checkpoint_uuid IS NOT NULL
+			   AND checkpoint_provider_session_id IS NOT NULL
+			 ORDER BY seq LIMIT 1`,
+		)
+		.get(sessionId, turnId);
+	return row
+		? {
+				seq: row.seq,
+				checkpointUuid: row.checkpoint_uuid,
+				providerSessionId: row.checkpoint_provider_session_id,
+			}
+		: null;
+}
+
 /**
  * Backfill a steering row that was accepted before the active response had
  * allocated its assistant transcript sequence.

@@ -102,6 +102,13 @@ describe("wrapperContent", () => {
 		expect(out).toContain("HLID_CLIPROXY_API_KEY/u:%WSLENV%");
 	});
 
+	it("forwards Claude SDK file checkpointing into WSL", () => {
+		const out = wrapperContent("Ubuntu", "/home/kyle");
+		expect(out).toContain(
+			"CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING/u:%WSLENV%",
+		);
+	});
+
 	it("uses bash -l so login profile is sourced", () => {
 		const out = wrapperContent("Ubuntu", "/home/kyle");
 		expect(out).toContain("--exec bash -l");

@@ -1,4 +1,4 @@
-import { Braces, ChevronsUp, Route, X } from "lucide-react";
+import { Braces, ChevronsUp, History, Route, X } from "lucide-react";
 import type { UserMessage } from "#/components/chat/chatReducer";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import { useCopyToClipboard } from "#/hooks/useCopyToClipboard";
@@ -19,6 +19,7 @@ export function UserMsg({
 	onPromote,
 	onSteer,
 	onViewContext,
+	onPreviewFileRewind,
 	canSteer = false,
 }: {
 	message: UserMessage;
@@ -38,6 +39,7 @@ export function UserMsg({
 	onPromote?: (id: string) => void;
 	onSteer?: (id: string) => void;
 	onViewContext?: (target: HlidContextReceiptTarget) => void;
+	onPreviewFileRewind?: (turnId: string) => void;
 	canSteer?: boolean;
 }) {
 	const { copy, copied } = useCopyToClipboard();
@@ -101,8 +103,21 @@ export function UserMsg({
 					!isRunning &&
 					!isSteering &&
 					!isPromoting &&
-					(message.text || (contextTarget && onViewContext)) && (
+					(message.text ||
+						(contextTarget && onViewContext) ||
+						(message.hasFileCheckpoint && onPreviewFileRewind)) && (
 						<div className="flex items-center gap-0.5">
+							{message.hasFileCheckpoint && onPreviewFileRewind && (
+								<button
+									type="button"
+									onClick={() => onPreviewFileRewind(message.id)}
+									className="p-1 text-muted-foreground/40 transition-colors hover:text-primary"
+									aria-label="Preview file rewind to this turn"
+									title="Preview file rewind"
+								>
+									<History className="h-3.5 w-3.5" />
+								</button>
+							)}
 							{contextTarget && onViewContext && (
 								<button
 									type="button"

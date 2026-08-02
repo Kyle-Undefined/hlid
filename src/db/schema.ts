@@ -452,6 +452,15 @@ function applyMigrations(db: Db): void {
 		db.run(`ALTER TABLE messages ADD COLUMN provider_turn_id TEXT`);
 	});
 
+	// Claude's file checkpoint for a root user turn. This is an opaque,
+	// same-native-session identifier and is intentionally not copied to forks.
+	runMigration(db, "_migrated_messages_checkpoint_uuid", (db) => {
+		db.run(`ALTER TABLE messages ADD COLUMN checkpoint_uuid TEXT`);
+		db.run(
+			`ALTER TABLE messages ADD COLUMN checkpoint_provider_session_id TEXT`,
+		);
+	});
+
 	// A queued Raven prompt can be folded into an assistant response that
 	// already has a transcript row. Retain that relationship so reloads and
 	// provider handoffs keep the steering prompt before the response it changed.

@@ -969,6 +969,92 @@ describe("SessionManager — provider-native MCP controls", () => {
 	});
 });
 
+describe("SessionManager — Claude file checkpoints", () => {
+	it("requires a matching dry-run receipt and rechecks it before rewinding", async () => {
+		const rewindFiles = vi.fn().mockResolvedValue({
+			canRewind: true,
+			filesChanged: ["src/example.ts"],
+			insertions: 2,
+			deletions: 1,
+		});
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "native-session" };
+					yield {
+						type: "file_checkpoint",
+						id: "checkpoint-user-id",
+						providerSessionId: "native-session",
+					};
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					rewindFiles,
+				};
+			},
+		};
+		vi.mocked(dbMock.getUserMessageCheckpoint).mockResolvedValue({
+			seq: 0,
+			checkpointUuid: "checkpoint-user-id",
+			providerSessionId: "native-session",
+		});
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const emitted: ServerMessage[] = [];
+		await sm.runQuery("change it", (message) => emitted.push(message), {
+			sessionId: "db-session",
+			turnId: "turn-1",
+		});
+		expect(dbMock.setMessageCheckpointUuid).toHaveBeenCalledWith(
+			"db-session",
+			0,
+			"checkpoint-user-id",
+			"native-session",
+		);
+		expect(emitted).toContainEqual({
+			type: "file_checkpoint",
+			session_id: "db-session",
+			turn_id: "turn-1",
+		});
+
+		const preview = await sm.controlFileRewind(
+			{ turnId: "turn-1", action: "preview" },
+			{ sessionId: "db-session" },
+		);
+		expect(preview).toMatchObject({
+			canRewind: true,
+			filesChanged: ["src/example.ts"],
+			previewId: expect.any(String),
+		});
+		await expect(
+			sm.controlFileRewind(
+				{
+					turnId: "turn-1",
+					action: "execute",
+					previewId: preview.previewId,
+				},
+				{ sessionId: "db-session" },
+			),
+		).resolves.toMatchObject({ canRewind: true });
+		expect(rewindFiles).toHaveBeenNthCalledWith(1, "checkpoint-user-id", {
+			dryRun: true,
+		});
+		expect(rewindFiles).toHaveBeenNthCalledWith(2, "checkpoint-user-id", {
+			dryRun: true,
+		});
+		expect(rewindFiles).toHaveBeenNthCalledWith(3, "checkpoint-user-id");
+	});
+});
+
 describe("SessionManager — provider-native skill refresh", () => {
 	it("reloads an already-live Claude session and publishes the refreshed skill catalog", async () => {
 		const refreshedSkills = [

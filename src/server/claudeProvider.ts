@@ -36,6 +36,7 @@ import type {
 	ProviderAccountInfo,
 	ProviderContextUsage,
 	ProviderEffortInfo,
+	ProviderFileRewindResult,
 	ProviderModelInfo,
 	ProviderSavedWorkflow,
 	ProviderSkillInfo,
@@ -1728,22 +1729,46 @@ function translateUserMessage(
 		toolResultBlocks.length === 1
 			? (message as { tool_use_result?: unknown }).tool_use_result
 			: undefined;
-	const events = content.flatMap((block: Record<string, unknown>) => {
-		if (block.type !== "tool_result") return [];
-		const text = normalizeToolResultContent(block.content);
-		return [
-			...tracker.recordToolResult(
-				String(block.tool_use_id ?? ""),
-				structuredToolResult ?? block.content,
-			),
-			{
-				type: "tool_result" as const,
-				toolId: String(block.tool_use_id ?? ""),
-				content: truncateToolResult(text),
-				...(block.is_error === true ? { isError: true } : {}),
-			},
-		];
-	});
+	const checkpointId = (message as { uuid?: unknown }).uuid;
+	const checkpointSessionId = (message as { session_id?: unknown }).session_id;
+	const isRootUserMessage =
+		(message as { parent_tool_use_id?: unknown }).parent_tool_use_id == null;
+	const isSteeringMessage =
+		(message as { priority?: unknown }).priority === "now";
+	const events: AgentEvent[] =
+		typeof checkpointId === "string" &&
+		checkpointId &&
+		typeof checkpointSessionId === "string" &&
+		checkpointSessionId &&
+		isRootUserMessage &&
+		!isSteeringMessage &&
+		toolResultBlocks.length === 0
+			? [
+					{
+						type: "file_checkpoint",
+						id: checkpointId,
+						providerSessionId: checkpointSessionId,
+					},
+				]
+			: [];
+	events.push(
+		...content.flatMap((block: Record<string, unknown>) => {
+			if (block.type !== "tool_result") return [];
+			const text = normalizeToolResultContent(block.content);
+			return [
+				...tracker.recordToolResult(
+					String(block.tool_use_id ?? ""),
+					structuredToolResult ?? block.content,
+				),
+				{
+					type: "tool_result" as const,
+					toolId: String(block.tool_use_id ?? ""),
+					content: truncateToolResult(text),
+					...(block.is_error === true ? { isError: true } : {}),
+				},
+			];
+		}),
+	);
 	return { events, hadText };
 }
 
@@ -2059,6 +2084,16 @@ class ClaudeAgentSession implements AgentSession {
 		const skills = result.skills as SlashCommand[];
 		this.latestSkillCommands = skills;
 		return skills;
+	}
+
+	async rewindFiles(
+		userMessageId: string,
+		options?: { dryRun?: boolean },
+	): Promise<ProviderFileRewindResult> {
+		if (!this.sdkQuery) {
+			throw new Error("Claude session is not active");
+		}
+		return this.sdkQuery.rewindFiles(userMessageId, options);
 	}
 
 	async supportedCommands(): Promise<SlashCommand[]> {
@@ -3108,7 +3143,10 @@ export class ClaudeProvider implements AgentProvider {
 					...(resumeId !== undefined ? { resume: resumeId } : {}),
 					...(params.historyResumeMode === "session-store"
 						? { sessionStore: createClaudeHistorySessionStore() }
-						: {}),
+						: {
+								enableFileCheckpointing: true,
+								extraArgs: { "replay-user-messages": null },
+							}),
 					...(params.persistSession === false ? { persistSession: false } : {}),
 					// biome-ignore lint/suspicious/noExplicitAny: SDK canUseTool type changed between versions
 					canUseTool: params.canUseTool as any,

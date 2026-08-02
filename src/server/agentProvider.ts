@@ -35,6 +35,15 @@ export type McpServerStatus = {
 	error?: string;
 };
 
+/** Provider-native preview/result for restoring tracked workspace files. */
+export type ProviderFileRewindResult = {
+	canRewind: boolean;
+	error?: string;
+	filesChanged?: string[];
+	insertions?: number;
+	deletions?: number;
+};
+
 /**
  * A slash command exposed by the underlying agent (e.g. /help, /usage).
  * Mirrors the SDK's SlashCommand shape but kept provider-agnostic here.
@@ -271,6 +280,8 @@ export type SubagentSnapshot = {
 
 export type AgentEvent =
 	| { type: "session_start"; sessionId: string }
+	/** Claude checkpoint attached to the current root user turn. */
+	| { type: "file_checkpoint"; id: string; providerSessionId: string }
 	| { type: "commands_changed"; commands: SlashCommand[] }
 	| { type: "transport_error"; message: string }
 	| { type: "text_delta"; text: string }
@@ -497,6 +508,11 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	 * Implementations must not start a hidden provider process for this control.
 	 */
 	reloadSkills?(): Promise<SlashCommand[] | null>;
+	/** Preview or execute a provider-native file checkpoint rewind. */
+	rewindFiles?(
+		userMessageId: string,
+		options?: { dryRun?: boolean },
+	): Promise<ProviderFileRewindResult>;
 	/** Available on providers that expose the list of supported slash commands. */
 	supportedCommands?(): Promise<SlashCommand[]>;
 	/** Execute a provider capability without relying on prompt-parsed CLI syntax. */

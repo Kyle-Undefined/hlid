@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { unlink } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
@@ -50,6 +51,7 @@ import type {
 	CanUseTool,
 	McpServerStatus,
 	ProviderAccountInfo,
+	ProviderFileRewindResult,
 	ProviderGoalControl,
 	ProviderGoalControlResult,
 	ProviderRealtimeEvent,
@@ -230,6 +232,8 @@ type TurnState = {
 	selectedModel: string;
 	/** In-memory provider ownership epoch captured before the provider turn. */
 	providerOwnershipGeneration: number;
+	/** Persisted user row that owns a provider-native file checkpoint. */
+	userSeq: number | null;
 	receivedAny: boolean;
 	receivedUsage: boolean;
 	queryRecorded: boolean;
@@ -312,6 +316,29 @@ const TEXT_WRITE_THROTTLE_MS = 800;
 // its native account/rateLimits/updated notifications as the faster path.
 const LIVE_USAGE_REFRESH_MS = 5_000;
 const PROVIDER_HANDOFF_MAX_CHARS = 80_000;
+const FILE_REWIND_PREVIEW_TTL_MS = 5 * 60_000;
+
+function normalizeFileRewindResult(
+	result: ProviderFileRewindResult,
+): ProviderFileRewindResult {
+	return {
+		canRewind: result.canRewind,
+		...(result.error ? { error: result.error } : {}),
+		filesChanged: [...(result.filesChanged ?? [])].sort(),
+		insertions: result.insertions ?? 0,
+		deletions: result.deletions ?? 0,
+	};
+}
+
+function sameFileRewindPreview(
+	left: ProviderFileRewindResult,
+	right: ProviderFileRewindResult,
+): boolean {
+	return (
+		JSON.stringify(normalizeFileRewindResult(left)) ===
+		JSON.stringify(normalizeFileRewindResult(right))
+	);
+}
 
 export interface RunQueryOptions {
 	sessionId?: string;
@@ -824,6 +851,7 @@ function createTurnState(
 		startedAtMs: Date.now(),
 		selectedModel,
 		providerOwnershipGeneration,
+		userSeq: null,
 		receivedAny: false,
 		receivedUsage: false,
 		queryRecorded: false,
@@ -936,6 +964,18 @@ export class SessionManager {
 	private mcpStatusByProvider = new Map<string, McpServerStatus[]>();
 	/** Invalidates delayed Claude MCP refreshes when a newer turn starts. */
 	private mcpRefreshGeneration = 0;
+	/** Short-lived, session-bound dry-run receipts required before file mutation. */
+	private fileRewindPreviews = new Map<
+		string,
+		{
+			sessionId: string;
+			turnId: string;
+			checkpointUuid: string;
+			providerSessionId: string;
+			createdAt: number;
+			result: ProviderFileRewindResult;
+		}
+	>();
 	/** Serialize temporary provider probes so MCP and command discovery both run. */
 	private probeQueue: Promise<void> = Promise.resolve();
 	private agentCwd: string | undefined;
@@ -1843,6 +1883,111 @@ export class SessionManager {
 			servers: statuses.map(mapMcpServer),
 		});
 		return { providerId: provider.providerId, statuses };
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket file_rewind dispatch.
+	async controlFileRewind(
+		request: {
+			turnId: string;
+			action: "preview" | "execute";
+			previewId?: string;
+		},
+		options: { sessionId: string },
+	): Promise<ProviderFileRewindResult & { previewId?: string }> {
+		if (!this.currentSessionId || this.currentSessionId !== options.sessionId) {
+			throw new Error("File rewind must target the active Hlid session.");
+		}
+		if (this.state !== "idle") {
+			throw new Error(
+				"Wait for the active turn to finish before rewinding files.",
+			);
+		}
+		if (this.historyResumeMode === "session-store") {
+			throw new Error(
+				"Imported Claude histories use the SDK session store and cannot use file checkpoints.",
+			);
+		}
+		const provider = this.resolveProvider(this.agentCwd);
+		const session = this.agentSession;
+		if (
+			!session?.rewindFiles ||
+			!isClaudeRuntimeProvider(provider.providerId)
+		) {
+			throw new Error(
+				"File rewind requires a live direct Claude session created with checkpointing enabled.",
+			);
+		}
+		const checkpoint = await db.getUserMessageCheckpoint(
+			options.sessionId,
+			request.turnId,
+		);
+		if (!checkpoint) {
+			throw new Error("This user turn does not have a Claude file checkpoint.");
+		}
+		if (
+			this.providerSessionProviderId !== provider.providerId ||
+			this.providerSessionId !== checkpoint.providerSessionId
+		) {
+			throw new Error(
+				"This checkpoint belongs to a different native Claude session.",
+			);
+		}
+
+		const now = Date.now();
+		for (const [id, preview] of this.fileRewindPreviews) {
+			if (now - preview.createdAt > FILE_REWIND_PREVIEW_TTL_MS) {
+				this.fileRewindPreviews.delete(id);
+			}
+		}
+		if (request.action === "preview") {
+			const result = normalizeFileRewindResult(
+				await session.rewindFiles(checkpoint.checkpointUuid, { dryRun: true }),
+			);
+			const previewId = randomUUID();
+			this.fileRewindPreviews.set(previewId, {
+				sessionId: options.sessionId,
+				turnId: request.turnId,
+				checkpointUuid: checkpoint.checkpointUuid,
+				providerSessionId: checkpoint.providerSessionId,
+				createdAt: now,
+				result,
+			});
+			return { ...result, previewId };
+		}
+
+		const previewId = request.previewId;
+		const preview = previewId
+			? this.fileRewindPreviews.get(previewId)
+			: undefined;
+		if (
+			!preview ||
+			preview.sessionId !== options.sessionId ||
+			preview.turnId !== request.turnId ||
+			preview.checkpointUuid !== checkpoint.checkpointUuid ||
+			preview.providerSessionId !== checkpoint.providerSessionId ||
+			now - preview.createdAt > FILE_REWIND_PREVIEW_TTL_MS
+		) {
+			throw new Error(
+				"The file rewind preview expired. Preview the change again.",
+			);
+		}
+		this.fileRewindPreviews.delete(previewId as string);
+		if (!preview.result.canRewind) {
+			throw new Error(
+				preview.result.error ?? "Claude cannot rewind this checkpoint.",
+			);
+		}
+		const currentPreview = normalizeFileRewindResult(
+			await session.rewindFiles(checkpoint.checkpointUuid, { dryRun: true }),
+		);
+		if (!sameFileRewindPreview(preview.result, currentPreview)) {
+			throw new Error(
+				"Tracked files changed after the preview. Review a fresh preview before rewinding.",
+			);
+		}
+		return normalizeFileRewindResult(
+			await session.rewindFiles(checkpoint.checkpointUuid),
+		);
 	}
 
 	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket save_workflow dispatch in wsHandlers.
@@ -3546,6 +3691,21 @@ export class SessionManager {
 					...(sessionId ? { session_id: sessionId } : {}),
 					commands: event.commands,
 				});
+				break;
+			case "file_checkpoint":
+				if (sessionId && turn.userSeq !== null && this.currentTurnId) {
+					await db.setMessageCheckpointUuid(
+						sessionId,
+						turn.userSeq,
+						event.id,
+						event.providerSessionId,
+					);
+					emit({
+						type: "file_checkpoint",
+						session_id: sessionId,
+						turn_id: this.currentTurnId,
+					});
+				}
 				break;
 			case "text_delta":
 				this.handleTextDelta(event, turn, sessionId, emit);
@@ -5797,7 +5957,7 @@ export class SessionManager {
 			// With `resume`, the CLI maintains conversation state on its end. We
 			// send only the new user turn — no transcript replay. The Hlid-owned
 			// manifest is stored beside the user row, not in its visible text.
-			await this.persistUserMessage(
+			turn.userSeq = await this.persistUserMessage(
 				sessionId,
 				userMessage,
 				safeAttachments,

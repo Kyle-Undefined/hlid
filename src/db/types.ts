@@ -76,6 +76,10 @@ export type MessageRow = {
 	sdk_uuid?: string | null;
 	/** Provider-native turn id for exact turn-boundary forks (Codex). */
 	provider_turn_id?: string | null;
+	/** Claude native file checkpoint attached to this user turn. */
+	checkpoint_uuid?: string | null;
+	/** Native Claude session that owns checkpoint_uuid. */
+	checkpoint_provider_session_id?: string | null;
 	/** Assistant message sequence this user prompt steered, when applicable. */
 	steer_target_seq?: number | null;
 	/** Raw assistant tool-event count when the provider accepted this steer. */

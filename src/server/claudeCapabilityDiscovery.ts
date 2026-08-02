@@ -21,6 +21,7 @@ const CONTROL_INTEGRATION = new Map<string, ProviderCapabilityIntegration>([
 	["supportedAgents", "provider-native"],
 	["reloadPlugins", "provider-native"],
 	["reloadSkills", "integrated"],
+	["rewindFiles", "integrated"],
 ]);
 
 function controlLabel(method: string): string {
@@ -106,16 +107,23 @@ export function discoverClaudeProviderCapabilities(input: {
 	const evidence = catalogEvidence(input.providerId, snapshot);
 	for (const method of snapshot.controlMethods ?? []) {
 		const integration = CONTROL_INTEGRATION.get(method) ?? "not-integrated";
+		const isFileRewind = method === "rewindFiles";
 		evidence.push({
 			id: providerCapabilityId(input.providerId, "sdk-control", method),
 			label: `SDK control: ${controlLabel(method)}`,
 			scope: "session",
 			support: "advertised",
 			integration,
-			readiness: "ready",
+			readiness: isFileRewind ? "gated" : "ready",
 			source: "provider-sdk",
-			maturity: "unknown",
-			operations: [method],
+			maturity: isFileRewind ? "beta" : "unknown",
+			operations: isFileRewind ? ["preview", "rewind"] : [method],
+			...(isFileRewind
+				? {
+						reason:
+							"Available only in live direct Claude sessions with tracked user checkpoints; imported session-store histories are excluded.",
+					}
+				: {}),
 		});
 	}
 	return {

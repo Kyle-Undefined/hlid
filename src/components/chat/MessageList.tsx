@@ -66,6 +66,7 @@ export const MessageList = memo(function MessageList({
 	handlePromoteQueued,
 	handleSteerQueued,
 	onViewContext,
+	onPreviewFileRewind,
 	canSteerQueued,
 	bottomRef,
 	hasOlderHistory = false,
@@ -102,6 +103,7 @@ export const MessageList = memo(function MessageList({
 	handlePromoteQueued: (id: string) => void;
 	handleSteerQueued: (id: string) => void;
 	onViewContext?: (target: HlidContextReceiptTarget) => void;
+	onPreviewFileRewind?: (turnId: string) => void;
 	canSteerQueued: boolean;
 	bottomRef: React.MutableRefObject<HTMLDivElement | null>;
 	hasOlderHistory?: boolean;
@@ -303,6 +305,7 @@ export const MessageList = memo(function MessageList({
 					onPromoteQueued={handlePromoteQueued}
 					onSteerQueued={handleSteerQueued}
 					onViewContext={onViewContext}
+					onPreviewFileRewind={onPreviewFileRewind}
 					canSteerQueued={
 						canSteerQueued &&
 						chatQueue.find((queued) => queued.id === m.id)?.steerable !== false

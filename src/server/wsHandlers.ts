@@ -105,6 +105,7 @@ function delegationMutationTarget(
 		case "set_permission_mode":
 		case "workflow_control":
 		case "mcp_control":
+		case "file_rewind":
 			return msg.session_id ?? subscribedSessionId;
 		case "goal_control":
 			return msg.action === "get" ? null : msg.session_id;
@@ -448,6 +449,50 @@ async function handleMcpControl(
 			action: msg.action,
 			error:
 				error instanceof Error ? error.message : "MCP server control failed",
+		});
+	}
+}
+
+async function handleFileRewind(
+	context: MessageContext,
+	entry: PoolEntry,
+	msg: MessageOf<"file_rewind">,
+): Promise<void> {
+	try {
+		const result = await entry.manager.controlFileRewind(
+			{
+				turnId: msg.turn_id,
+				action: msg.action,
+				previewId: msg.preview_id,
+			},
+			{ sessionId: msg.session_id },
+		);
+		send(context.ws, {
+			type: "file_rewind_result",
+			request_id: msg.request_id,
+			session_id: msg.session_id,
+			turn_id: msg.turn_id,
+			action: msg.action,
+			can_rewind: result.canRewind,
+			files_changed: result.filesChanged ?? [],
+			insertions: result.insertions ?? 0,
+			deletions: result.deletions ?? 0,
+			...(result.previewId ? { preview_id: result.previewId } : {}),
+			...(result.error ? { error: result.error } : {}),
+		});
+	} catch (error) {
+		send(context.ws, {
+			type: "file_rewind_result",
+			request_id: msg.request_id,
+			session_id: msg.session_id,
+			turn_id: msg.turn_id,
+			action: msg.action,
+			can_rewind: false,
+			files_changed: [],
+			insertions: 0,
+			deletions: 0,
+			error:
+				error instanceof Error ? error.message : "Claude file rewind failed",
 		});
 	}
 }
@@ -1390,6 +1435,9 @@ async function handleSessionMessage(
 		case "mcp_control":
 			await handleMcpControl(context, entry, msg);
 			return;
+		case "file_rewind":
+			await handleFileRewind(context, entry, msg);
+			return;
 		case "probe_slash_commands":
 			await entry.manager.probeSlashCommands(
 				sendProbeResult,
@@ -1520,6 +1568,7 @@ async function handleMessage(
 			msg.type === "set_permission_mode" ||
 			msg.type === "workflow_control" ||
 			msg.type === "mcp_control" ||
+			msg.type === "file_rewind" ||
 			msg.type === "save_workflow" ||
 			msg.type === "delete_workflow" ||
 			msg.type === "read_workflow_source") &&
@@ -1606,6 +1655,20 @@ async function handleMessage(
 					server_name: msg.server_name,
 					action: msg.action,
 					error: "This MCP session is not live.",
+				});
+			} else if (msg.type === "file_rewind") {
+				send(context.ws, {
+					type: "file_rewind_result",
+					request_id: msg.request_id,
+					session_id: msg.session_id,
+					turn_id: msg.turn_id,
+					action: msg.action,
+					can_rewind: false,
+					files_changed: [],
+					insertions: 0,
+					deletions: 0,
+					error:
+						"This Claude session is not live. Send a turn to resume it before previewing a file rewind.",
 				});
 			} else if (
 				msg.type === "save_workflow" ||

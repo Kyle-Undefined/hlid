@@ -1,6 +1,11 @@
 import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
-import { appendMessage, getUserMessageSeqByTurnId } from "./messages";
+import {
+	appendMessage,
+	getUserMessageCheckpoint,
+	getUserMessageSeqByTurnId,
+	setMessageCheckpointUuid,
+} from "./messages";
 import {
 	deletePendingSessionTurn,
 	discardDispatchingSessionTurnsAfterRestart,
@@ -60,6 +65,26 @@ describe("durable Raven pending turns", () => {
 			}),
 		).toBe(false);
 		expect(await listRecoverablePendingSessionTurns()).toEqual([]);
+	});
+
+	it("keeps a Claude file checkpoint owned by its exact Hlid and native sessions", async () => {
+		await createSession("session-1", "Checkpoint", "claude-sonnet");
+		await appendMessage("session-1", 0, "user", "change it", "turn-1");
+		await setMessageCheckpointUuid(
+			"session-1",
+			0,
+			"checkpoint-user-id",
+			"native-claude-session",
+		);
+
+		expect(await getUserMessageCheckpoint("session-1", "turn-1")).toEqual({
+			seq: 0,
+			checkpointUuid: "checkpoint-user-id",
+			providerSessionId: "native-claude-session",
+		});
+		expect(
+			await getUserMessageCheckpoint("session-1", "other-turn"),
+		).toBeNull();
 	});
 
 	it("retains sleep timing and promoted order", async () => {

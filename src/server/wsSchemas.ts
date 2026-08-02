@@ -118,6 +118,31 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 		server_name: z.string().trim().min(1).max(512),
 		action: z.enum(["reconnect", "enable", "disable"]),
 	}),
+	z
+		.strictObject({
+			type: z.literal("file_rewind"),
+			request_id: id,
+			session_id: id,
+			turn_id: id,
+			action: z.enum(["preview", "execute"]),
+			preview_id: id.optional(),
+		})
+		.superRefine((value, context) => {
+			if (value.action === "execute" && !value.preview_id) {
+				context.addIssue({
+					code: "custom",
+					message: "preview_id is required when executing a file rewind",
+					path: ["preview_id"],
+				});
+			}
+			if (value.action === "preview" && value.preview_id !== undefined) {
+				context.addIssue({
+					code: "custom",
+					message: "preview_id is only valid when executing a file rewind",
+					path: ["preview_id"],
+				});
+			}
+		}),
 	z.strictObject({
 		type: z.literal("probe_slash_commands"),
 		agent_cwd: path.optional(),

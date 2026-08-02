@@ -41,6 +41,12 @@ function dispatchImmediateMessage(
 				...(msg.attachments ? { attachments: msg.attachments } : {}),
 			});
 			return true;
+		case "file_checkpoint":
+			dispatch({
+				type: "MARK_USER_FILE_CHECKPOINT",
+				id: msg.turn_id,
+			});
+			return true;
 		case "permission_request":
 			dispatch({ type: "ADD_PERMISSION", msg });
 			return true;

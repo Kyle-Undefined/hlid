@@ -18,6 +18,8 @@ export type UserMessage = {
 	transcriptSeq?: number;
 	/** Whether Hlid retained an inspectable context receipt for this turn. */
 	hasContextReceipt?: boolean;
+	/** Claude captured a provider-native file checkpoint for this turn. */
+	hasFileCheckpoint?: boolean;
 	/** Assistant transcript sequence this prompt steered. */
 	steerTargetSeq?: number;
 	/** Live target correlation used until history can hydrate by sequence. */
@@ -115,6 +117,7 @@ export type HistoryItem =
 			text: string;
 			seq?: number;
 			hasContextReceipt?: boolean;
+			hasFileCheckpoint?: boolean;
 			steerTargetSeq?: number | null;
 			steerToolEventIndex?: number | null;
 			/** Resolved display cost restored from the linked usage query. */
@@ -154,6 +157,7 @@ export type Action =
 			attachments?: ChatAttachment[];
 	  }
 	| { type: "MARK_USER_CONTEXT_RECEIPT"; id: string }
+	| { type: "MARK_USER_FILE_CHECKPOINT"; id: string }
 	| { type: "REMOVE_USER"; id: string }
 	| {
 			/**
@@ -563,6 +567,7 @@ function historyItemToMessage(item: HistoryItem): ChatMessage {
 			attachments: item.attachments,
 			...(item.seq !== undefined ? { transcriptSeq: item.seq } : {}),
 			...(item.hasContextReceipt ? { hasContextReceipt: true } : {}),
+			...(item.hasFileCheckpoint ? { hasFileCheckpoint: true } : {}),
 			...(item.steerTargetSeq != null
 				? { steerTargetSeq: item.steerTargetSeq }
 				: {}),
@@ -736,6 +741,12 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 			return state.map((message) =>
 				message.role === "user" && message.id === action.id
 					? { ...message, hasContextReceipt: true }
+					: message,
+			);
+		case "MARK_USER_FILE_CHECKPOINT":
+			return state.map((message) =>
+				message.role === "user" && message.id === action.id
+					? { ...message, hasFileCheckpoint: true }
 					: message,
 			);
 		case "REMOVE_USER":

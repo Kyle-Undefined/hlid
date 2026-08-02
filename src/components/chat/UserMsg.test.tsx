@@ -139,6 +139,20 @@ describe("UserMsg", () => {
 		).toBeNull();
 	});
 
+	it("opens a Claude file rewind preview only for checkpointed turns", () => {
+		const onPreviewFileRewind = vi.fn();
+		render(
+			<UserMsg
+				message={makeMsg({ hasFileCheckpoint: true })}
+				onPreviewFileRewind={onPreviewFileRewind}
+			/>,
+		);
+		screen
+			.getByRole("button", { name: "Preview file rewind to this turn" })
+			.click();
+		expect(onPreviewFileRewind).toHaveBeenCalledWith("msg-1");
+	});
+
 	describe("persistent actions", () => {
 		it("keeps user actions visible without hover-only opacity", () => {
 			render(<UserMsg message={makeMsg()} />);

@@ -57,6 +57,7 @@ function mapSessionRows(
 		text: r.text,
 		seq: r.seq,
 		hasContextReceipt: Boolean(r.context_manifest_json),
+		hasFileCheckpoint: Boolean(r.checkpoint_uuid),
 		steerTargetSeq: r.steer_target_seq,
 		steerToolEventIndex: r.steer_tool_event_index,
 		cost:

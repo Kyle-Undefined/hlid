@@ -37,6 +37,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 	onPromoteQueued,
 	onSteerQueued,
 	onViewContext,
+	onPreviewFileRewind,
 	canSteerQueued,
 	canBranch,
 	forkingMessageId,
@@ -76,6 +77,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 	onPromoteQueued: (id: string) => void;
 	onSteerQueued: (id: string) => void;
 	onViewContext?: (target: HlidContextReceiptTarget) => void;
+	onPreviewFileRewind?: (turnId: string) => void;
 	canSteerQueued: boolean;
 	canBranch?: boolean;
 	forkingMessageId?: number | null;
@@ -99,6 +101,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 				onPromote={onPromoteQueued}
 				onSteer={onSteerQueued}
 				onViewContext={onViewContext}
+				onPreviewFileRewind={onPreviewFileRewind}
 				canSteer={canSteerQueued && message.id !== undefined}
 			/>
 		);

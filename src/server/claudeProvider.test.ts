@@ -93,6 +93,12 @@ function sdkGen(events: unknown[], mcpStatuses: unknown[] = []) {
 		reconnectMcpServer: vi.fn().mockResolvedValue(undefined),
 		toggleMcpServer: vi.fn().mockResolvedValue(undefined),
 		reloadSkills: vi.fn().mockResolvedValue({ skills: [] }),
+		rewindFiles: vi.fn().mockResolvedValue({
+			canRewind: true,
+			filesChanged: ["src/example.ts"],
+			insertions: 2,
+			deletions: 1,
+		}),
 	});
 	// Cast to the SDK's Query type: our generator satisfies the async-iterable
 	// contract; the extra SDK-internal methods (interrupt, setPendingMessageId)
@@ -152,6 +158,38 @@ describe("ClaudeProvider — event mapping", () => {
 
 		const events = await collectEvents(baseParams());
 		expect(events[0]).toEqual({ type: "session_start", sessionId: "sid-abc" });
+	});
+
+	it("surfaces a root replayed user message as a file checkpoint", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "user",
+					uuid: "checkpoint-user-id",
+					session_id: "native-claude-session",
+					parent_tool_use_id: null,
+					message: {
+						role: "user",
+						content: [{ type: "text", text: "change the file" }],
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events).toContainEqual({
+			type: "file_checkpoint",
+			id: "checkpoint-user-id",
+			providerSessionId: "native-claude-session",
+		});
 	});
 
 	it("yields assistant_message_id with the SDK message's uuid before its content-block events", async () => {
@@ -1616,6 +1654,9 @@ describe("ClaudeProvider — event mapping", () => {
 			sdkGen([
 				{
 					type: "user",
+					uuid: "synthetic-tool-result-id",
+					session_id: "native-claude-session",
+					parent_tool_use_id: null,
 					message: {
 						content: [
 							{
@@ -1641,6 +1682,9 @@ describe("ClaudeProvider — event mapping", () => {
 		expect(trs).toEqual([
 			{ type: "tool_result", toolId: "t-1", content: "file1\nfile2" },
 		]);
+		expect(events.some((event) => event.type === "file_checkpoint")).toBe(
+			false,
+		);
 	});
 
 	it("keeps long Obsidian inputs separate from the returned path", async () => {
@@ -3248,6 +3292,34 @@ describe("ClaudeProvider — reloadSkills", () => {
 	});
 });
 
+describe("ClaudeProvider — file rewind", () => {
+	it("delegates dry-run and execute to the live SDK query", async () => {
+		const gen = sdkGen([]);
+		vi.mocked(query).mockReturnValueOnce(gen);
+		const session = new ClaudeProvider().query(baseParams());
+		void session[Symbol.asyncIterator]().next();
+
+		await session.rewindFiles?.("checkpoint-user-id", { dryRun: true });
+		await session.rewindFiles?.("checkpoint-user-id");
+
+		expect(gen.rewindFiles).toHaveBeenNthCalledWith(1, "checkpoint-user-id", {
+			dryRun: true,
+		});
+		expect(gen.rewindFiles).toHaveBeenNthCalledWith(
+			2,
+			"checkpoint-user-id",
+			undefined,
+		);
+	});
+
+	it("fails closed before the Claude SDK query is live", async () => {
+		const session = new ClaudeProvider().query(baseParams());
+		await expect(session.rewindFiles?.("checkpoint-user-id")).rejects.toThrow(
+			"Claude session is not active",
+		);
+	});
+});
+
 // ── forkSession ───────────────────────────────────────────────────────────────
 
 describe("ClaudeProvider — forkSession", () => {
@@ -3967,6 +4039,10 @@ describe("ClaudeProvider — session resume", () => {
 		expect((capturedOptions as { resume?: string }).resume).toBe(
 			"resume-id-123",
 		);
+		expect(capturedOptions).toMatchObject({
+			enableFileCheckpointing: true,
+			extraArgs: { "replay-user-messages": null },
+		});
 	});
 
 	it("supplies Hlid's transcript store for imported Claude resumes", async () => {
@@ -4004,6 +4080,8 @@ describe("ClaudeProvider — session resume", () => {
 		expect(options.resume).toBe("imported-claude-id");
 		expect(typeof options.sessionStore?.load).toBe("function");
 		expect(typeof options.sessionStore?.append).toBe("function");
+		expect("enableFileCheckpointing" in options).toBe(false);
+		expect("extraArgs" in options).toBe(false);
 	});
 
 	it("does not pass resume option when sessionId is undefined", async () => {
