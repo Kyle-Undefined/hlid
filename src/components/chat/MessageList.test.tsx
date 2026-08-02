@@ -39,9 +39,9 @@ vi.mock("./ChatMessageRow", () => ({
 		message,
 		acceptedSteers,
 		queueState,
-		toolEventStartIndex,
-		olderToolEventCount,
-		onLoadOlderToolEvents,
+		activityOpen,
+		onToggleActivity,
+		onSelectTool,
 		groupedProjectPreviewEventIds,
 		historicalProjectPreviewGroups,
 		requesterSubagents,
@@ -54,9 +54,13 @@ vi.mock("./ChatMessageRow", () => ({
 		message: ChatMessage;
 		acceptedSteers?: readonly UserMessage[];
 		queueState?: { kind: string };
-		toolEventStartIndex?: number;
-		olderToolEventCount?: number;
-		onLoadOlderToolEvents?: () => void;
+		activityOpen?: boolean;
+		onToggleActivity?: (responseId: string) => void;
+		onSelectTool?: (
+			responseId: string,
+			event: import("#/server/protocol").ToolEventMessage,
+			trigger: HTMLElement,
+		) => void;
 		groupedProjectPreviewEventIds?: ReadonlySet<string>;
 		historicalProjectPreviewGroups?: ReadonlyMap<string, unknown[]>;
 		requesterSubagents?: ReadonlyMap<string, unknown>;
@@ -73,7 +77,7 @@ vi.mock("./ChatMessageRow", () => ({
 			data-steer-boundaries={acceptedSteers
 				?.map((steer) => steer.steerToolEventIndex)
 				.join(",")}
-			data-tool-event-start={toolEventStartIndex}
+			data-activity-open={String(activityOpen ?? false)}
 			data-preview-grouped={String(groupedProjectPreviewEventIds?.size ?? 0)}
 			data-preview-history={String(historicalProjectPreviewGroups?.size ?? 0)}
 			data-requester-count={String(requesterSubagents?.size ?? 0)}
@@ -108,11 +112,26 @@ vi.mock("./ChatMessageRow", () => ({
 							</button>
 						</span>
 					))}
-			{Boolean(olderToolEventCount && onLoadOlderToolEvents) && (
-				<button type="button" onClick={onLoadOlderToolEvents}>
-					Show {olderToolEventCount} earlier tool{" "}
-					{olderToolEventCount === 1 ? "call" : "calls"}
-				</button>
+			{message.role === "assistant" && (
+				<>
+					<button type="button" onClick={() => onToggleActivity?.(message.id)}>
+						Toggle activity {message.id}
+					</button>
+					{message.toolEvents.map((event) => (
+						<button
+							key={`inspect-${event.id}`}
+							type="button"
+							onClick={(clickEvent) =>
+								onSelectTool?.(message.id, event, clickEvent.currentTarget)
+							}
+						>
+							Inspect {event.id}
+						</button>
+					))}
+				</>
+			)}
+			{message.role === "assistant" && activityOpen && (
+				<div data-testid={`activity-body-${message.id}`} />
 			)}
 		</div>
 	),
@@ -636,6 +655,38 @@ describe("MessageList — bounded history rendering", () => {
 });
 
 describe("MessageList — bounded tool rendering", () => {
+	it("pages the inspector within the selected response", () => {
+		const message = assistantMsg("paged", 3);
+		message.toolEvents = message.toolEvents.map((event, index) => ({
+			...event,
+			name: `Read ${index}`,
+		}));
+		renderList({ messages: [message], providerId: "codex" });
+
+		fireEvent.click(screen.getByText("Inspect paged-tool-1"));
+		expect(
+			screen.getByRole("dialog", { name: "Read 1 tool details" }),
+		).not.toBeNull();
+		expect(screen.getByText("2 / 3")).not.toBeNull();
+
+		fireEvent.click(screen.getByRole("button", { name: "Next tool call" }));
+		expect(
+			screen.getByRole("dialog", { name: "Read 2 tool details" }),
+		).not.toBeNull();
+		expect(
+			(
+				screen.getByRole("button", {
+					name: "Next tool call",
+				}) as HTMLButtonElement
+			).disabled,
+		).toBe(true);
+
+		fireEvent.click(screen.getByRole("button", { name: "Previous tool call" }));
+		expect(
+			screen.getByRole("dialog", { name: "Read 1 tool details" }),
+		).not.toBeNull();
+	});
+
 	it("keeps durable Hlid children at the session bottom after Preview activity", () => {
 		const start = previewAssistantMsg("start", "start_project_preview");
 		start.toolEvents[0] = {
@@ -740,41 +791,61 @@ describe("MessageList — bounded tool rendering", () => {
 		).toBe("1");
 	});
 
-	it("allocates the latest 200 tool calls across assistant messages", () => {
-		renderList({
-			messages: [
-				userMsg("first", "first submission"),
-				assistantMsg("older", 150),
-				assistantMsg("newer", 150),
-			],
+	it("opens the newest tool-bearing response and collapses it when a newer response starts tools", () => {
+		const older = assistantMsg("older", 150);
+		const textOnly = assistantMsg("text-only", 0);
+		const view = renderList({
+			messages: [userMsg("first", "first submission"), older, textOnly],
 		});
 
-		expect(screen.getByTestId("message-older").dataset.toolEventStart).toBe(
-			"100",
+		expect(screen.getByTestId("message-older").dataset.activityOpen).toBe(
+			"true",
 		);
-		expect(screen.getByTestId("message-newer").dataset.toolEventStart).toBe(
-			"0",
+		expect(screen.getByTestId("message-text-only").dataset.activityOpen).toBe(
+			"false",
 		);
-		const reveal = screen.getByRole("button", {
-			name: "Show 100 earlier tool calls",
-		});
-		expect(reveal.closest("[data-testid]")).toBe(
-			screen.getByTestId("message-older"),
+
+		view.rerender(
+			listElement({
+				messages: [
+					older,
+					{ ...textOnly, toolEvents: assistantMsg("new", 1).toolEvents },
+				],
+			}),
 		);
-		expect(
-			screen.getByText("first submission").compareDocumentPosition(reveal) &
-				Node.DOCUMENT_POSITION_FOLLOWING,
-		).toBeTruthy();
-		fireEvent.click(reveal);
-		expect(screen.getByTestId("message-older").dataset.toolEventStart).toBe(
-			"0",
+
+		expect(screen.getByTestId("message-older").dataset.activityOpen).toBe(
+			"false",
 		);
-		expect(
-			screen.queryByRole("button", { name: /earlier tool calls/i }),
-		).toBeNull();
+		expect(screen.getByTestId("message-text-only").dataset.activityOpen).toBe(
+			"true",
+		);
 	});
 
-	it("folds a steer into a response without losing its 200-tool boundary", () => {
+	it("allows one historical tray and clears it when a newer response starts tools", () => {
+		const older = assistantMsg("older", 2);
+		const current = assistantMsg("current", 2);
+		const view = renderList({ messages: [older, current] });
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Toggle activity older" }),
+		);
+		expect(screen.getByTestId("message-older").dataset.activityOpen).toBe(
+			"true",
+		);
+		expect(screen.getByTestId("message-current").dataset.activityOpen).toBe(
+			"true",
+		);
+
+		view.rerender(
+			listElement({ messages: [older, current, assistantMsg("newest", 1)] }),
+		);
+		expect(screen.queryByTestId("activity-body-older")).toBeNull();
+		expect(screen.queryByTestId("activity-body-current")).toBeNull();
+		expect(screen.getByTestId("activity-body-newest")).not.toBeNull();
+	});
+
+	it("folds a steer into its response while preserving the absolute boundary", () => {
 		const original = userMsg("original", "first submission");
 		const response = {
 			...assistantMsg("response", 250),
@@ -793,7 +864,7 @@ describe("MessageList — bounded tool rendering", () => {
 		expect(screen.queryByTestId("message-steer")).toBeNull();
 		expect(responseRow.dataset.acceptedSteers).toBe("steer");
 		expect(responseRow.dataset.steerBoundaries).toBe("250");
-		expect(responseRow.dataset.toolEventStart).toBe("50");
+		expect(responseRow.dataset.activityOpen).toBe("true");
 
 		const updatedResponse = {
 			...response,
@@ -814,7 +885,7 @@ describe("MessageList — bounded tool rendering", () => {
 		expect(screen.queryByTestId("message-steer")).toBeNull();
 		expect(updatedRow.dataset.acceptedSteers).toBe("steer");
 		expect(updatedRow.dataset.steerBoundaries).toBe("250");
-		expect(updatedRow.dataset.toolEventStart).toBe("60");
+		expect(updatedRow.dataset.activityOpen).toBe("true");
 	});
 
 	it("associates a steer before applying the 100-row render window", () => {

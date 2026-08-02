@@ -1,10 +1,14 @@
 import { ChevronRight, GitFork, LoaderCircle, Route } from "lucide-react";
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { MarkdownBody } from "#/components/MarkdownBody";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import { useCopyToClipboard } from "#/hooks/useCopyToClipboard";
 import type { ObsidianCaptureDestination } from "#/lib/obsidianCapture";
 import type { ToolEventMessage } from "#/server/protocol";
+import {
+	type ActivityTrayRenderContext,
+	AssistantActivityTray,
+} from "./AssistantActivityTray";
 import { planAssistantTranscript } from "./assistantTranscriptLayout";
 import { CopyButton } from "./CopyButton";
 import type {
@@ -23,6 +27,8 @@ import { ReadAloudButton } from "./ReadAloudButton";
 import { SaveToObsidianActions } from "./SaveToObsidianActions";
 import { TaskActivityGroupToolBlock } from "./TaskActivityToolBlock";
 import { ToolBlock } from "./ToolBlock";
+
+const EMPTY_ACCEPTED_STEERS: readonly UserMessage[] = [];
 
 export function normalizeMd(text: string): string {
 	// CommonMark: "**foo:**bar" — closer after punctuation, before word char,
@@ -110,7 +116,7 @@ function AcceptedSteerReceipt({
 			aria-live="polite"
 			aria-atomic="true"
 			data-steer-receipt={message.id}
-			className="mx-3 my-1 block min-w-0 border-l border-primary/45 bg-primary/[0.035]"
+			className="mx-3 block min-w-0 border-l border-primary/45 bg-primary/[0.035]"
 		>
 			{canExpand ? (
 				<button
@@ -134,16 +140,16 @@ function AcceptedSteerReceipt({
 
 export function AssistantMsg({
 	message,
-	acceptedSteers = [],
+	acceptedSteers = EMPTY_ACCEPTED_STEERS,
 	permissionLabels,
 	sessionId,
 	providerId,
 	expandedVisualizationEventId,
 	onToggleVisualization,
 	onVisualizationInactive,
-	toolEventStartIndex = 0,
-	olderToolEventCount = 0,
-	onLoadOlderToolEvents,
+	activityOpen,
+	onToggleActivity,
+	onSelectTool,
 	canBranch = false,
 	branching = false,
 	onBranch,
@@ -161,9 +167,9 @@ export function AssistantMsg({
 	expandedVisualizationEventId?: string | null;
 	onToggleVisualization?: (eventId: string) => void;
 	onVisualizationInactive?: (eventId: string) => void;
-	toolEventStartIndex?: number;
-	olderToolEventCount?: number;
-	onLoadOlderToolEvents?: () => void;
+	activityOpen?: boolean;
+	onToggleActivity?: () => void;
+	onSelectTool?: (event: ToolEventMessage, trigger: HTMLElement) => void;
 	/** Whole-session precondition (Claude-only, session idle) — see raven.tsx. */
 	canBranch?: boolean;
 	/** True while this specific row's branch fork is in flight. */
@@ -179,16 +185,47 @@ export function AssistantMsg({
 	onDecidePermission?: PermissionDecisionHandler;
 }) {
 	const { copy, copied } = useCopyToClipboard();
-	const transcriptPlan = planAssistantTranscript({
-		toolEvents: message.toolEvents,
-		acceptedSteers,
-		toolEventStartIndex,
-		groupedProjectPreviewEventIds,
-		isProjectPreviewEvent: isProjectPreviewToolEvent,
-	});
-	const renderTool = (event: (typeof message.toolEvents)[number]) => {
+	const [localActivityOpen, setLocalActivityOpen] = useState(true);
+	const resolvedActivityOpen = activityOpen ?? localActivityOpen;
+	const toggleActivity =
+		onToggleActivity ?? (() => setLocalActivityOpen((current) => !current));
+	const suppressedProjectPreviewEventIds = useMemo(() => {
+		// MessageList pins the active Preview lifecycle in one rich session card.
+		// Keep those calls visible as compact response-owned receipts, while still
+		// suppressing the duplicate non-anchor rows of settled historical groups.
+		if (historicalProjectPreviewGroups === undefined) {
+			return groupedProjectPreviewEventIds;
+		}
+		const ids = new Set<string>();
+		for (const events of historicalProjectPreviewGroups.values()) {
+			for (const event of events.slice(1)) ids.add(event.id);
+		}
+		return ids;
+	}, [groupedProjectPreviewEventIds, historicalProjectPreviewGroups]);
+	const persistentTranscriptPlan = useMemo(
+		() =>
+			planAssistantTranscript({
+				toolEvents: message.toolEvents,
+				acceptedSteers,
+				toolEventStartIndex: 0,
+				groupedProjectPreviewEventIds: suppressedProjectPreviewEventIds,
+				isProjectPreviewEvent: isProjectPreviewToolEvent,
+			}),
+		[message.toolEvents, acceptedSteers, suppressedProjectPreviewEventIds],
+	);
+	const renderTool = (
+		event: (typeof message.toolEvents)[number],
+		transcriptPlan = persistentTranscriptPlan,
+		inspectTool?: ActivityTrayRenderContext["onSelectTool"],
+	) => {
 		const historicalPreviewEvents = historicalProjectPreviewGroups?.get(
 			event.id,
+		);
+		const compactPinnedPreview = Boolean(
+			inspectTool &&
+				groupedProjectPreviewEventIds?.has(event.id) &&
+				isProjectPreviewToolEvent(event) &&
+				!historicalPreviewEvents,
 		);
 		return historicalPreviewEvents ? (
 			<ProjectPreviewActivityCard
@@ -227,15 +264,22 @@ export function AssistantMsg({
 						: undefined
 				}
 				onDecidePermission={onDecidePermission}
+				onInspect={inspectTool}
+				compactSpecialized={compactPinnedPreview}
+				responseSettled={!message.streaming}
 			/>
 		);
 	};
-	const taskActivityGroups = transcriptPlan.taskActivityGroups.map((group) => ({
-		...group,
-		events: group.eventIndices.map(
-			(eventIndex) => message.toolEvents[eventIndex],
-		),
-	}));
+	const taskActivityGroups = useMemo(
+		() =>
+			persistentTranscriptPlan.taskActivityGroups.map((group) => ({
+				...group,
+				events: group.eventIndices.map(
+					(eventIndex) => message.toolEvents[eventIndex],
+				),
+			})),
+		[message.toolEvents, persistentTranscriptPlan.taskActivityGroups],
+	);
 	const activeTaskActivityGroups = message.streaming ? taskActivityGroups : [];
 	const activeTaskActivityGroupKeys = new Set(
 		activeTaskActivityGroups.map((group) => group.key),
@@ -260,41 +304,66 @@ export function AssistantMsg({
 			))}
 		</TaskActivityGroupToolBlock>
 	);
-	const trailingVisualizationEventIndices: number[] = [];
-	const transcriptItems = transcriptPlan.items.flatMap((item) => {
-		if (item.kind === "steer") {
-			return [
-				<AcceptedSteerReceipt
-					key={item.key}
-					message={acceptedSteers[item.steerIndex]}
-					responseId={message.id}
-				/>,
-			];
-		}
-		if (item.kind === "task_group") {
-			if (activeTaskActivityGroupKeys.has(item.key)) return [];
-			const group = taskActivityGroups.find(
-				(candidate) => candidate.key === item.key,
-			);
-			return group ? [renderTaskActivityGroup(group)] : [];
-		}
-		const event = message.toolEvents[item.eventIndex];
-		if (providerId === "codex" && isHlidVisualizationToolEvent(event)) {
-			trailingVisualizationEventIndices.push(item.eventIndex);
-			return [];
-		}
-		return [renderTool(event)];
-	});
-	const trailingVisualizationEvents = trailingVisualizationEventIndices.map(
-		(eventIndex) => message.toolEvents[eventIndex],
+	const renderActivityContent = ({
+		startIndex,
+		endIndex,
+		onSelectTool: inspectTool,
+	}: ActivityTrayRenderContext) => {
+		const transcriptPlan = planAssistantTranscript({
+			toolEvents: message.toolEvents,
+			acceptedSteers,
+			toolEventStartIndex: startIndex,
+			toolEventEndIndex: endIndex,
+			groupedProjectPreviewEventIds: suppressedProjectPreviewEventIds,
+			isProjectPreviewEvent: isProjectPreviewToolEvent,
+		});
+		return transcriptPlan.items.flatMap((item) => {
+			if (item.kind === "task_group") {
+				if (activeTaskActivityGroupKeys.has(item.key)) return [];
+				const events = item.eventIndices.map(
+					(eventIndex) => message.toolEvents[eventIndex],
+				);
+				return events.length > 0
+					? [
+							renderTaskActivityGroup({
+								key: item.key,
+								eventIndices: item.eventIndices,
+								events,
+							}),
+						]
+					: [];
+			}
+			const event = message.toolEvents[item.eventIndex];
+			if (providerId === "codex" && isHlidVisualizationToolEvent(event)) {
+				return [];
+			}
+			return [renderTool(event, transcriptPlan, inspectTool)];
+		});
+	};
+	const trailingVisualizationEvents = useMemo(
+		() =>
+			providerId === "codex"
+				? message.toolEvents.filter(isHlidVisualizationToolEvent)
+				: [],
+		[message.toolEvents, providerId],
 	);
-	const activeSubagentEvents = transcriptPlan.activeSubagentEventIndices.map(
-		(eventIndex) => message.toolEvents[eventIndex],
+	const activeSubagentEvents = useMemo(
+		() =>
+			persistentTranscriptPlan.activeSubagentEventIndices.map(
+				(eventIndex) => message.toolEvents[eventIndex],
+			),
+		[message.toolEvents, persistentTranscriptPlan.activeSubagentEventIndices],
 	);
-	const groupedPreviewEvents =
-		transcriptPlan.groupedProjectPreviewEventIndices.map(
-			(eventIndex) => message.toolEvents[eventIndex],
-		);
+	const groupedPreviewEvents = useMemo(
+		() =>
+			persistentTranscriptPlan.groupedProjectPreviewEventIndices.map(
+				(eventIndex) => message.toolEvents[eventIndex],
+			),
+		[
+			message.toolEvents,
+			persistentTranscriptPlan.groupedProjectPreviewEventIndices,
+		],
+	);
 	const hasAcceptedSteer = acceptedSteers.length > 0;
 	const latestAcceptedSteer = acceptedSteers.at(-1);
 	const jumpToAcceptedSteer = () => {
@@ -309,19 +378,33 @@ export function AssistantMsg({
 	};
 	return (
 		<div className="group w-full min-w-0 max-w-full overflow-hidden py-3 border-b border-border/40 space-y-1.5">
-			{olderToolEventCount > 0 && onLoadOlderToolEvents && (
-				<div className="my-1 flex w-full px-3 sm:justify-start">
-					<button
-						type="button"
-						onClick={onLoadOlderToolEvents}
-						className="flex min-h-9 w-full items-center justify-center border border-border px-3 py-1.5 text-[10px] tracking-widest text-muted-foreground uppercase transition-colors hover:bg-accent hover:text-foreground sm:w-auto"
-					>
-						Show {olderToolEventCount} earlier tool{" "}
-						{olderToolEventCount === 1 ? "call" : "calls"}
-					</button>
-				</div>
+			{(message.toolEvents.length > 0 || acceptedSteers.length > 0) && (
+				<AssistantActivityTray
+					responseId={message.id}
+					events={message.toolEvents}
+					streaming={message.streaming}
+					steerCount={acceptedSteers.length}
+					open={resolvedActivityOpen}
+					onToggle={toggleActivity}
+					onSelectTool={onSelectTool}
+					renderContent={renderActivityContent}
+				/>
 			)}
-			{transcriptItems}
+			{acceptedSteers.length > 0 && (
+				<section
+					data-steer-stack={message.id}
+					aria-label={`${acceptedSteers.length} accepted steer${acceptedSteers.length === 1 ? "" : "s"} for this response`}
+					className="space-y-1 py-0.5"
+				>
+					{acceptedSteers.map((steer) => (
+						<AcceptedSteerReceipt
+							key={steer.id}
+							message={steer}
+							responseId={message.id}
+						/>
+					))}
+				</section>
+			)}
 			{(message.text || message.streaming) && (
 				<div className="flex flex-wrap items-start gap-0">
 					<div className="shrink-0 pt-0.5 w-12 flex">
@@ -424,7 +507,7 @@ export function AssistantMsg({
 					)}
 				</div>
 			)}
-			{trailingVisualizationEvents.map(renderTool)}
+			{trailingVisualizationEvents.map((event) => renderTool(event))}
 			{!message.streaming && (
 				<ObsidianVaultChangeReview toolEvents={message.toolEvents} />
 			)}
@@ -444,7 +527,7 @@ export function AssistantMsg({
 				</div>
 			)}
 			{activeTaskActivityGroups.map(renderTaskActivityGroup)}
-			{activeSubagentEvents.map(renderTool)}
+			{activeSubagentEvents.map((event) => renderTool(event))}
 			{groupedProjectPreviewEventIds === undefined &&
 				groupedPreviewEvents.length > 0 && (
 					<ProjectPreviewActivityCard

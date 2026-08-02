@@ -9,7 +9,11 @@ import {
 	type ObsidianCaptureDestination,
 	type PlanDecision,
 } from "./ChatMessageRow";
-import type { ChatMessage, PermissionMessage } from "./chatReducer";
+import type {
+	AssistantMessage,
+	ChatMessage,
+	PermissionMessage,
+} from "./chatReducer";
 import { HlidDelegationActivityPanel } from "./HlidDelegationActivityPanel";
 import { isHlidVisualizationToolEvent } from "./HlidVisualizationToolBlock";
 import {
@@ -18,6 +22,7 @@ import {
 	ProjectPreviewActivityCard,
 	selectActiveProjectPreviewEvents,
 } from "./ProjectPreviewToolBlock";
+import { isActivityInspectorToolEvent, ToolInspector } from "./ToolBlock";
 import { UserMsg } from "./UserMsg";
 import {
 	type QueuedChatMessage,
@@ -47,6 +52,67 @@ function latestHlidVisualizationEvent(
 	}
 	return null;
 }
+
+type ActivityTrayState = {
+	sessionId: string;
+	collapsedAutomaticId: string | null;
+	manualOpenId: string | null;
+};
+
+type SelectedTool = {
+	responseId: string;
+	eventId: string;
+	trigger: HTMLElement;
+};
+
+function activityInspectorEventsForResponse(
+	message: AssistantMessage,
+	providerId: string | undefined,
+	groupedProjectPreviewEventIds: ReadonlySet<string>,
+	historicalProjectPreviewGroups: ReadonlyMap<string, ToolEventMessage[]>,
+): ToolEventMessage[] {
+	const historicalPreviewEventIds = new Set<string>();
+	for (const events of historicalProjectPreviewGroups.values()) {
+		for (const event of events) historicalPreviewEventIds.add(event.id);
+	}
+	return message.toolEvents.filter((event) => {
+		const compactPinnedPreview =
+			groupedProjectPreviewEventIds.has(event.id) &&
+			isProjectPreviewToolEvent(event) &&
+			!historicalPreviewEventIds.has(event.id);
+		return isActivityInspectorToolEvent(
+			event,
+			providerId,
+			compactPinnedPreview,
+		);
+	});
+}
+
+function mountedToolTrigger(
+	responseId: string,
+	eventId: string,
+): HTMLElement | null {
+	for (const tray of document.querySelectorAll<HTMLElement>(
+		"[data-activity-tray]",
+	)) {
+		if (tray.dataset.activityTray !== responseId) continue;
+		for (const trigger of tray.querySelectorAll<HTMLElement>(
+			"[data-tool-event-id]",
+		)) {
+			if (trigger.dataset.toolEventId === eventId) return trigger;
+		}
+	}
+	return null;
+}
+
+const EMPTY_PROJECT_PREVIEW_EVENT_IDS: ReadonlySet<string> = new Set();
+const EMPTY_PROJECT_PREVIEW_GROUPS: ReadonlyMap<string, ToolEventMessage[]> =
+	new Map();
+const EMPTY_PERMISSION_PLACEMENT = {
+	subagents: new Map<string, SubagentSnapshot>(),
+	byWorkflow: new Map<string, PermissionMessage[]>(),
+	embeddedIds: new Set<string>(),
+};
 
 /**
  * Renders the full message thread: history, permission cards, queued messages,
@@ -117,16 +183,12 @@ export const MessageList = memo(function MessageList({
 }) {
 	const {
 		olderHistoryCount,
-		olderToolEventCount,
 		visibleMessages,
 		acceptedSteersByAssistantId,
-		toolEventStartByMessageId,
-		toolEventRevealMessageId,
 		permissionLabels,
 		queueStateById,
 		orphanQueued,
 		loadOlder,
-		loadOlderToolEvents,
 	} = useMessageListView({
 		messages,
 		chatQueue,
@@ -137,6 +199,114 @@ export const MessageList = memo(function MessageList({
 		isLoadingOlderHistory,
 		onLoadOlderHistory,
 	});
+	const latestActivityResponseId = useMemo(() => {
+		for (let index = visibleMessages.length - 1; index >= 0; index--) {
+			const message = visibleMessages[index];
+			if (message.role === "assistant" && message.toolEvents.length > 0) {
+				return message.id;
+			}
+		}
+		return null;
+	}, [visibleMessages]);
+	const [activityTrayState, setActivityTrayState] = useState<ActivityTrayState>(
+		() => ({
+			sessionId,
+			collapsedAutomaticId: null,
+			manualOpenId: null,
+		}),
+	);
+	const [selectedTool, setSelectedTool] = useState<SelectedTool | null>(null);
+	const previousLatestActivityRef = useRef<{
+		sessionId: string;
+		responseId: string | null;
+	}>({ sessionId, responseId: latestActivityResponseId });
+	const scopedActivityTrayState =
+		activityTrayState.sessionId === sessionId
+			? activityTrayState
+			: {
+					sessionId,
+					collapsedAutomaticId: null,
+					manualOpenId: null,
+				};
+	const isActivityOpen = useCallback(
+		(responseId: string) =>
+			(responseId === latestActivityResponseId &&
+				scopedActivityTrayState.collapsedAutomaticId !== responseId) ||
+			(responseId !== latestActivityResponseId &&
+				scopedActivityTrayState.manualOpenId === responseId),
+		[latestActivityResponseId, scopedActivityTrayState],
+	);
+	const closeInspector = useCallback(() => {
+		setSelectedTool((current) => {
+			const trigger = current?.trigger;
+			if (trigger) {
+				requestAnimationFrame(() => {
+					if (trigger.isConnected) trigger.focus();
+				});
+			}
+			return null;
+		});
+	}, []);
+	useEffect(() => {
+		const previous = previousLatestActivityRef.current;
+		if (previous.sessionId !== sessionId) {
+			previousLatestActivityRef.current = {
+				sessionId,
+				responseId: latestActivityResponseId,
+			};
+			setActivityTrayState({
+				sessionId,
+				collapsedAutomaticId: null,
+				manualOpenId: null,
+			});
+			setSelectedTool(null);
+			return;
+		}
+		if (previous.responseId === latestActivityResponseId) return;
+		previousLatestActivityRef.current = {
+			sessionId,
+			responseId: latestActivityResponseId,
+		};
+		setActivityTrayState({
+			sessionId,
+			collapsedAutomaticId: null,
+			manualOpenId: null,
+		});
+		setSelectedTool(null);
+	}, [latestActivityResponseId, sessionId]);
+	const handleToggleActivity = useCallback(
+		(responseId: string) => {
+			closeInspector();
+			setActivityTrayState((current) => {
+				const scoped =
+					current.sessionId === sessionId
+						? current
+						: {
+								sessionId,
+								collapsedAutomaticId: null,
+								manualOpenId: null,
+							};
+				if (responseId === latestActivityResponseId) {
+					return {
+						...scoped,
+						collapsedAutomaticId:
+							scoped.collapsedAutomaticId === responseId ? null : responseId,
+					};
+				}
+				return {
+					...scoped,
+					manualOpenId: scoped.manualOpenId === responseId ? null : responseId,
+				};
+			});
+		},
+		[closeInspector, latestActivityResponseId, sessionId],
+	);
+	const handleSelectTool = useCallback(
+		(responseId: string, event: ToolEventMessage, trigger: HTMLElement) => {
+			setSelectedTool({ responseId, eventId: event.id, trigger });
+		},
+		[],
+	);
 	const latestVisualizationEvent = useMemo(
 		() => latestHlidVisualizationEvent(messages, providerId),
 		[messages, providerId],
@@ -195,6 +365,9 @@ export const MessageList = memo(function MessageList({
 		liveProjectPreview,
 	);
 	const groupedProjectPreviewEventIds = useMemo(() => {
+		if (allProjectPreviewEvents.length === 0) {
+			return EMPTY_PROJECT_PREVIEW_EVENT_IDS;
+		}
 		const ids = new Set(projectPreviewEvents.map((event) => event.id));
 		for (const lifecycle of groupProjectPreviewEventLifecycles(
 			allProjectPreviewEvents,
@@ -205,6 +378,9 @@ export const MessageList = memo(function MessageList({
 		return ids;
 	}, [allProjectPreviewEvents, projectPreviewEvents]);
 	const historicalProjectPreviewGroups = useMemo(() => {
+		if (allProjectPreviewEvents.length === 0) {
+			return EMPTY_PROJECT_PREVIEW_GROUPS;
+		}
 		const activeIds = new Set(projectPreviewEvents.map((event) => event.id));
 		const groups = new Map<string, ToolEventMessage[]>();
 		for (const lifecycle of groupProjectPreviewEventLifecycles(
@@ -216,6 +392,64 @@ export const MessageList = memo(function MessageList({
 		}
 		return groups;
 	}, [allProjectPreviewEvents, projectPreviewEvents]);
+	const selectedToolContext = useMemo(() => {
+		if (!selectedTool) return null;
+		const owner = visibleMessages.find(
+			(message) =>
+				message.role === "assistant" && message.id === selectedTool.responseId,
+		);
+		if (owner?.role !== "assistant") return null;
+		const events = activityInspectorEventsForResponse(
+			owner,
+			providerId,
+			groupedProjectPreviewEventIds,
+			historicalProjectPreviewGroups,
+		);
+		const index = events.findIndex(
+			(event) => event.id === selectedTool.eventId,
+		);
+		if (index < 0) return null;
+		return { event: events[index], events, index };
+	}, [
+		groupedProjectPreviewEventIds,
+		historicalProjectPreviewGroups,
+		providerId,
+		selectedTool,
+		visibleMessages,
+	]);
+	const navigateSelectedTool = useCallback(
+		(direction: -1 | 1) => {
+			setSelectedTool((current) => {
+				if (!current) return null;
+				const owner = visibleMessages.find(
+					(message) =>
+						message.role === "assistant" && message.id === current.responseId,
+				);
+				if (owner?.role !== "assistant") return current;
+				const events = activityInspectorEventsForResponse(
+					owner,
+					providerId,
+					groupedProjectPreviewEventIds,
+					historicalProjectPreviewGroups,
+				);
+				const index = events.findIndex((event) => event.id === current.eventId);
+				const next = events[index + direction];
+				if (!next) return current;
+				return {
+					...current,
+					eventId: next.id,
+					trigger:
+						mountedToolTrigger(current.responseId, next.id) ?? current.trigger,
+				};
+			});
+		},
+		[
+			groupedProjectPreviewEventIds,
+			historicalProjectPreviewGroups,
+			providerId,
+			visibleMessages,
+		],
+	);
 	const hasActiveProjectPreview =
 		liveProjectPreview?.state === "starting" ||
 		liveProjectPreview?.state === "ready";
@@ -258,7 +492,11 @@ export const MessageList = memo(function MessageList({
 			byWorkflow.set(workflowKey, approvals);
 			embeddedIds.add(message.id);
 		}
-		return { subagents, byWorkflow, embeddedIds };
+		return subagents.size === 0 &&
+			byWorkflow.size === 0 &&
+			embeddedIds.size === 0
+			? EMPTY_PERMISSION_PLACEMENT
+			: { subagents, byWorkflow, embeddedIds };
 	}, [visibleMessages]);
 
 	return (
@@ -291,11 +529,11 @@ export const MessageList = memo(function MessageList({
 					expandedVisualizationEventId={expandedVisualizationEventId}
 					onToggleVisualization={handleToggleVisualization}
 					onVisualizationInactive={handleVisualizationInactive}
-					toolEventStartIndex={toolEventStartByMessageId.get(m.id) ?? 0}
-					olderToolEventCount={
-						m.id === toolEventRevealMessageId ? olderToolEventCount : 0
+					activityOpen={
+						m.role === "assistant" ? isActivityOpen(m.id) : undefined
 					}
-					onLoadOlderToolEvents={loadOlderToolEvents}
+					onToggleActivity={handleToggleActivity}
+					onSelectTool={handleSelectTool}
 					permissionLabels={permissionLabels}
 					queueState={queueStateById.get(m.id)}
 					onDecide={handleDecide}
@@ -349,6 +587,24 @@ export const MessageList = memo(function MessageList({
 				/>
 			)}
 			<HlidDelegationActivityPanel sessionId={sessionId} />
+			{selectedToolContext && (
+				<ToolInspector
+					event={selectedToolContext.event}
+					onClose={closeInspector}
+					navigation={{
+						position: selectedToolContext.index + 1,
+						total: selectedToolContext.events.length,
+						onPrevious:
+							selectedToolContext.index > 0
+								? () => navigateSelectedTool(-1)
+								: undefined,
+						onNext:
+							selectedToolContext.index < selectedToolContext.events.length - 1
+								? () => navigateSelectedTool(1)
+								: undefined,
+					}}
+				/>
+			)}
 			<div ref={bottomRef} />
 		</>
 	);

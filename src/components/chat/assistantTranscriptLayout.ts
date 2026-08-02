@@ -3,12 +3,6 @@ import type { UserMessage } from "./chatReducer";
 
 export type AssistantTranscriptItem =
 	| {
-			kind: "steer";
-			key: string;
-			steerIndex: number;
-			boundary: number;
-	  }
-	| {
 			kind: "tool";
 			key: string;
 			eventIndex: number;
@@ -36,6 +30,7 @@ type PlanAssistantTranscriptOptions = {
 	toolEvents: readonly ToolEventMessage[];
 	acceptedSteers: readonly UserMessage[];
 	toolEventStartIndex: number;
+	toolEventEndIndex?: number;
 	groupedProjectPreviewEventIds?: ReadonlySet<string>;
 	isProjectPreviewEvent: (event: ToolEventMessage) => boolean;
 };
@@ -89,7 +84,8 @@ function planWorkflowChildren(
 		if (!child?.parentActivityId) continue;
 		const parentIndex = workflowEventIndices.get(child.parentActivityId);
 		if (parentIndex === undefined) continue;
-		// A child emitted after an accepted steer belongs below that receipt.
+		// A child emitted after an accepted steer stays outside the parent's
+		// nested card so the response timeline still reflects that redirection.
 		if (
 			crossesSteerBoundary(parentIndex, eventIndex, acceptedSteerBoundaries)
 		) {
@@ -159,29 +155,10 @@ function collectGroupedProjectPreviewEventIndices(
 	return eventIndices;
 }
 
-function groupSteersByVisibleBoundary(
-	acceptedSteerBoundaries: readonly number[],
-	visibleToolStart: number,
-	toolEventCount: number,
-): Map<number, number[]> {
-	const steerIndicesByBoundary = new Map<number, number[]>();
-	for (const [steerIndex, rawBoundary] of acceptedSteerBoundaries.entries()) {
-		const boundary = Math.min(
-			toolEventCount,
-			Math.max(visibleToolStart, rawBoundary),
-		);
-		const steerIndices = steerIndicesByBoundary.get(boundary) ?? [];
-		steerIndices.push(steerIndex);
-		steerIndicesByBoundary.set(boundary, steerIndices);
-	}
-	return steerIndicesByBoundary;
-}
-
 type BuildTranscriptItemsOptions = {
 	toolEvents: readonly ToolEventMessage[];
-	acceptedSteers: readonly UserMessage[];
-	acceptedSteerBoundaries: readonly number[];
 	visibleToolStart: number;
+	visibleToolEnd: number;
 	nestedEventIds: ReadonlySet<string>;
 	activeSubagentEventIndices: readonly number[];
 	groupedProjectPreviewEventIndices: readonly number[];
@@ -226,19 +203,13 @@ function indexVisibleTaskActivityGroups(
 
 function buildTranscriptItems({
 	toolEvents,
-	acceptedSteers,
-	acceptedSteerBoundaries,
 	visibleToolStart,
+	visibleToolEnd,
 	nestedEventIds,
 	activeSubagentEventIndices,
 	groupedProjectPreviewEventIndices,
 	taskActivityGroupsByAnchor,
 }: BuildTranscriptItemsOptions): AssistantTranscriptItem[] {
-	const steerIndicesByBoundary = groupSteersByVisibleBoundary(
-		acceptedSteerBoundaries,
-		visibleToolStart,
-		toolEvents.length,
-	);
 	const activeSubagentEventIndexSet = new Set(activeSubagentEventIndices);
 	const groupedProjectPreviewEventIndexSet = new Set(
 		groupedProjectPreviewEventIndices,
@@ -251,18 +222,9 @@ function buildTranscriptItems({
 	const items: AssistantTranscriptItem[] = [];
 	for (
 		let eventIndex = visibleToolStart;
-		eventIndex <= toolEvents.length;
+		eventIndex <= visibleToolEnd;
 		eventIndex++
 	) {
-		for (const steerIndex of steerIndicesByBoundary.get(eventIndex) ?? []) {
-			const steer = acceptedSteers[steerIndex];
-			items.push({
-				kind: "steer",
-				key: `steer:${steer.id}`,
-				steerIndex,
-				boundary: eventIndex,
-			});
-		}
 		const taskActivityGroup = taskActivityGroupsByAnchor.get(eventIndex);
 		if (taskActivityGroup) {
 			items.push({
@@ -272,7 +234,7 @@ function buildTranscriptItems({
 			});
 		}
 		if (
-			eventIndex < toolEvents.length &&
+			eventIndex < visibleToolEnd &&
 			!groupedTaskEventIndices.has(eventIndex) &&
 			!activeSubagentEventIndexSet.has(eventIndex) &&
 			!nestedEventIds.has(toolEvents[eventIndex].id) &&
@@ -296,6 +258,7 @@ export function planAssistantTranscript({
 	toolEvents,
 	acceptedSteers,
 	toolEventStartIndex,
+	toolEventEndIndex,
 	groupedProjectPreviewEventIds,
 	isProjectPreviewEvent,
 }: PlanAssistantTranscriptOptions): AssistantTranscriptPlan {
@@ -317,27 +280,58 @@ export function planAssistantTranscript({
 		Math.max(0, toolEventStartIndex),
 		toolEvents.length,
 	);
+	const visibleToolEnd = Math.min(
+		toolEvents.length,
+		Math.max(visibleToolStart, toolEventEndIndex ?? toolEvents.length),
+	);
+	const workflowEventIndices = indexWorkflowEvents(toolEvents);
+	const visibleWorkflowChildEventIndices = new Map<string, number[]>();
+	const visibleNestedEventIds = new Set<string>();
+	for (const [agentId, childIndices] of workflow.childEventIndices) {
+		const parentIndex = workflowEventIndices.get(agentId);
+		if (
+			parentIndex === undefined ||
+			parentIndex < visibleToolStart ||
+			parentIndex >= visibleToolEnd
+		) {
+			continue;
+		}
+		const visibleChildIndices = childIndices.filter(
+			(eventIndex) =>
+				eventIndex >= visibleToolStart && eventIndex < visibleToolEnd,
+		);
+		if (visibleChildIndices.length === 0) continue;
+		visibleWorkflowChildEventIndices.set(agentId, visibleChildIndices);
+		for (const eventIndex of visibleChildIndices) {
+			visibleNestedEventIds.add(toolEvents[eventIndex].id);
+		}
+	}
 	const taskActivityGroups = collectTaskActivityGroups(
 		toolEvents,
 		acceptedSteerBoundaries,
 	);
 	const taskActivityGroupsByAnchor = indexVisibleTaskActivityGroups(
-		taskActivityGroups,
+		taskActivityGroups.map((group) => ({
+			...group,
+			eventIndices: group.eventIndices.filter(
+				(eventIndex) =>
+					eventIndex >= visibleToolStart && eventIndex < visibleToolEnd,
+			),
+		})),
 		visibleToolStart,
 	);
 	const items = buildTranscriptItems({
 		toolEvents,
-		acceptedSteers,
-		acceptedSteerBoundaries,
 		visibleToolStart,
-		nestedEventIds: workflow.nestedEventIds,
+		visibleToolEnd,
+		nestedEventIds: visibleNestedEventIds,
 		activeSubagentEventIndices,
 		groupedProjectPreviewEventIndices,
 		taskActivityGroupsByAnchor,
 	});
 	return {
 		items,
-		workflowChildEventIndices: workflow.childEventIndices,
+		workflowChildEventIndices: visibleWorkflowChildEventIndices,
 		activeSubagentEventIndices,
 		groupedProjectPreviewEventIndices,
 		taskActivityGroups,

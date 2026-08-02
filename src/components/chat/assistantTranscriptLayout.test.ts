@@ -29,7 +29,7 @@ function steer(id: string, boundary?: number): UserMessage {
 }
 
 describe("planAssistantTranscript", () => {
-	it("normalizes accepted boundaries and clamps hidden receipts to the visible window", () => {
+	it("uses accepted boundaries for grouping without interleaving receipts", () => {
 		const toolEvents = Array.from({ length: 4 }, (_, index) =>
 			tool(`tool-${index}`),
 		);
@@ -49,28 +49,8 @@ describe("planAssistantTranscript", () => {
 		});
 
 		expect(plan.items).toEqual([
-			{ kind: "steer", key: "steer:negative", steerIndex: 0, boundary: 2 },
-			{
-				kind: "steer",
-				key: "steer:fractional",
-				steerIndex: 1,
-				boundary: 2,
-			},
 			{ kind: "tool", key: "tool-2", eventIndex: 2 },
-			{ kind: "steer", key: "steer:middle", steerIndex: 4, boundary: 3 },
 			{ kind: "tool", key: "tool-3", eventIndex: 3 },
-			{
-				kind: "steer",
-				key: "steer:non-finite",
-				steerIndex: 2,
-				boundary: 4,
-			},
-			{
-				kind: "steer",
-				key: "steer:oversized",
-				steerIndex: 3,
-				boundary: 4,
-			},
 		]);
 	});
 
@@ -129,7 +109,6 @@ describe("planAssistantTranscript", () => {
 		expect(plan.activeSubagentEventIndices).toEqual([2]);
 		expect(plan.items).toEqual([
 			{ kind: "tool", key: "workflow", eventIndex: 0 },
-			{ kind: "steer", key: "steer:redirect", steerIndex: 0, boundary: 2 },
 			{ kind: "tool", key: "cross-boundary-child", eventIndex: 3 },
 			{ kind: "tool", key: "later", eventIndex: 4 },
 		]);
@@ -268,7 +247,6 @@ describe("planAssistantTranscript", () => {
 				eventIndices: [0, 2],
 			},
 			{ kind: "tool", key: "ordinary", eventIndex: 1 },
-			{ kind: "steer", key: "steer:redirect", steerIndex: 0, boundary: 3 },
 			{
 				kind: "task_group",
 				key: "task-group:task-update-after-steer",

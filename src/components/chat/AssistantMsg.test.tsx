@@ -5,6 +5,7 @@ import {
 	fireEvent,
 	render,
 	screen,
+	waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as privacyStore from "#/hooks/privacyStore";
@@ -122,6 +123,54 @@ describe("normalizeMd", () => {
 });
 
 describe("AssistantMsg", () => {
+	it("renders grouped live Preview calls as compact inspectable activity rows", () => {
+		const onSelectTool = vi.fn();
+		const toolEvents: ToolEventMessage[] = [
+			{
+				type: "tool_event",
+				id: "preview-control",
+				name: "mcp__hlid__control_project_preview",
+				input: { action: "click" },
+				result: "ok",
+			},
+			{
+				type: "tool_event",
+				id: "preview-capture",
+				name: "mcp__hlid__capture_project_preview",
+				input: { viewport: "desktop" },
+				result: "ok",
+			},
+		];
+		render(
+			<AssistantMsg
+				message={makeMsg({ toolEvents })}
+				providerId="codex"
+				activityOpen
+				onSelectTool={onSelectTool}
+				groupedProjectPreviewEventIds={
+					new Set(toolEvents.map((event) => event.id))
+				}
+				historicalProjectPreviewGroups={new Map()}
+			/>,
+		);
+
+		expect(
+			screen.getByRole("button", {
+				name: "Activity, 2 tool calls, expanded",
+			}),
+		).not.toBeNull();
+		const control = screen.getByRole("button", {
+			name: /control_project_preview action: click, Complete/i,
+		});
+		expect(
+			screen.getByRole("button", {
+				name: /capture_project_preview viewport: desktop, Complete/i,
+			}),
+		).not.toBeNull();
+		fireEvent.click(control);
+		expect(onSelectTool).toHaveBeenCalledWith(toolEvents[0], control);
+	});
+
 	it("groups Claude task-store operations into one evolving task card", () => {
 		const base = {
 			kind: "tasks" as const,
@@ -360,7 +409,7 @@ describe("AssistantMsg", () => {
 		).toBeTruthy();
 	});
 
-	it("keeps an active task card visible outside the ordinary tool window", () => {
+	it("keeps an active task card visible beside the bounded activity tray", () => {
 		const taskActivity = {
 			kind: "tasks" as const,
 			source: "claude-task-store" as const,
@@ -371,7 +420,6 @@ describe("AssistantMsg", () => {
 		};
 		render(
 			<AssistantMsg
-				toolEventStartIndex={1}
 				message={makeMsg({
 					streaming: true,
 					toolEvents: [
@@ -455,7 +503,7 @@ describe("AssistantMsg", () => {
 		).toBeTruthy();
 	});
 
-	it("keeps the accepted steer at its tool boundary as later tools resume below it", () => {
+	it("keeps the accepted steer below the Activity tray as later tools arrive", () => {
 		const before = {
 			type: "tool_event" as const,
 			id: "tool-before",
@@ -505,13 +553,49 @@ describe("AssistantMsg", () => {
 			name: /^Read path: \/later/,
 		});
 		expect(
-			(resumedReceipt as Element).compareDocumentPosition(laterTool) &
+			laterTool.compareDocumentPosition(resumedReceipt as Element) &
 				Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
 		expect(
-			laterTool.compareDocumentPosition(screen.getByText("hello world")) &
-				Node.DOCUMENT_POSITION_FOLLOWING,
+			(resumedReceipt as Element).compareDocumentPosition(
+				screen.getByText("hello world"),
+			) & Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
+	});
+
+	it("keeps accepted steers mounted when the Activity tray is collapsed", () => {
+		const { container } = render(
+			<AssistantMsg
+				message={makeMsg({
+					toolEvents: [
+						{
+							type: "tool_event",
+							id: "tool-hidden",
+							name: "Read",
+							input: { path: "/hidden" },
+						},
+					],
+				})}
+				acceptedSteers={[acceptedSteer()]}
+				activityOpen={false}
+			/>,
+		);
+
+		expect(
+			screen.getByRole("button", {
+				name: "Activity, 1 tool call · 1 steer, collapsed",
+			}),
+		).not.toBeNull();
+		expect(
+			screen.queryByRole("button", { name: /^Read path: \/hidden/ }),
+		).toBeNull();
+		expect(
+			container.querySelector("[data-steer-stack='msg-1']"),
+		).not.toBeNull();
+		expect(
+			container.querySelector("[data-steer-receipt='steer-1']"),
+		).not.toBeNull();
+		expect(screen.getByText("Change direction")).not.toBeNull();
 	});
 
 	it("renders an accepted steer even when the provider response is empty", () => {
@@ -635,7 +719,7 @@ describe("AssistantMsg", () => {
 		}
 	});
 
-	it("interleaves multiple steers at their distinct acceptance boundaries", () => {
+	it("stacks multiple steers below all visible tool calls in persisted order", () => {
 		const toolEvents = Array.from({ length: 4 }, (_, index) => ({
 			type: "tool_event" as const,
 			id: `tool-${index}`,
@@ -677,12 +761,14 @@ describe("AssistantMsg", () => {
 			Boolean(
 				left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING,
 			);
-		expect(appearsBefore(tool0, firstReceipt as Element)).toBe(true);
-		expect(appearsBefore(firstReceipt as Element, tool1)).toBe(true);
+		expect(appearsBefore(tool0, tool1)).toBe(true);
 		expect(appearsBefore(tool1, tool2)).toBe(true);
-		expect(appearsBefore(tool2, secondReceipt as Element)).toBe(true);
-		expect(appearsBefore(secondReceipt as Element, tool3)).toBe(true);
-		expect(appearsBefore(tool3, prose)).toBe(true);
+		expect(appearsBefore(tool2, tool3)).toBe(true);
+		expect(appearsBefore(tool3, firstReceipt as Element)).toBe(true);
+		expect(
+			appearsBefore(firstReceipt as Element, secondReceipt as Element),
+		).toBe(true);
+		expect(appearsBefore(secondReceipt as Element, prose)).toBe(true);
 
 		const tailIndicator = screen.getByTitle(
 			"2 accepted steers in this response",
@@ -693,7 +779,7 @@ describe("AssistantMsg", () => {
 		);
 	});
 
-	it("keeps a hidden acceptance boundary visible beside the tool reveal control", () => {
+	it("keeps accepted steers mounted without replacing the bounded tool window", () => {
 		const toolEvents = Array.from({ length: 205 }, (_, index) => ({
 			type: "tool_event" as const,
 			id: `tool-${index}`,
@@ -704,31 +790,18 @@ describe("AssistantMsg", () => {
 			<AssistantMsg
 				message={makeMsg({ toolEvents })}
 				acceptedSteers={[acceptedSteer({ steerToolEventIndex: 10 })]}
-				toolEventStartIndex={200}
-				olderToolEventCount={200}
-				onLoadOlderToolEvents={vi.fn()}
+				activityOpen
+				onSelectTool={vi.fn()}
 			/>,
 		);
 
-		const reveal = screen.getByRole("button", {
-			name: "Show 200 earlier tool calls",
-		});
-		const receipt = container.querySelector("[data-steer-receipt]");
-		const firstVisibleTool = screen.getByRole("button", {
-			name: /read 200/i,
-		});
-		expect(receipt).not.toBeNull();
-		expect(
-			reveal.compareDocumentPosition(receipt as Element) &
-				Node.DOCUMENT_POSITION_FOLLOWING,
-		).toBeTruthy();
-		expect(
-			(receipt as Element).compareDocumentPosition(firstVisibleTool) &
-				Node.DOCUMENT_POSITION_FOLLOWING,
-		).toBeTruthy();
+		expect(container.querySelector("[data-steer-receipt]")).not.toBeNull();
+		expect(screen.getByRole("button", { name: /read 185/i })).not.toBeNull();
+		expect(screen.getByRole("button", { name: /read 204/i })).not.toBeNull();
+		expect(screen.queryByRole("button", { name: /read 0/i })).toBeNull();
 	});
 
-	it("preserves the exact boundary as the tool window advances and reveals", () => {
+	it("keeps the steer stack below the tool window as calls arrive and earlier calls load", async () => {
 		const toolEvents = Array.from({ length: 25 }, (_, index) => ({
 			type: "tool_event" as const,
 			id: `window-tool-${index}`,
@@ -740,7 +813,6 @@ describe("AssistantMsg", () => {
 			<AssistantMsg
 				message={makeMsg({ toolEvents, streaming: true })}
 				acceptedSteers={[steer]}
-				toolEventStartIndex={5}
 			/>,
 		);
 		const receipt = () =>
@@ -765,32 +837,24 @@ describe("AssistantMsg", () => {
 			<AssistantMsg
 				message={makeMsg({ toolEvents: updatedTools, streaming: true })}
 				acceptedSteers={[steer]}
-				toolEventStartIndex={8}
-			/>,
-		);
-		expect(
-			(receipt() as Element).compareDocumentPosition(
-				screen.getByRole("button", { name: /read 25/i }),
-			) & Node.DOCUMENT_POSITION_FOLLOWING,
-		).toBeTruthy();
-
-		rerender(
-			<AssistantMsg
-				message={makeMsg({ toolEvents: updatedTools, streaming: true })}
-				acceptedSteers={[steer]}
-				toolEventStartIndex={0}
 			/>,
 		);
 		expect(
 			screen
-				.getByRole("button", { name: /read 24/i })
+				.getByRole("button", { name: /read 27/i })
 				.compareDocumentPosition(receipt() as Element) &
 				Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
+
+		fireEvent.click(screen.getByRole("button", { name: "Load 8 earlier" }));
+		await waitFor(() =>
+			expect(screen.getByRole("button", { name: /read 0/i })).not.toBeNull(),
+		);
 		expect(
-			(receipt() as Element).compareDocumentPosition(
-				screen.getByRole("button", { name: /read 25/i }),
-			) & Node.DOCUMENT_POSITION_FOLLOWING,
+			screen
+				.getByRole("button", { name: /read 27/i })
+				.compareDocumentPosition(receipt() as Element) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
 	});
 
@@ -836,13 +900,9 @@ describe("AssistantMsg", () => {
 		Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
 	});
 
-	it("places the mobile reveal control directly before the tool rows it reveals", () => {
-		const onLoadOlderToolEvents = vi.fn();
+	it("places the bounded load-earlier control directly before the rows it reveals", async () => {
 		render(
 			<AssistantMsg
-				toolEventStartIndex={1}
-				olderToolEventCount={1}
-				onLoadOlderToolEvents={onLoadOlderToolEvents}
 				message={makeMsg({
 					toolEvents: [
 						{
@@ -851,6 +911,12 @@ describe("AssistantMsg", () => {
 							name: "Read old",
 							input: {},
 						},
+						...Array.from({ length: 20 }, (_, index) => ({
+							type: "tool_event" as const,
+							id: `middle-${index}`,
+							name: `Read middle ${index}`,
+							input: {},
+						})),
 						{
 							type: "tool_event",
 							id: "visible-read",
@@ -862,24 +928,22 @@ describe("AssistantMsg", () => {
 			/>,
 		);
 
-		const reveal = screen.getByRole("button", {
-			name: "Show 1 earlier tool call",
-		});
+		const reveal = screen.getByRole("button", { name: "Load 2 earlier" });
 		const visibleTool = screen.getByRole("button", { name: /read visible/i });
 		expect(
 			reveal.compareDocumentPosition(visibleTool) &
 				Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
 		expect(reveal.className).toContain("w-full");
-		expect(reveal.className).toContain("sm:w-auto");
 		fireEvent.click(reveal);
-		expect(onLoadOlderToolEvents).toHaveBeenCalledOnce();
+		await waitFor(() =>
+			expect(screen.getByRole("button", { name: /read old/i })).not.toBeNull(),
+		);
 	});
 
 	it("hides completed tool calls before the window but keeps active subagents visible", () => {
 		render(
 			<AssistantMsg
-				toolEventStartIndex={2}
 				message={makeMsg({
 					toolEvents: [
 						{
@@ -888,6 +952,12 @@ describe("AssistantMsg", () => {
 							name: "Read old",
 							input: {},
 						},
+						...Array.from({ length: 19 }, (_, index) => ({
+							type: "tool_event" as const,
+							id: `filler-${index}`,
+							name: `Read filler ${index}`,
+							input: {},
+						})),
 						{
 							type: "tool_event",
 							id: "active-child",
@@ -1043,7 +1113,7 @@ describe("AssistantMsg", () => {
 		).toHaveLength(1);
 	});
 
-	it("keeps a workflow child below a steer accepted after its parent", () => {
+	it("keeps a cross-boundary workflow child visible above the steer stack", () => {
 		const { container } = render(
 			<AssistantMsg
 				sessionId="session-1"
@@ -1094,11 +1164,10 @@ describe("AssistantMsg", () => {
 		const child = screen.getByRole("button", { name: /reader completed/i });
 		expect(receipt).not.toBeNull();
 		expect(
-			parent.compareDocumentPosition(receipt as Element) &
-				Node.DOCUMENT_POSITION_FOLLOWING,
+			parent.compareDocumentPosition(child) & Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
 		expect(
-			(receipt as Element).compareDocumentPosition(child) &
+			child.compareDocumentPosition(receipt as Element) &
 				Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
 	});

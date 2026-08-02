@@ -25,9 +25,9 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 	expandedVisualizationEventId,
 	onToggleVisualization,
 	onVisualizationInactive,
-	toolEventStartIndex = 0,
-	olderToolEventCount = 0,
-	onLoadOlderToolEvents,
+	activityOpen,
+	onToggleActivity,
+	onSelectTool,
 	permissionLabels,
 	queueState,
 	onDecide,
@@ -56,9 +56,13 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 	expandedVisualizationEventId?: string | null;
 	onToggleVisualization?: (eventId: string) => void;
 	onVisualizationInactive?: (eventId: string) => void;
-	toolEventStartIndex?: number;
-	olderToolEventCount?: number;
-	onLoadOlderToolEvents?: () => void;
+	activityOpen?: boolean;
+	onToggleActivity?: (responseId: string) => void;
+	onSelectTool?: (
+		responseId: string,
+		event: ToolEventMessage,
+		trigger: HTMLElement,
+	) => void;
 	permissionLabels: Map<string, string>;
 	queueState: UserMsgQueueState | undefined;
 	onDecide: (
@@ -140,9 +144,15 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 				onToggleVisualization={onToggleVisualization}
 				onVisualizationInactive={onVisualizationInactive}
 				permissionLabels={permissionLabels}
-				toolEventStartIndex={toolEventStartIndex}
-				olderToolEventCount={olderToolEventCount}
-				onLoadOlderToolEvents={onLoadOlderToolEvents}
+				activityOpen={activityOpen}
+				onToggleActivity={
+					onToggleActivity ? () => onToggleActivity(message.id) : undefined
+				}
+				onSelectTool={
+					onSelectTool
+						? (event, trigger) => onSelectTool(message.id, event, trigger)
+						: undefined
+				}
 				canBranch={canBranch}
 				branching={message.dbId != null && forkingMessageId === message.dbId}
 				onBranch={onBranch}

@@ -31,6 +31,7 @@ import {
 	looksLikeMarkdown,
 	stripReadLineNumbers,
 	ToolBlock,
+	ToolInspector,
 } from "./ToolBlock";
 
 afterEach(cleanup);
@@ -96,6 +97,341 @@ describe("ToolBlock — collapsed", () => {
 		);
 		expect(screen.getByLabelText(/error/i)).not.toBeNull();
 		expect(screen.getByText("permission denied")).not.toBeNull();
+	});
+});
+
+describe("ToolBlock — Activity tray presentation", () => {
+	it("uses a compact row for ordinary tools and delegates details to the owner", () => {
+		const onInspect = vi.fn();
+		const event = makeEvent({ result: "file1\nfile2" });
+		render(<ToolBlock event={event} onInspect={onInspect} responseSettled />);
+
+		const row = screen.getByRole("button", {
+			name: "Bash command: ls /tmp, Complete",
+		});
+		expect(screen.queryByText("file1")).toBeNull();
+		fireEvent.click(row);
+		expect(onInspect).toHaveBeenCalledWith(event, row);
+	});
+
+	it("renders a non-modal desktop inspector and closes it with Escape", () => {
+		const onClose = vi.fn();
+		const onPrevious = vi.fn();
+		const onNext = vi.fn();
+		render(
+			<ToolInspector
+				event={makeEvent({ result: "file1\nfile2" })}
+				onClose={onClose}
+				navigation={{
+					position: 2,
+					total: 4,
+					onPrevious,
+					onNext,
+				}}
+			/>,
+		);
+
+		const dialog = screen.getByRole("dialog", { name: "Bash tool details" });
+		expect(dialog.getAttribute("aria-modal")).toBeNull();
+		expect(dialog.className).toContain("w-[min(42rem,52vw)]");
+		expect(dialog.parentElement?.className).toContain("pointer-events-none");
+		expect(dialog.querySelector("pre")?.textContent).toBe("file1\nfile2");
+		expect(screen.getByText("2 / 4")).not.toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Previous tool call" }));
+		fireEvent.click(screen.getByRole("button", { name: "Next tool call" }));
+		expect(onPrevious).toHaveBeenCalledOnce();
+		expect(onNext).toHaveBeenCalledOnce();
+		fireEvent.keyDown(window, { key: "Escape" });
+		expect(onClose).toHaveBeenCalledOnce();
+	});
+
+	it("keeps pager arrows visible and disables unavailable directions", () => {
+		render(
+			<ToolInspector
+				event={makeEvent({ result: "ok" })}
+				onClose={vi.fn()}
+				navigation={{ position: 1, total: 1 }}
+			/>,
+		);
+
+		expect(
+			(
+				screen.getByRole("button", {
+					name: "Previous tool call",
+				}) as HTMLButtonElement
+			).disabled,
+		).toBe(true);
+		expect(
+			(
+				screen.getByRole("button", {
+					name: "Next tool call",
+				}) as HTMLButtonElement
+			).disabled,
+		).toBe(true);
+	});
+
+	it("renders a modal bottom sheet on mobile", () => {
+		Object.defineProperty(window, "matchMedia", {
+			configurable: true,
+			value: vi.fn().mockReturnValue({
+				matches: false,
+				addEventListener: vi.fn(),
+				removeEventListener: vi.fn(),
+			}),
+		});
+		const onClose = vi.fn();
+		render(
+			<ToolInspector event={makeEvent({ result: "ok" })} onClose={onClose} />,
+		);
+
+		const dialog = screen.getByRole("dialog", { name: "Bash tool details" });
+		expect(dialog.getAttribute("aria-modal")).toBe("true");
+		expect(dialog.className).toContain("max-h-[82dvh]");
+		expect(document.body.style.overflow).toBe("hidden");
+		fireEvent.click(dialog.parentElement as HTMLElement);
+		expect(onClose).toHaveBeenCalledOnce();
+		Reflect.deleteProperty(window, "matchMedia");
+	});
+
+	it("presents Codex command calls as command and output instead of protocol JSON", () => {
+		const event = makeEvent({
+			name: "commandExecution",
+			input: {
+				type: "commandExecution",
+				id: "te1",
+				command: "/bin/bash -lc pwd",
+				cwd: "/workspace/project",
+				status: "inProgress",
+				commandActions: [{ type: "unknown", command: "pwd" }],
+			},
+			result: JSON.stringify({
+				type: "commandExecution",
+				id: "te1",
+				command: "/bin/bash -lc pwd",
+				cwd: "/workspace/project",
+				status: "completed",
+				commandActions: [{ type: "unknown", command: "pwd" }],
+				aggregatedOutput: "/workspace/project\n",
+				exitCode: 0,
+				durationMs: 12,
+			}),
+		});
+		render(<ToolInspector event={event} onClose={vi.fn()} />);
+
+		expect(
+			screen.getByRole("dialog", { name: "Command tool details" }),
+		).not.toBeNull();
+		expect(screen.getByText("Call")).not.toBeNull();
+		expect(screen.getByText("Output")).not.toBeNull();
+		expect(screen.getByText("pwd")).not.toBeNull();
+		expect(screen.getAllByText("/workspace/project")).toHaveLength(2);
+		expect(document.querySelector("pre")?.textContent).toBe(
+			"/workspace/project\n",
+		);
+		expect(screen.getByText("status completed")).not.toBeNull();
+		expect(screen.getByText("exit 0")).not.toBeNull();
+		expect(screen.getByText("duration 12 ms")).not.toBeNull();
+		expect(screen.queryByText(/aggregatedOutput/)).toBeNull();
+	});
+
+	it("uses meaningful compact summaries for structured Codex calls", () => {
+		const onInspect = vi.fn();
+		const event = makeEvent({
+			name: "commandExecution",
+			input: {
+				type: "commandExecution",
+				command: "/bin/bash -lc pwd",
+				commandActions: [{ type: "unknown", command: "pwd" }],
+			},
+			result: JSON.stringify({
+				type: "commandExecution",
+				status: "completed",
+				aggregatedOutput: "/workspace/project\n",
+			}),
+		});
+		render(<ToolBlock event={event} onInspect={onInspect} responseSettled />);
+
+		const row = screen.getByRole("button", {
+			name: "Command pwd, Complete",
+		});
+		expect(screen.getByText("Command")).not.toBeNull();
+		expect(screen.getByText("pwd")).not.toBeNull();
+		fireEvent.click(row);
+		expect(onInspect).toHaveBeenCalledWith(event, row);
+	});
+
+	it("shows a themed diff overview on compact Codex file-change rows", () => {
+		const changes = [
+			{
+				path: "src/app.ts",
+				kind: "update",
+				diff: "@@ -1,2 +1,3 @@\n-const oldValue = 1;\n+const newValue = 2;\n+export { newValue };",
+			},
+		];
+		const event = makeEvent({
+			name: "fileChange",
+			input: { type: "fileChange", changes, status: "inProgress" },
+			result: JSON.stringify({
+				type: "fileChange",
+				changes,
+				status: "completed",
+			}),
+		});
+		render(<ToolBlock event={event} onInspect={vi.fn()} responseSettled />);
+
+		expect(
+			screen.getByRole("button", {
+				name: "File changes src/app.ts, 2 additions, 1 deletion, Complete",
+			}),
+		).not.toBeNull();
+		const additions = screen.getByText("+2");
+		const deletions = screen.getByText("-1");
+		expect(additions.className).toContain("text-status-success/70");
+		expect(deletions.className).toContain("text-destructive/70");
+		expect(`${additions.className} ${deletions.className}`).not.toMatch(
+			/(?:red|green)-\d/,
+		);
+	});
+
+	it("derives the compact diff overview from persisted Claude edit inputs", () => {
+		render(
+			<ToolBlock
+				event={makeEvent({
+					name: "Edit",
+					input: {
+						file_path: "/workspace/src/app.ts",
+						old_string: "const one = 1;\nconst two = 2;",
+						new_string: "const total = 3;",
+					},
+					result: "The file was updated successfully.",
+				})}
+				onInspect={vi.fn()}
+				responseSettled
+			/>,
+		);
+
+		expect(
+			screen.getByRole("button", {
+				name: "Edit /workspace/src/app.ts, 1 addition, 2 deletions, Complete",
+			}),
+		).not.toBeNull();
+		expect(screen.getByText("+1")).not.toBeNull();
+		expect(screen.getByText("-2")).not.toBeNull();
+	});
+
+	it("renders file changes as themed unified diff lines with visible markers", () => {
+		const changes = [
+			{
+				path: "src/app.ts",
+				kind: "update",
+				diff: "@@ -1,2 +1,2 @@\n-const oldValue = 1;\n+const newValue = 2;\n context();",
+			},
+		];
+		const event = makeEvent({
+			name: "fileChange",
+			input: { type: "fileChange", id: "te1", changes, status: "inProgress" },
+			result: JSON.stringify({
+				type: "fileChange",
+				id: "te1",
+				changes,
+				status: "completed",
+			}),
+		});
+		render(<ToolInspector event={event} onClose={vi.fn()} />);
+
+		expect(
+			screen.getByRole("dialog", { name: "File changes tool details" }),
+		).not.toBeNull();
+		expect(screen.getByText("Changes")).not.toBeNull();
+		expect(screen.getAllByText("src/app.ts")).toHaveLength(2);
+		const diff = screen.getByRole("region", { name: "src/app.ts diff" });
+		const deletion = screen.getByText("-const oldValue = 1;");
+		const addition = screen.getByText("+const newValue = 2;");
+		expect(diff.contains(deletion)).toBe(true);
+		expect(diff.contains(addition)).toBe(true);
+		expect(deletion.className).toContain("text-destructive/70");
+		expect(deletion.className).toContain("bg-destructive/5");
+		expect(addition.className).toContain("text-status-success/70");
+		expect(addition.className).toContain("bg-status-success/5");
+		expect(`${deletion.className} ${addition.className}`).not.toMatch(
+			/(?:red|green)-\d/,
+		);
+	});
+
+	it("renders Claude Edit replacements as a diff and retains the tool result", () => {
+		render(
+			<ToolInspector
+				event={makeEvent({
+					name: "Edit",
+					input: {
+						file_path: "/workspace/src/app.ts",
+						old_string: "const oldValue = 1;",
+						new_string: "const newValue = 2;",
+						replace_all: false,
+					},
+					result: "The file was updated successfully.",
+				})}
+				onClose={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByText("Changes")).not.toBeNull();
+		expect(
+			screen.getByRole("region", { name: "/workspace/src/app.ts diff" }),
+		).not.toBeNull();
+		expect(screen.getByText("-const oldValue = 1;")).not.toBeNull();
+		expect(screen.getByText("+const newValue = 2;")).not.toBeNull();
+		expect(screen.getByText(/^Result$/)).not.toBeNull();
+		expect(
+			screen.getByText("The file was updated successfully."),
+		).not.toBeNull();
+	});
+
+	it("renders Claude Write content as additions", () => {
+		render(
+			<ToolInspector
+				event={makeEvent({
+					name: "Write",
+					input: {
+						file_path: "/workspace/new-file.ts",
+						content: "export const one = 1;\nexport const two = 2;",
+					},
+					result: "File created.",
+				})}
+				onClose={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByText("+export const one = 1;")).not.toBeNull();
+		expect(screen.getByText("+export const two = 2;")).not.toBeNull();
+		expect(screen.queryByText("-export const one = 1;")).toBeNull();
+		expect(screen.getByText("File created.")).not.toBeNull();
+	});
+
+	it("shows a completed command result even when the command produced no output", () => {
+		render(
+			<ToolInspector
+				event={makeEvent({
+					name: "commandExecution",
+					input: {
+						type: "commandExecution",
+						command: "true",
+					},
+					result: JSON.stringify({
+						type: "commandExecution",
+						command: "true",
+						status: "completed",
+						aggregatedOutput: null,
+						exitCode: 0,
+						durationMs: 1,
+					}),
+				})}
+				onClose={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByText("Output")).not.toBeNull();
+		expect(screen.getByText("(no output)")).not.toBeNull();
 	});
 });
 
@@ -314,7 +650,7 @@ describe("ToolBlock — Hlid orchestration audit rows", () => {
 			screen.getByText(/Recorded tool call · response at call time/i),
 		).not.toBeNull();
 		expect(document.querySelector("pre")?.textContent).toContain(
-			list ? "delegation-1" : '"status":"running"',
+			list ? "delegation-1" : '"status": "running"',
 		);
 		if (!list) {
 			expect(
