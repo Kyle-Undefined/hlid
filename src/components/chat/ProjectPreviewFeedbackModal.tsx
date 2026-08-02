@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import {
 	type PointerEvent as ReactPointerEvent,
+	useCallback,
 	useEffect,
 	useRef,
 	useState,
@@ -120,8 +121,11 @@ export function ProjectPreviewFeedbackModal({
 	onClose: () => void;
 	onSave: (blob: Blob, comment: string) => Promise<void>;
 }) {
-	const { dialogRef, onDialogKeyDown } =
-		useDialogFocus<HTMLDivElement>(onClose);
+	const close = useCallback(() => {
+		if (!saving) onClose();
+	}, [onClose, saving]);
+	const { dialogRef, onBackdropClick, onDialogKeyDown } =
+		useDialogFocus<HTMLDivElement>(close);
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const imageRef = useRef<HTMLImageElement | null>(null);
 	const [loaded, setLoaded] = useState(false);
@@ -244,7 +248,12 @@ export function ProjectPreviewFeedbackModal({
 	];
 
 	return createPortal(
-		<div className="fixed inset-0 z-50 flex items-center justify-center bg-background/90 p-3 backdrop-blur-sm">
+		// biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled by the focused dialog
+		// biome-ignore lint/a11y/noStaticElementInteractions: modal backdrop pattern
+		<div
+			className="fixed inset-0 z-50 flex items-center justify-center bg-background/90 p-3 backdrop-blur-sm"
+			onClick={onBackdropClick}
+		>
 			<div
 				ref={dialogRef}
 				tabIndex={-1}

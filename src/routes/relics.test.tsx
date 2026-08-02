@@ -51,6 +51,7 @@ import {
 	AttachmentsPage,
 	deleteRelicRows,
 	Route,
+	type SkillCatalogItem,
 	SkillImportDialog,
 } from "./relics";
 
@@ -526,6 +527,47 @@ describe("AttachmentsPage", () => {
 });
 
 describe("SkillImportDialog", () => {
+	it("dismisses from the backdrop without closing from dialog content", async () => {
+		const onClose = vi.fn();
+		const discover = vi.fn().mockResolvedValue({ skills: [] });
+		render(<SkillImportDialog onClose={onClose} discover={discover} />);
+		await waitFor(() => expect(discover).toHaveBeenCalledOnce());
+		const dialog = screen.getByRole("dialog", {
+			name: "Import installed skills",
+		});
+
+		fireEvent.click(dialog);
+		expect(onClose).not.toHaveBeenCalled();
+		fireEvent.click(dialog.parentElement as HTMLElement);
+		expect(onClose).toHaveBeenCalledOnce();
+	});
+
+	it("ignores catalog completion after backdrop dismissal", async () => {
+		const catalog = Promise.withResolvers<{ skills: SkillCatalogItem[] }>();
+		const discover = vi.fn(() => catalog.promise);
+		const consoleError = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => {});
+		const view = render(
+			<SkillImportDialog onClose={vi.fn()} discover={discover} />,
+		);
+		await waitFor(() => expect(discover).toHaveBeenCalledOnce());
+
+		fireEvent.click(
+			screen.getByRole("dialog", { name: "Import installed skills" })
+				.parentElement as HTMLElement,
+		);
+		view.unmount();
+		await act(async () => {
+			catalog.resolve({ skills: [] });
+			await catalog.promise;
+		});
+
+		expect(consoleError.mock.calls.flat().join(" ")).not.toContain(
+			"hasn't mounted yet",
+		);
+	});
+
 	it("groups discovered provider skills and imports only checked rows", async () => {
 		const discover = vi.fn().mockResolvedValue({
 			skills: [

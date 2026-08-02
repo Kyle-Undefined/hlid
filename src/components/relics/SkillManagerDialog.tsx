@@ -143,7 +143,8 @@ export function SkillManagerDialog({
 		if (managerBusy) return;
 		stagedReview.close();
 	}, [managerBusy, stagedReview.close]);
-	const { dialogRef, onDialogKeyDown } = useDialogFocus<HTMLDivElement>(close);
+	const { dialogRef, onBackdropClick, onDialogKeyDown } =
+		useDialogFocus<HTMLDivElement>(close);
 
 	useEffect(() => {
 		mountedRef.current = true;
@@ -232,7 +233,12 @@ export function SkillManagerDialog({
 	);
 
 	return (
-		<div className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex items-center justify-center p-2 md:p-4">
+		// biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled by the focused dialog
+		// biome-ignore lint/a11y/noStaticElementInteractions: modal backdrop pattern
+		<div
+			className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex items-center justify-center p-2 md:p-4"
+			onClick={onBackdropClick}
+		>
 			<div
 				ref={dialogRef}
 				tabIndex={-1}

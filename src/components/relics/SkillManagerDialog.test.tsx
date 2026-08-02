@@ -90,6 +90,17 @@ function dependencies() {
 }
 
 describe("SkillManagerDialog", () => {
+	it("dismisses from the backdrop without closing from dialog content", async () => {
+		const onClose = vi.fn();
+		render(<SkillManagerDialog onClose={onClose} {...dependencies()} />);
+		const dialog = screen.getByRole("dialog", { name: "Agent skills" });
+
+		fireEvent.click(dialog);
+		expect(onClose).not.toHaveBeenCalled();
+		fireEvent.click(dialog.parentElement as HTMLElement);
+		await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+	});
+
 	it("stages a GitHub skill and exposes every readable file before approval", async () => {
 		const deps = dependencies();
 		deps.installSkill.mockResolvedValueOnce({

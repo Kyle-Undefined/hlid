@@ -13,10 +13,15 @@ export function AgentFolderBrowseModal({
 	onSelect: (path: string) => void;
 	onClose: () => void;
 }) {
-	const { dialogRef, onDialogKeyDown } =
+	const { dialogRef, onBackdropClick, onDialogKeyDown } =
 		useDialogFocus<HTMLDivElement>(onClose);
 	return (
-		<div className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex items-center justify-center p-4">
+		// biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled by the focused dialog
+		// biome-ignore lint/a11y/noStaticElementInteractions: modal backdrop pattern
+		<div
+			className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex items-center justify-center p-4"
+			onClick={onBackdropClick}
+		>
 			<div
 				ref={dialogRef}
 				tabIndex={-1}

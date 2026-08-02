@@ -194,12 +194,15 @@ export function HlidVisualizationToolBlock({
 }) {
 	const [zoom, setZoom] = useState(1);
 	const [maximized, setMaximized] = useState(false);
-	const { dialogRef: containerRef, onDialogKeyDown } =
-		useDialogFocus<HTMLDivElement>(
-			() => setMaximized(false),
-			maximized,
-			"dialog",
-		);
+	const {
+		dialogRef: containerRef,
+		onBackdropClick,
+		onDialogKeyDown,
+	} = useDialogFocus<HTMLDivElement>(
+		() => setMaximized(false),
+		maximized,
+		"dialog",
+	);
 	useEffect(() => {
 		if (!expanded) setMaximized(false);
 	}, [expanded]);
@@ -281,6 +284,7 @@ export function HlidVisualizationToolBlock({
 				maximized ? `Visualization viewer: ${visualization.title}` : undefined
 			}
 			onKeyDown={maximized ? onDialogKeyDown : undefined}
+			onClick={maximized ? onBackdropClick : undefined}
 			className={
 				maximized
 					? "fixed inset-0 z-50 flex min-h-0 flex-col bg-background/90 p-2 backdrop-blur-sm focus:outline-none md:p-4"

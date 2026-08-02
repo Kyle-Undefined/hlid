@@ -200,11 +200,9 @@ describe("HlidVisualizationToolBlock", () => {
 			}),
 		).not.toBeNull();
 
-		fireEvent.click(
-			within(dialog).getByRole("button", {
-				name: "Restore inline visualization",
-			}),
-		);
+		fireEvent.click(within(dialog).getByTitle("Latency explorer"));
+		expect(screen.getByRole("dialog")).toBe(dialog);
+		fireEvent.click(dialog);
 		expect(screen.queryByRole("dialog")).toBeNull();
 		expect(screen.getAllByTitle("Latency explorer")).toHaveLength(1);
 		expect(screen.getByTitle("Latency explorer")).toBe(inlineFrame);

@@ -1422,7 +1422,8 @@ export function RoutineManagerDialog({
 		}
 		onClose();
 	}, [editing, onClose]);
-	const { dialogRef, onDialogKeyDown } = useDialogFocus<HTMLDivElement>(close);
+	const { dialogRef, onBackdropClick, onDialogKeyDown } =
+		useDialogFocus<HTMLDivElement>(close);
 	const editDefinition = useMemo(() => {
 		if (editing === "new") return newDefinition ?? defaultDefinition;
 		if (!editing) return null;
@@ -1477,7 +1478,12 @@ export function RoutineManagerDialog({
 		}
 	};
 	return (
-		<div className="fixed inset-0 z-50 flex items-center justify-center bg-background/90 p-2 backdrop-blur-sm md:p-6">
+		// biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled by the focused dialog
+		// biome-ignore lint/a11y/noStaticElementInteractions: modal backdrop pattern
+		<div
+			className="fixed inset-0 z-50 flex items-center justify-center bg-background/90 p-2 backdrop-blur-sm md:p-6"
+			onClick={onBackdropClick}
+		>
 			<div
 				ref={dialogRef}
 				role="dialog"

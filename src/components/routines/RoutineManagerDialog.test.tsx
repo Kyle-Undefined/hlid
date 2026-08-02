@@ -160,6 +160,35 @@ const defaultDefinition: RoutineDefinition = {
 };
 
 describe("RoutineManagerDialog", () => {
+	it("uses backdrop dismissal with the same editor-to-overview close semantics", () => {
+		const onClose = vi.fn();
+		render(
+			<RoutineManagerDialog
+				routines={[]}
+				initialDefinition={defaultDefinition}
+				defaultDefinition={defaultDefinition}
+				targets={targets}
+				providers={providers}
+				skills={skills}
+				commands={[]}
+				onClose={onClose}
+				onRefresh={vi.fn().mockResolvedValue(undefined)}
+			/>,
+		);
+
+		const dialog = screen.getByRole("dialog", { name: "Routines" });
+		const backdrop = dialog.parentElement as HTMLElement;
+		fireEvent.click(dialog);
+		expect(onClose).not.toHaveBeenCalled();
+
+		fireEvent.click(backdrop);
+		expect(onClose).not.toHaveBeenCalled();
+		expect(screen.getByRole("button", { name: "New Routine" })).toBeDefined();
+
+		fireEvent.click(backdrop);
+		expect(onClose).toHaveBeenCalledOnce();
+	});
+
 	it("returns from the editor to the Routines overview before closing", () => {
 		const onClose = vi.fn();
 		render(

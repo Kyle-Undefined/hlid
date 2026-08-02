@@ -1,4 +1,10 @@
-import { type KeyboardEvent, type RefObject, useEffect, useRef } from "react";
+import {
+	type KeyboardEvent,
+	type MouseEvent,
+	type RefObject,
+	useEffect,
+	useRef,
+} from "react";
 
 const FOCUSABLE_SELECTOR = [
 	"button:not([disabled])",
@@ -27,6 +33,7 @@ export function useDialogFocus<T extends HTMLElement>(
 	initialFocus: "first" | "dialog" = "first",
 ): {
 	dialogRef: RefObject<T | null>;
+	onBackdropClick: (event: MouseEvent<T>) => void;
 	onDialogKeyDown: (event: KeyboardEvent<T>) => void;
 } {
 	const dialogRef = useRef<T>(null);
@@ -74,5 +81,9 @@ export function useDialogFocus<T extends HTMLElement>(
 		}
 	}
 
-	return { dialogRef, onDialogKeyDown };
+	function onBackdropClick(event: MouseEvent<T>): void {
+		if (event.target === event.currentTarget) onCloseRef.current();
+	}
+
+	return { dialogRef, onBackdropClick, onDialogKeyDown };
 }

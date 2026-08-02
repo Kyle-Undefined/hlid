@@ -39,20 +39,21 @@ function Dialog({
 	onClose: () => void;
 	initialFocus: "first" | "dialog";
 }) {
-	const { dialogRef, onDialogKeyDown } = useDialogFocus<HTMLDivElement>(
-		onClose,
-		true,
-		initialFocus,
-	);
+	const { dialogRef, onBackdropClick, onDialogKeyDown } =
+		useDialogFocus<HTMLDivElement>(onClose, true, initialFocus);
 	return (
-		<div
-			ref={dialogRef}
-			tabIndex={-1}
-			role="dialog"
-			onKeyDown={onDialogKeyDown}
-		>
-			<button type="button">First</button>
-			<button type="button">Last</button>
+		// biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled by the focused dialog
+		// biome-ignore lint/a11y/noStaticElementInteractions: modal backdrop test harness
+		<div data-testid="dialog-backdrop" onClick={onBackdropClick}>
+			<div
+				ref={dialogRef}
+				tabIndex={-1}
+				role="dialog"
+				onKeyDown={onDialogKeyDown}
+			>
+				<button type="button">First</button>
+				<button type="button">Last</button>
+			</div>
 		</div>
 	);
 }
@@ -86,5 +87,18 @@ describe("useDialogFocus", () => {
 		expect(document.activeElement).not.toBe(
 			screen.getByRole("button", { name: "First" }),
 		);
+	});
+
+	it("dismisses only when the click originates on the backdrop", () => {
+		const onClose = vi.fn();
+		render(<Harness onClose={onClose} />);
+		fireEvent.click(screen.getByRole("button", { name: "Open" }));
+
+		fireEvent.click(screen.getByRole("dialog"));
+		expect(onClose).not.toHaveBeenCalled();
+
+		fireEvent.click(screen.getByTestId("dialog-backdrop"));
+		expect(onClose).toHaveBeenCalledOnce();
+		expect(screen.queryByRole("dialog")).toBeNull();
 	});
 });

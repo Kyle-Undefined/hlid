@@ -923,8 +923,6 @@ export function SkillImportDialog({
 		data: { ids: string[] };
 	}) => Promise<SkillImportResult>;
 }) {
-	const { dialogRef, onDialogKeyDown } =
-		useDialogFocus<HTMLDivElement>(onClose);
 	const [skills, setSkills] = useState<SkillCatalogItem[]>([]);
 	const [selected, setSelected] = useState<Set<string>>(new Set());
 	const [search, setSearch] = useState("");
@@ -936,37 +934,58 @@ export function SkillImportDialog({
 		tone: "success" | "warning";
 		message: string;
 	} | null>(null);
+	const mountedRef = useRef(false);
+	const catalogRequestRef = useRef(0);
+	const importRequestRef = useRef(0);
+	const { dialogRef, onBackdropClick, onDialogKeyDown } =
+		useDialogFocus<HTMLDivElement>(onClose);
 
 	const loadCatalog = useCallback(async () => {
+		const requestId = ++catalogRequestRef.current;
 		setLoading(true);
 		setError(null);
 		setNotice(null);
 		setRefreshFeedback(null);
 		try {
 			const result = await discover();
+			if (!mountedRef.current || catalogRequestRef.current !== requestId)
+				return;
 			setSkills(result.skills);
 			setSelected(new Set());
 		} catch (cause) {
+			if (!mountedRef.current || catalogRequestRef.current !== requestId)
+				return;
 			setError(
 				cause instanceof Error ? cause.message : "Skill discovery failed",
 			);
 		} finally {
-			setLoading(false);
+			if (mountedRef.current && catalogRequestRef.current === requestId) {
+				setLoading(false);
+			}
 		}
 	}, [discover]);
 
 	useEffect(() => {
+		mountedRef.current = true;
 		void loadCatalog();
+		return () => {
+			mountedRef.current = false;
+			catalogRequestRef.current += 1;
+			importRequestRef.current += 1;
+		};
 	}, [loadCatalog]);
 
 	const refreshProviderCatalog = async () => {
 		if (loading || importing) return;
+		const requestId = ++catalogRequestRef.current;
 		setLoading(true);
 		setError(null);
 		setNotice(null);
 		setRefreshFeedback(null);
 		try {
 			const result = await refreshInstalled();
+			if (!mountedRef.current || catalogRequestRef.current !== requestId)
+				return;
 			setSkills(result.skills);
 			setSelected(new Set());
 			const snapshotWarning = result.warning
@@ -980,9 +999,13 @@ export function SkillImportDialog({
 				message: `${result.providerRefresh.reason}${snapshotWarning}`,
 			});
 		} catch (cause) {
+			if (!mountedRef.current || catalogRequestRef.current !== requestId)
+				return;
 			setError(cause instanceof Error ? cause.message : "Skill refresh failed");
 		} finally {
-			setLoading(false);
+			if (mountedRef.current && catalogRequestRef.current === requestId) {
+				setLoading(false);
+			}
 		}
 	};
 
@@ -1018,6 +1041,7 @@ export function SkillImportDialog({
 
 	const runImport = async () => {
 		if (selected.size === 0 || importing) return;
+		const requestId = ++importRequestRef.current;
 		setImporting(true);
 		setError(null);
 		setNotice(null);
@@ -1027,6 +1051,7 @@ export function SkillImportDialog({
 			const importedIds = new Set(result.imported.map((item) => item.id));
 			const refreshed =
 				importedIds.size > 0 ? await discover().catch(() => null) : null;
+			if (!mountedRef.current || importRequestRef.current !== requestId) return;
 			setSkills((current) =>
 				refreshed
 					? refreshed.skills
@@ -1048,14 +1073,22 @@ export function SkillImportDialog({
 				);
 			}
 		} catch (cause) {
+			if (!mountedRef.current || importRequestRef.current !== requestId) return;
 			setError(cause instanceof Error ? cause.message : "Import failed");
 		} finally {
-			setImporting(false);
+			if (mountedRef.current && importRequestRef.current === requestId) {
+				setImporting(false);
+			}
 		}
 	};
 
 	return (
-		<div className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex items-center justify-center p-2 md:p-4">
+		// biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled by the focused dialog
+		// biome-ignore lint/a11y/noStaticElementInteractions: modal backdrop pattern
+		<div
+			className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex items-center justify-center p-2 md:p-4"
+			onClick={onBackdropClick}
+		>
 			<div
 				ref={dialogRef}
 				tabIndex={-1}
@@ -1261,7 +1294,16 @@ function SkillDocumentToggle({
 	const [loading, setLoading] = useState(false);
 	const [content, setContent] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const mountedRef = useRef(false);
+	const requestRef = useRef(0);
 	const contentId = `skill-document-${skill.id}`;
+	useEffect(() => {
+		mountedRef.current = true;
+		return () => {
+			mountedRef.current = false;
+			requestRef.current += 1;
+		};
+	}, []);
 
 	const toggle = async (event: MouseEvent<HTMLButtonElement>) => {
 		event.preventDefault();
@@ -1272,17 +1314,22 @@ function SkillDocumentToggle({
 		}
 		setExpanded(true);
 		if (content !== null || loading) return;
+		const requestId = ++requestRef.current;
 		setLoading(true);
 		setError(null);
 		try {
 			const result = await readSkill({ data: { id: skill.id } });
+			if (!mountedRef.current || requestRef.current !== requestId) return;
 			setContent(result.content);
 		} catch (cause) {
+			if (!mountedRef.current || requestRef.current !== requestId) return;
 			setError(
 				cause instanceof Error ? cause.message : "Unable to read SKILL.md",
 			);
 		} finally {
-			setLoading(false);
+			if (mountedRef.current && requestRef.current === requestId) {
+				setLoading(false);
+			}
 		}
 	};
 

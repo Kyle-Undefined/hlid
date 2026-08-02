@@ -42,6 +42,44 @@ function frame(): ProjectPreviewAgentFrame {
 }
 
 describe("ProjectPreviewFeedbackModal", () => {
+	it("dismisses from the backdrop but stays locked while saving", () => {
+		const onClose = vi.fn();
+		const { rerender } = render(
+			<ProjectPreviewFeedbackModal
+				frame={frame()}
+				saving={false}
+				error={null}
+				onClose={onClose}
+				onSave={vi.fn(async () => {})}
+			/>,
+		);
+		const dialog = screen.getByRole("dialog", {
+			name: "Annotate Project Preview",
+		});
+
+		fireEvent.click(dialog);
+		expect(onClose).not.toHaveBeenCalled();
+		fireEvent.click(dialog.parentElement as HTMLElement);
+		expect(onClose).toHaveBeenCalledOnce();
+
+		onClose.mockClear();
+		rerender(
+			<ProjectPreviewFeedbackModal
+				frame={frame()}
+				saving
+				error={null}
+				onClose={onClose}
+				onSave={vi.fn(async () => {})}
+			/>,
+		);
+		const savingDialog = screen.getByRole("dialog", {
+			name: "Annotate Project Preview",
+		});
+		fireEvent.click(savingDialog.parentElement as HTMLElement);
+		fireEvent.keyDown(savingDialog, { key: "Escape" });
+		expect(onClose).not.toHaveBeenCalled();
+	});
+
 	it("scales annotation strokes and text to the source raster density", async () => {
 		class RasterImage {
 			onload: (() => void) | null = null;

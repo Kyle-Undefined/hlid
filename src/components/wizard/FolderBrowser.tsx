@@ -25,6 +25,7 @@ export function FolderBrowser({ initialPath, onSelect, external }: Props) {
 
 	useEffect(() => {
 		const controller = new AbortController();
+		let active = true;
 		setLoading(true);
 		setError(null);
 		const params = new URLSearchParams();
@@ -37,6 +38,7 @@ export function FolderBrowser({ initialPath, onSelect, external }: Props) {
 			.then((r) => r.json())
 			.then(
 				(data: { path: string; entries: BrowserEntry[]; error?: string }) => {
+					if (!active) return;
 					if (data.error) {
 						setError(data.error);
 						setSelectablePath(null);
@@ -53,14 +55,19 @@ export function FolderBrowser({ initialPath, onSelect, external }: Props) {
 				},
 			)
 			.catch((err) => {
-				if ((err as Error).name !== "AbortError") {
+				if (active && (err as Error).name !== "AbortError") {
 					setError("Failed to load directory");
 					setSelectablePath(null);
 				}
 			})
-			.finally(() => setLoading(false));
+			.finally(() => {
+				if (active) setLoading(false);
+			});
 
-		return () => controller.abort();
+		return () => {
+			active = false;
+			controller.abort();
+		};
 	}, [currentPath, external]);
 
 	const navigate = (name: string) =>

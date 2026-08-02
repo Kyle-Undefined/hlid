@@ -55,4 +55,19 @@ describe("BrowseFieldParts", () => {
 		expect(screen.queryByRole("dialog")).toBeNull();
 		expect(document.activeElement).toBe(trigger);
 	});
+
+	it("dismisses from the backdrop without treating dialog content as outside", () => {
+		const onClose = vi.fn();
+		render(
+			<BrowseDialog title="Pick folder" onClose={onClose}>
+				<button type="button">Select folder</button>
+			</BrowseDialog>,
+		);
+
+		const dialog = screen.getByRole("dialog", { name: "Pick folder" });
+		fireEvent.click(dialog);
+		expect(onClose).not.toHaveBeenCalled();
+		fireEvent.click(dialog.parentElement as HTMLElement);
+		expect(onClose).toHaveBeenCalledOnce();
+	});
 });
