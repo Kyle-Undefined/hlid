@@ -61,6 +61,8 @@ export type ProviderInfo = {
 		structuredActivities?: ReadonlyArray<"compact" | "review">;
 		workflowCatalog?: boolean;
 		realtime?: boolean;
+		appCatalog?: boolean;
+		appAuthentication?: boolean;
 	};
 	/** Bounded provider evidence resolved against Hlid's current integration. */
 	capabilitySnapshot?: ProviderCapabilitySnapshot;

@@ -19,6 +19,12 @@ import {
 import { APP_DIR, toLogical } from "../lib/paths";
 import { runBoundedProcess } from "../lib/process";
 import type {
+	ProviderAppAuthenticationRequest,
+	ProviderAppAuthenticationStart,
+	ProviderAppCatalogPage,
+	ProviderAppCatalogRequest,
+} from "../lib/providerAppTypes";
+import type {
 	AgentEvent,
 	AgentProvider,
 	AgentQueryParams,
@@ -41,14 +47,22 @@ import type {
 	SubagentSnapshot,
 } from "./agentProvider";
 import { ingestVisualizationHtml } from "./attachments";
+import { openInBrowser } from "./browser";
 import {
 	acquireCodexAppServer,
 	CodexAppServer,
 	type CodexAppServerLaunch,
 	type ThreadHandler,
 } from "./codexAppServer";
+import { type CodexAppAuthAttempt, mapCodexAppCatalogPage } from "./codexApps";
 import { discoverCodexProviderCapabilities } from "./codexCapabilityDiscovery";
 import type {
+	AppsInstalledParams,
+	AppsInstalledResponse,
+	AppsListParams,
+	AppsListResponse,
+	AppsReadParams,
+	AppsReadResponse,
 	CollabAgentState,
 	CollabAgentStatus,
 	CollabAgentTool,
@@ -58,7 +72,11 @@ import type {
 	FileChangeRequestApprovalResponse,
 	SandboxMode as GeneratedSandboxMode,
 	GrantedPermissionProfile,
+	ListMcpServerStatusParams,
+	ListMcpServerStatusResponse,
 	McpServerElicitationRequestResponse,
+	McpServerOauthLoginParams,
+	McpServerOauthLoginResponse,
 	Model,
 	ModelListParams,
 	ModelListResponse,
@@ -4635,6 +4653,8 @@ export class CodexProvider implements AgentProvider {
 		goalControl: true,
 		structuredActivities: ["compact", "review"],
 		realtime: true,
+		appCatalog: true,
+		appAuthentication: true,
 	} as const;
 	hlidToolLoading() {
 		const computerUseAvailable = windowsComputerUseHostAvailable();
@@ -4676,6 +4696,7 @@ export class CodexProvider implements AgentProvider {
 		throughMessage: true,
 	} as const;
 	protected readonly providerProfile?: CodexProviderProfile;
+	private readonly appAuthAttempts = new Map<string, CodexAppAuthAttempt>();
 
 	constructor(
 		options: {
@@ -4806,6 +4827,123 @@ export class CodexProvider implements AgentProvider {
 			cwd: launch.rpcCwd,
 			request: (method, params) => conn.requestOptional(method, params, 5_000),
 		});
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Invoked through the optional AgentProvider.listApps capability in providerAppRoutes.
+	async listApps(
+		context: ProviderAppCatalogRequest,
+	): Promise<ProviderAppCatalogPage> {
+		const launch = codexLaunchConfig({
+			cwd: context.cwd,
+			profile: this.providerProfile,
+		});
+		const conn = acquireCodexAppServer(launch.appServer);
+		await conn.ready;
+		const limit = Math.max(1, Math.min(100, Math.trunc(context.limit ?? 50)));
+		const appsParams: AppsListParams = {
+			limit,
+			...(context.cursor ? { cursor: context.cursor } : {}),
+			...(context.refresh ? { forceRefetch: true } : {}),
+		};
+		const installedParams: AppsInstalledParams = {
+			...(context.refresh ? { forceRefresh: true } : {}),
+		};
+		const mcpParams: ListMcpServerStatusParams = {
+			limit: 100,
+			detail: "full",
+		};
+		const settled = await Promise.allSettled([
+			conn.requestOptional("app/list", appsParams, 15_000),
+			conn.requestOptional("app/installed", installedParams, 15_000),
+			conn.requestOptional("mcpServerStatus/list", mcpParams, 15_000),
+		]);
+		const issues: string[] = [];
+		const result = (index: number, method: string): unknown => {
+			const item = settled[index];
+			if (item?.status === "fulfilled") return item.value;
+			issues.push(`${method} is unavailable in the active provider runtime.`);
+			return {};
+		};
+		const appsResponse = result(0, "app/list") as Partial<AppsListResponse>;
+		const installedResponse = result(
+			1,
+			"app/installed",
+		) as Partial<AppsInstalledResponse>;
+		const mcpResponse = result(
+			2,
+			"mcpServerStatus/list",
+		) as Partial<ListMcpServerStatusResponse>;
+		const page = mapCodexAppCatalogPage({
+			providerId: this.providerId,
+			cwd: launch.rpcCwd,
+			...(context.sessionId ? { sessionId: context.sessionId } : {}),
+			appsResponse,
+			installedResponse,
+			mcpResponse,
+			...(context.cursor ? { cursor: context.cursor } : {}),
+			authAttempts: this.appAuthAttempts,
+			issues,
+		});
+		return settled.every((item) => item.status === "rejected")
+			? { ...page, status: "unavailable" }
+			: page;
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Invoked through the optional AgentProvider.startAppAuthentication capability in providerAppRoutes.
+	async startAppAuthentication(
+		request: ProviderAppAuthenticationRequest,
+	): Promise<ProviderAppAuthenticationStart> {
+		const launch = codexLaunchConfig({
+			cwd: request.cwd,
+			profile: this.providerProfile,
+		});
+		const conn = acquireCodexAppServer(launch.appServer);
+		await conn.ready;
+		const key = `${request.target.kind}:${request.target.id}`;
+		try {
+			let authorizationUrl: unknown;
+			if (request.target.kind === "app") {
+				const params: AppsReadParams = {
+					appIds: [request.target.id],
+				};
+				const response = (await conn.requestOptional(
+					"app/read",
+					params,
+					10_000,
+				)) as AppsReadResponse;
+				authorizationUrl = response.apps.find(
+					(app) => app.id === request.target.id,
+				)?.installUrl;
+			} else {
+				const params: McpServerOauthLoginParams = {
+					name: request.target.id,
+				};
+				const response = (await conn.requestOptional(
+					"mcpServer/oauth/login",
+					params,
+					10_000,
+				)) as McpServerOauthLoginResponse;
+				authorizationUrl = response.authorizationUrl;
+			}
+			if (typeof authorizationUrl !== "string" || !authorizationUrl.trim()) {
+				throw new Error("Provider did not return an authorization URL");
+			}
+			if (!openInBrowser(authorizationUrl)) {
+				throw new Error("Hlid could not open the authorization URL");
+			}
+			this.appAuthAttempts.set(key, {
+				state: "pending",
+				startedAt: Date.now(),
+			});
+			return { opened: true };
+		} catch {
+			this.appAuthAttempts.set(key, {
+				state: "failed",
+				startedAt: Date.now(),
+				error: "Provider authentication could not be started.",
+			});
+			throw new Error("Provider authentication could not be started.");
+		}
 	}
 
 	async listModels(): Promise<ProviderModelInfo[]> {

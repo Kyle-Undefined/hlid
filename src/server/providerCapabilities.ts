@@ -143,6 +143,35 @@ function staticEvidence(input: {
 			reason: "Selected model, Hlid configuration, and backend still gate use.",
 		});
 	}
+	if (capabilities?.appCatalog) {
+		evidence.push({
+			id: providerCapabilityId(providerId, "app-catalog"),
+			label: "Apps and connector catalog",
+			scope: "account",
+			support: "advertised",
+			integration: "integrated",
+			readiness: "gated",
+			source: "hlid-adapter",
+			maturity: "experimental",
+			operations: ["list", "read", "refresh"],
+			reason: "Live provider inventory still determines current readiness.",
+		});
+	}
+	if (capabilities?.appAuthentication) {
+		evidence.push({
+			id: providerCapabilityId(providerId, "app-authentication"),
+			label: "App and connector authentication",
+			scope: "account",
+			support: "advertised",
+			integration: "integrated",
+			readiness: "gated",
+			source: "hlid-adapter",
+			maturity: "experimental",
+			operations: ["start", "observe-completion"],
+			reason:
+				"Live provider inventory still determines whether authentication is required.",
+		});
+	}
 	if (forkCapability) {
 		evidence.push({
 			id: providerCapabilityId(providerId, "exact-fork"),

@@ -87,6 +87,7 @@ import {
 	selectedProjectPreviewRelayUrl,
 } from "./projectPreviewRelay";
 import { handleProjectPreviewRoute } from "./projectPreviewRoutes";
+import { createProviderAppRouteHandler } from "./providerAppRoutes";
 import {
 	createModelCatalog,
 	createProviderCapabilityCatalog,
@@ -380,6 +381,14 @@ providerCatalogSnapshot = createProviderCatalogSnapshot(
 	},
 	{ discoveryCwd: config.vault.path || process.cwd() },
 );
+const handleProviderAppRoute = createProviderAppRouteHandler({
+	getProvider: (providerId) => providers.get(providerId),
+	loadConfig,
+	onAuthenticationStarted: () => {
+		providerCatalogSnapshot.invalidate();
+		bumpDataRevision("providers", "mcp");
+	},
+});
 let cliProxyAccountsKey = JSON.stringify(cliProxy.status().accounts);
 let providerCatalogRevision = getDataRevisions().providers;
 subscribeDataRevisions((revisions) => {
@@ -1099,6 +1108,7 @@ const handleAuthenticatedRoute = createAuthenticatedRouteHandler({
 	orderedHandlers: [
 		handleCodexRoute,
 		handleProviderRoute,
+		handleProviderAppRoute,
 		handleAcpRoute,
 		handleExtensionRoute,
 		handleCliProxyRoute,

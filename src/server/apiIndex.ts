@@ -72,6 +72,18 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 	},
 	{
 		method: "GET",
+		path: "/provider-apps?provider_id=codex&limit=50&refresh=1",
+		server: "api",
+		desc: "Bounded provider-native Apps and connector inventory. Reports installed, configured, authentication, usable, OAuth completion, and MCP tool/resource health separately. cursor pages the available catalog; cwd selects the exact provider workspace; refresh=1 requests a live provider refresh.",
+	},
+	{
+		method: "POST",
+		path: "/provider-apps/authenticate",
+		server: "api",
+		desc: 'Start provider-native app or MCP authentication and open the authorization URL on the Hlid host without returning or persisting it. Body: {"providerId": string, "kind": "app" | "mcp", "id": string, "cwd"?: string}.',
+	},
+	{
+		method: "GET",
 		path: "/acp/registry?refresh=1",
 		server: "api",
 		desc: "Cached official ACP agent catalog and local availability; ?refresh=1 forces refresh.",

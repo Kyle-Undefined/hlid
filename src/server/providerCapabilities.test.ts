@@ -170,6 +170,24 @@ describe("Codex capability discovery", () => {
 			if (method === "collaborationMode/list") {
 				return { data: [{ name: "plan" }] };
 			}
+			if (method === "app/list") {
+				return {
+					data: [
+						{
+							id: "github",
+							name: "GitHub",
+							installUrl: "https://example.test/connect",
+						},
+					],
+					nextCursor: "next",
+				};
+			}
+			if (method === "app/installed") {
+				return { apps: [{ id: "github", callable: true }] };
+			}
+			if (method === "mcpServerStatus/list") {
+				return { data: [{ name: "codex_apps", authStatus: "bearerToken" }] };
+			}
 			return { data: [{ cwd: "/work", hooks: [{ name: "lint" }] }] };
 		});
 
@@ -179,7 +197,7 @@ describe("Codex capability discovery", () => {
 			request,
 		});
 
-		expect(request).toHaveBeenCalledTimes(4);
+		expect(request).toHaveBeenCalledTimes(7);
 		expect(discovery.context).toEqual({ cwd: "/work" });
 		expect(discovery.issues).toBeUndefined();
 		expect(
@@ -198,6 +216,19 @@ describe("Codex capability discovery", () => {
 		expect(
 			discovery.evidence.find((item) => item.id.includes("hook-catalog")),
 		).toMatchObject({ label: "Hook catalog (1)" });
+		expect(
+			discovery.evidence.find((item) => item.id.includes("app-catalog")),
+		).toMatchObject({
+			label: "App catalog (1+ available)",
+			integration: "integrated",
+			readiness: "ready",
+		});
+		expect(
+			discovery.evidence.find((item) => item.id.includes("installed-apps")),
+		).toMatchObject({ label: "Installed apps (1; 1 usable)" });
+		expect(
+			discovery.evidence.find((item) => item.id.includes("connector-health")),
+		).toMatchObject({ label: "MCP connector health (1; 0 need auth)" });
 	});
 
 	it("keeps successful evidence when one optional endpoint is unavailable", async () => {

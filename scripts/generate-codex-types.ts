@@ -141,6 +141,16 @@ const SEEDS: Array<[name: string, relPath: string]> = [
 		"McpServerElicitationRequestResponse",
 		"v2/McpServerElicitationRequestResponse.ts",
 	],
+	["AppsListParams", "v2/AppsListParams.ts"],
+	["AppsListResponse", "v2/AppsListResponse.ts"],
+	["AppsReadParams", "v2/AppsReadParams.ts"],
+	["AppsReadResponse", "v2/AppsReadResponse.ts"],
+	["AppsInstalledParams", "v2/AppsInstalledParams.ts"],
+	["AppsInstalledResponse", "v2/AppsInstalledResponse.ts"],
+	["ListMcpServerStatusParams", "v2/ListMcpServerStatusParams.ts"],
+	["ListMcpServerStatusResponse", "v2/ListMcpServerStatusResponse.ts"],
+	["McpServerOauthLoginParams", "v2/McpServerOauthLoginParams.ts"],
+	["McpServerOauthLoginResponse", "v2/McpServerOauthLoginResponse.ts"],
 ];
 
 async function run(cmd: string[], opts?: { cwd?: string }): Promise<string> {

@@ -1,4 +1,10 @@
 import type { HlidToolLoadingSummary } from "../lib/hlidContext";
+import type {
+	ProviderAppAuthenticationRequest,
+	ProviderAppAuthenticationStart,
+	ProviderAppCatalogPage,
+	ProviderAppCatalogRequest,
+} from "../lib/providerAppTypes";
 import type { ProviderCapabilityDiscovery } from "../lib/providerCapabilityTypes";
 
 /**
@@ -612,6 +618,10 @@ export type ProviderCapabilityMetadata = {
 	workflowCatalog?: boolean;
 	/** Provider exposes the realtime conversation transport; config/model/backend still gate use. */
 	realtime?: boolean;
+	/** Provider exposes an account-scoped Apps and connector inventory. */
+	appCatalog?: boolean;
+	/** Hlid can start provider-native app or connector authentication. */
+	appAuthentication?: boolean;
 };
 
 export type ForkSessionParams = {
@@ -714,6 +724,14 @@ export interface AgentProvider {
 	discoverCapabilities?(context: {
 		cwd: string;
 	}): Promise<ProviderCapabilityDiscovery>;
+	/** Read one bounded provider-native Apps and connector page without starting a chat turn. */
+	listApps?(
+		context: ProviderAppCatalogRequest,
+	): Promise<ProviderAppCatalogPage>;
+	/** Begin provider-native authentication. The caller owns opening the returned safe URL. */
+	startAppAuthentication?(
+		request: ProviderAppAuthenticationRequest,
+	): Promise<ProviderAppAuthenticationStart>;
 	/** Live-fetch the provider's model catalog. Falls back to the static `models` list on failure. */
 	listModels?(): Promise<ProviderModelInfo[]>;
 	/** Discover skills visible to this provider for a concrete working directory. */

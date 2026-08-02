@@ -1,5 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
+	Blocks,
 	FileCode,
 	GitFork,
 	Headphones,
@@ -51,6 +52,7 @@ import { SlashPicker } from "#/components/cockpit/SlashPicker";
 import { McpIndicator } from "#/components/McpIndicator";
 import { ObsidianActiveNoteButton } from "#/components/ObsidianActiveNoteButton";
 import { PrivacyMask } from "#/components/PrivacyMask";
+import { ProviderAppsDialog } from "#/components/ProviderAppsCatalog";
 import { TerminalView } from "#/components/TerminalView";
 import { ProviderUsageStrip } from "#/components/usage/ProviderUsageStrip";
 import { ContextWindowSection } from "#/components/usage/UsageWindowSections";
@@ -4228,6 +4230,7 @@ function ChatInputArea(props: ChatComposerProps) {
 function ChatInputNotices({
 	config,
 	agentList,
+	providers,
 	session,
 	runtime,
 	upload,
@@ -4255,6 +4258,10 @@ function ChatInputNotices({
 		removePending,
 		dismissGitignoreHint,
 	} = upload;
+	const [appsOpen, setAppsOpen] = useState(false);
+	const activeProvider = providers.find(
+		(provider) => provider.id === activeProviderId,
+	);
 	return (
 		<>
 			<ActiveCommandBadges commands={activeSkills} onClear={clearActiveSkill} />
@@ -4362,6 +4369,17 @@ function ChatInputNotices({
 							"Vault"
 						}`}
 					/>
+					{activeProvider?.capabilities?.appCatalog && (
+						<button
+							type="button"
+							onClick={() => setAppsOpen(true)}
+							title={`Inspect ${activeProvider.label} Apps and connectors`}
+							className="flex shrink-0 items-center gap-1.5 text-[9px] tracking-widest text-muted-foreground/40 uppercase transition-colors hover:text-muted-foreground/70"
+						>
+							<Blocks className="h-3 w-3" />
+							apps
+						</button>
+					)}
 					<button
 						type="button"
 						onClick={() => {
@@ -4428,6 +4446,15 @@ function ChatInputNotices({
 					</button>
 				</div>
 			</div>
+			{appsOpen && activeProvider?.capabilities?.appCatalog && (
+				<ProviderAppsDialog
+					providerId={activeProvider.id}
+					providerLabel={activeProvider.label}
+					cwd={agentSkillContext ?? config.vault.path}
+					sessionId={sessionId}
+					onClose={() => setAppsOpen(false)}
+				/>
+			)}
 		</>
 	);
 }

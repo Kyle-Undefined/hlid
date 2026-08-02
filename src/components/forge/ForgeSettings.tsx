@@ -25,6 +25,7 @@ import { UpdatesSection } from "#/components/forge/UpdatesSection";
 import { VaultSection } from "#/components/forge/VaultSection";
 import { VocabSection } from "#/components/forge/VocabSection";
 import { VoiceSection } from "#/components/forge/VoiceSection";
+import { ProviderAppsCatalog } from "#/components/ProviderAppsCatalog";
 import { PageHeader, PageIntro } from "#/components/shell/PageHeader";
 import { SectionRail } from "#/components/shell/SectionRail";
 import type {
@@ -100,6 +101,7 @@ const CATEGORIES = [
 		label: "Integrations",
 		description: "MCP servers, external agents, and ACP",
 		sections: [
+			"Apps and Connectors",
 			"MCP",
 			"CLIProxyAPI",
 			"Umbod policy",
@@ -109,7 +111,7 @@ const CATEGORIES = [
 			"ACP Agent Catalog",
 		],
 		keywords:
-			"mcp servers cliproxy codex claude code oauth external agents acp catalog integrations",
+			"apps connectors mcp servers cliproxy codex claude code oauth authentication external agents acp catalog integrations",
 		group: "secondary",
 	},
 	{
@@ -422,11 +424,13 @@ function ExperienceCategory({
 function IntegrationsCategory({
 	state,
 	initial,
+	onShowApps,
 	onShowUmbod,
 	onShowCatalog,
 }: {
 	state: SettingsFormState;
 	initial: SettingsInitial;
+	onShowApps: () => void;
 	onShowUmbod: () => void;
 	onShowCatalog: () => void;
 }) {
@@ -436,6 +440,22 @@ function IntegrationsCategory({
 				title="Integrations"
 				description="Connect tools and agents without crowding core agent settings."
 			/>
+			<div className="flex min-w-0 flex-col items-start gap-3 border border-border bg-card p-4 @2xl:flex-row @2xl:items-center @2xl:justify-between">
+				<div className="min-w-0">
+					<div className="text-sm">Apps and Connectors</div>
+					<p className="mt-0.5 break-words text-xs text-muted-foreground">
+						Inspect provider-native app readiness, authentication, and MCP
+						health separately from plugin packages.
+					</p>
+				</div>
+				<button
+					type="button"
+					onClick={onShowApps}
+					className="max-w-full shrink-0 whitespace-normal border border-border px-3 py-1.5 text-center text-[10px] tracking-widest uppercase hover:bg-accent"
+				>
+					Open Apps
+				</button>
+			</div>
 			<McpSection vaultPath={state.vault.path} />
 			<CliProxySection
 				config={initial.cliproxy}
@@ -472,6 +492,68 @@ function IntegrationsCategory({
 					Open catalog
 				</button>
 			</div>
+		</>
+	);
+}
+
+function ProviderAppsPage({
+	providers,
+	cwd,
+	onBack,
+}: {
+	providers: SettingsInitial["providers"];
+	cwd: string;
+	onBack: () => void;
+}) {
+	const appProviders = providers.filter(
+		(provider) => provider.available && provider.capabilities?.appCatalog,
+	);
+	const [providerId, setProviderId] = useState(appProviders[0]?.id ?? "");
+	useEffect(() => {
+		if (appProviders.some((provider) => provider.id === providerId)) return;
+		setProviderId(appProviders[0]?.id ?? "");
+	}, [appProviders, providerId]);
+	const provider = appProviders.find(
+		(candidate) => candidate.id === providerId,
+	);
+	return (
+		<>
+			<button
+				type="button"
+				onClick={onBack}
+				className="text-[10px] tracking-widest uppercase text-muted-foreground hover:text-foreground"
+			>
+				← Integrations
+			</button>
+			<PageIntro
+				title="Apps and Connectors"
+				description="Inspect provider-native app installation, configuration, authentication, usability, and MCP health."
+			/>
+			{appProviders.length > 1 && (
+				<select
+					value={providerId}
+					onChange={(event) => setProviderId(event.target.value)}
+					aria-label="Apps provider"
+					className="w-full max-w-sm border border-border bg-input px-2.5 py-1.5 text-xs"
+				>
+					{appProviders.map((candidate) => (
+						<option key={candidate.id} value={candidate.id}>
+							{candidate.label}
+						</option>
+					))}
+				</select>
+			)}
+			{provider ? (
+				<ProviderAppsCatalog
+					providerId={provider.id}
+					providerLabel={provider.label}
+					cwd={cwd}
+				/>
+			) : (
+				<div className="border border-border bg-card p-6 text-sm text-muted-foreground">
+					No available provider advertises an Apps catalog through Hlid.
+				</div>
+			)}
 		</>
 	);
 }
@@ -559,6 +641,8 @@ function CategoryContent({
 	initial,
 	showCatalog,
 	onShowCatalog,
+	showApps,
+	onShowApps,
 	showUmbod,
 	onShowUmbod,
 	showTheme,
@@ -573,6 +657,8 @@ function CategoryContent({
 	initial: SettingsInitial;
 	showCatalog: boolean;
 	onShowCatalog: (show: boolean) => void;
+	showApps: boolean;
+	onShowApps: (show: boolean) => void;
 	showUmbod: boolean;
 	onShowUmbod: (show: boolean) => void;
 	showTheme: boolean;
@@ -582,6 +668,14 @@ function CategoryContent({
 	developerView: DeveloperView;
 	onDeveloperView: (view: DeveloperView) => void;
 }) {
+	if (category === "integrations" && showApps)
+		return (
+			<ProviderAppsPage
+				providers={initial.providers}
+				cwd={state.vault.path || initial.cwd}
+				onBack={() => onShowApps(false)}
+			/>
+		);
 	if (category === "integrations" && showCatalog)
 		return (
 			<AcpCatalogPage
@@ -623,6 +717,7 @@ function CategoryContent({
 				<IntegrationsCategory
 					state={state}
 					initial={initial}
+					onShowApps={() => onShowApps(true)}
 					onShowUmbod={() => onShowUmbod(true)}
 					onShowCatalog={() => onShowCatalog(true)}
 				/>
@@ -730,6 +825,7 @@ export function ForgeSettings({
 	const [category, setCategory] = useState<Category>("overview");
 	const [search, setSearch] = useState("");
 	const [showCatalog, setShowCatalog] = useState(false);
+	const [showApps, setShowApps] = useState(false);
 	const [showUmbod, setShowUmbod] = useState(false);
 	const [showTheme, setShowTheme] = useState(false);
 	const [themeTarget, setThemeTarget] = useState<ThemeTarget>("desktop");
@@ -750,12 +846,14 @@ export function ForgeSettings({
 		if (shown.some((item) => item.id === category)) return;
 		setCategory(shown[0].id);
 		setShowCatalog(false);
+		setShowApps(false);
 		setShowUmbod(false);
 		setShowTheme(false);
 	}, [category, search, shown]);
 	function choose(next: Category) {
 		setCategory(next);
 		setShowCatalog(false);
+		setShowApps(false);
 		setShowUmbod(false);
 		setShowTheme(false);
 	}
@@ -866,6 +964,8 @@ export function ForgeSettings({
 								initial={initial}
 								showCatalog={showCatalog}
 								onShowCatalog={setShowCatalog}
+								showApps={showApps}
+								onShowApps={setShowApps}
 								showUmbod={showUmbod}
 								onShowUmbod={setShowUmbod}
 								showTheme={showTheme}

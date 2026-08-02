@@ -17,6 +17,7 @@ vi.mock("node:fs/promises", () => ({
 vi.mock("../lib/codexPath", () => ({ resolveCodexExecutable: vi.fn() }));
 vi.mock("../lib/process", () => ({ runBoundedProcess: vi.fn() }));
 vi.mock("./attachments", () => ({ ingestVisualizationHtml: vi.fn() }));
+vi.mock("./browser", () => ({ openInBrowser: vi.fn(() => true) }));
 vi.mock("./libraryStore", () => ({
 	prepareLibrary: vi.fn().mockResolvedValue(undefined),
 	visualizationStagingJobDirectory: vi.fn(() => "/tmp/hlid-visualization-job"),
@@ -45,6 +46,7 @@ import type {
 	AgentSession,
 } from "./agentProvider";
 import { ingestVisualizationHtml } from "./attachments";
+import { openInBrowser } from "./browser";
 import {
 	__resetCodexAppServersForTesting,
 	acquireCodexAppServer,
@@ -240,11 +242,13 @@ describe("CodexProvider capability declarations", () => {
 		});
 	});
 
-	it("declares structured goals, activities, and realtime transport", () => {
+	it("declares structured goals, activities, realtime, and Apps", () => {
 		expect(new CodexProvider().capabilities).toEqual({
 			goalControl: true,
 			structuredActivities: ["compact", "review"],
 			realtime: true,
+			appCatalog: true,
+			appAuthentication: true,
 		});
 	});
 
@@ -1229,6 +1233,103 @@ describe("CodexProvider.listSkills", () => {
 	});
 });
 
+describe("CodexProvider Apps and connector integration", () => {
+	beforeEach(() => {
+		__resetCodexAppServersForTesting();
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		vi.mocked(openInBrowser).mockReturnValue(true);
+	});
+
+	it("reads app, installed runtime, and MCP health without creating a thread", async () => {
+		const { proc, writes } = makeFakeSessionProc({
+			appsListResult: {
+				data: [
+					{
+						id: "github",
+						name: "GitHub",
+						isAccessible: true,
+						isEnabled: true,
+						installUrl: "https://example.test/connect",
+					},
+				],
+				nextCursor: null,
+			},
+			installedAppsResult: {
+				apps: [
+					{
+						id: "github",
+						runtimeName: "GitHub",
+						enabled: true,
+						callable: true,
+					},
+				],
+			},
+			mcpStatusResult: {
+				data: [
+					{
+						name: "codex_apps",
+						authStatus: "bearerToken",
+						tools: { search: {} },
+						resources: [],
+						resourceTemplates: [],
+					},
+				],
+			},
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+
+		const page = await new CodexProvider().listApps?.({
+			cwd: "/work/project",
+			limit: 50,
+		});
+
+		expect(page).toMatchObject({
+			status: "current",
+			installedCount: 1,
+			usableCount: 1,
+			apps: [expect.objectContaining({ id: "github", usable: true })],
+			connectors: [expect.objectContaining({ id: "codex_apps", usable: true })],
+		});
+		expect(writeMethods(writes)).toEqual(
+			expect.arrayContaining([
+				"initialize",
+				"app/list",
+				"app/installed",
+				"mcpServerStatus/list",
+			]),
+		);
+		expect(writeMethods(writes)).not.toContain("thread/start");
+	});
+
+	it("opens app authorization on the host without returning the URL", async () => {
+		const { proc } = makeFakeSessionProc({
+			appsReadResult: {
+				apps: [
+					{
+						id: "github",
+						name: "GitHub",
+						installUrl: "https://secret.example.test/oauth-state",
+					},
+				],
+				missingAppIds: [],
+			},
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const provider = new CodexProvider();
+
+		const result = await provider.startAppAuthentication?.({
+			cwd: "/work/project",
+			target: { kind: "app", id: "github" },
+		});
+
+		expect(result).toEqual({ opened: true });
+		expect(JSON.stringify(result)).not.toContain("oauth-state");
+		expect(openInBrowser).toHaveBeenCalledWith(
+			"https://secret.example.test/oauth-state",
+		);
+	});
+});
+
 // ── CodexAgentSession mid-session model/permission switching ──────────────────
 
 /**
@@ -1245,6 +1346,10 @@ function makeFakeSessionProc(
 		mcpStatusResult?: unknown;
 		/** Reply to `mcpServerStatus/list` with a JSON-RPC error. */
 		mcpStatusError?: boolean;
+		appsListResult?: unknown;
+		installedAppsResult?: unknown;
+		appsReadResult?: unknown;
+		mcpOauthResult?: unknown;
 		skills?: unknown[];
 		modelListResult?: unknown;
 		uniqueThreadIds?: boolean;
@@ -1437,6 +1542,34 @@ function makeFakeSessionProc(
 									? { id: msg.id, error: { message: "unsupported" } }
 									: { id: msg.id, result: opts.mcpStatusResult ?? {} },
 							)}\n`,
+						),
+					);
+				} else if (msg.method === "app/list") {
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify({ id: msg.id, result: opts.appsListResult ?? { data: [], nextCursor: null } })}\n`,
+						),
+					);
+				} else if (msg.method === "app/installed") {
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify({ id: msg.id, result: opts.installedAppsResult ?? { apps: [] } })}\n`,
+						),
+					);
+				} else if (msg.method === "app/read") {
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify({ id: msg.id, result: opts.appsReadResult ?? { apps: [], missingAppIds: [] } })}\n`,
+						),
+					);
+				} else if (msg.method === "mcpServer/oauth/login") {
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify({ id: msg.id, result: opts.mcpOauthResult ?? { authorizationUrl: "https://example.test/oauth" } })}\n`,
 						),
 					);
 				} else if (
