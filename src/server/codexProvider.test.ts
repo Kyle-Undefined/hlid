@@ -3491,7 +3491,7 @@ describe("CodexAgentSession — notifications", () => {
 		session.cancel();
 	});
 
-	it("maps inbound notification families and deduplicates streamed content", async () => {
+	it("maps inbound notifications, preserves message boundaries, and deduplicates streamed content", async () => {
 		const { proc } = makeFakeSessionProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);
 		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
@@ -3574,6 +3574,9 @@ describe("CodexAgentSession — notifications", () => {
 			text: "Streamed response",
 		});
 		expect(await nextSessionEvent(events)).toEqual({
+			type: "assistant_message_boundary",
+		});
+		expect(await nextSessionEvent(events)).toEqual({
 			type: "text_delta",
 			text: "Fallback response",
 		});
@@ -3632,6 +3635,63 @@ describe("CodexAgentSession — notifications", () => {
 			},
 		});
 		expect(await events.next()).toEqual({ value: undefined, done: true });
+	});
+
+	it("separates streamed assistant items without splitting chunks from one item", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		await session.send("hello");
+		await nextSessionEvent(events); // session_start
+
+		emitSessionNotification(proc, "turn/started", {
+			threadId: "thread-1",
+			turn: { id: "turn-1" },
+		});
+		emitSessionNotification(proc, "item/agentMessage/delta", {
+			threadId: "thread-1",
+			itemId: "message-1",
+			delta: "First ",
+		});
+		emitSessionNotification(proc, "item/agentMessage/delta", {
+			threadId: "thread-1",
+			itemId: "message-1",
+			delta: "update.",
+		});
+		emitSessionNotification(proc, "item/agentMessage/delta", {
+			threadId: "thread-1",
+			itemId: "message-2",
+			delta: "Second update.",
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "turn-1", status: "completed" },
+		});
+
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "provider_turn_id",
+			id: "turn-1",
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "text_delta",
+			text: "First ",
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "text_delta",
+			text: "update.",
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "assistant_message_boundary",
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "text_delta",
+			text: "Second update.",
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({ type: "done" });
+		session.cancel();
 	});
 
 	it("repairs a dropped streamed suffix from the completed-turn summary", async () => {

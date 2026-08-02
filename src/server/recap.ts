@@ -147,7 +147,11 @@ export async function generateTurnRecap({
 		let actualModel: string | null = null;
 		let contextWindow: number | null = null;
 		for await (const event of session) {
-			if (event.type === "text_delta") {
+			if (event.type === "assistant_message_boundary") {
+				if (summary && !summary.endsWith("\n\n")) {
+					summary += summary.endsWith("\n") ? "\n" : "\n\n";
+				}
+			} else if (event.type === "text_delta") {
 				summary += event.text;
 			} else if (
 				event.type === "text_replace" &&

@@ -1987,6 +1987,7 @@ class ClaudeAgentSession implements AgentSession {
 	private receivedAnyEvent = false;
 	private retriedWithoutResume = false;
 	private pendingSteerContinuation = false;
+	private hasEmittedAssistantTextMessage = false;
 	private subagents = new ClaudeSubagentTracker();
 	private turnUsage = new ClaudeTurnUsageAccumulator();
 	// The streaming Claude SDK query survives across Raven turns and reports
@@ -2246,6 +2247,7 @@ class ClaudeAgentSession implements AgentSession {
 		messages: ReadonlyArray<Extract<SDKMessage, { type: "result" }>>,
 		done: Extract<AgentEvent, { type: "done" }>,
 	): Extract<AgentEvent, { type: "done" }> {
+		this.hasEmittedAssistantTextMessage = false;
 		const reconciled = this.turnUsage.reconcileMany(messages);
 		this.turnUsage.reset();
 		this.subagents.finishQuery();
@@ -2420,6 +2422,19 @@ class ClaudeAgentSession implements AgentSession {
 					this.includeEstimatedCost,
 					this.normalizeModel,
 				);
+				if (message.type === "assistant") {
+					const firstTextIndex = translation.events.findIndex(
+						(event) => event.type === "text_delta",
+					);
+					if (firstTextIndex >= 0) {
+						if (this.hasEmittedAssistantTextMessage) {
+							translation.events.splice(firstTextIndex, 0, {
+								type: "assistant_message_boundary",
+							});
+						}
+						this.hasEmittedAssistantTextMessage = true;
+					}
+				}
 				for (const event of translation.events) {
 					if (event.type === "commands_changed") {
 						this.latestSkillCommands = event.commands;

@@ -308,6 +308,10 @@ function updateWindowsWorkerText(
 	text: string,
 	event: AgentEvent,
 ): string | null {
+	if (event.type === "assistant_message_boundary") {
+		if (!text || text.endsWith("\n\n")) return text;
+		return text.endsWith("\n") ? `${text}\n` : `${text}\n\n`;
+	}
 	if (event.type === "text_delta") return text + event.text;
 	if (event.type !== "text_replace" || !text.endsWith(event.previousText)) {
 		return null;
@@ -1927,6 +1931,7 @@ class CodexAgentSession implements AgentSession {
 	private canceled = false;
 	private endAfterTurn = false;
 	private emittedAgentMessageText = new Map<string, string>();
+	private queryAssistantMessageIds = new Set<string>();
 	private emittedReasoningIds = new Set<string>();
 	private emittedUnidentifiedAgentMessageText = "";
 	private startedItems = new Map<string, Record<string, unknown>>();
@@ -3799,6 +3804,7 @@ class CodexAgentSession implements AgentSession {
 	private resetQueryAccounting(): void {
 		this.clearPendingDone();
 		this.activeTurnModel = null;
+		this.queryAssistantMessageIds.clear();
 		this.queryUsage = emptyCodexUsage();
 		this.queryEstimatedCost = 0;
 		this.queryUsageIsPriced = true;
@@ -3944,10 +3950,20 @@ class CodexAgentSession implements AgentSession {
 		this.lastUsage = emptyCodexUsage();
 	}
 
+	private beginAssistantMessage(itemId: string): void {
+		const key = itemId || "__unidentified_agent_message__";
+		if (this.queryAssistantMessageIds.has(key)) return;
+		if (this.queryAssistantMessageIds.size > 0) {
+			this.events.push({ type: "assistant_message_boundary" });
+		}
+		this.queryAssistantMessageIds.add(key);
+	}
+
 	private handleAgentMessageDelta(obj: Record<string, unknown>): void {
 		const text = textFromUnknown(obj.delta ?? obj.text ?? obj.content);
 		if (!text) return;
 		const itemId = String(obj.itemId ?? obj.id ?? "");
+		this.beginAssistantMessage(itemId);
 		if (itemId) {
 			this.emittedAgentMessageText.set(
 				itemId,
@@ -4198,6 +4214,7 @@ class CodexAgentSession implements AgentSession {
 			? (this.emittedAgentMessageText.get(itemId) ?? "")
 			: this.emittedUnidentifiedAgentMessageText;
 		if (text === emittedText) return;
+		this.beginAssistantMessage(itemId);
 
 		// Completed message content is authoritative in Codex 0.146. AgentEvent
 		// text remains append-only for the common dropped-suffix case. If an

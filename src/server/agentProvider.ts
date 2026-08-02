@@ -284,6 +284,8 @@ export type AgentEvent =
 	| { type: "file_checkpoint"; id: string; providerSessionId: string }
 	| { type: "commands_changed"; commands: SlashCommand[] }
 	| { type: "transport_error"; message: string }
+	/** A distinct root assistant message follows within the same visible turn. */
+	| { type: "assistant_message_boundary" }
 	| { type: "text_delta"; text: string }
 	| {
 			/**

@@ -1555,6 +1555,57 @@ describe("SessionManager — live tool_event persistence", () => {
 		}
 	});
 
+	it("separates adjacent assistant messages in streaming and persisted text", async () => {
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(_params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-message-boundaries" };
+					yield { type: "text_delta", text: "First update." };
+					yield { type: "assistant_message_boundary" };
+					yield { type: "text_delta", text: "Second update." };
+					yield {
+						type: "tool_start",
+						toolId: "tool-1",
+						name: "Read",
+						input: {},
+					};
+					yield { type: "assistant_message_boundary" };
+					yield { type: "text_delta", text: "After tool." };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const emitted: ServerMessage[] = [];
+		await sm.runQuery("report progress", (message) => emitted.push(message), {
+			sessionId: "sess-message-boundaries",
+		});
+
+		expect(emitted.filter((message) => message.type === "chunk")).toEqual([
+			{ type: "chunk", text: "First update.", offset: 0 },
+			{ type: "chunk", text: "\n\nSecond update.", offset: 13 },
+			{ type: "chunk", text: "\n\nAfter tool.", offset: 29 },
+		]);
+		expect(dbMock.setMessageText).toHaveBeenCalledWith(
+			"sess-message-boundaries",
+			expect.any(Number),
+			"First update.\n\nSecond update.\n\nAfter tool.",
+		);
+	});
+
 	it("replaces an arbitrary streamed tail with authoritative completed text", async () => {
 		let release!: () => void;
 		const gate = new Promise<void>((resolve) => {

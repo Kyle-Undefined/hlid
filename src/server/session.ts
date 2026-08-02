@@ -241,6 +241,7 @@ type TurnState = {
 	queryRecorded: boolean;
 	assistantText: string;
 	lastAssistantText: string;
+	assistantMessageBoundaryPending: boolean;
 	lastBlockType: "text" | "tool_use" | null;
 	lastActualModel: string | null;
 	lastTurnUsage: {
@@ -859,6 +860,7 @@ function createTurnState(
 		queryRecorded: false,
 		assistantText: "",
 		lastAssistantText: "",
+		assistantMessageBoundaryPending: false,
 		lastBlockType: null,
 		lastActualModel: null,
 		lastTurnUsage: null,
@@ -888,6 +890,14 @@ function createTurnState(
 		lastTurnToolEvents: [],
 		sdkSummary: null,
 	};
+}
+
+function joinAssistantMessageText(previous: string, next: string): string {
+	if (!previous || !next) return next;
+	const trailingNewlines = previous.match(/\n*$/)?.[0].length ?? 0;
+	const leadingNewlines = next.match(/^\n*/)?.[0].length ?? 0;
+	const missingNewlines = Math.max(0, 2 - trailingNewlines - leadingNewlines);
+	return `${"\n".repeat(missingNewlines)}${next}`;
 }
 
 export class SessionManager {
@@ -3318,10 +3328,14 @@ export class SessionManager {
 		sessionId: string | undefined,
 		emit: (msg: ServerMessage) => void,
 	): void {
-		const text =
-			turn.lastBlockType === "tool_use" &&
-			event.text &&
-			!event.text.startsWith("\n")
+		const beginsNewAssistantMessage =
+			turn.assistantMessageBoundaryPending && Boolean(event.text);
+		if (event.text) turn.assistantMessageBoundaryPending = false;
+		const text = beginsNewAssistantMessage
+			? joinAssistantMessageText(turn.assistantText, event.text)
+			: turn.lastBlockType === "tool_use" &&
+					event.text &&
+					!event.text.startsWith("\n")
 				? `\n\n${event.text}`
 				: event.text;
 		const offset = turn.assistantText.length;
@@ -3352,11 +3366,15 @@ export class SessionManager {
 		// invariant is ever violated.
 		if (!replacesCurrentTail) return;
 		const prefix = turn.assistantText.slice(0, previousOffset);
-		const text =
-			event.previousText.length === 0 &&
-			turn.lastBlockType === "tool_use" &&
-			event.text &&
-			!event.text.startsWith("\n")
+		const beginsNewAssistantMessage =
+			turn.assistantMessageBoundaryPending && Boolean(event.text);
+		if (event.text) turn.assistantMessageBoundaryPending = false;
+		const text = beginsNewAssistantMessage
+			? joinAssistantMessageText(prefix, event.text)
+			: event.previousText.length === 0 &&
+					turn.lastBlockType === "tool_use" &&
+					event.text &&
+					!event.text.startsWith("\n")
 				? `\n\n${event.text}`
 				: event.text;
 		turn.assistantText = prefix + text;
@@ -3708,6 +3726,9 @@ export class SessionManager {
 						turn_id: this.currentTurnId,
 					});
 				}
+				break;
+			case "assistant_message_boundary":
+				turn.assistantMessageBoundaryPending = true;
 				break;
 			case "text_delta":
 				this.handleTextDelta(event, turn, sessionId, emit);

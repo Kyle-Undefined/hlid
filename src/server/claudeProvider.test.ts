@@ -4775,6 +4775,57 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 		session.cancel();
 	});
 
+	it("marks adjacent assistant messages within one query without steering", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkStream(async function* () {
+				yield {
+					type: "assistant",
+					message: {
+						content: [{ type: "text", text: "First update." }],
+						usage: { input_tokens: 10, output_tokens: 3 },
+					},
+				};
+				yield {
+					type: "assistant",
+					message: {
+						content: [{ type: "text", text: "Second update." }],
+						usage: { input_tokens: 10, output_tokens: 3 },
+					},
+				};
+				yield {
+					type: "result",
+					subtype: "success",
+					stop_reason: "end_turn",
+					total_cost_usd: 0.1,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 6 },
+				};
+			}),
+		);
+		const session = new ClaudeProvider().query(baseParams());
+		await session.send("keep me posted");
+
+		const events: AgentEvent[] = [];
+		for await (const event of session) {
+			events.push(event);
+			if (event.type === "done") break;
+		}
+
+		expect(
+			events.filter(
+				(event) =>
+					event.type === "text_delta" ||
+					event.type === "assistant_message_boundary",
+			),
+		).toEqual([
+			{ type: "text_delta", text: "First update." },
+			{ type: "assistant_message_boundary" },
+			{ type: "text_delta", text: "Second update." },
+		]);
+		session.cancel();
+	});
+
 	it("keeps the active turn open across the result boundary interrupted by a steer", async () => {
 		let releaseInterruptedResult: (() => void) | undefined;
 		const interruptedResultReady = new Promise<void>((resolve) => {
@@ -4842,6 +4893,20 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			type: "text_delta",
 			text: "Status is done. Continuing.",
 		});
+		const firstTextIndex = events.findIndex(
+			(event) =>
+				event.type === "text_delta" && event.text === "Starting the update.",
+		);
+		const boundaryIndex = events.findIndex(
+			(event) => event.type === "assistant_message_boundary",
+		);
+		const secondTextIndex = events.findIndex(
+			(event) =>
+				event.type === "text_delta" &&
+				event.text === "Status is done. Continuing.",
+		);
+		expect(firstTextIndex).toBeLessThan(boundaryIndex);
+		expect(boundaryIndex).toBeLessThan(secondTextIndex);
 		expect(events.find((event) => event.type === "done")).toMatchObject({
 			turns: 2,
 			durationMs: 300,
