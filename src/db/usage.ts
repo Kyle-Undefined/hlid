@@ -86,8 +86,17 @@ export async function getAggregatedStats(): Promise<AggStats> {
 			.get() ?? EMPTY_ALLTIME;
 
 	const sessionCount =
-		db.query<{ n: number }, []>(`SELECT COUNT(*) as n FROM sessions`).get()
-			?.n ?? 0;
+		db
+			.query<{ n: number }, []>(
+				`SELECT COUNT(*) AS n FROM (
+				   SELECT id AS session_id FROM sessions
+				   UNION
+				   SELECT session_id FROM historical_sessions
+				   UNION
+				   SELECT session_id FROM usage_queries WHERE session_id IS NOT NULL
+				 )`,
+			)
+			.get()?.n ?? 0;
 
 	const today =
 		db

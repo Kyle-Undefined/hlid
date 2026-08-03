@@ -1020,6 +1020,43 @@ describe("SessionsLedger header controls", () => {
 		expect(props.onCleanup).toHaveBeenCalledWith(30);
 	});
 
+	it("previews cleanup impact before enabling confirmation", async () => {
+		const onPreviewCleanup = vi.fn().mockResolvedValue({
+			days: 30,
+			cutoff: cleanupReferenceTime - 30 * 86_400,
+			sessions: 3,
+			messages: 12,
+			toolEvents: 6,
+			estimatedDatabaseBytes: 2048,
+			usageQueriesPreserved: 4,
+			managedAttachments: 2,
+			managedAttachmentBytes: 512,
+			retainedRelics: 1,
+			retainedRelicBytes: 256,
+			vaultLinksDetached: 0,
+			planProposals: 0,
+			askUserQuestions: 0,
+			projectPreviewFeedback: 0,
+		});
+		const props = renderLedger({
+			oldestStartedAt: cleanupReferenceTime - 40 * 86_400,
+			cleanupReferenceTime,
+			onPreviewCleanup,
+		});
+		openListActions();
+
+		fireEvent.change(
+			screen.getByRole("combobox", { name: "Clean up old sessions" }),
+			{ target: { value: "30" } },
+		);
+
+		expect(await screen.findByText(/delete 3 sessions/i)).not.toBeNull();
+		expect(onPreviewCleanup).toHaveBeenCalledWith(30);
+		expect(props.onCleanup).not.toHaveBeenCalled();
+		fireEvent.click(screen.getByRole("button", { name: "confirm" }));
+		expect(props.onCleanup).toHaveBeenCalledWith(30);
+	});
+
 	it("hides cleanup entirely when no sessions are old enough", () => {
 		renderLedger({
 			oldestStartedAt: cleanupReferenceTime - 3600,

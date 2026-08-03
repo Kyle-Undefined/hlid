@@ -14,10 +14,20 @@ const EMPTY_STORAGE_STATS: StorageStats = {
 	sessions: 0,
 	messages: 0,
 	usageQueries: 0,
+	pendingFileDeletions: 0,
+	availableBytes: 0,
 };
 
 export const getStorageStatsFn = createServerFn({ method: "GET" }).handler(() =>
 	dbJson<StorageStats>("/db/storage", EMPTY_STORAGE_STATS),
+);
+
+export const reclaimStorageFn = createServerFn({ method: "POST" }).handler(
+	async () => {
+		const response = await dbFetch("/db/storage/reclaim", { method: "POST" });
+		await requireDbOk(response, "Reclaim database storage");
+		return (await response.json()) as StorageStats;
+	},
 );
 
 export const optimizeStorageFn = createServerFn({ method: "POST" }).handler(

@@ -85,6 +85,12 @@ const DB_GET_HANDLERS: Record<string, DbGetHandler> = {
 	"/db/attachments": ({ url }) => getAttachments(url),
 	"/db/logs": ({ url }) => getLogs(url),
 	"/db/storage": async () => Response.json(await db.getStorageStats()),
+	"/db/sessions/cleanup/preview": ({ url, pool, terminalPool }) => {
+		const days = clampInt(url.searchParams.get("older_than_days"), 30, 1);
+		return db
+			.getSessionCleanupPreview(days, getLiveDbSessionIds(pool, terminalPool))
+			.then((preview) => Response.json(preview));
+	},
 	"/db/live-sessions": ({ pool, terminalPool }) =>
 		Response.json(getLiveSessionsStatus(pool, terminalPool)),
 	"/db/provider-history/import/status": ({ url }) =>
@@ -654,7 +660,28 @@ async function handlePostRoute(
 ): Promise<Response | null> {
 	switch (context.url.pathname) {
 		case "/db/storage/optimize": {
+			await unlinkPaths(
+				(await db.listPendingFileDeletions()).map((entry) => entry.path),
+			);
 			const result = await db.optimizeStorage();
+			bumpDataRevision("storage");
+			return Response.json(result);
+		}
+		case "/db/storage/reclaim": {
+			const running = getLiveSessionsStatus(
+				context.pool,
+				context.terminalPool,
+			).some((session) => session.state === "running");
+			if (running) {
+				return new Response(
+					"Stop running Raven and terminal sessions before reclaiming database storage.",
+					{ status: 409 },
+				);
+			}
+			await unlinkPaths(
+				(await db.listPendingFileDeletions()).map((entry) => entry.path),
+			);
+			const result = await db.reclaimStorage();
 			bumpDataRevision("storage");
 			return Response.json(result);
 		}

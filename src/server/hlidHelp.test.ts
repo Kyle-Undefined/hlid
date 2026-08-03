@@ -191,6 +191,33 @@ describe("Hlid operating guidance", () => {
 		).toMatchObject({ owner: "provider", availability: "unavailable" });
 	});
 
+	it("keeps agent maintenance available while reclaim remains Forge-only", () => {
+		const focused = JSON.parse(
+			buildHlidHelpResponse("maintenance", {
+				providerId: "codex",
+				sessionId: "session-1",
+				registeredHlidTools: [
+					"inspect_hlid_storage",
+					"optimize_hlid_storage",
+					"cleanup_hlid_sessions",
+				],
+			}),
+		);
+
+		expect(focused.capabilities).toEqual([
+			expect.objectContaining({
+				id: "maintenance",
+				owner: "hlid",
+				availability: "available",
+				summary: expect.stringContaining("Forge-only"),
+			}),
+		]);
+		expect(focused.guidance.join(" ")).toContain("inspect_hlid_storage first");
+		expect(focused.guidance.join(" ")).toContain(
+			"No Hlid agent tool exposes VACUUM",
+		);
+	});
+
 	it("advertises orchestration only with a live workspace session and the complete lifecycle tools", () => {
 		const available = buildHlidCapabilityManifest({
 			providerId: "codex",
@@ -548,6 +575,9 @@ describe("Hlid operating guidance", () => {
 			registeredHlidTools: [
 				"hlid_help",
 				"hlid_api",
+				"inspect_hlid_storage",
+				"optimize_hlid_storage",
+				"cleanup_hlid_sessions",
 				"delegate_hlid_agent",
 				"list_hlid_agents",
 				"inspect_hlid_agent",
@@ -1031,6 +1061,9 @@ describe("Hlid operating guidance", () => {
 			registeredHlidTools: [
 				"hlid_help",
 				"hlid_api",
+				"inspect_hlid_storage",
+				"optimize_hlid_storage",
+				"cleanup_hlid_sessions",
 				"delegate_hlid_agent",
 				"list_hlid_agents",
 				"inspect_hlid_agent",

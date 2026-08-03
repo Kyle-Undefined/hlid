@@ -27,8 +27,8 @@ export type { ProjectPreviewAgentFrame } from "./protocol";
 const MAX_ELEMENTS = 100;
 const MAX_QUEUED_ACTIONS = 8;
 const AGENT_BROWSER_IDLE_MS = 30 * 60 * 1_000;
-const MAX_RETAINED_FRAMES_PER_PREVIEW = 12;
-const MAX_RETAINED_FRAME_BYTES = 64 * 1024 * 1024;
+const MAX_RETAINED_FRAMES_PER_PREVIEW = 8;
+const MAX_RETAINED_FRAME_BYTES = 32 * 1024 * 1024;
 
 type ProjectPreviewControlBase = {
 	previewId: string;

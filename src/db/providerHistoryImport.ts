@@ -2100,7 +2100,10 @@ function upsertSessionTranscript(
 				file.subpath,
 				file.path,
 				file.sha256,
-				file.payloadJson,
+				// Codex can resume directly from its native rollout file, so retaining
+				// another full JSON copy in Hlid only duplicates hundreds of megabytes.
+				// Claude's session-store resume path still requires the stored payload.
+				session.providerId === "codex" ? "[]" : file.payloadJson,
 				file.records.length,
 			],
 		);

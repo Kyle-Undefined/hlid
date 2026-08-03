@@ -4,6 +4,7 @@ import { fmtBytes } from "#/lib/formatters";
 import {
 	getStorageStatsFn,
 	optimizeStorageFn,
+	reclaimStorageFn,
 	type StorageStats,
 } from "#/lib/serverFns/storage";
 import { Field, Section } from "./fields";
@@ -43,6 +44,37 @@ function OptimizeStorageAction({
 			>
 				{busy ? "OPTIMIZING…" : "OPTIMIZE"}
 			</button>
+		</Field>
+	);
+}
+
+function ReclaimStorageAction({
+	busy,
+	onReclaim,
+}: {
+	busy: boolean;
+	onReclaim: () => void;
+}) {
+	return (
+		<Field
+			label="Reclaim database space"
+			hint="fully rebuild SQLite after cleanup; Hlid pauses while this runs"
+		>
+			<ConfirmAction
+				label="reclaim database space?"
+				onConfirm={onReclaim}
+				className="shrink-0"
+				trigger={(open) => (
+					<button
+						type="button"
+						onClick={open}
+						disabled={busy}
+						className="text-[10px] tracking-widest px-3 py-1.5 border border-destructive/40 text-destructive/80 hover:text-destructive hover:bg-destructive/10 transition-colors uppercase disabled:opacity-40"
+					>
+						{busy ? "RECLAIMING…" : "RECLAIM"}
+					</button>
+				)}
+			/>
 		</Field>
 	);
 }
@@ -110,7 +142,13 @@ function useSystemMaintenance() {
 	const [autostart, setAutostart] = useState<LifecycleState | null>(null);
 	const [storage, setStorage] = useState<StorageStats | null>(null);
 	const [busy, setBusy] = useState<
-		null | "toggle" | "restart" | "shutdown" | "open_install_dir" | "optimize"
+		| null
+		| "toggle"
+		| "restart"
+		| "shutdown"
+		| "open_install_dir"
+		| "optimize"
+		| "reclaim"
 	>(null);
 	const [error, setError] = useState<string | null>(null);
 
@@ -204,12 +242,27 @@ function useSystemMaintenance() {
 		}
 	}
 
+	async function reclaimStorage() {
+		setError(null);
+		setBusy("reclaim");
+		try {
+			setStorage(await reclaimStorageFn());
+		} catch (cause) {
+			setError(
+				cause instanceof Error ? cause.message : "Database reclaim failed",
+			);
+		} finally {
+			setBusy(null);
+		}
+	}
+
 	return {
 		autostart,
 		storage,
 		busy,
 		error,
 		optimizeStorage,
+		reclaimStorage,
 		toggleAutostart,
 		openInstallDir: () =>
 			runLifecycleAction("open_install_dir", "Failed to open folder"),
@@ -357,7 +410,14 @@ function StorageSummary({
 }
 
 function DangerZone({ maintenance }: { maintenance: SystemMaintenance }) {
-	const { busy, error, optimizeStorage, doRestart, doShutdown } = maintenance;
+	const {
+		busy,
+		error,
+		optimizeStorage,
+		reclaimStorage,
+		doRestart,
+		doShutdown,
+	} = maintenance;
 	return (
 		<div id="lifecycle-controls" className="scroll-mt-20">
 			<Section
@@ -367,6 +427,10 @@ function DangerZone({ maintenance }: { maintenance: SystemMaintenance }) {
 				<OptimizeStorageAction
 					busy={busy !== null}
 					onOptimize={() => void optimizeStorage()}
+				/>
+				<ReclaimStorageAction
+					busy={busy !== null}
+					onReclaim={() => void reclaimStorage()}
 				/>
 				<RestartAction
 					busy={busy !== null}

@@ -331,10 +331,16 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		desc: "Delete a non-running session. Removes session-retained ephemeral attachments and detaches retained or vault attachments; protected delegation lineages return a conflict.",
 	},
 	{
+		method: "GET",
+		path: "/db/sessions/cleanup/preview?older_than_days=",
+		server: "api",
+		desc: "Preview the exact current impact of age-based session cleanup, including sessions, messages, tool events, estimated database bytes, managed attachments and Relics, detached vault links, and preserved usage-query totals. Excludes live sessions and protected delegation lineages.",
+	},
+	{
 		method: "POST",
 		path: "/db/sessions/cleanup?older_than_days=",
 		server: "api",
-		desc: 'Delete eligible active, non-imported sessions older than N days, excluding live sessions and protected delegation lineages. Accepts query older_than_days or body {"older_than_days": number}; defaults to 30 days.',
+		desc: 'Delete eligible active, non-imported sessions older than N days, excluding live sessions and protected delegation lineages. Preview with GET /db/sessions/cleanup/preview first. Accepts query older_than_days or body {"older_than_days": number}; defaults to 30 days.',
 	},
 	{
 		method: "GET",

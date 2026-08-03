@@ -464,8 +464,17 @@ export async function setToolEventResult(
 ): Promise<void> {
 	const db = await getDb();
 	const { changes } = db.run(
-		`UPDATE tool_events SET result_text = ?, is_error = ? WHERE session_id = ? AND tool_id = ?`,
-		[resultText, isError ? 1 : 0, sessionId, toolId],
+		`UPDATE tool_events
+		 SET result_text = ?, result_length = ?, result_preview = ?, is_error = ?
+		 WHERE session_id = ? AND tool_id = ?`,
+		[
+			resultText,
+			resultText.length,
+			resultText.slice(0, TOOL_RESULT_PREVIEW_CHARS),
+			isError ? 1 : 0,
+			sessionId,
+			toolId,
+		],
 	);
 	if (changes === 0) {
 		throw new Error(
@@ -830,9 +839,9 @@ export async function getSessionToolEventSummaries(
 	return getSessionSequenceRows<ToolEventSummaryRow>({
 		sessionId,
 		select: `id, session_id, assistant_seq, tool_id, name, input_json,
-			CASE WHEN result_text IS NULL THEN NULL ELSE substr(result_text, 1, ${TOOL_RESULT_PREVIEW_CHARS}) END AS result_text,
-			length(result_text) AS result_length,
-			CASE WHEN length(COALESCE(result_text, '')) > ${TOOL_RESULT_PREVIEW_CHARS} THEN 1 ELSE 0 END AS result_truncated,
+			CASE WHEN result_text IS NULL THEN NULL ELSE COALESCE(result_preview, substr(result_text, 1, ${TOOL_RESULT_PREVIEW_CHARS})) END AS result_text,
+			COALESCE(result_length, length(result_text)) AS result_length,
+			CASE WHEN COALESCE(result_length, length(COALESCE(result_text, ''))) > ${TOOL_RESULT_PREVIEW_CHARS} THEN 1 ELSE 0 END AS result_truncated,
 			is_error, subagent_json, activity_json`,
 		table: "tool_events",
 		sequenceColumn: "assistant_seq",

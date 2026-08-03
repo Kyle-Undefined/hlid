@@ -470,6 +470,20 @@ function sessionsCapability(state: ManifestState): Capability {
 	};
 }
 
+function maintenanceCapability(state: ManifestState): Capability {
+	return {
+		id: "maintenance",
+		owner: "hlid",
+		availability: toolAvailability(state.tools, [
+			"inspect_hlid_storage",
+			"optimize_hlid_storage",
+			"cleanup_hlid_sessions",
+		]),
+		summary:
+			"Hlid agents can inspect storage, preview and perform guarded age-based cleanup, and run lightweight SQLite optimization. Physical database reclaim remains Forge-only.",
+	};
+}
+
 function contextCapability(state: ManifestState): Capability {
 	return {
 		id: "context",
@@ -741,6 +755,7 @@ function buildCapabilities(
 		referencesCapability(state),
 		permissionsCapability(state),
 		sessionsCapability(state),
+		maintenanceCapability(state),
 		contextCapability(state),
 		plansReviewCapability(state),
 		workflowsCapability(state),

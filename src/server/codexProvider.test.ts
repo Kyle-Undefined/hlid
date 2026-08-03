@@ -4129,6 +4129,10 @@ describe("CodexAgentSession — notifications", () => {
 						type: "inputText",
 						text: '{"path":"Projects/Hlid.md"}',
 					},
+					{
+						type: "inputImage",
+						imageUrl: `data:image/png;base64,${"A".repeat(2_000)}`,
+					},
 				],
 			},
 		});

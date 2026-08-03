@@ -18,7 +18,15 @@ export const TOPIC_GUIDANCE: Record<HlidHelpTopic, string[]> = {
 	sessions: [
 		"Rename and archive are Hlid-owned metadata operations and stay outside provider transcripts.",
 		"Exact forks are exposed only when the provider preserves native hidden context.",
-		"Archive is reversible; delete follows retention rules.",
+		"Archive is reversible. Delete removes the session and its Hlid-owned linked Relics while preserving immutable Ledger usage; vault-owned files are only detached.",
+	],
+	maintenance: [
+		"Use inspect_hlid_storage first. Supplying cleanup_older_than_days returns the current cleanup impact and a short-lived, session-scoped preview ID.",
+		"Report the preview's deletion and preservation totals before cleanup_hlid_sessions, and proceed only when the user's request explicitly authorizes that impact.",
+		"cleanup_hlid_sessions requires that preview ID, rechecks the impact, and refuses stale previews. It removes eligible sessions and their Hlid-owned linked Relics while preserving immutable Ledger usage; vault-owned files are only detached.",
+		"optimize_hlid_storage retries pending managed-file deletions, performs a passive WAL checkpoint, and runs SQLite optimize. It does not physically rebuild or shrink the database.",
+		"Physical database reclaim remains a confirmed Forge-only action. No Hlid agent tool exposes VACUUM or stops an active Raven or terminal session.",
+		"Managed PNG optimization and durable embedded-image compaction run automatically at their storage or upgrade boundaries; agents do not need to invoke them.",
 	],
 	context: [
 		"Hlid adds only the operating brief and the exact instructions, references, skills, attachments, or plan guidance selected for the turn.",

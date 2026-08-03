@@ -17,6 +17,8 @@ vi.mock("../db", () => ({
 	getAttachment: vi.fn().mockResolvedValue(null),
 	deleteAttachment: vi.fn().mockResolvedValue(undefined),
 	promoteAttachmentToVault: vi.fn().mockResolvedValue(true),
+	completePendingFileDeletion: vi.fn().mockResolvedValue(undefined),
+	failPendingFileDeletion: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("node:fs/promises", () => ({

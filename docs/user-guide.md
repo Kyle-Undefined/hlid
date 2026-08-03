@@ -793,6 +793,17 @@ in `Ledger`.
 
 ## Maintenance and troubleshooting
 
+Agents can use Hlið's deferred maintenance tools to inspect storage, preview
+age-based session cleanup, perform an approved cleanup, and run a lightweight
+SQLite checkpoint and optimize pass. Cleanup previews are short-lived and bound
+to the Raven session that requested them; if the impact changes, Hlid requires a
+fresh preview. Cleanup preserves immutable Ledger usage while removing linked
+Hlid-owned Relics and detaching vault-owned files.
+
+Physical database reclaim remains a confirmed **Forge → Advanced** action. It is
+not exposed as an agent tool or in Hlið's curated agent API. Reclaim rewrites the
+database file and refuses to run while a Raven or terminal session is running.
+
 ### Import or repair provider usage
 
 These tools are for a source checkout, not the packaged app. They dry-run first

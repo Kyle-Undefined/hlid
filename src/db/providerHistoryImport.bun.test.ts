@@ -313,6 +313,13 @@ describe("provider history import", () => {
 		expect(applied).toMatchObject({ createdSessions: 1, insertedQueries: 3 });
 		expect(
 			db
+				.query<{ payload_json: string }, []>(
+					"SELECT payload_json FROM provider_history_transcripts WHERE provider_id = 'codex' LIMIT 1",
+				)
+				.get()?.payload_json,
+		).toBe("[]");
+		expect(
+			db
 				.query<{ started_at: number; ended_at: number }, []>(
 					`SELECT started_at, ended_at FROM sessions WHERE id = 'history:codex:root-thread'`,
 				)

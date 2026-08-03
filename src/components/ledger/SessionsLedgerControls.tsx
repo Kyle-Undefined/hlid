@@ -8,7 +8,9 @@ import {
 import type { ComponentType, CSSProperties, RefObject } from "react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import type { SessionCleanupPreview } from "#/db";
 import { useAnchoredPopover } from "#/hooks/useAnchoredPopover";
+import { fmtBytes } from "#/lib/formatters";
 import type { LedgerAgentOption, SessionSortKey } from "#/lib/ledgerState";
 
 const CLEANUP_DAY_OPTIONS = [7, 30, 90] as const;
@@ -43,6 +45,7 @@ export type SessionsLedgerSecondaryActions = {
 	oldestStartedAt: number | null;
 	cleanupReferenceTime: number;
 	onCleanup: (days: number) => void;
+	onPreviewCleanup?: (days: number) => Promise<SessionCleanupPreview>;
 	onExport?: (format: "csv" | "json") => void;
 	onImportClaude?: () => void;
 	claudeImportStatus?: string | null;
@@ -132,12 +135,19 @@ function CleanupControl({
 	oldestStartedAt,
 	referenceTime,
 	onCleanup,
+	onPreviewCleanup,
 }: {
 	oldestStartedAt: number | null;
 	referenceTime: number;
 	onCleanup: (days: number) => void;
+	onPreviewCleanup?: (days: number) => Promise<SessionCleanupPreview>;
 }) {
-	const [pendingDays, setPendingDays] = useState<number | null>(null);
+	const [pending, setPending] = useState<{
+		days: number;
+		preview?: SessionCleanupPreview;
+	} | null>(null);
+	const [loadingDays, setLoadingDays] = useState<number | null>(null);
+	const [previewError, setPreviewError] = useState<string | null>(null);
 	const available = CLEANUP_DAY_OPTIONS.filter(
 		(days) =>
 			oldestStartedAt != null &&
@@ -145,28 +155,43 @@ function CleanupControl({
 	);
 	if (available.length === 0) return null;
 
-	if (pendingDays != null) {
+	if (loadingDays != null) {
+		return (
+			<span className="text-[8px] tracking-widest uppercase text-muted-foreground/50">
+				checking {loadingDays}d cleanup…
+			</span>
+		);
+	}
+
+	if (pending != null) {
+		const { days, preview } = pending;
 		return (
 			<div
 				aria-live="polite"
 				className="flex items-center gap-2 text-[8px] tracking-widest uppercase"
 			>
 				<span className="text-muted-foreground/50">
-					delete older than {pendingDays}d?
+					{preview
+						? preview.sessions === 0
+							? `nothing eligible older than ${days}d`
+							: `delete ${preview.sessions} sessions · ${fmtBytes(preview.estimatedDatabaseBytes)} db · ${preview.managedAttachments} relics?`
+						: `delete older than ${days}d?`}
 				</span>
+				{preview?.sessions !== 0 && (
+					<button
+						type="button"
+						onClick={() => {
+							onCleanup(days);
+							setPending(null);
+						}}
+						className="text-destructive/60 hover:text-destructive transition-colors"
+					>
+						confirm
+					</button>
+				)}
 				<button
 					type="button"
-					onClick={() => {
-						onCleanup(pendingDays);
-						setPendingDays(null);
-					}}
-					className="text-destructive/60 hover:text-destructive transition-colors"
-				>
-					confirm
-				</button>
-				<button
-					type="button"
-					onClick={() => setPendingDays(null)}
+					onClick={() => setPending(null)}
 					className="text-muted-foreground/50 hover:text-muted-foreground/80 transition-colors"
 				>
 					cancel
@@ -178,9 +203,24 @@ function CleanupControl({
 	return (
 		<select
 			value=""
-			onChange={(event) => {
+			onChange={async (event) => {
 				const days = Number(event.target.value);
-				if (Number.isFinite(days) && days > 0) setPendingDays(days);
+				if (!Number.isFinite(days) || days <= 0) return;
+				setPreviewError(null);
+				if (!onPreviewCleanup) {
+					setPending({ days });
+					return;
+				}
+				setLoadingDays(days);
+				try {
+					setPending({ days, preview: await onPreviewCleanup(days) });
+				} catch (error) {
+					setPreviewError(
+						error instanceof Error ? error.message : "Cleanup preview failed",
+					);
+				} finally {
+					setLoadingDays(null);
+				}
 			}}
 			aria-label="Clean up old sessions"
 			className="bg-transparent border border-border text-[8px] tracking-widest uppercase text-muted-foreground/50 hover:text-muted-foreground/80 px-1.5 py-0.5 focus:outline-none focus:border-primary/50 transition-colors"
@@ -191,6 +231,7 @@ function CleanupControl({
 					older than {days}d
 				</option>
 			))}
+			{previewError && <option disabled>{previewError}</option>}
 		</select>
 	);
 }
@@ -282,6 +323,7 @@ function SecondaryActionsPanel({
 						oldestStartedAt={actions.oldestStartedAt}
 						referenceTime={actions.cleanupReferenceTime}
 						onCleanup={actions.onCleanup}
+						onPreviewCleanup={actions.onPreviewCleanup}
 					/>
 				</div>
 			)}

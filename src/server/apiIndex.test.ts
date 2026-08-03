@@ -51,7 +51,14 @@ describe("buildApiIndex", () => {
 		const cleanup = endpoint("POST", "/db/sessions/cleanup?older_than_days=");
 		expect(cleanup?.desc).toContain("active, non-imported sessions");
 		expect(cleanup?.desc).toContain("protected delegation lineages");
+		expect(cleanup?.desc).toContain("cleanup/preview");
 		expect(cleanup?.desc).toContain('{"older_than_days": number}');
+		const cleanupPreview = endpoint(
+			"GET",
+			"/db/sessions/cleanup/preview?older_than_days=",
+		);
+		expect(cleanupPreview?.desc).toContain("preserved usage-query totals");
+		expect(cleanupPreview?.desc).toContain("protected delegation lineages");
 
 		const attachments = endpoint(
 			"GET",
@@ -141,6 +148,7 @@ describe("buildApiIndex", () => {
 			["GET", "/db/provider-history/import/status?job_id="],
 			["GET", "/db/storage"],
 			["POST", "/db/storage/optimize"],
+			["GET", "/db/sessions/cleanup/preview?older_than_days="],
 			["POST", "/api/agents"],
 			["GET", "/api/agents/validate?path="],
 			["GET", "/api/agents/claudemd?path="],
@@ -150,6 +158,12 @@ describe("buildApiIndex", () => {
 			["POST", "/api/mcp/agent/toggle"],
 		] as const;
 		for (const [method, path] of routes) endpoint(method, path);
+		expect(
+			API_ENDPOINTS.some(
+				(entry) =>
+					entry.method === "POST" && entry.path === "/db/storage/reclaim",
+			),
+		).toBe(false);
 
 		expect(
 			endpoint("GET", "/db/session-context?session_id=&limit=&before_seq=")

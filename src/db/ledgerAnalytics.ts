@@ -70,6 +70,11 @@ const TOOL_DIMENSIONS: AnalyticsDimensions = {
 	provider: "te.provider_id",
 	model: "NULLIF(te.model, '')",
 };
+const HISTORICAL_TOOL_DIMENSIONS: AnalyticsDimensions = {
+	agent: "hte.agent_cwd",
+	provider: "hte.provider_id",
+	model: "NULLIF(hte.model, '')",
+};
 
 function rangeDays(range: LedgerStatsRange): number | null {
 	if (range === "7d") return 7;
@@ -168,12 +173,21 @@ function toolEventConditions(filter: LedgerAnalyticsFilter): SqlConditions[] {
 	];
 }
 
+function historicalToolEventConditions(
+	filter: LedgerAnalyticsFilter,
+): SqlConditions[] {
+	return [
+		sessionConditions(filter, "hte.timestamp", HISTORICAL_TOOL_DIMENSIONS),
+	];
+}
+
 export async function getLedgerAnalytics(
 	filter: LedgerAnalyticsFilter,
 ): Promise<LedgerAnalytics> {
 	const db = await getDb();
 	const usage = sessionConditions(filter, "uq.timestamp", USAGE_DIMENSIONS);
 	const toolSources = toolEventConditions(filter);
+	const historicalToolSources = historicalToolEventConditions(filter);
 
 	type SelectedRow = AggWindow & { sessions: number };
 	const selected = db
@@ -226,17 +240,26 @@ export async function getLedgerAnalytics(
 			`SELECT name, COUNT(*) AS count,
 			 SUM(CASE WHEN is_error = 1 THEN 1 ELSE 0 END) AS errorCount,
 			 CAST(SUM(CASE WHEN is_error = 1 THEN 1 ELSE 0 END) AS REAL) / COUNT(*) AS errorRate
-			 FROM (${toolSources
-					.map(
-						(source) =>
-							`SELECT te.name, te.is_error
-							 FROM tool_events te JOIN sessions s ON s.id = te.session_id
-							 ${source.sql}`,
-					)
-					.join(" UNION ALL ")}) filtered_tool_events
-			 GROUP BY name ORDER BY count DESC, name ASC LIMIT 10`,
+				 FROM (${[
+						...toolSources.map(
+							(source) =>
+								`SELECT te.name, te.is_error
+								 FROM tool_events te JOIN sessions s ON s.id = te.session_id
+								 ${source.sql}`,
+						),
+						...historicalToolSources.map(
+							(source) =>
+								`SELECT hte.name, hte.is_error
+								 FROM historical_tool_events hte
+								 ${source.sql}`,
+						),
+					].join(" UNION ALL ")}) filtered_tool_events
+				 GROUP BY name ORDER BY count DESC, name ASC LIMIT 10`,
 		)
-		.all(...toolSources.flatMap((source) => source.params))
+		.all(
+			...toolSources.flatMap((source) => source.params),
+			...historicalToolSources.flatMap((source) => source.params),
+		)
 		.map((row) => ({ ...row, errorRate: row.errorRate ?? 0 }));
 
 	// Charts read the immutable usage ledger (not queries, which cascade-delete
@@ -274,10 +297,11 @@ export async function getLedgerAnalytics(
 	const agents = db
 		.query<{ value: string }, []>(
 			`SELECT DISTINCT value FROM (
-				SELECT agent_cwd AS value FROM sessions
-				UNION ALL SELECT agent_cwd FROM queries
-				UNION ALL SELECT agent_cwd FROM usage_queries
-				UNION ALL SELECT agent_cwd FROM tool_events
+					SELECT agent_cwd AS value FROM sessions
+					UNION ALL SELECT agent_cwd FROM queries
+					UNION ALL SELECT agent_cwd FROM usage_queries
+					UNION ALL SELECT agent_cwd FROM tool_events
+					UNION ALL SELECT agent_cwd FROM historical_tool_events
 			 ) WHERE value IS NOT NULL AND TRIM(value) <> ''
 			 ORDER BY value COLLATE NOCASE`,
 		)
@@ -286,10 +310,11 @@ export async function getLedgerAnalytics(
 	const providers = db
 		.query<{ value: string }, []>(
 			`SELECT DISTINCT value FROM (
-				SELECT provider_id AS value FROM sessions
-				UNION ALL SELECT provider_id FROM queries
-				UNION ALL SELECT provider_id FROM usage_queries
-				UNION ALL SELECT provider_id FROM tool_events
+					SELECT provider_id AS value FROM sessions
+					UNION ALL SELECT provider_id FROM queries
+					UNION ALL SELECT provider_id FROM usage_queries
+					UNION ALL SELECT provider_id FROM tool_events
+					UNION ALL SELECT provider_id FROM historical_tool_events
 			 ) WHERE value IS NOT NULL AND TRIM(value) <> ''
 			 ORDER BY value COLLATE NOCASE`,
 		)
@@ -298,10 +323,11 @@ export async function getLedgerAnalytics(
 	const models = db
 		.query<{ value: string }, []>(
 			`SELECT DISTINCT value FROM (
-				SELECT ${SESSION_MODEL_SQL} AS value FROM sessions s
-				UNION ALL SELECT model FROM queries
-				UNION ALL SELECT model FROM usage_queries
-				UNION ALL SELECT model FROM tool_events
+					SELECT ${SESSION_MODEL_SQL} AS value FROM sessions s
+					UNION ALL SELECT model FROM queries
+					UNION ALL SELECT model FROM usage_queries
+					UNION ALL SELECT model FROM tool_events
+					UNION ALL SELECT model FROM historical_tool_events
 			 ) WHERE value IS NOT NULL AND TRIM(value) <> ''
 			 ORDER BY value COLLATE NOCASE`,
 		)
@@ -328,15 +354,25 @@ export async function getLedgerToolErrors(
 ): Promise<LedgerToolErrorBreakdown> {
 	const db = await getDb();
 	const toolSources = toolEventConditions(filter);
-	const rowsSql = toolSources
-		.map(
+	const historicalToolSources = historicalToolEventConditions(filter);
+	const rowsSql = [
+		...toolSources.map(
 			(source) =>
 				`SELECT te.name, te.is_error, te.result_text
 				 FROM tool_events te JOIN sessions s ON s.id = te.session_id
 				 ${source.sql}`,
-		)
-		.join(" UNION ALL ");
-	const sourceParams = toolSources.flatMap((source) => source.params);
+		),
+		...historicalToolSources.map(
+			(source) =>
+				`SELECT hte.name, hte.is_error, hte.result_text
+				 FROM historical_tool_events hte
+				 ${source.sql}`,
+		),
+	].join(" UNION ALL ");
+	const sourceParams = [
+		...toolSources.flatMap((source) => source.params),
+		...historicalToolSources.flatMap((source) => source.params),
+	];
 	const params = [...sourceParams, toolName];
 	const counts = db
 		.query<{ total: number; distinctCount: number }, (string | number)[]>(

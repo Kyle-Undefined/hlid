@@ -4286,12 +4286,16 @@ class CodexAgentSession implements AgentSession {
 
 	private completedToolResultContent(item: Record<string, unknown>): string {
 		if (item.type === "dynamicToolCall" && Array.isArray(item.contentItems)) {
-			const text = item.contentItems.map((contentItem) => {
-				const content = asObj(contentItem);
-				return typeof content.text === "string" ? content.text : null;
-			});
-			if (text.length > 0 && text.every((value) => value !== null)) {
-				return text.join("\n");
+			const text = item.contentItems
+				.map((contentItem) => asObj(contentItem).text)
+				.filter((value): value is string => typeof value === "string");
+			if (text.length > 0) return text.join("\n");
+			if (
+				item.contentItems.some(
+					(contentItem) => asObj(contentItem).type === "inputImage",
+				)
+			) {
+				return "[Image result omitted from durable transcript]";
 			}
 		}
 		return JSON.stringify(item);

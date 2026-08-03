@@ -1,7 +1,7 @@
 {
   "name": "hlid",
   "description": "Hliðskjálf - Watcher of Worlds",
-  "version": "0.1.59",
+  "version": "0.1.60",
   "private": true,
   "type": "module",
   "imports": {
@@ -64,6 +64,7 @@
     "lucide-react": "0.577.0",
     "mermaid": "11.16.0",
     "node-pty": "1.1.0",
+    "pngjs": "7.0.0",
     "react": "19.2.7",
     "react-dom": "19.2.7",
     "react-markdown": "10.1.0",

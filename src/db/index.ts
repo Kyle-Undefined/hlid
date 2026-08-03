@@ -51,6 +51,11 @@ export {
 	updateHlidDelegationProgress,
 	updateHlidDelegationTokens,
 } from "./delegations";
+export {
+	completePendingFileDeletion,
+	failPendingFileDeletion,
+	listPendingFileDeletions,
+} from "./fileCleanup";
 export type {
 	LedgerAnalytics,
 	LedgerAnalyticsFilter,
@@ -62,7 +67,11 @@ export { getLedgerAnalytics, getLedgerToolErrors } from "./ledgerAnalytics";
 // Event log
 export { appendLog, clearLogs, getLogs } from "./logs";
 export type { StorageStats } from "./maintenance";
-export { getStorageStats, optimizeStorage } from "./maintenance";
+export {
+	getStorageStats,
+	optimizeStorage,
+	reclaimStorage,
+} from "./maintenance";
 // Messages & tool events
 export {
 	appendAskUserQuestion,
@@ -146,6 +155,7 @@ export {
 	getSessionAgentCwd,
 	getSessionById,
 	getSessionClaudeId,
+	getSessionCleanupPreview,
 	getSessionLastQueryContext,
 	getSessionModel,
 	getSessionProviderId,
@@ -174,6 +184,7 @@ export {
 	saveSetting,
 	setCurrentSessionId,
 } from "./settings";
+export { runPostUpgradeStorageMaintenance } from "./storageMaintenance";
 export type {
 	AggStats,
 	AttachmentKind,
@@ -186,6 +197,7 @@ export type {
 	ProviderUsageSnapshot,
 	ProviderWindowEntry,
 	QueryData,
+	SessionCleanupPreview,
 	SessionRow,
 	ThirtyDayStats,
 	ToolEventDetailRow,

@@ -28,6 +28,7 @@ import { computeAllowedAgentRealPaths } from "./agentPaths";
 import type { AgentProvider, McpServerStatus } from "./agentProvider";
 import { buildApiIndex } from "./apiIndex";
 import { handleAttachmentRoute } from "./attachmentRoutes";
+import { unlinkPaths } from "./attachments";
 import {
 	authorizeServiceRequest,
 	isLoopback,
@@ -1379,3 +1380,29 @@ if (isCompiled) {
 	providerCapabilityCatalog.warm();
 	markUiServerReady();
 }
+
+void (async () => {
+	await unlinkPaths(
+		(await db.listPendingFileDeletions()).map((entry) => entry.path),
+	);
+	return db.runPostUpgradeStorageMaintenance();
+})()
+	.then((result) => {
+		const changed =
+			result.codexTranscriptsCompacted +
+			result.toolImagesSanitized +
+			result.toolSummariesBackfilled +
+			result.managedImagesProcessed;
+		if (changed > 0) {
+			console.log(
+				`[storage] compacted ${result.codexTranscriptsCompacted} Codex transcript payloads, ${result.toolImagesSanitized} embedded images, ${result.toolSummariesBackfilled} tool summaries, and inspected ${result.managedImagesProcessed} managed PNGs (${result.managedImageBytesSaved} bytes saved)`,
+			);
+			bumpDataRevision("storage");
+		}
+	})
+	.catch((error) => {
+		console.warn(
+			"[storage] post-upgrade compaction failed; it will retry after restart:",
+			error instanceof Error ? error.message : String(error),
+		);
+	});

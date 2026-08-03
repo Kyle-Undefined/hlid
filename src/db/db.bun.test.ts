@@ -67,6 +67,7 @@ import {
 	getSessionAgentCwd,
 	getSessionById,
 	getSessionClaudeId,
+	getSessionCleanupPreview,
 	getSessionLastQueryContext,
 	getSessionModel,
 	getSessionProviderId,
@@ -2449,6 +2450,76 @@ describe("sessions — deleteSessionsOlderThan", () => {
 		expect(await getSessionById("stale-old")).toBeNull();
 	});
 
+	it("uses last activity and protects pinned sessions", async () => {
+		const now = Math.floor(Date.now() / 1000);
+		const oldTs = now - 10 * 86_400;
+		db.run(
+			`INSERT INTO sessions (id, label, model, started_at, ended_at, pinned)
+				 VALUES ('recently-used', 'Recent', 'm', ?, ?, 0),
+				        ('recent-message', 'Recent message', 'm', ?, ?, 0),
+				        ('pinned-old', 'Pinned', 'm', ?, ?, 1),
+				        ('stale-old', 'Stale', 'm', ?, ?, 0)`,
+			[oldTs, now, oldTs, oldTs, oldTs, oldTs, oldTs, oldTs],
+		);
+		await appendMessage("recent-message", 0, "user", "new activity");
+
+		const result = await deleteSessionsOlderThan(5);
+
+		expect(result.sessionIds).toEqual(["stale-old"]);
+		expect(await getSessionById("recently-used")).not.toBeNull();
+		expect(await getSessionById("recent-message")).not.toBeNull();
+		expect(await getSessionById("pinned-old")).not.toBeNull();
+	});
+
+	it("previews destructive impact while separating preserved usage", async () => {
+		const oldTs = Math.floor(Date.now() / 1000) - 10 * 86_400;
+		db.run(
+			`INSERT INTO sessions (id, label, model, started_at) VALUES (?, ?, ?, ?)`,
+			["old-s", "Old", "m", oldTs],
+		);
+		await appendMessage("old-s", 0, "assistant", "message");
+		await appendToolEvent("old-s", 0, "tool", "Read", { path: "/tmp" });
+		await setToolEventResult("old-s", "tool", "result", false);
+		await recordQuery("old-s", baseQuery());
+		await makeAttachment("retained", {
+			session_id: "old-s",
+			kind: "ephemeral",
+			retention: "retained",
+			size_bytes: 123,
+		});
+		await appendPlanProposal("old-s", "plan", 1, "plan", "approved");
+		await appendAskUserQuestion("old-s", "ask", 2, "[]");
+		db.run(`UPDATE sessions SET ended_at = ? WHERE id = 'old-s'`, [oldTs]);
+		for (const table of [
+			"messages",
+			"tool_events",
+			"attachments",
+			"plan_proposals",
+			"ask_user_questions",
+		]) {
+			db.run(
+				`UPDATE ${table} SET ${table === "attachments" ? "created_at" : "timestamp"} = ? WHERE session_id = 'old-s'`,
+				[oldTs],
+			);
+		}
+
+		const preview = await getSessionCleanupPreview(5);
+
+		expect(preview).toMatchObject({
+			sessions: 1,
+			messages: 1,
+			toolEvents: 1,
+			usageQueriesPreserved: 1,
+			managedAttachments: 1,
+			managedAttachmentBytes: 123,
+			retainedRelics: 1,
+			retainedRelicBytes: 123,
+			planProposals: 1,
+			askUserQuestions: 1,
+		});
+		expect(preview.estimatedDatabaseBytes).toBeGreaterThan(0);
+	});
+
 	it("returns ephemeral attachment paths for deleted sessions", async () => {
 		const oldTs = Math.floor(Date.now() / 1000) - 10 * 86400;
 		db.run(
@@ -2460,6 +2531,9 @@ describe("sessions — deleteSessionsOlderThan", () => {
 			kind: "ephemeral",
 			path: "/tmp/old-file.bin",
 		});
+		db.run(`UPDATE attachments SET created_at = ? WHERE id = 'att-old'`, [
+			oldTs,
+		]);
 
 		const { ephemeralPaths } = await deleteSessionsOlderThan(5);
 		expect(ephemeralPaths).toContain("/tmp/old-file.bin");
@@ -2513,7 +2587,7 @@ describe("sessions — cascade delete completeness", () => {
 		expect(att?.message_seq).toBeNull();
 	});
 
-	it("deleteSession retains library artifacts with retained policy", async () => {
+	it("deleteSession removes linked Hlid-owned retained relics", async () => {
 		await createSession("s1", "L", "m");
 		await createAttachment({
 			id: "att-plan",
@@ -2531,12 +2605,42 @@ describe("sessions — cascade delete completeness", () => {
 		});
 
 		const { ephemeralPaths } = await deleteSession("s1");
-		expect(ephemeralPaths).not.toContain(
-			"/library/artifacts/att-plan/plan.html",
-		);
-		const attachment = await getAttachment("att-plan");
-		expect(attachment?.session_id).toBeNull();
-		expect(attachment?.retention).toBe("retained");
+		expect(ephemeralPaths).toContain("/library/artifacts/att-plan/plan.html");
+		expect(await getAttachment("att-plan")).toBeNull();
+		expect(
+			db
+				.query<{ count: number }, []>(
+					`SELECT COUNT(*) AS count FROM pending_file_deletions`,
+				)
+				.get()?.count,
+		).toBe(1);
+	});
+
+	it("deleteSession removes interactive rows and preserves compact tool history", async () => {
+		await createSession("s1", "L", "m");
+		await appendMessage("s1", 0, "assistant", "x");
+		await appendToolEvent("s1", 0, "tool-error", "Bash", { command: "x" });
+		await setToolEventResult("s1", "tool-error", "failure", true);
+		await appendPlanProposal("s1", "plan", 1, "plan", "approved");
+		await appendAskUserQuestion("s1", "ask", 2, "[]");
+
+		await deleteSession("s1");
+
+		expect(
+			db.query(`SELECT * FROM plan_proposals WHERE session_id = 's1'`).all(),
+		).toHaveLength(0);
+		expect(
+			db
+				.query(`SELECT * FROM ask_user_questions WHERE session_id = 's1'`)
+				.all(),
+		).toHaveLength(0);
+		expect(
+			db
+				.query<{ name: string; is_error: number; result_text: string }, []>(
+					`SELECT name, is_error, result_text FROM historical_tool_events`,
+				)
+				.get(),
+		).toEqual({ name: "Bash", is_error: 1, result_text: "failure" });
 	});
 
 	it("deleteSession removes the stored transcript for an imported session", async () => {
@@ -2630,9 +2734,28 @@ describe("ledger — usage_daily survives session deletion (all-time immutabilit
 		// All-time stats must be unchanged
 		const after = await getAggregatedStats();
 		expect(after.allTime.queries).toBe(1);
+		expect(after.allTime.sessions).toBe(before.allTime.sessions);
 		expect(after.allTime.input_tokens).toBe(300);
 		expect(after.allTime.output_tokens).toBe(100);
 		expect(after.allTime.cost).toBeCloseTo(0.05);
+	});
+
+	it("preserves the all-time session total even without a usage row", async () => {
+		await createSession("zero-query", "No query", "m");
+		const before = await getAggregatedStats();
+
+		await deleteSession("zero-query");
+
+		const after = await getAggregatedStats();
+		expect(before.allTime.sessions).toBe(1);
+		expect(after.allTime.sessions).toBe(1);
+		expect(
+			db
+				.query<{ count: number }, []>(
+					"SELECT COUNT(*) AS count FROM historical_sessions WHERE session_id = 'zero-query'",
+				)
+				.get()?.count,
+		).toBe(1);
 	});
 
 	it("usage_daily survives deleteSessionsOlderThan", async () => {

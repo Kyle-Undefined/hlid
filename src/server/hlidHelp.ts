@@ -15,6 +15,7 @@ export const HLID_HELP_TOPICS = [
 	"references",
 	"permissions",
 	"sessions",
+	"maintenance",
 	"context",
 	"plans_review",
 	"workflows",

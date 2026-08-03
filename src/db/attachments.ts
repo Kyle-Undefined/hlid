@@ -35,12 +35,14 @@ export async function createAttachment(row: {
 	retention?: AttachmentRetention;
 	origin?: AttachmentOrigin;
 	agent_cwd?: string | null;
+	image_optimized_at?: number | null;
+	original_size_bytes?: number | null;
 }): Promise<void> {
 	const db = await getDb();
 	db.transaction(() => {
 		db.run(
-			`INSERT INTO attachments (id, session_id, message_seq, kind, filename, path, mime, size_bytes, sha256, created_at, storage_key, category, retention, origin, agent_cwd)
-		 VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, unixepoch(), ?, ?, ?, ?, ?)`,
+			`INSERT INTO attachments (id, session_id, message_seq, kind, filename, path, mime, size_bytes, sha256, created_at, storage_key, category, retention, origin, agent_cwd, image_optimized_at, original_size_bytes)
+			 VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, unixepoch(), ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				row.id,
 				row.session_id,
@@ -55,6 +57,8 @@ export async function createAttachment(row: {
 				row.retention ?? "session",
 				row.origin ?? "legacy",
 				row.agent_cwd ?? null,
+				row.image_optimized_at ?? null,
+				row.original_size_bytes ?? null,
 			],
 		);
 		db.run(

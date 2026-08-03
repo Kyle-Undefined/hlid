@@ -1608,6 +1608,79 @@ function applyMigrations(db: Db): void {
 		);
 	});
 
+	// Session cleanup removes bulky transcripts while Ledger remains historical.
+	// Keep a bounded immutable tool-event projection so tool/error totals do not
+	// change when the owning Raven session is intentionally deleted.
+	runMigration(db, "_migrated_historical_tool_events_v1", (db) => {
+		db.run(`
+			CREATE TABLE historical_tool_events (
+				source_event_id INTEGER PRIMARY KEY,
+				session_id TEXT NOT NULL,
+				timestamp INTEGER NOT NULL,
+				name TEXT NOT NULL,
+				is_error INTEGER NOT NULL DEFAULT 0,
+				result_text TEXT,
+				provider_id TEXT,
+				model TEXT,
+				agent_cwd TEXT
+			)
+		`);
+		db.run(
+			`CREATE INDEX idx_historical_tool_events_timestamp
+			 ON historical_tool_events(timestamp)`,
+		);
+		db.run(
+			`CREATE INDEX idx_historical_tool_events_dimensions
+			 ON historical_tool_events(provider_id, model, agent_cwd, timestamp)`,
+		);
+		db.run(
+			`CREATE INDEX idx_historical_tool_events_name_error
+			 ON historical_tool_events(name, is_error, timestamp)`,
+		);
+	});
+	runMigration(db, "_migrated_historical_sessions_v1", (db) => {
+		db.run(`
+			CREATE TABLE historical_sessions (
+				session_id TEXT PRIMARY KEY,
+				started_at INTEGER NOT NULL,
+				ended_at INTEGER,
+				provider_id TEXT,
+				model TEXT,
+				agent_cwd TEXT,
+				deleted_at INTEGER NOT NULL DEFAULT (unixepoch())
+			)
+		`);
+	});
+
+	// Filesystem deletion cannot be atomic with SQLite. Queue Hlid-owned files in
+	// the same transaction as their attachment/session rows so failed unlinks can
+	// be retried by later maintenance instead of becoming invisible orphans.
+	runMigration(db, "_migrated_pending_file_deletions_v1", (db) => {
+		db.run(`
+			CREATE TABLE pending_file_deletions (
+				path TEXT PRIMARY KEY,
+				created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+				attempts INTEGER NOT NULL DEFAULT 0,
+				last_error TEXT
+			)
+		`);
+	});
+
+	// Session history reads should not ask SQLite to materialize every large tool
+	// result merely to calculate its length and first visible characters.
+	runMigration(db, "_migrated_tool_event_result_summary_v1", (db) => {
+		db.run(`ALTER TABLE tool_events ADD COLUMN result_length INTEGER`);
+		db.run(`ALTER TABLE tool_events ADD COLUMN result_preview TEXT`);
+	});
+
+	// Managed images are optimized at most once per stored version. Recording the
+	// original size keeps the savings auditable and makes the upgrade pass safely
+	// restartable without repeatedly re-encoding an attachment.
+	runMigration(db, "_migrated_attachment_image_optimization_v1", (db) => {
+		db.run(`ALTER TABLE attachments ADD COLUMN image_optimized_at INTEGER`);
+		db.run(`ALTER TABLE attachments ADD COLUMN original_size_bytes INTEGER`);
+	});
+
 	// Claude's long-lived streaming query reports total_cost_usd cumulatively.
 	// v0.0.128 and later stored those snapshots as per-query estimates. Repair
 	// completed live Raven turns while leaving imported and interrupted rows

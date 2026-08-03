@@ -11,10 +11,30 @@ import type { Db } from "./schema";
 import { getDb } from "./schema";
 import type {
 	QueryData,
+	SessionCleanupPreview,
 	SessionRow,
 	SessionSelection,
 	SessionSort,
 } from "./types";
+
+const HISTORICAL_TOOL_ERROR_PREVIEW_CHARS = 4_096;
+const SESSION_CLEANUP_BATCH_SIZE = 25;
+const SESSION_LAST_ACTIVITY_SQL = `MAX(
+	session.started_at,
+	COALESCE(session.ended_at, session.started_at),
+	COALESCE((SELECT MAX(message.timestamp) FROM messages message
+	          WHERE message.session_id = session.id), session.started_at),
+	COALESCE((SELECT MAX(event.timestamp) FROM tool_events event
+	          WHERE event.session_id = session.id), session.started_at),
+	COALESCE((SELECT MAX(permission.timestamp) FROM permission_events permission
+	          WHERE permission.session_id = session.id), session.started_at),
+	COALESCE((SELECT MAX(proposal.timestamp) FROM plan_proposals proposal
+	          WHERE proposal.session_id = session.id), session.started_at),
+	COALESCE((SELECT MAX(question.timestamp) FROM ask_user_questions question
+	          WHERE question.session_id = session.id), session.started_at),
+	COALESCE((SELECT MAX(attachment.created_at) FROM attachments attachment
+	          WHERE attachment.session_id = session.id), session.started_at)
+)`;
 
 export class SessionHasDelegationDescendantsError extends Error {
 	constructor(readonly sessionId: string) {
@@ -816,37 +836,106 @@ export async function getAllSessions(): Promise<SessionRow[]> {
 		.all();
 }
 
-/**
- * Delete all rows for a set of session IDs across every related table.
- * Must be called inside a transaction. Returns ephemeral attachment paths
- * so the caller can unlink them from disk.
- */
+/** Delete every Hlid-owned row/file link while preserving immutable ledgers. */
 function cascadeDeleteSessionIds(db: Db, ids: string[]): string[] {
 	if (ids.length === 0) return [];
 	const ph = ids.map(() => "?").join(",");
 	const rows = db
 		.query<{ path: string }, string[]>(
-			`SELECT path FROM attachments WHERE kind = 'ephemeral' AND retention = 'session' AND session_id IN (${ph})`,
+			`SELECT path FROM attachments
+			 WHERE kind = 'ephemeral' AND session_id IN (${ph})`,
 		)
 		.all(...ids);
 	const ephemeralPaths = rows.map((r) => r.path);
 	db.run(
-		`DELETE FROM attachments WHERE kind = 'ephemeral' AND retention = 'session' AND session_id IN (${ph})`,
+		`INSERT OR IGNORE INTO historical_sessions
+		 (session_id, started_at, ended_at, provider_id, model, agent_cwd)
+		 SELECT id, started_at, ended_at, provider_id,
+		        COALESCE(NULLIF(actual_model, ''), NULLIF(selected_model, ''), model),
+		        agent_cwd
+		 FROM sessions WHERE id IN (${ph})`,
 		ids,
 	);
 	db.run(
-		`UPDATE attachments SET session_id = NULL, message_seq = NULL WHERE (kind = 'vault' OR retention != 'session') AND session_id IN (${ph})`,
+		`INSERT OR IGNORE INTO pending_file_deletions(path)
+		 SELECT path FROM attachments
+		 WHERE kind = 'ephemeral' AND session_id IN (${ph})`,
 		ids,
 	);
-	db.run(`DELETE FROM tool_events WHERE session_id IN (${ph})`, ids);
-	db.run(`DELETE FROM project_previews WHERE session_id IN (${ph})`, ids);
+
+	// Preserve compact historical tool/error analytics before deleting bulky
+	// transcript results. Full successful results are intentionally not retained.
+	db.run(
+		`INSERT OR IGNORE INTO historical_tool_events
+		 (source_event_id, session_id, timestamp, name, is_error, result_text,
+		  provider_id, model, agent_cwd)
+		 SELECT event.id,
+		        event.session_id,
+		        COALESCE(
+		          event.timestamp,
+		          (SELECT MIN(message.timestamp)
+		           FROM messages message
+		           WHERE message.session_id = event.session_id
+		             AND message.seq = event.assistant_seq
+		             AND message.role = 'assistant'),
+		          session.ended_at,
+		          session.started_at
+		        ),
+		        event.name,
+		        COALESCE(event.is_error, 0),
+		        CASE WHEN event.is_error = 1
+		             THEN substr(COALESCE(event.result_text, ''), 1, ${HISTORICAL_TOOL_ERROR_PREVIEW_CHARS})
+		             ELSE NULL END,
+		        event.provider_id,
+		        event.model,
+		        event.agent_cwd
+		 FROM tool_events event
+		 JOIN sessions session ON session.id = event.session_id
+		 WHERE event.session_id IN (${ph})`,
+		ids,
+	);
+
+	// Feedback rows refer to generated report attachments. Remove both sides of
+	// that ownership boundary before deleting all Hlid-owned attachment rows.
+	db.run(
+		`DELETE FROM project_preview_feedback WHERE session_id IN (${ph})`,
+		ids,
+	);
+	db.run(
+		`DELETE FROM attachments
+		 WHERE kind = 'ephemeral' AND session_id IN (${ph})`,
+		ids,
+	);
+	db.run(
+		`UPDATE attachments SET session_id = NULL, message_seq = NULL
+		 WHERE kind = 'vault' AND session_id IN (${ph})`,
+		ids,
+	);
+	for (const table of [
+		"tool_events",
+		"project_previews",
+		"plan_proposals",
+		"ask_user_questions",
+		"session_pending_turns",
+		"permission_events",
+		"messages",
+		"queries",
+	] as const) {
+		db.run(`DELETE FROM ${table} WHERE session_id IN (${ph})`, ids);
+	}
 	db.run(
 		`DELETE FROM session_delegations WHERE child_session_id IN (${ph})`,
 		ids,
 	);
-	db.run(`DELETE FROM permission_events WHERE session_id IN (${ph})`, ids);
-	db.run(`DELETE FROM messages WHERE session_id IN (${ph})`, ids);
-	db.run(`DELETE FROM queries WHERE session_id IN (${ph})`, ids);
+	db.run(
+		`UPDATE routine_runs SET session_id = NULL WHERE session_id IN (${ph})`,
+		ids,
+	);
+	db.run(
+		`UPDATE history_import_items SET imported_query_id = NULL
+		 WHERE imported_session_id IN (${ph})`,
+		ids,
+	);
 	db.run(
 		`DELETE FROM provider_history_transcripts
 		 WHERE EXISTS (
@@ -861,6 +950,162 @@ function cascadeDeleteSessionIds(db: Db, ids: string[]): string[] {
 	// usage_queries intentionally NOT deleted — immutable ledger for all-time stats
 	db.run(`DELETE FROM sessions WHERE id IN (${ph})`, ids);
 	return ephemeralPaths;
+}
+
+function cleanupSessionIds(
+	db: Db,
+	cutoff: number,
+	excludedSessionIds: readonly string[],
+	limit?: number,
+): string[] {
+	const excludedIds = [...new Set(excludedSessionIds.filter(Boolean))];
+	const excludedSql =
+		excludedIds.length > 0
+			? `AND session.id NOT IN (${excludedIds.map(() => "?").join(",")})`
+			: "";
+	const limitSql = limit == null ? "" : "LIMIT ?";
+	const params: (number | string)[] = [cutoff, ...excludedIds];
+	if (limit != null) params.push(limit);
+	return db
+		.query<{ id: string }, (number | string)[]>(
+			`WITH RECURSIVE
+			 cleanup_candidates(id, last_activity) AS (
+			   SELECT session.id, ${SESSION_LAST_ACTIVITY_SQL}
+			   FROM sessions session
+			   WHERE ${SESSION_LAST_ACTIVITY_SQL} < ?
+			     AND session.history_imported = 0
+			     AND session.archived_at IS NULL
+			     AND COALESCE(session.pinned, 0) = 0
+			     AND NOT EXISTS (
+			       SELECT 1 FROM session_pending_turns pending
+			       WHERE pending.session_id = session.id
+			     )
+			     ${excludedSql}
+			 ),
+			 blocked_delegations(id, parent_delegation_id) AS (
+			   SELECT delegation.id, delegation.parent_delegation_id
+			   FROM session_delegations delegation
+			   WHERE NOT EXISTS (
+			     SELECT 1 FROM cleanup_candidates candidate
+			     WHERE candidate.id = delegation.child_session_id
+			   )
+			      OR delegation.status IN ('pending', 'running')
+			      OR (
+			        delegation.status = 'interrupted'
+			        AND delegation.routine_run_id IS NULL
+			        AND delegation.attempt_count < ${HLID_DELEGATION_MAX_ATTEMPTS}
+			      )
+			   UNION
+			   SELECT parent.id, parent.parent_delegation_id
+			   FROM session_delegations parent
+			   JOIN blocked_delegations child
+			     ON child.parent_delegation_id = parent.id
+			 )
+			 SELECT candidate.id
+			 FROM cleanup_candidates candidate
+			 WHERE NOT EXISTS (
+			   SELECT 1
+			   FROM session_delegations protected_lineage
+			   JOIN blocked_delegations blocked ON blocked.id = protected_lineage.id
+			   WHERE protected_lineage.child_session_id = candidate.id
+			      OR protected_lineage.parent_session_id = candidate.id
+			 )
+			 ORDER BY candidate.last_activity, candidate.id
+			 ${limitSql}`,
+		)
+		.all(...params)
+		.map((row) => row.id);
+}
+
+function emptyCleanupPreview(
+	days: number,
+	cutoff: number,
+): SessionCleanupPreview {
+	return {
+		days,
+		cutoff,
+		sessions: 0,
+		messages: 0,
+		toolEvents: 0,
+		estimatedDatabaseBytes: 0,
+		usageQueriesPreserved: 0,
+		managedAttachments: 0,
+		managedAttachmentBytes: 0,
+		retainedRelics: 0,
+		retainedRelicBytes: 0,
+		vaultLinksDetached: 0,
+		planProposals: 0,
+		askUserQuestions: 0,
+		projectPreviewFeedback: 0,
+	};
+}
+
+function cleanupPreviewForIds(
+	db: Db,
+	days: number,
+	cutoff: number,
+	ids: readonly string[],
+): SessionCleanupPreview {
+	if (ids.length === 0) return emptyCleanupPreview(days, cutoff);
+	const ph = ids.map(() => "?").join(",");
+	type PreviewCounts = Omit<SessionCleanupPreview, "days" | "cutoff">;
+	const row = db
+		.query<PreviewCounts, string[]>(
+			`SELECT
+			 (SELECT COUNT(*) FROM sessions WHERE id IN (${ph})) AS sessions,
+			 (SELECT COUNT(*) FROM messages WHERE session_id IN (${ph})) AS messages,
+			 (SELECT COUNT(*) FROM tool_events WHERE session_id IN (${ph})) AS toolEvents,
+			 (SELECT COALESCE(SUM(
+			    length(COALESCE(text, '')) + length(COALESCE(recap, '')) +
+			    length(COALESCE(context_manifest_json, ''))
+			  ), 0) FROM messages WHERE session_id IN (${ph})) +
+			 (SELECT COALESCE(SUM(
+			    length(COALESCE(input_json, '')) + length(COALESCE(result_text, '')) +
+			    length(COALESCE(subagent_json, '')) + length(COALESCE(activity_json, ''))
+			  ), 0) FROM tool_events WHERE session_id IN (${ph})) AS estimatedDatabaseBytes,
+			 (SELECT COUNT(*) FROM usage_queries WHERE session_id IN (${ph})) AS usageQueriesPreserved,
+			 (SELECT COUNT(*) FROM attachments
+			  WHERE kind = 'ephemeral' AND session_id IN (${ph})) AS managedAttachments,
+			 (SELECT COALESCE(SUM(size_bytes), 0) FROM attachments
+			  WHERE kind = 'ephemeral' AND session_id IN (${ph})) AS managedAttachmentBytes,
+			 (SELECT COUNT(*) FROM attachments
+			  WHERE kind = 'ephemeral' AND retention = 'retained'
+			    AND session_id IN (${ph})) AS retainedRelics,
+			 (SELECT COALESCE(SUM(size_bytes), 0) FROM attachments
+			  WHERE kind = 'ephemeral' AND retention = 'retained'
+			    AND session_id IN (${ph})) AS retainedRelicBytes,
+			 (SELECT COUNT(*) FROM attachments
+			  WHERE kind = 'vault' AND session_id IN (${ph})) AS vaultLinksDetached,
+			 (SELECT COUNT(*) FROM plan_proposals WHERE session_id IN (${ph})) AS planProposals,
+			 (SELECT COUNT(*) FROM ask_user_questions WHERE session_id IN (${ph})) AS askUserQuestions,
+			 (SELECT COUNT(*) FROM project_preview_feedback
+			  WHERE session_id IN (${ph})) AS projectPreviewFeedback`,
+		)
+		.get(...Array.from({ length: 14 }, () => ids).flat());
+	return row ? { days, cutoff, ...row } : emptyCleanupPreview(days, cutoff);
+}
+
+export async function getSessionCleanupPreview(
+	days: number,
+	excludedSessionIds: readonly string[] = [],
+): Promise<SessionCleanupPreview> {
+	const db = await getDb();
+	const cutoff = Math.floor(Date.now() / 1000) - days * 86_400;
+	const ids = cleanupSessionIds(db, cutoff, excludedSessionIds);
+	const preview = emptyCleanupPreview(days, cutoff);
+	for (let offset = 0; offset < ids.length; offset += 250) {
+		const part = cleanupPreviewForIds(
+			db,
+			days,
+			cutoff,
+			ids.slice(offset, offset + 250),
+		);
+		for (const key of Object.keys(part) as (keyof SessionCleanupPreview)[]) {
+			if (key === "days" || key === "cutoff") continue;
+			preview[key] += part[key];
+		}
+	}
+	return preview;
 }
 
 /**
@@ -985,62 +1230,25 @@ export async function deleteSessionsOlderThan(
 ): Promise<{ count: number; ephemeralPaths: string[]; sessionIds: string[] }> {
 	const db = await getDb();
 	const cutoff = Math.floor(Date.now() / 1000) - days * 86400;
-	const excludedIds = [...new Set(excludedSessionIds.filter(Boolean))];
-	const excludedSql =
-		excludedIds.length > 0
-			? `AND id NOT IN (${excludedIds.map(() => "?").join(",")})`
-			: "";
-	let ids: string[] = [];
-	let ephemeralPaths: string[] = [];
-	db.transaction(() => {
-		const sessionRows = db
-			.query<{ id: string }, (number | string)[]>(
-				`WITH RECURSIVE
-				 cleanup_candidates(id) AS (
-				   SELECT id
-				   FROM sessions
-				   WHERE started_at < ?
-				     AND history_imported = 0
-				     AND archived_at IS NULL
-				     ${excludedSql}
-				 ),
-					 blocked_delegations(id, parent_delegation_id) AS (
-					   SELECT delegation.id, delegation.parent_delegation_id
-					   FROM session_delegations delegation
-					   WHERE NOT EXISTS (
-					     SELECT 1
-					     FROM cleanup_candidates candidate
-					     WHERE candidate.id = delegation.child_session_id
-					   )
-					      OR delegation.status IN ('pending', 'running')
-					      OR (
-					        delegation.status = 'interrupted'
-					        AND delegation.routine_run_id IS NULL
-					        AND delegation.attempt_count < ${HLID_DELEGATION_MAX_ATTEMPTS}
-					      )
-					   UNION
-					   SELECT parent.id, parent.parent_delegation_id
-					   FROM session_delegations parent
-				   JOIN blocked_delegations child
-				     ON child.parent_delegation_id = parent.id
-				 )
-				 SELECT candidate.id
-				 FROM cleanup_candidates candidate
-				 WHERE NOT EXISTS (
-				   SELECT 1
-				   FROM session_delegations protected_lineage
-				   JOIN blocked_delegations blocked
-				     ON blocked.id = protected_lineage.id
-				   WHERE protected_lineage.child_session_id = candidate.id
-				      OR protected_lineage.parent_session_id = candidate.id
-				 )`,
-			)
-			.all(cutoff, ...excludedIds);
-		ids = sessionRows.map((r) => r.id);
-		if (ids.length > 0) {
-			ephemeralPaths = cascadeDeleteSessionIds(db, ids);
-		}
-	})();
+	const ids: string[] = [];
+	const ephemeralPaths: string[] = [];
+	while (true) {
+		const batch = cleanupSessionIds(
+			db,
+			cutoff,
+			excludedSessionIds,
+			SESSION_CLEANUP_BATCH_SIZE,
+		);
+		if (batch.length === 0) break;
+		let batchPaths: string[] = [];
+		db.transaction(() => {
+			batchPaths = cascadeDeleteSessionIds(db, batch);
+		})();
+		ids.push(...batch);
+		ephemeralPaths.push(...batchPaths);
+		// Keep the server responsive between bounded SQLite transactions.
+		await new Promise<void>((resolve) => setImmediate(resolve));
+	}
 	if (ids.length > 0) {
 		markAnalyticsChanged(["stats", "activity"], "sessions_cleaned_up");
 	}

@@ -21,8 +21,11 @@ const serverFns = vi.hoisted(() => ({
 		sessions: 1,
 		messages: 2,
 		usageQueries: 3,
+		pendingFileDeletions: 0,
+		availableBytes: 1024 * 1024,
 	}),
 	optimizeStorageFn: vi.fn(),
+	reclaimStorageFn: vi.fn(),
 }));
 
 vi.mock("#/lib/serverFns/storage", async (importOriginal) => ({
@@ -35,6 +38,7 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 	serverFns.getStorageStatsFn.mockClear();
 	serverFns.optimizeStorageFn.mockReset();
+	serverFns.reclaimStorageFn.mockReset();
 });
 
 describe("SystemSection", () => {
@@ -115,6 +119,39 @@ describe("SystemSection", () => {
 		fireEvent.click(screen.getByText("OPTIMIZE"));
 		await screen.findByText("database is busy");
 		expect(screen.getByText("OPTIMIZE")).not.toBeNull();
+	});
+
+	it("requires confirmation before rebuilding the database", async () => {
+		serverFns.reclaimStorageFn.mockResolvedValueOnce({
+			databaseBytes: 512,
+			walBytes: 0,
+			reclaimableBytes: 0,
+			trackedAttachmentBytes: 0,
+			trackedAttachments: 0,
+			sessions: 1,
+			messages: 2,
+			usageQueries: 3,
+			pendingFileDeletions: 0,
+			availableBytes: 1024 * 1024,
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(
+				jsonResponse({
+					ok: true,
+					data: { enabled: false, supported: true },
+				}),
+			),
+		);
+		render(<SystemSection view="advanced" />);
+
+		fireEvent.click(screen.getByText("RECLAIM"));
+		expect(serverFns.reclaimStorageFn).not.toHaveBeenCalled();
+		fireEvent.click(screen.getByText("confirm"));
+
+		await waitFor(() =>
+			expect(serverFns.reclaimStorageFn).toHaveBeenCalledOnce(),
+		);
 	});
 
 	it("places restart above shutdown and posts the restart action", async () => {

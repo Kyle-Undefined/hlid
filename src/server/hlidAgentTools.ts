@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { lstat, realpath, rename, rm, writeFile } from "node:fs/promises";
 import {
 	basename,
@@ -36,8 +37,36 @@ import {
 
 export const HLID_AGENT_NAMESPACE = "hlid";
 export const HLID_AGENT_NAMESPACE_DESCRIPTION =
-	"Curated Hlid host capabilities. Discover the active operating contract and HTTP API, create durable Raven child sessions, publish deliverables to Relics, or run and inspect a session-scoped Project Preview.";
+	"Curated Hlid host capabilities. Discover the active operating contract and HTTP API, maintain Hlid storage, create durable Raven child sessions, publish deliverables to Relics, or run and inspect a session-scoped Project Preview.";
 export const MAX_HLID_INLINE_RELIC_CHARS = 2_000_000;
+const STORAGE_CLEANUP_PREVIEW_TTL_MS = 10 * 60 * 1_000;
+const MAX_STORAGE_CLEANUP_PREVIEWS = 256;
+
+type SessionCleanupPreview = {
+	days: number;
+	cutoff: number;
+	sessions: number;
+	messages: number;
+	toolEvents: number;
+	estimatedDatabaseBytes: number;
+	usageQueriesPreserved: number;
+	managedAttachments: number;
+	managedAttachmentBytes: number;
+	retainedRelics: number;
+	retainedRelicBytes: number;
+	vaultLinksDetached: number;
+	planProposals: number;
+	askUserQuestions: number;
+	projectPreviewFeedback: number;
+};
+
+type StorageCleanupPreviewReceipt = {
+	sessionId: string;
+	expiresAt: number;
+	preview: SessionCleanupPreview;
+};
+
+const storageCleanupPreviews = new Map<string, StorageCleanupPreviewReceipt>();
 
 /** Fields shared by every preview tool: which preview to address. */
 const previewTarget = z.object({
@@ -60,6 +89,13 @@ export const hlidAgentSchemas = {
 		method: z.enum(["GET", "POST", "PATCH", "DELETE"]).optional(),
 		scope: z.enum(["data", "ui"]).optional(),
 		limit: z.number().int().min(1).max(50).optional(),
+	}),
+	inspect_hlid_storage: z.object({
+		cleanup_older_than_days: z.number().int().min(1).max(36_500).optional(),
+	}),
+	optimize_hlid_storage: z.object({}),
+	cleanup_hlid_sessions: z.object({
+		preview_id: z.string().uuid(),
 	}),
 	delegate_hlid_agent: delegateHlidAgentSchema,
 	list_hlid_agents: listHlidAgentsSchema,
@@ -204,6 +240,63 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 						"Maximum endpoints to return, from 1 to 50. Defaults to 20.",
 				},
 			},
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "inspect_hlid_storage",
+		description:
+			"Inspect Hlid's database, WAL, reusable pages, managed library, attachment, session, message, usage-query, pending-deletion, and available-disk totals without changing them. Optionally supply cleanup_older_than_days to preview guarded session cleanup and receive a short-lived, one-use preview_id required by cleanup_hlid_sessions. Cleanup previews exclude live, pinned, archived, imported, pending-turn, and protected delegation-lineage sessions.",
+		readOnly: true,
+		deferLoading: true,
+		searchHint:
+			"inspect Hlid storage database WAL library attachments cleanup preview maintenance disk usage",
+		inputSchema: {
+			type: "object",
+			properties: {
+				cleanup_older_than_days: {
+					type: "number",
+					description:
+						"Optional whole-number age threshold from 1 to 36500 days. When present, return the current cleanup impact and a preview ID.",
+				},
+			},
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "optimize_hlid_storage",
+		description:
+			"Run Hlid's lightweight storage maintenance: retry pending managed-file deletions, perform a passive SQLite WAL checkpoint, and run PRAGMA optimize. Returns before-and-after storage totals. This does not VACUUM, physically rebuild the database, stop sessions, or perform Forge-only reclaim.",
+		readOnly: false,
+		deferLoading: true,
+		searchHint:
+			"optimize Hlid storage SQLite WAL checkpoint maintenance pending file deletion",
+		approvalTitle: "Hlid optimize storage",
+		inputSchema: {
+			type: "object",
+			properties: {},
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "cleanup_hlid_sessions",
+		description:
+			"Delete the eligible old sessions represented by a fresh preview_id from inspect_hlid_storage after reporting its deletion and preservation totals and receiving explicit user authorization. The preview is session-scoped, one-use, expires after ten minutes, and is rechecked immediately; changed impact is refused. Cleanup removes Hlid-owned linked Relics and preserves immutable Ledger usage totals while only detaching vault-owned files. Physical database reclaim remains Forge-only.",
+		readOnly: false,
+		deferLoading: true,
+		searchHint:
+			"clean delete old Hlid sessions linked Relics preserve Ledger usage storage maintenance",
+		approvalTitle: "Hlid clean up sessions",
+		inputSchema: {
+			type: "object",
+			properties: {
+				preview_id: {
+					type: "string",
+					description:
+						"Short-lived preview ID returned by inspect_hlid_storage for this Raven session.",
+				},
+			},
+			required: ["preview_id"],
 			additionalProperties: false,
 		},
 	},
@@ -1230,6 +1323,129 @@ async function executePublishRelic(
 	return JSON.stringify(await response.json());
 }
 
+function pruneStorageCleanupPreviews(now = Date.now()): void {
+	for (const [id, receipt] of storageCleanupPreviews) {
+		if (receipt.expiresAt <= now) storageCleanupPreviews.delete(id);
+	}
+	while (storageCleanupPreviews.size >= MAX_STORAGE_CLEANUP_PREVIEWS) {
+		const oldest = storageCleanupPreviews.keys().next().value;
+		if (typeof oldest !== "string") break;
+		storageCleanupPreviews.delete(oldest);
+	}
+}
+
+function cleanupPreviewSignature(preview: SessionCleanupPreview): string {
+	const { cutoff: _cutoff, ...stableImpact } = preview;
+	return JSON.stringify(stableImpact);
+}
+
+async function readHlidStorage(): Promise<Record<string, unknown>> {
+	const response = await dbFetch("/db/storage");
+	await requireDbOk(response, "Inspect Hlid storage");
+	return (await response.json()) as Record<string, unknown>;
+}
+
+async function readSessionCleanupPreview(
+	days: number,
+): Promise<SessionCleanupPreview> {
+	const response = await dbFetch(
+		`/db/sessions/cleanup/preview?older_than_days=${days}`,
+	);
+	await requireDbOk(response, "Preview Hlid session cleanup");
+	return (await response.json()) as SessionCleanupPreview;
+}
+
+async function executeInspectHlidStorage(
+	input: unknown,
+	context: HlidAgentToolContext,
+): Promise<string> {
+	const parsed = hlidAgentSchemas.inspect_hlid_storage.parse(input);
+	const storage = await readHlidStorage();
+	if (parsed.cleanup_older_than_days === undefined) {
+		return JSON.stringify({ storage });
+	}
+	if (!context.sessionId) {
+		throw new Error(
+			"Hlid could not bind the cleanup preview to the active Raven session.",
+		);
+	}
+	const preview = await readSessionCleanupPreview(
+		parsed.cleanup_older_than_days,
+	);
+	const previewId = randomUUID();
+	const expiresAt = Date.now() + STORAGE_CLEANUP_PREVIEW_TTL_MS;
+	pruneStorageCleanupPreviews();
+	storageCleanupPreviews.set(previewId, {
+		sessionId: context.sessionId,
+		expiresAt,
+		preview,
+	});
+	return JSON.stringify({
+		storage,
+		cleanup: {
+			preview_id: previewId,
+			expires_at: Math.floor(expiresAt / 1_000),
+			...preview,
+		},
+	});
+}
+
+async function executeOptimizeHlidStorage(input: unknown): Promise<string> {
+	hlidAgentSchemas.optimize_hlid_storage.parse(input);
+	const before = await readHlidStorage();
+	const response = await dbFetch("/db/storage/optimize", { method: "POST" });
+	await requireDbOk(response, "Optimize Hlid storage");
+	const after = (await response.json()) as Record<string, unknown>;
+	return JSON.stringify({ before, after, physical_reclaim: "forge-only" });
+}
+
+async function executeCleanupHlidSessions(
+	input: unknown,
+	context: HlidAgentToolContext,
+): Promise<string> {
+	const parsed = hlidAgentSchemas.cleanup_hlid_sessions.parse(input);
+	if (!context.sessionId) {
+		throw new Error("Hlid could not resolve the active Raven session.");
+	}
+	pruneStorageCleanupPreviews();
+	const receipt = storageCleanupPreviews.get(parsed.preview_id);
+	if (!receipt) {
+		throw new Error(
+			"Cleanup preview is missing or expired. Inspect Hlid storage again before cleanup.",
+		);
+	}
+	if (receipt.sessionId !== context.sessionId) {
+		throw new Error(
+			"Cleanup preview belongs to a different Raven session. Inspect Hlid storage in this session first.",
+		);
+	}
+
+	const currentPreview = await readSessionCleanupPreview(receipt.preview.days);
+	storageCleanupPreviews.delete(parsed.preview_id);
+	if (
+		cleanupPreviewSignature(currentPreview) !==
+		cleanupPreviewSignature(receipt.preview)
+	) {
+		throw new Error(
+			"Cleanup impact changed after preview. Inspect Hlid storage again and review the new totals.",
+		);
+	}
+
+	const response = await dbFetch(
+		`/db/sessions/cleanup?older_than_days=${receipt.preview.days}`,
+		{ method: "POST" },
+	);
+	await requireDbOk(response, "Clean up Hlid sessions");
+	const cleanup = (await response.json()) as Record<string, unknown>;
+	const storage = await readHlidStorage();
+	return JSON.stringify({
+		preview: currentPreview,
+		cleanup,
+		storage,
+		physical_reclaim: "forge-only",
+	});
+}
+
 const hlidAgentToolHandlers = {
 	hlid_help: async (input, context) => {
 		const parsed = hlidAgentSchemas.hlid_help.parse(input);
@@ -1247,6 +1463,9 @@ const hlidAgentToolHandlers = {
 			parsed,
 		);
 	},
+	inspect_hlid_storage: executeInspectHlidStorage,
+	optimize_hlid_storage: executeOptimizeHlidStorage,
+	cleanup_hlid_sessions: executeCleanupHlidSessions,
 	delegate_hlid_agent: (input, context) =>
 		executeDelegationTool("delegate_hlid_agent", input, context),
 	list_hlid_agents: (input, context) =>

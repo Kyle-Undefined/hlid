@@ -62,6 +62,25 @@ export type SessionSelection = {
 	permissionMode: string | null;
 };
 
+/** Read-only impact summary returned before destructive age-based cleanup. */
+export type SessionCleanupPreview = {
+	days: number;
+	cutoff: number;
+	sessions: number;
+	messages: number;
+	toolEvents: number;
+	estimatedDatabaseBytes: number;
+	usageQueriesPreserved: number;
+	managedAttachments: number;
+	managedAttachmentBytes: number;
+	retainedRelics: number;
+	retainedRelicBytes: number;
+	vaultLinksDetached: number;
+	planProposals: number;
+	askUserQuestions: number;
+	projectPreviewFeedback: number;
+};
+
 export type MessageRow = {
 	id: number;
 	session_id: string;
@@ -205,6 +224,8 @@ export type AttachmentRow = {
 	retention?: AttachmentRetention;
 	origin?: AttachmentOrigin;
 	agent_cwd?: string | null;
+	image_optimized_at?: number | null;
+	original_size_bytes?: number | null;
 };
 
 export type LogLevel = "error" | "warn" | "info";

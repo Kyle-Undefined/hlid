@@ -11,6 +11,44 @@ const db = vi.hoisted(() => ({
 
 vi.mock("#/lib/dbClient", () => db);
 
+function storageStats(overrides: Record<string, number> = {}) {
+	return {
+		databaseBytes: 1_000,
+		walBytes: 100,
+		reclaimableBytes: 400,
+		trackedAttachmentBytes: 200,
+		trackedAttachments: 2,
+		libraryBytes: 300,
+		sessions: 10,
+		messages: 20,
+		usageQueries: 30,
+		pendingFileDeletions: 0,
+		availableBytes: 10_000,
+		...overrides,
+	};
+}
+
+function cleanupPreview(overrides: Record<string, number> = {}) {
+	return {
+		days: 30,
+		cutoff: 1_700_000_000,
+		sessions: 2,
+		messages: 8,
+		toolEvents: 4,
+		estimatedDatabaseBytes: 500,
+		usageQueriesPreserved: 3,
+		managedAttachments: 2,
+		managedAttachmentBytes: 120,
+		retainedRelics: 1,
+		retainedRelicBytes: 80,
+		vaultLinksDetached: 1,
+		planProposals: 0,
+		askUserQuestions: 0,
+		projectPreviewFeedback: 0,
+		...overrides,
+	};
+}
+
 import {
 	executeHlidAgentTool,
 	executeHlidAgentToolRich,
@@ -57,6 +95,9 @@ describe("Hlid agent tools", () => {
 		expect(specNames).toEqual([
 			"hlid_help",
 			"hlid_api",
+			"inspect_hlid_storage",
+			"optimize_hlid_storage",
+			"cleanup_hlid_sessions",
 			"delegate_hlid_agent",
 			"list_hlid_agents",
 			"inspect_hlid_agent",
@@ -72,6 +113,7 @@ describe("Hlid agent tools", () => {
 			"control_project_preview",
 			"stop_project_preview",
 		]);
+		expect(specNames.some((name) => name.includes("reclaim"))).toBe(false);
 		expect(HLID_AGENT_TOOL_SPECS).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({
@@ -83,6 +125,23 @@ describe("Hlid agent tools", () => {
 					name: "hlid_api",
 					readOnly: true,
 					deferLoading: true,
+				}),
+				expect.objectContaining({
+					name: "inspect_hlid_storage",
+					readOnly: true,
+					deferLoading: true,
+				}),
+				expect.objectContaining({
+					name: "optimize_hlid_storage",
+					readOnly: false,
+					deferLoading: true,
+					approvalTitle: "Hlid optimize storage",
+				}),
+				expect.objectContaining({
+					name: "cleanup_hlid_sessions",
+					readOnly: false,
+					deferLoading: true,
+					approvalTitle: "Hlid clean up sessions",
 				}),
 				expect.objectContaining({
 					name: "delegate_hlid_agent",
@@ -473,6 +532,191 @@ describe("Hlid agent tools", () => {
 		});
 		expect(db.dbFetch).toHaveBeenCalledTimes(1);
 		expect(db.dbFetch).toHaveBeenCalledWith("/api-index");
+	});
+
+	it("inspects storage and issues a session-scoped cleanup preview", async () => {
+		db.dbFetch.mockImplementation((path: string) => {
+			if (path === "/db/storage") {
+				return Promise.resolve(Response.json(storageStats()));
+			}
+			if (path === "/db/sessions/cleanup/preview?older_than_days=30") {
+				return Promise.resolve(Response.json(cleanupPreview()));
+			}
+			throw new Error(`Unexpected path: ${path}`);
+		});
+
+		const result = JSON.parse(
+			await executeHlidAgentTool(
+				"inspect_hlid_storage",
+				{ cleanup_older_than_days: 30 },
+				{ sessionId: "session-1" },
+			),
+		);
+
+		expect(result).toMatchObject({
+			storage: { databaseBytes: 1_000, usageQueries: 30 },
+			cleanup: {
+				days: 30,
+				sessions: 2,
+				usageQueriesPreserved: 3,
+			},
+		});
+		expect(result.cleanup.preview_id).toMatch(
+			/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+		);
+		expect(result.cleanup.expires_at).toBeGreaterThan(
+			Math.floor(Date.now() / 1_000),
+		);
+	});
+
+	it("optimizes storage without exposing physical reclaim", async () => {
+		db.dbFetch.mockImplementation((path: string, init?: RequestInit) => {
+			if (path === "/db/storage") {
+				return Promise.resolve(Response.json(storageStats()));
+			}
+			if (path === "/db/storage/optimize" && init?.method === "POST") {
+				return Promise.resolve(
+					Response.json(storageStats({ walBytes: 0, reclaimableBytes: 300 })),
+				);
+			}
+			throw new Error(`Unexpected path: ${path}`);
+		});
+
+		const result = JSON.parse(
+			await executeHlidAgentTool("optimize_hlid_storage", {}),
+		);
+		expect(result).toMatchObject({
+			before: { walBytes: 100 },
+			after: { walBytes: 0, reclaimableBytes: 300 },
+			physical_reclaim: "forge-only",
+		});
+		expect(db.dbFetch).not.toHaveBeenCalledWith(
+			"/db/storage/reclaim",
+			expect.anything(),
+		);
+	});
+
+	it("cleans only after rechecking a fresh preview from the same session", async () => {
+		let storageReads = 0;
+		let previewReads = 0;
+		db.dbFetch.mockImplementation((path: string, init?: RequestInit) => {
+			if (path === "/db/storage") {
+				storageReads += 1;
+				return Promise.resolve(
+					Response.json(
+						storageReads === 1
+							? storageStats()
+							: storageStats({ sessions: 8, databaseBytes: 900 }),
+					),
+				);
+			}
+			if (path === "/db/sessions/cleanup/preview?older_than_days=30") {
+				previewReads += 1;
+				return Promise.resolve(
+					Response.json(
+						cleanupPreview({ cutoff: 1_700_000_000 + previewReads }),
+					),
+				);
+			}
+			if (
+				path === "/db/sessions/cleanup?older_than_days=30" &&
+				init?.method === "POST"
+			) {
+				return Promise.resolve(Response.json({ deleted: 2 }));
+			}
+			throw new Error(`Unexpected path: ${path}`);
+		});
+
+		const inspected = JSON.parse(
+			await executeHlidAgentTool(
+				"inspect_hlid_storage",
+				{ cleanup_older_than_days: 30 },
+				{ sessionId: "session-1" },
+			),
+		);
+		const result = JSON.parse(
+			await executeHlidAgentTool(
+				"cleanup_hlid_sessions",
+				{ preview_id: inspected.cleanup.preview_id },
+				{ sessionId: "session-1" },
+			),
+		);
+
+		expect(result).toMatchObject({
+			preview: { sessions: 2, usageQueriesPreserved: 3 },
+			cleanup: { deleted: 2 },
+			storage: { sessions: 8, databaseBytes: 900 },
+			physical_reclaim: "forge-only",
+		});
+		expect(previewReads).toBe(2);
+		expect(db.dbFetch).not.toHaveBeenCalledWith(
+			"/db/storage/reclaim",
+			expect.anything(),
+		);
+	});
+
+	it("refuses cleanup when the preview impact changed", async () => {
+		let previewReads = 0;
+		db.dbFetch.mockImplementation((path: string) => {
+			if (path === "/db/storage") {
+				return Promise.resolve(Response.json(storageStats()));
+			}
+			if (path === "/db/sessions/cleanup/preview?older_than_days=30") {
+				previewReads += 1;
+				return Promise.resolve(
+					Response.json(
+						cleanupPreview({ sessions: previewReads === 1 ? 2 : 3 }),
+					),
+				);
+			}
+			throw new Error(`Unexpected path: ${path}`);
+		});
+		const inspected = JSON.parse(
+			await executeHlidAgentTool(
+				"inspect_hlid_storage",
+				{ cleanup_older_than_days: 30 },
+				{ sessionId: "session-1" },
+			),
+		);
+
+		await expect(
+			executeHlidAgentTool(
+				"cleanup_hlid_sessions",
+				{ preview_id: inspected.cleanup.preview_id },
+				{ sessionId: "session-1" },
+			),
+		).rejects.toThrow("impact changed");
+		expect(db.dbFetch).not.toHaveBeenCalledWith(
+			"/db/sessions/cleanup?older_than_days=30",
+			expect.anything(),
+		);
+	});
+
+	it("does not let another Raven session consume a cleanup preview", async () => {
+		db.dbFetch.mockImplementation((path: string) => {
+			if (path === "/db/storage") {
+				return Promise.resolve(Response.json(storageStats()));
+			}
+			if (path === "/db/sessions/cleanup/preview?older_than_days=30") {
+				return Promise.resolve(Response.json(cleanupPreview()));
+			}
+			throw new Error(`Unexpected path: ${path}`);
+		});
+		const inspected = JSON.parse(
+			await executeHlidAgentTool(
+				"inspect_hlid_storage",
+				{ cleanup_older_than_days: 30 },
+				{ sessionId: "session-1" },
+			),
+		);
+
+		await expect(
+			executeHlidAgentTool(
+				"cleanup_hlid_sessions",
+				{ preview_id: inspected.cleanup.preview_id },
+				{ sessionId: "session-2" },
+			),
+		).rejects.toThrow("different Raven session");
 	});
 
 	it("returns bounded help from the live persisted session selection", async () => {

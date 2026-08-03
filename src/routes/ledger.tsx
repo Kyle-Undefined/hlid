@@ -22,7 +22,12 @@ import { cacheHitPct, StatCell } from "#/components/ledger/LedgerStats";
 import { SessionsLedger } from "#/components/ledger/SessionsLedger";
 import { StatsFilterBar } from "#/components/ledger/StatsFilterBar";
 import { PrivacyMask } from "#/components/PrivacyMask";
-import type { LedgerAnalytics, LedgerAnalyticsFilter, SessionRow } from "#/db";
+import type {
+	LedgerAnalytics,
+	LedgerAnalyticsFilter,
+	SessionCleanupPreview,
+	SessionRow,
+} from "#/db";
 import { useLedgerSessionMutations } from "#/hooks/useLedgerSessionMutations";
 import {
 	type LedgerStatsSourceStatus,
@@ -156,6 +161,16 @@ const cleanupSessionsFn = createServerFn({ method: "POST" })
 			"clean up sessions",
 		);
 		return res.json() as Promise<{ deleted: number }>;
+	});
+
+const previewCleanupSessionsFn = createServerFn({ method: "GET" })
+	.validator((raw) => sessionCleanupSchema.parse(raw))
+	.handler(async ({ data }) => {
+		const res = await dbFetch(
+			`/db/sessions/cleanup/preview?older_than_days=${data.days}`,
+		);
+		if (!res.ok) throw new Error(`Cleanup preview failed (${res.status})`);
+		return res.json() as Promise<SessionCleanupPreview>;
 	});
 
 type ProviderHistoryImportResult = {
@@ -1195,6 +1210,9 @@ function SessionsTab({
 						})
 					}
 					onCleanup={mutations.cleanupSessions}
+					onPreviewCleanup={(days) =>
+						previewCleanupSessionsFn({ data: { days } })
+					}
 					activeSessionId={live.activeSessionData?.id}
 					activeSession={live.activeSessionData}
 					sessionsStatus={sessionsStatus}

@@ -24,6 +24,7 @@ import {
 	samePath,
 	toHostRuntimePath,
 } from "../lib/paths";
+import { optimizeManagedImage } from "./imageOptimization";
 import {
 	artifactDirectory,
 	artifactPath,
@@ -317,6 +318,8 @@ export async function handleGeneratedRelicPublish(
 			);
 		}
 	}
+	const imageOptimization = optimizeManagedImage(buf, mime);
+	buf = imageOptimization.buffer;
 
 	const id = randomUUID();
 	const category = input.category === "other" ? "other" : "report";
@@ -344,6 +347,12 @@ export async function handleGeneratedRelicPublish(
 			retention: "retained",
 			origin: "generated",
 			agent_cwd: input.runtime_cwd?.trim() || null,
+			...(mime === "image/png"
+				? {
+						image_optimized_at: Math.floor(Date.now() / 1000),
+						original_size_bytes: imageOptimization.originalBytes,
+					}
+				: {}),
 		});
 		created = true;
 		await onPublished?.(id);
@@ -459,7 +468,7 @@ export async function handleUpload(
 		return new Response("Agent path is not registered", { status: 403 });
 	}
 
-	const buf = Buffer.from(await file.arrayBuffer());
+	let buf: Buffer = Buffer.from(await file.arrayBuffer());
 
 	// For binary types, verify declared MIME matches actual file bytes.
 	const isBinaryMime =
@@ -475,6 +484,8 @@ export async function handleUpload(
 			);
 		}
 	}
+	const imageOptimization = optimizeManagedImage(buf, mime);
+	buf = imageOptimization.buffer;
 
 	const sha256 = createHash("sha256").update(buf).digest("hex");
 	const id = randomUUID();
@@ -499,6 +510,12 @@ export async function handleUpload(
 			retention: "session",
 			origin: "upload",
 			agent_cwd: agentRoot,
+			...(mime === "image/png"
+				? {
+						image_optimized_at: Math.floor(Date.now() / 1000),
+						original_size_bytes: imageOptimization.originalBytes,
+					}
+				: {}),
 		});
 	} catch (error) {
 		await unlink(finalPath).catch(() => {});
@@ -1089,9 +1106,17 @@ export async function unlinkPaths(paths: string[]): Promise<void> {
 				await unlink(absolute);
 			} catch (err: unknown) {
 				if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+					await db
+						.failPendingFileDeletion(
+							absolute,
+							err instanceof Error ? err.message : String(err),
+						)
+						.catch(() => {});
 					console.warn(`[attachments] unlink failed for ${absolute}:`, err);
+					return;
 				}
 			}
+			await db.completePendingFileDeletion(absolute).catch(() => {});
 			const parent = dirname(absolute);
 			if (parent !== artifactsRoot && pathStartsWith(artifactsRoot, parent)) {
 				await rmdir(parent).catch(() => {});

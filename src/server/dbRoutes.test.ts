@@ -36,7 +36,12 @@ const {
 	mockCreateForkedSessionRow,
 	mockDeleteSession,
 	mockDeleteSessionsOlderThan,
+	mockGetSessionCleanupPreview,
 	mockDeleteProjectPreviewsForSessions,
+	mockGetStorageStats,
+	mockOptimizeStorage,
+	mockReclaimStorage,
+	mockListPendingFileDeletions,
 	mockGetMessageForFork,
 	mockInsertForkedMessages,
 	mockCopyForkedSessionTranscript,
@@ -44,6 +49,7 @@ const {
 	mockGetHlidDelegationByChildSession,
 	mockAbandonInterruptedHlidDelegation,
 	mockCloseProjectPreviewSession,
+	mockUnlinkPaths,
 } = vi.hoisted(() => ({
 	mockGetSessionById: vi.fn(),
 	mockGetCurrentSessionId: vi.fn(),
@@ -71,7 +77,12 @@ const {
 	mockCreateForkedSessionRow: vi.fn(),
 	mockDeleteSession: vi.fn(),
 	mockDeleteSessionsOlderThan: vi.fn(),
+	mockGetSessionCleanupPreview: vi.fn(),
 	mockDeleteProjectPreviewsForSessions: vi.fn(),
+	mockGetStorageStats: vi.fn(),
+	mockOptimizeStorage: vi.fn(),
+	mockReclaimStorage: vi.fn(),
+	mockListPendingFileDeletions: vi.fn(),
 	mockGetMessageForFork: vi.fn(),
 	mockInsertForkedMessages: vi.fn(),
 	mockCopyForkedSessionTranscript: vi.fn(),
@@ -79,6 +90,7 @@ const {
 	mockGetHlidDelegationByChildSession: vi.fn(),
 	mockAbandonInterruptedHlidDelegation: vi.fn(),
 	mockCloseProjectPreviewSession: vi.fn(),
+	mockUnlinkPaths: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../db", () => ({
@@ -105,7 +117,12 @@ vi.mock("../db", () => ({
 	createForkedSessionRow: mockCreateForkedSessionRow,
 	deleteSession: mockDeleteSession,
 	deleteSessionsOlderThan: mockDeleteSessionsOlderThan,
+	getSessionCleanupPreview: mockGetSessionCleanupPreview,
 	deleteProjectPreviewsForSessions: mockDeleteProjectPreviewsForSessions,
+	getStorageStats: mockGetStorageStats,
+	optimizeStorage: mockOptimizeStorage,
+	reclaimStorage: mockReclaimStorage,
+	listPendingFileDeletions: mockListPendingFileDeletions,
 	getMessageForFork: mockGetMessageForFork,
 	insertForkedMessages: mockInsertForkedMessages,
 	copyForkedSessionTranscript: mockCopyForkedSessionTranscript,
@@ -115,7 +132,7 @@ vi.mock("../db", () => ({
 
 // dbRoutes also imports from ./attachments and ./proxy — stub them out.
 vi.mock("./attachments", () => ({
-	unlinkPaths: vi.fn().mockResolvedValue(undefined),
+	unlinkPaths: mockUnlinkPaths,
 }));
 
 vi.mock("./sessionForkAttachments", () => ({
@@ -288,6 +305,7 @@ beforeEach(() => {
 	mockGetHlidDelegationByChildSession.mockResolvedValue(null);
 	mockAbandonInterruptedHlidDelegation.mockReset();
 	mockAbandonInterruptedHlidDelegation.mockResolvedValue(null);
+	mockListPendingFileDeletions.mockResolvedValue([]);
 	resetAnalyticsRevisionForTest();
 	resetAnalyticsSnapshotsForTest();
 });
@@ -1994,6 +2012,89 @@ describe("handleDbRoute — POST /db/sessions/cleanup", () => {
 		expect(mockDeleteProjectPreviewsForSessions).toHaveBeenCalledWith([
 			"unrelated-old-session",
 		]);
+	});
+});
+
+describe("handleDbRoute — GET /db/sessions/cleanup/preview", () => {
+	it("previews only sessions not claimed by a live runtime", async () => {
+		const preview = {
+			days: 30,
+			cutoff: 1_700_000_000,
+			sessions: 2,
+			messages: 8,
+			toolEvents: 3,
+			estimatedDatabaseBytes: 4096,
+			usageQueriesPreserved: 4,
+			managedAttachments: 1,
+			managedAttachmentBytes: 1024,
+			retainedRelics: 1,
+			retainedRelicBytes: 1024,
+			vaultLinksDetached: 0,
+			planProposals: 0,
+			askUserQuestions: 0,
+			projectPreviewFeedback: 0,
+		};
+		mockGetSessionCleanupPreview.mockResolvedValueOnce(preview);
+		const pool = makePool({
+			getAllEntries: vi.fn().mockReturnValue(
+				[
+					{
+						claimedDbSessionId: "claimed-session",
+						manager: { getCurrentSessionId: vi.fn().mockReturnValue(null) },
+					},
+				].values(),
+			),
+		});
+
+		const response = await handleDbRoute(
+			makeUrl("/db/sessions/cleanup/preview", {
+				older_than_days: "30",
+			}),
+			makeRequest(),
+			pool,
+		);
+
+		expect(response?.status).toBe(200);
+		expect(await response?.json()).toEqual(preview);
+		expect(mockGetSessionCleanupPreview).toHaveBeenCalledWith(30, [
+			"claimed-session",
+		]);
+	});
+});
+
+describe("handleDbRoute — storage maintenance", () => {
+	it("retries queued file deletions before physically reclaiming storage", async () => {
+		mockListPendingFileDeletions.mockResolvedValueOnce([
+			{ path: "C:/Hlid/artifacts/old.png" },
+		]);
+		mockReclaimStorage.mockResolvedValueOnce({ databaseBytes: 2048 });
+
+		const response = await handleDbRoute(
+			makeUrl("/db/storage/reclaim"),
+			makeRequest("POST"),
+			makePool(),
+		);
+
+		expect(response?.status).toBe(200);
+		expect(mockUnlinkPaths).toHaveBeenCalledWith(["C:/Hlid/artifacts/old.png"]);
+		expect(mockReclaimStorage).toHaveBeenCalledOnce();
+	});
+
+	it("refuses a physical reclaim while a session is running", async () => {
+		const pool = makePool({
+			getSessionsStatus: vi
+				.fn()
+				.mockReturnValue([{ session_id: "running", state: "running" }]),
+		});
+
+		const response = await handleDbRoute(
+			makeUrl("/db/storage/reclaim"),
+			makeRequest("POST"),
+			pool,
+		);
+
+		expect(response?.status).toBe(409);
+		expect(mockReclaimStorage).not.toHaveBeenCalled();
 	});
 });
 
