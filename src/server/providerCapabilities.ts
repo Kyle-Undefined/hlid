@@ -172,6 +172,21 @@ function staticEvidence(input: {
 				"Live provider inventory still determines whether authentication is required.",
 		});
 	}
+	if (capabilities?.backgroundActivities) {
+		evidence.push({
+			id: providerCapabilityId(providerId, "background-activity"),
+			label: "Background activity",
+			scope: "session",
+			support: "advertised",
+			integration: "integrated",
+			readiness: "gated",
+			source: "hlid-adapter",
+			maturity: capabilities.backgroundActivities.maturity,
+			operations: [...capabilities.backgroundActivities.operations],
+			reason:
+				"Only a live direct provider session can observe or control native background work.",
+		});
+	}
 	if (forkCapability) {
 		evidence.push({
 			id: providerCapabilityId(providerId, "exact-fork"),

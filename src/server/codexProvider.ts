@@ -24,6 +24,7 @@ import type {
 	ProviderAppCatalogPage,
 	ProviderAppCatalogRequest,
 } from "../lib/providerAppTypes";
+import { compareProviderBackgroundActivity } from "../lib/providerBackgroundActivity";
 import type {
 	AgentEvent,
 	AgentProvider,
@@ -32,6 +33,8 @@ import type {
 	ForkSessionParams,
 	ForkSessionResult,
 	McpServerStatus,
+	ProviderBackgroundActivity,
+	ProviderBackgroundActivityControl,
 	ProviderEffortInfo,
 	ProviderGoalControl,
 	ProviderGoalControlResult,
@@ -86,6 +89,11 @@ import type {
 	ReasoningEffortOption,
 	SandboxPolicy,
 	SubAgentActivityKind,
+	ThreadBackgroundTerminalsCleanParams,
+	ThreadBackgroundTerminalsListParams,
+	ThreadBackgroundTerminalsListResponse,
+	ThreadBackgroundTerminalsTerminateParams,
+	ThreadBackgroundTerminalsTerminateResponse,
 	ThreadCompactStartParams,
 	ThreadCompactStartResponse,
 	ThreadForkParams,
@@ -98,6 +106,8 @@ import type {
 	ThreadGoalSetParams,
 	ThreadGoalSetResponse,
 	ThreadGoalUpdatedNotification,
+	ThreadItemsListParams,
+	ThreadItemsListResponse,
 	ThreadRealtimeAppendSpeechParams,
 	ThreadRealtimeClosedNotification,
 	ThreadRealtimeErrorNotification,
@@ -1940,6 +1950,49 @@ function mapCodexRateLimitWindows(
 	];
 }
 
+const CODEX_BACKGROUND_ACTIVITY_MAX_PAGES = 5;
+const CODEX_BACKGROUND_ACTIVITY_PAGE_SIZE = 100;
+const CODEX_BACKGROUND_ACTIVITY_MAX_OUTPUT_CHARS = 8_192;
+const CODEX_BACKGROUND_ACTIVITY_RETENTION_MS = 15 * 60_000;
+
+function finiteNumber(value: unknown): number | undefined {
+	if (typeof value === "bigint") {
+		const converted = Number(value);
+		return Number.isSafeInteger(converted) ? converted : undefined;
+	}
+	return typeof value === "number" && Number.isFinite(value)
+		? value
+		: undefined;
+}
+
+function boundedBackgroundOutput(value: string | null): string | undefined {
+	if (!value) return undefined;
+	return value.length <= CODEX_BACKGROUND_ACTIVITY_MAX_OUTPUT_CHARS
+		? value
+		: value.slice(-CODEX_BACKGROUND_ACTIVITY_MAX_OUTPUT_CHARS);
+}
+
+function backgroundCommandActivityId(
+	item: Record<string, unknown>,
+): string | null {
+	if (item.type !== "commandExecution" || typeof item.id !== "string") {
+		return null;
+	}
+	return item.id || null;
+}
+
+function backgroundCommandLabel(item: Record<string, unknown>): string | null {
+	for (const rawAction of Array.isArray(item.commandActions)
+		? item.commandActions
+		: []) {
+		const command = asObj(rawAction).command;
+		if (typeof command === "string" && command.trim()) return command;
+	}
+	return typeof item.command === "string" && item.command.trim()
+		? item.command
+		: null;
+}
+
 class CodexAgentSession implements AgentSession {
 	private conn: CodexAppServer | null = null;
 	private events = new AsyncQueue<AgentEvent>();
@@ -1983,6 +2036,18 @@ class CodexAgentSession implements AgentSession {
 		| ((event: ProviderRealtimeEvent) => void)
 		| null = null;
 	private realtimeMode: ProviderRealtimeStart["mode"] | null = null;
+	private backgroundActivities = new Map<string, ProviderBackgroundActivity>();
+	/**
+	 * Root-thread commands currently running through structured provider items.
+	 * Current Codex Code Mode owns these cells outside unified_exec, so Hlid can
+	 * observe them while active but has no client-callable process handle.
+	 */
+	private backgroundCommandCandidates = new Map<
+		string,
+		{ item: Record<string, unknown>; startedAtMs: number }
+	>();
+	private backgroundActivityRead: Promise<ProviderBackgroundActivity[]> | null =
+		null;
 
 	private launch: CodexLaunchConfig | null = null;
 
@@ -2052,6 +2117,296 @@ class CodexAgentSession implements AgentSession {
 			threadId: this.threadId,
 			turnId: this.activeTurnId,
 		});
+	}
+
+	private async readBackgroundTerminals(): Promise<
+		ThreadBackgroundTerminalsListResponse["data"]
+	> {
+		if (!this.threadId) throw new Error("Codex thread did not start");
+		const terminals: ThreadBackgroundTerminalsListResponse["data"] = [];
+		let cursor: string | null = null;
+		for (let page = 0; page < CODEX_BACKGROUND_ACTIVITY_MAX_PAGES; page++) {
+			const params: ThreadBackgroundTerminalsListParams = {
+				threadId: this.threadId,
+				limit: CODEX_BACKGROUND_ACTIVITY_PAGE_SIZE,
+				...(cursor ? { cursor } : {}),
+			};
+			const response = (await this.requestOptional(
+				"thread/backgroundTerminals/list",
+				params,
+			)) as ThreadBackgroundTerminalsListResponse;
+			terminals.push(...response.data);
+			cursor = response.nextCursor;
+			if (!cursor) break;
+		}
+		return terminals;
+	}
+
+	private async readBackgroundThreadItems(
+		wantedIds: ReadonlySet<string>,
+	): Promise<Map<string, ThreadItemsListResponse["data"][number]["item"]>> {
+		const items = new Map<
+			string,
+			ThreadItemsListResponse["data"][number]["item"]
+		>();
+		if (!this.threadId || wantedIds.size === 0) return items;
+		let cursor: string | null = null;
+		for (let page = 0; page < CODEX_BACKGROUND_ACTIVITY_MAX_PAGES; page++) {
+			const params: ThreadItemsListParams = {
+				threadId: this.threadId,
+				limit: CODEX_BACKGROUND_ACTIVITY_PAGE_SIZE,
+				sortDirection: "desc",
+				...(cursor ? { cursor } : {}),
+			};
+			const response = (await this.requestOptional(
+				"thread/items/list",
+				params,
+			)) as ThreadItemsListResponse;
+			for (const entry of response.data) {
+				if ("id" in entry.item && wantedIds.has(entry.item.id)) {
+					items.set(entry.item.id, entry.item);
+				}
+			}
+			if (items.size === wantedIds.size || !response.nextCursor) break;
+			cursor = response.nextCursor;
+		}
+		return items;
+	}
+
+	private async observeBackgroundActivities(): Promise<
+		ProviderBackgroundActivity[]
+	> {
+		await this.ensureReady();
+		if (!this.threadId) throw new Error("Codex thread did not start");
+		const providerSessionId = this.threadId;
+		this.projectRunningCommandActivities();
+		const terminals = await this.readBackgroundTerminals();
+		const wantedIds = new Set(terminals.map((terminal) => terminal.itemId));
+		for (const activity of this.backgroundActivities.values()) {
+			if (activity.status === "running") wantedIds.add(activity.activityId);
+		}
+		const items = await this.readBackgroundThreadItems(wantedIds);
+		const now = Date.now();
+		const next = new Map<string, ProviderBackgroundActivity>();
+
+		for (const terminal of terminals) {
+			const previous = this.backgroundActivities.get(terminal.itemId);
+			const item = items.get(terminal.itemId);
+			const commandItem = item?.type === "commandExecution" ? item : undefined;
+			const rssKb = finiteNumber(terminal.rssKb);
+			const osPid = finiteNumber(terminal.osPid);
+			const cpuPercent = finiteNumber(terminal.cpuPercent);
+			const recentOutput = boundedBackgroundOutput(
+				commandItem?.aggregatedOutput ?? null,
+			);
+			next.set(terminal.itemId, {
+				providerId: this.params.providerId ?? "codex",
+				providerSessionId,
+				activityId: terminal.itemId,
+				processId: terminal.processId,
+				kind: "terminal",
+				status: "running",
+				command: terminal.command,
+				cwd: String(terminal.cwd),
+				...(recentOutput ? { recentOutput } : {}),
+				...(osPid !== undefined ? { osPid } : {}),
+				...(cpuPercent !== undefined ? { cpuPercent } : {}),
+				...(rssKb !== undefined ? { rssKb } : {}),
+				startedAtMs: previous?.startedAtMs ?? now,
+				updatedAtMs: now,
+				capabilities: { terminate: true, clean: true },
+			});
+		}
+
+		for (const previous of this.backgroundActivities.values()) {
+			if (next.has(previous.activityId)) continue;
+			if (previous.status !== "running") {
+				const endedAt = previous.endedAtMs ?? previous.updatedAtMs;
+				if (now - endedAt <= CODEX_BACKGROUND_ACTIVITY_RETENTION_MS) {
+					next.set(previous.activityId, previous);
+				}
+				continue;
+			}
+			const item = items.get(previous.activityId);
+			const commandItem = item?.type === "commandExecution" ? item : undefined;
+			const status =
+				commandItem?.status === "inProgress"
+					? "running"
+					: commandItem?.status === "completed"
+						? "completed"
+						: commandItem?.status === "failed" ||
+								commandItem?.status === "declined"
+							? "failed"
+							: "unknown";
+			const recentOutput = boundedBackgroundOutput(
+				commandItem?.aggregatedOutput ?? null,
+			);
+			next.set(previous.activityId, {
+				...previous,
+				status,
+				...(recentOutput ? { recentOutput } : {}),
+				updatedAtMs: now,
+				...(status === "running" ? {} : { endedAtMs: now }),
+				capabilities: {},
+			});
+		}
+
+		this.backgroundActivities = next;
+		return [...next.values()].sort(compareProviderBackgroundActivity);
+	}
+
+	private recordBackgroundCommandStarted(
+		item: Record<string, unknown>,
+		params: Record<string, unknown>,
+	): void {
+		const activityId = backgroundCommandActivityId(item);
+		if (!activityId) return;
+		this.backgroundCommandCandidates.set(activityId, {
+			item,
+			startedAtMs: finiteNumber(params.startedAtMs) ?? Date.now(),
+		});
+	}
+
+	private recordBackgroundCommandCompleted(
+		item: Record<string, unknown>,
+		params: Record<string, unknown>,
+	): void {
+		const activityId = backgroundCommandActivityId(item);
+		if (!activityId) return;
+		this.backgroundCommandCandidates.delete(activityId);
+		const previous = this.backgroundActivities.get(activityId);
+		if (!previous) return;
+		const now = finiteNumber(params.completedAtMs) ?? Date.now();
+		const status =
+			item.status === "completed"
+				? "completed"
+				: item.status === "failed" || item.status === "declined"
+					? "failed"
+					: "unknown";
+		const recentOutput = boundedBackgroundOutput(
+			typeof item.aggregatedOutput === "string" ? item.aggregatedOutput : null,
+		);
+		this.backgroundActivities.set(activityId, {
+			...previous,
+			status,
+			...(recentOutput ? { recentOutput } : {}),
+			updatedAtMs: now,
+			endedAtMs: now,
+			capabilities: {},
+		});
+	}
+
+	private projectRunningCommandActivities(): void {
+		if (!this.threadId) return;
+		const now = Date.now();
+		for (const [activityId, candidate] of this.backgroundCommandCandidates) {
+			if (this.backgroundActivities.has(activityId)) continue;
+			const { item, startedAtMs } = candidate;
+			const command = backgroundCommandLabel(item);
+			const recentOutput = boundedBackgroundOutput(
+				typeof item.aggregatedOutput === "string"
+					? item.aggregatedOutput
+					: null,
+			);
+			this.backgroundActivities.set(activityId, {
+				providerId: this.params.providerId ?? "codex",
+				providerSessionId: this.threadId,
+				activityId,
+				kind: "shell",
+				status: "running",
+				...(command ? { command } : {}),
+				...(typeof item.cwd === "string" ? { cwd: item.cwd } : {}),
+				...(recentOutput ? { recentOutput } : {}),
+				startedAtMs,
+				updatedAtMs: now,
+				// Code Mode exposes exact cell termination only to its model-facing
+				// wait tool. Do not claim a native Hlid control operation here.
+				capabilities: {},
+			});
+		}
+	}
+
+	async listBackgroundActivities(): Promise<ProviderBackgroundActivity[]> {
+		this.projectRunningCommandActivities();
+		if (!this.backgroundActivityRead) {
+			const read = this.observeBackgroundActivities()
+				.catch(() =>
+					[...this.backgroundActivities.values()].sort(
+						compareProviderBackgroundActivity,
+					),
+				)
+				.finally(() => {
+					if (this.backgroundActivityRead === read) {
+						this.backgroundActivityRead = null;
+					}
+				});
+			this.backgroundActivityRead = read;
+		}
+		const immediate = [...this.backgroundActivities.values()].sort(
+			compareProviderBackgroundActivity,
+		);
+		// Codex can serialize its native terminal inventory behind an active turn.
+		// Structured item lifecycle state is already authoritative enough to show
+		// read-only Code Mode activity, so never stall that projection on the native
+		// probe. Once native data arrives, the next session poll picks up controls.
+		if (this.activeTurnId !== null || immediate.length > 0) return immediate;
+		return this.backgroundActivityRead;
+	}
+
+	async controlBackgroundActivity(
+		request: ProviderBackgroundActivityControl,
+	): Promise<void> {
+		await this.ensureReady();
+		if (!this.threadId) throw new Error("Codex thread did not start");
+		const activities = await this.listBackgroundActivities();
+		const now = Date.now();
+		if (request.action === "terminate") {
+			const activity = activities.find(
+				(candidate) => candidate.activityId === request.activityId,
+			);
+			if (!activity || activity.status !== "running") {
+				throw new Error("That Codex background terminal is no longer running");
+			}
+			if (!activity.capabilities.terminate || !activity.processId) {
+				throw new Error(
+					"That Codex background activity is not controllable through Hlid",
+				);
+			}
+			const params: ThreadBackgroundTerminalsTerminateParams = {
+				threadId: this.threadId,
+				processId: activity.processId,
+			};
+			const response = (await this.request(
+				"thread/backgroundTerminals/terminate",
+				params,
+			)) as ThreadBackgroundTerminalsTerminateResponse;
+			if (!response.terminated) {
+				throw new Error("Codex did not terminate that background terminal");
+			}
+			this.backgroundActivities.set(activity.activityId, {
+				...activity,
+				status: "stopped",
+				updatedAtMs: now,
+				endedAtMs: now,
+				capabilities: {},
+			});
+			return;
+		}
+
+		const params: ThreadBackgroundTerminalsCleanParams = {
+			threadId: this.threadId,
+		};
+		await this.request("thread/backgroundTerminals/clean", params);
+		for (const activity of activities) {
+			if (activity.status !== "running") continue;
+			this.backgroundActivities.set(activity.activityId, {
+				...activity,
+				status: "stopped",
+				updatedAtMs: now,
+				endedAtMs: now,
+				capabilities: {},
+			});
+		}
 	}
 
 	async steer(message: string, opts?: SendOptions): Promise<void> {
@@ -2884,6 +3239,11 @@ class CodexAgentSession implements AgentSession {
 	private request(method: string, params: unknown): Promise<unknown> {
 		if (!this.conn) throw new Error("Codex app-server is not running");
 		return this.conn.request(method, params);
+	}
+
+	private requestOptional(method: string, params: unknown): Promise<unknown> {
+		if (!this.conn) throw new Error("Codex app-server is not running");
+		return this.conn.requestOptional(method, params);
 	}
 
 	private async resolveWindowsWorkerSettings(
@@ -3761,6 +4121,7 @@ class CodexAgentSession implements AgentSession {
 		this.emittedReasoningIds.clear();
 		this.emittedUnidentifiedAgentMessageText = "";
 		this.startedItems.clear();
+		this.backgroundCommandCandidates.clear();
 		this.approvedHtmlPlanItemId = null;
 		this.htmlPlanReady = false;
 		this.nativePlanText = "";
@@ -4034,6 +4395,7 @@ class CodexAgentSession implements AgentSession {
 			this.handleSubagentActivity(item);
 			return;
 		}
+		this.recordBackgroundCommandStarted(item, obj);
 		this.startedItems.set(itemId, item);
 		if (type === "agentMessage" || type === "userMessage") return;
 		if (type === "reasoning") {
@@ -4320,6 +4682,7 @@ class CodexAgentSession implements AgentSession {
 			this.handleSubagentActivity(item);
 			return;
 		}
+		this.recordBackgroundCommandCompleted(item, obj);
 		if (itemId === this.approvedHtmlPlanItemId) this.htmlPlanReady = true;
 		if (type === "agentMessage") {
 			this.handleCompletedAgentMessage(item);
@@ -4441,6 +4804,7 @@ class CodexAgentSession implements AgentSession {
 		this.cumulativeUsageTurns.delete(threadId);
 		this.queryTurns += 1;
 		this.activeTurnId = null;
+		this.projectRunningCommandActivities();
 		const plan =
 			this.nativePlanText.trim() ||
 			(this.htmlPlanReady || this.params.planHtmlPath
@@ -4663,6 +5027,10 @@ export class CodexProvider implements AgentProvider {
 		realtime: true,
 		appCatalog: true,
 		appAuthentication: true,
+		backgroundActivities: {
+			maturity: "experimental",
+			operations: ["list", "terminate", "clean"],
+		},
 	} as const;
 	hlidToolLoading() {
 		const computerUseAvailable = windowsComputerUseHostAvailable();

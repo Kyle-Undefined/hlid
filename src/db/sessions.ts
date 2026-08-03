@@ -912,6 +912,7 @@ function cascadeDeleteSessionIds(db: Db, ids: string[]): string[] {
 		ids,
 	);
 	for (const table of [
+		"provider_background_activities",
 		"tool_events",
 		"project_previews",
 		"plan_proposals",

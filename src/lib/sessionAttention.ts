@@ -15,6 +15,9 @@ export type SessionAttentionInput = {
 	goalStatus?: ProviderGoalStatus;
 	routine?: boolean;
 	terminal?: boolean;
+	backgroundRunningCount?: number;
+	backgroundFailedCount?: number;
+	backgroundCompletedCount?: number;
 	sleepState?: Pick<
 		AgentSleepMessage,
 		"until" | "windowId" | "reason" | "utilization"
@@ -37,6 +40,9 @@ function classifyAttention(input: SessionAttentionInput): {
 	if (input.state === "error") {
 		return { bucket: "needs_attention", reason: "error" };
 	}
+	if ((input.backgroundFailedCount ?? 0) > 0) {
+		return { bucket: "needs_attention", reason: "background_failed" };
+	}
 	if (input.goalStatus === "blocked") {
 		return { bucket: "needs_attention", reason: "goal_blocked" };
 	}
@@ -55,6 +61,9 @@ function classifyAttention(input: SessionAttentionInput): {
 	if (input.terminal) {
 		return { bucket: "working", reason: "terminal" };
 	}
+	if ((input.backgroundRunningCount ?? 0) > 0) {
+		return { bucket: "working", reason: "provider_activity" };
+	}
 	if (input.state === "running") {
 		return {
 			bucket: "working",
@@ -67,6 +76,9 @@ function classifyAttention(input: SessionAttentionInput): {
 	}
 	if (input.queueCount > 0) {
 		return { bucket: "queued", reason: "queued_prompt" };
+	}
+	if ((input.backgroundCompletedCount ?? 0) > 0) {
+		return { bucket: "recent", reason: "background_completed" };
 	}
 	return {
 		bucket: "recent",

@@ -242,14 +242,189 @@ describe("CodexProvider capability declarations", () => {
 		});
 	});
 
-	it("declares structured goals, activities, realtime, and Apps", () => {
+	it("declares structured goals, activities, realtime, Apps, and background work", () => {
 		expect(new CodexProvider().capabilities).toEqual({
 			goalControl: true,
 			structuredActivities: ["compact", "review"],
 			realtime: true,
 			appCatalog: true,
 			appAuthentication: true,
+			backgroundActivities: {
+				maturity: "experimental",
+				operations: ["list", "terminate", "clean"],
+			},
 		});
+	});
+
+	it("observes and controls exact Codex background terminals", async () => {
+		const backgroundTerminals: Array<Record<string, unknown>> = [
+			{
+				itemId: "item-background-1",
+				processId: "process-42",
+				command: "python3 -m http.server",
+				cwd: "/tmp/codex-test",
+				osPid: 4242,
+				cpuPercent: 2.5,
+				rssKb: 2048,
+			},
+		];
+		const backgroundItems: Array<Record<string, unknown>> = [
+			{
+				turnId: "turn-1",
+				item: {
+					type: "commandExecution",
+					id: "item-background-1",
+					command: "python3 -m http.server",
+					cwd: "/tmp/codex-test",
+					processId: "process-42",
+					status: "inProgress",
+					aggregatedOutput: "Serving HTTP on port 8000",
+					exitCode: null,
+					durationMs: null,
+				},
+			},
+		];
+		const { proc, writes } = makeFakeSessionProc({
+			backgroundTerminals,
+			backgroundItems,
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({ providerId: "codex" }),
+		);
+
+		await expect(session.listBackgroundActivities?.()).resolves.toEqual([
+			expect.objectContaining({
+				providerId: "codex",
+				providerSessionId: "thread-1",
+				activityId: "item-background-1",
+				processId: "process-42",
+				status: "running",
+				recentOutput: "Serving HTTP on port 8000",
+				capabilities: { terminate: true, clean: true },
+			}),
+		]);
+
+		await session.controlBackgroundActivity?.({
+			action: "terminate",
+			activityId: "item-background-1",
+		});
+		expect(
+			writes
+				.map((write) => JSON.parse(write))
+				.find(
+					(message) =>
+						message.method === "thread/backgroundTerminals/terminate",
+				)?.params,
+		).toEqual({ threadId: "thread-1", processId: "process-42" });
+		backgroundTerminals.length = 0;
+		await expect(session.listBackgroundActivities?.()).resolves.toEqual([
+			expect.objectContaining({
+				activityId: "item-background-1",
+				status: "stopped",
+				capabilities: {},
+			}),
+		]);
+		session.cancel();
+	});
+
+	it("projects running Code Mode commands without inventing native controls", async () => {
+		const now = Date.now();
+		const backgroundItems: Array<Record<string, unknown>> = [
+			{
+				turnId: "turn-1",
+				item: {
+					type: "commandExecution",
+					id: "exec-code-mode-1",
+					command: "pwsh.exe -Command 'Start-Sleep -Seconds 120'",
+					commandActions: [
+						{ type: "unknown", command: "Start-Sleep -Seconds 120" },
+					],
+					cwd: "C:\\work\\project",
+					processId: null,
+					status: "inProgress",
+					aggregatedOutput: null,
+					exitCode: null,
+					durationMs: null,
+				},
+			},
+		];
+		const { proc, writes } = makeFakeSessionProc({
+			backgroundItems,
+			deferBackgroundTerminals: true,
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({ providerId: "codex" }),
+		);
+		const runningActivity = expect.objectContaining({
+			providerId: "codex",
+			providerSessionId: "thread-1",
+			activityId: "exec-code-mode-1",
+			kind: "shell",
+			status: "running",
+			command: "Start-Sleep -Seconds 120",
+			cwd: "C:\\work\\project",
+			startedAtMs: now - 100,
+			capabilities: {},
+		});
+
+		await session.send("Run a long command through Code Mode");
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			startedAtMs: now - 100,
+			item: backgroundItems[0]?.item as Record<string, unknown>,
+		});
+		await expect(session.listBackgroundActivities?.()).resolves.toEqual([
+			runningActivity,
+		]);
+
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "turn-1", status: "completed" },
+		});
+		await expect(session.listBackgroundActivities?.()).resolves.toEqual([
+			runningActivity,
+		]);
+
+		await expect(
+			session.controlBackgroundActivity?.({
+				action: "terminate",
+				activityId: "exec-code-mode-1",
+			}),
+		).rejects.toThrow("not controllable through Hlid");
+		expect(
+			writes.some(
+				(write) =>
+					JSON.parse(write).method === "thread/backgroundTerminals/terminate",
+			),
+		).toBe(false);
+
+		const completed = {
+			...(backgroundItems[0]?.item as Record<string, unknown>),
+			status: "completed",
+			aggregatedOutput: "done",
+			exitCode: 0,
+			durationMs: 120_000,
+		};
+		backgroundItems[0] = { turnId: "turn-1", item: completed };
+		emitSessionNotification(proc, "item/completed", {
+			threadId: "thread-1",
+			completedAtMs: now,
+			item: completed,
+		});
+		await expect(session.listBackgroundActivities?.()).resolves.toEqual([
+			expect.objectContaining({
+				activityId: "exec-code-mode-1",
+				status: "completed",
+				recentOutput: "done",
+				endedAtMs: now,
+				capabilities: {},
+			}),
+		]);
+		session.cancel();
 	});
 
 	it("forks a Codex thread through the captured turn without auto-continuing its goal", async () => {
@@ -1356,6 +1531,11 @@ function makeFakeSessionProc(
 		missingRolloutOnResume?: boolean;
 		threadModel?: string | null;
 		deferSkills?: boolean;
+		backgroundTerminals?: Array<Record<string, unknown>>;
+		backgroundItems?: Array<Record<string, unknown>>;
+		/** Leave the native background-terminal request pending during active turns. */
+		deferBackgroundTerminals?: boolean;
+		terminateResult?: boolean;
 	} = {},
 ): {
 	proc: FakeProc;
@@ -1482,6 +1662,49 @@ function makeFakeSessionProc(
 						),
 					);
 				} else if (msg.method === "thread/compact/start") {
+					stdout.emit(
+						"data",
+						Buffer.from(`${JSON.stringify({ id: msg.id, result: {} })}\n`),
+					);
+				} else if (msg.method === "thread/backgroundTerminals/list") {
+					if (opts.deferBackgroundTerminals) return;
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify({
+								id: msg.id,
+								result: {
+									data: opts.backgroundTerminals ?? [],
+									nextCursor: null,
+								},
+							})}\n`,
+						),
+					);
+				} else if (msg.method === "thread/items/list") {
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify({
+								id: msg.id,
+								result: {
+									data: opts.backgroundItems ?? [],
+									nextCursor: null,
+									backwardsCursor: null,
+								},
+							})}\n`,
+						),
+					);
+				} else if (msg.method === "thread/backgroundTerminals/terminate") {
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify({
+								id: msg.id,
+								result: { terminated: opts.terminateResult ?? true },
+							})}\n`,
+						),
+					);
+				} else if (msg.method === "thread/backgroundTerminals/clean") {
 					stdout.emit(
 						"data",
 						Buffer.from(`${JSON.stringify({ id: msg.id, result: {} })}\n`),

@@ -20,6 +20,7 @@ import {
 	toProviderRuntimePath,
 } from "../lib/paths";
 import { permissionToolDisplayName } from "../lib/permissionPresentation";
+import { compareProviderBackgroundActivity } from "../lib/providerBackgroundActivity";
 import { isCliProxyProvider } from "../lib/providerIds";
 import { estimateProviderCost } from "../lib/providerPricing";
 import {
@@ -51,6 +52,8 @@ import type {
 	CanUseTool,
 	McpServerStatus,
 	ProviderAccountInfo,
+	ProviderBackgroundActivity,
+	ProviderBackgroundActivityControl,
 	ProviderFileRewindResult,
 	ProviderGoalControl,
 	ProviderGoalControlResult,
@@ -323,6 +326,9 @@ const TEXT_WRITE_THROTTLE_MS = 800;
 const LIVE_USAGE_REFRESH_MS = 5_000;
 const PROVIDER_HANDOFF_MAX_CHARS = 80_000;
 const FILE_REWIND_PREVIEW_TTL_MS = 5 * 60_000;
+const BACKGROUND_ACTIVITY_ACTIVE_POLL_MS = 2_000;
+const BACKGROUND_ACTIVITY_IDLE_POLL_MS = 10_000;
+const BACKGROUND_ACTIVITY_LIMIT = 50;
 
 function normalizeFileRewindResult(
 	result: ProviderFileRewindResult,
@@ -1015,6 +1021,14 @@ export class SessionManager {
 	// chat switch / abort.
 	private agentSession: AgentSession | null = null;
 	private agentSessionKey: string | null = null;
+	private backgroundActivities: ProviderBackgroundActivity[] = [];
+	private backgroundActivityChangeHandler: (() => void) | null = null;
+	private backgroundActivityWriteTail: Promise<void> = Promise.resolve();
+	private backgroundActivityObserver: {
+		session: AgentSession;
+		providerId: string;
+		timer?: ReturnType<typeof setTimeout>;
+	} | null = null;
 	private realtimeMode: ProviderRealtimeMode | null = null;
 	private realtimeStopPromise: Promise<void> | null = null;
 	private codexRealtimeEnabled = false;
@@ -1121,6 +1135,7 @@ export class SessionManager {
 
 	reinitialize(config: HlidConfig): void {
 		this.abort();
+		this.replaceBackgroundActivities([], false);
 		this.providerOverride = null;
 		this.modelOverride = null;
 		this.effortOverride = null;
@@ -1189,6 +1204,7 @@ export class SessionManager {
 			if (this.state === "running") {
 				this.restartProviderRuntimeAfterTurn = true;
 			} else {
+				this.stopBackgroundActivityObserver();
 				this.agentSession.cancel();
 				this.agentSession = null;
 				this.agentSessionKey = null;
@@ -1223,6 +1239,182 @@ export class SessionManager {
 
 	getCurrentGoal(): ProviderThreadGoal | null {
 		return this.currentGoal;
+	}
+
+	setBackgroundActivityChangeHandler(handler: (() => void) | null): void {
+		this.backgroundActivityChangeHandler = handler;
+	}
+
+	getBackgroundActivities(): ProviderBackgroundActivity[] {
+		return this.backgroundActivities;
+	}
+
+	private backgroundActivitySnapshotChanged(
+		next: readonly ProviderBackgroundActivity[],
+	): boolean {
+		return JSON.stringify(this.backgroundActivities) !== JSON.stringify(next);
+	}
+
+	private replaceBackgroundActivities(
+		next: ProviderBackgroundActivity[],
+		persist = true,
+	): void {
+		if (!this.backgroundActivitySnapshotChanged(next)) return;
+		this.backgroundActivities = next;
+		this.backgroundActivityChangeHandler?.();
+		const sessionId = this.currentSessionId;
+		if (!persist || !sessionId) return;
+		const snapshot = next.map((activity) => ({
+			...activity,
+			capabilities: { ...activity.capabilities },
+		}));
+		const persistSnapshot = () =>
+			db.replaceSessionBackgroundActivities(sessionId, snapshot);
+		this.backgroundActivityWriteTail = this.backgroundActivityWriteTail
+			.then(persistSnapshot, persistSnapshot)
+			.catch((error) =>
+				logDbError("replaceSessionBackgroundActivities", error),
+			);
+	}
+
+	private mergedBackgroundActivities(
+		observed: readonly ProviderBackgroundActivity[],
+	): ProviderBackgroundActivity[] {
+		// This is a live monitor, not a second provider-history surface. Settled
+		// work remains in its durable transcript tool call and leaves this snapshot.
+		return observed
+			.filter((activity) => activity.status === "running")
+			.sort(compareProviderBackgroundActivity)
+			.slice(0, BACKGROUND_ACTIVITY_LIMIT);
+	}
+
+	private async refreshProviderBackgroundActivities(
+		session: AgentSession,
+		providerId: string,
+	): Promise<void> {
+		const observer = this.backgroundActivityObserver;
+		if (
+			this.agentSession !== session ||
+			observer?.session !== session ||
+			observer.providerId !== providerId ||
+			!session.listBackgroundActivities
+		) {
+			return;
+		}
+		const observed = await session.listBackgroundActivities();
+		if (
+			this.agentSession !== session ||
+			this.backgroundActivityObserver !== observer
+		) {
+			return;
+		}
+		this.replaceBackgroundActivities(this.mergedBackgroundActivities(observed));
+	}
+
+	private scheduleBackgroundActivityPoll(
+		observer: NonNullable<SessionManager["backgroundActivityObserver"]>,
+	): void {
+		if (
+			this.backgroundActivityObserver !== observer ||
+			this.agentSession !== observer.session
+		) {
+			return;
+		}
+		const active = this.backgroundActivities.some(
+			(activity) => activity.status === "running",
+		);
+		const delay =
+			active || this.state === "running"
+				? BACKGROUND_ACTIVITY_ACTIVE_POLL_MS
+				: BACKGROUND_ACTIVITY_IDLE_POLL_MS;
+		observer.timer = setTimeout(() => {
+			void this.pollBackgroundActivities(observer);
+		}, delay);
+		observer.timer.unref?.();
+	}
+
+	private async pollBackgroundActivities(
+		observer: NonNullable<SessionManager["backgroundActivityObserver"]>,
+	): Promise<void> {
+		if (
+			this.backgroundActivityObserver !== observer ||
+			this.agentSession !== observer.session
+		) {
+			return;
+		}
+		try {
+			await this.refreshProviderBackgroundActivities(
+				observer.session,
+				observer.providerId,
+			);
+		} catch {
+			// Background activity is optional and experimental. A failed observation
+			// must not disconnect or fail the owning conversation.
+		}
+		this.scheduleBackgroundActivityPoll(observer);
+	}
+
+	private startBackgroundActivityObserver(
+		session: AgentSession,
+		providerId: string,
+	): void {
+		if (!session.listBackgroundActivities) return;
+		if (this.backgroundActivityObserver?.session === session) return;
+		this.stopBackgroundActivityObserver(false);
+		const observer = {
+			session,
+			providerId,
+		};
+		this.backgroundActivityObserver = observer;
+		void this.pollBackgroundActivities(observer);
+	}
+
+	private stopBackgroundActivityObserver(markRunningUnknown = true): void {
+		const observer = this.backgroundActivityObserver;
+		if (observer?.timer) clearTimeout(observer.timer);
+		this.backgroundActivityObserver = null;
+		if (markRunningUnknown) this.replaceBackgroundActivities([]);
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket background_activity_control dispatch in wsHandlers.
+	async controlProviderBackgroundActivity(
+		request: ProviderBackgroundActivityControl,
+	): Promise<void> {
+		const session = this.agentSession;
+		const providerId =
+			this.backgroundActivityObserver?.session === session
+				? this.backgroundActivityObserver.providerId
+				: this.getProviderId();
+		if (!session?.controlBackgroundActivity) {
+			throw new Error(
+				`${this.resolveProvider(this.agentCwd).label ?? "This provider"} cannot control background activity from Raven`,
+			);
+		}
+		if (request.action === "terminate") {
+			const activity = this.backgroundActivities.find(
+				(candidate) =>
+					candidate.providerId === providerId &&
+					candidate.activityId === request.activityId &&
+					candidate.status === "running" &&
+					candidate.capabilities.terminate,
+			);
+			if (!activity) {
+				throw new Error("That background activity is no longer controllable");
+			}
+		} else if (
+			!this.backgroundActivities.some(
+				(activity) =>
+					activity.providerId === providerId &&
+					activity.status === "running" &&
+					activity.capabilities.clean,
+			)
+		) {
+			throw new Error(
+				"There are no controllable background activities to clean",
+			);
+		}
+		await session.controlBackgroundActivity(request);
+		await this.refreshProviderBackgroundActivities(session, providerId);
 	}
 
 	private selectedModelFor(agentSettings?: AgentSettings): string {
@@ -1336,6 +1528,7 @@ export class SessionManager {
 		const providerChanged = currentProviderId !== providerId;
 		if (providerChanged) {
 			this.providerOwnershipGeneration += 1;
+			this.stopBackgroundActivityObserver();
 			this.agentSession?.cancel();
 			this.agentSession = null;
 			this.agentSessionKey = null;
@@ -1632,6 +1825,7 @@ export class SessionManager {
 			return false;
 		}
 		const provider = this.resolveProvider(this.agentCwd);
+		this.stopBackgroundActivityObserver();
 		this.agentSession?.cancel();
 		this.agentSession = null;
 		this.agentSessionKey = null;
@@ -2436,6 +2630,7 @@ export class SessionManager {
 						error instanceof Error ? error.stack?.slice(0, 500) : undefined,
 				});
 				emit({ type: "error", message, turn_scoped: true });
+				this.stopBackgroundActivityObserver();
 				this.agentSession?.cancel();
 				this.agentSession = null;
 				this.agentSessionKey = null;
@@ -2516,6 +2711,7 @@ export class SessionManager {
 		this.abortController?.abort();
 		// Slice B: tear down the long-lived AgentSession so the next runQuery
 		// rebuilds the SDK stream from scratch.
+		this.stopBackgroundActivityObserver();
 		this.agentSession?.cancel();
 		this.agentSession = null;
 		this.agentSessionKey = null;
@@ -2533,6 +2729,7 @@ export class SessionManager {
 		this.cancelAllAskUserQuestions();
 		this.planModeManager.clearAll();
 		this.abortController?.abort();
+		this.stopBackgroundActivityObserver();
 		this.agentSession?.cancel();
 		this.agentSession = null;
 		this.agentSessionKey = null;
@@ -2562,6 +2759,7 @@ export class SessionManager {
 		}
 
 		if (retiresActiveSession) {
+			this.stopBackgroundActivityObserver();
 			this.agentSession?.cancel();
 			this.agentSession = null;
 			this.agentSessionKey = null;
@@ -2645,6 +2843,7 @@ export class SessionManager {
 			savedModel,
 			savedProviderId,
 			savedProviderSessionId,
+			savedBackgroundActivities,
 		] = await Promise.all([
 			db.getSessionById(sessionId),
 			// Only existence matters here. Provider handoff loads the transcript
@@ -2656,6 +2855,7 @@ export class SessionManager {
 			db.getSessionModel(sessionId),
 			db.getSessionProviderId(sessionId),
 			db.getSessionProviderSession(sessionId),
+			db.listProviderBackgroundActivities(sessionId),
 		]);
 		if (
 			savedSession?.history_imported &&
@@ -2673,6 +2873,7 @@ export class SessionManager {
 		// sample is a defensive floor for older or partially migrated databases.
 		this.messageSeq = Math.max(nextMessageSeq, prior.length);
 		this.currentSessionId = sessionId;
+		this.replaceBackgroundActivities(savedBackgroundActivities, false);
 		this.currentSessionLabel = savedSession?.label ?? null;
 		this.currentSessionPinned = savedSession?.pinned === 1;
 		this.currentForkParentSessionId =
@@ -2745,6 +2946,13 @@ export class SessionManager {
 		userMessage: string,
 		updateGlobalFocus = true,
 	): Promise<void> {
+		if (sessionId && sessionId !== this.currentSessionId) {
+			// Stop the old session's observer while its session id still owns the
+			// in-memory snapshot. This prevents an in-flight provider poll from
+			// writing the old process inventory into the session being restored.
+			this.stopBackgroundActivityObserver();
+			await this.backgroundActivityWriteTail;
+		}
 		let sessionExists = Boolean(
 			sessionId && sessionId === this.currentSessionId,
 		);
@@ -2774,6 +2982,7 @@ export class SessionManager {
 
 		// Create DB session record for new sessions
 		if (sessionId && this.messageSeq === 0 && !sessionExists) {
+			this.replaceBackgroundActivities([], false);
 			const label = userMessage.slice(0, SESSION_LABEL_LENGTH).toUpperCase();
 			this.currentSessionLabel = label;
 			const agentSettings = this.agentCwd
@@ -5657,6 +5866,7 @@ export class SessionManager {
 				this.restartAgentSessionForEffort ||
 				this.restartProviderRuntimeAfterTurn)
 		) {
+			this.stopBackgroundActivityObserver();
 			this.agentSession.cancel();
 			this.agentSession = null;
 			this.agentSessionKey = null;
@@ -5667,6 +5877,10 @@ export class SessionManager {
 			if (onGoalChange) {
 				this.agentSession.setGoalChangeHandler?.(onGoalChange);
 			}
+			this.startBackgroundActivityObserver(
+				this.agentSession,
+				provider.providerId,
+			);
 			return this.agentSession;
 		}
 		this.restartProviderRuntimeAfterTurn = false;
@@ -5731,6 +5945,7 @@ export class SessionManager {
 		this.agentSession = session;
 		this.agentSessionKey = desiredKey;
 		this.restartAgentSessionForEffort = false;
+		this.startBackgroundActivityObserver(session, provider.providerId);
 		return session;
 	}
 
@@ -6331,6 +6546,7 @@ export class SessionManager {
 			// Slice B: tear down the AgentSession on error — its iterator may
 			// be in an inconsistent state. Explicit aborts also retire the stream,
 			// but settle as idle instead of fabricating a child-session error.
+			this.stopBackgroundActivityObserver();
 			this.agentSession?.cancel();
 			this.agentSession = null;
 			this.agentSessionKey = null;

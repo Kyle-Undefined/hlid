@@ -64,6 +64,32 @@ describe("provider capability resolution", () => {
 		expect(make(1).revision).toBe(make(2).revision);
 	});
 
+	it("publishes integrated background activity as a live-session gate", () => {
+		const snapshot = buildProviderCapabilitySnapshot({
+			providerId: "codex",
+			providerAvailable: true,
+			models: [],
+			capabilities: {
+				backgroundActivities: {
+					maturity: "experimental",
+					operations: ["list", "terminate", "clean"],
+				},
+			},
+		});
+
+		expect(
+			snapshot.capabilities.find((item) =>
+				item.id.includes("background-activity"),
+			),
+		).toMatchObject({
+			integration: "integrated",
+			readiness: "gated",
+			availability: "conditional",
+			maturity: "experimental",
+			operations: ["clean", "list", "terminate"],
+		});
+	});
+
 	it("uses the provider-effective workspace and revisions it independently", () => {
 		const make = (cwd: string) =>
 			buildProviderCapabilitySnapshot({

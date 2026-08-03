@@ -37,6 +37,32 @@ const SEEDS: Array<[name: string, relPath: string]> = [
 	["ThreadForkResponse", "v2/ThreadForkResponse.ts"],
 	["ThreadCompactStartParams", "v2/ThreadCompactStartParams.ts"],
 	["ThreadCompactStartResponse", "v2/ThreadCompactStartResponse.ts"],
+	[
+		"ThreadBackgroundTerminalsListParams",
+		"v2/ThreadBackgroundTerminalsListParams.ts",
+	],
+	[
+		"ThreadBackgroundTerminalsListResponse",
+		"v2/ThreadBackgroundTerminalsListResponse.ts",
+	],
+	[
+		"ThreadBackgroundTerminalsTerminateParams",
+		"v2/ThreadBackgroundTerminalsTerminateParams.ts",
+	],
+	[
+		"ThreadBackgroundTerminalsTerminateResponse",
+		"v2/ThreadBackgroundTerminalsTerminateResponse.ts",
+	],
+	[
+		"ThreadBackgroundTerminalsCleanParams",
+		"v2/ThreadBackgroundTerminalsCleanParams.ts",
+	],
+	[
+		"ThreadBackgroundTerminalsCleanResponse",
+		"v2/ThreadBackgroundTerminalsCleanResponse.ts",
+	],
+	["ThreadItemsListParams", "v2/ThreadItemsListParams.ts"],
+	["ThreadItemsListResponse", "v2/ThreadItemsListResponse.ts"],
 	["ThreadGoal", "v2/ThreadGoal.ts"],
 	["ThreadGoalSetParams", "v2/ThreadGoalSetParams.ts"],
 	["ThreadGoalSetResponse", "v2/ThreadGoalSetResponse.ts"],

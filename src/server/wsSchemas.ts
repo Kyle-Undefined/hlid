@@ -298,6 +298,18 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 		task_id: id,
 		session_id: id.optional(),
 	}),
+	z
+		.strictObject({
+			type: z.literal("background_activity_control"),
+			action: z.enum(["terminate", "clean"]),
+			activity_id: id.optional(),
+			session_id: id.optional(),
+		})
+		.refine(
+			(message) =>
+				message.action === "clean" || Boolean(message.activity_id?.trim()),
+			{ message: "terminate requires activity_id" },
+		),
 ]);
 
 export function parseClientMessage(raw: string): ClientMessage | null {

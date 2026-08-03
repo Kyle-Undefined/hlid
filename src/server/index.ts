@@ -462,6 +462,7 @@ const broadcastLiveSessions = () => {
 		sessions: getLiveSessionsStatus(pool, terminalPool),
 	});
 };
+pool.setStatusChangeHandler(broadcastLiveSessions);
 let durableDelegationRefresh: Promise<void> | null = null;
 let durableDelegationRefreshAgain = false;
 const refreshDurableDelegationAttention = (): Promise<void> => {

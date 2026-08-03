@@ -22,6 +22,7 @@ import {
 	ProjectPreviewActivityCard,
 	selectActiveProjectPreviewEvents,
 } from "./ProjectPreviewToolBlock";
+import { ProviderBackgroundActivityPanel } from "./ProviderBackgroundActivityPanel";
 import { isActivityInspectorToolEvent, ToolInspector } from "./ToolBlock";
 import { UserMsg } from "./UserMsg";
 import {
@@ -587,6 +588,7 @@ export const MessageList = memo(function MessageList({
 				/>
 			)}
 			<HlidDelegationActivityPanel sessionId={sessionId} />
+			<ProviderBackgroundActivityPanel sessionId={sessionId} />
 			{selectedToolContext && (
 				<ToolInspector
 					event={selectedToolContext.event}

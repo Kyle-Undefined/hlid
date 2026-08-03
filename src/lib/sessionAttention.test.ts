@@ -64,6 +64,33 @@ describe("deriveSessionAttention", () => {
 		});
 	});
 
+	it("projects provider background work without making success urgent", () => {
+		expect(
+			deriveSessionAttention(
+				{ ...idle, backgroundRunningCount: 1 },
+				undefined,
+				10,
+			),
+		).toMatchObject({ bucket: "working", reason: "provider_activity" });
+		expect(
+			deriveSessionAttention(
+				{ ...idle, backgroundFailedCount: 1 },
+				undefined,
+				20,
+			),
+		).toMatchObject({
+			bucket: "needs_attention",
+			reason: "background_failed",
+		});
+		expect(
+			deriveSessionAttention(
+				{ ...idle, backgroundCompletedCount: 1 },
+				undefined,
+				30,
+			),
+		).toMatchObject({ bucket: "recent", reason: "background_completed" });
+	});
+
 	it("classifies an exact usage sleep ahead of generic running work", () => {
 		const sleeping = deriveSessionAttention(
 			{

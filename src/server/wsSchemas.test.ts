@@ -353,6 +353,40 @@ describe("chat WebSocket runtime schema", () => {
 		).toBeNull();
 	});
 
+	it("requires an exact activity id for background termination", () => {
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "background_activity_control",
+					action: "terminate",
+					activity_id: "item-1",
+					session_id: "session-1",
+				}),
+			),
+		).toEqual({
+			type: "background_activity_control",
+			action: "terminate",
+			activity_id: "item-1",
+			session_id: "session-1",
+		});
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "background_activity_control",
+					action: "terminate",
+				}),
+			),
+		).toBeNull();
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "background_activity_control",
+					action: "clean",
+				}),
+			),
+		).toEqual({ type: "background_activity_control", action: "clean" });
+	});
+
 	it("validates workflow discovery and save requests", () => {
 		expect(
 			parseClientMessage(

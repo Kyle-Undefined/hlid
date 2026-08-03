@@ -1695,4 +1695,45 @@ function applyMigrations(db: Db): void {
 	runMigration(db, CODEX_TERRA_LUNA_PRICING_MIGRATION, (db) => {
 		repairCodexPricingCutover(db);
 	});
+
+	// Provider work can outlive the visible assistant turn. Keep a bounded
+	// session-owned projection so Raven can restore settled/unknown activity
+	// without pretending a restarted process is still live or controllable.
+	runMigration(db, "_migrated_provider_background_activities_v1", (db) => {
+		db.run(`
+			CREATE TABLE provider_background_activities (
+				session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+				provider_id TEXT NOT NULL,
+				provider_session_id TEXT NOT NULL,
+				activity_id TEXT NOT NULL,
+				process_id TEXT,
+				kind TEXT NOT NULL CHECK(kind IN (
+					'terminal', 'shell', 'monitor', 'agent', 'workflow', 'task'
+				)),
+				status TEXT NOT NULL CHECK(status IN (
+					'running', 'completed', 'failed', 'stopped', 'unknown'
+				)),
+				command TEXT,
+				description TEXT,
+				cwd TEXT,
+				recent_output TEXT,
+				os_pid INTEGER,
+				cpu_percent REAL,
+				rss_kb INTEGER,
+				started_at_ms INTEGER NOT NULL,
+				updated_at_ms INTEGER NOT NULL,
+				ended_at_ms INTEGER,
+				can_stop INTEGER NOT NULL DEFAULT 0,
+				can_terminate INTEGER NOT NULL DEFAULT 0,
+				can_clean INTEGER NOT NULL DEFAULT 0,
+				PRIMARY KEY (
+					session_id, provider_id, provider_session_id, activity_id
+				)
+			)
+		`);
+		db.run(
+			`CREATE INDEX idx_provider_background_activities_session_updated
+			 ON provider_background_activities(session_id, updated_at_ms DESC)`,
+		);
+	});
 }

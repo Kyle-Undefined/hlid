@@ -100,6 +100,7 @@ function reconcileAttentionFromStatus(
 				: current?.reason === "goal_usage_wait"
 					? "usageLimited"
 					: undefined;
+	const activities = session.background_activities ?? [];
 	return deriveSessionAttention(
 		{
 			state,
@@ -109,6 +110,15 @@ function reconcileAttentionFromStatus(
 			queueCount: current?.queue_count ?? 0,
 			goalStatus,
 			terminal: session.mode === "terminal",
+			backgroundRunningCount: activities.filter(
+				(activity) => activity.status === "running",
+			).length,
+			backgroundFailedCount: activities.filter(
+				(activity) => activity.status === "failed",
+			).length,
+			backgroundCompletedCount: activities.filter(
+				(activity) => activity.status === "completed",
+			).length,
 		},
 		current,
 	);

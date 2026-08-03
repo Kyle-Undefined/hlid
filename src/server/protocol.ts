@@ -620,6 +620,9 @@ export type SessionAttentionReason =
 	| "plan_review"
 	| "error"
 	| "provider_turn"
+	| "provider_activity"
+	| "background_completed"
+	| "background_failed"
 	| "usage_sleep"
 	| "terminal"
 	| "queued_prompt"
@@ -700,6 +703,8 @@ export type SessionStatusEntry = {
 	effort?: string;
 	/** Current session-scoped permission mode, when available. */
 	permission_mode?: string;
+	/** Live and recently settled provider work that outlives its parent turn. */
+	background_activities?: import("./agentProvider").ProviderBackgroundActivity[];
 	hasPendingPermissions: boolean;
 	/**
 	 * Rich attention state. Optional for compatibility with older connected
@@ -1235,6 +1240,14 @@ export type ClientWorkflowControlMessage = {
 	session_id?: string;
 };
 
+/** Exact native control for session-level provider background work. */
+export type ClientBackgroundActivityControlMessage = {
+	type: "background_activity_control";
+	action: "terminate" | "clean";
+	activity_id?: string;
+	session_id?: string;
+};
+
 export type ClientMessage =
 	| ClientChatMessage
 	| ClientCancelQueuedMessage
@@ -1267,4 +1280,5 @@ export type ClientMessage =
 	| ClientSetModelMessage
 	| ClientSetPermissionModeMessage
 	| ClientSetEffortMessage
-	| ClientWorkflowControlMessage;
+	| ClientWorkflowControlMessage
+	| ClientBackgroundActivityControlMessage;

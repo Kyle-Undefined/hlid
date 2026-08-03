@@ -310,6 +310,49 @@ export type TaskActivity = {
 	items: TaskActivityItem[];
 };
 
+export type ProviderBackgroundActivityStatus =
+	| "running"
+	| "completed"
+	| "failed"
+	| "stopped"
+	| "unknown";
+
+/**
+ * Session-level provider work that can outlive the visible parent turn.
+ * Native identifiers and operations stay provider-owned; Hlid only projects a
+ * bounded, capability-gated snapshot for Raven and durable attention.
+ */
+export type ProviderBackgroundActivity = {
+	providerId: string;
+	providerSessionId: string;
+	/** Stable provider item/task id used as the Hlid activity identity. */
+	activityId: string;
+	/** Provider runtime process id, when distinct from activityId. */
+	processId?: string;
+	kind: "terminal" | "shell" | "monitor" | "agent" | "workflow" | "task";
+	status: ProviderBackgroundActivityStatus;
+	command?: string;
+	description?: string;
+	cwd?: string;
+	/** Bounded recent output or provider summary, never an unbounded transcript. */
+	recentOutput?: string;
+	osPid?: number;
+	cpuPercent?: number;
+	rssKb?: number;
+	startedAtMs: number;
+	updatedAtMs: number;
+	endedAtMs?: number;
+	capabilities: {
+		stop?: boolean;
+		terminate?: boolean;
+		clean?: boolean;
+	};
+};
+
+export type ProviderBackgroundActivityControl =
+	| { action: "terminate"; activityId: string }
+	| { action: "clean" };
+
 export type AgentEvent =
 	| { type: "session_start"; sessionId: string }
 	/** Claude checkpoint attached to the current root user turn. */
@@ -536,6 +579,12 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	 * turn. Claude exposes this as a native streaming control request.
 	 */
 	stopTask?(taskId: string): Promise<void>;
+	/** Read a bounded snapshot of live and recently settled provider work. */
+	listBackgroundActivities?(): Promise<ProviderBackgroundActivity[]>;
+	/** Execute an exact provider-native background activity operation. */
+	controlBackgroundActivity?(
+		request: ProviderBackgroundActivityControl,
+	): Promise<void>;
 	/**
 	 * Close the input stream without aborting the session. Use for one-shot
 	 * queries (e.g. recap) after the final send() so the SDK process sees EOF
@@ -650,6 +699,11 @@ export type ProviderCapabilityMetadata = {
 	appCatalog?: boolean;
 	/** Hlid can start provider-native app or connector authentication. */
 	appAuthentication?: boolean;
+	/** Provider background activity is observable and controllable through Hlid. */
+	backgroundActivities?: {
+		maturity: "experimental" | "beta" | "stable";
+		operations: ReadonlyArray<"list" | "stop" | "terminate" | "clean">;
+	};
 };
 
 export type ForkSessionParams = {

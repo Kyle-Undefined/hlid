@@ -574,6 +574,67 @@ describe("SessionManager — provider background tasks", () => {
 	});
 });
 
+describe("SessionManager — provider background activity", () => {
+	it("observes, persists, controls, and safely detaches live activity", async () => {
+		const running = {
+			providerId: "claude",
+			providerSessionId: "sdk-session-1",
+			activityId: "terminal-1",
+			processId: "process-1",
+			kind: "terminal" as const,
+			status: "running" as const,
+			command: "bun run dev",
+			startedAtMs: 100,
+			updatedAtMs: 200,
+			capabilities: { terminate: true, clean: true },
+		};
+		const listBackgroundActivities = vi.fn().mockResolvedValue([running]);
+		const controlBackgroundActivity = vi.fn().mockResolvedValue(undefined);
+		const { provider } = makeSwitchableProvider({
+			listBackgroundActivities,
+			controlBackgroundActivity,
+		});
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery("hi", () => {}, { sessionId: "sess-1" });
+		await vi.waitFor(() => {
+			expect(sm.getBackgroundActivities()).toEqual([running]);
+		});
+		expect(dbMock.replaceSessionBackgroundActivities).toHaveBeenCalledWith(
+			"sess-1",
+			[running],
+		);
+
+		await sm.controlProviderBackgroundActivity({
+			action: "terminate",
+			activityId: "terminal-1",
+		});
+		expect(controlBackgroundActivity).toHaveBeenCalledWith({
+			action: "terminate",
+			activityId: "terminal-1",
+		});
+
+		listBackgroundActivities.mockResolvedValue([
+			{
+				...running,
+				status: "completed",
+				updatedAtMs: 300,
+				endedAtMs: 300,
+				capabilities: {},
+			},
+		]);
+		await sm.controlProviderBackgroundActivity({ action: "clean" });
+		expect(sm.getBackgroundActivities()).toEqual([]);
+		expect(dbMock.replaceSessionBackgroundActivities).toHaveBeenLastCalledWith(
+			"sess-1",
+			[],
+		);
+
+		sm.abort();
+		expect(sm.getBackgroundActivities()).toEqual([]);
+	});
+});
+
 // ── abort ─────────────────────────────────────────────────────────────────────
 
 describe("SessionManager — abort", () => {

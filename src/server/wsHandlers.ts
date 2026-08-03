@@ -104,6 +104,7 @@ function delegationMutationTarget(
 		case "set_effort":
 		case "set_permission_mode":
 		case "workflow_control":
+		case "background_activity_control":
 		case "mcp_control":
 		case "file_rewind":
 			return msg.session_id ?? subscribedSessionId;
@@ -1419,6 +1420,27 @@ async function handleSessionMessage(
 				});
 			}
 			return;
+		case "background_activity_control":
+			try {
+				await entry.manager.controlProviderBackgroundActivity(
+					msg.action === "terminate"
+						? {
+								action: "terminate",
+								activityId: msg.activity_id ?? "",
+							}
+						: { action: "clean" },
+				);
+				broadcastSessionsStatus(context);
+			} catch (error) {
+				send(context.ws, {
+					type: "error",
+					message:
+						error instanceof Error
+							? error.message
+							: "Failed to control background activity",
+				});
+			}
+			return;
 		case "clear":
 			context.ws.data.pendingNewSession = true;
 			entry.runState.clearError();
@@ -1567,6 +1589,7 @@ async function handleMessage(
 			msg.type === "set_effort" ||
 			msg.type === "set_permission_mode" ||
 			msg.type === "workflow_control" ||
+			msg.type === "background_activity_control" ||
 			msg.type === "mcp_control" ||
 			msg.type === "file_rewind" ||
 			msg.type === "save_workflow" ||
@@ -1646,6 +1669,11 @@ async function handleMessage(
 				send(context.ws, {
 					type: "error",
 					message: "This workflow session is not live.",
+				});
+			} else if (msg.type === "background_activity_control") {
+				send(context.ws, {
+					type: "error",
+					message: "This provider background activity session is not live.",
 				});
 			} else if (msg.type === "mcp_control") {
 				send(context.ws, {

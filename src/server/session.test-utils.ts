@@ -70,6 +70,8 @@ export function mockDbModule() {
 		getSessionModel: vi.fn().mockResolvedValue(null),
 		getSessionProviderId: vi.fn().mockResolvedValue(null),
 		getSessionProviderSession: vi.fn().mockResolvedValue(null),
+		listProviderBackgroundActivities: vi.fn().mockResolvedValue([]),
+		replaceSessionBackgroundActivities: vi.fn().mockResolvedValue(undefined),
 		getSessionClaudeId: vi.fn().mockResolvedValue(null),
 		getAttachment: vi.fn().mockResolvedValue(null),
 		setSessionProviderId: vi.fn().mockResolvedValue(undefined),

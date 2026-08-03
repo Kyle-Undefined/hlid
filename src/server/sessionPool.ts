@@ -50,6 +50,7 @@ export class SessionPool {
 		DelegatedLifecycleCounts
 	>();
 	private durableDelegationRefreshGeneration = 0;
+	private statusChangeHandler: (() => void) | null = null;
 	/** Session ID of the vault's lazy singleton entry, or null if not yet created. */
 	private _vaultSessionId: string | null = null;
 
@@ -97,7 +98,15 @@ export class SessionPool {
 			runState,
 		};
 		this.entries.set(sessionId, entry);
+		manager.setBackgroundActivityChangeHandler(() => {
+			this.statusChangeHandler?.();
+		});
 		return entry;
+	}
+
+	/** Notify the host when provider work changes outside a visible chat turn. */
+	setStatusChangeHandler(handler: (() => void) | null): void {
+		this.statusChangeHandler = handler;
 	}
 
 	/** Look up a live session entry by its UUID. Returns undefined if not found. */
@@ -148,6 +157,7 @@ export class SessionPool {
 		const entry = this.entries.get(sessionId);
 		if (!entry) return;
 		entry.manager.abort();
+		entry.manager.setBackgroundActivityChangeHandler(null);
 		this.entries.delete(sessionId);
 		this.attentionBySession.delete(sessionId);
 		if (this._vaultSessionId === sessionId) {
@@ -162,6 +172,7 @@ export class SessionPool {
 	closeAll(): void {
 		for (const entry of this.entries.values()) {
 			entry.manager.suspendForRestart();
+			entry.manager.setBackgroundActivityChangeHandler(null);
 		}
 		this.entries.clear();
 		this.attentionBySession.clear();
@@ -262,6 +273,7 @@ export class SessionPool {
 			const sleepState = entry.manager.getSleepState();
 			const sessionLabel = entry.manager.getSessionLabel();
 			const presentation = entry.manager.getSessionPresentation();
+			const backgroundActivities = entry.manager.getBackgroundActivities();
 			const attention = deriveSessionAttention(
 				{
 					state,
@@ -272,6 +284,15 @@ export class SessionPool {
 					goalStatus: entry.manager.getCurrentGoal()?.status,
 					routine: entry.manager.getActiveRoutine() !== null,
 					sleepState,
+					backgroundRunningCount: backgroundActivities.filter(
+						(activity) => activity.status === "running",
+					).length,
+					backgroundFailedCount: backgroundActivities.filter(
+						(activity) => activity.status === "failed",
+					).length,
+					backgroundCompletedCount: backgroundActivities.filter(
+						(activity) => activity.status === "completed",
+					).length,
 				},
 				this.attentionBySession.get(entry.sessionId),
 			);
@@ -285,6 +306,9 @@ export class SessionPool {
 				model,
 				effort,
 				permission_mode,
+				...(backgroundActivities.length > 0
+					? { background_activities: backgroundActivities }
+					: {}),
 				hasPendingPermissions:
 					pendingPerms.length > 0 ||
 					pendingQuestions.length > 0 ||

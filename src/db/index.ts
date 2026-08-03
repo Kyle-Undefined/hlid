@@ -127,6 +127,10 @@ export {
 	saveProjectPreview,
 	stopActiveProjectPreviewsAfterRestart,
 } from "./projectPreviews";
+export {
+	listProviderBackgroundActivities,
+	replaceSessionBackgroundActivities,
+} from "./providerBackgroundActivities";
 export type { RoutineRunRow } from "./routines";
 // Routines
 export {

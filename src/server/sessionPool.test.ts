@@ -43,6 +43,8 @@ const mockInstances: {
 	getSleepState: ReturnType<typeof vi.fn>;
 	getSessionLabel: ReturnType<typeof vi.fn>;
 	getSessionPresentation: ReturnType<typeof vi.fn>;
+	getBackgroundActivities: ReturnType<typeof vi.fn>;
+	setBackgroundActivityChangeHandler: ReturnType<typeof vi.fn>;
 	getProviderId: ReturnType<typeof vi.fn>;
 	isRunning: ReturnType<typeof vi.fn>;
 }[] = [];
@@ -85,6 +87,8 @@ vi.mock("./session", () => ({
 				delegationParentTurnId: null,
 				delegationDepth: null,
 			}),
+			getBackgroundActivities: vi.fn().mockReturnValue([]),
+			setBackgroundActivityChangeHandler: vi.fn(),
 			getProviderId: vi.fn().mockReturnValue("claude"),
 			isRunning: vi.fn().mockReturnValue(false),
 		};
@@ -888,6 +892,31 @@ describe("SessionPool.getSessionsStatus", () => {
 
 		const [s] = pool.getSessionsStatus();
 		expect(s.state).toBe("running");
+	});
+
+	it("projects provider activity and its session attention", () => {
+		const pool = makePool();
+		pool.create("/code/proj", "Agent");
+		const activity = {
+			providerId: "codex",
+			providerSessionId: "thread-1",
+			activityId: "terminal-1",
+			kind: "terminal",
+			status: "running",
+			command: "bun run dev",
+			startedAtMs: 100,
+			updatedAtMs: 200,
+			capabilities: { terminate: true },
+		};
+		mockInstances[0]?.getBackgroundActivities.mockReturnValue([activity]);
+
+		expect(pool.getSessionsStatus()[0]).toMatchObject({
+			background_activities: [activity],
+			attention: {
+				bucket: "working",
+				reason: "provider_activity",
+			},
+		});
 	});
 
 	it("hasPendingPermissions is true when manager has pending requests", () => {

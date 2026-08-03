@@ -165,6 +165,7 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		setEffort: vi.fn().mockResolvedValue(undefined),
 		setPermissionMode: vi.fn().mockResolvedValue(undefined),
 		stopProviderTask: vi.fn().mockResolvedValue(undefined),
+		controlProviderBackgroundActivity: vi.fn().mockResolvedValue(undefined),
 		getAccountInfo: vi.fn().mockResolvedValue(null),
 		...overrides,
 	} as unknown as SessionManager;
@@ -1246,6 +1247,52 @@ describe("message — workflow_control", () => {
 		expect(lastSentTo(ws)).toEqual({
 			type: "error",
 			message: "This workflow session is not live.",
+		});
+	});
+});
+
+describe("message — background_activity_control", () => {
+	it("terminates one exact native activity in the addressed live session", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "background_activity_control",
+				action: "terminate",
+				activity_id: "item-1",
+				session_id: "vault-id",
+			}),
+		);
+
+		expect(session.controlProviderBackgroundActivity).toHaveBeenCalledWith({
+			action: "terminate",
+			activityId: "item-1",
+		});
+	});
+
+	it("rejects background control when the owning session is detached", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "background_activity_control",
+				action: "clean",
+				session_id: "archived-session",
+			}),
+		);
+
+		expect(session.controlProviderBackgroundActivity).not.toHaveBeenCalled();
+		expect(lastSentTo(ws)).toEqual({
+			type: "error",
+			message: "This provider background activity session is not live.",
 		});
 	});
 });
