@@ -175,7 +175,7 @@ describe("provider capability resolution", () => {
 });
 
 describe("Codex capability discovery", () => {
-	it("maps bounded runtime catalogs without claiming Hlid integration", async () => {
+	it("maps bounded runtime catalogs and recognizes wired collaboration modes", async () => {
 		const request = vi.fn(async (method: string) => {
 			if (method === "experimentalFeature/list") {
 				return {
@@ -194,7 +194,13 @@ describe("Codex capability discovery", () => {
 				return { data: [{ id: ":workspace", allowed: true }] };
 			}
 			if (method === "collaborationMode/list") {
-				return { data: [{ name: "plan" }] };
+				return {
+					data: [
+						{ name: "Default" },
+						{ name: "Plan" },
+						{ name: "Pair programming" },
+					],
+				};
 			}
 			if (method === "app/list") {
 				return {
@@ -241,9 +247,27 @@ describe("Codex capability discovery", () => {
 		expect(
 			discovery.evidence.find((item) => item.id.includes("permission-profile")),
 		).toMatchObject({ integration: "not-integrated" });
-		expect(
-			discovery.evidence.find((item) => item.id.includes("collaboration-mode")),
-		).toMatchObject({ integration: "not-integrated" });
+		const collaborationModes = discovery.evidence.filter((item) =>
+			item.id.includes("collaboration-mode"),
+		);
+		expect(collaborationModes).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					label: "Default",
+					integration: "integrated",
+					readiness: "ready",
+				}),
+				expect.objectContaining({
+					label: "Plan",
+					integration: "integrated",
+					readiness: "ready",
+				}),
+				expect.objectContaining({
+					label: "Pair programming",
+					integration: "not-integrated",
+				}),
+			]),
+		);
 		expect(
 			discovery.evidence.find((item) => item.id.includes("hook-catalog")),
 		).toMatchObject({ label: "Hook catalog (1)" });

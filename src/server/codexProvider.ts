@@ -161,19 +161,6 @@ type ApprovalRequestResult =
 	| CommandExecutionRequestApprovalResponse
 	| FileChangeRequestApprovalResponse;
 
-type CodexCollaborationMode = {
-	mode: "plan" | "default";
-	settings: {
-		model: string;
-		reasoning_effort: string | null;
-		developer_instructions: null;
-	};
-};
-
-type TurnStartParamsWithCollaboration = TurnStartParams & {
-	collaborationMode?: CodexCollaborationMode;
-};
-
 class AsyncQueue<T> {
 	private values: T[] = [];
 	private waiters: Array<(value: IteratorResult<T>) => void> = [];
@@ -2470,7 +2457,7 @@ class CodexAgentSession implements AgentSession {
 				(path): UserInput => ({ type: "localAudio", path }),
 			),
 		];
-		const params: TurnStartParamsWithCollaboration = {
+		const params: TurnStartParams = {
 			threadId: this.threadId,
 			input,
 			...(this.delegatedWindowsWorker?.kind === "visualize"

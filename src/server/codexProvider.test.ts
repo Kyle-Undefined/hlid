@@ -3782,6 +3782,25 @@ describe("CodexAgentSession — setPermissionMode", () => {
 		expect(turns[1].collaborationMode).toMatchObject({ mode: "default" });
 	});
 
+	it("selects native plan on the next turn of a resumed thread", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({
+				sessionId: "existing-thread",
+				permissionMode: "plan",
+			}),
+		);
+
+		await session.send("continue planning");
+
+		expect(writeMethods(writes)).toContain("thread/resume");
+		expect(turnStartParams(writes)[0].collaborationMode).toMatchObject({
+			mode: "plan",
+		});
+	});
+
 	it("carries xhigh effort into native Codex plan mode", async () => {
 		const { proc, writes } = makeFakeSessionProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);

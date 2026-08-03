@@ -132,22 +132,38 @@ function collaborationModeEvidence(
 	providerId: string,
 	response: unknown,
 ): ProviderCapabilityEvidence[] {
+	const integratedModes = new Set(["default", "plan"]);
 	return list(response, ["data", "modes", "collaborationModes"]).flatMap(
 		(value) => {
 			const item = record(value);
 			const id = textValue(item, ["id", "name", "mode"]);
 			if (!id) return [];
+			const normalizedId = id.toLowerCase();
+			const integrated = integratedModes.has(normalizedId);
 			return [
 				{
 					id: providerCapabilityId(providerId, "collaboration-mode", id),
 					label: textValue(item, ["displayName", "name"]) ?? id,
 					scope: "session" as const,
 					support: "advertised" as const,
-					integration: "not-integrated" as const,
+					integration: integrated
+						? ("integrated" as const)
+						: ("not-integrated" as const),
 					readiness: "ready" as const,
 					source: "provider-runtime" as const,
 					maturity: "experimental" as const,
 					operations: ["select"],
+					...(normalizedId === "default"
+						? {
+								reason:
+									"Raven selects Codex's native Default mode for ordinary turns.",
+							}
+						: normalizedId === "plan"
+							? {
+									reason:
+										"Raven selects native Plan for plain planning. HTML plans remain Hlid-managed so Codex can write the review artifact.",
+								}
+							: {}),
 				},
 			];
 		},
