@@ -15,6 +15,7 @@ const CONTROL_INTEGRATION = new Map<string, ProviderCapabilityIntegration>([
 	["mcpServerStatus", "integrated"],
 	["reconnectMcpServer", "integrated"],
 	["toggleMcpServer", "integrated"],
+	["setMcpServers", "integrated"],
 	["getContextUsage", "integrated"],
 	["stopTask", "integrated"],
 	["backgroundTasks", "integrated"],
@@ -144,6 +145,7 @@ export function discoverClaudeProviderCapabilities(input: {
 	for (const method of snapshot.controlMethods ?? []) {
 		const integration = CONTROL_INTEGRATION.get(method) ?? "not-integrated";
 		const isFileRewind = method === "rewindFiles";
+		const isMcpServerApply = method === "setMcpServers";
 		evidence.push({
 			id: providerCapabilityId(input.providerId, "sdk-control", method),
 			label: `SDK control: ${controlLabel(method)}`,
@@ -152,14 +154,19 @@ export function discoverClaudeProviderCapabilities(input: {
 			integration,
 			readiness: isFileRewind ? "gated" : "ready",
 			source: "provider-sdk",
-			maturity: isFileRewind ? "beta" : "unknown",
+			maturity: isFileRewind || isMcpServerApply ? "beta" : "unknown",
 			operations: isFileRewind ? ["preview", "rewind"] : [method],
 			...(isFileRewind
 				? {
 						reason:
 							"Available only in live direct Claude sessions with tracked user checkpoints; imported session-store histories are excluded.",
 					}
-				: {}),
+				: isMcpServerApply
+					? {
+							reason:
+								"Hlid applies its canonical workspace MCP configuration only through existing live Claude sessions; cold sessions load the file on their next turn.",
+						}
+					: {}),
 		});
 	}
 	return {

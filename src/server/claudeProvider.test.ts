@@ -92,6 +92,11 @@ function sdkGen(events: unknown[], mcpStatuses: unknown[] = []) {
 		mcpServerStatus: vi.fn().mockResolvedValue(mcpStatuses),
 		reconnectMcpServer: vi.fn().mockResolvedValue(undefined),
 		toggleMcpServer: vi.fn().mockResolvedValue(undefined),
+		setMcpServers: vi.fn().mockResolvedValue({
+			added: [],
+			removed: [],
+			errors: {},
+		}),
 		reloadSkills: vi.fn().mockResolvedValue({ skills: [] }),
 		rewindFiles: vi.fn().mockResolvedValue({
 			canRewind: true,
@@ -3708,6 +3713,176 @@ describe("ClaudeProvider — mcpServerStatus", () => {
 
 		const statuses = await session.mcpServerStatus?.();
 		expect(statuses).toEqual(mockStatuses);
+	});
+});
+
+describe("ClaudeProvider — live MCP configuration", () => {
+	it("owns workspace .mcp.json dynamically while preserving native settings sources", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "hlid-claude-mcp-start-"));
+		try {
+			await writeFile(
+				join(cwd, ".mcp.json"),
+				JSON.stringify({
+					mcpServers: {
+						local: { command: "bun", args: ["server.ts"] },
+						disabled: { type: "http", url: "https://example.com/mcp" },
+					},
+				}),
+			);
+			await mkdir(join(cwd, ".claude"));
+			await writeFile(
+				join(cwd, ".claude", "settings.local.json"),
+				JSON.stringify({ disabledMcpjsonServers: ["disabled"] }),
+			);
+			let capturedOptions: Record<string, unknown> | undefined;
+			vi.mocked(query).mockImplementationOnce(
+				({ options }: { options?: Record<string, unknown> }) => {
+					capturedOptions = options;
+					return sdkGen([]);
+				},
+			);
+
+			const session = new ClaudeProvider().query(baseParams({ cwd }));
+			await session.send("hello");
+
+			expect(capturedOptions?.settingSources).toEqual([
+				"user",
+				"project",
+				"local",
+			]);
+			expect(capturedOptions?.settings).toEqual({
+				disabledMcpjsonServers: ["local", "disabled"],
+			});
+			expect(capturedOptions?.mcpServers).toEqual(
+				expect.objectContaining({
+					local: { command: "bun", args: ["server.ts"] },
+				}),
+			);
+			expect(
+				(capturedOptions?.mcpServers as Record<string, unknown>).disabled,
+			).toBeUndefined();
+			expect(
+				Object.keys(capturedOptions?.mcpServers as Record<string, unknown>),
+			).toHaveLength(3);
+			session.cancel();
+		} finally {
+			await rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("replaces only the Hlid-managed dynamic subset in a live query", async () => {
+		const gen = sdkGen([]);
+		gen.setMcpServers = vi.fn().mockResolvedValue({
+			added: ["next"],
+			removed: ["old"],
+			errors: {},
+		});
+		gen.mcpServerStatus = vi.fn().mockResolvedValue([
+			{ name: "next", status: "connected", scope: "dynamic" },
+			{ name: "claude.ai Drive", status: "connected", scope: "claudeai" },
+		]);
+		vi.mocked(query).mockReturnValueOnce(gen);
+		const session = new ClaudeProvider().query(baseParams());
+		await session.send("hello");
+
+		await expect(
+			session.setMcpServers?.([
+				{
+					name: "next",
+					config: { type: "sse", url: "https://example.com/sse" },
+					disabled: false,
+				},
+			]),
+		).resolves.toEqual({
+			added: ["next"],
+			removed: ["old"],
+			errors: {},
+		});
+		const dynamic = gen.setMcpServers.mock.calls[0]?.[0] as Record<
+			string,
+			unknown
+		>;
+		expect(dynamic.next).toEqual({
+			type: "sse",
+			url: "https://example.com/sse",
+		});
+		expect(Object.keys(dynamic)).toHaveLength(3);
+		await expect(session.mcpServerStatus?.()).resolves.toEqual([
+			{ name: "claude.ai Drive", status: "connected", scope: "claudeai" },
+			{ name: "next", status: "connected", scope: "project" },
+		]);
+		session.cancel();
+	});
+
+	it("defers a cold query without spawning Claude and uses the update on first send", async () => {
+		vi.mocked(query).mockClear();
+		let capturedOptions: Record<string, unknown> | undefined;
+		vi.mocked(query).mockImplementationOnce(
+			({ options }: { options?: Record<string, unknown> }) => {
+				capturedOptions = options;
+				return sdkGen([]);
+			},
+		);
+		const session = new ClaudeProvider().query(baseParams());
+
+		await expect(
+			session.setMcpServers?.([
+				{
+					name: "late",
+					config: { command: "bun", args: ["late.ts"] },
+					disabled: false,
+				},
+			]),
+		).resolves.toBeNull();
+		expect(query).not.toHaveBeenCalled();
+
+		await session.send("hello");
+		expect(capturedOptions?.mcpServers).toEqual(
+			expect.objectContaining({
+				late: { command: "bun", args: ["late.ts"] },
+			}),
+		);
+		expect(capturedOptions?.settings).toEqual({
+			disabledMcpjsonServers: ["late"],
+		});
+		session.cancel();
+	});
+
+	it("reports disabled and invalid workspace definitions without connecting them", async () => {
+		const gen = sdkGen([]);
+		gen.setMcpServers = vi.fn().mockResolvedValue({
+			added: [],
+			removed: [],
+			errors: {},
+		});
+		vi.mocked(query).mockReturnValueOnce(gen);
+		const session = new ClaudeProvider().query(baseParams());
+		await session.send("hello");
+		await session.setMcpServers?.([
+			{
+				name: "off",
+				config: { command: "bun" },
+				disabled: true,
+			},
+			{
+				name: "broken",
+				config: { type: "http", url: 1 },
+				disabled: false,
+			},
+		]);
+
+		expect(gen.setMcpServers.mock.calls[0]?.[0]).not.toHaveProperty("off");
+		expect(gen.setMcpServers.mock.calls[0]?.[0]).not.toHaveProperty("broken");
+		await expect(session.mcpServerStatus?.()).resolves.toEqual([
+			{ name: "off", status: "disabled", scope: "project" },
+			{
+				name: "broken",
+				status: "failed",
+				scope: "project",
+				error: "http configuration requires a URL",
+			},
+		]);
+		session.cancel();
 	});
 });
 

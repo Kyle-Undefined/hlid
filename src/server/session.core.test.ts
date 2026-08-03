@@ -1201,6 +1201,90 @@ describe("SessionManager — provider-native skill refresh", () => {
 	});
 });
 
+describe("SessionManager — applyProviderMcpServers", () => {
+	it("applies definitions through an existing Claude session and publishes status", async () => {
+		const setMcpServers = vi.fn().mockResolvedValue({
+			added: ["search"],
+			removed: [],
+			errors: {},
+		});
+		const mcpServerStatus = vi
+			.fn()
+			.mockResolvedValue([
+				{ name: "search", status: "connected" as const, scope: "project" },
+			]);
+		const provider: AgentProvider = {
+			providerId: "claude",
+			label: "Claude",
+			query(): AgentSession {
+				return {
+					async *[Symbol.asyncIterator]() {
+						yield {
+							type: "done" as const,
+							cost: 0,
+							turns: 1,
+							durationMs: 0,
+							usage: { inputTokens: 1, outputTokens: 1 },
+						};
+					},
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					setMcpServers,
+					mcpServerStatus,
+				};
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("hello", vi.fn(), { sessionId: "db-session" });
+		const emitted: ServerMessage[] = [];
+		const definitions = [
+			{
+				name: "search",
+				config: { command: "bun", args: ["server.ts"] },
+				disabled: false,
+			},
+		];
+
+		await expect(
+			sm.applyProviderMcpServers(definitions, (message) =>
+				emitted.push(message),
+			),
+		).resolves.toEqual({
+			providerId: "claude",
+			status: "applied",
+			result: { added: ["search"], removed: [], errors: {} },
+			statuses: [{ name: "search", status: "connected", scope: "project" }],
+		});
+		expect(setMcpServers).toHaveBeenCalledWith(definitions);
+		expect(emitted).toContainEqual({
+			type: "mcp_status",
+			provider_id: "claude",
+			session_id: "db-session",
+			servers: [{ name: "search", status: "connected", scope: "project" }],
+		});
+		expect(sm.getLastMcpStatus("claude")).toEqual([
+			{ name: "search", status: "connected", scope: "project" },
+		]);
+	});
+
+	it("reports not-live without creating a Claude provider session", async () => {
+		const provider: AgentProvider = {
+			providerId: "claude",
+			label: "Claude",
+			query: vi.fn(),
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await expect(
+			sm.applyProviderMcpServers([], vi.fn()),
+		).resolves.toMatchObject({
+			providerId: "claude",
+			status: "not-live",
+		});
+		expect(provider.query).not.toHaveBeenCalled();
+	});
+});
+
 // ── probeSlashCommands ────────────────────────────────────────────────────────
 
 describe("SessionManager — probeSlashCommands", () => {

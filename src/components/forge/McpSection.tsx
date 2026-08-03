@@ -65,7 +65,7 @@ export interface McpServerManagerProps {
 	showCloudServers?: boolean;
 	/** Show "check MCPs" probe button (vault only) */
 	showProbe?: boolean;
-	/** Send sync_mcp_list after write (vault only) */
+	/** Refresh configured/runtime status after a vault or agent mutation. */
 	syncAfterWrite?: boolean;
 	/** Custom footer node */
 	footer?: ReactNode;

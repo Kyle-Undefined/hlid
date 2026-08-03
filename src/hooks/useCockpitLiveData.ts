@@ -181,10 +181,13 @@ export function useCockpitLiveData(
 		if (message.type === "mcp_status") {
 			if ((message.agent_cwd ?? "") !== (commandAgentCwd ?? "")) return;
 			const incoming = message.servers.map((server) =>
-				mapMcpServer({
-					...server,
-					providerId: server.provider_id ?? message.provider_id,
-				}),
+				mapMcpServer(
+					{
+						...server,
+						providerId: server.provider_id ?? message.provider_id,
+					},
+					message.agent_cwd ? "agent" : "vault",
+				),
 			);
 			setMcpServers((previous) =>
 				message.inventory || !message.provider_id

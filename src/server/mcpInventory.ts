@@ -1,6 +1,7 @@
 import type { ServerWebSocket } from "bun";
 import { readAgentMcpFileAsync } from "../lib/agentMcp";
 import { type McpRegistryEntry, mergeMcpRegistry } from "../lib/mcpRegistry";
+import { samePath } from "../lib/paths";
 import { readVaultMcpFileAsync } from "../lib/vaultMcp";
 import { resolveAgentMetadataPath } from "./agentPaths";
 import {
@@ -11,6 +12,45 @@ import { loadConfig } from "./config";
 import { mapMcpServer } from "./protocol";
 import { broadcast, send } from "./runState";
 import type { PoolEntry, SessionPool } from "./sessionPool";
+
+async function applyLiveClaudeMcpConfig(
+	pool: SessionPool,
+	workspacePath: string,
+	servers: Awaited<ReturnType<typeof readAgentServers>>,
+): Promise<
+	Array<
+		Extract<
+			Awaited<ReturnType<PoolEntry["manager"]["applyProviderMcpServers"]>>,
+			{ status: "applied" }
+		>
+	>
+> {
+	const candidates = [...pool.getAllEntries()].filter(
+		(entry) =>
+			samePath(entry.agentCwd, workspacePath) &&
+			entry.manager.getProviderId() === "claude",
+	);
+	const settled = await Promise.allSettled(
+		candidates.map((entry) =>
+			entry.manager.applyProviderMcpServers(servers, (message) =>
+				entry.runState.broadcast(message),
+			),
+		),
+	);
+	for (const result of settled) {
+		if (result.status === "rejected") {
+			console.error(
+				"[mcp] Failed to apply live Claude MCP configuration:",
+				result.reason,
+			);
+		}
+	}
+	return settled.flatMap((result) =>
+		result.status === "fulfilled" && result.value.status === "applied"
+			? [result.value]
+			: [],
+	);
+}
 
 async function readAgentServers(resolvedAgent: string) {
 	try {
@@ -26,18 +66,30 @@ function resolveRegisteredAgent(agentCwd: string): string | undefined {
 
 export async function syncAgentMcpList(
 	ws: ServerWebSocket<unknown>,
+	pool: SessionPool,
 	entry: PoolEntry,
 	agentCwd: string,
 ): Promise<void> {
 	const resolvedAgent = resolveRegisteredAgent(agentCwd);
 	if (!resolvedAgent) return;
-	const servers = (await readAgentServers(resolvedAgent)).map(
-		({ name, disabled }) =>
-			mapMcpServer({
-				name,
-				status: disabled ? "disabled" : "pending",
-				scope: "project",
-			}),
+	const definitions = await readAgentServers(resolvedAgent);
+	const applied = await applyLiveClaudeMcpConfig(
+		pool,
+		resolvedAgent,
+		definitions,
+	);
+	const liveByName = new Map(
+		(applied[0]?.statuses ?? []).map((status) => [status.name, status]),
+	);
+	const servers = definitions.map(({ name, disabled }) =>
+		mapMcpServer({
+			name,
+			status: disabled
+				? "disabled"
+				: (liveByName.get(name)?.status ?? "pending"),
+			scope: "project",
+			error: disabled ? undefined : liveByName.get(name)?.error,
+		}),
 	);
 	send(ws, {
 		type: "mcp_status",
@@ -127,22 +179,22 @@ export async function syncMcpInventory(
 export async function syncVaultMcpList(pool: SessionPool): Promise<void> {
 	const config = loadConfig();
 	if (!config.vault.path) return;
+	const definitions = await readVaultServers(config.vault.path);
+	await applyLiveClaudeMcpConfig(pool, config.vault.path, definitions);
 	const cached = pool.vaultEntry().manager.getLastMcpStatus() ?? [];
 	const cachedByName = new Map(cached.map((server) => [server.name, server]));
 	const preserved = cached
 		.filter((server) => server.scope !== "project")
 		.map(mapMcpServer);
-	const vault = (await readVaultServers(config.vault.path)).map(
-		({ name, disabled }) => {
-			const known = cachedByName.get(name);
-			return mapMcpServer({
-				name,
-				status: disabled ? "disabled" : (known?.status ?? "pending"),
-				scope: "project",
-				error: disabled ? undefined : known?.error,
-			});
-		},
-	);
+	const vault = definitions.map(({ name, disabled }) => {
+		const known = cachedByName.get(name);
+		return mapMcpServer({
+			name,
+			status: disabled ? "disabled" : (known?.status ?? "pending"),
+			scope: "project",
+			error: disabled ? undefined : known?.error,
+		});
+	});
 	const providerId = pool.vaultEntry().manager.getProviderId();
 	broadcast({
 		type: "mcp_status",

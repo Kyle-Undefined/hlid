@@ -283,6 +283,7 @@ describe("Claude capability discovery", () => {
 				"interrupt",
 				"reconnectMcpServer",
 				"toggleMcpServer",
+				"setMcpServers",
 				"reloadSkills",
 				"rewindFiles",
 				"backgroundTasks",
@@ -317,6 +318,16 @@ describe("Claude capability discovery", () => {
 				item.operations?.includes("toggleMcpServer"),
 			),
 		).toMatchObject({ integration: "integrated", readiness: "ready" });
+		expect(
+			discovery.evidence.find((item) =>
+				item.operations?.includes("setMcpServers"),
+			),
+		).toMatchObject({
+			integration: "integrated",
+			readiness: "ready",
+			maturity: "beta",
+			reason: expect.stringContaining("canonical workspace MCP configuration"),
+		});
 		expect(
 			discovery.evidence.find((item) => item.id.includes("rewindfiles")),
 		).toMatchObject({

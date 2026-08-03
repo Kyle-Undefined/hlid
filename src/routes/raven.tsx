@@ -840,10 +840,13 @@ function useRavenChatRuntime({
 				providerId: messageProviderId ?? expectedProviderId ?? null,
 				operations: message.operations ?? [],
 				servers: message.servers.map((server) =>
-					mapMcpServer({
-						...server,
-						providerId: server.provider_id ?? message.provider_id,
-					}),
+					mapMcpServer(
+						{
+							...server,
+							providerId: server.provider_id ?? message.provider_id,
+						},
+						message.agent_cwd ? "agent" : "vault",
+					),
 				),
 			});
 		},

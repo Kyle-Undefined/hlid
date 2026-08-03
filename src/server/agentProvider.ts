@@ -41,6 +41,20 @@ export type McpServerStatus = {
 	error?: string;
 };
 
+/** One Hlid-managed MCP definition read from the workspace config adapter. */
+export type ProviderMcpServerDefinition = {
+	name: string;
+	config: unknown;
+	disabled: boolean;
+};
+
+/** Exact result returned when a provider replaces its live dynamic MCP set. */
+export type ProviderMcpServerApplyResult = {
+	added: string[];
+	removed: string[];
+	errors: Record<string, string>;
+};
+
 /** Provider-native preview/result for restoring tracked workspace files. */
 export type ProviderFileRewindResult = {
 	canRewind: boolean;
@@ -599,6 +613,14 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	reconnectMcpServer?(serverName: string): Promise<void>;
 	/** Enable or disable one provider-owned MCP server inside this live session. */
 	toggleMcpServer?(serverName: string, enabled: boolean): Promise<void>;
+	/**
+	 * Replace the Hlid-managed MCP subset inside an existing provider session.
+	 * Returns null when the provider Query is not live; implementations must not
+	 * start a hidden provider process for this control.
+	 */
+	setMcpServers?(
+		servers: ProviderMcpServerDefinition[],
+	): Promise<ProviderMcpServerApplyResult | null>;
 	/**
 	 * Reload provider-native skills inside an already-live session. Returns the
 	 * refreshed native skill commands, or null when no provider Query is live.

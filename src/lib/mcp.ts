@@ -3,7 +3,7 @@
 export type McpServerEntry = {
 	name: string;
 	displayName: string;
-	source: "cloud" | "vault" | "global";
+	source: "cloud" | "vault" | "agent" | "global";
 	providerId?: string;
 	error?: string;
 	status:
@@ -15,6 +15,11 @@ export type McpServerEntry = {
 		| "unknown";
 };
 
+export type McpProjectSource = Extract<
+	McpServerEntry["source"],
+	"vault" | "agent"
+>;
+
 const VALID_MCP_STATUSES = new Set<McpServerEntry["status"]>([
 	"connected",
 	"failed",
@@ -25,13 +30,16 @@ const VALID_MCP_STATUSES = new Set<McpServerEntry["status"]>([
 ]);
 
 /** Maps a raw MCP server object (from protocol or static config) to the UI McpServerEntry shape. */
-export function mapMcpServer(s: {
-	name: string;
-	status: string;
-	scope?: string;
-	providerId?: string;
-	error?: string;
-}): McpServerEntry {
+export function mapMcpServer(
+	s: {
+		name: string;
+		status: string;
+		scope?: string;
+		providerId?: string;
+		error?: string;
+	},
+	projectSource: McpProjectSource = "vault",
+): McpServerEntry {
 	return {
 		name: s.name,
 		displayName: s.name.startsWith("claude.ai ")
@@ -41,7 +49,7 @@ export function mapMcpServer(s: {
 			s.scope === "claudeai"
 				? "cloud"
 				: s.scope === "project"
-					? "vault"
+					? projectSource
 					: "global",
 		status: VALID_MCP_STATUSES.has(s.status as McpServerEntry["status"])
 			? (s.status as McpServerEntry["status"])

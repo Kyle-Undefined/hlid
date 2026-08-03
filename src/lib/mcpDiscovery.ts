@@ -43,7 +43,7 @@ export async function discoverMcpServers(
 ): Promise<McpServerEntry[]> {
 	try {
 		const live = await dependencies.loadLiveServers();
-		if (live.length > 0) return live.map(mapMcpServer);
+		if (live.length > 0) return live.map((server) => mapMcpServer(server));
 	} catch {
 		// The internal server may not be running yet; use static configuration.
 	}

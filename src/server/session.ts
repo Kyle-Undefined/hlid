@@ -57,6 +57,8 @@ import type {
 	ProviderFileRewindResult,
 	ProviderGoalControl,
 	ProviderGoalControlResult,
+	ProviderMcpServerApplyResult,
+	ProviderMcpServerDefinition,
 	ProviderRealtimeEvent,
 	ProviderRealtimeMode,
 	ProviderRealtimeStartResult,
@@ -463,6 +465,15 @@ export type SessionState = "idle" | "running" | "error";
 
 export type ProviderSkillReloadResult =
 	| { providerId: string; status: "reloaded"; skillCount: number }
+	| { providerId: string; status: "not-live"; reason: string };
+
+export type ProviderMcpConfigApplyResult =
+	| {
+			providerId: string;
+			status: "applied";
+			result: ProviderMcpServerApplyResult;
+			statuses: McpServerStatus[];
+	  }
 	| { providerId: string; status: "not-live"; reason: string };
 
 type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan";
@@ -1813,6 +1824,52 @@ export class SessionManager {
 			commands: skills,
 		});
 		return { providerId, status: "reloaded", skillCount: skills.length };
+	}
+
+	/**
+	 * Reconcile Hlid's canonical workspace MCP definitions through an existing
+	 * Claude Query. A cold session is deliberately deferred so this control never
+	 * creates a hidden provider process merely because Forge changed a file.
+	 */
+	// fallow-ignore-next-line unused-class-member -- Called by MCP inventory sync after Forge mutations.
+	async applyProviderMcpServers(
+		servers: ProviderMcpServerDefinition[],
+		emit: (msg: ServerMessage) => void,
+	): Promise<ProviderMcpConfigApplyResult> {
+		const providerId = this.getProviderId();
+		const session = this.agentSession;
+		if (providerId !== "claude" || !session?.setMcpServers) {
+			return {
+				providerId,
+				status: "not-live",
+				reason:
+					providerId === "claude"
+						? "This Claude session does not expose live MCP replacement."
+						: "This session is not owned by the Claude Agent SDK provider.",
+			};
+		}
+		const result = await session.setMcpServers(servers);
+		if (!result) {
+			return {
+				providerId,
+				status: "not-live",
+				reason:
+					"This Claude session has not established its native Query yet. Its next turn will load the updated MCP configuration.",
+			};
+		}
+		const statuses = (await session.mcpServerStatus?.()) ?? [];
+		this.mcpStatusByProvider.set(providerId, statuses);
+		emit({
+			type: "mcp_status",
+			provider_id: providerId,
+			...(this.getMcpControlOperations().length
+				? { operations: this.getMcpControlOperations() }
+				: {}),
+			...(this.agentCwd ? { agent_cwd: this.agentCwd } : {}),
+			...(this.currentSessionId ? { session_id: this.currentSessionId } : {}),
+			servers: statuses.map(mapMcpServer),
+		});
+		return { providerId, status: "applied", result, statuses };
 	}
 
 	/**

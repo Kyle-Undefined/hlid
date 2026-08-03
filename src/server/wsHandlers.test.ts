@@ -138,6 +138,11 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		handleAskUserQuestionResponse: vi.fn(),
 		handlePlanModeExitResponse: vi.fn(),
 		probeMcpStatus: vi.fn().mockResolvedValue(undefined),
+		applyProviderMcpServers: vi.fn().mockResolvedValue({
+			providerId: "claude",
+			status: "not-live",
+			reason: "No live query",
+		}),
 		controlMcpServer: vi
 			.fn()
 			.mockResolvedValue({ providerId: "claude", statuses: [] }),
@@ -2956,6 +2961,60 @@ describe("message — sync_mcp_list (agent_cwd)", () => {
 		).servers.map((s) => s.name);
 		expect(serverNames).toContain("image-gen");
 		expect(serverNames).toContain("search");
+	});
+
+	it("with a live Claude session: applies the canonical agent definitions", async () => {
+		writeFileSync(
+			join(agentDir, ".mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					search: { command: "bun", args: ["server.ts"] },
+				},
+			}),
+			"utf8",
+		);
+		const applyProviderMcpServers = vi.fn().mockResolvedValue({
+			providerId: "claude",
+			status: "applied",
+			result: { added: ["search"], removed: [], errors: {} },
+			statuses: [{ name: "search", status: "connected", scope: "project" }],
+		});
+		const session = makeSession({ applyProviderMcpServers });
+		const { pool, entry, runState } = wrapSession(session);
+		entry.agentCwd = agentDir;
+		pool.getAllEntries.mockReturnValue([entry][Symbol.iterator]());
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		mockSend.mockClear();
+
+		await message(
+			ws as never,
+			JSON.stringify({ type: "sync_mcp_list", agent_cwd: agentDir }),
+		);
+
+		expect(applyProviderMcpServers).toHaveBeenCalledWith(
+			[
+				{
+					name: "search",
+					config: { command: "bun", args: ["server.ts"] },
+					disabled: false,
+				},
+			],
+			expect.any(Function),
+		);
+		expect(runState.broadcast).not.toHaveBeenCalled();
+		expect(mockSend).toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({
+				type: "mcp_status",
+				servers: [
+					expect.objectContaining({
+						name: "search",
+						status: "connected",
+					}),
+				],
+			}),
+		);
 	});
 
 	it("with valid agent_cwd: marks disabled names from settings.local.json", async () => {

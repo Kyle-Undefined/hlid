@@ -4,6 +4,7 @@ import type {
 	SDKControlGetUsageResponse,
 	SDKMessage,
 	EffortLevel as SdkEffortLevel,
+	McpServerConfig as SdkMcpServerConfig,
 	ModelInfo as SdkModelInfo,
 	PermissionMode as SdkPermissionMode,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -24,6 +25,7 @@ import {
 	toHostRuntimePath,
 	toProviderRuntimePath,
 } from "../lib/paths";
+import { readProjectMcpFile } from "../lib/projectMcp";
 import type {
 	AgentEvent,
 	AgentProvider,
@@ -39,6 +41,8 @@ import type {
 	ProviderContextUsage,
 	ProviderEffortInfo,
 	ProviderFileRewindResult,
+	ProviderMcpServerApplyResult,
+	ProviderMcpServerDefinition,
 	ProviderModelInfo,
 	ProviderSavedWorkflow,
 	ProviderSkillInfo,
@@ -57,6 +61,10 @@ import { ClaudeBackgroundActivityTracker } from "./claudeBackgroundActivities";
 import { discoverClaudeProviderCapabilities } from "./claudeCapabilityDiscovery";
 import { createClaudeHistorySessionStore } from "./claudeHistorySessionStore";
 import { createClaudeHostInteractionHandlers } from "./claudeHostInteractions";
+import {
+	type PreparedClaudeMcpServers,
+	prepareClaudeMcpServers,
+} from "./claudeMcpConfig";
 import { getClaudeWarmupSnapshot } from "./claudeWarmup";
 import {
 	deleteClaudeWorkflow,
@@ -2015,6 +2023,8 @@ class ClaudeAgentSession implements AgentSession {
 	private makeQuery: (
 		input: AsyncIterable<SdkUserMessage>,
 		resumeId: string | undefined,
+		mcpServers: Record<string, SdkMcpServerConfig>,
+		disabledMcpjsonServers: string[],
 	) => SdkQuery;
 	private resumeId: string | undefined;
 	private inputStream: InputStream = new InputStream();
@@ -2036,11 +2046,15 @@ class ClaudeAgentSession implements AgentSession {
 	// total_cost_usd cumulatively for that query object. Keep the raw boundary
 	// here so every Hlid `done` event exposes only the newly incurred cost.
 	private lastProviderEstimatedCost = 0;
+	private configuredMcpServers: PreparedClaudeMcpServers;
+	private lastMcpApplyErrors: Record<string, string>;
 
 	constructor(
 		makeQuery: (
 			input: AsyncIterable<SdkUserMessage>,
 			resumeId: string | undefined,
+			mcpServers: Record<string, SdkMcpServerConfig>,
+			disabledMcpjsonServers: string[],
 		) => SdkQuery,
 		abortController: AbortController,
 		resumeId: string | undefined,
@@ -2053,6 +2067,9 @@ class ClaudeAgentSession implements AgentSession {
 		private readonly normalizeModel: (model: string) => string,
 		private readonly exposeUsageWindows: boolean,
 		private readonly exposeAccountInfo: boolean,
+		private readonly hostMcpServers: Record<string, SdkMcpServerConfig>,
+		initialMcpServers: PreparedClaudeMcpServers,
+		private readonly reservedMcpServerNames: ReadonlySet<string>,
 	) {
 		this.makeQuery = makeQuery;
 		this.abortController = abortController;
@@ -2061,6 +2078,17 @@ class ClaudeAgentSession implements AgentSession {
 			hostParams.providerId ?? "claude",
 			runtimeCwd,
 		);
+		this.configuredMcpServers = initialMcpServers;
+		this.lastMcpApplyErrors = { ...initialMcpServers.errors };
+	}
+
+	private dynamicMcpServers(
+		configured = this.configuredMcpServers,
+	): Record<string, SdkMcpServerConfig> {
+		return {
+			...configured.dynamicServers,
+			...this.hostMcpServers,
+		};
 	}
 
 	cancel(): void {
@@ -2142,7 +2170,42 @@ class ClaudeAgentSession implements AgentSession {
 
 	async mcpServerStatus(): Promise<McpServerStatus[]> {
 		if (!this.sdkQuery) return [];
-		return this.sdkQuery.mcpServerStatus() as Promise<McpServerStatus[]>;
+		const providerStatuses =
+			(await this.sdkQuery.mcpServerStatus()) as McpServerStatus[];
+		const managed = new Set(this.configuredMcpServers.managedNames);
+		const providerByName = new Map<string, McpServerStatus>();
+		for (const status of providerStatuses) {
+			if (!managed.has(status.name)) continue;
+			const current = providerByName.get(status.name);
+			// Claude may report both the disabled file-backed entry and Hlid's live
+			// dynamic entry under one name. Prefer the actionable dynamic status.
+			if (
+				!current ||
+				(current.status === "disabled" && status.status !== "disabled")
+			) {
+				providerByName.set(status.name, status);
+			}
+		}
+		const nativeStatuses = providerStatuses.filter(
+			(status) => !managed.has(status.name),
+		);
+		const disabled = new Set(this.configuredMcpServers.disabledNames);
+		const projectStatuses = this.configuredMcpServers.managedNames.map(
+			(name) => {
+				const error = this.lastMcpApplyErrors[name];
+				if (error) {
+					return { name, status: "failed" as const, scope: "project", error };
+				}
+				if (disabled.has(name)) {
+					return { name, status: "disabled" as const, scope: "project" };
+				}
+				const status = providerByName.get(name);
+				return status
+					? { ...status, scope: "project" }
+					: { name, status: "pending" as const, scope: "project" };
+			},
+		);
+		return [...nativeStatuses, ...projectStatuses];
 	}
 
 	async reconnectMcpServer(serverName: string): Promise<void> {
@@ -2157,6 +2220,30 @@ class ClaudeAgentSession implements AgentSession {
 			throw new Error("Claude session is not active");
 		}
 		await this.sdkQuery.toggleMcpServer(serverName, enabled);
+	}
+
+	async setMcpServers(
+		servers: ProviderMcpServerDefinition[],
+	): Promise<ProviderMcpServerApplyResult | null> {
+		const prepared = prepareClaudeMcpServers(
+			servers,
+			this.reservedMcpServerNames,
+		);
+		if (!this.sdkQuery) {
+			this.configuredMcpServers = prepared;
+			this.lastMcpApplyErrors = { ...prepared.errors };
+			return null;
+		}
+		const result = await this.sdkQuery.setMcpServers(
+			this.dynamicMcpServers(prepared),
+		);
+		this.configuredMcpServers = prepared;
+		this.lastMcpApplyErrors = { ...prepared.errors, ...result.errors };
+		return {
+			added: result.added,
+			removed: result.removed,
+			errors: { ...this.lastMcpApplyErrors },
+		};
 	}
 
 	async reloadSkills(): Promise<SlashCommand[] | null> {
@@ -2269,7 +2356,12 @@ class ClaudeAgentSession implements AgentSession {
 
 	private ensureSdkQuery(): void {
 		if (this.sdkQuery) return;
-		this.sdkQuery = this.makeQuery(this.inputStream.iterate(), this.resumeId);
+		this.sdkQuery = this.makeQuery(
+			this.inputStream.iterate(),
+			this.resumeId,
+			this.dynamicMcpServers(),
+			this.configuredMcpServers.managedNames,
+		);
 	}
 
 	[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
@@ -2311,7 +2403,12 @@ class ClaudeAgentSession implements AgentSession {
 					// Fresh input stream so the SDK consumes the replayed msg.
 					self.inputStream.close();
 					self.inputStream = new InputStream();
-					self.sdkQuery = self.makeQuery(self.inputStream.iterate(), undefined);
+					self.sdkQuery = self.makeQuery(
+						self.inputStream.iterate(),
+						undefined,
+						self.dynamicMcpServers(),
+						self.configuredMcpServers.managedNames,
+					);
 					if (self.firstSend) self.inputStream.push(self.firstSend);
 					yield* self.translateEvents();
 					return;
@@ -3152,6 +3249,33 @@ export class ClaudeProvider implements AgentProvider {
 		const abortController = new AbortController();
 		const sdkEnv = claudeSdkEnv(params.cwd, this.sdkEnv);
 		const hostInteractions = createClaudeHostInteractionHandlers(params);
+		const reservedMcpServerNames = new Set([
+			HLID_AGENT_NAMESPACE,
+			OBSIDIAN_AGENT_NAMESPACE,
+		]);
+		const configuredMcpServers = (() => {
+			try {
+				return prepareClaudeMcpServers(
+					readProjectMcpFile(params.cwd).servers,
+					reservedMcpServerNames,
+				);
+			} catch (error) {
+				console.error(
+					`[claude] Failed to read MCP configuration for ${params.cwd}:`,
+					error,
+				);
+				return prepareClaudeMcpServers([], reservedMcpServerNames);
+			}
+		})();
+		const hostMcpServers: Record<string, SdkMcpServerConfig> = {
+			[HLID_AGENT_NAMESPACE]: createHlidSdkServer(params),
+			[OBSIDIAN_AGENT_NAMESPACE]: createObsidianSdkServer(
+				params.permissionMode === "bypassPermissions" && !params.policyEnforced
+					? params.canUseTool
+					: undefined,
+				abortController.signal,
+			),
+		};
 
 		if (params.signal) {
 			if (params.signal.aborted) {
@@ -3166,21 +3290,17 @@ export class ClaudeProvider implements AgentProvider {
 		const makeQuery = (
 			input: AsyncIterable<SdkUserMessage>,
 			resumeId: string | undefined,
+			mcpServers: Record<string, SdkMcpServerConfig>,
+			disabledMcpjsonServers: string[],
 		): SdkQuery =>
 			query({
 				prompt: input as unknown as Parameters<typeof query>[0]["prompt"],
 				options: {
 					cwd: params.cwd,
-					mcpServers: {
-						[HLID_AGENT_NAMESPACE]: createHlidSdkServer(params),
-						[OBSIDIAN_AGENT_NAMESPACE]: createObsidianSdkServer(
-							params.permissionMode === "bypassPermissions" &&
-								!params.policyEnforced
-								? params.canUseTool
-								: undefined,
-							abortController.signal,
-						),
-					},
+					mcpServers,
+					...(disabledMcpjsonServers.length
+						? { settings: { disabledMcpjsonServers } }
+						: {}),
 					...(params.additionalDirectories?.length
 						? { additionalDirectories: params.additionalDirectories }
 						: {}),
@@ -3268,6 +3388,9 @@ export class ClaudeProvider implements AgentProvider {
 			this.normalizeModel,
 			this.exposeUsageWindows,
 			this.exposeAccountInfo,
+			hostMcpServers,
+			configuredMcpServers,
+			reservedMcpServerNames,
 		);
 	}
 

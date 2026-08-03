@@ -46,6 +46,18 @@ describe("mapMcpServer — source", () => {
 		expect(entry.source).toBe("vault");
 	});
 
+	it("maps scope=project to agent in an agent context", () => {
+		const entry = mapMcpServer(
+			{
+				name: "x",
+				status: "connected",
+				scope: "project",
+			},
+			"agent",
+		);
+		expect(entry.source).toBe("agent");
+	});
+
 	it("maps scope=undefined to global", () => {
 		const entry = mapMcpServer({ name: "x", status: "connected" });
 		expect(entry.source).toBe("global");
