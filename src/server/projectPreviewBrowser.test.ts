@@ -157,6 +157,17 @@ describe("ProjectPreviewBrowserManager", () => {
 			manager.getFrame(base.previewId, base.sessionId, first.frame_id)
 				?.frame_id,
 		).toBe(first.frame_id);
+		const frameWindow = manager.getFrameWindow(base.previewId, base.sessionId);
+		expect(frameWindow.frames).toEqual([
+			expect.objectContaining({ frame_id: first.frame_id, path: "/app" }),
+			expect.objectContaining({ frame_id: second.frame_id, path: "/app" }),
+		]);
+		expect(frameWindow.frames[0]).not.toHaveProperty("image_base64");
+		expect(frameWindow.latest_frame?.frame_id).toBe(second.frame_id);
+		expect(
+			manager.getFrameWindow(base.previewId, base.sessionId, second.frame_id)
+				.latest_frame,
+		).toBeNull();
 
 		await manager.close(base.previewId);
 		expect(

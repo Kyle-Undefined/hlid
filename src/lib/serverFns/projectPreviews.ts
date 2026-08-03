@@ -3,11 +3,16 @@ import { z } from "zod";
 import { dbFetch, dbJson, requireDbOk } from "#/lib/dbClient";
 import type {
 	ProjectPreviewAgentFrame,
+	ProjectPreviewAgentFrameWindow,
 	ProjectPreviewFeedbackResult,
 	ProjectPreviewSnapshot,
 } from "#/server/protocol";
 
-export type { ProjectPreviewAgentFrame, ProjectPreviewSnapshot };
+export type {
+	ProjectPreviewAgentFrame,
+	ProjectPreviewAgentFrameSummary,
+	ProjectPreviewSnapshot,
+} from "#/server/protocol";
 
 const sessionIdSchema = z.string().trim().min(1);
 const previewActionSchema = z.object({
@@ -17,6 +22,9 @@ const previewActionSchema = z.object({
 const agentFrameSchema = previewActionSchema.extend({
 	afterFrameId: z.string().uuid().optional(),
 	frameId: z.string().uuid().optional(),
+});
+const agentFramesSchema = previewActionSchema.extend({
+	afterFrameId: z.string().uuid().optional(),
 });
 const captureFeedbackSchema = previewActionSchema.extend({
 	path: z.string().trim().max(2_048).optional(),
@@ -31,6 +39,16 @@ const saveFeedbackSchema = previewActionSchema.extend({
 	attachmentId: z.string().uuid(),
 	comment: z.string().max(10_000).optional(),
 });
+
+function projectPreviewAgentFramePath(
+	data: z.infer<typeof agentFrameSchema>,
+	endpoint: "agent-frame" | "agent-frames",
+): string {
+	const search = new URLSearchParams({ session_id: data.sessionId });
+	if (data.afterFrameId) search.set("after_frame_id", data.afterFrameId);
+	if (data.frameId) search.set("frame_id", data.frameId);
+	return `/api/project-previews/${encodeURIComponent(data.previewId)}/${endpoint}?${search}`;
+}
 
 async function postProjectPreviewJson<T>(
 	previewId: string,
@@ -67,11 +85,16 @@ export const getProjectPreviewAgentFrameFn = createServerFn({ method: "GET" })
 	.validator((raw) => agentFrameSchema.parse(raw))
 	.handler(({ data }) =>
 		dbJson<ProjectPreviewAgentFrame | null>(
-			`/api/project-previews/${encodeURIComponent(data.previewId)}/agent-frame?session_id=${encodeURIComponent(data.sessionId)}${
-				data.afterFrameId
-					? `&after_frame_id=${encodeURIComponent(data.afterFrameId)}`
-					: ""
-			}${data.frameId ? `&frame_id=${encodeURIComponent(data.frameId)}` : ""}`,
+			projectPreviewAgentFramePath(data, "agent-frame"),
+			null,
+		),
+	);
+
+export const getProjectPreviewAgentFramesFn = createServerFn({ method: "GET" })
+	.validator((raw) => agentFramesSchema.parse(raw))
+	.handler(({ data }) =>
+		dbJson<ProjectPreviewAgentFrameWindow | null>(
+			projectPreviewAgentFramePath(data, "agent-frames"),
 			null,
 		),
 	);

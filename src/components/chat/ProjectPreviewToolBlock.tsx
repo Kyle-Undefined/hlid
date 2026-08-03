@@ -25,11 +25,8 @@ import {
 	type ProjectPreviewAction,
 	useProjectPreviewActions,
 } from "#/hooks/useProjectPreviewActions";
-import {
-	getProjectPreviewAgentFrameFn,
-	type ProjectPreviewAgentFrame,
-	type ProjectPreviewSnapshot,
-} from "#/lib/serverFns/projectPreviews";
+import { useProjectPreviewAgentFrame } from "#/hooks/useProjectPreviewAgentFrame";
+import type { ProjectPreviewSnapshot } from "#/lib/serverFns/projectPreviews";
 import type { ToolEventMessage } from "#/server/protocol";
 
 type ProjectPreviewCaptureMetadata = {
@@ -135,9 +132,29 @@ function ProjectPreviewCaptureOpener({
 	className: string;
 	children: ReactNode;
 }) {
-	const [frame, setFrame] = useState<ProjectPreviewAgentFrame | null>(null);
-	const [loading, setLoading] = useState(false);
+	const [target, setTarget] = useState<{
+		frameId: string;
+		previewId: string;
+		sessionId: string;
+	} | null>(null);
+	const [resolving, setResolving] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const {
+		frame,
+		error: frameError,
+		navigation,
+	} = useProjectPreviewAgentFrame({
+		enabled: target !== null,
+		initialFrameId: target?.frameId,
+		previewId: target?.previewId ?? "",
+		sessionId: target?.sessionId ?? "",
+	});
+	const loading = resolving || Boolean(target && !frame && !frameError);
+	useEffect(() => {
+		if (!frameError || frame) return;
+		setError(frameError);
+		setTarget(null);
+	}, [frame, frameError]);
 	const canHydrateCapture = Boolean(
 		!event.isError &&
 			isCaptureActivity(event) &&
@@ -150,7 +167,7 @@ function ProjectPreviewCaptureOpener({
 
 	const open = async () => {
 		if (!canOpen) return;
-		setLoading(true);
+		setResolving(true);
 		setError(null);
 		try {
 			let resolvedCapture = capture;
@@ -174,21 +191,15 @@ function ProjectPreviewCaptureOpener({
 			) {
 				throw new Error("This Preview action has no retained capture.");
 			}
-			const result = await getProjectPreviewAgentFrameFn({
-				data: {
-					sessionId: resolvedCapture.session_id,
-					previewId: resolvedCapture.preview_id,
-					frameId: resolvedCapture.frame_id,
-				},
+			setTarget({
+				frameId: resolvedCapture.frame_id,
+				previewId: resolvedCapture.preview_id,
+				sessionId: resolvedCapture.session_id,
 			});
-			if (!result) {
-				throw new Error("This Preview capture is no longer available.");
-			}
-			setFrame(result);
 		} catch (cause) {
 			setError(cause instanceof Error ? cause.message : String(cause));
 		} finally {
-			setLoading(false);
+			setResolving(false);
 		}
 	};
 
@@ -219,15 +230,26 @@ function ProjectPreviewCaptureOpener({
 			) : (
 				<div className={className}>{children}</div>
 			)}
-			{error && (
-				<div className="px-3 pb-2 text-[10px] text-destructive">{error}</div>
+			{(error || frameError) && (
+				<div className="px-3 pb-2 text-[10px] text-destructive">
+					{error || frameError}
+				</div>
 			)}
 			{frame &&
 				createPortal(
 					<ImageViewerModal
+						key={frame.frame_id}
 						src={`data:${frame.mime};base64,${frame.image_base64}`}
 						alt={`Preview capture at ${frame.path}`}
-						onClose={() => setFrame(null)}
+						onClose={() => setTarget(null)}
+						navigation={{
+							position: navigation.position,
+							total: navigation.total,
+							onPrevious: navigation.previous,
+							onNext: navigation.next,
+							previousLabel: "Previous Preview capture",
+							nextLabel: "Next Preview capture",
+						}}
 					/>,
 					document.body,
 				)}

@@ -115,6 +115,32 @@ describe("ImageViewerModal", () => {
 			"project-preview-mobile-settings.png",
 		);
 	});
+
+	it("renders optional previous and next image navigation", () => {
+		const onPrevious = vi.fn();
+		const onNext = vi.fn();
+		render(
+			<ImageViewerModal
+				src="x.png"
+				alt="capture"
+				onClose={vi.fn()}
+				navigation={{
+					position: 2,
+					total: 3,
+					onPrevious,
+					onNext,
+					previousLabel: "Previous Preview capture",
+					nextLabel: "Next Preview capture",
+				}}
+			/>,
+		);
+
+		fireEvent.click(screen.getByLabelText("Previous Preview capture"));
+		fireEvent.click(screen.getByLabelText("Next Preview capture"));
+		expect(onPrevious).toHaveBeenCalledOnce();
+		expect(onNext).toHaveBeenCalledOnce();
+		expect(screen.getByText("2 / 3")).toBeDefined();
+	});
 });
 
 describe("ClickableImage", () => {

@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
 	handleRelayRequest: vi.fn().mockResolvedValue(null),
 	getProjectPreview: vi.fn(),
 	getFrame: vi.fn(),
+	getFrameWindow: vi.fn(),
 	retainProjectPreviewFeedback: vi.fn(),
 	bumpDataRevision: vi.fn(),
 }));
@@ -43,6 +44,7 @@ vi.mock("./projectPreviewBrowser", () => ({
 		capture: vi.fn(),
 		control: vi.fn(),
 		getFrame: mocks.getFrame,
+		getFrameWindow: mocks.getFrameWindow,
 	},
 }));
 
@@ -478,6 +480,12 @@ describe("Project Preview capture route", () => {
 		});
 		mocks.relayTarget.mockReturnValue({ port: 5173, capability });
 		mocks.getFrame.mockReturnValue(null);
+		mocks.getFrameWindow.mockReturnValue({
+			preview_id: "7c0eea4d-f74e-45c8-8674-a535fbb4412b",
+			session_id: "session-1",
+			frames: [],
+			latest_frame: null,
+		});
 	});
 
 	it("returns only the latest in-memory Agent view frame for its owner", async () => {
@@ -546,6 +554,42 @@ describe("Project Preview capture route", () => {
 			frameId,
 		);
 		expect(await response?.json()).toMatchObject({ frame_id: frameId });
+	});
+
+	it("returns an ordered retained-frame window without repeating an unchanged PNG", async () => {
+		const frameId = "e16b1643-591f-4d67-8c22-9df105659385";
+		mocks.getFrameWindow.mockReturnValue({
+			preview_id: "7c0eea4d-f74e-45c8-8674-a535fbb4412b",
+			session_id: "session-1",
+			frames: [
+				{
+					frame_id: frameId,
+					captured_at: 10,
+					path: "/settings",
+					viewport: "desktop",
+					width: 1440,
+					height: 1000,
+					full_page: false,
+				},
+			],
+			latest_frame: null,
+		});
+		const href = `http://localhost/api/project-previews/7c0eea4d-f74e-45c8-8674-a535fbb4412b/agent-frames?session_id=session-1&after_frame_id=${frameId}`;
+		const response = await handleProjectPreviewRoute(
+			new URL(href),
+			new Request(href),
+		);
+
+		expect(response?.status).toBe(200);
+		expect(mocks.getFrameWindow).toHaveBeenCalledWith(
+			"7c0eea4d-f74e-45c8-8674-a535fbb4412b",
+			"session-1",
+			frameId,
+		);
+		expect(await response?.json()).toMatchObject({
+			frames: [{ frame_id: frameId }],
+			latest_frame: null,
+		});
 	});
 
 	it("captures only the live Preview owned by the requested session", async () => {

@@ -451,13 +451,30 @@ async function handleAgentFrameRoute({
 	req,
 }: ProjectPreviewRouteContext): Promise<Response | null> {
 	const match = url.pathname.match(
-		/^\/api\/project-previews\/([^/]+)\/agent-frame$/,
+		/^\/api\/project-previews\/([^/]+)\/agent-(frame|frames)$/,
 	);
 	if (!match || req.method !== "GET") return null;
 	const sessionId = requiredSessionId(url);
 	if (sessionId instanceof Response) return sessionId;
 	const previewId = decodeURIComponent(match[1]);
 	await inspectPreview(sessionId, previewId);
+	if (match[2] === "frames") {
+		const afterFrameId = url.searchParams.get("after_frame_id")?.trim();
+		if (afterFrameId && !z.string().uuid().safeParse(afterFrameId).success) {
+			return Response.json(
+				{ error: "after_frame_id must be a UUID" },
+				{ status: 400 },
+			);
+		}
+		return Response.json(
+			projectPreviewBrowserManager.getFrameWindow(
+				previewId,
+				sessionId,
+				afterFrameId,
+			),
+			{ headers: { "cache-control": "no-store" } },
+		);
+	}
 	const frameId = url.searchParams.get("frame_id")?.trim();
 	if (frameId && !z.string().uuid().safeParse(frameId).success) {
 		return Response.json({ error: "frame_id must be a UUID" }, { status: 400 });

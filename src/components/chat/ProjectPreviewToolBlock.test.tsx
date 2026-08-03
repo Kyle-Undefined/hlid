@@ -19,6 +19,7 @@ vi.mock("#/hooks/toolEventDetailStore", () => ({
 }));
 vi.mock("#/lib/serverFns/projectPreviews", () => ({
 	getProjectPreviewAgentFrameFn: vi.fn(async () => null),
+	getProjectPreviewAgentFramesFn: vi.fn(async () => null),
 	restartProjectPreviewFn: vi.fn(),
 	stopProjectPreviewFn: vi.fn(),
 }));
@@ -30,6 +31,7 @@ import {
 import { loadToolEventDetail } from "#/hooks/toolEventDetailStore";
 import {
 	getProjectPreviewAgentFrameFn,
+	getProjectPreviewAgentFramesFn,
 	type ProjectPreviewAgentFrame,
 	type ProjectPreviewSnapshot,
 	restartProjectPreviewFn,
@@ -50,8 +52,39 @@ afterEach(() => {
 	vi.clearAllMocks();
 	vi.mocked(getProjectPreviewAgentFrameFn).mockReset();
 	vi.mocked(getProjectPreviewAgentFrameFn).mockResolvedValue(null);
+	vi.mocked(getProjectPreviewAgentFramesFn).mockReset();
+	vi.mocked(getProjectPreviewAgentFramesFn).mockResolvedValue(null);
 	vi.mocked(loadToolEventDetail).mockReset();
 });
+
+function mockFrameHistory(frames: ProjectPreviewAgentFrame[]): void {
+	const latest = frames.at(-1);
+	if (!latest) throw new Error("Expected at least one Preview frame.");
+	vi.mocked(getProjectPreviewAgentFramesFn).mockResolvedValue({
+		preview_id: latest.preview_id,
+		session_id: latest.session_id,
+		frames: frames.map((frame) => ({
+			frame_id: frame.frame_id,
+			captured_at: frame.captured_at,
+			path: frame.path,
+			viewport: frame.viewport,
+			width: frame.width,
+			height: frame.height,
+			full_page: frame.full_page,
+			...(frame.last_action ? { last_action: frame.last_action } : {}),
+		})),
+		latest_frame: latest,
+	});
+	vi.mocked(getProjectPreviewAgentFrameFn).mockImplementation(
+		async (options) => {
+			if (!options?.data) {
+				throw new Error("Expected Project Preview frame input.");
+			}
+			const data = options.data as { frameId?: string };
+			return frames.find((frame) => frame.frame_id === data.frameId) ?? null;
+		},
+	);
+}
 
 function snapshotEvent(
 	id: string,
@@ -139,7 +172,7 @@ describe("ProjectPreviewCaptureToolBlock", () => {
 
 	it("reopens a historical capture from its tool-call action", async () => {
 		const frameId = "323e4567-e89b-12d3-a456-426614174001";
-		vi.mocked(getProjectPreviewAgentFrameFn).mockResolvedValueOnce({
+		const frame: ProjectPreviewAgentFrame = {
 			preview_id: "323e4567-e89b-12d3-a456-426614174000",
 			session_id: "historical-session",
 			path: "/history",
@@ -156,7 +189,8 @@ describe("ProjectPreviewCaptureToolBlock", () => {
 			elements: [],
 			console_messages: [],
 			failed_requests: [],
-		});
+		};
+		mockFrameHistory([frame]);
 		render(
 			<ProjectPreviewCaptureToolBlock
 				event={{
@@ -186,6 +220,89 @@ describe("ProjectPreviewCaptureToolBlock", () => {
 		);
 		expect(
 			await screen.findByRole("dialog", { name: "Image viewer" }),
+		).toBeTruthy();
+	});
+
+	it("navigates retained captures from the Raven capture viewer", async () => {
+		const previewId = "333e4567-e89b-12d3-a456-426614174000";
+		const sessionId = "raven-session";
+		const frames = [
+			{
+				frame_id: "333e4567-e89b-12d3-a456-426614174001",
+				path: "/first",
+				captured_at: 1,
+				image_base64: "first",
+			},
+			{
+				frame_id: "333e4567-e89b-12d3-a456-426614174002",
+				path: "/second",
+				captured_at: 2,
+				image_base64: "second",
+			},
+			{
+				frame_id: "333e4567-e89b-12d3-a456-426614174003",
+				path: "/third",
+				captured_at: 3,
+				image_base64: "third",
+			},
+		].map(
+			(candidate): ProjectPreviewAgentFrame => ({
+				preview_id: previewId,
+				session_id: sessionId,
+				viewport: "desktop",
+				width: 1440,
+				height: 1000,
+				full_page: false,
+				mime: "image/png",
+				size_bytes: 1024,
+				title: "History",
+				elements: [],
+				console_messages: [],
+				failed_requests: [],
+				...candidate,
+			}),
+		);
+		mockFrameHistory(frames);
+
+		render(
+			<ProjectPreviewCaptureToolBlock
+				event={{
+					type: "tool_event",
+					id: "capture-second",
+					name: "mcp__hlid__capture_project_preview",
+					input: {},
+					result: JSON.stringify({
+						preview_id: previewId,
+						session_id: sessionId,
+						path: frames[1]?.path,
+						viewport: "desktop",
+						width: 1440,
+						height: 1000,
+						full_page: false,
+						size_bytes: 1024,
+						frame_id: frames[1]?.frame_id,
+					}),
+				}}
+			/>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "View Preview capture at /second",
+			}),
+		);
+		expect(await screen.findByText("2 / 3")).toBeTruthy();
+		fireEvent.click(screen.getByLabelText("Previous Preview capture"));
+		expect(
+			await screen.findByRole("img", {
+				name: "Preview capture at /first",
+			}),
+		).toBeTruthy();
+		fireEvent.click(screen.getByLabelText("Next Preview capture"));
+		expect(
+			await screen.findByRole("img", {
+				name: "Preview capture at /second",
+			}),
 		).toBeTruthy();
 	});
 });
@@ -315,7 +432,7 @@ describe("ProjectPreviewActivityCard", () => {
 			failed_requests: [],
 			last_action: "click",
 		};
-		vi.mocked(getProjectPreviewAgentFrameFn).mockResolvedValueOnce(frame);
+		mockFrameHistory([frame]);
 
 		render(
 			<ProjectPreviewActivityCard
@@ -354,11 +471,10 @@ describe("ProjectPreviewActivityCard", () => {
 		expect(
 			await screen.findByRole("dialog", { name: "Image viewer" }),
 		).toBeTruthy();
-		expect(getProjectPreviewAgentFrameFn).toHaveBeenCalledWith({
+		expect(getProjectPreviewAgentFramesFn).toHaveBeenCalledWith({
 			data: {
 				sessionId: frame.session_id,
 				previewId: frame.preview_id,
-				frameId: frame.frame_id,
 			},
 		});
 	});
@@ -409,7 +525,7 @@ describe("ProjectPreviewActivityCard", () => {
 				],
 			}),
 		});
-		vi.mocked(getProjectPreviewAgentFrameFn).mockResolvedValueOnce(frame);
+		mockFrameHistory([frame]);
 
 		render(
 			<ProjectPreviewActivityCard
@@ -443,11 +559,10 @@ describe("ProjectPreviewActivityCard", () => {
 			frame.session_id,
 			"compacted-capture",
 		);
-		expect(getProjectPreviewAgentFrameFn).toHaveBeenCalledWith({
+		expect(getProjectPreviewAgentFramesFn).toHaveBeenCalledWith({
 			data: {
 				sessionId: frame.session_id,
 				previewId: frame.preview_id,
-				frameId: frame.frame_id,
 			},
 		});
 	});
@@ -484,7 +599,7 @@ describe("ProjectPreviewActivityCard", () => {
 				frame_id: frame.frame_id,
 			})}[image]`,
 		});
-		vi.mocked(getProjectPreviewAgentFrameFn).mockResolvedValueOnce(frame);
+		mockFrameHistory([frame]);
 
 		render(
 			<ProjectPreviewActivityCard
@@ -516,11 +631,10 @@ describe("ProjectPreviewActivityCard", () => {
 			frame.session_id,
 			"claude-capture",
 		);
-		expect(getProjectPreviewAgentFrameFn).toHaveBeenCalledWith({
+		expect(getProjectPreviewAgentFramesFn).toHaveBeenCalledWith({
 			data: {
 				sessionId: frame.session_id,
 				previewId: frame.preview_id,
-				frameId: frame.frame_id,
 			},
 		});
 	});

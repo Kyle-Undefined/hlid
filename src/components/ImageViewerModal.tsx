@@ -1,9 +1,25 @@
-import { Download, Minus, Plus, X } from "lucide-react";
+import {
+	ChevronLeft,
+	ChevronRight,
+	Download,
+	Minus,
+	Plus,
+	X,
+} from "lucide-react";
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { useDialogFocus } from "#/hooks/useDialogFocus";
 
 type ImageViewerZoom = "fit" | number;
+
+export type ImageViewerNavigation = {
+	position: number;
+	total: number;
+	onPrevious?: () => void;
+	onNext?: () => void;
+	previousLabel?: string;
+	nextLabel?: string;
+};
 
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 4;
@@ -34,11 +50,13 @@ export function ImageViewerModal({
 	alt,
 	onClose,
 	downloadFilename,
+	navigation,
 }: {
 	src: string;
 	alt: string;
 	onClose: () => void;
 	downloadFilename?: string;
+	navigation?: ImageViewerNavigation;
 }) {
 	const { dialogRef, onDialogKeyDown } =
 		useDialogFocus<HTMLDivElement>(onClose);
@@ -60,7 +78,6 @@ export function ImageViewerModal({
 			boundedZoom((current === "fit" ? 1 : current) + delta),
 		);
 	};
-
 	return (
 		// biome-ignore lint/a11y/useKeyWithClickEvents: backdrop Escape handled by inner dialog
 		// biome-ignore lint/a11y/noStaticElementInteractions: modal backdrop pattern
@@ -86,8 +103,38 @@ export function ImageViewerModal({
 				>
 					<X className="w-4 h-4" />
 				</button>
-				<fieldset className="flex min-h-8 shrink-0 items-center justify-center gap-1 border-0 pr-7">
-					<legend className="sr-only">Image zoom controls</legend>
+				<fieldset className="flex min-h-8 shrink-0 flex-wrap items-center justify-center gap-1 border-0 pr-7">
+					<legend className="sr-only">Image controls</legend>
+					{navigation && (
+						<>
+							<button
+								type="button"
+								onClick={navigation.onPrevious}
+								disabled={!navigation.onPrevious}
+								aria-label={navigation.previousLabel ?? "Previous image"}
+								className="inline-flex h-8 w-8 items-center justify-center text-muted-foreground/55 transition-colors hover:text-foreground disabled:opacity-25 disabled:hover:text-muted-foreground/55"
+							>
+								<ChevronLeft className="h-4 w-4" aria-hidden="true" />
+							</button>
+							<span
+								aria-live="polite"
+								aria-atomic="true"
+								className="min-w-10 text-center font-mono text-[9px] tabular-nums text-muted-foreground/55"
+							>
+								{navigation.position} / {navigation.total}
+							</span>
+							<button
+								type="button"
+								onClick={navigation.onNext}
+								disabled={!navigation.onNext}
+								aria-label={navigation.nextLabel ?? "Next image"}
+								className="inline-flex h-8 w-8 items-center justify-center text-muted-foreground/55 transition-colors hover:text-foreground disabled:opacity-25 disabled:hover:text-muted-foreground/55"
+							>
+								<ChevronRight className="h-4 w-4" aria-hidden="true" />
+							</button>
+							<span className="mx-1 h-4 border-l border-border" aria-hidden />
+						</>
+					)}
 					<button
 						type="button"
 						onClick={() => setZoom("fit")}
@@ -209,6 +256,7 @@ export function ClickableImage({
 	imageClassName,
 	displayWidth,
 	downloadFilename,
+	navigation,
 }: {
 	src: string;
 	alt: string;
@@ -216,6 +264,7 @@ export function ClickableImage({
 	imageClassName?: string;
 	displayWidth?: number;
 	downloadFilename?: string;
+	navigation?: ImageViewerNavigation;
 }) {
 	const [open, setOpen] = useState(false);
 	const logicalWidth =
@@ -255,10 +304,12 @@ export function ClickableImage({
 			{open &&
 				createPortal(
 					<ImageViewerModal
+						key={src}
 						src={src}
 						alt={alt}
 						onClose={() => setOpen(false)}
 						downloadFilename={downloadFilename}
+						navigation={navigation}
 					/>,
 					document.body,
 				)}

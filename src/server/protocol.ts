@@ -863,6 +863,25 @@ export type ProjectPreviewAgentFrame = {
 		| "viewport";
 };
 
+export type ProjectPreviewAgentFrameSummary = Pick<
+	ProjectPreviewAgentFrame,
+	| "frame_id"
+	| "captured_at"
+	| "path"
+	| "viewport"
+	| "width"
+	| "height"
+	| "full_page"
+	| "last_action"
+>;
+
+export type ProjectPreviewAgentFrameWindow = {
+	preview_id: string;
+	session_id: string;
+	frames: ProjectPreviewAgentFrameSummary[];
+	latest_frame: ProjectPreviewAgentFrame | null;
+};
+
 export type ProjectPreviewFeedbackResult = {
 	attachment: ChatAttachment;
 	open_url: string;

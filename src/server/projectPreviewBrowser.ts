@@ -16,7 +16,11 @@ import {
 	type ProjectPreviewBrowserSessionFactory,
 } from "./projectPreviewCdp";
 import type { ProjectPreviewCapability } from "./projectPreviewTrust";
-import type { ProjectPreviewAgentFrame } from "./protocol";
+import type {
+	ProjectPreviewAgentFrame,
+	ProjectPreviewAgentFrameSummary,
+	ProjectPreviewAgentFrameWindow,
+} from "./protocol";
 
 export type { ProjectPreviewAgentFrame } from "./protocol";
 
@@ -447,6 +451,34 @@ export class ProjectPreviewBrowserManager {
 		sessionId: string,
 	): ProjectPreviewAgentFrame | null {
 		return this.getFrame(previewId, sessionId);
+	}
+
+	getFrameWindow(
+		previewId: string,
+		sessionId: string,
+		afterFrameId?: string,
+	): ProjectPreviewAgentFrameWindow {
+		const retained = (this.frameHistory.get(previewId) ?? []).filter(
+			(frame) => frame.session_id === sessionId,
+		);
+		const latest = retained.at(-1) ?? null;
+		const frames: ProjectPreviewAgentFrameSummary[] = retained.map((frame) => ({
+			frame_id: frame.frame_id,
+			captured_at: frame.captured_at,
+			path: frame.path,
+			viewport: frame.viewport,
+			width: frame.width,
+			height: frame.height,
+			full_page: frame.full_page,
+			...(frame.last_action ? { last_action: frame.last_action } : {}),
+		}));
+		return {
+			preview_id: previewId,
+			session_id: sessionId,
+			frames,
+			latest_frame:
+				latest && latest.frame_id !== afterFrameId ? { ...latest } : null,
+		};
 	}
 
 	getFrame(

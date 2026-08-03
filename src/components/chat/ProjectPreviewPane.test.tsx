@@ -5,12 +5,14 @@ import {
 	render,
 	screen,
 	waitFor,
+	within,
 } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyProjectPreview } from "#/hooks/projectPreviewStore";
 import {
 	captureProjectPreviewFeedbackFn,
 	getProjectPreviewAgentFrameFn,
+	getProjectPreviewAgentFramesFn,
 	type ProjectPreviewAgentFrame,
 	restartProjectPreviewFn,
 	stopProjectPreviewFn,
@@ -28,17 +30,55 @@ vi.mock("#/lib/serverFns/projectPreviews", async (importOriginal) => {
 		...actual,
 		captureProjectPreviewFeedbackFn: vi.fn(),
 		getProjectPreviewAgentFrameFn: vi.fn(async () => null),
+		getProjectPreviewAgentFramesFn: vi.fn(),
 		restartProjectPreviewFn: vi.fn(),
 		saveProjectPreviewFeedbackFn: vi.fn(),
 		stopProjectPreviewFn: vi.fn(),
 	};
 });
 
+beforeEach(() => {
+	vi.mocked(getProjectPreviewAgentFrameFn).mockReset().mockResolvedValue(null);
+	vi.mocked(getProjectPreviewAgentFramesFn)
+		.mockReset()
+		.mockImplementation(async (options) => {
+			if (!options?.data) {
+				throw new Error("Expected Project Preview frame-window input.");
+			}
+			const data = options.data as {
+				previewId: string;
+				sessionId: string;
+				afterFrameId?: string;
+			};
+			const latest = await getProjectPreviewAgentFrameFn({ data });
+			return {
+				preview_id: data.previewId,
+				session_id: data.sessionId,
+				frames: latest
+					? [
+							{
+								frame_id: latest.frame_id,
+								captured_at: latest.captured_at,
+								path: latest.path,
+								viewport: latest.viewport,
+								width: latest.width,
+								height: latest.height,
+								full_page: latest.full_page,
+								...(latest.last_action
+									? { last_action: latest.last_action }
+									: {}),
+							},
+						]
+					: [],
+				latest_frame: latest,
+			};
+		});
+});
+
 afterEach(() => {
 	cleanup();
 	vi.clearAllMocks();
 	vi.unstubAllGlobals();
-	vi.mocked(getProjectPreviewAgentFrameFn).mockResolvedValue(null);
 });
 
 function preview(): ProjectPreviewSnapshot {
@@ -306,6 +346,103 @@ describe("ProjectPreviewPane", () => {
 		expect(download.getAttribute("href")).toBe("data:image/png;base64,AQID");
 		expect(download.getAttribute("download")).toBe(
 			"project-preview-mobile-settings-20260729T140506Z.png",
+		);
+	});
+
+	it("reviews retained captures in the pane and full-screen viewer", async () => {
+		const first: ProjectPreviewAgentFrame = {
+			preview_id: preview().id,
+			session_id: "session-1",
+			path: "/first",
+			viewport: "desktop",
+			width: 1440,
+			height: 1000,
+			full_page: false,
+			captured_at: 10,
+			mime: "image/png",
+			size_bytes: 3,
+			image_base64: "FIRST",
+			frame_id: "e16b1643-591f-4d67-8c22-9df105659385",
+			title: "First",
+			elements: [],
+			console_messages: [],
+			failed_requests: [],
+		};
+		const second: ProjectPreviewAgentFrame = {
+			...first,
+			path: "/second",
+			captured_at: 20,
+			image_base64: "SECOND",
+			frame_id: "f16b1643-591f-4d67-8c22-9df105659386",
+			title: "Second",
+		};
+		vi.mocked(getProjectPreviewAgentFramesFn).mockResolvedValue({
+			preview_id: preview().id,
+			session_id: "session-1",
+			frames: [first, second].map((candidate) => ({
+				frame_id: candidate.frame_id,
+				captured_at: candidate.captured_at,
+				path: candidate.path,
+				viewport: candidate.viewport,
+				width: candidate.width,
+				height: candidate.height,
+				full_page: candidate.full_page,
+			})),
+			latest_frame: second,
+		});
+		vi.mocked(getProjectPreviewAgentFrameFn).mockImplementation(
+			async (options) => {
+				if (!options?.data) {
+					throw new Error("Expected Project Preview frame input.");
+				}
+				const data = options.data as { frameId?: string };
+				return (
+					[first, second].find(
+						(candidate) => candidate.frame_id === data.frameId,
+					) ?? null
+				);
+			},
+		);
+		render(<ProjectPreviewPane preview={preview()} />);
+
+		fireEvent.click(screen.getByLabelText("Show agent view"));
+		expect(
+			await screen.findByRole("button", {
+				name: "View Agent browser at /second",
+			}),
+		).not.toBeNull();
+		expect(screen.getByTitle("2 of 2 retained captures")).not.toBeNull();
+		expect(
+			(screen.getByLabelText("Next Preview capture") as HTMLButtonElement)
+				.disabled,
+		).toBe(true);
+
+		fireEvent.click(screen.getByLabelText("Previous Preview capture"));
+		expect(
+			await screen.findByRole("button", {
+				name: "View Agent browser at /first",
+			}),
+		).not.toBeNull();
+		expect(screen.getByTitle("1 of 2 retained captures")).not.toBeNull();
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "View Agent browser at /first" }),
+		);
+		const viewer = screen.getByRole("dialog", { name: "Image viewer" });
+		expect(
+			(
+				within(viewer).getByLabelText(
+					"Previous Preview capture",
+				) as HTMLButtonElement
+			).disabled,
+		).toBe(true);
+		fireEvent.click(within(viewer).getByLabelText("Next Preview capture"));
+		await waitFor(() =>
+			expect(
+				screen
+					.getByRole("link", { name: "Download image" })
+					.getAttribute("href"),
+			).toBe("data:image/png;base64,SECOND"),
 		);
 	});
 

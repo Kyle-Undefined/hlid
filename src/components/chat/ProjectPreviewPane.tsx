@@ -1,6 +1,8 @@
 import {
 	Bot,
 	Camera,
+	ChevronLeft,
+	ChevronRight,
 	ExternalLink,
 	LoaderCircle,
 	Maximize2,
@@ -133,12 +135,15 @@ export function ProjectPreviewPane({
 	}));
 	const [surface, setSurface] = useState<"user" | "agent" | "logs">("user");
 	const isReady = preview.state === "ready";
-	const { frame: agentFrame, error: agentFrameError } =
-		useProjectPreviewAgentFrame({
-			enabled: isReady && surface === "agent",
-			previewId: preview.id,
-			sessionId: preview.session_id,
-		});
+	const {
+		frame: agentFrame,
+		error: agentFrameError,
+		navigation: agentFrameNavigation,
+	} = useProjectPreviewAgentFrame({
+		enabled: isReady && surface === "agent",
+		previewId: preview.id,
+		sessionId: preview.session_id,
+	});
 	const [viewport, setViewport] = useState<
 		"fit" | "desktop" | "tablet" | "mobile"
 	>("fit");
@@ -551,7 +556,7 @@ export function ProjectPreviewPane({
 					<div className="absolute inset-0 overflow-auto p-3">
 						{agentFrame ? (
 							<div className="mx-auto max-w-full">
-								<div className="mb-2 flex items-center justify-between gap-3 text-[9px] uppercase tracking-widest text-muted-foreground/60">
+								<div className="mb-2 flex min-h-8 items-center justify-between gap-3 text-[9px] uppercase tracking-widest text-muted-foreground/60">
 									<span className="truncate">
 										Agent view · {agentFrame.last_action ?? "observed"} ·{" "}
 										{agentFrame.viewport} ·{" "}
@@ -563,10 +568,47 @@ export function ProjectPreviewPane({
 										</span>{" "}
 										· {agentFrame.path}
 									</span>
-									<span className="shrink-0">
-										{new Date(agentFrame.captured_at).toLocaleTimeString()}
-									</span>
+									<div
+										className="flex shrink-0 items-center gap-1"
+										aria-busy={agentFrameNavigation.pending}
+									>
+										<button
+											type="button"
+											onClick={agentFrameNavigation.previous}
+											disabled={!agentFrameNavigation.previous}
+											aria-label="Previous Preview capture"
+											className="inline-flex h-8 w-8 items-center justify-center text-muted-foreground/55 transition-colors hover:text-foreground disabled:opacity-25 disabled:hover:text-muted-foreground/55"
+										>
+											<ChevronLeft className="h-4 w-4" aria-hidden="true" />
+										</button>
+										<span
+											aria-live="polite"
+											aria-atomic="true"
+											title={`${agentFrameNavigation.position} of ${agentFrameNavigation.total} retained captures`}
+											className="min-w-10 text-center font-mono text-[9px] tabular-nums text-muted-foreground/55"
+										>
+											{agentFrameNavigation.position} /{" "}
+											{agentFrameNavigation.total}
+										</span>
+										<button
+											type="button"
+											onClick={agentFrameNavigation.next}
+											disabled={!agentFrameNavigation.next}
+											aria-label="Next Preview capture"
+											className="inline-flex h-8 w-8 items-center justify-center text-muted-foreground/55 transition-colors hover:text-foreground disabled:opacity-25 disabled:hover:text-muted-foreground/55"
+										>
+											<ChevronRight className="h-4 w-4" aria-hidden="true" />
+										</button>
+										<span className="ml-1">
+											{new Date(agentFrame.captured_at).toLocaleTimeString()}
+										</span>
+									</div>
 								</div>
+								{agentFrameError && (
+									<div className="mb-2 text-[10px] text-destructive">
+										{agentFrameError}
+									</div>
+								)}
 								<ClickableImage
 									src={`data:${agentFrame.mime};base64,${agentFrame.image_base64}`}
 									alt={`Agent browser at ${agentFrame.path}`}
@@ -576,6 +618,14 @@ export function ProjectPreviewPane({
 										agentFrameCaptureSize?.width ?? agentFrame.width
 									}
 									downloadFilename={previewCaptureFilename(agentFrame)}
+									navigation={{
+										position: agentFrameNavigation.position,
+										total: agentFrameNavigation.total,
+										onPrevious: agentFrameNavigation.previous,
+										onNext: agentFrameNavigation.next,
+										previousLabel: "Previous Preview capture",
+										nextLabel: "Next Preview capture",
+									}}
 								/>
 								{(agentFrame.console_messages.length > 0 ||
 									agentFrame.failed_requests.length > 0) && (
