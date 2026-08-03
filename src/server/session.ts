@@ -1762,6 +1762,12 @@ export class SessionManager {
 		const operations: McpControlOperation[] = [];
 		if (this.agentSession?.reconnectMcpServer) operations.push("reconnect");
 		if (this.agentSession?.toggleMcpServer) operations.push("toggle");
+		if (
+			this.agentSession?.setMcpPermissionModeOverride &&
+			this.agentSession.mcpPermissionModeOverrideAvailable
+		) {
+			operations.push("permission-override");
+		}
 		return operations;
 	}
 
@@ -2106,7 +2112,11 @@ export class SessionManager {
 			sessionId: string;
 			emit: (msg: ServerMessage) => void;
 		},
-	): Promise<{ providerId: string; statuses: McpServerStatus[] }> {
+	): Promise<{
+		providerId: string;
+		statuses: McpServerStatus[];
+		warning?: string;
+	}> {
 		const provider = this.resolveProvider(this.agentCwd);
 		const session = this.agentSession;
 		if (!session) {
@@ -2114,6 +2124,7 @@ export class SessionManager {
 				`${provider.label ?? provider.providerId} MCP controls require a live session.`,
 			);
 		}
+		let warning: string | undefined;
 		if (request.action === "reconnect") {
 			if (!session.reconnectMcpServer) {
 				throw new Error(
@@ -2121,7 +2132,7 @@ export class SessionManager {
 				);
 			}
 			await session.reconnectMcpServer(request.serverName);
-		} else {
+		} else if (request.action === "enable" || request.action === "disable") {
 			if (!session.toggleMcpServer) {
 				throw new Error(
 					`${provider.label ?? provider.providerId} does not expose native MCP toggle.`,
@@ -2131,6 +2142,26 @@ export class SessionManager {
 				request.serverName,
 				request.action === "enable",
 			);
+		} else {
+			if (
+				!session.setMcpPermissionModeOverride ||
+				!session.mcpPermissionModeOverrideAvailable
+			) {
+				throw new Error(
+					`${provider.label ?? provider.providerId} does not expose a native MCP permission override in this session.`,
+				);
+			}
+			const mode =
+				request.action === "permission-default"
+					? "default"
+					: request.action === "permission-auto"
+						? "auto"
+						: null;
+			const result = await session.setMcpPermissionModeOverride(
+				request.serverName,
+				mode,
+			);
+			warning = result.warning;
 		}
 		let statuses = this.getLastMcpStatus(provider.providerId) ?? [];
 		if (session.mcpServerStatus) {
@@ -2151,7 +2182,11 @@ export class SessionManager {
 			session_id: options.sessionId,
 			servers: statuses.map(mapMcpServer),
 		});
-		return { providerId: provider.providerId, statuses };
+		return {
+			providerId: provider.providerId,
+			statuses,
+			...(warning ? { warning } : {}),
+		};
 	}
 
 	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket file_rewind dispatch.

@@ -92,6 +92,7 @@ function sdkGen(events: unknown[], mcpStatuses: unknown[] = []) {
 		mcpServerStatus: vi.fn().mockResolvedValue(mcpStatuses),
 		reconnectMcpServer: vi.fn().mockResolvedValue(undefined),
 		toggleMcpServer: vi.fn().mockResolvedValue(undefined),
+		setMcpPermissionModeOverride: vi.fn().mockResolvedValue({}),
 		setMcpServers: vi.fn().mockResolvedValue({
 			added: [],
 			removed: [],
@@ -3919,6 +3920,114 @@ describe("ClaudeProvider — MCP controls", () => {
 		await expect(session.toggleMcpServer?.("github", true)).rejects.toThrow(
 			"Claude session is not active",
 		);
+	});
+
+	it("applies and reports tighten-only per-server permission overrides", async () => {
+		const gen = sdkGen(
+			[
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+			],
+			[{ name: "github", status: "connected", scope: "project" }],
+		);
+		gen.setMcpPermissionModeOverride = vi
+			.fn()
+			.mockResolvedValueOnce({ warning: "Stored for github" })
+			.mockResolvedValue({});
+		vi.mocked(query).mockReturnValueOnce(gen);
+
+		const session = new ClaudeProvider().query(
+			baseParams({
+				permissionMode: "bypassPermissions",
+				policyEnforced: false,
+			}),
+		);
+		await session[Symbol.asyncIterator]().next();
+
+		expect(session.mcpPermissionModeOverrideAvailable).toBe(true);
+		await expect(
+			session.setMcpPermissionModeOverride?.("github", "default"),
+		).resolves.toEqual({ warning: "Stored for github" });
+		await expect(session.mcpServerStatus?.()).resolves.toEqual([
+			{
+				name: "github",
+				status: "connected",
+				scope: "project",
+				permissionModeOverride: "default",
+			},
+		]);
+		await session.setMcpPermissionModeOverride?.("github", "auto");
+		await session.setMcpPermissionModeOverride?.("github", null);
+
+		expect(gen.setMcpPermissionModeOverride).toHaveBeenNthCalledWith(
+			1,
+			"github",
+			"default",
+		);
+		expect(gen.setMcpPermissionModeOverride).toHaveBeenNthCalledWith(
+			2,
+			"github",
+			"auto",
+		);
+		expect(gen.setMcpPermissionModeOverride).toHaveBeenNthCalledWith(
+			3,
+			"github",
+			null,
+		);
+		await expect(session.mcpServerStatus?.()).resolves.toEqual([
+			{ name: "github", status: "connected", scope: "project" },
+		]);
+	});
+
+	it("keeps native MCP overrides unavailable under Hlid policy or prompting modes", async () => {
+		const policyGen = sdkGen([
+			{
+				type: "result",
+				subtype: "success",
+				total_cost_usd: 0,
+				num_turns: 1,
+				duration_ms: 100,
+				usage: { input_tokens: 10, output_tokens: 5 },
+			},
+		]);
+		vi.mocked(query).mockReturnValueOnce(policyGen);
+		const policySession = new ClaudeProvider().query(
+			baseParams({
+				permissionMode: "bypassPermissions",
+				policyEnforced: true,
+			}),
+		);
+		await policySession[Symbol.asyncIterator]().next();
+
+		expect(policySession.mcpPermissionModeOverrideAvailable).toBe(false);
+		await expect(
+			policySession.setMcpPermissionModeOverride?.("github", "default"),
+		).rejects.toThrow("Hlid policy enforcement owns MCP approvals");
+
+		const promptGen = sdkGen([
+			{
+				type: "result",
+				subtype: "success",
+				total_cost_usd: 0,
+				num_turns: 1,
+				duration_ms: 100,
+				usage: { input_tokens: 10, output_tokens: 5 },
+			},
+		]);
+		vi.mocked(query).mockReturnValueOnce(promptGen);
+		const promptSession = new ClaudeProvider().query(baseParams());
+		await promptSession[Symbol.asyncIterator]().next();
+
+		expect(promptSession.mcpPermissionModeOverrideAvailable).toBe(false);
+		await expect(
+			promptSession.setMcpPermissionModeOverride?.("github", "auto"),
+		).rejects.toThrow("require Auto-approve all");
 	});
 });
 

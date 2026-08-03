@@ -41,6 +41,8 @@ import type {
 	ProviderContextUsage,
 	ProviderEffortInfo,
 	ProviderFileRewindResult,
+	ProviderMcpPermissionModeOverride,
+	ProviderMcpPermissionModeOverrideResult,
 	ProviderMcpServerApplyResult,
 	ProviderMcpServerDefinition,
 	ProviderModelInfo,
@@ -2048,6 +2050,10 @@ class ClaudeAgentSession implements AgentSession {
 	private lastProviderEstimatedCost = 0;
 	private configuredMcpServers: PreparedClaudeMcpServers;
 	private lastMcpApplyErrors: Record<string, string>;
+	private readonly mcpPermissionModeOverrides = new Map<
+		string,
+		ProviderMcpPermissionModeOverride
+	>();
 
 	constructor(
 		makeQuery: (
@@ -2205,7 +2211,14 @@ class ClaudeAgentSession implements AgentSession {
 					: { name, status: "pending" as const, scope: "project" };
 			},
 		);
-		return [...nativeStatuses, ...projectStatuses];
+		return [...nativeStatuses, ...projectStatuses].map((status) => {
+			const permissionModeOverride = this.mcpPermissionModeOverrides.get(
+				status.name,
+			);
+			return permissionModeOverride
+				? { ...status, permissionModeOverride }
+				: status;
+		});
 	}
 
 	async reconnectMcpServer(serverName: string): Promise<void> {
@@ -2220,6 +2233,40 @@ class ClaudeAgentSession implements AgentSession {
 			throw new Error("Claude session is not active");
 		}
 		await this.sdkQuery.toggleMcpServer(serverName, enabled);
+	}
+
+	get mcpPermissionModeOverrideAvailable(): boolean {
+		return Boolean(
+			this.sdkQuery &&
+				!this.policyEnforced &&
+				this.hostParams.permissionMode === "bypassPermissions",
+		);
+	}
+
+	async setMcpPermissionModeOverride(
+		serverName: string,
+		mode: ProviderMcpPermissionModeOverride | null,
+	): Promise<ProviderMcpPermissionModeOverrideResult> {
+		if (!this.sdkQuery) {
+			throw new Error("Claude session is not active");
+		}
+		if (this.policyEnforced) {
+			throw new Error(
+				"Hlid policy enforcement owns MCP approvals for this session.",
+			);
+		}
+		if (this.hostParams.permissionMode !== "bypassPermissions") {
+			throw new Error(
+				"Claude MCP permission overrides require Auto-approve all for the live session.",
+			);
+		}
+		const result = await this.sdkQuery.setMcpPermissionModeOverride(
+			serverName,
+			mode,
+		);
+		if (mode === null) this.mcpPermissionModeOverrides.delete(serverName);
+		else this.mcpPermissionModeOverrides.set(serverName, mode);
+		return result;
 	}
 
 	async setMcpServers(

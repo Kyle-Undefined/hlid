@@ -16,6 +16,7 @@ const CONTROL_INTEGRATION = new Map<string, ProviderCapabilityIntegration>([
 	["reconnectMcpServer", "integrated"],
 	["toggleMcpServer", "integrated"],
 	["setMcpServers", "integrated"],
+	["setMcpPermissionModeOverride", "integrated"],
 	["getContextUsage", "integrated"],
 	["stopTask", "integrated"],
 	["backgroundTasks", "integrated"],
@@ -146,16 +147,24 @@ export function discoverClaudeProviderCapabilities(input: {
 		const integration = CONTROL_INTEGRATION.get(method) ?? "not-integrated";
 		const isFileRewind = method === "rewindFiles";
 		const isMcpServerApply = method === "setMcpServers";
+		const isMcpPermissionOverride = method === "setMcpPermissionModeOverride";
 		evidence.push({
 			id: providerCapabilityId(input.providerId, "sdk-control", method),
 			label: `SDK control: ${controlLabel(method)}`,
 			scope: "session",
 			support: "advertised",
 			integration,
-			readiness: isFileRewind ? "gated" : "ready",
+			readiness: isFileRewind || isMcpPermissionOverride ? "gated" : "ready",
 			source: "provider-sdk",
-			maturity: isFileRewind || isMcpServerApply ? "beta" : "unknown",
-			operations: isFileRewind ? ["preview", "rewind"] : [method],
+			maturity:
+				isFileRewind || isMcpServerApply || isMcpPermissionOverride
+					? "beta"
+					: "unknown",
+			operations: isFileRewind
+				? ["preview", "rewind"]
+				: isMcpPermissionOverride
+					? ["default", "auto", "clear"]
+					: [method],
 			...(isFileRewind
 				? {
 						reason:
@@ -166,7 +175,12 @@ export function discoverClaudeProviderCapabilities(input: {
 							reason:
 								"Hlid applies its canonical workspace MCP configuration only through existing live Claude sessions; cold sessions load the file on their next turn.",
 						}
-					: {}),
+					: isMcpPermissionOverride
+						? {
+								reason:
+									"Claude's per-server override is tighten-only and session-scoped. It is available only in a live direct session whose native mode already auto-allows MCP tools; Hlid policy enforcement remains authoritative and disables this provider control.",
+							}
+						: {}),
 		});
 	}
 	return {

@@ -116,7 +116,14 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 		request_id: id,
 		session_id: id,
 		server_name: z.string().trim().min(1).max(512),
-		action: z.enum(["reconnect", "enable", "disable"]),
+		action: z.enum([
+			"reconnect",
+			"enable",
+			"disable",
+			"permission-default",
+			"permission-auto",
+			"permission-clear",
+		]),
 	}),
 	z
 		.strictObject({

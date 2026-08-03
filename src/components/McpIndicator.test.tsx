@@ -143,4 +143,53 @@ describe("McpIndicator", () => {
 		);
 		expect(screen.getByText("Start a live Claude session.")).toBeTruthy();
 	});
+
+	it("offers Claude's tighten-only per-server approval selector", () => {
+		const onControl = vi.fn();
+		render(
+			<McpIndicator
+				servers={[
+					{
+						name: "github",
+						displayName: "GitHub",
+						source: "vault",
+						providerId: "claude",
+						status: "connected",
+						permissionModeOverride: "default",
+					},
+				]}
+				operations={["permission-override"]}
+				onControl={onControl}
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "MCP server status" }));
+		const selector = screen.getByRole("combobox", {
+			name: "MCP approval mode for GitHub",
+		});
+
+		expect((selector as HTMLSelectElement).value).toBe("default");
+		fireEvent.change(selector, { target: { value: "auto" } });
+		fireEvent.change(selector, { target: { value: "inherit" } });
+
+		expect(onControl).toHaveBeenNthCalledWith(1, "github", "permission-auto");
+		expect(onControl).toHaveBeenNthCalledWith(2, "github", "permission-clear");
+		expect(
+			screen.getByText(/only tightens Claude's native auto-approval/i),
+		).toBeTruthy();
+	});
+
+	it("explains why the native override is inactive under Hlid policy", () => {
+		render(
+			<McpIndicator
+				servers={[]}
+				operations={["reconnect"]}
+				permissionOverrideHint="Hlid policy enforcement owns MCP approvals."
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "MCP server status" }));
+
+		expect(
+			screen.getByText("Hlid policy enforcement owns MCP approvals."),
+		).toBeTruthy();
+	});
 });

@@ -39,6 +39,16 @@ export type McpServerStatus = {
 	status: "connected" | "failed" | "needs-auth" | "pending" | "disabled";
 	scope?: string;
 	error?: string;
+	/** Claude-native tighten-only override for this live MCP server. */
+	permissionModeOverride?: ProviderMcpPermissionModeOverride;
+};
+
+/** Claude's session-scoped, tighten-only MCP permission override values. */
+export type ProviderMcpPermissionModeOverride = "default" | "auto";
+
+/** Informational result from Claude's native MCP permission override control. */
+export type ProviderMcpPermissionModeOverrideResult = {
+	warning?: string;
 };
 
 /** One Hlid-managed MCP definition read from the workspace config adapter. */
@@ -626,6 +636,17 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	reconnectMcpServer?(serverName: string): Promise<void>;
 	/** Enable or disable one provider-owned MCP server inside this live session. */
 	toggleMcpServer?(serverName: string, enabled: boolean): Promise<void>;
+	/**
+	 * True only while the provider's native, tighten-only per-MCP permission
+	 * override can affect this live session. Hlid policy enforcement remains
+	 * authoritative and makes this provider control unavailable.
+	 */
+	readonly mcpPermissionModeOverrideAvailable?: boolean;
+	/** Pin or clear one provider-native, session-scoped MCP permission override. */
+	setMcpPermissionModeOverride?(
+		serverName: string,
+		mode: ProviderMcpPermissionModeOverride | null,
+	): Promise<ProviderMcpPermissionModeOverrideResult>;
 	/**
 	 * Replace the Hlid-managed MCP subset inside an existing provider session.
 	 * Returns null when the provider Query is not live; implementations must not

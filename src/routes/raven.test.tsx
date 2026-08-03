@@ -614,6 +614,67 @@ describe("Raven composed submission behavior", () => {
 		expect(screen.getByText("Claude could not reconnect github.")).toBeTruthy();
 	});
 
+	it("routes Claude MCP approval overrides and surfaces provider warnings", () => {
+		state.send.mockReturnValue(true);
+		state.permissionMode = "bypassPermissions";
+		render(<ChatPage />);
+		act(() => {
+			state.onMessage?.({
+				type: "mcp_status",
+				provider_id: "claude",
+				operations: ["reconnect", "toggle", "permission-override"],
+				servers: [
+					{
+						name: "github",
+						status: "connected",
+						scope: "project",
+						permission_mode_override: "default",
+					},
+				],
+			});
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "MCP server status" }));
+		fireEvent.change(
+			screen.getByRole("combobox", {
+				name: "MCP approval mode for github",
+			}),
+			{ target: { value: "auto" } },
+		);
+
+		const request = state.send.mock.calls
+			.map(([message]) => message)
+			.find(
+				(message) =>
+					message.type === "mcp_control" &&
+					message.action === "permission-auto",
+			);
+		expect(request).toMatchObject({
+			type: "mcp_control",
+			session_id: expect.any(String),
+			server_name: "github",
+			action: "permission-auto",
+		});
+
+		act(() => {
+			state.onMessage?.({
+				type: "mcp_control_result",
+				request_id: request.request_id,
+				session_id: request.session_id,
+				provider_id: "claude",
+				server_name: "github",
+				action: "permission-auto",
+				warning:
+					"Claude stored the override for a server that is not connected yet.",
+			});
+		});
+		expect(
+			screen.getByText(
+				"Claude stored the override for a server that is not connected yet.",
+			),
+		).toBeTruthy();
+	});
+
 	it("opens the Claude workflow manager without forwarding /workflows as a prompt", () => {
 		render(<ChatPage />);
 		fireEvent.change(screen.getByRole("combobox"), {

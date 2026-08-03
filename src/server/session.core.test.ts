@@ -965,6 +965,15 @@ describe("SessionManager — provider-native MCP controls", () => {
 				},
 			];
 		});
+		const setMcpPermissionModeOverride = vi.fn(
+			async (_name: string, mode: "default" | "auto" | null) => {
+				statuses = statuses.map((status) => ({
+					...status,
+					...(mode ? { permissionModeOverride: mode } : {}),
+				}));
+				return { warning: "Provider warning" };
+			},
+		);
 		const provider: AgentProvider = {
 			providerId: "claude",
 			label: "Claude",
@@ -987,12 +996,18 @@ describe("SessionManager — provider-native MCP controls", () => {
 					mcpServerStatus: vi.fn(async () => statuses),
 					reconnectMcpServer,
 					toggleMcpServer,
+					mcpPermissionModeOverrideAvailable: true,
+					setMcpPermissionModeOverride,
 				};
 			},
 		};
 		const sm = new SessionManager(makeConfig(), makeProviders(provider));
 		await sm.runQuery("hello", vi.fn(), { sessionId: "db-session" });
-		expect(sm.getMcpControlOperations()).toEqual(["reconnect", "toggle"]);
+		expect(sm.getMcpControlOperations()).toEqual([
+			"reconnect",
+			"toggle",
+			"permission-override",
+		]);
 
 		const emitted: ServerMessage[] = [];
 		await sm.controlMcpServer(
@@ -1003,16 +1018,31 @@ describe("SessionManager — provider-native MCP controls", () => {
 			{ serverName: "github", action: "disable" },
 			{ sessionId: "db-session", emit: (message) => emitted.push(message) },
 		);
+		const permissionResult = await sm.controlMcpServer(
+			{ serverName: "github", action: "permission-default" },
+			{ sessionId: "db-session", emit: (message) => emitted.push(message) },
+		);
 
 		expect(reconnectMcpServer).toHaveBeenCalledWith("github");
 		expect(toggleMcpServer).toHaveBeenCalledWith("github", false);
+		expect(setMcpPermissionModeOverride).toHaveBeenCalledWith(
+			"github",
+			"default",
+		);
+		expect(permissionResult.warning).toBe("Provider warning");
 		expect(sm.getLastMcpStatus("claude")?.[0].status).toBe("disabled");
 		expect(emitted.at(-1)).toMatchObject({
 			type: "mcp_status",
 			provider_id: "claude",
-			operations: ["reconnect", "toggle"],
+			operations: ["reconnect", "toggle", "permission-override"],
 			session_id: "db-session",
-			servers: [{ name: "github", status: "disabled" }],
+			servers: [
+				{
+					name: "github",
+					status: "disabled",
+					permission_mode_override: "default",
+				},
+			],
 		});
 	});
 

@@ -78,7 +78,9 @@ export function McpIndicator({
 	operations = [],
 	pendingControl,
 	controlError,
+	controlNotice,
 	controlHint,
+	permissionOverrideHint,
 	onControl,
 }: {
 	servers: McpServerEntry[];
@@ -89,7 +91,9 @@ export function McpIndicator({
 	operations?: readonly McpControlOperation[];
 	pendingControl?: { serverName: string; action: McpControlAction } | null;
 	controlError?: string | null;
+	controlNotice?: string | null;
 	controlHint?: string;
+	permissionOverrideHint?: string;
 	onControl?: (serverName: string, action: McpControlAction) => void;
 }) {
 	const [open, setOpen] = useState(false);
@@ -110,6 +114,8 @@ export function McpIndicator({
 	const status = aggregateStatus(servers);
 	const canReconnect = operations.includes("reconnect") && Boolean(onControl);
 	const canToggle = operations.includes("toggle") && Boolean(onControl);
+	const canPermissionOverride =
+		operations.includes("permission-override") && Boolean(onControl);
 
 	useEffect(() => {
 		if (
@@ -242,7 +248,7 @@ export function McpIndicator({
 													{server.error}
 												</div>
 											)}
-											{(canReconnect || canToggle) && (
+											{(canReconnect || canToggle || canPermissionOverride) && (
 												<div className="pl-3.5 mt-2 flex items-center gap-3">
 													{canReconnect && server.status !== "disabled" && (
 														<button
@@ -275,6 +281,35 @@ export function McpIndicator({
 																: toggleAction}
 														</button>
 													)}
+													{canPermissionOverride && (
+														<label className="ml-auto flex items-center gap-1.5 text-[8px] tracking-wider text-muted-foreground/45">
+															<span>approval</span>
+															<select
+																value={
+																	server.permissionModeOverride ?? "inherit"
+																}
+																disabled={controlBusy}
+																onChange={(event) => {
+																	const value = event.currentTarget.value;
+																	onControl?.(
+																		server.name,
+																		value === "default"
+																			? "permission-default"
+																			: value === "auto"
+																				? "permission-auto"
+																				: "permission-clear",
+																	);
+																}}
+																aria-label={`MCP approval mode for ${server.displayName}`}
+																title="Session inherits Claude's native mode. Ask forces per-action prompts. Auto-check uses Claude's native classifier."
+																className="border border-border/60 bg-background px-1 py-0.5 text-[8px] text-foreground/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/60 disabled:opacity-30"
+															>
+																<option value="inherit">session</option>
+																<option value="default">ask</option>
+																<option value="auto">auto-check</option>
+															</select>
+														</label>
+													)}
 												</div>
 											)}
 										</div>
@@ -285,6 +320,22 @@ export function McpIndicator({
 						{controlError && (
 							<div className="px-3 py-2 border-t border-destructive/30 text-[9px] text-destructive/70">
 								{controlError}
+							</div>
+						)}
+						{controlNotice && (
+							<div className="px-3 py-2 border-t border-status-warning/30 text-[9px] text-status-warning/70">
+								{controlNotice}
+							</div>
+						)}
+						{canPermissionOverride && (
+							<div className="px-3 py-2 border-t border-border/40 text-[8px] leading-relaxed text-muted-foreground/40">
+								Per-server approval only tightens Claude's native auto-approval.
+								It never bypasses Hlid policy.
+							</div>
+						)}
+						{permissionOverrideHint && !canPermissionOverride && (
+							<div className="px-3 py-2 border-t border-border/40 text-[8px] leading-relaxed text-muted-foreground/40">
+								{permissionOverrideHint}
 							</div>
 						)}
 						{controlHint && operations.length === 0 && (

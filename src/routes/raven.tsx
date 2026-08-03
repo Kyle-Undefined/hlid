@@ -716,6 +716,7 @@ function useRavenChatRuntime({
 		action: McpControlAction;
 	} | null>(null);
 	const [mcpControlError, setMcpControlError] = useState<string | null>(null);
+	const [mcpControlNotice, setMcpControlNotice] = useState<string | null>(null);
 	const mcpControlRequestIdRef = useRef<string | null>(null);
 	const [fileRewindTurnId, setFileRewindTurnId] = useState<string | null>(null);
 	const [fileRewindPending, setFileRewindPending] = useState<
@@ -863,6 +864,7 @@ function useRavenChatRuntime({
 			mcpControlRequestIdRef.current = null;
 			setMcpPendingControl(null);
 			setMcpControlError(message.error ?? null);
+			setMcpControlNotice(message.warning ?? null);
 		},
 		[sessionIdRef],
 	);
@@ -1019,6 +1021,7 @@ function useRavenChatRuntime({
 			mcpControlRequestIdRef.current = requestId;
 			setMcpPendingControl({ serverName, action });
 			setMcpControlError(null);
+			setMcpControlNotice(null);
 			const delivered = connection.send({
 				type: "mcp_control",
 				request_id: requestId,
@@ -1149,6 +1152,7 @@ function useRavenChatRuntime({
 		setMcpSnapshot({ providerId: null, operations: [], servers: [] });
 		setMcpPendingControl(null);
 		setMcpControlError(null);
+		setMcpControlNotice(null);
 		mcpControlRequestIdRef.current = null;
 		setFileRewindTurnId(null);
 		setFileRewindPending(null);
@@ -1237,6 +1241,7 @@ function useRavenChatRuntime({
 				: [],
 		mcpPendingControl,
 		mcpControlError,
+		mcpControlNotice,
 		controlMcp,
 		fileRewindTurnId,
 		fileRewindPending,
@@ -4262,6 +4267,7 @@ function ChatInputNotices({
 	terminalOpen,
 	onToggleTerminal,
 	activeProviderId,
+	activePermissionMode,
 	activeEffort,
 	selectSessionControls,
 	activeSkills,
@@ -4269,7 +4275,7 @@ function ChatInputNotices({
 	vaultPicker,
 }: ChatComposerProps) {
 	const { agentSkillContext, selectAgent, sessionId } = session;
-	const { messages, effort, send } = runtime;
+	const { messages, effort, permissionMode, send } = runtime;
 	const {
 		pendingAttachments,
 		uploadingCount,
@@ -4376,9 +4382,20 @@ function ChatInputNotices({
 						operations={runtime.mcpOperations}
 						pendingControl={runtime.mcpPendingControl}
 						controlError={runtime.mcpControlError}
+						controlNotice={runtime.mcpControlNotice}
 						controlHint={
 							isClaudeRuntimeProvider(activeProviderId)
 								? "Native reconnect and toggle become available while this Claude session is live."
+								: undefined
+						}
+						permissionOverrideHint={
+							isClaudeRuntimeProvider(activeProviderId)
+								? config.umbod?.enabled
+									? "Hlid policy enforcement owns MCP approvals for this session, so Claude's native per-server override is inactive."
+									: (activePermissionMode ?? permissionMode) !==
+											"bypassPermissions"
+										? "Per-server Claude approval becomes available when this live session uses Auto-approve all."
+										: undefined
 								: undefined
 						}
 						onControl={runtime.controlMcp}

@@ -440,6 +440,7 @@ async function handleMcpControl(
 			provider_id: result.providerId,
 			server_name: msg.server_name,
 			action: msg.action,
+			...(result.warning ? { warning: result.warning } : {}),
 		});
 	} catch (error) {
 		send(context.ws, {
@@ -770,6 +771,17 @@ async function handlePermissionMode(
 		return;
 	}
 	entry.runState.broadcast({ type: "status", ...entry.manager.getStatus() });
+	const cachedMcp = entry.manager.getLastMcpStatus();
+	if (cachedMcp) {
+		const providerId = entry.manager.getProviderId();
+		const operations = entry.manager.getMcpControlOperations();
+		entry.runState.broadcast({
+			type: "mcp_status",
+			...(providerId ? { provider_id: providerId } : {}),
+			...(operations.length ? { operations } : {}),
+			servers: cachedMcp.map(mapMcpServer),
+		});
+	}
 }
 
 function handlePermissionResponse(

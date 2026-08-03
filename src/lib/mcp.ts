@@ -6,6 +6,7 @@ export type McpServerEntry = {
 	source: "cloud" | "vault" | "agent" | "global";
 	providerId?: string;
 	error?: string;
+	permissionModeOverride?: "default" | "auto";
 	status:
 		| "connected"
 		| "failed"
@@ -37,6 +38,7 @@ export function mapMcpServer(
 		scope?: string;
 		providerId?: string;
 		error?: string;
+		permission_mode_override?: "default" | "auto";
 	},
 	projectSource: McpProjectSource = "vault",
 ): McpServerEntry {
@@ -56,5 +58,8 @@ export function mapMcpServer(
 			: "unknown",
 		...(s.providerId ? { providerId: s.providerId } : {}),
 		...(s.error ? { error: s.error } : {}),
+		...(s.permission_mode_override
+			? { permissionModeOverride: s.permission_mode_override }
+			: {}),
 	};
 }

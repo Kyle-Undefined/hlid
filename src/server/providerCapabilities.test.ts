@@ -333,6 +333,7 @@ describe("Claude capability discovery", () => {
 				"reconnectMcpServer",
 				"toggleMcpServer",
 				"setMcpServers",
+				"setMcpPermissionModeOverride",
 				"reloadSkills",
 				"rewindFiles",
 				"backgroundTasks",
@@ -376,6 +377,17 @@ describe("Claude capability discovery", () => {
 			readiness: "ready",
 			maturity: "beta",
 			reason: expect.stringContaining("canonical workspace MCP configuration"),
+		});
+		expect(
+			discovery.evidence.find((item) =>
+				item.id.includes("setmcppermissionmodeoverride"),
+			),
+		).toMatchObject({
+			integration: "integrated",
+			readiness: "gated",
+			maturity: "beta",
+			operations: ["default", "auto", "clear"],
+			reason: expect.stringContaining("tighten-only"),
 		});
 		expect(
 			discovery.evidence.find((item) => item.id.includes("rewindfiles")),

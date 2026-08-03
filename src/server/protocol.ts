@@ -323,6 +323,8 @@ export type McpStatusMessage = {
 		provider_id?: string;
 		scope?: string;
 		error?: string;
+		/** Claude-native tighten-only override; omission means inherit session mode. */
+		permission_mode_override?: "default" | "auto";
 	}>;
 	/** Set when this status response is scoped to a specific cwd-agent's .mcp.json. */
 	agent_cwd?: string;
@@ -330,8 +332,17 @@ export type McpStatusMessage = {
 	session_id?: string;
 };
 
-export type McpControlOperation = "reconnect" | "toggle";
-export type McpControlAction = "reconnect" | "enable" | "disable";
+export type McpControlOperation =
+	| "reconnect"
+	| "toggle"
+	| "permission-override";
+export type McpControlAction =
+	| "reconnect"
+	| "enable"
+	| "disable"
+	| "permission-default"
+	| "permission-auto"
+	| "permission-clear";
 
 export type McpControlResultMessage = {
 	type: "mcp_control_result";
@@ -341,6 +352,7 @@ export type McpControlResultMessage = {
 	server_name: string;
 	action: McpControlAction;
 	error?: string;
+	warning?: string;
 };
 
 /** A provider-native file checkpoint captured for one persisted user turn. */
@@ -566,6 +578,7 @@ export function mapMcpServer(s: {
 	providerId?: string;
 	scope?: string;
 	error?: string;
+	permissionModeOverride?: "default" | "auto";
 }): McpStatusMessage["servers"][number] {
 	return {
 		name: s.name,
@@ -573,6 +586,7 @@ export function mapMcpServer(s: {
 		provider_id: s.providerId,
 		scope: s.scope,
 		error: s.error,
+		permission_mode_override: s.permissionModeOverride,
 	};
 }
 

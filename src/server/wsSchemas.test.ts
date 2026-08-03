@@ -237,6 +237,17 @@ describe("chat WebSocket runtime schema", () => {
 			parseClientMessage(
 				JSON.stringify({
 					type: "mcp_control",
+					request_id: "request-2",
+					session_id: "session-1",
+					server_name: "github",
+					action: "permission-auto",
+				}),
+			),
+		).toMatchObject({ action: "permission-auto" });
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "mcp_control",
 					request_id: "request-1",
 					session_id: "session-1",
 					server_name: "github",

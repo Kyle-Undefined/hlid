@@ -636,6 +636,40 @@ describe("message — provider-native MCP controls", () => {
 		});
 	});
 
+	it("returns informational warnings from Claude permission overrides", async () => {
+		const controlMcpServer = vi.fn(async () => ({
+			providerId: "claude",
+			statuses: [],
+			warning: "Unknown server name",
+		}));
+		const session = makeSession({ controlMcpServer });
+		const { pool, entry } = wrapSession(session);
+		pool.findByDbSessionId.mockReturnValue(entry);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "mcp_control",
+				request_id: "request-permission",
+				session_id: "db-session",
+				server_name: "github",
+				action: "permission-auto",
+			}),
+		);
+
+		expect(mockSend).toHaveBeenCalledWith(ws, {
+			type: "mcp_control_result",
+			request_id: "request-permission",
+			session_id: "db-session",
+			provider_id: "claude",
+			server_name: "github",
+			action: "permission-auto",
+			warning: "Unknown server name",
+		});
+	});
+
 	it("fails closed instead of reviving a detached session", async () => {
 		const session = makeSession();
 		const { pool } = wrapSession(session);
@@ -1811,6 +1845,12 @@ describe("message — set_permission_mode", () => {
 				model: "test-model",
 				permission_mode: "acceptEdits",
 			}),
+			getLastMcpStatus: vi
+				.fn()
+				.mockReturnValue([
+					{ name: "github", status: "connected", scope: "project" },
+				]),
+			getMcpControlOperations: vi.fn().mockReturnValue(["reconnect"]),
 		});
 		const { pool, runState } = wrapSession(session);
 		const { message } = createWsHandlers(pool as never);
@@ -1825,6 +1865,17 @@ describe("message — set_permission_mode", () => {
 			state: "idle",
 			model: "test-model",
 			permission_mode: "acceptEdits",
+		});
+		expect(runState.broadcast).toHaveBeenCalledWith({
+			type: "mcp_status",
+			provider_id: "claude",
+			operations: ["reconnect"],
+			servers: [
+				expect.objectContaining({
+					name: "github",
+					status: "connected",
+				}),
+			],
 		});
 	});
 
