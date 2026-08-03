@@ -39,6 +39,7 @@ type PreviewEntry = {
 	bridge: LoopbackBridge | null;
 	capability: ProjectPreviewCapability | null;
 	stopping: boolean;
+	stopPromise: Promise<ProjectPreviewSnapshot> | null;
 	lifetimeTimer: ReturnType<typeof setTimeout>;
 	persistTimer: ReturnType<typeof setTimeout> | null;
 };
@@ -52,9 +53,11 @@ type LoopbackBridge = {
 const MAX_LOG_LINES = 200;
 const MAX_LOG_LINE_CHARS = 2_000;
 export const PROJECT_PREVIEW_LIFETIME_MS = 4 * 60 * 60 * 1_000;
+const PROJECT_PREVIEW_BROWSER_CLOSE_TIMEOUT_MS = 5_000;
 
 type ProjectPreviewManagerOptions = {
 	lifetimeMs?: number;
+	browserCloseTimeoutMs?: number;
 	persist?: (preview: ProjectPreviewSnapshot) => Promise<void>;
 	browserManager?: Pick<
 		typeof projectPreviewBrowserManager,
@@ -431,6 +434,23 @@ async function waitForChildExit(
 	});
 }
 
+async function waitForCleanup(
+	cleanup: Promise<void>,
+	timeoutMs: number,
+): Promise<boolean> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			cleanup.then(() => true),
+			new Promise<boolean>((resolveResult) => {
+				timer = setTimeout(() => resolveResult(false), timeoutMs);
+			}),
+		]);
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
+}
+
 async function terminateWslProcessGroup(
 	termination: ProjectPreviewWslTermination | null,
 ): Promise<void> {
@@ -491,10 +511,13 @@ export class ProjectPreviewManager {
 		typeof projectPreviewBrowserManager,
 		"close" | "closeAll"
 	>;
+	private readonly browserCloseTimeoutMs: number;
 	private readonly capabilityFactory: () => ProjectPreviewCapability;
 
 	constructor(options: ProjectPreviewManagerOptions = {}) {
 		this.lifetimeMs = options.lifetimeMs ?? PROJECT_PREVIEW_LIFETIME_MS;
+		this.browserCloseTimeoutMs =
+			options.browserCloseTimeoutMs ?? PROJECT_PREVIEW_BROWSER_CLOSE_TIMEOUT_MS;
 		this.persistSnapshot =
 			options.persist ??
 			(async (preview) => {
@@ -630,6 +653,7 @@ export class ProjectPreviewManager {
 			bridge: null,
 			capability,
 			stopping: false,
+			stopPromise: null,
 			lifetimeTimer,
 			persistTimer: null,
 		};
@@ -735,12 +759,27 @@ export class ProjectPreviewManager {
 		};
 	}
 
-	async stop(
+	stop(
 		sessionId: string,
 		previewId?: string,
 		reason = "explicit",
 	): Promise<ProjectPreviewSnapshot> {
 		const entry = this.requireSessionEntry(sessionId, previewId);
+		if (entry.stopPromise) return entry.stopPromise;
+
+		const stopPromise = this.stopEntry(entry, sessionId, reason);
+		entry.stopPromise = stopPromise;
+		void stopPromise.catch(() => {
+			if (entry.stopPromise === stopPromise) entry.stopPromise = null;
+		});
+		return stopPromise;
+	}
+
+	private async stopEntry(
+		entry: PreviewEntry,
+		sessionId: string,
+		reason: string,
+	): Promise<ProjectPreviewSnapshot> {
 		entry.stopping = true;
 		entry.snapshot.stop_reason = reason;
 		disposeProjectPreviewRelay(entry.snapshot.id);
@@ -749,7 +788,21 @@ export class ProjectPreviewManager {
 			clearTimeout(entry.persistTimer);
 			entry.persistTimer = null;
 		}
-		await this.browserManager.close(entry.snapshot.id);
+		const browserClosed = await waitForCleanup(
+			this.browserManager.close(entry.snapshot.id),
+			this.browserCloseTimeoutMs,
+		);
+		if (!browserClosed) {
+			const message = `[Hlid] Preview browser cleanup exceeded ${this.browserCloseTimeoutMs}ms; continuing shutdown.`;
+			entry.snapshot.logs.push(message);
+			if (entry.snapshot.logs.length > MAX_LOG_LINES) {
+				entry.snapshot.logs.splice(
+					0,
+					entry.snapshot.logs.length - MAX_LOG_LINES,
+				);
+			}
+			console.warn(`[project-preview] ${message}`);
+		}
 		await entry.bridge?.close();
 		entry.bridge = null;
 		await terminateProcess(entry.child, entry.wslTermination);

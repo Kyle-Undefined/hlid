@@ -412,6 +412,33 @@ describe("ProjectPreviewActivityCard", () => {
 		expect(applyProjectPreview).toHaveBeenLastCalledWith(stopped);
 	});
 
+	it("stops a Preview from Raven's inline activity controls", async () => {
+		const event = snapshotEvent(
+			"start-inline-stop",
+			"preview-inline-stop",
+			"ready",
+		);
+		const current = JSON.parse(event.result) as ProjectPreviewSnapshot;
+		const stopped = {
+			...current,
+			state: "stopped" as const,
+		};
+		vi.mocked(stopProjectPreviewFn).mockResolvedValueOnce(stopped);
+
+		render(<ProjectPreviewActivityCard events={[event]} />);
+		fireEvent.click(screen.getByLabelText("Stop preview"));
+
+		await waitFor(() =>
+			expect(stopProjectPreviewFn).toHaveBeenCalledWith({
+				data: {
+					sessionId: current.session_id,
+					previewId: current.id,
+				},
+			}),
+		);
+		expect(applyProjectPreview).toHaveBeenCalledWith(stopped);
+	});
+
 	it("opens the exact agent capture from its activity action", async () => {
 		const frame: ProjectPreviewAgentFrame = {
 			preview_id: "123e4567-e89b-12d3-a456-426614174000",

@@ -72,6 +72,51 @@ describe("ProjectPreviewManager", () => {
 		expect(browserManager.close).toHaveBeenCalledWith(preview.id);
 	});
 
+	it("shares concurrent stops and bounds stalled browser cleanup", async () => {
+		let finishBrowserClose: (() => void) | undefined;
+		const browserClose = new Promise<void>((resolve) => {
+			finishBrowserClose = resolve;
+		});
+		const browserManager = {
+			close: vi.fn(() => browserClose),
+			closeAll: vi.fn(async () => {}),
+		};
+		const manager = new ProjectPreviewManager({
+			persist,
+			browserManager,
+			browserCloseTimeoutMs: 20,
+		});
+		managers.push(manager);
+		const port = await freePort();
+		const script =
+			"require('node:http').createServer((_request,response)=>response.end('ready')).listen(" +
+			port +
+			",'127.0.0.1')";
+		const preview = await manager.start({
+			sessionId: "concurrent-stop-session",
+			runtimeCwd: process.cwd(),
+			command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+			port,
+			readinessTimeoutSeconds: 5,
+		});
+
+		const firstStop = manager.stop(preview.session_id, preview.id);
+		const secondStop = manager.stop(preview.session_id, preview.id);
+
+		expect(secondStop).toBe(firstStop);
+		expect(browserManager.close).toHaveBeenCalledTimes(1);
+		const [firstResult, secondResult] = await Promise.all([
+			firstStop,
+			secondStop,
+		]);
+		expect(firstResult).toMatchObject({ id: preview.id, state: "stopped" });
+		expect(secondResult).toEqual(firstResult);
+		expect(firstResult.logs).toContain(
+			"[Hlid] Preview browser cleanup exceeded 20ms; continuing shutdown.",
+		);
+		finishBrowserClose?.();
+	});
+
 	it("restarts a preview on the same port after the old process releases it", async () => {
 		const browserManager = {
 			close: vi.fn(async () => {}),
