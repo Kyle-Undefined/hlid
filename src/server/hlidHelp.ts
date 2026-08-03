@@ -9,6 +9,19 @@ export const HLID_OPERATING_CONTRACT_VERSION = 1 as const;
 export const MAX_HLID_OPERATING_BRIEF_CHARS = 700;
 export const MAX_HLID_HELP_RESPONSE_CHARS = 8_000;
 export const MAX_HLID_ORCHESTRATION_TARGET_CATALOG_CHARS = 2_600;
+export const MAX_HLID_PROVIDER_CAPABILITY_PAGE_SIZE = 20;
+
+export const HLID_PROVIDER_CAPABILITY_INTEGRATIONS = [
+	"integrated",
+	"provider-native",
+	"not-integrated",
+] as const;
+export const HLID_PROVIDER_CAPABILITY_AVAILABILITIES = [
+	"available",
+	"provider-native",
+	"conditional",
+	"unavailable",
+] as const;
 
 export const HLID_HELP_TOPICS = [
 	"overview",
@@ -32,6 +45,19 @@ export const HLID_HELP_TOPICS = [
 ] as const;
 
 export type HlidHelpTopic = (typeof HLID_HELP_TOPICS)[number];
+
+export type HlidProviderCapabilityQuery = {
+	query?: string;
+	capabilityId?: string;
+	integration?: (typeof HLID_PROVIDER_CAPABILITY_INTEGRATIONS)[number];
+	availability?: (typeof HLID_PROVIDER_CAPABILITY_AVAILABILITIES)[number];
+	limit?: number;
+	cursor?: string;
+};
+
+export type HlidHelpOptions = {
+	providerCapabilities?: HlidProviderCapabilityQuery;
+};
 
 export type HlidOperatingContext = {
 	providerId?: string;
@@ -204,9 +230,185 @@ function boundedJson(value: unknown, maxChars: number): string {
 	);
 }
 
+const DEFAULT_PROVIDER_CAPABILITY_PAGE_SIZE = 8;
+const MAX_PROVIDER_CAPABILITY_INDEX_IDS = 64;
+const PROVIDER_CAPABILITY_CURSOR_VERSION = 1;
+
+type NormalizedProviderCapabilityFilters = {
+	query: string;
+	capabilityId: string;
+	integration: HlidProviderCapabilityQuery["integration"] | null;
+	availability: HlidProviderCapabilityQuery["availability"] | null;
+};
+
+type ProviderCapabilityCursor = {
+	v: typeof PROVIDER_CAPABILITY_CURSOR_VERSION;
+	revision: string;
+	offset: number;
+	filters: NormalizedProviderCapabilityFilters;
+};
+
+function normalizedProviderCapabilityFilters(
+	query: HlidProviderCapabilityQuery,
+): NormalizedProviderCapabilityFilters {
+	return {
+		query: query.query?.trim().toLowerCase() ?? "",
+		capabilityId: query.capabilityId?.trim().toLowerCase() ?? "",
+		integration: query.integration ?? null,
+		availability: query.availability ?? null,
+	};
+}
+
+function isNormalizedProviderCapabilityFilters(
+	value: unknown,
+): value is NormalizedProviderCapabilityFilters {
+	if (!value || typeof value !== "object") return false;
+	const candidate = value as Record<string, unknown>;
+	return (
+		typeof candidate.query === "string" &&
+		typeof candidate.capabilityId === "string" &&
+		(candidate.integration === null ||
+			HLID_PROVIDER_CAPABILITY_INTEGRATIONS.includes(
+				candidate.integration as (typeof HLID_PROVIDER_CAPABILITY_INTEGRATIONS)[number],
+			)) &&
+		(candidate.availability === null ||
+			HLID_PROVIDER_CAPABILITY_AVAILABILITIES.includes(
+				candidate.availability as (typeof HLID_PROVIDER_CAPABILITY_AVAILABILITIES)[number],
+			))
+	);
+}
+
+function encodeProviderCapabilityCursor(
+	payload: ProviderCapabilityCursor,
+): string {
+	return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+}
+
+function decodeProviderCapabilityCursor(
+	value: string,
+): ProviderCapabilityCursor {
+	try {
+		const parsed = JSON.parse(
+			Buffer.from(value, "base64url").toString("utf8"),
+		) as Partial<ProviderCapabilityCursor>;
+		if (
+			parsed.v !== PROVIDER_CAPABILITY_CURSOR_VERSION ||
+			typeof parsed.revision !== "string" ||
+			typeof parsed.offset !== "number" ||
+			!Number.isInteger(parsed.offset) ||
+			parsed.offset < 0 ||
+			!isNormalizedProviderCapabilityFilters(parsed.filters)
+		) {
+			throw new Error("invalid cursor payload");
+		}
+		return parsed as ProviderCapabilityCursor;
+	} catch {
+		throw new Error(
+			"Invalid provider capability cursor. Restart the lookup without a cursor.",
+		);
+	}
+}
+
+function hasProviderCapabilityFilters(
+	filters: NormalizedProviderCapabilityFilters,
+): boolean {
+	return Boolean(
+		filters.query ||
+			filters.capabilityId ||
+			filters.integration ||
+			filters.availability,
+	);
+}
+
+function providerCapabilitySearchText(
+	item: NonNullable<ProviderInfo["capabilitySnapshot"]>["capabilities"][number],
+): string {
+	return [
+		item.id,
+		item.label,
+		item.scope,
+		item.support,
+		item.integration,
+		item.readiness,
+		item.availability,
+		item.maturity,
+		...(item.operations ?? []),
+		item.reason,
+	]
+		.filter((value): value is string => typeof value === "string")
+		.join(" ")
+		.toLowerCase();
+}
+
+function compactProviderCapabilityIndex(
+	snapshot: NonNullable<ProviderInfo["capabilitySnapshot"]>,
+) {
+	const categorized = {
+		notIntegrated: [] as string[],
+		integratedConditional: [] as string[],
+		integratedUnavailable: [] as string[],
+		integratedAvailable: [] as string[],
+	};
+	let providerNativeTotal = 0;
+	for (const item of [...snapshot.capabilities].sort((a, b) =>
+		a.id.localeCompare(b.id),
+	)) {
+		if (item.integration === "provider-native") {
+			providerNativeTotal++;
+			continue;
+		}
+		if (item.integration === "not-integrated") {
+			categorized.notIntegrated.push(item.id);
+		} else if (item.availability === "conditional") {
+			categorized.integratedConditional.push(item.id);
+		} else if (item.availability === "unavailable") {
+			categorized.integratedUnavailable.push(item.id);
+		} else {
+			categorized.integratedAvailable.push(item.id);
+		}
+	}
+	const actionableTotal = Object.values(categorized).reduce(
+		(total, items) => total + items.length,
+		0,
+	);
+	let remaining = MAX_PROVIDER_CAPABILITY_INDEX_IDS;
+	const boundedCategory = (items: string[]) => {
+		const selected = items
+			.slice(0, remaining)
+			.map((id) => boundedValue(id, 180));
+		remaining -= selected.length;
+		return selected;
+	};
+	const notIntegrated = boundedCategory(categorized.notIntegrated);
+	const integratedConditional = boundedCategory(
+		categorized.integratedConditional,
+	);
+	const integratedUnavailable = boundedCategory(
+		categorized.integratedUnavailable,
+	);
+	const integratedAvailable = boundedCategory(categorized.integratedAvailable);
+	const returned =
+		notIntegrated.length +
+		integratedConditional.length +
+		integratedUnavailable.length +
+		integratedAvailable.length;
+	return {
+		actionableTotal,
+		returned,
+		truncated: returned < actionableTotal,
+		providerNativeTotal,
+		notIntegrated,
+		integratedConditional,
+		integratedUnavailable,
+		integratedAvailable,
+	};
+}
+
 function focusedProviderCapabilityCatalog(
 	provider: ProviderInfo | undefined,
+	query: HlidProviderCapabilityQuery,
 	limit: number,
+	includeIndex: boolean,
 ) {
 	const snapshot = provider?.capabilitySnapshot;
 	if (!snapshot) {
@@ -219,16 +421,69 @@ function focusedProviderCapabilityCatalog(
 			items: [],
 		};
 	}
+	const requestedFilters = normalizedProviderCapabilityFilters(query);
+	const cursor = query.cursor
+		? decodeProviderCapabilityCursor(query.cursor)
+		: null;
+	if (cursor && cursor.revision !== snapshot.revision) {
+		throw new Error(
+			"Provider capability catalog changed after this cursor was issued. Restart the lookup without a cursor.",
+		);
+	}
+	if (
+		cursor &&
+		hasProviderCapabilityFilters(requestedFilters) &&
+		JSON.stringify(cursor.filters) !== JSON.stringify(requestedFilters)
+	) {
+		throw new Error(
+			"Provider capability filters changed after this cursor was issued. Repeat the original filters or use the cursor by itself.",
+		);
+	}
+	const filters = cursor?.filters ?? requestedFilters;
+	const offset = cursor?.offset ?? 0;
 	const priority = (item: (typeof snapshot.capabilities)[number]) => {
 		if (item.integration === "not-integrated") return 0;
 		if (item.availability === "conditional") return 1;
 		if (item.integration === "integrated") return 2;
 		return 3;
 	};
-	const sorted = [...snapshot.capabilities].sort(
-		(a, b) => priority(a) - priority(b) || a.id.localeCompare(b.id),
-	);
-	const items = sorted.slice(0, limit).map((item) => ({
+	const sorted = [...snapshot.capabilities]
+		.filter((item) => {
+			if (
+				filters.capabilityId &&
+				item.id.toLowerCase() !== filters.capabilityId
+			)
+				return false;
+			if (filters.integration && item.integration !== filters.integration)
+				return false;
+			if (filters.availability && item.availability !== filters.availability)
+				return false;
+			return (
+				!filters.query ||
+				providerCapabilitySearchText(item).includes(filters.query)
+			);
+		})
+		.sort((a, b) => {
+			if (filters.query) {
+				const aLabel = a.label.toLowerCase();
+				const bLabel = b.label.toLowerCase();
+				const aExact =
+					a.id.toLowerCase() === filters.query || aLabel === filters.query;
+				const bExact =
+					b.id.toLowerCase() === filters.query || bLabel === filters.query;
+				if (aExact !== bExact) return aExact ? -1 : 1;
+				const aPrefix =
+					a.id.toLowerCase().startsWith(filters.query) ||
+					aLabel.startsWith(filters.query);
+				const bPrefix =
+					b.id.toLowerCase().startsWith(filters.query) ||
+					bLabel.startsWith(filters.query);
+				if (aPrefix !== bPrefix) return aPrefix ? -1 : 1;
+			}
+			return priority(a) - priority(b) || a.id.localeCompare(b.id);
+		});
+	const pageEnd = Math.min(offset + limit, sorted.length);
+	const items = sorted.slice(offset, pageEnd).map((item) => ({
 		id: boundedValue(item.id, 180),
 		label: boundedValue(item.label, 120),
 		scope: item.scope,
@@ -246,6 +501,15 @@ function focusedProviderCapabilityCatalog(
 			: {}),
 		...(item.reason ? { reason: boundedValue(item.reason, 180) } : {}),
 	}));
+	const nextCursor =
+		limit > 0 && pageEnd < sorted.length
+			? encodeProviderCapabilityCursor({
+					v: PROVIDER_CAPABILITY_CURSOR_VERSION,
+					revision: snapshot.revision,
+					offset: pageEnd,
+					filters,
+				})
+			: undefined;
 	return {
 		source: "live-provider-capability-catalog" as const,
 		snapshot: snapshot.status,
@@ -255,9 +519,23 @@ function focusedProviderCapabilityCatalog(
 			? { context: { cwd: boundedValue(snapshot.context.cwd, 300) } }
 			: {}),
 		total: snapshot.capabilities.length,
+		matched: sorted.length,
 		returned: items.length,
-		truncated: items.length < snapshot.capabilities.length,
+		truncated: offset > 0 || pageEnd < sorted.length,
+		offset,
+		limit,
 		items,
+		...(nextCursor ? { nextCursor } : {}),
+		...(includeIndex && !cursor && !hasProviderCapabilityFilters(filters)
+			? { index: compactProviderCapabilityIndex(snapshot) }
+			: {}),
+		lookup: {
+			filters: ["query", "capability_id", "integration", "availability"],
+			pagination:
+				"Pass nextCursor back as cursor; it retains the filters and is valid only for this catalog revision.",
+			omission:
+				"Omission from a truncated page or compact index is not evidence that a capability is unavailable.",
+		},
 		...(snapshot.issues?.length
 			? {
 					issues: snapshot.issues
@@ -271,6 +549,7 @@ function focusedProviderCapabilityCatalog(
 export function buildHlidHelpResponse(
 	topic: HlidHelpTopic,
 	context: HlidOperatingContext,
+	options: HlidHelpOptions = {},
 ): string {
 	const manifest = buildHlidCapabilityManifest(context);
 	const capability =
@@ -291,16 +570,28 @@ export function buildHlidHelpResponse(
 		relatedTopics: manifest.helpTopics.filter((item) => item !== topic),
 	};
 	if (topic === "providers") {
-		for (let limit = 8; limit >= 0; limit--) {
-			const response = JSON.stringify({
-				...shared,
-				providerCapabilities: focusedProviderCapabilityCatalog(
-					context.providerSnapshot,
-					limit,
-				),
-				...tail,
-			});
-			if (response.length <= MAX_HLID_HELP_RESPONSE_CHARS) return response;
+		const providerQuery = options.providerCapabilities ?? {};
+		const requestedLimit = Math.max(
+			1,
+			Math.min(
+				MAX_HLID_PROVIDER_CAPABILITY_PAGE_SIZE,
+				providerQuery.limit ?? DEFAULT_PROVIDER_CAPABILITY_PAGE_SIZE,
+			),
+		);
+		for (const includeIndex of [true, false]) {
+			for (let limit = requestedLimit; limit >= 0; limit--) {
+				const response = JSON.stringify({
+					...shared,
+					providerCapabilities: focusedProviderCapabilityCatalog(
+						context.providerSnapshot,
+						providerQuery,
+						limit,
+						includeIndex,
+					),
+					...tail,
+				});
+				if (response.length <= MAX_HLID_HELP_RESPONSE_CHARS) return response;
+			}
 		}
 	}
 	if (topic !== "orchestration") {

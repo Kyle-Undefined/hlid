@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { ProviderCapabilityDescriptor } from "../lib/providerCapabilityTypes";
 import { runtimeEnvironments } from "./hlidCapabilityManifest";
 import {
 	buildHlidCapabilityManifest,
@@ -6,10 +7,51 @@ import {
 	buildHlidOperatingBriefResult,
 	HLID_HELP_TOPICS,
 	HLID_OPERATING_CONTRACT_VERSION,
+	type HlidOperatingContext,
 	MAX_HLID_HELP_RESPONSE_CHARS,
 	MAX_HLID_OPERATING_BRIEF_CHARS,
 	MAX_HLID_ORCHESTRATION_TARGET_CATALOG_CHARS,
 } from "./hlidHelp";
+
+function providerCapability(
+	overrides: Partial<ProviderCapabilityDescriptor> &
+		Pick<ProviderCapabilityDescriptor, "id" | "label">,
+): ProviderCapabilityDescriptor {
+	return {
+		scope: "session",
+		support: "advertised",
+		integration: "integrated",
+		readiness: "ready",
+		source: "provider-runtime",
+		availability: "available",
+		...overrides,
+	};
+}
+
+function providerHelpContext(
+	capabilities: ProviderCapabilityDescriptor[],
+	revision = "v1-provider-test",
+): HlidOperatingContext {
+	return {
+		providerId: "codex",
+		sessionId: "session-1",
+		providerSnapshot: {
+			id: "codex",
+			label: "Codex",
+			available: true,
+			capabilitySnapshot: {
+				contractVersion: 1,
+				providerId: "codex",
+				status: "current",
+				source: "live",
+				revision,
+				observedAt: 1,
+				context: { cwd: "/work/project" },
+				capabilities,
+			},
+		},
+	};
+}
 
 describe("Hlid operating guidance", () => {
 	it.each([
@@ -891,6 +933,145 @@ describe("Hlid operating guidance", () => {
 			integration: "not-integrated",
 			availability: "unavailable",
 		});
+		expect(response.providerCapabilities.index).toMatchObject({
+			actionableTotal: 2,
+			providerNativeTotal: 0,
+			notIntegrated: ["claude:sdk-control:rewindfiles"],
+			integratedAvailable: ["claude:sdk-control:interrupt"],
+		});
+		expect(response.providerCapabilities.lookup.omission).toContain(
+			"not evidence",
+		);
+	});
+
+	it("indexes and retrieves a capability omitted from the default detail page", () => {
+		const capabilities = [
+			...Array.from({ length: 3 }, (_, index) =>
+				providerCapability({
+					id: `codex:not-integrated:${index}`,
+					label: `Not integrated ${index}`,
+					integration: "not-integrated",
+					availability: "unavailable",
+				}),
+			),
+			...Array.from({ length: 4 }, (_, index) =>
+				providerCapability({
+					id: `codex:conditional:${index}`,
+					label: `Conditional ${index}`,
+					readiness: "gated",
+					availability: "conditional",
+				}),
+			),
+			providerCapability({
+				id: "codex:collaboration-mode:default",
+				label: "Default",
+			}),
+			providerCapability({
+				id: "codex:collaboration-mode:plan",
+				label: "Plan",
+				operations: ["select"],
+			}),
+		];
+		const context = providerHelpContext(capabilities);
+		const defaultPage = JSON.parse(buildHlidHelpResponse("providers", context));
+
+		expect(defaultPage.providerCapabilities.total).toBe(9);
+		expect(
+			defaultPage.providerCapabilities.items.some(
+				(item: { id: string }) => item.id === "codex:collaboration-mode:plan",
+			),
+		).toBe(false);
+		expect(
+			defaultPage.providerCapabilities.index.integratedAvailable,
+		).toContain("codex:collaboration-mode:plan");
+		expect(JSON.stringify(defaultPage).length).toBeLessThanOrEqual(
+			MAX_HLID_HELP_RESPONSE_CHARS,
+		);
+
+		const search = JSON.parse(
+			buildHlidHelpResponse("providers", context, {
+				providerCapabilities: { query: "plan" },
+			}),
+		);
+		expect(search.providerCapabilities).toMatchObject({
+			total: 9,
+			matched: 1,
+			returned: 1,
+			truncated: false,
+		});
+		expect(search.providerCapabilities.items[0]).toMatchObject({
+			id: "codex:collaboration-mode:plan",
+			integration: "integrated",
+			availability: "available",
+		});
+		expect(search.providerCapabilities.index).toBeUndefined();
+
+		const exact = JSON.parse(
+			buildHlidHelpResponse("providers", context, {
+				providerCapabilities: {
+					capabilityId: "codex:collaboration-mode:plan",
+				},
+			}),
+		);
+		expect(exact.providerCapabilities.items).toEqual([
+			expect.objectContaining({ label: "Plan" }),
+		]);
+	});
+
+	it("pages filtered capabilities with a revision-bound self-contained cursor", () => {
+		const capabilities = [
+			providerCapability({ id: "codex:available:a", label: "Available A" }),
+			providerCapability({ id: "codex:available:b", label: "Available B" }),
+			providerCapability({ id: "codex:available:c", label: "Available C" }),
+		];
+		const context = providerHelpContext(capabilities, "v1-cursor-a");
+		const first = JSON.parse(
+			buildHlidHelpResponse("providers", context, {
+				providerCapabilities: {
+					integration: "integrated",
+					availability: "available",
+					limit: 1,
+				},
+			}),
+		);
+		expect(first.providerCapabilities).toMatchObject({
+			matched: 3,
+			returned: 1,
+			offset: 0,
+			truncated: true,
+		});
+		expect(first.providerCapabilities.nextCursor).toEqual(expect.any(String));
+
+		const second = JSON.parse(
+			buildHlidHelpResponse("providers", context, {
+				providerCapabilities: {
+					cursor: first.providerCapabilities.nextCursor,
+					limit: 1,
+				},
+			}),
+		);
+		expect(second.providerCapabilities).toMatchObject({
+			matched: 3,
+			returned: 1,
+			offset: 1,
+			truncated: true,
+		});
+		expect(second.providerCapabilities.items[0].id).toBe("codex:available:b");
+		expect(second.providerCapabilities.nextCursor).not.toBe(
+			first.providerCapabilities.nextCursor,
+		);
+
+		expect(() =>
+			buildHlidHelpResponse(
+				"providers",
+				providerHelpContext(capabilities, "v1-cursor-b"),
+				{
+					providerCapabilities: {
+						cursor: first.providerCapabilities.nextCursor,
+					},
+				},
+			),
+		).toThrow(/catalog changed/i);
 	});
 
 	it("removes provider-owned actions when the live provider is unavailable", () => {

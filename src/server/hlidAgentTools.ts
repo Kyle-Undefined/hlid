@@ -32,7 +32,10 @@ import {
 import {
 	buildHlidHelpResponse,
 	HLID_HELP_TOPICS,
+	HLID_PROVIDER_CAPABILITY_AVAILABILITIES,
+	HLID_PROVIDER_CAPABILITY_INTEGRATIONS,
 	type HlidOperatingContext,
+	MAX_HLID_PROVIDER_CAPABILITY_PAGE_SIZE,
 } from "./hlidHelp";
 
 export const HLID_AGENT_NAMESPACE = "hlid";
@@ -81,9 +84,37 @@ const previewCapture = previewTarget.extend({
 });
 
 export const hlidAgentSchemas = {
-	hlid_help: z.object({
-		topic: z.enum(HLID_HELP_TOPICS).optional(),
-	}),
+	hlid_help: z
+		.object({
+			topic: z.enum(HLID_HELP_TOPICS).optional(),
+			query: z.string().trim().min(1).max(200).optional(),
+			capability_id: z.string().trim().min(1).max(240).optional(),
+			integration: z.enum(HLID_PROVIDER_CAPABILITY_INTEGRATIONS).optional(),
+			availability: z.enum(HLID_PROVIDER_CAPABILITY_AVAILABILITIES).optional(),
+			limit: z
+				.number()
+				.int()
+				.min(1)
+				.max(MAX_HLID_PROVIDER_CAPABILITY_PAGE_SIZE)
+				.optional(),
+			cursor: z.string().trim().min(1).max(1_000).optional(),
+		})
+		.superRefine((value, context) => {
+			const hasProviderLookup = Boolean(
+				value.query ||
+					value.capability_id ||
+					value.integration ||
+					value.availability ||
+					value.limit ||
+					value.cursor,
+			);
+			if (hasProviderLookup && value.topic !== "providers") {
+				context.addIssue({
+					code: "custom",
+					message: "Provider capability lookup fields require topic=providers.",
+				});
+			}
+		}),
 	hlid_api: z.object({
 		query: z.string().trim().max(200).optional(),
 		method: z.enum(["GET", "POST", "PATCH", "DELETE"]).optional(),
@@ -189,7 +220,7 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 	{
 		name: "hlid_help",
 		description:
-			"Return bounded, versioned operating guidance for the Hlid capabilities available in the active provider, environment, permission mode, workspace, and session. Omit topic for the live capability overview, or request one focused topic. Use this instead of guessing cross-provider behavior or loading a static Hlid manual.",
+			"Return bounded, versioned operating guidance for the Hlid capabilities available in the active provider, environment, permission mode, workspace, and session. Omit topic for the live capability overview, or request one focused topic. Provider capability help supports exact lookup, search, status filters, and revision-bound pagination so a truncated page never has to be treated as the whole catalog. Use this instead of guessing cross-provider behavior or loading a static Hlid manual.",
 		readOnly: true,
 		deferLoading: true,
 		searchHint:
@@ -202,6 +233,37 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 					enum: [...HLID_HELP_TOPICS],
 					description:
 						"Focused help topic. Omit for the current capability overview.",
+				},
+				query: {
+					type: "string",
+					description:
+						"With topic=providers, search capability IDs, labels, operations, state, and reasons.",
+				},
+				capability_id: {
+					type: "string",
+					description:
+						"With topic=providers, retrieve one exact capability ID from the full active-provider snapshot.",
+				},
+				integration: {
+					type: "string",
+					enum: [...HLID_PROVIDER_CAPABILITY_INTEGRATIONS],
+					description:
+						"With topic=providers, filter by Hlid integration state.",
+				},
+				availability: {
+					type: "string",
+					enum: [...HLID_PROVIDER_CAPABILITY_AVAILABILITIES],
+					description:
+						"With topic=providers, filter by resolved live availability.",
+				},
+				limit: {
+					type: "number",
+					description: `With topic=providers, request 1-${MAX_HLID_PROVIDER_CAPABILITY_PAGE_SIZE} matching rows. The response budget may return fewer.`,
+				},
+				cursor: {
+					type: "string",
+					description:
+						"With topic=providers, continue from nextCursor. The cursor retains filters and fails if the catalog revision changes.",
 				},
 			},
 			additionalProperties: false,
@@ -1452,6 +1514,16 @@ const hlidAgentToolHandlers = {
 		return buildHlidHelpResponse(
 			parsed.topic ?? "overview",
 			await liveHlidOperatingContext(context),
+			{
+				providerCapabilities: {
+					query: parsed.query,
+					capabilityId: parsed.capability_id,
+					integration: parsed.integration,
+					availability: parsed.availability,
+					limit: parsed.limit,
+					cursor: parsed.cursor,
+				},
+			},
 		);
 	},
 	hlid_api: async (input) => {

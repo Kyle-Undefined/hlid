@@ -101,6 +101,7 @@ export const TOPIC_GUIDANCE: Record<HlidHelpTopic, string[]> = {
 	],
 	providers: [
 		"Provider-native operations remain native and capability-gated.",
+		"The default provider item list is a bounded priority page, not the complete catalog. Omission is not evidence of unavailability; use query, capability_id, state filters, or nextCursor to retrieve the full live snapshot on demand.",
 		"Never present transcript replay as an exact fork or a prompt convention as a structured provider operation.",
 		"When a Raven session changes provider, Hlid can supply a bounded visible-transcript handoff. Native hidden context does not cross that boundary.",
 		"Compaction and working-tree review use structured provider activity only when the active provider advertises support.",

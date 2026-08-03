@@ -85,6 +85,42 @@ describe("Hlid agent tools", () => {
 		for (const topic of HLID_HELP_TOPICS) {
 			expect(hlidAgentSchemas.hlid_help.parse({ topic })).toEqual({ topic });
 		}
+		expect(
+			hlidAgentSchemas.hlid_help.parse({
+				topic: "providers",
+				query: "plan",
+				capability_id: "codex:collaboration-mode:plan",
+				integration: "integrated",
+				availability: "available",
+				limit: 5,
+				cursor: "opaque-cursor",
+			}),
+		).toMatchObject({
+			topic: "providers",
+			query: "plan",
+			capability_id: "codex:collaboration-mode:plan",
+			integration: "integrated",
+			availability: "available",
+			limit: 5,
+			cursor: "opaque-cursor",
+		});
+		expect(() =>
+			hlidAgentSchemas.hlid_help.parse({ topic: "mcp", query: "plan" }),
+		).toThrow(/topic=providers/i);
+		expect(helpSpec?.inputSchema.properties).toMatchObject({
+			query: { type: "string" },
+			capability_id: { type: "string" },
+			integration: {
+				type: "string",
+				enum: ["integrated", "provider-native", "not-integrated"],
+			},
+			availability: {
+				type: "string",
+				enum: ["available", "provider-native", "conditional", "unavailable"],
+			},
+			limit: { type: "number" },
+			cursor: { type: "string" },
+		});
 	});
 
 	it("exposes deferred orchestration, Relic, and Project Preview capabilities", () => {
@@ -788,6 +824,90 @@ describe("Hlid agent tools", () => {
 		expect(db.dbFetch).toHaveBeenCalledWith(
 			"/providers?host_capabilities=1&provider_capabilities=1&capability_cwd=%5C%5Cwsl.localhost%5CUbuntu-24.04%5Chome%5Ckyle%5Cdevelopment%5Crepos%5Chlid&provider_capabilities_wait=1",
 		);
+	});
+
+	it("retrieves an omitted provider capability through the agent help tool", async () => {
+		db.dbFetch.mockImplementation((path: string) => {
+			if (path === "/db/session-row?id=session-1") {
+				return Promise.resolve(
+					Response.json({
+						provider_id: "codex",
+						agent_cwd: "/work/project",
+					}),
+				);
+			}
+			if (path.startsWith("/providers?")) {
+				return Promise.resolve(
+					Response.json({
+						providers: [
+							{
+								id: "codex",
+								label: "Codex",
+								available: true,
+								models: [],
+								capabilitySnapshot: {
+									contractVersion: 1,
+									providerId: "codex",
+									status: "current",
+									source: "live",
+									revision: "v1-query-test",
+									observedAt: 1,
+									capabilities: [
+										{
+											id: "codex:collaboration-mode:default",
+											label: "Default",
+											scope: "session",
+											support: "advertised",
+											integration: "integrated",
+											readiness: "ready",
+											source: "provider-runtime",
+											availability: "available",
+										},
+										{
+											id: "codex:collaboration-mode:plan",
+											label: "Plan",
+											scope: "session",
+											support: "advertised",
+											integration: "integrated",
+											readiness: "ready",
+											source: "provider-runtime",
+											availability: "available",
+											operations: ["select"],
+										},
+									],
+								},
+							},
+						],
+					}),
+				);
+			}
+			return Promise.resolve(Response.json({}));
+		});
+
+		const result = JSON.parse(
+			await executeHlidAgentTool(
+				"hlid_help",
+				{ topic: "providers", query: "plan" },
+				{
+					providerId: "codex",
+					runtimeCwd: "/work/project",
+					sessionId: "session-1",
+				},
+			),
+		);
+
+		expect(result.providerCapabilities).toMatchObject({
+			total: 2,
+			matched: 1,
+			returned: 1,
+			truncated: false,
+		});
+		expect(result.providerCapabilities.items).toEqual([
+			expect.objectContaining({
+				id: "codex:collaboration-mode:plan",
+				availability: "available",
+			}),
+		]);
 	});
 
 	it("keeps Windows host bridges available to a WSL-scoped session", async () => {
