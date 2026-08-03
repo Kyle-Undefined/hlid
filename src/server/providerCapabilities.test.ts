@@ -329,7 +329,7 @@ describe("Claude capability discovery", () => {
 			discovery.evidence.find((item) =>
 				item.operations?.includes("backgroundTasks"),
 			),
-		).toMatchObject({ integration: "not-integrated" });
+		).toMatchObject({ integration: "integrated", readiness: "ready" });
 		expect(
 			discovery.evidence.find((item) => item.id.includes("mcp-elicitation")),
 		).toMatchObject({

@@ -41,6 +41,7 @@ vi.mock("./ChatMessageRow", () => ({
 		queueState,
 		activityOpen,
 		onToggleActivity,
+		onBackgroundActivity,
 		onSelectTool,
 		groupedProjectPreviewEventIds,
 		historicalProjectPreviewGroups,
@@ -56,6 +57,7 @@ vi.mock("./ChatMessageRow", () => ({
 		queueState?: { kind: string };
 		activityOpen?: boolean;
 		onToggleActivity?: (responseId: string) => void;
+		onBackgroundActivity?: () => void;
 		onSelectTool?: (
 			responseId: string,
 			event: import("#/server/protocol").ToolEventMessage,
@@ -117,6 +119,11 @@ vi.mock("./ChatMessageRow", () => ({
 					<button type="button" onClick={() => onToggleActivity?.(message.id)}>
 						Toggle activity {message.id}
 					</button>
+					{onBackgroundActivity && (
+						<button type="button" onClick={onBackgroundActivity}>
+							Background running tools
+						</button>
+					)}
 					{message.toolEvents.map((event) => (
 						<button
 							key={`inspect-${event.id}`}
@@ -260,6 +267,7 @@ type RenderListArgs = {
 	hasOlderHistory?: boolean;
 	isLoadingOlderHistory?: boolean;
 	onLoadOlderHistory?: () => Promise<number>;
+	onBackgroundActivity?: () => void;
 };
 
 function listElement(args: RenderListArgs) {
@@ -274,6 +282,7 @@ function listElement(args: RenderListArgs) {
 			hasOlderHistory={args.hasOlderHistory}
 			isLoadingOlderHistory={args.isLoadingOlderHistory}
 			onLoadOlderHistory={args.onLoadOlderHistory}
+			onBackgroundActivity={args.onBackgroundActivity}
 			handleDecide={vi.fn()}
 			handleSubmitAnswers={vi.fn()}
 			handlePlanDecide={vi.fn()}
@@ -291,6 +300,33 @@ function renderList(args: RenderListArgs) {
 }
 
 describe("MessageList — orphan queue rendering", () => {
+	it("routes background control only into the streaming assistant activity", () => {
+		const onBackgroundActivity = vi.fn();
+		const active = {
+			...assistantMsg("active", 1),
+			streaming: true,
+		};
+		const view = renderList({
+			messages: [active],
+			onBackgroundActivity,
+		});
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Background running tools" }),
+		);
+		expect(onBackgroundActivity).toHaveBeenCalledOnce();
+
+		view.rerender(
+			listElement({
+				messages: [{ ...active, streaming: false }],
+				onBackgroundActivity,
+			}),
+		);
+		expect(
+			screen.queryByRole("button", { name: "Background running tools" }),
+		).toBeNull();
+	});
+
 	it("keeps an expanded visualization open when a normal follow-up starts", () => {
 		const message = visualizationAssistantMsg(
 			"visualization",

@@ -127,12 +127,14 @@ export function ProviderBackgroundActivityPanel({
 		panelOpenOverrides.set(sessionId, next);
 		setOpenOverride(next);
 	};
-	const terminate = (activityId: string) => {
+	const stop = (activity: ProviderBackgroundActivity) => {
+		const action = activity.capabilities.terminate ? "terminate" : "stop";
+		const activityId = activity.activityId;
 		setBusy(activityId);
 		if (
 			!send({
 				type: "background_activity_control",
-				action: "terminate",
+				action,
 				activity_id: activityId,
 				session_id: session?.session_id ?? sessionId,
 			})
@@ -240,10 +242,11 @@ export function ProviderBackgroundActivityPanel({
 										)}
 									</div>
 									{activity.status === "running" &&
-										activity.capabilities.terminate && (
+										(activity.capabilities.stop ||
+											activity.capabilities.terminate) && (
 											<button
 												type="button"
-												onClick={() => terminate(activity.activityId)}
+												onClick={() => stop(activity)}
 												disabled={busy !== null}
 												aria-label="Stop background activity"
 												className="rounded p-1 text-muted-foreground/60 hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"

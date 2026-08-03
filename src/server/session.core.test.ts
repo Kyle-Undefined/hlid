@@ -604,6 +604,10 @@ describe("SessionManager — provider background activity", () => {
 			"sess-1",
 			[running],
 		);
+		await sm.controlProviderBackgroundActivity({ action: "background" });
+		expect(controlBackgroundActivity).toHaveBeenCalledWith({
+			action: "background",
+		});
 
 		await sm.controlProviderBackgroundActivity({
 			action: "terminate",

@@ -57,6 +57,7 @@ export function AssistantActivityTray({
 	steerCount,
 	open,
 	onToggle,
+	onBackground,
 	onSelectTool,
 	renderContent,
 }: {
@@ -66,6 +67,7 @@ export function AssistantActivityTray({
 	steerCount: number;
 	open: boolean;
 	onToggle: () => void;
+	onBackground?: () => void;
 	onSelectTool?: (event: ToolEventMessage, trigger: HTMLElement) => void;
 	renderContent: (context: ActivityTrayRenderContext) => ReactNode;
 }) {
@@ -176,32 +178,45 @@ export function AssistantActivityTray({
 			data-activity-tray={responseId}
 			className="mx-3 my-1 min-w-0 overflow-hidden border border-border/65 bg-background/35"
 		>
-			<button
-				type="button"
-				data-activity-tray-header={responseId}
-				aria-expanded={open}
-				aria-controls={regionId}
-				aria-label={`Activity, ${summary}, ${open ? "expanded" : "collapsed"}`}
-				onClick={onToggle}
-				className="group flex min-h-10 w-full min-w-0 items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-primary/[0.035] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/60"
-			>
-				<ChevronRight
-					className={`h-3 w-3 shrink-0 text-primary/50 transition-transform duration-150 ${open ? "rotate-90" : ""}`}
-					aria-hidden="true"
-				/>
-				<span className="shrink-0 text-[9px] font-medium uppercase tracking-[0.16em] text-primary/70">
-					Activity
-				</span>
-				<span className="min-w-0 flex-1 truncate font-mono text-[9px] text-muted-foreground/55">
-					{summary}
-				</span>
-				{runningCount > 0 && (
-					<LoaderCircle
-						className="h-3 w-3 shrink-0 animate-spin text-primary/60"
+			<div className="flex min-w-0 items-stretch">
+				<button
+					type="button"
+					data-activity-tray-header={responseId}
+					aria-expanded={open}
+					aria-controls={regionId}
+					aria-label={`Activity, ${summary}, ${open ? "expanded" : "collapsed"}`}
+					onClick={onToggle}
+					className="group flex min-h-10 min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-primary/[0.035] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/60"
+				>
+					<ChevronRight
+						className={`h-3 w-3 shrink-0 text-primary/50 transition-transform duration-150 ${open ? "rotate-90" : ""}`}
 						aria-hidden="true"
 					/>
+					<span className="shrink-0 text-[9px] font-medium uppercase tracking-[0.16em] text-primary/70">
+						Activity
+					</span>
+					<span className="min-w-0 flex-1 truncate font-mono text-[9px] text-muted-foreground/55">
+						{summary}
+					</span>
+					{runningCount > 0 && (
+						<LoaderCircle
+							className="h-3 w-3 shrink-0 animate-spin text-primary/60"
+							aria-hidden="true"
+						/>
+					)}
+				</button>
+				{runningCount > 0 && onBackground && (
+					<button
+						type="button"
+						onClick={onBackground}
+						aria-label="Background running Claude tools"
+						title="Move Claude's running Bash commands and subagents into the background"
+						className="shrink-0 border-l border-border/55 px-3 text-[8px] font-medium uppercase tracking-[0.14em] text-primary/65 transition-colors hover:bg-primary/[0.035] hover:text-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/60"
+					>
+						Background
+					</button>
 				)}
-			</button>
+			</div>
 			{open && (
 				<section
 					ref={bodyRef}

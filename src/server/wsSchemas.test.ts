@@ -353,7 +353,7 @@ describe("chat WebSocket runtime schema", () => {
 		).toBeNull();
 	});
 
-	it("requires an exact activity id for background termination", () => {
+	it("validates exact and session-level background activity controls", () => {
 		expect(
 			parseClientMessage(
 				JSON.stringify({
@@ -377,6 +377,35 @@ describe("chat WebSocket runtime schema", () => {
 				}),
 			),
 		).toBeNull();
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "background_activity_control",
+					action: "stop",
+					activity_id: "task-1",
+				}),
+			),
+		).toEqual({
+			type: "background_activity_control",
+			action: "stop",
+			activity_id: "task-1",
+		});
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "background_activity_control",
+					action: "stop",
+				}),
+			),
+		).toBeNull();
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "background_activity_control",
+					action: "background",
+				}),
+			),
+		).toEqual({ type: "background_activity_control", action: "background" });
 		expect(
 			parseClientMessage(
 				JSON.stringify({

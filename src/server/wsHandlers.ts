@@ -1423,12 +1423,12 @@ async function handleSessionMessage(
 		case "background_activity_control":
 			try {
 				await entry.manager.controlProviderBackgroundActivity(
-					msg.action === "terminate"
+					msg.action === "stop" || msg.action === "terminate"
 						? {
-								action: "terminate",
+								action: msg.action,
 								activityId: msg.activity_id ?? "",
 							}
-						: { action: "clean" },
+						: { action: msg.action },
 				);
 				broadcastSessionsStatus(context);
 			} catch (error) {

@@ -34,6 +34,8 @@ import type {
 	ForkSessionResult,
 	McpServerStatus,
 	ProviderAccountInfo,
+	ProviderBackgroundActivity,
+	ProviderBackgroundActivityControl,
 	ProviderContextUsage,
 	ProviderEffortInfo,
 	ProviderFileRewindResult,
@@ -51,6 +53,7 @@ import type {
 	TaskActivity,
 } from "./agentProvider";
 import { toAgentToolCallResult } from "./agentToolResult";
+import { ClaudeBackgroundActivityTracker } from "./claudeBackgroundActivities";
 import { discoverClaudeProviderCapabilities } from "./claudeCapabilityDiscovery";
 import { createClaudeHistorySessionStore } from "./claudeHistorySessionStore";
 import { createClaudeHostInteractionHandlers } from "./claudeHostInteractions";
@@ -2027,6 +2030,7 @@ class ClaudeAgentSession implements AgentSession {
 	private pendingSteerContinuation = false;
 	private hasEmittedAssistantTextMessage = false;
 	private subagents = new ClaudeSubagentTracker();
+	private backgroundActivities: ClaudeBackgroundActivityTracker;
 	private turnUsage = new ClaudeTurnUsageAccumulator();
 	// The streaming Claude SDK query survives across Raven turns and reports
 	// total_cost_usd cumulatively for that query object. Keep the raw boundary
@@ -2053,6 +2057,10 @@ class ClaudeAgentSession implements AgentSession {
 		this.makeQuery = makeQuery;
 		this.abortController = abortController;
 		this.resumeId = resumeId;
+		this.backgroundActivities = new ClaudeBackgroundActivityTracker(
+			hostParams.providerId ?? "claude",
+			runtimeCwd,
+		);
 	}
 
 	cancel(): void {
@@ -2077,6 +2085,39 @@ class ClaudeAgentSession implements AgentSession {
 			throw new Error("Claude session is not active");
 		}
 		await this.sdkQuery.stopTask(taskId);
+		this.backgroundActivities.stop(taskId);
+	}
+
+	async listBackgroundActivities(): Promise<ProviderBackgroundActivity[]> {
+		return this.backgroundActivities.list();
+	}
+
+	async controlBackgroundActivity(
+		request: ProviderBackgroundActivityControl,
+	): Promise<void> {
+		if (!this.sdkQuery) throw new Error("Claude session is not active");
+		if (request.action === "background") {
+			const backgrounded = await this.sdkQuery.backgroundTasks();
+			if (!backgrounded) {
+				throw new Error("Claude has no matching foreground task to background");
+			}
+			this.backgroundActivities.markBackgrounded();
+			return;
+		}
+		if (request.action === "stop") {
+			const activity = this.backgroundActivities
+				.list()
+				.find((candidate) => candidate.activityId === request.activityId);
+			if (!activity?.capabilities.stop) {
+				throw new Error("That Claude background task is no longer running");
+			}
+			await this.sdkQuery.stopTask(request.activityId);
+			this.backgroundActivities.stop(request.activityId);
+			return;
+		}
+		throw new Error(
+			`Claude does not support ${request.action} for background tasks`,
+		);
 	}
 
 	async send(message: string, opts?: SendOptions): Promise<void> {
@@ -2424,6 +2465,7 @@ class ClaudeAgentSession implements AgentSession {
 				}
 				const message = next.value;
 				this.receivedAnyEvent = true;
+				this.backgroundActivities.observe(message);
 				if (message.type === "result" && isEmptyClaudeIdleBoundary(message)) {
 					// This belongs to the resumed stream's idle state, not the
 					// non-empty user message Hlid has just queued. Keep draining
@@ -2909,6 +2951,10 @@ export class ClaudeProvider implements AgentProvider {
 	readonly label: string;
 	readonly capabilities = {
 		workflowCatalog: true,
+		backgroundActivities: {
+			maturity: "experimental",
+			operations: ["background", "list", "stop"],
+		},
 	} as const;
 	hlidToolLoading() {
 		const hlidTools = describeHlidToolLoading(HLID_AGENT_TOOL_SPECS, true);

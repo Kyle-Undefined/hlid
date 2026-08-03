@@ -4090,6 +4090,84 @@ describe("ClaudeProvider — stopTask", () => {
 
 		expect(gen.stopTask).toHaveBeenCalledWith("workflow-task-1");
 	});
+
+	it("backgrounds the active Claude foreground tasks through the SDK", async () => {
+		const gen = sdkGen([]);
+		gen.backgroundTasks = vi.fn().mockResolvedValue(true);
+		vi.mocked(query).mockReturnValueOnce(gen);
+
+		const session = new ClaudeProvider().query(baseParams());
+		await session.send("start");
+		await session.controlBackgroundActivity?.({ action: "background" });
+
+		expect(gen.backgroundTasks).toHaveBeenCalledWith();
+	});
+
+	it("lists and stops the exact structured Claude background task", async () => {
+		const gen = sdkGen([
+			{
+				type: "assistant",
+				uuid: "assistant-1",
+				session_id: "sdk-session-1",
+				parent_tool_use_id: null,
+				message: {
+					model: "claude-sonnet-4-6",
+					usage: { input_tokens: 1, output_tokens: 1 },
+					content: [
+						{
+							type: "tool_use",
+							id: "bash-1",
+							name: "Bash",
+							input: { command: "sleep 30" },
+						},
+					],
+				},
+			},
+			{
+				type: "user",
+				uuid: "user-1",
+				session_id: "sdk-session-1",
+				parent_tool_use_id: null,
+				message: {
+					content: [
+						{
+							type: "tool_result",
+							tool_use_id: "bash-1",
+							content: "Command running in background",
+						},
+					],
+				},
+				tool_use_result: { backgroundTaskId: "task-1" },
+			},
+		]);
+		gen.stopTask = vi.fn().mockResolvedValue(undefined);
+		vi.mocked(query).mockReturnValueOnce(gen);
+
+		const session = new ClaudeProvider().query(baseParams());
+		const iter = session[Symbol.asyncIterator]();
+		await iter.next();
+		await iter.next();
+		await iter.next();
+		await iter.next();
+
+		await expect(session.listBackgroundActivities?.()).resolves.toEqual([
+			expect.objectContaining({
+				providerId: "claude",
+				providerSessionId: "sdk-session-1",
+				activityId: "task-1",
+				kind: "shell",
+				command: "sleep 30",
+				capabilities: { stop: true },
+			}),
+		]);
+		await session.controlBackgroundActivity?.({
+			action: "stop",
+			activityId: "task-1",
+		});
+
+		expect(gen.stopTask).toHaveBeenCalledWith("task-1");
+		await expect(session.listBackgroundActivities?.()).resolves.toEqual([]);
+	});
 });
 
 // ── cancel ────────────────────────────────────────────────────────────────────
@@ -5334,9 +5412,13 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 // ── Provider capability declarations ─────────────────────────────────────────
 
 describe("ClaudeProvider capability declarations", () => {
-	it("declares the provider-native workflow catalog", () => {
+	it("declares workflows and native background activity", () => {
 		expect(new ClaudeProvider().capabilities).toEqual({
 			workflowCatalog: true,
+			backgroundActivities: {
+				maturity: "experimental",
+				operations: ["background", "list", "stop"],
+			},
 		});
 	});
 

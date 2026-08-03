@@ -260,6 +260,7 @@ import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import {
 	ChatPage,
 	isNewProjectPreviewPresentationRequest,
+	providerBackgroundOperationAvailable,
 	Route,
 	ravenTabAfterProjectPreviewStops,
 } from "./raven";
@@ -1284,6 +1285,41 @@ describe("Raven composed submission behavior", () => {
 		expect(queue.className).toContain("w-full");
 		expect(stop.className).toContain("md:w-auto");
 		expect(queue.className).toContain("md:w-auto");
+	});
+
+	it("keeps Claude's capability-gated background control out of the composer", () => {
+		state.sessionState = "running";
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: "session-1",
+			isExplicitSession: true,
+			providers: [
+				{
+					id: "claude",
+					label: "Claude",
+					available: true,
+					capabilities: {
+						backgroundActivities: {
+							maturity: "experimental",
+							operations: ["background", "list", "stop"],
+						},
+					},
+				},
+			],
+		};
+		expect(
+			providerBackgroundOperationAvailable(
+				state.loaderData.providers as Parameters<
+					typeof providerBackgroundOperationAvailable
+				>[0],
+				"claude",
+				"background",
+			),
+		).toBe(true);
+		render(<ChatPage />);
+		expect(
+			screen.queryByRole("button", { name: "Background Claude tasks" }),
+		).toBeNull();
 	});
 
 	it("keeps mobile terminal tab content above the composer while desktop orders it last", () => {

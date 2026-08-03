@@ -42,6 +42,59 @@ function tray(eventsValue: ToolEventMessage[], open = true) {
 }
 
 describe("AssistantActivityTray", () => {
+	it("keeps Claude's background action with active tool activity", () => {
+		const onBackground = vi.fn();
+		const running: ToolEventMessage[] = [
+			{
+				type: "tool_event",
+				id: "bash-1",
+				name: "Bash",
+				input: { command: "sleep 30" },
+			},
+		];
+		const view = render(
+			<AssistantActivityTray
+				responseId="response"
+				events={running}
+				streaming
+				steerCount={0}
+				open
+				onToggle={vi.fn()}
+				onBackground={onBackground}
+				renderContent={() => null}
+			/>,
+		);
+
+		const background = screen.getByRole("button", {
+			name: "Background running Claude tools",
+		});
+		expect(
+			background.parentElement?.parentElement?.getAttribute(
+				"data-activity-tray",
+			),
+		).toBe("response");
+		fireEvent.click(background);
+		expect(onBackground).toHaveBeenCalledOnce();
+
+		view.rerender(
+			<AssistantActivityTray
+				responseId="response"
+				events={[{ ...running[0], result: "done" }]}
+				streaming={false}
+				steerCount={0}
+				open
+				onToggle={vi.fn()}
+				onBackground={onBackground}
+				renderContent={() => null}
+			/>,
+		);
+		expect(
+			screen.queryByRole("button", {
+				name: "Background running Claude tools",
+			}),
+		).toBeNull();
+	});
+
 	it("mounts only the newest 20 calls and reports the load state in its button", async () => {
 		const view = render(tray(events(25)));
 		expect(screen.getByTestId("range").textContent).toBe("5:25");

@@ -17,6 +17,7 @@ const CONTROL_INTEGRATION = new Map<string, ProviderCapabilityIntegration>([
 	["toggleMcpServer", "integrated"],
 	["getContextUsage", "integrated"],
 	["stopTask", "integrated"],
+	["backgroundTasks", "integrated"],
 	["accountInfo", "integrated"],
 	["supportedAgents", "provider-native"],
 	["reloadPlugins", "provider-native"],

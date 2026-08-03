@@ -63,7 +63,7 @@ describe("ProviderBackgroundActivityPanel", () => {
 
 		expect(screen.queryByText("python3 -m http.server")).toBeNull();
 		const toggle = screen.getByRole("button", {
-			name: /BACKGROUND ACTIVITY/i,
+			name: /^BACKGROUND ACTIVITY/i,
 		});
 		if (toggle.getAttribute("aria-expanded") !== "true") {
 			fireEvent.click(toggle);
@@ -110,6 +110,38 @@ describe("ProviderBackgroundActivityPanel", () => {
 		).toBeNull();
 	});
 
+	it("uses Claude's exact task stop capability without claiming termination", () => {
+		const restored = status();
+		if (restored.background_activities?.[0]) {
+			restored.background_activities[0] = {
+				...restored.background_activities[0],
+				providerId: "claude",
+				providerSessionId: "sdk-session-1",
+				activityId: "task-1",
+				kind: "task",
+				capabilities: { stop: true },
+			};
+		}
+		act(() => replaceSessionsStatus([restored]));
+		render(<ProviderBackgroundActivityPanel sessionId="session-1" />);
+		const toggle = screen.getByRole("button", {
+			name: /^BACKGROUND ACTIVITY/i,
+		});
+		if (toggle.getAttribute("aria-expanded") !== "true") {
+			fireEvent.click(toggle);
+		}
+		fireEvent.click(
+			screen.getByRole("button", { name: "Stop background activity" }),
+		);
+
+		expect(mockSend).toHaveBeenCalledWith({
+			type: "background_activity_control",
+			action: "stop",
+			activity_id: "task-1",
+			session_id: "pool-1",
+		});
+	});
+
 	it("shows live read-only provider activity without stop controls", () => {
 		const restored = status();
 		if (restored.background_activities?.[0]) {
@@ -123,7 +155,7 @@ describe("ProviderBackgroundActivityPanel", () => {
 		act(() => replaceSessionsStatus([restored]));
 		render(<ProviderBackgroundActivityPanel sessionId="session-1" />);
 		const toggle = screen.getByRole("button", {
-			name: /BACKGROUND ACTIVITY/i,
+			name: /^BACKGROUND ACTIVITY/i,
 		});
 		if (toggle.getAttribute("aria-expanded") !== "true") {
 			fireEvent.click(toggle);

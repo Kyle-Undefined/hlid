@@ -63,6 +63,12 @@ export type ProviderInfo = {
 		realtime?: boolean;
 		appCatalog?: boolean;
 		appAuthentication?: boolean;
+		backgroundActivities?: {
+			maturity: "experimental" | "beta" | "stable";
+			operations: ReadonlyArray<
+				"background" | "list" | "stop" | "terminate" | "clean"
+			>;
+		};
 	};
 	/** Bounded provider evidence resolved against Hlid's current integration. */
 	capabilitySnapshot?: ProviderCapabilitySnapshot;

@@ -134,6 +134,7 @@ export const MessageList = memo(function MessageList({
 	handleSteerQueued,
 	onViewContext,
 	onPreviewFileRewind,
+	onBackgroundActivity,
 	canSteerQueued,
 	bottomRef,
 	hasOlderHistory = false,
@@ -171,6 +172,7 @@ export const MessageList = memo(function MessageList({
 	handleSteerQueued: (id: string) => void;
 	onViewContext?: (target: HlidContextReceiptTarget) => void;
 	onPreviewFileRewind?: (turnId: string) => void;
+	onBackgroundActivity?: () => void;
 	canSteerQueued: boolean;
 	bottomRef: React.MutableRefObject<HTMLDivElement | null>;
 	hasOlderHistory?: boolean;
@@ -534,6 +536,11 @@ export const MessageList = memo(function MessageList({
 						m.role === "assistant" ? isActivityOpen(m.id) : undefined
 					}
 					onToggleActivity={handleToggleActivity}
+					onBackgroundActivity={
+						m.role === "assistant" && m.streaming
+							? onBackgroundActivity
+							: undefined
+					}
 					onSelectTool={handleSelectTool}
 					permissionLabels={permissionLabels}
 					queueState={queueStateById.get(m.id)}

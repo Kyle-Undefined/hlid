@@ -27,6 +27,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 	onVisualizationInactive,
 	activityOpen,
 	onToggleActivity,
+	onBackgroundActivity,
 	onSelectTool,
 	permissionLabels,
 	queueState,
@@ -58,6 +59,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 	onVisualizationInactive?: (eventId: string) => void;
 	activityOpen?: boolean;
 	onToggleActivity?: (responseId: string) => void;
+	onBackgroundActivity?: () => void;
 	onSelectTool?: (
 		responseId: string,
 		event: ToolEventMessage,
@@ -148,6 +150,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 				onToggleActivity={
 					onToggleActivity ? () => onToggleActivity(message.id) : undefined
 				}
+				onBackgroundActivity={onBackgroundActivity}
 				onSelectTool={
 					onSelectTool
 						? (event, trigger) => onSelectTool(message.id, event, trigger)

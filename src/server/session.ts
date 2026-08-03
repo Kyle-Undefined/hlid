@@ -1390,18 +1390,20 @@ export class SessionManager {
 				`${this.resolveProvider(this.agentCwd).label ?? "This provider"} cannot control background activity from Raven`,
 			);
 		}
-		if (request.action === "terminate") {
+		if (request.action === "stop" || request.action === "terminate") {
+			const capability = request.action;
 			const activity = this.backgroundActivities.find(
 				(candidate) =>
 					candidate.providerId === providerId &&
 					candidate.activityId === request.activityId &&
 					candidate.status === "running" &&
-					candidate.capabilities.terminate,
+					candidate.capabilities[capability],
 			);
 			if (!activity) {
 				throw new Error("That background activity is no longer controllable");
 			}
 		} else if (
+			request.action === "clean" &&
 			!this.backgroundActivities.some(
 				(activity) =>
 					activity.providerId === providerId &&

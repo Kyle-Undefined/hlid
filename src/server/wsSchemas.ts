@@ -301,14 +301,15 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 	z
 		.strictObject({
 			type: z.literal("background_activity_control"),
-			action: z.enum(["terminate", "clean"]),
+			action: z.enum(["background", "stop", "terminate", "clean"]),
 			activity_id: id.optional(),
 			session_id: id.optional(),
 		})
 		.refine(
 			(message) =>
-				message.action === "clean" || Boolean(message.activity_id?.trim()),
-			{ message: "terminate requires activity_id" },
+				(message.action !== "stop" && message.action !== "terminate") ||
+				Boolean(message.activity_id?.trim()),
+			{ message: "stop and terminate require activity_id" },
 		),
 ]);
 

@@ -1272,6 +1272,18 @@ describe("message — background_activity_control", () => {
 			action: "terminate",
 			activityId: "item-1",
 		});
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "background_activity_control",
+				action: "background",
+				session_id: "vault-id",
+			}),
+		);
+		expect(session.controlProviderBackgroundActivity).toHaveBeenLastCalledWith({
+			action: "background",
+		});
 	});
 
 	it("rejects background control when the owning session is detached", async () => {

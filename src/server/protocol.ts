@@ -1243,7 +1243,7 @@ export type ClientWorkflowControlMessage = {
 /** Exact native control for session-level provider background work. */
 export type ClientBackgroundActivityControlMessage = {
 	type: "background_activity_control";
-	action: "terminate" | "clean";
+	action: "background" | "stop" | "terminate" | "clean";
 	activity_id?: string;
 	session_id?: string;
 };

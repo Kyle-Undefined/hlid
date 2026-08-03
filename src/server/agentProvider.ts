@@ -350,6 +350,8 @@ export type ProviderBackgroundActivity = {
 };
 
 export type ProviderBackgroundActivityControl =
+	| { action: "background" }
+	| { action: "stop"; activityId: string }
 	| { action: "terminate"; activityId: string }
 	| { action: "clean" };
 
@@ -702,7 +704,9 @@ export type ProviderCapabilityMetadata = {
 	/** Provider background activity is observable and controllable through Hlid. */
 	backgroundActivities?: {
 		maturity: "experimental" | "beta" | "stable";
-		operations: ReadonlyArray<"list" | "stop" | "terminate" | "clean">;
+		operations: ReadonlyArray<
+			"background" | "list" | "stop" | "terminate" | "clean"
+		>;
 	};
 };
 

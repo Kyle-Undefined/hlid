@@ -3717,7 +3717,7 @@ function RavenMessagePane({
 	composerProps,
 }: ChatPageContentProps) {
 	const { sessionId } = session;
-	const { wsStatus, sessionState, runningTurnId, messages } = runtime;
+	const { wsStatus, sessionState, runningTurnId, messages, send } = runtime;
 	const { scrollRef, bottomRef, transcriptContentRef } = viewport;
 	const {
 		handleDecide,
@@ -3756,6 +3756,20 @@ function RavenMessagePane({
 	const canPreviewFileRewind =
 		isClaudeRuntimeProvider(composerProps.activeProviderId) &&
 		!runtime.isRunning;
+	const canBackgroundTools =
+		runtime.isRunning &&
+		providerBackgroundOperationAvailable(
+			composerProps.providers,
+			composerProps.activeProviderId,
+			"background",
+		);
+	const handleBackgroundTools = useCallback(() => {
+		send({
+			type: "background_activity_control",
+			action: "background",
+			session_id: sessionId,
+		});
+	}, [send, sessionId]);
 	// Below md, the Terminal tab fully replaces chat (RavenShellTabBar); md+
 	// always shows chat regardless (desktop split panel is chunk 4).
 	const mobileHideChat = terminalOpen && shellTab === "terminal";
@@ -3826,6 +3840,9 @@ function RavenMessagePane({
 									onViewContext={runtime.openContext}
 									onPreviewFileRewind={
 										canPreviewFileRewind ? runtime.previewFileRewind : undefined
+									}
+									onBackgroundActivity={
+										canBackgroundTools ? handleBackgroundTools : undefined
 									}
 									canSteerQueued={canSteerQueued}
 									bottomRef={bottomRef}
@@ -4838,6 +4855,19 @@ function useChatSessionFork({
 
 type ChatSessionFork = ReturnType<typeof useChatSessionFork>;
 
+export function providerBackgroundOperationAvailable(
+	providers: RavenProviders,
+	providerId: string,
+	operation: "background" | "list" | "stop" | "terminate" | "clean",
+): boolean {
+	return (
+		providers
+			.find((provider) => provider.id === providerId)
+			?.capabilities?.backgroundActivities?.operations.includes(operation) ??
+		false
+	);
+}
+
 function ChatActionButtons({
 	runtime,
 	input,
@@ -4877,7 +4907,7 @@ function ChatActionButtons({
 				</div>
 			)}
 			{isRunning ? (
-				<div className="grid shrink-0 grid-rows-2 gap-y-1 md:contents">
+				<div className="grid shrink-0 grid-cols-1 grid-rows-2 gap-x-1 gap-y-1 md:contents">
 					<button
 						type="button"
 						onClick={() => send({ type: "abort" })}
@@ -4903,7 +4933,7 @@ function ChatActionButtons({
 					type="button"
 					onClick={() => handleSend()}
 					disabled={!canSend}
-					className="order-8 min-h-11 self-start shrink-0 px-4 py-2 text-[10px] font-bold tracking-widest text-primary/70 uppercase transition-colors hover:text-primary disabled:text-muted-foreground/35 md:min-h-0 md:py-3"
+					className="order-9 min-h-11 self-start shrink-0 px-4 py-2 text-[10px] font-bold tracking-widest text-primary/70 uppercase transition-colors hover:text-primary disabled:text-muted-foreground/35 md:min-h-0 md:py-3"
 					aria-label="Send"
 				>
 					RUN
@@ -4913,7 +4943,7 @@ function ChatActionButtons({
 				<button
 					type="button"
 					onClick={handleClear}
-					className="order-9 flex min-h-11 min-w-11 shrink-0 items-center justify-center px-3 py-2 text-muted-foreground/45 transition-colors hover:text-muted-foreground md:min-h-0 md:min-w-0 md:py-3"
+					className="order-10 flex min-h-11 min-w-11 shrink-0 items-center justify-center px-3 py-2 text-muted-foreground/45 transition-colors hover:text-muted-foreground md:min-h-0 md:min-w-0 md:py-3"
 					aria-label="New chat"
 				>
 					<SquarePen className="w-3.5 h-3.5" />

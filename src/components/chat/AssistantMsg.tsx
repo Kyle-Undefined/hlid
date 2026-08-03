@@ -149,6 +149,7 @@ export function AssistantMsg({
 	onVisualizationInactive,
 	activityOpen,
 	onToggleActivity,
+	onBackgroundActivity,
 	onSelectTool,
 	canBranch = false,
 	branching = false,
@@ -169,6 +170,7 @@ export function AssistantMsg({
 	onVisualizationInactive?: (eventId: string) => void;
 	activityOpen?: boolean;
 	onToggleActivity?: () => void;
+	onBackgroundActivity?: () => void;
 	onSelectTool?: (event: ToolEventMessage, trigger: HTMLElement) => void;
 	/** Whole-session precondition (Claude-only, session idle) — see raven.tsx. */
 	canBranch?: boolean;
@@ -386,6 +388,7 @@ export function AssistantMsg({
 					steerCount={acceptedSteers.length}
 					open={resolvedActivityOpen}
 					onToggle={toggleActivity}
+					onBackground={onBackgroundActivity}
 					onSelectTool={onSelectTool}
 					renderContent={renderActivityContent}
 				/>
