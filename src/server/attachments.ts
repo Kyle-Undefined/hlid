@@ -12,6 +12,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { basename, dirname, extname, relative, resolve } from "node:path";
+import { PNG } from "pngjs";
 import type { HlidConfig } from "../config";
 import * as db from "../db";
 import {
@@ -110,6 +111,170 @@ function sanitizeFilename(name: string): string {
 	const base = basename(name).slice(0, 200);
 	const cleaned = base.replace(FILENAME_SAFE, "_").replace(/^\.+/, "_");
 	return cleaned || "file";
+}
+
+const GENERATED_IMAGE_MAX_PIXELS = 12_000_000;
+const STANDARD_BASE64_RE =
+	/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+export type IngestedGeneratedImage = {
+	id: string;
+	filename: string;
+	mime: "image/png";
+	sizeBytes: number;
+	width: number;
+	height: number;
+};
+
+function generatedImageFilename(itemId: string, providerPath?: string): string {
+	const providerName = providerPath
+		? basename(providerPath.replaceAll("\\", "/"))
+		: "";
+	if (providerName.toLowerCase().endsWith(".png")) {
+		return sanitizeFilename(providerName);
+	}
+	const safeId = sanitizeFilename(itemId)
+		.replace(/\.png$/i, "")
+		.slice(0, 160);
+	return `${safeId || "generated-image"}.png`;
+}
+
+function decodeGeneratedImageBase64(value: string, maxBytes: number): Buffer {
+	const encoded = value.trim();
+	if (!encoded) throw new Error("The provider returned no image data.");
+	if (
+		encoded.length > Math.ceil(maxBytes / 3) * 4 + 4 ||
+		!STANDARD_BASE64_RE.test(encoded)
+	) {
+		throw new Error("The provider returned invalid or oversized image data.");
+	}
+	const bytes = Buffer.from(encoded, "base64");
+	if (bytes.byteLength === 0) {
+		throw new Error("The provider returned no image data.");
+	}
+	if (bytes.byteLength > maxBytes) {
+		throw new Error(`Generated image exceeds the ${maxBytes} byte limit.`);
+	}
+	return bytes;
+}
+
+function generatedPngDimensions(bytes: Buffer): {
+	width: number;
+	height: number;
+} {
+	if (
+		sniffMime(bytes) !== "image/png" ||
+		bytes.byteLength < 24 ||
+		bytes.toString("ascii", 12, 16) !== "IHDR"
+	) {
+		throw new Error("The generated image is not a PNG.");
+	}
+	const headerWidth = bytes.readUInt32BE(16);
+	const headerHeight = bytes.readUInt32BE(20);
+	if (
+		headerWidth <= 0 ||
+		headerHeight <= 0 ||
+		headerWidth * headerHeight > GENERATED_IMAGE_MAX_PIXELS
+	) {
+		throw new Error("The generated PNG dimensions are unsupported.");
+	}
+	let decoded: { width: number; height: number };
+	try {
+		decoded = PNG.sync.read(bytes);
+	} catch {
+		throw new Error("The generated PNG is corrupt.");
+	}
+	const { width, height } = decoded;
+	if (
+		!Number.isSafeInteger(width) ||
+		!Number.isSafeInteger(height) ||
+		width <= 0 ||
+		height <= 0 ||
+		width * height > GENERATED_IMAGE_MAX_PIXELS ||
+		width !== headerWidth ||
+		height !== headerHeight
+	) {
+		throw new Error("The generated PNG dimensions are unsupported.");
+	}
+	return { width, height };
+}
+
+/**
+ * Retain a provider-produced PNG in Hlid's artifact library without ever
+ * placing its base64 result in transcript text. Generated images are durable
+ * Relics immediately, while their tool event keeps session and item provenance.
+ */
+export async function ingestGeneratedImage(opts: {
+	dataBase64: string;
+	providerItemId: string;
+	providerPath?: string;
+	sessionId: string;
+	messageSeq: number;
+	agentCwd?: string;
+	maxBytes: number;
+	allowedMimes: readonly string[];
+}): Promise<IngestedGeneratedImage> {
+	if (!opts.allowedMimes.includes("image/png")) {
+		throw new Error("Generated PNG images are disabled by attachment policy.");
+	}
+	const sourceBytes = decodeGeneratedImageBase64(
+		opts.dataBase64,
+		opts.maxBytes,
+	);
+	const { width, height } = generatedPngDimensions(sourceBytes);
+	const optimized = optimizeManagedImage(sourceBytes, "image/png");
+	const bytes = optimized.buffer;
+	const id = randomUUID();
+	const filename = generatedImageFilename(
+		opts.providerItemId,
+		opts.providerPath,
+	);
+	await prepareLibrary();
+	const directory = artifactDirectory(id);
+	const path = artifactPath(id, filename);
+	let attachmentCreated = false;
+	try {
+		await mkdir(directory, { recursive: true, mode: 0o700 });
+		await writeFile(path, bytes, { flag: "wx", mode: 0o600 });
+		await db.createAttachment({
+			id,
+			session_id: opts.sessionId,
+			kind: "ephemeral",
+			filename,
+			path,
+			mime: "image/png",
+			size_bytes: bytes.byteLength,
+			sha256: createHash("sha256").update(bytes).digest("hex"),
+			storage_key: storageKey(path),
+			category: "media",
+			retention: "retained",
+			origin: "generated",
+			agent_cwd: opts.agentCwd ?? null,
+			image_optimized_at: Math.floor(Date.now() / 1000),
+			original_size_bytes: optimized.originalBytes,
+		});
+		attachmentCreated = true;
+		const linked = await db.linkAttachmentToMessage(
+			id,
+			opts.sessionId,
+			opts.messageSeq,
+		);
+		if (!linked)
+			throw new Error("Generated image could not be linked to its turn.");
+		return {
+			id,
+			filename,
+			mime: "image/png",
+			sizeBytes: bytes.byteLength,
+			width,
+			height,
+		};
+	} catch (error) {
+		if (attachmentCreated) await db.deleteAttachment(id).catch(() => {});
+		await unlink(path).catch(() => {});
+		await rmdir(directory).catch(() => {});
+		throw error;
+	}
 }
 
 const GENERATED_RELIC_MIMES: Record<string, string> = {

@@ -198,6 +198,7 @@ export type AttachmentCategory =
 	| "upload"
 	| "plan"
 	| "report"
+	| "media"
 	| "visualization"
 	| "other";
 export type AttachmentRetention = "session" | "retained" | "linked";

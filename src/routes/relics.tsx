@@ -65,6 +65,7 @@ type CategoryFilter =
 	| "upload"
 	| "plan"
 	| "report"
+	| "media"
 	| "visualization"
 	| "other";
 type SortCol = "created_at" | "size_bytes";
@@ -328,6 +329,7 @@ const CATEGORY_FILTERS: { value: CategoryFilter; label: string }[] = [
 	{ value: "upload", label: "Uploads" },
 	{ value: "plan", label: "Plans" },
 	{ value: "report", label: "Reports" },
+	{ value: "media", label: "Generated media" },
 	{ value: "visualization", label: "Visualizations" },
 	{ value: "other", label: "Other" },
 ];

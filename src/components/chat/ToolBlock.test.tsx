@@ -28,6 +28,7 @@ vi.mock("#/hooks/wsStore", () => ({
 }));
 
 import {
+	isActivityInspectorToolEvent,
 	looksLikeMarkdown,
 	stripReadLineNumbers,
 	ToolBlock,
@@ -53,6 +54,15 @@ function makeEvent(overrides?: Partial<ToolEventMessage>): ToolEventMessage {
 }
 
 describe("ToolBlock — collapsed", () => {
+	it("keeps generated media out of the ordinary Activity inspector", () => {
+		expect(
+			isActivityInspectorToolEvent(
+				makeEvent({ name: "ImageGeneration", input: {} }),
+				"codex",
+			),
+		).toBe(false);
+	});
+
 	it("renders tool name and input pills", () => {
 		render(<ToolBlock event={makeEvent()} />);
 		expect(screen.getByText("Bash")).not.toBeNull();

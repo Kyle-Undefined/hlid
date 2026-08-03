@@ -242,7 +242,7 @@ describe("CodexProvider capability declarations", () => {
 		});
 	});
 
-	it("declares structured goals, activities, realtime, Apps, and background work", () => {
+	it("declares structured goals, activities, realtime, Apps, background work, and generated media", () => {
 		expect(new CodexProvider().capabilities).toEqual({
 			goalControl: true,
 			structuredActivities: ["compact", "review"],
@@ -252,6 +252,10 @@ describe("CodexProvider capability declarations", () => {
 			backgroundActivities: {
 				maturity: "experimental",
 				operations: ["list", "terminate", "clean"],
+			},
+			generatedMedia: {
+				maturity: "stable",
+				operations: ["persist", "preview", "download"],
 			},
 		});
 	});
@@ -3863,6 +3867,55 @@ describe("CodexAgentSession — notifications", () => {
 			expect(replacement).toHaveBeenNthCalledWith(2, null);
 		});
 		expect(initial).not.toHaveBeenCalled();
+		session.cancel();
+	});
+
+	it("emits image generation through the generated-media handoff", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		await session.send("make an image");
+		await nextSessionEvent(events);
+
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			item: {
+				id: "image-1",
+				type: "imageGeneration",
+				status: "inProgress",
+				result: "must-not-leak-at-start",
+			},
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "tool_start",
+			toolId: "image-1",
+			name: "ImageGeneration",
+			input: { type: "imageGeneration", status: "inProgress" },
+		});
+
+		emitSessionNotification(proc, "item/completed", {
+			threadId: "thread-1",
+			item: {
+				id: "image-1",
+				type: "imageGeneration",
+				status: "completed",
+				result: "cG5nLWJ5dGVz",
+				revisedPrompt: "A quiet mountain lake",
+				savedPath: "C:\\generated\\image-1.png",
+			},
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "generated_media",
+			toolId: "image-1",
+			kind: "image",
+			status: "completed",
+			mime: "image/png",
+			dataBase64: "cG5nLWJ5dGVz",
+			prompt: "A quiet mountain lake",
+			providerPath: "C:\\generated\\image-1.png",
+		});
 		session.cancel();
 	});
 

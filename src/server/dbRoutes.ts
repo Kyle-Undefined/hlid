@@ -21,7 +21,7 @@ import {
 } from "./providerHistorySync";
 import { getWindowMark } from "./proxy";
 import { broadcast } from "./runState";
-import { copyForkedVisualizationAttachments } from "./sessionForkAttachments";
+import { copyForkedSessionAttachments } from "./sessionForkAttachments";
 import type { SessionPool } from "./sessionPool";
 import type { TerminalSessionPool } from "./terminalSessionPool";
 
@@ -960,7 +960,7 @@ async function forkSession({
 		if (copied === 0 && messages?.length) {
 			await db.insertForkedMessages(newId, messages);
 		}
-		await copyForkedVisualizationAttachments(sourceId, newId);
+		await copyForkedSessionAttachments(sourceId, newId);
 	} catch (error) {
 		// The provider fork has already succeeded. Keep Hlid atomic even when
 		// persistence or transcript hydration fails after that point.

@@ -187,6 +187,21 @@ function staticEvidence(input: {
 				"Only a live direct provider session can observe or control native background work.",
 		});
 	}
+	if (capabilities?.generatedMedia) {
+		evidence.push({
+			id: providerCapabilityId(providerId, "generated-media"),
+			label: "Generated media persistence",
+			scope: "session",
+			support: "advertised",
+			integration: "integrated",
+			readiness: "gated",
+			source: "hlid-adapter",
+			maturity: capabilities.generatedMedia.maturity,
+			operations: [...capabilities.generatedMedia.operations],
+			reason:
+				"Selected provider, model, and backend must emit a supported generated-media result.",
+		});
+	}
 	if (forkCapability) {
 		evidence.push({
 			id: providerCapabilityId(providerId, "exact-fork"),

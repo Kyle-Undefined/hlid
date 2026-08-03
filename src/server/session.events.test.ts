@@ -16,6 +16,10 @@ vi.mock("../lib/claudePath", async () =>
 vi.mock("../db", async () =>
 	(await import("./session.test-utils")).mockDbModule(),
 );
+vi.mock("./attachments", () => ({
+	ingestGeneratedImage: vi.fn(),
+	ingestPlanHtml: vi.fn(),
+}));
 vi.mock("./recap", async () =>
 	(await import("./session.test-utils")).mockRecap(),
 );
@@ -49,6 +53,8 @@ import type {
 	AgentQueryParams,
 	AgentSession,
 } from "./agentProvider";
+import { ingestGeneratedImage } from "./attachments";
+import { loadConfig } from "./config";
 import { ASK_USER_QUESTION_CANCEL_KEY, type ServerMessage } from "./protocol";
 import { SessionManager } from "./session";
 import {
@@ -1210,6 +1216,90 @@ describe("SessionManager — live tool_event persistence", () => {
 				false,
 			);
 		});
+		release();
+		await runPromise;
+	});
+
+	it("persists generated media as a compact attachment-backed tool result", async () => {
+		vi.mocked(loadConfig).mockReturnValue(makeConfig());
+		vi.mocked(ingestGeneratedImage).mockResolvedValue({
+			id: "generated-attachment-1",
+			filename: "image-1.png",
+			mime: "image/png",
+			sizeBytes: 4_096,
+			width: 1_024,
+			height: 1_024,
+		});
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const rawBase64 = "raw-provider-image-base64";
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "sdk-media-1" },
+				{
+					type: "tool_start",
+					toolId: "image-1",
+					name: "ImageGeneration",
+					input: { type: "imageGeneration", status: "inProgress" },
+				},
+				{
+					type: "generated_media",
+					toolId: "image-1",
+					kind: "image",
+					status: "completed",
+					mime: "image/png",
+					dataBase64: rawBase64,
+					prompt: "A quiet mountain lake",
+					providerPath: "/provider/image-1.png",
+				},
+			],
+			gate,
+		);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const runPromise = sm.runQuery(
+			"make an image",
+			(message) => emitted.push(message),
+			{ sessionId: "sess-media-1" },
+		);
+		await gateReached;
+
+		expect(ingestGeneratedImage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				dataBase64: rawBase64,
+				providerItemId: "image-1",
+				providerPath: "/provider/image-1.png",
+				sessionId: "sess-media-1",
+				messageSeq: expect.any(Number),
+			}),
+		);
+		const persisted = vi
+			.mocked(dbMock.setToolEventResult)
+			.mock.calls.find((call) => call[1] === "image-1");
+		expect(persisted).toBeDefined();
+		expect(persisted?.[2]).not.toContain(rawBase64);
+		expect(JSON.parse(persisted?.[2] ?? "{}")).toMatchObject({
+			type: "hlid_generated_media",
+			version: 1,
+			status: "ready",
+			provider: "claude",
+			provider_item_id: "image-1",
+			attachment_id: "generated-attachment-1",
+			filename: "image-1.png",
+			mime: "image/png",
+			size_bytes: 4_096,
+			width: 1_024,
+			height: 1_024,
+			prompt: "A quiet mountain lake",
+		});
+		expect(emitted).toContainEqual({
+			type: "attachment_created",
+			id: "generated-attachment-1",
+			kind: "ephemeral",
+		});
+
 		release();
 		await runPromise;
 	});

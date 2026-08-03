@@ -90,6 +90,31 @@ describe("provider capability resolution", () => {
 		});
 	});
 
+	it("publishes generated media persistence as a provider-gated integration", () => {
+		const snapshot = buildProviderCapabilitySnapshot({
+			providerId: "codex",
+			providerAvailable: true,
+			models: [],
+			capabilities: {
+				generatedMedia: {
+					maturity: "stable",
+					operations: ["persist", "preview", "download"],
+				},
+			},
+		});
+
+		expect(
+			snapshot.capabilities.find((item) => item.id.includes("generated-media")),
+		).toMatchObject({
+			integration: "integrated",
+			readiness: "gated",
+			availability: "conditional",
+			maturity: "stable",
+			operations: ["download", "persist", "preview"],
+			reason: expect.stringContaining("provider, model, and backend"),
+		});
+	});
+
 	it("uses the provider-effective workspace and revisions it independently", () => {
 		const make = (cwd: string) =>
 			buildProviderCapabilitySnapshot({

@@ -9,6 +9,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import * as db from "../db";
+import type { AttachmentRow } from "../db/types";
 import { HLID_CREATE_VISUALIZATION_TOOL } from "../lib/hlidContext";
 import { pathStartsWith } from "../lib/paths";
 import {
@@ -24,28 +25,44 @@ const VISUALIZATION_TOOL_NAMES = new Set([
 	`hlid.${HLID_CREATE_VISUALIZATION_TOOL}`,
 	`mcp__hlid__${HLID_CREATE_VISUALIZATION_TOOL}`,
 ]);
+const GENERATED_MEDIA_TOOL_NAMES = new Set([
+	"ImageGeneration",
+	"imageGeneration",
+]);
 
-type VisualizationToolResult = Record<string, unknown> & {
-	type: "hlid_visualization";
+type AttachmentToolResult = Record<string, unknown> & {
 	attachment_id: string;
 	filename: string;
 };
 
-type VisualizationReference = {
+type AttachmentReference = {
 	toolId: string;
-	result: VisualizationToolResult;
+	assistantSeq: number;
+	result: AttachmentToolResult;
 	originalResult: string;
 };
 
-type CreatedVisualizationCopy = {
+type CreatedAttachmentCopy = {
 	id: string;
 	path: string;
 	directory: string;
 };
 
-function parseVisualizationToolResult(
+type ForkAttachmentSpec = {
+	label: string;
+	toolNames: ReadonlySet<string>;
+	parseResult: (resultText: string | null) => AttachmentToolResult | null;
+	isEligible: (
+		source: AttachmentRow,
+		result: AttachmentToolResult,
+		sourceSessionId: string,
+	) => boolean;
+	linkToMessage: boolean;
+};
+
+function parsedResult(
 	resultText: string | null,
-): VisualizationToolResult | null {
+): Record<string, unknown> | null {
 	if (!resultText) return null;
 	let value: unknown;
 	try {
@@ -53,22 +70,48 @@ function parseVisualizationToolResult(
 	} catch {
 		return null;
 	}
-	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-	const result = value as Record<string, unknown>;
+	return value && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: null;
+}
+
+function attachmentResult(
+	result: Record<string, unknown> | null,
+): AttachmentToolResult | null {
 	if (
-		result.type !== "hlid_visualization" ||
-		typeof result.attachment_id !== "string" ||
+		typeof result?.attachment_id !== "string" ||
 		!result.attachment_id ||
 		typeof result.filename !== "string" ||
 		!result.filename
 	) {
 		return null;
 	}
-	return result as VisualizationToolResult;
+	return result as AttachmentToolResult;
+}
+
+function parseVisualizationToolResult(
+	resultText: string | null,
+): AttachmentToolResult | null {
+	const result = parsedResult(resultText);
+	return result?.type === "hlid_visualization"
+		? attachmentResult(result)
+		: null;
+}
+
+function parseGeneratedMediaToolResult(
+	resultText: string | null,
+): AttachmentToolResult | null {
+	const result = parsedResult(resultText);
+	return result?.type === "hlid_generated_media" &&
+		result.version === 1 &&
+		result.status === "ready" &&
+		result.mime === "image/png"
+		? attachmentResult(result)
+		: null;
 }
 
 async function removeCreatedCopies(
-	created: readonly CreatedVisualizationCopy[],
+	created: readonly CreatedAttachmentCopy[],
 ): Promise<void> {
 	for (const copy of [...created].reverse()) {
 		await db.deleteAttachment(copy.id).catch(() => null);
@@ -77,30 +120,24 @@ async function removeCreatedCopies(
 	}
 }
 
-/**
- * Give a fork independent ownership of each session-retained visualization its
- * copied tool events reference. The copied tool result is rewritten to the new
- * attachment id, so deleting or aging out the source session cannot break the
- * fork's inline iframe.
- */
-export async function copyForkedVisualizationAttachments(
+async function copyForkedManagedAttachments(
 	sourceSessionId: string,
 	targetSessionId: string,
+	spec: ForkAttachmentSpec,
 ): Promise<number> {
-	const references: VisualizationReference[] = [];
+	const references: AttachmentReference[] = [];
 	for (const event of await db.getSessionToolEventSummaries(targetSessionId)) {
-		if (event.is_error === 1 || !VISUALIZATION_TOOL_NAMES.has(event.name)) {
-			continue;
-		}
+		if (event.is_error === 1 || !spec.toolNames.has(event.name)) continue;
 		const detail = await db.getSessionToolEventDetail(
 			targetSessionId,
 			event.tool_id,
 		);
 		if (!detail || detail.is_error === 1) continue;
-		const result = parseVisualizationToolResult(detail.result_text);
+		const result = spec.parseResult(detail.result_text);
 		if (!result || !detail.result_text) continue;
 		references.push({
 			toolId: event.tool_id,
+			assistantSeq: event.assistant_seq,
 			result,
 			originalResult: detail.result_text,
 		});
@@ -110,8 +147,8 @@ export async function copyForkedVisualizationAttachments(
 	await prepareLibrary();
 	const canonicalArtifactsRoot = await realpath(artifactsDirectory());
 	const replacements = new Map<string, string>();
-	const created: CreatedVisualizationCopy[] = [];
-	const rewritten: VisualizationReference[] = [];
+	const created: CreatedAttachmentCopy[] = [];
+	const rewritten: AttachmentReference[] = [];
 	try {
 		for (const reference of references) {
 			const sourceId = reference.result.attachment_id;
@@ -119,20 +156,12 @@ export async function copyForkedVisualizationAttachments(
 			const source = await db.getAttachment(sourceId);
 			if (!source) {
 				throw new Error(
-					"Forked visualization references an unavailable attachment",
+					`Forked ${spec.label} references an unavailable attachment`,
 				);
 			}
-			if (
-				source.session_id !== sourceSessionId ||
-				source.kind !== "ephemeral" ||
-				source.category !== "visualization" ||
-				source.retention !== "session" ||
-				source.origin !== "generated" ||
-				source.mime !== "text/html" ||
-				source.filename !== reference.result.filename
-			) {
+			if (!spec.isEligible(source, reference.result, sourceSessionId)) {
 				throw new Error(
-					"Forked visualization attachment is not an eligible source-session artifact",
+					`Forked ${spec.label} attachment is not an eligible source-session artifact`,
 				);
 			}
 
@@ -148,7 +177,7 @@ export async function copyForkedVisualizationAttachments(
 				!sourceStats.isFile()
 			) {
 				throw new Error(
-					"Forked visualization source is not a regular unlinked artifact",
+					`Forked ${spec.label} source is not a regular unlinked artifact`,
 				);
 			}
 			const [canonicalSourceDirectory, canonicalSourcePath] = await Promise.all(
@@ -159,7 +188,7 @@ export async function copyForkedVisualizationAttachments(
 				!pathStartsWith(canonicalSourceDirectory, canonicalSourcePath)
 			) {
 				throw new Error(
-					"Forked visualization source escapes Hlid-owned artifact storage",
+					`Forked ${spec.label} source escapes Hlid-owned artifact storage`,
 				);
 			}
 			const bytes = Buffer.from(await readFile(canonicalSourcePath));
@@ -170,7 +199,7 @@ export async function copyForkedVisualizationAttachments(
 				sha256 !== source.sha256
 			) {
 				throw new Error(
-					"Forked visualization source no longer matches its attachment record",
+					`Forked ${spec.label} source no longer matches its attachment record`,
 				);
 			}
 
@@ -186,15 +215,29 @@ export async function copyForkedVisualizationAttachments(
 				kind: "ephemeral",
 				filename: source.filename,
 				path: destination,
-				mime: "text/html",
+				mime: source.mime,
 				size_bytes: bytes.byteLength,
 				sha256,
 				storage_key: storageKey(destination),
-				category: "visualization",
-				retention: "session",
+				category: source.category,
+				retention: source.retention,
 				origin: "generated",
 				agent_cwd: source.agent_cwd ?? null,
+				image_optimized_at: source.image_optimized_at ?? null,
+				original_size_bytes: source.original_size_bytes ?? null,
 			});
+			if (spec.linkToMessage) {
+				const linked = await db.linkAttachmentToMessage(
+					id,
+					targetSessionId,
+					reference.assistantSeq,
+				);
+				if (!linked) {
+					throw new Error(
+						`Forked ${spec.label} could not be linked to its assistant turn`,
+					);
+				}
+			}
 			replacements.set(sourceId, id);
 		}
 
@@ -227,4 +270,62 @@ export async function copyForkedVisualizationAttachments(
 		await removeCreatedCopies(created);
 		throw error;
 	}
+}
+
+/** Give a fork independent ownership of each session-retained visualization. */
+export function copyForkedVisualizationAttachments(
+	sourceSessionId: string,
+	targetSessionId: string,
+): Promise<number> {
+	return copyForkedManagedAttachments(sourceSessionId, targetSessionId, {
+		label: "visualization",
+		toolNames: VISUALIZATION_TOOL_NAMES,
+		parseResult: parseVisualizationToolResult,
+		linkToMessage: false,
+		isEligible: (source, result, sourceId) =>
+			source.session_id === sourceId &&
+			source.kind === "ephemeral" &&
+			source.category === "visualization" &&
+			source.retention === "session" &&
+			source.origin === "generated" &&
+			source.mime === "text/html" &&
+			source.filename === result.filename,
+	});
+}
+
+/** Give a fork an independent generated image and rewrite its compact receipt. */
+export function copyForkedGeneratedMediaAttachments(
+	sourceSessionId: string,
+	targetSessionId: string,
+): Promise<number> {
+	return copyForkedManagedAttachments(sourceSessionId, targetSessionId, {
+		label: "generated media",
+		toolNames: GENERATED_MEDIA_TOOL_NAMES,
+		parseResult: parseGeneratedMediaToolResult,
+		linkToMessage: true,
+		isEligible: (source, result, sourceId) =>
+			source.session_id === sourceId &&
+			source.kind === "ephemeral" &&
+			source.category === "media" &&
+			source.retention === "retained" &&
+			source.origin === "generated" &&
+			source.mime === "image/png" &&
+			source.filename === result.filename,
+	});
+}
+
+/** Copy every Hlid-owned artifact referenced by the forked visible transcript. */
+export async function copyForkedSessionAttachments(
+	sourceSessionId: string,
+	targetSessionId: string,
+): Promise<number> {
+	const visualizations = await copyForkedVisualizationAttachments(
+		sourceSessionId,
+		targetSessionId,
+	);
+	const media = await copyForkedGeneratedMediaAttachments(
+		sourceSessionId,
+		targetSessionId,
+	);
+	return visualizations + media;
 }

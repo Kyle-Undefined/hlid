@@ -72,6 +72,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	cleanup();
+	vi.useRealTimers();
 	window.history.replaceState({}, "", "/");
 	resetSessionStatusForTesting();
 	vi.restoreAllMocks();
@@ -79,6 +80,34 @@ afterEach(() => {
 });
 
 describe("LiveSessionSwitcher", () => {
+	it("advances the working timer as soon as it crosses one minute", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(100_000);
+		replaceSessionsStatus([
+			session("working", {
+				state: "running",
+				attention: {
+					bucket: "working",
+					reason: "provider_turn",
+					since: 40_500,
+					last_activity_at: 40_500,
+					queue_count: 0,
+					pending_count: 0,
+				},
+			}),
+		]);
+		renderSwitcher("chat-working");
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Open session attention, 1 total, work in progress",
+			}),
+		);
+		expect(screen.getByText("<1m")).not.toBeNull();
+
+		act(() => vi.advanceTimersByTime(1_000));
+		expect(screen.getByText("1m")).not.toBeNull();
+	});
+
 	it("shows only real live chats ordered by attention with compact context", () => {
 		replaceSessionsStatus([
 			session("placeholder", {

@@ -211,7 +211,8 @@ function LiveSessionDrawer({
 	);
 	const [now, setNow] = useState(Date.now());
 	useEffect(() => {
-		const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+		setNow(Date.now());
+		const timer = window.setInterval(() => setNow(Date.now()), 1_000);
 		return () => window.clearInterval(timer);
 	}, []);
 	const liveIds = new Set(rows.map((row) => row.session.session_id));

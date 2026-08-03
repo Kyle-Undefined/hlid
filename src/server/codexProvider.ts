@@ -1994,6 +1994,7 @@ class CodexAgentSession implements AgentSession {
 	private emittedReasoningIds = new Set<string>();
 	private emittedUnidentifiedAgentMessageText = "";
 	private startedItems = new Map<string, Record<string, unknown>>();
+	private emittedGeneratedMediaIds = new Set<string>();
 	private attachedThreadIds = new Set<string>();
 	private subagentByThread = new Map<string, string>();
 	private subagentSnapshots = new Map<string, SubagentSnapshot>();
@@ -4108,6 +4109,7 @@ class CodexAgentSession implements AgentSession {
 		this.emittedReasoningIds.clear();
 		this.emittedUnidentifiedAgentMessageText = "";
 		this.startedItems.clear();
+		this.emittedGeneratedMediaIds.clear();
 		this.backgroundCommandCandidates.clear();
 		this.approvedHtmlPlanItemId = null;
 		this.htmlPlanReady = false;
@@ -4384,6 +4386,18 @@ class CodexAgentSession implements AgentSession {
 		}
 		this.recordBackgroundCommandStarted(item, obj);
 		this.startedItems.set(itemId, item);
+		if (type === "imageGeneration") {
+			this.events.push({
+				type: "tool_start",
+				toolId: itemId,
+				name: "ImageGeneration",
+				input: {
+					type: "imageGeneration",
+					status: String(item.status ?? "in_progress"),
+				},
+			});
+			return;
+		}
 		if (type === "agentMessage" || type === "userMessage") return;
 		if (type === "reasoning") {
 			this.emitReasoning(item);
@@ -4681,6 +4695,41 @@ class CodexAgentSession implements AgentSession {
 		}
 		if (type === "plan") {
 			this.nativePlanText = textFromUnknown(item.text);
+			return;
+		}
+		if (type === "imageGeneration") {
+			if (!this.startedItems.has(itemId)) {
+				this.events.push({
+					type: "tool_start",
+					toolId: itemId,
+					name: "ImageGeneration",
+					input: {
+						type: "imageGeneration",
+						status: "in_progress",
+					},
+				});
+				this.startedItems.set(itemId, item);
+			}
+			if (!this.emittedGeneratedMediaIds.has(itemId)) {
+				this.emittedGeneratedMediaIds.add(itemId);
+				this.events.push({
+					type: "generated_media",
+					toolId: itemId,
+					kind: "image",
+					status: String(item.status ?? "completed"),
+					mime: "image/png",
+					...(typeof item.result === "string" && item.result
+						? { dataBase64: item.result }
+						: {}),
+					...(typeof item.revisedPrompt === "string" && item.revisedPrompt
+						? { prompt: item.revisedPrompt }
+						: {}),
+					...(typeof item.savedPath === "string" && item.savedPath
+						? { providerPath: item.savedPath }
+						: {}),
+				});
+			}
+			this.maybeFinalizePendingDone();
 			return;
 		}
 		if (type === "userMessage" || !type) return;
@@ -5017,6 +5066,10 @@ export class CodexProvider implements AgentProvider {
 		backgroundActivities: {
 			maturity: "experimental",
 			operations: ["list", "terminate", "clean"],
+		},
+		generatedMedia: {
+			maturity: "stable",
+			operations: ["persist", "preview", "download"],
 		},
 	} as const;
 	hlidToolLoading() {

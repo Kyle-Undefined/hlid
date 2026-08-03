@@ -7,6 +7,7 @@
  */
 
 import { dirname } from "node:path";
+import { PNG } from "pngjs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeConfig as makeBaseConfig } from "#/test/fixtures";
 
@@ -16,6 +17,7 @@ vi.mock("../db", () => ({
 	createAttachment: vi.fn().mockResolvedValue(undefined),
 	getAttachment: vi.fn().mockResolvedValue(null),
 	deleteAttachment: vi.fn().mockResolvedValue(undefined),
+	linkAttachmentToMessage: vi.fn().mockResolvedValue(true),
 	promoteAttachmentToVault: vi.fn().mockResolvedValue(true),
 	completePendingFileDeletion: vi.fn().mockResolvedValue(undefined),
 	failPendingFileDeletion: vi.fn().mockResolvedValue(undefined),
@@ -59,6 +61,7 @@ import {
 	readFile,
 	rmdir,
 	unlink,
+	writeFile,
 } from "node:fs/promises";
 import type { HlidConfig } from "../config";
 
@@ -67,6 +70,7 @@ import * as db from "../db";
 import {
 	handleGeneratedRelicPublish,
 	handleUpload,
+	ingestGeneratedImage,
 	promoteAttachmentToObsidian,
 	removeAttachment,
 	unlinkPaths,
@@ -87,6 +91,14 @@ const makeConfig = (vaultPath = "/tmp/test-vault"): HlidConfig =>
 		},
 	});
 
+function generatedPng(width = 2, height = 1): Buffer {
+	return PNG.sync.write({
+		width,
+		height,
+		data: Buffer.alloc(width * height * 4, 255),
+	});
+}
+
 function makeFormData(file: File, extra?: Record<string, string>): FormData {
 	const form = new FormData();
 	form.append("file", file);
@@ -106,6 +118,84 @@ function makeRequest(form: FormData): Request {
 }
 
 afterEach(() => vi.clearAllMocks());
+
+describe("ingestGeneratedImage", () => {
+	it("retains a generated PNG and links it to the assistant turn", async () => {
+		const png = generatedPng();
+		const result = await ingestGeneratedImage({
+			dataBase64: png.toString("base64"),
+			providerItemId: "image-1",
+			providerPath: "C:\\provider\\sunset.png",
+			sessionId: "session-1",
+			messageSeq: 7,
+			agentCwd: "/work/project",
+			maxBytes: DEFAULT_ATTACHMENTS_CONFIG.max_bytes,
+			allowedMimes: DEFAULT_ATTACHMENTS_CONFIG.allowed_mimes,
+		});
+
+		expect(result).toMatchObject({
+			id: "00000000-0000-0000-0000-000000000001",
+			filename: "sunset.png",
+			mime: "image/png",
+			width: 2,
+			height: 1,
+		});
+		expect(writeFile).toHaveBeenCalledWith(
+			expect.stringContaining("sunset.png"),
+			expect.any(Buffer),
+			{ flag: "wx", mode: 0o600 },
+		);
+		expect(db.createAttachment).toHaveBeenCalledWith(
+			expect.objectContaining({
+				session_id: "session-1",
+				filename: "sunset.png",
+				mime: "image/png",
+				category: "media",
+				retention: "retained",
+				origin: "generated",
+				agent_cwd: "/work/project",
+			}),
+		);
+		expect(db.linkAttachmentToMessage).toHaveBeenCalledWith(
+			"00000000-0000-0000-0000-000000000001",
+			"session-1",
+			7,
+		);
+	});
+
+	it("rejects invalid base64 before writing an artifact", async () => {
+		await expect(
+			ingestGeneratedImage({
+				dataBase64: "not-base64!",
+				providerItemId: "image-1",
+				sessionId: "session-1",
+				messageSeq: 7,
+				maxBytes: DEFAULT_ATTACHMENTS_CONFIG.max_bytes,
+				allowedMimes: DEFAULT_ATTACHMENTS_CONFIG.allowed_mimes,
+			}),
+		).rejects.toThrow("invalid or oversized image data");
+		expect(writeFile).not.toHaveBeenCalled();
+	});
+
+	it("rejects oversized PNG dimensions before decoding pixels", async () => {
+		const header = Buffer.alloc(24);
+		Buffer.from([0x89, 0x50, 0x4e, 0x47]).copy(header);
+		header.write("IHDR", 12, "ascii");
+		header.writeUInt32BE(5_000, 16);
+		header.writeUInt32BE(5_000, 20);
+		await expect(
+			ingestGeneratedImage({
+				dataBase64: header.toString("base64"),
+				providerItemId: "image-1",
+				sessionId: "session-1",
+				messageSeq: 7,
+				maxBytes: DEFAULT_ATTACHMENTS_CONFIG.max_bytes,
+				allowedMimes: DEFAULT_ATTACHMENTS_CONFIG.allowed_mimes,
+			}),
+		).rejects.toThrow("dimensions are unsupported");
+		expect(writeFile).not.toHaveBeenCalled();
+	});
+});
 
 describe("handleGeneratedRelicPublish", () => {
 	it("publishes direct HTML as a retained generated report", async () => {

@@ -123,6 +123,50 @@ describe("normalizeMd", () => {
 });
 
 describe("AssistantMsg", () => {
+	it("renders generated media after the response without an Activity tray", () => {
+		const { container } = render(
+			<AssistantMsg
+				message={makeMsg({
+					text: "Your image is ready.",
+					toolEvents: [
+						{
+							type: "tool_event",
+							id: "image-1",
+							name: "ImageGeneration",
+							input: { status: "inProgress" },
+							result: JSON.stringify({
+								type: "hlid_generated_media",
+								version: 1,
+								status: "ready",
+								provider: "codex",
+								provider_item_id: "image-1",
+								attachment_id: "attachment-1",
+								filename: "image-1.png",
+								mime: "image/png",
+								size_bytes: 4_096,
+								width: 1_024,
+								height: 768,
+							}),
+						},
+					],
+				})}
+				providerId="codex"
+			/>,
+		);
+
+		expect(screen.queryByText("Activity")).toBeNull();
+		expect(screen.getByText("Generated image")).not.toBeNull();
+		const response = screen.getByText("Your image is ready.");
+		const media = container.querySelector(
+			"[data-generated-media='attachment-1']",
+		);
+		expect(media).not.toBeNull();
+		expect(
+			response.compareDocumentPosition(media as Element) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+	});
+
 	it("renders grouped live Preview calls as compact inspectable activity rows", () => {
 		const onSelectTool = vi.fn();
 		const toolEvents: ToolEventMessage[] = [

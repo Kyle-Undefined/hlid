@@ -413,6 +413,19 @@ export type AgentEvent =
 			content: string;
 			isError?: boolean;
 	  }
+	/** Provider-produced media that Hlid must retain before exposing to Raven. */
+	| {
+			type: "generated_media";
+			toolId: string;
+			kind: "image";
+			status: string;
+			mime: "image/png";
+			/** Provider result bytes. Never persisted directly in transcript text. */
+			dataBase64?: string;
+			prompt?: string;
+			/** Optional provider-owned copy, retained only as bounded provenance. */
+			providerPath?: string;
+	  }
 	| { type: "summary"; text: string }
 	| {
 			type: "usage";
@@ -729,6 +742,11 @@ export type ProviderCapabilityMetadata = {
 		operations: ReadonlyArray<
 			"background" | "list" | "stop" | "terminate" | "clean"
 		>;
+	};
+	/** Provider media results that Hlid persists and presents as durable Relics. */
+	generatedMedia?: {
+		maturity: "experimental" | "beta" | "stable";
+		operations: ReadonlyArray<"persist" | "preview" | "download">;
 	};
 };
 

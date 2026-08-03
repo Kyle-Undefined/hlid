@@ -72,7 +72,7 @@ import type {
 	SubagentSnapshot,
 	TaskActivity,
 } from "./agentProvider";
-import { ingestPlanHtml } from "./attachments";
+import { ingestGeneratedImage, ingestPlanHtml } from "./attachments";
 import { prewarmClaudeCli, waitForClaudeWarmupSnapshot } from "./claudeWarmup";
 import { loadConfig } from "./config";
 import { bumpDataRevision } from "./dataRevision";
@@ -3945,6 +3945,100 @@ export class SessionManager {
 		});
 	}
 
+	private async handleGeneratedMedia(
+		event: Extract<AgentEvent, { type: "generated_media" }>,
+		turn: TurnState,
+		sessionId: string | undefined,
+		emit: (msg: ServerMessage) => void,
+		provider: AgentProvider,
+	): Promise<void> {
+		const failure = async (
+			stage: "provider" | "persistence",
+			error: string,
+		): Promise<void> => {
+			await this.handleToolResult(
+				{
+					type: "tool_result",
+					toolId: event.toolId,
+					content: JSON.stringify({
+						type: "hlid_generated_media",
+						version: 1,
+						status: "failed",
+						provider: provider.providerId,
+						provider_item_id: event.toolId,
+						failure_stage: stage,
+						error: error.slice(0, 1_000),
+					}),
+					isError: true,
+				},
+				turn,
+				sessionId,
+				emit,
+			);
+		};
+
+		if (event.status.toLowerCase() !== "completed" || !event.dataBase64) {
+			await failure(
+				"provider",
+				`Image generation ended with status ${event.status || "unknown"}.`,
+			);
+			return;
+		}
+		if (!sessionId) {
+			await failure(
+				"persistence",
+				"Generated media requires a durable Hlid session.",
+			);
+			return;
+		}
+
+		const seq = this.ensureAssistantRow(turn, sessionId);
+		try {
+			await turn.assistantRowWrite;
+			const config = loadConfig();
+			const image = await ingestGeneratedImage({
+				dataBase64: event.dataBase64,
+				providerItemId: event.toolId,
+				providerPath: event.providerPath,
+				sessionId,
+				messageSeq: seq,
+				agentCwd: this.agentCwd,
+				maxBytes: config.attachments.max_bytes,
+				allowedMimes: config.attachments.allowed_mimes,
+			});
+			bumpDataRevision("relics", "storage");
+			emit({ type: "attachment_created", id: image.id, kind: "ephemeral" });
+			await this.handleToolResult(
+				{
+					type: "tool_result",
+					toolId: event.toolId,
+					content: JSON.stringify({
+						type: "hlid_generated_media",
+						version: 1,
+						status: "ready",
+						provider: provider.providerId,
+						provider_item_id: event.toolId,
+						attachment_id: image.id,
+						filename: image.filename,
+						mime: image.mime,
+						size_bytes: image.sizeBytes,
+						width: image.width,
+						height: image.height,
+						...(event.prompt ? { prompt: event.prompt.slice(0, 4_000) } : {}),
+					}),
+				},
+				turn,
+				sessionId,
+				emit,
+			);
+		} catch (error) {
+			await failure(
+				"persistence",
+				error instanceof Error ? error.message : String(error),
+			);
+		}
+	}
+
 	private handleUsage(
 		event: Extract<AgentEvent, { type: "usage" }>,
 		turn: TurnState,
@@ -4078,6 +4172,9 @@ export class SessionManager {
 				break;
 			case "tool_result":
 				await this.handleToolResult(event, turn, sessionId, emit);
+				break;
+			case "generated_media":
+				await this.handleGeneratedMedia(event, turn, sessionId, emit, provider);
 				break;
 			case "usage":
 				this.handleUsage(event, turn, emit, provider);

@@ -16,6 +16,7 @@ import type {
 	PermissionMessage,
 	UserMessage,
 } from "./chatReducer";
+import { isGeneratedMediaToolEvent } from "./GeneratedMediaToolBlock";
 import { isHlidVisualizationToolEvent } from "./HlidVisualizationToolBlock";
 import { ObsidianVaultChangeReview } from "./ObsidianVaultChangeReview";
 import type { PermissionDecisionHandler } from "./PermissionCard";
@@ -286,6 +287,15 @@ export function AssistantMsg({
 	const activeTaskActivityGroupKeys = new Set(
 		activeTaskActivityGroups.map((group) => group.key),
 	);
+	const activityToolEvents = useMemo(
+		() =>
+			message.toolEvents.filter(
+				(event) =>
+					!isGeneratedMediaToolEvent(event) &&
+					!(providerId === "codex" && isHlidVisualizationToolEvent(event)),
+			),
+		[message.toolEvents, providerId],
+	);
 	const renderTaskActivityGroup = (
 		group: (typeof taskActivityGroups)[number],
 	) => (
@@ -312,7 +322,7 @@ export function AssistantMsg({
 		onSelectTool: inspectTool,
 	}: ActivityTrayRenderContext) => {
 		const transcriptPlan = planAssistantTranscript({
-			toolEvents: message.toolEvents,
+			toolEvents: activityToolEvents,
 			acceptedSteers,
 			toolEventStartIndex: startIndex,
 			toolEventEndIndex: endIndex,
@@ -323,7 +333,7 @@ export function AssistantMsg({
 			if (item.kind === "task_group") {
 				if (activeTaskActivityGroupKeys.has(item.key)) return [];
 				const events = item.eventIndices.map(
-					(eventIndex) => message.toolEvents[eventIndex],
+					(eventIndex) => activityToolEvents[eventIndex],
 				);
 				return events.length > 0
 					? [
@@ -335,13 +345,14 @@ export function AssistantMsg({
 						]
 					: [];
 			}
-			const event = message.toolEvents[item.eventIndex];
-			if (providerId === "codex" && isHlidVisualizationToolEvent(event)) {
-				return [];
-			}
+			const event = activityToolEvents[item.eventIndex];
 			return [renderTool(event, transcriptPlan, inspectTool)];
 		});
 	};
+	const trailingGeneratedMediaEvents = useMemo(
+		() => message.toolEvents.filter(isGeneratedMediaToolEvent),
+		[message.toolEvents],
+	);
 	const trailingVisualizationEvents = useMemo(
 		() =>
 			providerId === "codex"
@@ -380,10 +391,10 @@ export function AssistantMsg({
 	};
 	return (
 		<div className="group w-full min-w-0 max-w-full overflow-hidden py-3 border-b border-border/40 space-y-1.5">
-			{(message.toolEvents.length > 0 || acceptedSteers.length > 0) && (
+			{(activityToolEvents.length > 0 || acceptedSteers.length > 0) && (
 				<AssistantActivityTray
 					responseId={message.id}
-					events={message.toolEvents}
+					events={activityToolEvents}
 					streaming={message.streaming}
 					steerCount={acceptedSteers.length}
 					open={resolvedActivityOpen}
@@ -510,6 +521,7 @@ export function AssistantMsg({
 					)}
 				</div>
 			)}
+			{trailingGeneratedMediaEvents.map((event) => renderTool(event))}
 			{trailingVisualizationEvents.map((event) => renderTool(event))}
 			{!message.streaming && (
 				<ObsidianVaultChangeReview toolEvents={message.toolEvents} />

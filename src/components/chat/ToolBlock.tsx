@@ -20,6 +20,10 @@ import type { SubagentSnapshot } from "#/server/agentProvider";
 import type { ToolEventMessage } from "#/server/protocol";
 import type { PermissionMessage } from "./chatReducer";
 import {
+	GeneratedMediaToolBlock,
+	isGeneratedMediaToolEvent,
+} from "./GeneratedMediaToolBlock";
+import {
 	HlidDelegationToolBlock,
 	isHlidDelegationToolEvent,
 } from "./HlidDelegationToolBlock";
@@ -323,6 +327,7 @@ type ToolBlockProps = {
 };
 
 type SpecializedToolEventKind =
+	| "generated-media"
 	| "subagent"
 	| "visualization"
 	| "project-preview-capture"
@@ -332,6 +337,7 @@ function specializedToolEventKind(
 	event: ToolEventMessage,
 	providerId?: string,
 ): SpecializedToolEventKind | null {
+	if (isGeneratedMediaToolEvent(event)) return "generated-media";
 	if (providerId === "codex" && isHlidVisualizationToolEvent(event)) {
 		return "visualization";
 	}
@@ -379,6 +385,9 @@ function SpecializedToolEvent({
 	pendingPermissions,
 	onDecidePermission,
 }: ToolBlockProps & { kind: SpecializedToolEventKind }) {
+	if (kind === "generated-media") {
+		return <GeneratedMediaToolBlock event={event} />;
+	}
 	if (kind === "visualization") {
 		return (
 			<HlidVisualizationToolBlock

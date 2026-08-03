@@ -45,7 +45,7 @@ const {
 	mockGetMessageForFork,
 	mockInsertForkedMessages,
 	mockCopyForkedSessionTranscript,
-	mockCopyForkedVisualizationAttachments,
+	mockCopyForkedSessionAttachments,
 	mockGetHlidDelegationByChildSession,
 	mockAbandonInterruptedHlidDelegation,
 	mockCloseProjectPreviewSession,
@@ -86,7 +86,7 @@ const {
 	mockGetMessageForFork: vi.fn(),
 	mockInsertForkedMessages: vi.fn(),
 	mockCopyForkedSessionTranscript: vi.fn(),
-	mockCopyForkedVisualizationAttachments: vi.fn(),
+	mockCopyForkedSessionAttachments: vi.fn(),
 	mockGetHlidDelegationByChildSession: vi.fn(),
 	mockAbandonInterruptedHlidDelegation: vi.fn(),
 	mockCloseProjectPreviewSession: vi.fn(),
@@ -136,7 +136,7 @@ vi.mock("./attachments", () => ({
 }));
 
 vi.mock("./sessionForkAttachments", () => ({
-	copyForkedVisualizationAttachments: mockCopyForkedVisualizationAttachments,
+	copyForkedSessionAttachments: mockCopyForkedSessionAttachments,
 }));
 
 vi.mock("./proxy", () => ({
@@ -1047,8 +1047,8 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		mockInsertForkedMessages.mockReset();
 		mockCopyForkedSessionTranscript.mockReset();
 		mockCopyForkedSessionTranscript.mockResolvedValue(2);
-		mockCopyForkedVisualizationAttachments.mockReset();
-		mockCopyForkedVisualizationAttachments.mockResolvedValue(0);
+		mockCopyForkedSessionAttachments.mockReset();
+		mockCopyForkedSessionAttachments.mockResolvedValue(0);
 	});
 
 	function forkRequest(body: unknown): Request {
@@ -1426,7 +1426,7 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 			json.id,
 			undefined,
 		);
-		expect(mockCopyForkedVisualizationAttachments).toHaveBeenCalledWith(
+		expect(mockCopyForkedSessionAttachments).toHaveBeenCalledWith(
 			"abc-123",
 			json.id,
 		);
@@ -1480,7 +1480,7 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 			history_resume_mode: "none",
 		});
 		mockGetSessionProviderSession.mockResolvedValue("thread-source");
-		mockCopyForkedVisualizationAttachments.mockRejectedValue(
+		mockCopyForkedSessionAttachments.mockRejectedValue(
 			new Error("Visualization copy failed"),
 		);
 		const pool = makePool({

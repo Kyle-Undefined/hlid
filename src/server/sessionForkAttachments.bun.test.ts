@@ -24,7 +24,11 @@ vi.mock("./libraryStore", () => ({
 		path.slice(`${libraryState.root}/`.length).replaceAll("\\", "/"),
 }));
 
-import { createAttachment, getAttachment } from "../db/attachments";
+import {
+	createAttachment,
+	getAttachment,
+	linkAttachmentToMessage,
+} from "../db/attachments";
 import { freshDb } from "../db/db.test-utils";
 import {
 	appendMessage,
@@ -38,7 +42,10 @@ import {
 	createSession,
 	deleteSession,
 } from "../db/sessions";
-import { copyForkedVisualizationAttachments } from "./sessionForkAttachments";
+import {
+	copyForkedGeneratedMediaAttachments,
+	copyForkedVisualizationAttachments,
+} from "./sessionForkAttachments";
 
 let database: Database;
 let libraryRoot = "";
@@ -144,5 +151,94 @@ describe("copyForkedVisualizationAttachments", () => {
 			(await getSessionToolEventDetail("fork", "visualization-tool-1"))
 				?.result_text,
 		).toBe(forkResultText);
+	});
+});
+
+describe("copyForkedGeneratedMediaAttachments", () => {
+	it("keeps a forked generated image valid after the source session is deleted", async () => {
+		await createSession("source", "Source", "gpt-5.6-sol", {
+			providerId: "codex",
+		});
+		await appendMessage("source", 1, "assistant", "Image ready");
+		await appendToolEvent("source", 1, "image-tool-1", "ImageGeneration", {
+			type: "imageGeneration",
+			status: "inProgress",
+		});
+
+		const sourceAttachmentId = "generated-image-source";
+		const sourceDirectory = `${libraryRoot}/artifacts/${sourceAttachmentId}`;
+		const sourcePath = `${sourceDirectory}/image-tool-1.png`;
+		const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]);
+		await mkdir(sourceDirectory, { recursive: true });
+		await writeFile(sourcePath, png);
+		await createAttachment({
+			id: sourceAttachmentId,
+			session_id: "source",
+			kind: "ephemeral",
+			filename: "image-tool-1.png",
+			path: sourcePath,
+			mime: "image/png",
+			size_bytes: png.byteLength,
+			sha256: createHash("sha256").update(png).digest("hex"),
+			storage_key: `artifacts/${sourceAttachmentId}/image-tool-1.png`,
+			category: "media",
+			retention: "retained",
+			origin: "generated",
+			agent_cwd: "/work/project",
+			image_optimized_at: 123,
+			original_size_bytes: png.byteLength,
+		});
+		expect(await linkAttachmentToMessage(sourceAttachmentId, "source", 1)).toBe(
+			true,
+		);
+		const sourceResult = JSON.stringify({
+			type: "hlid_generated_media",
+			version: 1,
+			status: "ready",
+			provider: "codex",
+			provider_item_id: "image-tool-1",
+			attachment_id: sourceAttachmentId,
+			filename: "image-tool-1.png",
+			mime: "image/png",
+			size_bytes: png.byteLength,
+			width: 1,
+			height: 1,
+		});
+		await setToolEventResult("source", "image-tool-1", sourceResult, false);
+
+		await createForkedSessionRow("source", "fork", "native-fork", {
+			forkKind: "exact",
+		});
+		await copyForkedSessionTranscript("source", "fork");
+		expect(await copyForkedGeneratedMediaAttachments("source", "fork")).toBe(1);
+
+		const forkResultText = (
+			await getSessionToolEventDetail("fork", "image-tool-1")
+		)?.result_text;
+		const forkResult = JSON.parse(forkResultText ?? "{}") as {
+			attachment_id: string;
+		};
+		expect(forkResult.attachment_id).not.toBe(sourceAttachmentId);
+		const forkAttachment = await getAttachment(forkResult.attachment_id);
+		expect(forkAttachment).toMatchObject({
+			session_id: "fork",
+			message_seq: 1,
+			kind: "ephemeral",
+			filename: "image-tool-1.png",
+			mime: "image/png",
+			category: "media",
+			retention: "retained",
+			origin: "generated",
+			agent_cwd: "/work/project",
+			image_optimized_at: 123,
+			original_size_bytes: png.byteLength,
+		});
+		expect(await readFile(forkAttachment?.path ?? "")).toEqual(png);
+
+		const { ephemeralPaths } = await deleteSession("source");
+		await Promise.all(ephemeralPaths.map((path) => unlink(path)));
+		expect(await getAttachment(sourceAttachmentId)).toBeNull();
+		expect(await getAttachment(forkResult.attachment_id)).not.toBeNull();
+		expect(await readFile(forkAttachment?.path ?? "")).toEqual(png);
 	});
 });
