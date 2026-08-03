@@ -344,11 +344,21 @@ describe("ToolBlock — Activity tray presentation", () => {
 		).not.toBeNull();
 		expect(screen.getByText("Changes")).not.toBeNull();
 		expect(screen.getAllByText("src/app.ts")).toHaveLength(2);
+		const toggle = screen.getByRole("button", {
+			name: "Collapse diff for src/app.ts, 1 addition, 1 deletion",
+		});
+		expect(toggle.getAttribute("aria-expanded")).toBe("true");
 		const diff = screen.getByRole("region", { name: "src/app.ts diff" });
 		const deletion = screen.getByText("-const oldValue = 1;");
 		const addition = screen.getByText("+const newValue = 2;");
+		const canvas = diff.querySelector("[data-diff-scroll-canvas]");
 		expect(diff.contains(deletion)).toBe(true);
 		expect(diff.contains(addition)).toBe(true);
+		expect(canvas?.className).toContain("min-w-full");
+		expect(canvas?.className).toContain("w-max");
+		expect(deletion.className).toContain("w-full");
+		expect(addition.className).toContain("w-full");
+		expect(addition.className).toContain("whitespace-pre");
 		expect(deletion.className).toContain("text-destructive/70");
 		expect(deletion.className).toContain("bg-destructive/5");
 		expect(addition.className).toContain("text-status-success/70");
@@ -356,6 +366,83 @@ describe("ToolBlock — Activity tray presentation", () => {
 		expect(`${deletion.className} ${addition.className}`).not.toMatch(
 			/(?:red|green)-\d/,
 		);
+
+		fireEvent.click(toggle);
+		expect(toggle.getAttribute("aria-expanded")).toBe("false");
+		expect(
+			screen.queryByRole("region", { name: "src/app.ts diff" }),
+		).toBeNull();
+		expect(screen.queryByText("-const oldValue = 1;")).toBeNull();
+	});
+
+	it("collapses multi-file diffs by default and mounts files independently", () => {
+		const changes = [
+			{
+				path: "src/one.ts",
+				kind: "update",
+				diff: "-old one\n+new one",
+			},
+			{
+				path: "src/two.ts",
+				kind: "add",
+				diff: "+new two",
+			},
+		];
+		render(
+			<ToolInspector
+				event={makeEvent({
+					name: "fileChange",
+					input: { type: "fileChange", changes, status: "inProgress" },
+					result: JSON.stringify({
+						type: "fileChange",
+						changes,
+						status: "completed",
+					}),
+				})}
+				onClose={vi.fn()}
+			/>,
+		);
+
+		const firstToggle = screen.getByRole("button", {
+			name: "Expand diff for src/one.ts, 1 addition, 1 deletion",
+		});
+		const secondToggle = screen.getByRole("button", {
+			name: "Expand diff for src/two.ts, 1 addition, 0 deletions",
+		});
+		expect(firstToggle.getAttribute("aria-expanded")).toBe("false");
+		expect(secondToggle.getAttribute("aria-expanded")).toBe("false");
+		expect(
+			screen.queryByRole("region", { name: "src/one.ts diff" }),
+		).toBeNull();
+		expect(screen.queryByText("-old one")).toBeNull();
+		expect(screen.queryByText("+new two")).toBeNull();
+
+		fireEvent.click(firstToggle);
+		expect(firstToggle.getAttribute("aria-expanded")).toBe("true");
+		expect(
+			screen.getByRole("region", { name: "src/one.ts diff" }),
+		).not.toBeNull();
+		expect(screen.queryByText("-old one")).not.toBeNull();
+		expect(
+			screen.queryByRole("region", { name: "src/two.ts diff" }),
+		).toBeNull();
+		expect(screen.queryByText("+new two")).toBeNull();
+
+		fireEvent.click(firstToggle);
+		expect(
+			screen.queryByRole("region", { name: "src/one.ts diff" }),
+		).toBeNull();
+		expect(screen.queryByText("-old one")).toBeNull();
+
+		fireEvent.click(secondToggle);
+		expect(secondToggle.getAttribute("aria-expanded")).toBe("true");
+		expect(
+			screen.getByRole("region", { name: "src/two.ts diff" }),
+		).not.toBeNull();
+		expect(screen.queryByText("+new two")).not.toBeNull();
+		expect(
+			screen.queryByRole("region", { name: "src/one.ts diff" }),
+		).toBeNull();
 	});
 
 	it("renders Claude Edit replacements as a diff and retains the tool result", () => {
