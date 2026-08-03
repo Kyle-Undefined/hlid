@@ -52,6 +52,10 @@ const DEFAULT_METADATA_IDLE_TIMEOUT_MS = 10_000;
 const CODEX_STDERR_BURST_MS = 100;
 const MAX_CODEX_STDERR_BUFFER_CHARS = 64 * 1024;
 const MAX_CODEX_DIAGNOSTIC_CHARS = 500;
+const REMOTE_PLUGIN_SYNC_WARNING_COOLDOWN_MS = 60 * 60_000;
+const APP_CATALOG_DEGRADED_WARNING =
+	"Codex app catalog refresh is degraded; provider sessions remain available";
+let lastRemotePluginSyncWarningAt = Number.NEGATIVE_INFINITY;
 // biome-ignore lint/complexity/useRegexLiterals: constructor avoids a literal control character rejected by noControlCharactersInRegex
 const ANSI_ESCAPE = new RegExp("\\x1b\\[[0-9;]*m", "g");
 
@@ -174,6 +178,13 @@ function summarizeCodexStderr(line: string): string | null | undefined {
 					: typeof parsed.fields?.error === "string"
 						? parsed.fields.error
 						: "";
+			if (
+				target.includes("codex_core_plugins::") &&
+				(/remote installed plugin bundle sync failed/i.test(raw) ||
+					/failed to refresh remote installed plugins cache/i.test(raw))
+			) {
+				return APP_CATALOG_DEGRADED_WARNING;
+			}
 			if (/models_manager::cache$/.test(target)) {
 				if (/failed to load models cache/i.test(raw)) {
 					return `${target}: model catalog cache could not be read; Codex will refresh it`;
@@ -504,6 +515,16 @@ export class CodexAppServer {
 			if (line.trim()) this.recordOmittedStderr(line);
 			return;
 		}
+		if (summary === APP_CATALOG_DEGRADED_WARNING) {
+			const now = Date.now();
+			if (
+				now - lastRemotePluginSyncWarningAt <
+				REMOTE_PLUGIN_SYNC_WARNING_COOLDOWN_MS
+			) {
+				return;
+			}
+			lastRemotePluginSyncWarningAt = now;
+		}
 		console.warn("[codex app-server]", summary);
 	}
 
@@ -715,4 +736,5 @@ export function listCodexAppServers(): Array<{
 
 export function __resetCodexAppServersForTesting(): void {
 	closeAllCodexAppServers();
+	lastRemotePluginSyncWarningAt = Number.NEGATIVE_INFINITY;
 }

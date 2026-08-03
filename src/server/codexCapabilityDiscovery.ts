@@ -185,70 +185,6 @@ function hookEvidence(
 	];
 }
 
-function appCatalogEvidence(
-	providerId: string,
-	response: unknown,
-): ProviderCapabilityEvidence[] {
-	const apps = list(response, ["data", "apps"]);
-	const truncated = Boolean(record(response).nextCursor);
-	const connectable = apps.filter((value) =>
-		Boolean(textValue(record(value), ["installUrl"])),
-	).length;
-	return [
-		{
-			id: providerCapabilityId(providerId, "app-catalog"),
-			label: `App catalog (${apps.length}${truncated ? "+" : ""} available)`,
-			scope: "account",
-			support: "advertised",
-			integration: "integrated",
-			readiness: "ready",
-			source: "provider-runtime",
-			maturity: "experimental",
-			operations: ["list", "read", "refresh"],
-		},
-		{
-			id: providerCapabilityId(providerId, "app-authentication"),
-			label: `App authentication (${connectable} connectable on this page)`,
-			scope: "account",
-			support: "advertised",
-			integration: "integrated",
-			readiness: connectable > 0 ? "ready" : "gated",
-			source: "provider-runtime",
-			maturity: "experimental",
-			operations: ["start", "observe-completion"],
-			...(connectable > 0
-				? {}
-				: {
-						reason:
-							"The current catalog page did not advertise an authentication entry point.",
-					}),
-		},
-	];
-}
-
-function installedAppEvidence(
-	providerId: string,
-	response: unknown,
-): ProviderCapabilityEvidence[] {
-	const apps = list(response, ["apps", "data"]);
-	const callable = apps.filter(
-		(value) => booleanValue(record(value), ["callable"]) === true,
-	).length;
-	return [
-		{
-			id: providerCapabilityId(providerId, "installed-apps"),
-			label: `Installed apps (${apps.length}; ${callable} usable)`,
-			scope: "account",
-			support: "advertised",
-			integration: "integrated",
-			readiness: "ready",
-			source: "provider-runtime",
-			maturity: "experimental",
-			operations: ["list", "refresh"],
-		},
-	];
-}
-
 function connectorHealthEvidence(
 	providerId: string,
 	response: unknown,
@@ -299,23 +235,15 @@ export async function discoverCodexProviderCapabilities(input: {
 			map: hookEvidence,
 		},
 		{
-			method: "app/list",
-			params: { limit: 100 },
-			map: appCatalogEvidence,
-			allowNextCursor: true,
-		},
-		{
-			method: "app/installed",
-			params: {},
-			map: installedAppEvidence,
-		},
-		{
 			method: "mcpServerStatus/list",
 			params: { limit: 100, detail: "full" },
 			map: connectorHealthEvidence,
 			allowNextCursor: true,
 		},
 	] as const;
+	// Remote app inventory has its own bounded Apps/Connectors route. Keeping
+	// app/list and app/installed out of this general snapshot prevents a slow
+	// plugin registry sync from delaying unrelated provider capability reads.
 	const settled = await Promise.allSettled(
 		probes.map((probe) => input.request(probe.method, probe.params)),
 	);

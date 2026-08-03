@@ -75,7 +75,7 @@ async function compactCodexTranscripts(db: Db): Promise<number> {
 export function sanitizeDurableToolResult(resultText: string): string {
 	if (!resultText.includes("data:image/")) return resultText;
 	return resultText.replace(
-		/data:image\/[^"'\s)>\]}]+/g,
+		/data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=_-]+/gi,
 		DURABLE_IMAGE_PLACEHOLDER,
 	);
 }
@@ -83,26 +83,26 @@ export function sanitizeDurableToolResult(resultText: string): string {
 async function sanitizeToolImages(db: Db): Promise<number> {
 	if (maintenanceComplete(db, TOOL_IMAGES_SANITIZED)) return 0;
 	let sanitized = 0;
+	// Source and diagnostic output may mention the prefix without containing an
+	// image. Advance by ID so those unchanged rows cannot starve later matches.
+	let lastScannedId = 0;
 	while (true) {
 		const rows = db
-			.query<{ id: number; result_text: string }, [number]>(
+			.query<{ id: number; result_text: string }, [number, number]>(
 				`SELECT id, result_text
 				 FROM tool_events
-				 WHERE result_text IS NOT NULL
+				 WHERE id > ?
+				   AND result_text IS NOT NULL
 				   AND instr(result_text, 'data:image/') > 0
 				 ORDER BY id
 				 LIMIT ?`,
 			)
-			.all(STORAGE_MAINTENANCE_BATCH_SIZE);
+			.all(lastScannedId, STORAGE_MAINTENANCE_BATCH_SIZE);
 		if (rows.length === 0) break;
 		db.transaction(() => {
 			for (const row of rows) {
 				const resultText = sanitizeDurableToolResult(row.result_text);
-				if (resultText === row.result_text) {
-					throw new Error(
-						`Could not compact embedded image in tool event ${row.id}`,
-					);
-				}
+				if (resultText === row.result_text) continue;
 				sanitized += db.run(
 					`UPDATE tool_events
 					 SET result_text = ?, result_length = ?, result_preview = ?
@@ -116,6 +116,7 @@ async function sanitizeToolImages(db: Db): Promise<number> {
 				).changes;
 			}
 		})();
+		lastScannedId = rows.at(-1)?.id ?? lastScannedId;
 		await yieldToServer();
 	}
 	markMaintenanceComplete(db, TOOL_IMAGES_SANITIZED);

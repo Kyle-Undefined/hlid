@@ -244,6 +244,56 @@ describe("CodexAppServer idle lifecycle", () => {
 		warn.mockRestore();
 	});
 
+	it("rate-limits remote app catalog failures across app servers", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const first = await create(4_000_000);
+		const second = await create(4_000_000);
+		const diagnostic = (target: string, message: string) =>
+			`${JSON.stringify({
+				level: "WARN",
+				target,
+				fields: { message },
+			})}\n`;
+
+		first.proc.stderr.emit(
+			"data",
+			Buffer.from(
+				diagnostic(
+					"codex_core_plugins::remote::remote_installed_plugin_sync",
+					"remote installed plugin bundle sync failed",
+				),
+			),
+		);
+		second.proc.stderr.emit(
+			"data",
+			Buffer.from(
+				diagnostic(
+					"codex_core_plugins::manager",
+					"failed to refresh remote installed plugins cache",
+				),
+			),
+		);
+
+		expect(warn).toHaveBeenCalledOnce();
+		expect(warn).toHaveBeenCalledWith(
+			"[codex app-server]",
+			"Codex app catalog refresh is degraded; provider sessions remain available",
+		);
+
+		await vi.advanceTimersByTimeAsync(60 * 60_000);
+		second.proc.stderr.emit(
+			"data",
+			Buffer.from(
+				diagnostic(
+					"codex_core_plugins::remote::remote_installed_plugin_sync",
+					"remote installed plugin bundle sync failed",
+				),
+			),
+		);
+		expect(warn).toHaveBeenCalledTimes(2);
+		warn.mockRestore();
+	});
+
 	it("buffers stderr lines split across process chunks", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const { proc } = await create();

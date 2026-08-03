@@ -197,7 +197,12 @@ describe("Codex capability discovery", () => {
 			request,
 		});
 
-		expect(request).toHaveBeenCalledTimes(7);
+		expect(request).toHaveBeenCalledTimes(5);
+		expect(request).not.toHaveBeenCalledWith("app/list", expect.anything());
+		expect(request).not.toHaveBeenCalledWith(
+			"app/installed",
+			expect.anything(),
+		);
 		expect(discovery.context).toEqual({ cwd: "/work" });
 		expect(discovery.issues).toBeUndefined();
 		expect(
@@ -216,16 +221,6 @@ describe("Codex capability discovery", () => {
 		expect(
 			discovery.evidence.find((item) => item.id.includes("hook-catalog")),
 		).toMatchObject({ label: "Hook catalog (1)" });
-		expect(
-			discovery.evidence.find((item) => item.id.includes("app-catalog")),
-		).toMatchObject({
-			label: "App catalog (1+ available)",
-			integration: "integrated",
-			readiness: "ready",
-		});
-		expect(
-			discovery.evidence.find((item) => item.id.includes("installed-apps")),
-		).toMatchObject({ label: "Installed apps (1; 1 usable)" });
 		expect(
 			discovery.evidence.find((item) => item.id.includes("connector-health")),
 		).toMatchObject({ label: "MCP connector health (1; 0 need auth)" });

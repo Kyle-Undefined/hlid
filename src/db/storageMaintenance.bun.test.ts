@@ -121,5 +121,54 @@ describe("post-upgrade storage maintenance", () => {
 		expect(sanitizeDurableToolResult('{"path":"capture.png"}')).toBe(
 			'{"path":"capture.png"}',
 		);
+		expect(
+			sanitizeDurableToolResult("AND instr(result_text, 'data:image/') > 0"),
+		).toBe("AND instr(result_text, 'data:image/') > 0");
+		expect(sanitizeDurableToolResult(String.raw`data:image\/[^\"']+`)).toBe(
+			String.raw`data:image\/[^\"']+`,
+		);
+	});
+
+	it("skips textual image references without stranding later maintenance", async () => {
+		database.run(
+			`INSERT INTO sessions (id, label, started_at) VALUES ('s1', 'storage', 1)`,
+		);
+		database.run(
+			`INSERT INTO tool_events
+			 (session_id, assistant_seq, tool_id, name, input_json, result_text)
+			 VALUES
+			 ('s1', 1, 'source-1', 'fileChange', '{}', ?),
+			 ('s1', 2, 'capture-1', 'capture_project_preview', '{}', ?)`,
+			[
+				"AND instr(result_text, 'data:image/') > 0",
+				'{"imageUrl":"data:image/png;base64,AQID"}',
+			],
+		);
+
+		const result = await runPostUpgradeStorageMaintenance();
+
+		expect(result.toolImagesSanitized).toBe(1);
+		expect(result.toolSummariesBackfilled).toBe(1);
+		expect(
+			database
+				.query<{ result_text: string }, []>(
+					"SELECT result_text FROM tool_events WHERE tool_id = 'source-1'",
+				)
+				.get()?.result_text,
+		).toBe("AND instr(result_text, 'data:image/') > 0");
+		expect(
+			database
+				.query<{ result_text: string }, []>(
+					"SELECT result_text FROM tool_events WHERE tool_id = 'capture-1'",
+				)
+				.get()?.result_text,
+		).toContain("image omitted");
+		expect(await runPostUpgradeStorageMaintenance()).toEqual({
+			codexTranscriptsCompacted: 0,
+			toolImagesSanitized: 0,
+			toolSummariesBackfilled: 0,
+			managedImagesProcessed: 0,
+			managedImageBytesSaved: 0,
+		});
 	});
 });
