@@ -40,6 +40,7 @@ import {
 	getSessionNextMessageSeq,
 	getSessionPlanProposals,
 	getSessionToolEventDetail,
+	getSessionToolEventPage,
 	getSessionToolEventSummaries,
 	setAskUserQuestionResolution,
 	setMessageProviderTurnId,
@@ -117,6 +118,26 @@ function baseQuery(overrides: Partial<QueryData> = {}): QueryData {
 		tokens_in_context: null,
 		...overrides,
 	};
+}
+
+function insertProviderTranscriptForTest(
+	db: Database,
+	providerId: string,
+	nativeSessionId: string,
+): void {
+	db.run(
+		`INSERT INTO provider_history_transcripts
+		 (provider_id, native_session_id, subpath, source_path, source_hash,
+		  payload_json, entry_count)
+		 VALUES (?, ?, '', 'source.jsonl', 'hash', '[]', 1)`,
+		[providerId, nativeSessionId],
+	);
+	db.run(
+		`INSERT INTO provider_history_transcript_deltas
+		 (provider_id, native_session_id, subpath, uuid, payload_json)
+		 VALUES (?, ?, '', 'delta-1', '{"type":"user","uuid":"delta-1"}')`,
+		[providerId, nativeSessionId],
+	);
 }
 
 async function setActualModelForTest(
@@ -418,6 +439,25 @@ describe("sessions — create & fetch", () => {
 		).toMatchObject({ fork_parent_label: "Renamed parent" });
 	});
 
+	it("copies session-store resume mode to a native fork", async () => {
+		const db = freshDb();
+		await createSession("source", "Imported Claude", "sonnet", {
+			providerId: "claude",
+		});
+		await setSessionProviderSession("source", "claude", "native-source");
+		db.run(
+			`UPDATE sessions SET history_resume_mode = 'session-store' WHERE id = 'source'`,
+		);
+
+		await createForkedSessionRow("source", "fork", "native-fork");
+
+		expect(await getSessionById("fork")).toMatchObject({
+			provider_id: "claude",
+			provider_session_id: "native-fork",
+			history_resume_mode: "session-store",
+		});
+	});
+
 	it("rejects rename for a missing session", async () => {
 		freshDb();
 		await expect(renameSession("missing", "New label")).rejects.toThrow(
@@ -636,6 +676,87 @@ describe("sessions — provider sessions", () => {
 		expect(await getSessionProviderId("s1")).toBe("claude");
 		expect(await getSessionProviderSession("s1", "claude")).toBe(
 			"claude-uuid-123",
+		);
+	});
+
+	it("deletes a last-owner transcript and deltas on a provider id switch", async () => {
+		const db = await getDb();
+		await createSession("s1", "L", "sonnet", { providerId: "claude" });
+		await setSessionProviderSession("s1", "claude", "claude-native");
+		insertProviderTranscriptForTest(db, "claude", "claude-native");
+
+		await setSessionProviderId("s1", "codex");
+
+		expect(
+			db
+				.query<{ transcripts: number; deltas: number }, []>(`
+					SELECT
+					 (SELECT COUNT(*) FROM provider_history_transcripts) AS transcripts,
+					 (SELECT COUNT(*) FROM provider_history_transcript_deltas) AS deltas
+				`)
+				.get(),
+		).toEqual({ transcripts: 0, deltas: 0 });
+	});
+
+	it("retains shared transcripts until the final provider selection switches", async () => {
+		const db = await getDb();
+		for (const sessionId of ["first", "second"]) {
+			await createSession(sessionId, sessionId, "sonnet", {
+				providerId: "claude",
+			});
+			await setSessionProviderSession(sessionId, "claude", "shared-native");
+		}
+		insertProviderTranscriptForTest(db, "claude", "shared-native");
+
+		await setSessionProviderId("first", "codex");
+		expect(
+			db
+				.query<{ count: number }, []>(
+					`SELECT COUNT(*) AS count FROM provider_history_transcripts`,
+				)
+				.get()?.count,
+		).toBe(1);
+
+		await setSessionProviderSelection("second", "codex", {
+			model: "gpt-5.6-sol",
+			effort: "medium",
+			permissionMode: "default",
+		});
+		expect(
+			db
+				.query<{ transcripts: number; deltas: number }, []>(`
+					SELECT
+					 (SELECT COUNT(*) FROM provider_history_transcripts) AS transcripts,
+					 (SELECT COUNT(*) FROM provider_history_transcript_deltas) AS deltas
+				`)
+				.get(),
+		).toEqual({ transcripts: 0, deltas: 0 });
+	});
+
+	it("preserves transcript ownership across same-provider updates", async () => {
+		const db = await getDb();
+		await createSession("s1", "L", "sonnet", { providerId: "claude" });
+		await setSessionProviderSession("s1", "claude", "claude-native");
+		insertProviderTranscriptForTest(db, "claude", "claude-native");
+
+		await setSessionProviderId("s1", "claude");
+		await setSessionProviderSelection("s1", "claude", {
+			model: "opus",
+			effort: "high",
+			permissionMode: "default",
+		});
+
+		expect(
+			db
+				.query<{ transcripts: number; deltas: number }, []>(`
+					SELECT
+					 (SELECT COUNT(*) FROM provider_history_transcripts) AS transcripts,
+					 (SELECT COUNT(*) FROM provider_history_transcript_deltas) AS deltas
+				`)
+				.get(),
+		).toEqual({ transcripts: 1, deltas: 1 });
+		expect(await getSessionProviderSession("s1", "claude")).toBe(
+			"claude-native",
 		);
 	});
 });
@@ -1697,6 +1818,66 @@ describe("tool events", () => {
 		expect(events[0].tool_id).toBe("tid-1");
 	});
 
+	it("traverses three tool-event pages in order without duplicates", async () => {
+		await createSession("s1", "L", "m");
+		await appendMessage("s1", 0, "assistant", "used tools");
+		for (let index = 0; index < 45; index++) {
+			const toolId = `tool-${index}`;
+			await appendToolEvent("s1", 0, toolId, "Read", { index });
+			await setToolEventResult("s1", toolId, `result-${index}`, index === 2);
+		}
+		await createSession("other", "Other", "m");
+		await appendToolEvent("other", 0, "other-tool", "Read", {});
+
+		const latest = await getSessionToolEventPage("s1", 0, undefined, 20);
+		expect(latest.items.map((row) => row.tool_id)).toEqual(
+			Array.from({ length: 20 }, (_, index) => `tool-${index + 25}`),
+		);
+		expect(latest).toMatchObject({
+			total: 45,
+			errorCount: 1,
+			hasEarlier: true,
+		});
+		expect(latest.nextBeforeId).toBe(latest.items[0].id);
+
+		const middle = await getSessionToolEventPage(
+			"s1",
+			0,
+			latest.nextBeforeId ?? undefined,
+			20,
+		);
+		expect(middle.items.map((row) => row.tool_id)).toEqual(
+			Array.from({ length: 20 }, (_, index) => `tool-${index + 5}`),
+		);
+		expect(middle).toMatchObject({
+			total: 45,
+			errorCount: 1,
+			hasEarlier: true,
+		});
+		expect(middle.nextBeforeId).toBe(middle.items[0].id);
+
+		const earlier = await getSessionToolEventPage(
+			"s1",
+			0,
+			middle.nextBeforeId ?? undefined,
+			20,
+		);
+		expect(earlier.items.map((row) => row.tool_id)).toEqual(
+			Array.from({ length: 5 }, (_, index) => `tool-${index}`),
+		);
+		expect(earlier).toMatchObject({
+			total: 45,
+			errorCount: 1,
+			hasEarlier: false,
+			nextBeforeId: null,
+		});
+		const chronological = [...earlier.items, ...middle.items, ...latest.items];
+		expect(chronological.map((row) => row.tool_id)).toEqual(
+			Array.from({ length: 45 }, (_, index) => `tool-${index}`),
+		);
+		expect(new Set(chronological.map((row) => row.id)).size).toBe(45);
+	});
+
 	it("scopes tool-adjacent transcript cards to the requested sequence window", async () => {
 		await createSession("s1", "L", "m");
 		await appendMessage("s1", 10, "assistant", "old");
@@ -2643,7 +2824,7 @@ describe("sessions — cascade delete completeness", () => {
 		).toEqual({ name: "Bash", is_error: 1, result_text: "failure" });
 	});
 
-	it("deleteSession removes the stored transcript for an imported session", async () => {
+	it("deleteSession removes the stored transcript and deltas for its last owner", async () => {
 		db.run(
 			`INSERT INTO sessions
 			 (id, label, model, started_at, provider_id, provider_session_id,
@@ -2655,7 +2836,12 @@ describe("sessions — cascade delete completeness", () => {
 			`INSERT INTO provider_history_transcripts
 			 (provider_id, native_session_id, subpath, source_path, source_hash,
 			  payload_json, entry_count)
-			 VALUES ('claude', 'native-id', '', 'source.jsonl', 'hash', '[]', 0)`,
+				 VALUES ('claude', 'native-id', '', 'source.jsonl', 'hash', '[]', 0)`,
+		);
+		db.run(
+			`INSERT INTO provider_history_transcript_deltas
+			 (provider_id, native_session_id, subpath, uuid, payload_json)
+			 VALUES ('claude', 'native-id', '', 'delta-1', '{"type":"user","uuid":"delta-1"}')`,
 		);
 
 		await deleteSession("imported");
@@ -2667,6 +2853,55 @@ describe("sessions — cascade delete completeness", () => {
 				)
 				.get()?.count,
 		).toBe(0);
+		expect(
+			db
+				.query<{ count: number }, []>(
+					"SELECT COUNT(*) AS count FROM provider_history_transcript_deltas",
+				)
+				.get()?.count,
+		).toBe(0);
+	});
+
+	it("retains a native transcript until its final Hlid session is deleted", async () => {
+		await createSession("first", "First", "sonnet", { providerId: "claude" });
+		await createSession("second", "Second", "sonnet", {
+			providerId: "claude",
+		});
+		await setSessionProviderSession("first", "claude", "shared-native");
+		await setSessionProviderSession("second", "claude", "shared-native");
+		db.run(
+			`INSERT INTO provider_history_transcripts
+			 (provider_id, native_session_id, subpath, source_path, source_hash,
+			  payload_json, entry_count)
+			 VALUES ('claude', 'shared-native', '', 'source.jsonl', 'hash', '[]', 1)`,
+		);
+		db.run(
+			`INSERT INTO provider_history_transcript_deltas
+			 (provider_id, native_session_id, subpath, uuid, payload_json)
+			 VALUES ('claude', 'shared-native', '', 'delta-1', '{"type":"user","uuid":"delta-1"}')`,
+		);
+
+		await deleteSession("first");
+		expect(
+			db
+				.query<{ transcripts: number; deltas: number }, []>(`
+					SELECT
+					 (SELECT COUNT(*) FROM provider_history_transcripts) AS transcripts,
+					 (SELECT COUNT(*) FROM provider_history_transcript_deltas) AS deltas
+				`)
+				.get(),
+		).toEqual({ transcripts: 1, deltas: 1 });
+
+		await deleteSession("second");
+		expect(
+			db
+				.query<{ transcripts: number; deltas: number }, []>(`
+					SELECT
+					 (SELECT COUNT(*) FROM provider_history_transcripts) AS transcripts,
+					 (SELECT COUNT(*) FROM provider_history_transcript_deltas) AS deltas
+				`)
+				.get(),
+		).toEqual({ transcripts: 0, deltas: 0 });
 	});
 });
 

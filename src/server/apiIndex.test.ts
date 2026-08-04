@@ -39,7 +39,7 @@ describe("buildApiIndex", () => {
 
 		const messages = endpoint(
 			"GET",
-			"/db/session-messages?session_id=&before_seq=&before_id=&min_seq=&min_id=&limit=",
+			"/db/session-messages?session_id=&before_seq=&before_id=&min_seq=&min_id=&limit=&tool_event_page_size=",
 		);
 		expect(messages?.desc).toContain("before_seq/before_id");
 		expect(messages?.desc).toContain("min_seq/min_id");

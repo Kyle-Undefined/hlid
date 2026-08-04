@@ -588,6 +588,167 @@ describe("ADD_TOOL_EVENT", () => {
 	});
 });
 
+describe("historical tool-event pages", () => {
+	const tool = (id: string) => ({
+		type: "tool_event" as const,
+		id,
+		name: "Read",
+		input: {},
+	});
+
+	function pagedHistory(ids: string[], nextBeforeId: number | null) {
+		return reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [
+				{
+					kind: "message" as const,
+					id: "a1",
+					role: "assistant",
+					text: "done",
+					seq: 2,
+					toolEvents: ids.map(tool),
+					toolEventPage: {
+						total: 4,
+						errorCount: 1,
+						hasEarlier: nextBeforeId !== null,
+						nextBeforeId,
+					},
+				},
+			],
+		});
+	}
+
+	it("prepends unique rows only for the current cursor", () => {
+		const initial = pagedHistory(["t3", "t4"], 30);
+		const stale = reducer(initial, {
+			type: "PREPEND_TOOL_EVENT_PAGE",
+			id: "a1",
+			expectedBeforeId: 29,
+			events: [tool("t2")],
+			page: {
+				total: 4,
+				errorCount: 1,
+				hasEarlier: true,
+				nextBeforeId: 20,
+			},
+		});
+		expect(stale).toBe(initial);
+
+		const next = reducer(initial, {
+			type: "PREPEND_TOOL_EVENT_PAGE",
+			id: "a1",
+			expectedBeforeId: 30,
+			events: [tool("t1"), tool("t2"), tool("t3")],
+			page: {
+				total: 4,
+				errorCount: 1,
+				hasEarlier: false,
+				nextBeforeId: null,
+			},
+		});
+		const message = next[0];
+		expect(
+			message.role === "assistant" ? message.toolEvents.map((e) => e.id) : [],
+		).toEqual(["t1", "t2", "t3", "t4"]);
+		expect(message).toMatchObject({
+			toolEventPage: { hasEarlier: false, nextBeforeId: null },
+		});
+	});
+
+	it("keeps an already revealed prefix across a reconnect snapshot", () => {
+		const revealed = pagedHistory(["t1", "t2", "t3", "t4"], null);
+		const refreshed = reducer(revealed, {
+			type: "LOAD_HISTORY",
+			preserveToolEventPages: true,
+			items: [
+				{
+					kind: "message",
+					id: "a1",
+					role: "assistant",
+					text: "fresh",
+					seq: 2,
+					toolEvents: [tool("t3"), { ...tool("t4"), result: "fresh" }],
+					toolEventPage: {
+						total: 4,
+						errorCount: 1,
+						hasEarlier: true,
+						nextBeforeId: 30,
+					},
+				},
+			],
+		});
+		const message = refreshed[0];
+		expect(
+			message.role === "assistant" ? message.toolEvents.map((e) => e.id) : [],
+		).toEqual(["t1", "t2", "t3", "t4"]);
+		expect(message).toMatchObject({
+			text: "fresh",
+			toolEvents: expect.arrayContaining([
+				expect.objectContaining({ id: "t4", result: "fresh" }),
+			]),
+			toolEventPage: { hasEarlier: false, nextBeforeId: null },
+		});
+	});
+
+	it("keeps a partially revealed prefix and its next cursor on reconnect", () => {
+		const revealed = reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [
+				{
+					kind: "message",
+					id: "a1",
+					role: "assistant",
+					text: "done",
+					seq: 2,
+					toolEvents: Array.from({ length: 40 }, (_, index) =>
+						tool(`t${index + 6}`),
+					),
+					toolEventPage: {
+						total: 45,
+						errorCount: 2,
+						hasEarlier: true,
+						nextBeforeId: 6,
+					},
+				},
+			],
+		});
+		const refreshed = reducer(revealed, {
+			type: "LOAD_HISTORY",
+			preserveToolEventPages: true,
+			items: [
+				{
+					kind: "message",
+					id: "a1",
+					role: "assistant",
+					text: "fresh",
+					seq: 2,
+					toolEvents: Array.from({ length: 20 }, (_, index) =>
+						tool(`t${index + 26}`),
+					),
+					toolEventPage: {
+						total: 45,
+						errorCount: 2,
+						hasEarlier: true,
+						nextBeforeId: 26,
+					},
+				},
+			],
+		});
+		const message = refreshed[0];
+		expect(
+			message.role === "assistant" ? message.toolEvents.map((e) => e.id) : [],
+		).toEqual(Array.from({ length: 40 }, (_, index) => `t${index + 6}`));
+		expect(message).toMatchObject({
+			text: "fresh",
+			toolEventPage: {
+				total: 45,
+				hasEarlier: true,
+				nextBeforeId: 6,
+			},
+		});
+	});
+});
+
 // ── ADD_TOOL_RESULT ───────────────────────────────────────────────────────────
 
 describe("ADD_TOOL_RESULT", () => {

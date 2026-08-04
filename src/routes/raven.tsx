@@ -3843,6 +3843,7 @@ function RavenMessagePane({
 									hasOlderHistory={runtime.hasOlderHistory}
 									isLoadingOlderHistory={runtime.isLoadingOlderHistory}
 									onLoadOlderHistory={handleLoadOlderHistory}
+									onLoadEarlierToolEvents={runtime.loadEarlierToolEvents}
 									handleDecide={handleDecide}
 									handleSubmitAnswers={handleSubmitAnswers}
 									handlePlanDecide={handlePlanDecide}

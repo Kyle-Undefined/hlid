@@ -224,6 +224,33 @@ export async function getSessionProviderSession(
 	);
 }
 
+type ProviderSessionOwner = {
+	provider_id: string | null;
+	provider_session_id: string | null;
+};
+
+function deleteProviderTranscriptIfUnowned(
+	db: Db,
+	owner: ProviderSessionOwner | null,
+): void {
+	if (owner?.provider_id == null || owner.provider_session_id == null) return;
+	db.run(
+		`DELETE FROM provider_history_transcripts
+		 WHERE provider_id = ? AND native_session_id = ?
+		   AND NOT EXISTS (
+		     SELECT 1 FROM sessions survivor
+		     WHERE survivor.provider_id = ?
+		       AND survivor.provider_session_id = ?
+		   )`,
+		[
+			owner.provider_id,
+			owner.provider_session_id,
+			owner.provider_id,
+			owner.provider_session_id,
+		],
+	);
+}
+
 export async function setSessionProviderId(
 	sessionId: string,
 	providerId: string,
@@ -231,21 +258,32 @@ export async function setSessionProviderId(
 	const db = await getDb();
 	// Legacy callers only own provider identity. Preserve their selected
 	// controls, but invalidate runtime values owned by the previous provider.
-	db.run(
-		`UPDATE sessions
-		 SET actual_model = CASE WHEN provider_id = ? THEN actual_model ELSE NULL END,
-		     provider_session_id = CASE
-		       WHEN provider_id = ? THEN provider_session_id
-		       ELSE NULL
-		     END,
-		     claude_session_id = CASE
-		       WHEN provider_id = ? THEN claude_session_id
-		       ELSE NULL
-		     END,
-		     provider_id = ?
-		 WHERE id = ?`,
-		[providerId, providerId, providerId, providerId, sessionId],
-	);
+	db.transaction(() => {
+		const previous = db
+			.query<ProviderSessionOwner, [string]>(`
+				SELECT provider_id, provider_session_id
+				FROM sessions WHERE id = ?
+			`)
+			.get(sessionId);
+		db.run(
+			`UPDATE sessions
+			 SET actual_model = CASE WHEN provider_id = ? THEN actual_model ELSE NULL END,
+			     provider_session_id = CASE
+			       WHEN provider_id = ? THEN provider_session_id
+			       ELSE NULL
+			     END,
+			     claude_session_id = CASE
+			       WHEN provider_id = ? THEN claude_session_id
+			       ELSE NULL
+			     END,
+			     provider_id = ?
+			 WHERE id = ?`,
+			[providerId, providerId, providerId, providerId, sessionId],
+		);
+		if (previous?.provider_id !== providerId) {
+			deleteProviderTranscriptIfUnowned(db, previous);
+		}
+	}).immediate();
 	markAnalyticsChanged(["stats", "activity"], "session_provider");
 }
 
@@ -263,41 +301,52 @@ export async function setSessionProviderSelection(
 	// Provider plus controls form one current-session ownership tuple. Native
 	// thread continuity survives a same-provider model change, but the observed
 	// runtime model belongs to the exact provider/model selection that produced it.
-	db.run(
-		`UPDATE sessions
-		 SET actual_model = CASE
-		       WHEN provider_id = ?
-		        AND COALESCE(selected_model, model, '') = ?
-		       THEN actual_model
-		       ELSE NULL
-		     END,
-		     provider_session_id = CASE
-		       WHEN provider_id = ? THEN provider_session_id
-		       ELSE NULL
-		     END,
-		     claude_session_id = CASE
-		       WHEN provider_id = ? THEN claude_session_id
-		       ELSE NULL
-		     END,
-		     provider_id = ?,
-		     model = ?,
-		     selected_model = ?,
-		     selected_effort = ?,
-		     selected_permission_mode = ?
-		 WHERE id = ?`,
-		[
-			providerId,
-			selectedModel,
-			providerId,
-			providerId,
-			providerId,
-			selectedModel,
-			selectedModel,
-			selection.effort ?? null,
-			selection.permissionMode ?? null,
-			sessionId,
-		],
-	);
+	db.transaction(() => {
+		const previous = db
+			.query<ProviderSessionOwner, [string]>(`
+				SELECT provider_id, provider_session_id
+				FROM sessions WHERE id = ?
+			`)
+			.get(sessionId);
+		db.run(
+			`UPDATE sessions
+			 SET actual_model = CASE
+			       WHEN provider_id = ?
+			        AND COALESCE(selected_model, model, '') = ?
+			       THEN actual_model
+			       ELSE NULL
+			     END,
+			     provider_session_id = CASE
+			       WHEN provider_id = ? THEN provider_session_id
+			       ELSE NULL
+			     END,
+			     claude_session_id = CASE
+			       WHEN provider_id = ? THEN claude_session_id
+			       ELSE NULL
+			     END,
+			     provider_id = ?,
+			     model = ?,
+			     selected_model = ?,
+			     selected_effort = ?,
+			     selected_permission_mode = ?
+			 WHERE id = ?`,
+			[
+				providerId,
+				selectedModel,
+				providerId,
+				providerId,
+				providerId,
+				selectedModel,
+				selectedModel,
+				selection.effort ?? null,
+				selection.permissionMode ?? null,
+				sessionId,
+			],
+		);
+		if (previous?.provider_id !== providerId) {
+			deleteProviderTranscriptIfUnowned(db, previous);
+		}
+	}).immediate();
 	markAnalyticsChanged(["stats", "activity"], "session_provider_selection");
 }
 
@@ -425,12 +474,14 @@ export async function createForkedSessionRow(
 	const db = await getDb();
 	db.run(
 		`UPDATE sessions
-		 SET fork_parent_session_id = ?, fork_parent_message_id = ?, fork_kind = ?
+		 SET fork_parent_session_id = ?, fork_parent_message_id = ?, fork_kind = ?,
+		     history_resume_mode = ?
 		 WHERE id = ?`,
 		[
 			sourceId,
 			options.parentMessageId ?? null,
 			options.forkKind ?? "exact",
+			source.history_resume_mode ?? "none",
 			newId,
 		],
 	);
@@ -940,13 +991,18 @@ function cascadeDeleteSessionIds(db: Db, ids: string[]): string[] {
 	db.run(
 		`DELETE FROM provider_history_transcripts
 		 WHERE EXISTS (
-		   SELECT 1 FROM sessions s
-		   WHERE s.id IN (${ph})
-		     AND s.history_imported = 1
-		     AND s.provider_id = provider_history_transcripts.provider_id
-		     AND s.provider_session_id = provider_history_transcripts.native_session_id
+		   SELECT 1 FROM sessions doomed
+		   WHERE doomed.id IN (${ph})
+		     AND doomed.provider_id = provider_history_transcripts.provider_id
+		     AND doomed.provider_session_id = provider_history_transcripts.native_session_id
+		 )
+		 AND NOT EXISTS (
+		   SELECT 1 FROM sessions survivor
+		   WHERE survivor.id NOT IN (${ph})
+		     AND survivor.provider_id = provider_history_transcripts.provider_id
+		     AND survivor.provider_session_id = provider_history_transcripts.native_session_id
 		 )`,
-		ids,
+		[...ids, ...ids],
 	);
 	// usage_queries intentionally NOT deleted — immutable ledger for all-time stats
 	db.run(`DELETE FROM sessions WHERE id IN (${ph})`, ids);

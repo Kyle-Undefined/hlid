@@ -5,6 +5,7 @@ import {
 	HLID_DELEGATION_CONTROL_OWNERSHIP_ERROR,
 	isHlidDelegationControlOwned,
 } from "../lib/hlidDelegation";
+import { isTranscriptPagingSpecialToolName } from "../lib/toolEventPaging";
 import { clampInt, uid } from "../lib/utils";
 import {
 	msUntilNextLocalDay,
@@ -65,6 +66,7 @@ const DB_GET_HANDLERS: Record<string, DbGetHandler> = {
 	"/db/recent-sessions": ({ url }) => getRecentSessions(url),
 	"/db/session-messages": ({ url }) => getSessionMessages(url),
 	"/db/session-tool-event": ({ url }) => getSessionToolEvent(url),
+	"/db/session-tool-events": ({ url }) => getSessionToolEvents(url),
 	"/db/stats": () => getStats(),
 	"/db/activity": () => getActivity(),
 	"/db/ledger-analytics": ({ url }) => getLedgerAnalytics(url),
@@ -281,6 +283,10 @@ async function getSessionMessages(url: URL): Promise<Response> {
 		requestedMinSeq !== undefined && minIdParam
 			? clampInt(minIdParam, 0, 0, Number.MAX_SAFE_INTEGER)
 			: undefined;
+	const toolEventPageSizeParam = url.searchParams.get("tool_event_page_size");
+	const toolEventPageSize = toolEventPageSizeParam
+		? clampInt(toolEventPageSizeParam, 20, 1, 100)
+		: undefined;
 	const pageMessages = await db.getSessionMessages(
 		sessionId,
 		beforeSeq,
@@ -292,11 +298,16 @@ async function getSessionMessages(url: URL): Promise<Response> {
 	const minSeq = pageMessages[0]?.seq;
 	if (minSeq === undefined) return Response.json([]);
 	const maxSeq = pageMessages.at(-1)?.seq ?? minSeq;
-	const [messages, toolEvents, attachments] = await Promise.all([
-		Promise.resolve(pageMessages),
-		db.getSessionToolEventSummaries(sessionId, minSeq, undefined, maxSeq),
-		db.getAttachmentsForSession(sessionId, minSeq, undefined, maxSeq),
-	]);
+	const [messages, toolEvents, attachments, steerTargetSeqs] =
+		await Promise.all([
+			Promise.resolve(pageMessages),
+			db.getSessionToolEventSummaries(sessionId, minSeq, undefined, maxSeq),
+			db.getAttachmentsForSession(sessionId, minSeq, undefined, maxSeq),
+			toolEventPageSize === undefined
+				? Promise.resolve([])
+				: db.getSessionSteerTargetSeqs(sessionId, minSeq, maxSeq),
+		]);
+	const steeredAssistantSeqs = new Set(steerTargetSeqs);
 	const toolsBySeq = new Map<number, (typeof toolEvents)[number][]>();
 	for (const te of toolEvents) {
 		if (te.assistant_seq == null) continue;
@@ -311,13 +322,68 @@ async function getSessionMessages(url: URL): Promise<Response> {
 		list.push(a);
 		attachBySeq.set(a.message_seq, list);
 	}
-	const enriched = messages.map((m) => ({
-		...m,
-		toolEvents:
-			m.role === "assistant" ? (toolsBySeq.get(m.seq) ?? []) : undefined,
-		attachments: m.role === "user" ? (attachBySeq.get(m.seq) ?? []) : undefined,
-	}));
+	const enriched = messages.map((m) => {
+		const allToolEvents =
+			m.role === "assistant" ? (toolsBySeq.get(m.seq) ?? []) : undefined;
+		if (allToolEvents === undefined || toolEventPageSize === undefined) {
+			return {
+				...m,
+				toolEvents: allToolEvents,
+				attachments:
+					m.role === "user" ? (attachBySeq.get(m.seq) ?? []) : undefined,
+			};
+		}
+		const mayPage =
+			m.query_id != null &&
+			!steeredAssistantSeqs.has(m.seq) &&
+			allToolEvents.every(
+				(event) =>
+					event.result_text !== null &&
+					event.subagent_json == null &&
+					event.activity_json == null &&
+					!isTranscriptPagingSpecialToolName(event.name),
+			);
+		const hasEarlier = mayPage && allToolEvents.length > toolEventPageSize;
+		if (!hasEarlier) {
+			return { ...m, toolEvents: allToolEvents };
+		}
+		const toolEvents = allToolEvents.slice(-toolEventPageSize);
+		return {
+			...m,
+			toolEvents,
+			toolEventPage: {
+				total: allToolEvents.length,
+				errorCount: allToolEvents.filter((event) => event.is_error === 1)
+					.length,
+				hasEarlier: true,
+				nextBeforeId: toolEvents[0]?.id ?? null,
+			},
+		};
+	});
 	return Response.json(enriched);
+}
+
+async function getSessionToolEvents(url: URL): Promise<Response> {
+	const sessionId = url.searchParams.get("session_id")?.trim();
+	if (!sessionId) return new Response("Missing session_id", { status: 400 });
+	const assistantSeqParam = url.searchParams.get("assistant_seq");
+	if (!assistantSeqParam) {
+		return new Response("Missing assistant_seq", { status: 400 });
+	}
+	const assistantSeq = clampInt(
+		assistantSeqParam,
+		0,
+		0,
+		Number.MAX_SAFE_INTEGER,
+	);
+	const beforeIdParam = url.searchParams.get("before_id");
+	const beforeId = beforeIdParam
+		? clampInt(beforeIdParam, 0, 0, Number.MAX_SAFE_INTEGER)
+		: undefined;
+	const limit = clampInt(url.searchParams.get("limit"), 20, 1, 100);
+	return Response.json(
+		await db.getSessionToolEventPage(sessionId, assistantSeq, beforeId, limit),
+	);
 }
 
 async function getSessionToolEvent(url: URL): Promise<Response> {

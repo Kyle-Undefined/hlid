@@ -1,3 +1,4 @@
+import type { ToolEventPageMeta } from "#/db";
 import { orderSteeredTranscript } from "#/lib/steeredTranscript";
 import type {
 	AskQuestion,
@@ -40,6 +41,8 @@ export type AssistantMessage = {
 	turnId?: string;
 	text: string;
 	toolEvents: ToolEventMessage[];
+	/** Bounded historical suffix metadata; omitted for live or specialized responses. */
+	toolEventPage?: ToolEventPageMeta;
 	streaming: boolean;
 	cost: number | null;
 	costEstimated?: boolean;
@@ -109,6 +112,12 @@ export type ChatMessage =
 	| PlanProposalMessage
 	| LocalCommandOutputChatMessage;
 
+export type LoadEarlierToolEvents = (
+	responseId: string,
+	assistantSeq: number,
+	beforeId: number,
+) => Promise<number>;
+
 export type HistoryItem =
 	| {
 			kind: "message";
@@ -126,6 +135,7 @@ export type HistoryItem =
 			cost?: number | null;
 			costEstimated?: boolean;
 			toolEvents?: ToolEventMessage[];
+			toolEventPage?: ToolEventPageMeta;
 			attachments?: ChatAttachment[];
 			recap?: string | null;
 	  }
@@ -230,6 +240,14 @@ export type Action =
 			isError?: boolean;
 	  }
 	| {
+			type: "PREPEND_TOOL_EVENT_PAGE";
+			id: string;
+			/** Ignore a response that raced a newer page or reconnect snapshot. */
+			expectedBeforeId: number;
+			events: ToolEventMessage[];
+			page: ToolEventPageMeta;
+	  }
+	| {
 			type: "SETTLE_ACTIVE_SUBAGENTS";
 			endedAtMs: number;
 	  }
@@ -270,6 +288,8 @@ export type Action =
 	| {
 			type: "LOAD_HISTORY";
 			items: HistoryItem[];
+			/** Reconnect snapshots retain already-revealed immutable tool prefixes. */
+			preserveToolEventPages?: boolean;
 	  }
 	| {
 			type: "PREPEND_HISTORY";
@@ -464,8 +484,10 @@ function patchMessage<R extends ChatMessage["role"]>(
 	let touched = false;
 	const next = state.map((message) => {
 		if (message.id !== id || message.role !== role) return message;
+		const patched = patch(message as Extract<ChatMessage, { role: R }>);
+		if (patched === message) return message;
 		touched = true;
-		return patch(message as Extract<ChatMessage, { role: R }>);
+		return patched;
 	});
 	return touched ? next : state;
 }
@@ -592,6 +614,7 @@ function historyItemToMessage(item: HistoryItem): ChatMessage {
 			role: "assistant",
 			text: item.text,
 			toolEvents: item.toolEvents ?? [],
+			...(item.toolEventPage ? { toolEventPage: item.toolEventPage } : {}),
 			streaming: false,
 			cost: item.cost ?? null,
 			...(item.costEstimated ? { costEstimated: true } : {}),
@@ -608,6 +631,79 @@ function historyItemToMessage(item: HistoryItem): ChatMessage {
 		streaming: false,
 		cost: null,
 	};
+}
+
+function sameToolEventPage(
+	left: ToolEventPageMeta | undefined,
+	right: ToolEventPageMeta | undefined,
+): boolean {
+	return (
+		left === right ||
+		(left !== undefined &&
+			right !== undefined &&
+			left.total === right.total &&
+			left.errorCount === right.errorCount &&
+			left.hasEarlier === right.hasEarlier &&
+			left.nextBeforeId === right.nextBeforeId)
+	);
+}
+
+/**
+ * A reconnect refreshes the authoritative suffix, but should not discard older
+ * immutable pages the user already revealed. The server only marks settled,
+ * page-safe responses with toolEventPage, so retaining their prefix cannot race
+ * a live tool update.
+ */
+function preserveLoadedToolEventPage(
+	previous: AssistantMessage,
+	fresh: AssistantMessage,
+): AssistantMessage {
+	const page = fresh.toolEventPage;
+	if (!page || previous.toolEvents.length <= fresh.toolEvents.length)
+		return fresh;
+	if (
+		previous.toolEvents.length > page.total ||
+		(previous.toolEventPage && previous.toolEventPage.total !== page.total) ||
+		(!previous.toolEventPage && previous.toolEvents.length !== page.total)
+	) {
+		return fresh;
+	}
+
+	const previousIds = new Set(previous.toolEvents.map((event) => event.id));
+	if (!fresh.toolEvents.every((event) => previousIds.has(event.id)))
+		return fresh;
+	const freshIds = new Set(fresh.toolEvents.map((event) => event.id));
+	const retainedPrefix = previous.toolEvents.filter(
+		(event) => !freshIds.has(event.id),
+	);
+	const toolEvents = [...retainedPrefix, ...fresh.toolEvents];
+	if (toolEvents.length > page.total) return fresh;
+
+	const priorPage = previous.toolEventPage;
+	const toolEventPage: ToolEventPageMeta = {
+		...page,
+		hasEarlier: priorPage?.hasEarlier ?? toolEvents.length < page.total,
+		nextBeforeId:
+			priorPage?.nextBeforeId ??
+			(toolEvents.length < page.total ? page.nextBeforeId : null),
+	};
+	return { ...fresh, toolEvents, toolEventPage };
+}
+
+function preserveLoadedToolEventPages(
+	state: ChatMessage[],
+	fresh: ChatMessage[],
+): ChatMessage[] {
+	const previousAssistants = new Map(
+		state.flatMap((message) =>
+			message.role === "assistant" ? [[message.id, message] as const] : [],
+		),
+	);
+	return fresh.map((message) => {
+		if (message.role !== "assistant" || !message.toolEventPage) return message;
+		const previous = previousAssistants.get(message.id);
+		return previous ? preserveLoadedToolEventPage(previous, message) : message;
+	});
 }
 
 function orderPersistedSteers(state: ChatMessage[]): ChatMessage[] {
@@ -850,6 +946,40 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				detailSessionId: action.detailSessionId,
 				...(action.isError !== undefined ? { isError: action.isError } : {}),
 			}));
+		case "PREPEND_TOOL_EVENT_PAGE":
+			return patchMessage(state, action.id, "assistant", (message) => {
+				const currentPage = message.toolEventPage;
+				if (
+					!currentPage ||
+					currentPage.nextBeforeId !== action.expectedBeforeId ||
+					currentPage.total !== action.page.total
+				) {
+					return message;
+				}
+				const existingIds = new Set(
+					message.toolEvents.map((event) => event.id),
+				);
+				const earlier = action.events.filter((event) => {
+					if (existingIds.has(event.id)) return false;
+					existingIds.add(event.id);
+					return true;
+				});
+				const toolEvents =
+					earlier.length > 0
+						? [...earlier, ...message.toolEvents]
+						: message.toolEvents;
+				const complete = toolEvents.length >= action.page.total;
+				const toolEventPage: ToolEventPageMeta = complete
+					? { ...action.page, hasEarlier: false, nextBeforeId: null }
+					: action.page;
+				if (
+					toolEvents === message.toolEvents &&
+					sameToolEventPage(currentPage, toolEventPage)
+				) {
+					return message;
+				}
+				return { ...message, toolEvents, toolEventPage };
+			});
 		case "SETTLE_ACTIVE_SUBAGENTS":
 			return settleActiveSubagents(state, action.endedAtMs);
 		case "ADD_LOCAL_COMMAND_OUTPUT":
@@ -947,8 +1077,14 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				},
 			];
 		}
-		case "LOAD_HISTORY":
-			return orderPersistedSteers(action.items.map(historyItemToMessage));
+		case "LOAD_HISTORY": {
+			const loaded = orderPersistedSteers(
+				action.items.map(historyItemToMessage),
+			);
+			return action.preserveToolEventPages
+				? preserveLoadedToolEventPages(state, loaded)
+				: loaded;
+		}
 		case "PREPEND_HISTORY": {
 			const existing = new Set(state.map(messageKey));
 			const older = action.items.map(historyItemToMessage).filter((message) => {

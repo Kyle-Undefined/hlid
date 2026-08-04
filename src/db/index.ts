@@ -86,7 +86,9 @@ export {
 	getSessionMessages,
 	getSessionNextMessageSeq,
 	getSessionPlanProposals,
+	getSessionSteerTargetSeqs,
 	getSessionToolEventDetail,
+	getSessionToolEventPage,
 	getSessionToolEventSummaries,
 	getUserMessageCheckpoint,
 	getUserMessageSeqByTurnId,
@@ -205,6 +207,8 @@ export type {
 	SessionRow,
 	ThirtyDayStats,
 	ToolEventDetailRow,
+	ToolEventPageMeta,
+	ToolEventSummaryPage,
 	ToolEventSummaryRow,
 	WeeklyStats,
 } from "./types";

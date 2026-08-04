@@ -5,6 +5,7 @@ import { getDb } from "./schema";
 import type {
 	MessageRow,
 	ToolEventDetailRow,
+	ToolEventSummaryPage,
 	ToolEventSummaryRow,
 } from "./types";
 
@@ -742,6 +743,25 @@ export async function getSessionMessages(
 		.all(sessionId);
 }
 
+/** Assistant sequences in a window that have at least one persisted steer. */
+export async function getSessionSteerTargetSeqs(
+	sessionId: string,
+	minAssistantSeq: number,
+	maxAssistantSeq: number,
+): Promise<number[]> {
+	const db = await getDb();
+	return db
+		.query<{ steer_target_seq: number }, [string, number, number]>(
+			`SELECT DISTINCT steer_target_seq
+			 FROM messages
+			 WHERE session_id = ?
+			   AND steer_target_seq BETWEEN ? AND ?
+			 ORDER BY steer_target_seq`,
+		)
+		.all(sessionId, minAssistantSeq, maxAssistantSeq)
+		.map((row) => row.steer_target_seq);
+}
+
 export async function getSessionContextManifests(
 	sessionId: string,
 	limit = 20,
@@ -830,6 +850,12 @@ export async function getSessionNextMessageSeq(
  * Transcript-friendly tool rows. Tool results dominate large session payloads,
  * so history carries a short preview and hydrates the full result on demand.
  */
+const TOOL_EVENT_SUMMARY_SELECT = `id, session_id, assistant_seq, tool_id, name, input_json,
+	CASE WHEN result_text IS NULL THEN NULL ELSE COALESCE(result_preview, substr(result_text, 1, ${TOOL_RESULT_PREVIEW_CHARS})) END AS result_text,
+	COALESCE(result_length, length(result_text)) AS result_length,
+	CASE WHEN COALESCE(result_length, length(COALESCE(result_text, ''))) > ${TOOL_RESULT_PREVIEW_CHARS} THEN 1 ELSE 0 END AS result_truncated,
+	is_error, subagent_json, activity_json`;
+
 export async function getSessionToolEventSummaries(
 	sessionId: string,
 	minAssistantSeq?: number,
@@ -838,11 +864,7 @@ export async function getSessionToolEventSummaries(
 ): Promise<ToolEventSummaryRow[]> {
 	return getSessionSequenceRows<ToolEventSummaryRow>({
 		sessionId,
-		select: `id, session_id, assistant_seq, tool_id, name, input_json,
-			CASE WHEN result_text IS NULL THEN NULL ELSE COALESCE(result_preview, substr(result_text, 1, ${TOOL_RESULT_PREVIEW_CHARS})) END AS result_text,
-			COALESCE(result_length, length(result_text)) AS result_length,
-			CASE WHEN COALESCE(result_length, length(COALESCE(result_text, ''))) > ${TOOL_RESULT_PREVIEW_CHARS} THEN 1 ELSE 0 END AS result_truncated,
-			is_error, subagent_json, activity_json`,
+		select: TOOL_EVENT_SUMMARY_SELECT,
 		table: "tool_events",
 		sequenceColumn: "assistant_seq",
 		minSequence: minAssistantSeq,
@@ -850,6 +872,59 @@ export async function getSessionToolEventSummaries(
 		maxSequence: maxAssistantSeq,
 		unboundedOrderBy: "id ASC",
 	});
+}
+
+/** Returns an exclusive backwards page while preserving ascending transcript order. */
+export async function getSessionToolEventPage(
+	sessionId: string,
+	assistantSeq: number,
+	beforeId?: number,
+	limit = 20,
+): Promise<ToolEventSummaryPage> {
+	const db = await getDb();
+	const boundedLimit = Math.min(100, Math.max(1, Math.trunc(limit)));
+	const counts = db
+		.query<{ total: number; error_count: number }, [string, number]>(
+			`SELECT COUNT(*) AS total,
+				COALESCE(SUM(CASE WHEN is_error = 1 THEN 1 ELSE 0 END), 0) AS error_count
+			 FROM tool_events
+			 WHERE session_id = ? AND assistant_seq = ?`,
+		)
+		.get(sessionId, assistantSeq) ?? { total: 0, error_count: 0 };
+	const cursorClause = beforeId === undefined ? "" : " AND id < ?";
+	const params =
+		beforeId === undefined
+			? ([sessionId, assistantSeq, boundedLimit + 1] as [
+					string,
+					number,
+					number,
+				])
+			: ([sessionId, assistantSeq, beforeId, boundedLimit + 1] as [
+					string,
+					number,
+					number,
+					number,
+				]);
+	const rows = db
+		.query<ToolEventSummaryRow, typeof params>(
+			`SELECT * FROM (
+				SELECT ${TOOL_EVENT_SUMMARY_SELECT}
+				FROM tool_events
+				WHERE session_id = ? AND assistant_seq = ?${cursorClause}
+				ORDER BY id DESC
+				LIMIT ?
+			) ORDER BY id ASC`,
+		)
+		.all(...params);
+	const hasEarlier = rows.length > boundedLimit;
+	const items = hasEarlier ? rows.slice(1) : rows;
+	return {
+		items,
+		total: Number(counts.total),
+		errorCount: Number(counts.error_count),
+		hasEarlier,
+		nextBeforeId: hasEarlier ? (items[0]?.id ?? null) : null,
+	};
 }
 
 /** Full result for one session-scoped historical tool event. */

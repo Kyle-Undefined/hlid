@@ -13,6 +13,7 @@ import { planAssistantTranscript } from "./assistantTranscriptLayout";
 import { CopyButton } from "./CopyButton";
 import type {
 	AssistantMessage,
+	LoadEarlierToolEvents,
 	PermissionMessage,
 	UserMessage,
 } from "./chatReducer";
@@ -152,6 +153,7 @@ export function AssistantMsg({
 	onToggleActivity,
 	onBackgroundActivity,
 	onSelectTool,
+	onLoadEarlierToolEvents,
 	canBranch = false,
 	branching = false,
 	onBranch,
@@ -173,6 +175,7 @@ export function AssistantMsg({
 	onToggleActivity?: () => void;
 	onBackgroundActivity?: () => void;
 	onSelectTool?: (event: ToolEventMessage, trigger: HTMLElement) => void;
+	onLoadEarlierToolEvents?: LoadEarlierToolEvents;
 	/** Whole-session precondition (Claude-only, session idle) — see raven.tsx. */
 	canBranch?: boolean;
 	/** True while this specific row's branch fork is in flight. */
@@ -296,6 +299,18 @@ export function AssistantMsg({
 			),
 		[message.toolEvents, providerId],
 	);
+	const toolEventPage = message.toolEventPage;
+	const assistantSeq = message.transcriptSeq;
+	const beforeToolEventId = toolEventPage?.nextBeforeId;
+	const loadEarlierActivity =
+		toolEventPage?.hasEarlier &&
+		beforeToolEventId !== null &&
+		beforeToolEventId !== undefined &&
+		assistantSeq !== undefined &&
+		onLoadEarlierToolEvents
+			? () =>
+					onLoadEarlierToolEvents(message.id, assistantSeq, beforeToolEventId)
+			: undefined;
 	const renderTaskActivityGroup = (
 		group: (typeof taskActivityGroups)[number],
 	) => (
@@ -395,6 +410,10 @@ export function AssistantMsg({
 				<AssistantActivityTray
 					responseId={message.id}
 					events={activityToolEvents}
+					totalCount={message.toolEventPage?.total}
+					errorCount={message.toolEventPage?.errorCount}
+					hasEarlier={message.toolEventPage?.hasEarlier}
+					onLoadEarlier={loadEarlierActivity}
 					streaming={message.streaming}
 					steerCount={acceptedSteers.length}
 					open={resolvedActivityOpen}

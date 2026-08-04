@@ -11,14 +11,11 @@ import { ClickableImage } from "#/components/ImageViewerModal";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import { loadToolEventDetail } from "#/hooks/toolEventDetailStore";
 import { fmtBytes } from "#/lib/formatters";
+import { isGeneratedMediaToolName } from "#/lib/toolEventPaging";
 import type { ToolEventMessage } from "#/server/protocol";
 
 const ATTACHMENT_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
 const GENERATED_IMAGE_FILENAME_RE = /^[a-zA-Z0-9._-]{1,240}\.png$/i;
-const GENERATED_IMAGE_TOOL_NAMES = new Set([
-	"ImageGeneration",
-	"imageGeneration",
-]);
 
 export type GeneratedMediaResult =
 	| {
@@ -135,7 +132,7 @@ export function parseGeneratedMediaResult(
 }
 
 export function isGeneratedMediaToolEvent(event: ToolEventMessage): boolean {
-	return GENERATED_IMAGE_TOOL_NAMES.has(event.name);
+	return isGeneratedMediaToolName(event.name);
 }
 
 export function GeneratedMediaToolBlock({

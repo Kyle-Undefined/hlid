@@ -19,7 +19,9 @@ const {
 	mockSetSessionPinned,
 	mockGetSessionMessages,
 	mockGetSessionToolEventSummaries,
+	mockGetSessionToolEventPage,
 	mockGetSessionToolEventDetail,
+	mockGetSessionSteerTargetSeqs,
 	mockGetAttachmentsForSession,
 	mockGetProviderUsage,
 	mockGetLogs,
@@ -60,7 +62,9 @@ const {
 	mockSetSessionPinned: vi.fn(),
 	mockGetSessionMessages: vi.fn(),
 	mockGetSessionToolEventSummaries: vi.fn(),
+	mockGetSessionToolEventPage: vi.fn(),
 	mockGetSessionToolEventDetail: vi.fn(),
+	mockGetSessionSteerTargetSeqs: vi.fn(),
 	mockGetAttachmentsForSession: vi.fn(),
 	mockGetProviderUsage: vi.fn(),
 	mockGetLogs: vi.fn(),
@@ -103,7 +107,9 @@ vi.mock("../db", () => ({
 	setSessionPinned: mockSetSessionPinned,
 	getSessionMessages: mockGetSessionMessages,
 	getSessionToolEventSummaries: mockGetSessionToolEventSummaries,
+	getSessionToolEventPage: mockGetSessionToolEventPage,
 	getSessionToolEventDetail: mockGetSessionToolEventDetail,
+	getSessionSteerTargetSeqs: mockGetSessionSteerTargetSeqs,
 	getAttachmentsForSession: mockGetAttachmentsForSession,
 	getProviderUsage: mockGetProviderUsage,
 	getLogs: mockGetLogs,
@@ -301,6 +307,7 @@ describe("handleDbRoute — POST provider history import", () => {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mockGetSessionSteerTargetSeqs.mockResolvedValue([]);
 	mockGetHlidDelegationByChildSession.mockReset();
 	mockGetHlidDelegationByChildSession.mockResolvedValue(null);
 	mockAbandonInterruptedHlidDelegation.mockReset();
@@ -2179,6 +2186,177 @@ describe("handleDbRoute — GET /db/session-messages", () => {
 			undefined,
 			50,
 		);
+	});
+
+	it("compacts eligible settled tool histories only when explicitly requested", async () => {
+		mockGetSessionMessages.mockResolvedValue([
+			{ id: 1, seq: 2, role: "assistant", text: "done", query_id: 42 },
+		]);
+		mockGetSessionToolEventSummaries.mockResolvedValue(
+			Array.from({ length: 25 }, (_, index) => ({
+				id: index + 1,
+				assistant_seq: 2,
+				name: "Read",
+				result_text: "ok",
+				is_error: index === 3 ? 1 : 0,
+				subagent_json: null,
+				activity_json: null,
+			})),
+		);
+		mockGetAttachmentsForSession.mockResolvedValue([]);
+
+		const compact = await handleDbRoute(
+			makeUrl("/db/session-messages", {
+				session_id: "s1",
+				tool_event_page_size: "20",
+			}),
+			makeRequest(),
+		);
+		const [compactRow] = (await compact?.json()) as Array<{
+			toolEvents: Array<{ id: number }>;
+			toolEventPage: Record<string, unknown>;
+		}>;
+		expect(compactRow.toolEvents.map((event) => event.id)).toEqual(
+			Array.from({ length: 20 }, (_, index) => index + 6),
+		);
+		expect(compactRow.toolEventPage).toEqual({
+			total: 25,
+			errorCount: 1,
+			hasEarlier: true,
+			nextBeforeId: 6,
+		});
+
+		const legacy = await handleDbRoute(
+			makeUrl("/db/session-messages", { session_id: "s1" }),
+			makeRequest(),
+		);
+		const [legacyRow] = (await legacy?.json()) as Array<{
+			toolEvents: unknown[];
+			toolEventPage?: unknown;
+		}>;
+		expect(legacyRow.toolEvents).toHaveLength(25);
+		expect(legacyRow.toolEventPage).toBeUndefined();
+	});
+
+	it("omits page metadata when an eligible history fits on one page", async () => {
+		mockGetSessionMessages.mockResolvedValue([
+			{ id: 1, seq: 2, role: "assistant", text: "done", query_id: 42 },
+		]);
+		mockGetSessionToolEventSummaries.mockResolvedValue(
+			Array.from({ length: 20 }, (_, index) => ({
+				id: index + 1,
+				assistant_seq: 2,
+				name: "Read",
+				result_text: "ok",
+				is_error: 0,
+				subagent_json: null,
+				activity_json: null,
+			})),
+		);
+		mockGetAttachmentsForSession.mockResolvedValue([]);
+
+		const response = await handleDbRoute(
+			makeUrl("/db/session-messages", {
+				session_id: "s1",
+				tool_event_page_size: "20",
+			}),
+			makeRequest(),
+		);
+		const [row] = (await response?.json()) as Array<{
+			toolEvents: unknown[];
+			toolEventPage?: unknown;
+		}>;
+		expect(row.toolEvents).toHaveLength(20);
+		expect(row.toolEventPage).toBeUndefined();
+	});
+
+	it.each([
+		["unfinished response", { query_id: null }],
+		["unresolved result", { event: { result_text: null } }],
+		[
+			"special transcript tool",
+			{ event: { name: "mcp__hlid__capture_project_preview" } },
+		],
+		["subagent snapshot", { event: { subagent_json: "{}" } }],
+		["structured activity", { event: { activity_json: "{}" } }],
+		["accepted steer", { steer: true }],
+	])("keeps %s tool histories complete", async (_label, guard) => {
+		mockGetSessionMessages.mockResolvedValue([
+			{
+				id: 1,
+				seq: 2,
+				role: "assistant",
+				text: "done",
+				query_id: "query_id" in guard ? guard.query_id : 42,
+			},
+		]);
+		mockGetSessionToolEventSummaries.mockResolvedValue(
+			Array.from({ length: 21 }, (_, index) => ({
+				id: index + 1,
+				assistant_seq: 2,
+				name: "Read",
+				result_text: "ok",
+				is_error: 0,
+				subagent_json: null,
+				activity_json: null,
+				...(index === 0 && "event" in guard ? guard.event : {}),
+			})),
+		);
+		mockGetAttachmentsForSession.mockResolvedValue([]);
+		mockGetSessionSteerTargetSeqs.mockResolvedValue(
+			"steer" in guard && guard.steer ? [2] : [],
+		);
+
+		const response = await handleDbRoute(
+			makeUrl("/db/session-messages", {
+				session_id: "s1",
+				tool_event_page_size: "20",
+			}),
+			makeRequest(),
+		);
+		const [row] = (await response?.json()) as Array<{
+			toolEvents: unknown[];
+			toolEventPage?: unknown;
+		}>;
+		expect(row.toolEvents).toHaveLength(21);
+		expect(row.toolEventPage).toBeUndefined();
+	});
+});
+
+describe("handleDbRoute — GET /db/session-tool-events", () => {
+	it("requires a session and assistant sequence", async () => {
+		const missingSession = await handleDbRoute(
+			makeUrl("/db/session-tool-events", { assistant_seq: "2" }),
+			makeRequest(),
+		);
+		const missingSequence = await handleDbRoute(
+			makeUrl("/db/session-tool-events", { session_id: "s1" }),
+			makeRequest(),
+		);
+		expect(missingSession?.status).toBe(400);
+		expect(missingSequence?.status).toBe(400);
+	});
+
+	it("passes the exclusive id cursor to storage", async () => {
+		mockGetSessionToolEventPage.mockResolvedValue({
+			items: [{ id: 10 }],
+			total: 30,
+			errorCount: 2,
+			hasEarlier: true,
+			nextBeforeId: 10,
+		});
+		const response = await handleDbRoute(
+			makeUrl("/db/session-tool-events", {
+				session_id: "s1",
+				assistant_seq: "4",
+				before_id: "20",
+				limit: "10",
+			}),
+			makeRequest(),
+		);
+		expect(response?.status).toBe(200);
+		expect(mockGetSessionToolEventPage).toHaveBeenCalledWith("s1", 4, 20, 10);
+		expect(await response?.json()).toMatchObject({ total: 30, errorCount: 2 });
 	});
 });
 

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import {
+	act,
 	cleanup,
 	fireEvent,
 	render,
@@ -10,7 +11,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ToolEventMessage } from "#/server/protocol";
 import { AssistantActivityTray } from "./AssistantActivityTray";
 
-afterEach(cleanup);
+afterEach(() => {
+	cleanup();
+	vi.unstubAllGlobals();
+});
 
 function events(count: number): ToolEventMessage[] {
 	return Array.from({ length: count }, (_, index) => ({
@@ -128,6 +132,136 @@ describe("AssistantActivityTray", () => {
 
 		view.rerender(tray(events(25)));
 		expect(screen.getByTestId("range").textContent).toBe("5:25");
+	});
+
+	it("fetches only after the loaded prefix is exhausted and anchors the inner scroll", async () => {
+		let view: ReturnType<typeof render>;
+		let scrollHeight = 200;
+		const pagedTray = (items: ToolEventMessage[]) => (
+			<AssistantActivityTray
+				responseId="paged-response"
+				events={items}
+				totalCount={45}
+				errorCount={2}
+				hasEarlier={items.length < 45}
+				onLoadEarlier={onLoadEarlier}
+				streaming={false}
+				steerCount={0}
+				open
+				onToggle={vi.fn()}
+				renderContent={({ startIndex, endIndex }) => (
+					<div data-testid="paged-range">
+						{startIndex}:{endIndex}
+					</div>
+				)}
+			/>
+		);
+		const onLoadEarlier = vi.fn(async () => {
+			scrollHeight = 400;
+			view.rerender(pagedTray(events(40)));
+			return 20;
+		});
+		view = render(pagedTray(events(20)));
+
+		expect(
+			screen.getByRole("button", {
+				name: "Activity, 45 tool calls · 2 errors, expanded",
+			}),
+		).not.toBeNull();
+		const region = screen.getByRole("region", {
+			name: /activity for response/i,
+		}) as HTMLDivElement;
+		Object.defineProperty(region, "scrollHeight", {
+			configurable: true,
+			get: () => scrollHeight,
+		});
+		region.scrollTop = 30;
+
+		fireEvent.click(screen.getByRole("button", { name: "Load 20 earlier" }));
+		await waitFor(() =>
+			expect(screen.getByTestId("paged-range").textContent).toBe("0:40"),
+		);
+		expect(onLoadEarlier).toHaveBeenCalledOnce();
+		expect(region.scrollTop).toBe(230);
+		expect(
+			screen.getByRole("button", {
+				name: "Loaded 20 earlier, 40 of 45 shown",
+			}),
+		).not.toBeNull();
+	});
+
+	it("does not let the prepend's queued tail pin override its scroll anchor", async () => {
+		let nextFrame = 1;
+		const frames = new Map<number, FrameRequestCallback>();
+		vi.stubGlobal(
+			"requestAnimationFrame",
+			vi.fn((callback: FrameRequestCallback) => {
+				const frame = nextFrame++;
+				frames.set(frame, callback);
+				return frame;
+			}),
+		);
+		vi.stubGlobal(
+			"cancelAnimationFrame",
+			vi.fn((frame: number) => {
+				frames.delete(frame);
+			}),
+		);
+		const flushFrames = () => {
+			const pending = [...frames.values()];
+			frames.clear();
+			for (const callback of pending) callback(0);
+		};
+
+		let view: ReturnType<typeof render>;
+		let scrollHeight = 200;
+		const pagedTray = (items: ToolEventMessage[]) => (
+			<AssistantActivityTray
+				responseId="anchored-response"
+				events={items}
+				totalCount={45}
+				hasEarlier={items.length < 45}
+				onLoadEarlier={onLoadEarlier}
+				streaming={false}
+				steerCount={0}
+				open
+				onToggle={vi.fn()}
+				renderContent={({ startIndex, endIndex }) => (
+					<div data-testid="anchored-range">
+						{startIndex}:{endIndex}
+					</div>
+				)}
+			/>
+		);
+		const onLoadEarlier = vi.fn(async () => {
+			scrollHeight = 400;
+			view.rerender(pagedTray(events(40)));
+			return 20;
+		});
+		view = render(pagedTray(events(20)));
+
+		const region = screen.getByRole("region", {
+			name: /activity for response/i,
+		}) as HTMLDivElement;
+		Object.defineProperty(region, "scrollHeight", {
+			configurable: true,
+			get: () => scrollHeight,
+		});
+		act(flushFrames);
+		region.scrollTop = 30;
+
+		fireEvent.click(screen.getByRole("button", { name: "Load 20 earlier" }));
+		await waitFor(() =>
+			expect(screen.getByTestId("anchored-range").textContent).toBe("0:40"),
+		);
+		expect(region.scrollTop).toBe(230);
+		act(flushFrames);
+		expect(region.scrollTop).toBe(230);
+
+		scrollHeight = 410;
+		view.rerender(pagedTray(events(41)));
+		act(flushFrames);
+		expect(region.scrollTop).toBe(410);
 	});
 
 	it("detaches from live updates when scrolled upward and can jump back", () => {

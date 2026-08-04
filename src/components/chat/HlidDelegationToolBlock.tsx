@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { PrivacyMask } from "#/components/PrivacyMask";
+import { isHlidDelegationToolName } from "#/lib/toolEventPaging";
 import type { ToolEventMessage } from "#/server/protocol";
 
 type HlidDelegationAction =
@@ -41,7 +42,7 @@ function actionFor(name: string): HlidDelegationAction | null {
 }
 
 export function isHlidDelegationToolEvent(event: ToolEventMessage): boolean {
-	return actionFor(event.name) !== null;
+	return isHlidDelegationToolName(event.name);
 }
 
 function record(value: unknown): Record<string, unknown> | null {

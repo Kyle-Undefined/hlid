@@ -132,6 +132,17 @@ export type ToolEventSummaryRow = ToolEventRow & {
 	result_truncated: number;
 };
 
+export type ToolEventPageMeta = {
+	total: number;
+	errorCount: number;
+	hasEarlier: boolean;
+	nextBeforeId: number | null;
+};
+
+export type ToolEventSummaryPage = ToolEventPageMeta & {
+	items: ToolEventSummaryRow[];
+};
+
 /** Full result returned only when a historical tool event is expanded. */
 export type ToolEventDetailRow = Pick<
 	ToolEventRow,

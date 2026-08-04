@@ -7,6 +7,7 @@ import { AskUserQuestionCard } from "./AskUserQuestionCard";
 import { AssistantMsg } from "./AssistantMsg";
 import type {
 	ChatMessage,
+	LoadEarlierToolEvents,
 	PermissionMessage,
 	UserMessage,
 } from "./chatReducer";
@@ -29,6 +30,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 	onToggleActivity,
 	onBackgroundActivity,
 	onSelectTool,
+	onLoadEarlierToolEvents,
 	permissionLabels,
 	queueState,
 	onDecide,
@@ -65,6 +67,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 		event: ToolEventMessage,
 		trigger: HTMLElement,
 	) => void;
+	onLoadEarlierToolEvents?: LoadEarlierToolEvents;
 	permissionLabels: Map<string, string>;
 	queueState: UserMsgQueueState | undefined;
 	onDecide: (
@@ -156,6 +159,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 						? (event, trigger) => onSelectTool(message.id, event, trigger)
 						: undefined
 				}
+				onLoadEarlierToolEvents={onLoadEarlierToolEvents}
 				canBranch={canBranch}
 				branching={message.dbId != null && forkingMessageId === message.dbId}
 				onBranch={onBranch}

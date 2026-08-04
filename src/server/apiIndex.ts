@@ -296,9 +296,9 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 	},
 	{
 		method: "GET",
-		path: "/db/session-messages?session_id=&before_seq=&before_id=&min_seq=&min_id=&limit=",
+		path: "/db/session-messages?session_id=&before_seq=&before_id=&min_seq=&min_id=&limit=&tool_event_page_size=",
 		server: "api",
-		desc: "Message transcript enriched with assistant tool-event summaries and user attachments. Supports exclusive backward cursors with before_seq/before_id and inclusive forward refresh cursors with min_seq/min_id; row IDs disambiguate equal sequence values.",
+		desc: "Message transcript enriched with assistant tool-event summaries and user attachments. Supports exclusive backward cursors with before_seq/before_id and inclusive forward refresh cursors with min_seq/min_id; row IDs disambiguate equal sequence values. Optional tool_event_page_size compacts eligible settled assistant tool histories; omitting it preserves the full legacy response.",
 	},
 	{
 		method: "GET",
@@ -311,6 +311,12 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		path: "/db/session-tool-event?session_id=&tool_id=",
 		server: "api",
 		desc: "Full persisted detail for one session-owned tool event; returns 404 when absent.",
+	},
+	{
+		method: "GET",
+		path: "/db/session-tool-events?session_id=&assistant_seq=&before_id=&limit=",
+		server: "api",
+		desc: "Exclusive backwards page of lightweight tool-event summaries for one assistant response, returned in ascending transcript order with total/error metadata.",
 	},
 	{
 		method: "POST",

@@ -1,3 +1,4 @@
+import { isObsidianMutationToolName } from "#/lib/toolEventPaging";
 import type { ToolEventMessage } from "#/server/protocol";
 
 export type VaultChangeKind =
@@ -54,6 +55,7 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 function operationFromToolName(name: string): VaultOperation | null {
+	if (!isObsidianMutationToolName(name)) return null;
 	const normalized = name.toLowerCase();
 	for (const operation of Object.keys(OPERATION_NAMES) as VaultOperation[]) {
 		if (

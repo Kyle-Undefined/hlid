@@ -16,6 +16,7 @@ import type {
 	AskUserQuestionNotes,
 	AskUserQuestionProvenance,
 	ServerMessage,
+	ToolEventMessage,
 } from "#/server/protocol";
 
 // ─── shared row-mapping helpers ───────────────────────────────────────────────
@@ -25,6 +26,9 @@ type PermRow = Awaited<ReturnType<typeof getSessionPermissionsFn>>[number];
 type PlanRow = Awaited<ReturnType<typeof getSessionPlanProposalsFn>>[number];
 type AukRow = Awaited<ReturnType<typeof getSessionAskUserQuestionsFn>>[number];
 type CtxRow = Awaited<ReturnType<typeof getSessionContextFn>>;
+type SessionToolEventSummaryRow = NonNullable<
+	SessionDataRow["toolEvents"]
+>[number];
 
 export const SESSION_HISTORY_PAGE_SIZE = 100;
 
@@ -34,6 +38,46 @@ function safeParseJson<T>(raw: string, fallback: T): T {
 	} catch {
 		return fallback;
 	}
+}
+
+/** Shared mapper for initial transcript pages and later per-response pages. */
+export function mapSessionToolEventSummary(
+	te: SessionToolEventSummaryRow,
+	sessionId: string,
+): ToolEventMessage {
+	return {
+		type: "tool_event",
+		id: te.tool_id,
+		name: te.name,
+		input: safeParseJson<unknown>(te.input_json, {}),
+		...(te.result_text != null ? { result: te.result_text } : {}),
+		...(te.result_truncated === 1
+			? {
+					resultTruncated: true,
+					...(te.result_length != null
+						? { resultLength: te.result_length }
+						: {}),
+					detailSessionId: sessionId,
+				}
+			: {}),
+		...(te.is_error != null ? { isError: te.is_error === 1 } : {}),
+		...(te.subagent_json
+			? {
+					subagent: safeParseJson<SubagentSnapshot | undefined>(
+						te.subagent_json,
+						undefined,
+					),
+				}
+			: {}),
+		...(te.activity_json
+			? {
+					taskActivity: safeParseJson<TaskActivity | undefined>(
+						te.activity_json,
+						undefined,
+					),
+				}
+			: {}),
+	};
 }
 
 function mapSessionRows(
@@ -65,45 +109,10 @@ function mapSessionRows(
 			r.query_estimated_cost ??
 			(r.query_cost_known === 1 ? (r.query_cost ?? 0) : null),
 		costEstimated: r.query_estimated_cost != null,
-		toolEvents: r.toolEvents?.map((te) => ({
-			type: "tool_event" as const,
-			id: te.tool_id,
-			name: te.name,
-			input: (() => {
-				try {
-					return JSON.parse(te.input_json) as unknown;
-				} catch {
-					return {};
-				}
-			})(),
-			...(te.result_text != null ? { result: te.result_text } : {}),
-			...(te.result_truncated === 1
-				? {
-						resultTruncated: true,
-						...(te.result_length != null
-							? { resultLength: te.result_length }
-							: {}),
-						detailSessionId: r.session_id,
-					}
-				: {}),
-			...(te.is_error != null ? { isError: te.is_error === 1 } : {}),
-			...(te.subagent_json
-				? {
-						subagent: safeParseJson<SubagentSnapshot | undefined>(
-							te.subagent_json,
-							undefined,
-						),
-					}
-				: {}),
-			...(te.activity_json
-				? {
-						taskActivity: safeParseJson<TaskActivity | undefined>(
-							te.activity_json,
-							undefined,
-						),
-					}
-				: {}),
-		})),
+		toolEvents: r.toolEvents?.map((te) =>
+			mapSessionToolEventSummary(te, r.session_id),
+		),
+		...(r.toolEventPage ? { toolEventPage: r.toolEventPage } : {}),
 		attachments: r.attachments?.map((a) => ({
 			id: a.id,
 			path: a.path,
@@ -460,6 +469,7 @@ export async function loadSessionSnapshot({
 	preserveFromSeq,
 	preserveFromId,
 	preserveHasOlder = false,
+	preserveToolEventPages = false,
 }: {
 	sessionId: string;
 	dispatch: React.Dispatch<Action>;
@@ -473,6 +483,8 @@ export async function loadSessionSnapshot({
 	/** Database-row tie-breaker paired with preserveFromSeq. */
 	preserveFromId?: number;
 	preserveHasOlder?: boolean;
+	/** Reconnects retain immutable per-response pages already revealed by the user. */
+	preserveToolEventPages?: boolean;
 	/** Checked right after the fetch resolves; skips all dispatches if true (effect was cleaned up or superseded). */
 	isCancelled: () => boolean;
 }): Promise<SessionHistoryPage | null> {
@@ -519,7 +531,11 @@ export async function loadSessionSnapshot({
 		bufferedMessages = [...bufferedMessages, ...wsStore.drainMessageBuffer()];
 	}
 	const { items } = page;
-	dispatch({ type: "LOAD_HISTORY", items });
+	dispatch({
+		type: "LOAD_HISTORY",
+		items,
+		...(preserveToolEventPages ? { preserveToolEventPages: true } : {}),
+	});
 	// Dispatches are processed in order, so opening the gate here lets buffered
 	// events enqueue immediately after LOAD_HISTORY without being discarded by
 	// useChatWsHandler during an initial remount.

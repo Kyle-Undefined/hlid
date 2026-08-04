@@ -7,6 +7,8 @@ import type {
 	PermissionEventRow,
 	SessionRow,
 	ToolEventDetailRow,
+	ToolEventPageMeta,
+	ToolEventSummaryPage,
 	ToolEventSummaryRow,
 } from "#/db";
 import { dbFetch, dbJson, requireDbOk } from "#/lib/dbClient";
@@ -97,6 +99,7 @@ export const getSessionRowsByIdsFn = createServerFn({ method: "GET" })
 
 type EnrichedMessageRow = MessageRow & {
 	toolEvents?: ToolEventSummaryRow[];
+	toolEventPage?: ToolEventPageMeta;
 	attachments?: AttachmentRow[];
 };
 
@@ -111,6 +114,13 @@ const sessionTranscriptWindowSchema = z.object({
 	sessionId: sessionIdSchema,
 	minSeq: z.number().int().nonnegative(),
 	minId: z.number().int().nonnegative().optional(),
+});
+
+const sessionToolEventPageSchema = z.object({
+	sessionId: sessionIdSchema,
+	assistantSeq: z.number().int().nonnegative(),
+	beforeId: z.number().int().nonnegative().optional(),
+	limit: z.number().int().min(1).max(100).optional(),
 });
 
 const sessionScopedPageSchema = z.object({
@@ -156,6 +166,7 @@ export const getSessionDataFn = createServerFn({ method: "GET" })
 		}
 		const params = new URLSearchParams({
 			session_id: data.sessionId,
+			tool_event_page_size: "20",
 		});
 		if ("limit" in data) {
 			params.set("limit", String(data.limit));
@@ -172,6 +183,27 @@ export const getSessionDataFn = createServerFn({ method: "GET" })
 			}
 		}
 		return dbJson<EnrichedMessageRow[]>(`/db/session-messages?${params}`, []);
+	});
+
+/** Loads an older compact page for one settled assistant response. */
+export const getSessionToolEventPageFn = createServerFn({ method: "GET" })
+	.validator((raw) => sessionToolEventPageSchema.parse(raw))
+	.handler(({ data }) => {
+		const params = new URLSearchParams({
+			session_id: data.sessionId,
+			assistant_seq: String(data.assistantSeq),
+			limit: String(data.limit ?? 20),
+		});
+		if (data.beforeId !== undefined) {
+			params.set("before_id", String(data.beforeId));
+		}
+		return dbJson<ToolEventSummaryPage>(`/db/session-tool-events?${params}`, {
+			items: [],
+			total: 0,
+			errorCount: 0,
+			hasEarlier: false,
+			nextBeforeId: null,
+		});
 	});
 
 /** Hydrates a complete historical tool result only when its block is opened. */

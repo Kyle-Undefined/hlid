@@ -192,7 +192,7 @@ describe("provider history import", () => {
 			codexRoot,
 			"2026/07/01/rollout-2026-07-01T00-00-02-child-thread.jsonl",
 		);
-		writeJsonl(rootPath, [
+		const rootRecords: JsonRecord[] = [
 			codexMeta({
 				id: "root-thread",
 				timestamp: "2026-07-01T00:00:00.000Z",
@@ -224,7 +224,8 @@ describe("provider history import", () => {
 				lastCreated: 0,
 			}),
 			codexTerminal("turn_aborted", "2026-07-01T00:00:08.000Z"),
-		]);
+		];
+		writeJsonl(rootPath, rootRecords);
 		writeJsonl(childPath, [
 			codexMeta({
 				id: "child-thread",
@@ -343,6 +344,47 @@ describe("provider history import", () => {
 		});
 		expect(secondPlan.sessions).toHaveLength(0);
 		expect(secondPlan.alreadyImported.queries).toBe(3);
+
+		db.run(
+			`INSERT INTO provider_history_transcript_deltas
+			 (provider_id, native_session_id, subpath, uuid, payload_json)
+			 VALUES ('codex', 'root-thread', '', 'codex-base-uuid',
+			         '{"type":"turn_context","uuid":"codex-base-uuid"}')`,
+		);
+		writeJsonl(rootPath, [
+			...rootRecords,
+			{
+				type: "turn_context",
+				uuid: "codex-base-uuid",
+				timestamp: "2026-07-01T00:00:12.000Z",
+				payload: { model: "gpt-5.4" },
+			},
+		]);
+		const refreshedPlan = await planProviderHistoryImport({
+			db,
+			codexRoots: [codexRoot],
+		});
+		expect(refreshedPlan.sessions).toHaveLength(1);
+		expect(refreshedPlan.sessions[0].queries).toHaveLength(0);
+		await applyProviderHistoryImport(db, refreshedPlan);
+		expect(
+			db
+				.query<{ count: number }, []>(`
+					SELECT COUNT(*) AS count
+					FROM provider_history_transcript_deltas
+					WHERE provider_id = 'codex' AND native_session_id = 'root-thread'
+				`)
+				.get()?.count,
+		).toBe(1);
+		expect(
+			db
+				.query<{ entry_count: number }, []>(`
+					SELECT entry_count FROM provider_history_transcripts
+					WHERE provider_id = 'codex' AND native_session_id = 'root-thread'
+					  AND subpath = ''
+				`)
+				.get()?.entry_count,
+		).toBe(rootRecords.length + 1);
 	});
 
 	it("imports a child that becomes terminal after its parent was imported", async () => {
@@ -525,7 +567,7 @@ describe("provider history import", () => {
 		const projectsRoot = join(scratch, "claude-projects");
 		const sessionId = "claude-external";
 		const rootPath = join(projectsRoot, "-work-claude", `${sessionId}.jsonl`);
-		writeJsonl(rootPath, [
+		const rootRecords: JsonRecord[] = [
 			claudeUser({
 				sessionId,
 				uuid: "user-1",
@@ -561,7 +603,8 @@ describe("provider history import", () => {
 				timestamp: "2026-07-02T00:00:04.000Z",
 				durationMs: 4_000,
 			},
-		]);
+		];
+		writeJsonl(rootPath, rootRecords);
 		const childPath = join(
 			projectsRoot,
 			"-work-claude",
@@ -708,6 +751,61 @@ describe("provider history import", () => {
 			sessionId: "claude-external",
 		});
 		expect(restored?.some((entry) => entry.type === "user")).toBe(true);
+
+		const sessionStore = createClaudeHistorySessionStore();
+		const absorbedDeltas = Array.from({ length: 501 }, (_, index) => ({
+			type: "system",
+			uuid: `absorbed-delta-${index}`,
+			location: "delta",
+		}));
+		await sessionStore.append(
+			{ projectKey: "/work/claude", sessionId: "claude-external" },
+			[
+				...absorbedDeltas,
+				{ type: "system", uuid: "retained-delta", location: "delta" },
+				{ type: "system", marker: "retained-without-uuid" },
+			],
+		);
+		writeJsonl(rootPath, [
+			...rootRecords,
+			...absorbedDeltas.map((entry) => ({
+				...entry,
+				sessionId,
+				timestamp: "2026-07-02T00:00:05.000Z",
+				location: "refreshed-base",
+			})),
+		]);
+		const refreshedManifest = await planProviderHistoryImport({
+			db,
+			claudeRoots: [projectsRoot],
+		});
+		expect(refreshedManifest.sessions).toHaveLength(1);
+		expect(refreshedManifest.sessions[0].queries).toHaveLength(0);
+		await applyProviderHistoryImport(db, refreshedManifest);
+
+		const reloaded = await sessionStore.load({
+			projectKey: "/work/claude",
+			sessionId: "claude-external",
+		});
+		expect(
+			reloaded?.find((entry) => entry.uuid === "absorbed-delta-500"),
+		).toMatchObject({ location: "refreshed-base" });
+		expect(
+			reloaded?.find((entry) => entry.uuid === "retained-delta"),
+		).toMatchObject({ location: "delta" });
+		expect(
+			reloaded?.filter((entry) => entry.marker === "retained-without-uuid"),
+		).toHaveLength(1);
+		expect(
+			db
+				.query<{ uuid: string | null }, []>(`
+					SELECT uuid FROM provider_history_transcript_deltas
+					WHERE provider_id = 'claude'
+					  AND native_session_id = 'claude-external' AND subpath = ''
+					ORDER BY id
+				`)
+				.all(),
+		).toEqual([{ uuid: "retained-delta" }, { uuid: null }]);
 	});
 
 	it("imports Desktop Cowork usage with an actionable source identity", async () => {

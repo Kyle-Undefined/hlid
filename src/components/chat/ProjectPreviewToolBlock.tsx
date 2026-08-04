@@ -27,6 +27,7 @@ import {
 } from "#/hooks/useProjectPreviewActions";
 import { useProjectPreviewAgentFrame } from "#/hooks/useProjectPreviewAgentFrame";
 import type { ProjectPreviewSnapshot } from "#/lib/serverFns/projectPreviews";
+import { isProjectPreviewToolName } from "#/lib/toolEventPaging";
 import type { ToolEventMessage } from "#/server/protocol";
 
 type ProjectPreviewCaptureMetadata = {
@@ -381,13 +382,7 @@ function resultSnapshot(
 }
 
 export function isProjectPreviewToolEvent(event: ToolEventMessage): boolean {
-	return [
-		"start_project_preview",
-		"inspect_project_preview",
-		"capture_project_preview",
-		"control_project_preview",
-		"stop_project_preview",
-	].some((name) => event.name.endsWith(name));
+	return isProjectPreviewToolName(event.name);
 }
 
 function projectPreviewEventId(event: ToolEventMessage): string | null {

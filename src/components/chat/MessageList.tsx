@@ -12,6 +12,7 @@ import {
 import type {
 	AssistantMessage,
 	ChatMessage,
+	LoadEarlierToolEvents,
 	PermissionMessage,
 } from "./chatReducer";
 import { HlidDelegationActivityPanel } from "./HlidDelegationActivityPanel";
@@ -140,6 +141,7 @@ export const MessageList = memo(function MessageList({
 	hasOlderHistory = false,
 	isLoadingOlderHistory = false,
 	onLoadOlderHistory,
+	onLoadEarlierToolEvents,
 	canBranch,
 	forkingMessageId,
 	onBranch,
@@ -178,6 +180,7 @@ export const MessageList = memo(function MessageList({
 	hasOlderHistory?: boolean;
 	isLoadingOlderHistory?: boolean;
 	onLoadOlderHistory?: () => Promise<number>;
+	onLoadEarlierToolEvents?: LoadEarlierToolEvents;
 	/** "Branch from here" precondition (Claude-only, session idle). */
 	canBranch?: boolean;
 	forkingMessageId?: number | null;
@@ -546,6 +549,7 @@ export const MessageList = memo(function MessageList({
 							: undefined
 					}
 					onSelectTool={handleSelectTool}
+					onLoadEarlierToolEvents={onLoadEarlierToolEvents}
 					permissionLabels={permissionLabels}
 					queueState={queueStateById.get(m.id)}
 					onDecide={handleDecide}

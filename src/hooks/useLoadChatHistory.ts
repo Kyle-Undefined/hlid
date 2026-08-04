@@ -1,13 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Action } from "#/components/chat/chatReducer";
+import type {
+	Action,
+	LoadEarlierToolEvents,
+} from "#/components/chat/chatReducer";
 import {
 	loadSessionHistoryPage,
 	loadSessionSnapshot,
+	mapSessionToolEventSummary,
 	SESSION_HISTORY_PAGE_SIZE,
 } from "#/hooks/loadSessionSnapshot";
 import { claimPendingPrompt } from "#/hooks/wsChatQueueStore";
 import type { WsStatus } from "#/hooks/wsStore";
 import * as wsStore from "#/hooks/wsStore";
+import { getSessionToolEventPageFn } from "#/lib/serverFns/sessions";
 import { uid } from "#/lib/utils";
 import type { ServerMessage } from "#/server/protocol";
 
@@ -45,6 +50,7 @@ export function useLoadChatHistory({
 	const loadingOlderRef = useRef(false);
 	const olderRequestRef = useRef<Promise<number> | null>(null);
 	const reconnectRequestRef = useRef<Promise<void> | null>(null);
+	const toolPageRequestsRef = useRef(new Map<string, Promise<number>>());
 	const loadGenerationRef = useRef(0);
 	const [hasOlderHistory, setHasOlderHistory] = useState(false);
 	const [isLoadingOlderHistory, setIsLoadingOlderHistory] = useState(false);
@@ -72,6 +78,7 @@ export function useLoadChatHistory({
 		oldestIdRef.current = null;
 		hasOlderRef.current = false;
 		loadingOlderRef.current = false;
+		toolPageRequestsRef.current.clear();
 		setHasOlderHistory(false);
 		setIsLoadingOlderHistory(false);
 		// Enable buffering so events arriving before history loads are captured
@@ -197,6 +204,7 @@ export function useLoadChatHistory({
 								preserveHasOlder: hasOlderRef.current,
 							}
 						: {}),
+					preserveToolEventPages: true,
 				});
 				if (!cancelled && result) applyPageState(result);
 			} finally {
@@ -278,9 +286,66 @@ export function useLoadChatHistory({
 		}
 	}, [dispatch, sessionIdRef]);
 
+	const loadEarlierToolEvents = useCallback<LoadEarlierToolEvents>(
+		(responseId, assistantSeq, beforeId) => {
+			const sessionId = sessionIdRef.current;
+			if (!sessionId) return Promise.resolve(0);
+			const generation = loadGenerationRef.current;
+			const requestKey = `${sessionId}\0${assistantSeq}\0${beforeId}`;
+			const existing = toolPageRequestsRef.current.get(requestKey);
+			if (existing) return existing;
+
+			const request = getSessionToolEventPageFn({
+				data: {
+					sessionId,
+					assistantSeq,
+					beforeId,
+					limit: 20,
+				},
+			})
+				.then((page) => {
+					if (
+						generation !== loadGenerationRef.current ||
+						sessionIdRef.current !== sessionId
+					) {
+						return 0;
+					}
+					const events = page.items.map((row) =>
+						mapSessionToolEventSummary(row, sessionId),
+					);
+					dispatch({
+						type: "PREPEND_TOOL_EVENT_PAGE",
+						id: responseId,
+						expectedBeforeId: beforeId,
+						events,
+						page: {
+							total: page.total,
+							errorCount: page.errorCount,
+							hasEarlier: page.hasEarlier,
+							nextBeforeId: page.nextBeforeId,
+						},
+					});
+					return events.length;
+				})
+				.catch((error) => {
+					console.error(error);
+					return 0;
+				});
+			toolPageRequestsRef.current.set(requestKey, request);
+			void request.finally(() => {
+				if (toolPageRequestsRef.current.get(requestKey) === request) {
+					toolPageRequestsRef.current.delete(requestKey);
+				}
+			});
+			return request;
+		},
+		[dispatch, sessionIdRef],
+	);
+
 	return {
 		hasOlderHistory,
 		isLoadingOlderHistory,
 		loadOlderHistory,
+		loadEarlierToolEvents,
 	};
 }

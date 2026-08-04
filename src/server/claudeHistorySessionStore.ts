@@ -7,8 +7,10 @@ import { getDb } from "#/db";
 
 type TranscriptRow = {
 	payload_json: string;
-	source_path: string;
-	source_hash: string;
+};
+
+type TranscriptDeltaRow = {
+	payload_json: string;
 };
 
 const appendQueues = new Map<string, Promise<void>>();
@@ -20,6 +22,10 @@ function storedSubpath(key: SessionKey): string {
 function parseEntries(payload: string): SessionStoreEntry[] {
 	const value: unknown = JSON.parse(payload);
 	return Array.isArray(value) ? (value as SessionStoreEntry[]) : [];
+}
+
+function parseEntry(payload: string): SessionStoreEntry {
+	return JSON.parse(payload) as SessionStoreEntry;
 }
 
 function mergeEntries(
@@ -46,50 +52,77 @@ export function createClaudeHistorySessionStore(): SessionStore {
 	return {
 		async load(key) {
 			const db = await getDb();
+			const subpath = storedSubpath(key);
 			const row = db
 				.query<TranscriptRow, [string, string]>(`
-					SELECT payload_json, source_path, source_hash
+					SELECT payload_json
 					FROM provider_history_transcripts
 					WHERE provider_id = 'claude' AND native_session_id = ? AND subpath = ?
 				`)
-				.get(key.sessionId, storedSubpath(key));
-			return row ? parseEntries(row.payload_json) : null;
+				.get(key.sessionId, subpath);
+			if (!row) return null;
+			const deltas = db
+				.query<TranscriptDeltaRow, [string, string]>(`
+					SELECT payload_json
+					FROM provider_history_transcript_deltas
+					WHERE provider_id = 'claude' AND native_session_id = ? AND subpath = ?
+					ORDER BY id
+				`)
+				.all(key.sessionId, subpath)
+				.map((delta) => parseEntry(delta.payload_json));
+			return mergeEntries(parseEntries(row.payload_json), deltas);
 		},
 		async append(key, entries) {
-			const queueKey = `${key.sessionId}\0${storedSubpath(key)}`;
+			const subpath = storedSubpath(key);
+			const queueKey = `${key.sessionId}\0${subpath}`;
 			const previous = appendQueues.get(queueKey) ?? Promise.resolve();
-			const next = previous.then(async () => {
+			const append = async () => {
 				const db = await getDb();
-				const row = db
-					.query<TranscriptRow, [string, string]>(`
-						SELECT payload_json, source_path, source_hash
-						FROM provider_history_transcripts
-						WHERE provider_id = 'claude' AND native_session_id = ? AND subpath = ?
-					`)
-					.get(key.sessionId, storedSubpath(key));
-				const merged = mergeEntries(
-					row ? parseEntries(row.payload_json) : [],
-					entries,
-				);
-				db.run(
-					`INSERT INTO provider_history_transcripts
-					 (provider_id, native_session_id, subpath, source_path, source_hash,
-					  payload_json, entry_count, updated_at)
-					 VALUES ('claude', ?, ?, ?, ?, ?, ?, unixepoch())
-					 ON CONFLICT(provider_id, native_session_id, subpath) DO UPDATE SET
-					  payload_json = excluded.payload_json,
-					  entry_count = excluded.entry_count,
-					  updated_at = excluded.updated_at`,
-					[
-						key.sessionId,
-						storedSubpath(key),
-						row?.source_path ?? "sdk-session-store",
-						row?.source_hash ?? "sdk-session-store",
-						JSON.stringify(merged),
-						merged.length,
-					],
-				);
-			});
+				db.transaction(() => {
+					db.run(
+						`INSERT OR IGNORE INTO provider_history_transcripts
+						 (provider_id, native_session_id, subpath, source_path, source_hash,
+						  payload_json, entry_count, updated_at)
+						 VALUES ('claude', ?, ?, 'sdk-session-store', 'sdk-session-store',
+						         '[]', 0, unixepoch())`,
+						[key.sessionId, subpath],
+					);
+					const base = db
+						.query<TranscriptRow, [string, string]>(`
+							SELECT payload_json
+							FROM provider_history_transcripts
+							WHERE provider_id = 'claude'
+							  AND native_session_id = ? AND subpath = ?
+						`)
+						.get(key.sessionId, subpath);
+					const baseEntries = parseEntries(base?.payload_json ?? "[]");
+					const baseUuids = new Set(
+						baseEntries
+							.map((entry) => entry.uuid)
+							.filter((uuid): uuid is string => typeof uuid === "string"),
+					);
+					let insertedCount = 0;
+					for (const entry of entries) {
+						const uuid = typeof entry.uuid === "string" ? entry.uuid : null;
+						if (uuid !== null && baseUuids.has(uuid)) continue;
+						const result = db.run(
+							`INSERT OR IGNORE INTO provider_history_transcript_deltas
+							 (provider_id, native_session_id, subpath, uuid, payload_json)
+							 VALUES ('claude', ?, ?, ?, ?)`,
+							[key.sessionId, subpath, uuid, JSON.stringify(entry)],
+						);
+						insertedCount += result.changes;
+					}
+					db.run(
+						`UPDATE provider_history_transcripts
+						 SET entry_count = entry_count + ?, updated_at = unixepoch()
+						 WHERE provider_id = 'claude'
+						   AND native_session_id = ? AND subpath = ?`,
+						[insertedCount, key.sessionId, subpath],
+					);
+				}).immediate();
+			};
+			const next = previous.then(append, append);
 			appendQueues.set(queueKey, next);
 			try {
 				await next;

@@ -53,6 +53,10 @@ function countLabel(count: number, singular: string, plural = `${singular}s`) {
 export function AssistantActivityTray({
 	responseId,
 	events,
+	totalCount,
+	errorCount: aggregateErrorCount,
+	hasEarlier = false,
+	onLoadEarlier,
 	streaming,
 	steerCount,
 	open,
@@ -63,6 +67,11 @@ export function AssistantActivityTray({
 }: {
 	responseId: string;
 	events: readonly ToolEventMessage[];
+	/** Aggregate persisted count when only a bounded historical suffix is loaded. */
+	totalCount?: number;
+	errorCount?: number;
+	hasEarlier?: boolean;
+	onLoadEarlier?: () => Promise<number>;
 	streaming: boolean;
 	steerCount: number;
 	open: boolean;
@@ -77,25 +86,43 @@ export function AssistantActivityTray({
 	const [detachedEnd, setDetachedEnd] = useState<number | null>(null);
 	const [loadFeedback, setLoadFeedback] = useState<LoadFeedback | null>(null);
 	const loadFrameRef = useRef<number | null>(null);
+	const tailPinFrameRef = useRef<{
+		frame: number;
+		eventCount: number;
+	} | null>(null);
+	const anchoredPrependEventCountRef = useRef<number | null>(null);
+	const loadGenerationRef = useRef(0);
 	const prependSnapshotRef = useRef<{
 		scrollHeight: number;
 		scrollTop: number;
+		visibleCount: number;
+		eventCount: number;
 	} | null>(null);
 	const eventCount = events.length;
+	const resolvedTotalCount = Math.max(eventCount, totalCount ?? eventCount);
 	const endIndex = Math.min(detachedEnd ?? eventCount, eventCount);
 	const startIndex = Math.max(0, endIndex - visibleCount);
-	const earlierCount = Math.min(ACTIVITY_TOOL_PAGE_SIZE, startIndex);
+	const loadedEarlierCount = Math.min(ACTIVITY_TOOL_PAGE_SIZE, startIndex);
+	const serverEarlierCount =
+		hasEarlier && onLoadEarlier
+			? Math.min(
+					ACTIVITY_TOOL_PAGE_SIZE,
+					Math.max(0, resolvedTotalCount - eventCount),
+				)
+			: 0;
+	const earlierCount = loadedEarlierCount || serverEarlierCount;
 	const newerCount = Math.max(0, eventCount - endIndex);
-	const errorCount = useMemo(
+	const loadedErrorCount = useMemo(
 		() => events.filter((event) => event.isError).length,
 		[events],
 	);
+	const errorCount = aggregateErrorCount ?? loadedErrorCount;
 	const runningCount = useMemo(
 		() => activeToolCount(events, streaming),
 		[events, streaming],
 	);
 	const summaryParts = [
-		countLabel(eventCount, "tool call"),
+		countLabel(resolvedTotalCount, "tool call"),
 		...(errorCount > 0 ? [countLabel(errorCount, "error")] : []),
 		...(runningCount > 0
 			? [countLabel(runningCount, "running", "running")]
@@ -108,6 +135,7 @@ export function AssistantActivityTray({
 	// at the newest 20 calls, keeping remount cost predictable.
 	useEffect(() => {
 		if (open) return;
+		loadGenerationRef.current += 1;
 		if (loadFrameRef.current !== null) {
 			cancelAnimationFrame(loadFrameRef.current);
 			loadFrameRef.current = null;
@@ -115,6 +143,8 @@ export function AssistantActivityTray({
 		setVisibleCount(ACTIVITY_TOOL_PAGE_SIZE);
 		setDetachedEnd(null);
 		setLoadFeedback(null);
+		prependSnapshotRef.current = null;
+		anchoredPrependEventCountRef.current = null;
 	}, [open]);
 	useEffect(() => {
 		if (loadFeedback?.phase !== "loaded") return;
@@ -123,31 +153,58 @@ export function AssistantActivityTray({
 	}, [loadFeedback]);
 	useEffect(
 		() => () => {
+			loadGenerationRef.current += 1;
 			if (loadFrameRef.current !== null) {
 				cancelAnimationFrame(loadFrameRef.current);
+			}
+			if (tailPinFrameRef.current !== null) {
+				cancelAnimationFrame(tailPinFrameRef.current.frame);
 			}
 		},
 		[],
 	);
-	// biome-ignore lint/correctness/useExhaustiveDependencies: visibleCount is the DOM prepend commit that makes scroll-height restoration possible
 	useLayoutEffect(() => {
 		const snapshot = prependSnapshotRef.current;
 		const body = bodyRef.current;
 		if (!snapshot || !body) return;
+		// A server page can reach the parent before this tray expands its local
+		// window. Keep the snapshot until those newly loaded rows actually mount.
+		if (visibleCount <= snapshot.visibleCount) return;
 		prependSnapshotRef.current = null;
 		body.scrollTop =
 			snapshot.scrollTop + (body.scrollHeight - snapshot.scrollHeight);
-	}, [visibleCount]);
+		if (eventCount !== snapshot.eventCount) {
+			anchoredPrependEventCountRef.current = eventCount;
+			const tailPin = tailPinFrameRef.current;
+			if (tailPin?.eventCount === eventCount) {
+				cancelAnimationFrame(tailPin.frame);
+				tailPinFrameRef.current = null;
+			}
+		}
+	}, [eventCount, visibleCount]);
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: eventCount is the live append signal that keeps an attached tray pinned to its tail
 	useEffect(() => {
 		if (!open || detachedEnd !== null) return;
 		const body = bodyRef.current;
 		if (!body) return;
+		if (anchoredPrependEventCountRef.current === eventCount) {
+			anchoredPrependEventCountRef.current = null;
+			return;
+		}
+		anchoredPrependEventCountRef.current = null;
 		const frame = requestAnimationFrame(() => {
+			if (tailPinFrameRef.current?.frame === frame) {
+				tailPinFrameRef.current = null;
+			}
 			body.scrollTop = body.scrollHeight;
 		});
-		return () => cancelAnimationFrame(frame);
+		tailPinFrameRef.current = { frame, eventCount };
+		return () => {
+			cancelAnimationFrame(frame);
+			if (tailPinFrameRef.current?.frame === frame) {
+				tailPinFrameRef.current = null;
+			}
+		};
 	}, [detachedEnd, eventCount, open]);
 
 	const loadEarlier = () => {
@@ -157,20 +214,56 @@ export function AssistantActivityTray({
 			prependSnapshotRef.current = {
 				scrollHeight: body.scrollHeight,
 				scrollTop: body.scrollTop,
+				visibleCount,
+				eventCount,
 			};
 		}
-		const loaded = earlierCount;
+		const revealLoaded = loadedEarlierCount;
 		setLoadFeedback({ phase: "loading" });
-		loadFrameRef.current = requestAnimationFrame(() => {
-			loadFrameRef.current = null;
-			setVisibleCount((count) => count + ACTIVITY_TOOL_PAGE_SIZE);
-			setLoadFeedback({
-				phase: "loaded",
-				loaded,
-				shown: Math.min(endIndex, visibleCount + loaded),
-				total: eventCount,
+		if (revealLoaded > 0) {
+			loadFrameRef.current = requestAnimationFrame(() => {
+				loadFrameRef.current = null;
+				setVisibleCount((count) => count + revealLoaded);
+				setLoadFeedback({
+					phase: "loaded",
+					loaded: revealLoaded,
+					shown: Math.min(resolvedTotalCount, visibleCount + revealLoaded),
+					total: resolvedTotalCount,
+				});
 			});
-		});
+			return;
+		}
+		if (!onLoadEarlier) {
+			prependSnapshotRef.current = null;
+			setLoadFeedback(null);
+			return;
+		}
+		const generation = ++loadGenerationRef.current;
+		void onLoadEarlier().then(
+			(loadedValue) => {
+				if (loadGenerationRef.current !== generation || !open) return;
+				const loaded = Number.isFinite(loadedValue)
+					? Math.max(0, Math.floor(loadedValue))
+					: 0;
+				if (loaded === 0) {
+					prependSnapshotRef.current = null;
+					setLoadFeedback(null);
+					return;
+				}
+				setVisibleCount((count) => count + loaded);
+				setLoadFeedback({
+					phase: "loaded",
+					loaded,
+					shown: Math.min(resolvedTotalCount, visibleCount + loaded),
+					total: resolvedTotalCount,
+				});
+			},
+			() => {
+				if (loadGenerationRef.current !== generation || !open) return;
+				prependSnapshotRef.current = null;
+				setLoadFeedback(null);
+			},
+		);
 	};
 
 	return (

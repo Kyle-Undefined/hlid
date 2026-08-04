@@ -926,6 +926,37 @@ function applyMigrations(db: Db): void {
 			 ON provider_history_transcripts(provider_id, native_session_id)`,
 		);
 	});
+	runMigration(db, "_migrated_provider_history_transcript_deltas_v1", (db) => {
+		db.run(`
+			CREATE TABLE IF NOT EXISTS provider_history_transcript_deltas (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				provider_id TEXT NOT NULL,
+				native_session_id TEXT NOT NULL,
+				subpath TEXT NOT NULL DEFAULT '',
+				uuid TEXT,
+				payload_json TEXT NOT NULL,
+				appended_at INTEGER NOT NULL DEFAULT (unixepoch()),
+				FOREIGN KEY (provider_id, native_session_id, subpath)
+					REFERENCES provider_history_transcripts(
+						provider_id, native_session_id, subpath
+					)
+					ON DELETE CASCADE
+			)
+		`);
+		db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_history_delta_uuid
+			ON provider_history_transcript_deltas(
+				provider_id, native_session_id, subpath, uuid
+			)
+			WHERE uuid IS NOT NULL
+		`);
+		db.run(`
+			CREATE INDEX IF NOT EXISTS idx_provider_history_delta_order
+			ON provider_history_transcript_deltas(
+				provider_id, native_session_id, subpath, id
+			)
+		`);
+	});
 	runMigration(db, "_migrated_codex_history_source_classification", (db) => {
 		db.run(`
 			UPDATE sessions

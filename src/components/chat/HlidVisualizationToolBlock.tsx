@@ -9,6 +9,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import { useDialogFocus } from "#/hooks/useDialogFocus";
+import { isHlidVisualizationToolName } from "#/lib/toolEventPaging";
 import type { ToolEventMessage } from "#/server/protocol";
 
 const ATTACHMENT_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -19,11 +20,6 @@ export const VISUALIZATION_OFFSCREEN_GRACE_MS = 60_000;
 const MIN_VISUALIZATION_ZOOM = 0.5;
 const MAX_VISUALIZATION_ZOOM = 1.5;
 const VISUALIZATION_ZOOM_STEP = 0.1;
-const VISUALIZATION_TOOL_NAMES = new Set([
-	"create_visualization",
-	"hlid.create_visualization",
-	"mcp__hlid__create_visualization",
-]);
 
 export type HlidVisualizationResult = {
 	type: "hlid_visualization";
@@ -74,7 +70,7 @@ export function parseHlidVisualizationResult(
 }
 
 export function isHlidVisualizationToolEvent(event: ToolEventMessage): boolean {
-	return VISUALIZATION_TOOL_NAMES.has(event.name);
+	return isHlidVisualizationToolName(event.name);
 }
 
 function boundedVisualizationZoom(zoom: number): number {

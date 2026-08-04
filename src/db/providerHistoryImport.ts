@@ -2107,6 +2107,43 @@ function upsertSessionTranscript(
 				file.records.length,
 			],
 		);
+		if (session.providerId === "claude") {
+			const baseUuids = [
+				...new Set(
+					file.records
+						.map((record) => record.uuid)
+						.filter((uuid): uuid is string => typeof uuid === "string"),
+				),
+			];
+			for (let offset = 0; offset < baseUuids.length; offset += 500) {
+				const chunk = baseUuids.slice(offset, offset + 500);
+				db.run(
+					`DELETE FROM provider_history_transcript_deltas
+					 WHERE provider_id = 'claude' AND native_session_id = ?
+					   AND subpath = ? AND uuid IN (${chunk.map(() => "?").join(", ")})`,
+					[session.nativeSessionId, file.subpath, ...chunk],
+				);
+			}
+			const deltaCount = db
+				.query<{ count: number }, [string, string]>(`
+					SELECT COUNT(*) AS count
+					FROM provider_history_transcript_deltas
+					WHERE provider_id = 'claude'
+					  AND native_session_id = ? AND subpath = ?
+				`)
+				.get(session.nativeSessionId, file.subpath)?.count;
+			db.run(
+				`UPDATE provider_history_transcripts
+				 SET entry_count = ?
+				 WHERE provider_id = 'claude'
+				   AND native_session_id = ? AND subpath = ?`,
+				[
+					file.records.length + (deltaCount ?? 0),
+					session.nativeSessionId,
+					file.subpath,
+				],
+			);
+		}
 	}
 	const existing = db
 		.query<{ count: number }, [string]>(

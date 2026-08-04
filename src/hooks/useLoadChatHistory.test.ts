@@ -41,6 +41,7 @@ vi.mock("#/lib/serverFns/sessions", () => ({
 	getSessionPermissionsFn: vi.fn(),
 	getSessionPlanProposalsFn: vi.fn(),
 	getSessionAskUserQuestionsFn: vi.fn(),
+	getSessionToolEventPageFn: vi.fn(),
 }));
 
 vi.mock("#/lib/utils", () => ({
@@ -58,6 +59,7 @@ import {
 	getSessionDataFn,
 	getSessionPermissionsFn,
 	getSessionPlanProposalsFn,
+	getSessionToolEventPageFn,
 } from "#/lib/serverFns/sessions";
 import { useLoadChatHistory } from "./useLoadChatHistory";
 
@@ -153,6 +155,97 @@ describe("useLoadChatHistory — initial load", () => {
 		await act(async () => {});
 
 		expect(liveStatsStore.resetLiveStats).not.toHaveBeenCalled();
+	});
+
+	it("deduplicates one per-response page request and maps it through the history mapper", async () => {
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			makeRow("assistant", "done", 1000),
+		]);
+		let resolvePage!: (
+			value: Awaited<ReturnType<typeof getSessionToolEventPageFn>>,
+		) => void;
+		vi.mocked(getSessionToolEventPageFn).mockReturnValue(
+			new Promise((resolve) => {
+				resolvePage = resolve;
+			}),
+		);
+		const dispatch = vi.fn();
+		const view = renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+		await act(async () => {});
+
+		const first = view.result.current.loadEarlierToolEvents(
+			"response-1",
+			2,
+			30,
+		);
+		const second = view.result.current.loadEarlierToolEvents(
+			"response-1",
+			2,
+			30,
+		);
+		expect(first).toBe(second);
+		expect(getSessionToolEventPageFn).toHaveBeenCalledOnce();
+		expect(getSessionToolEventPageFn).toHaveBeenCalledWith({
+			data: {
+				sessionId: "sess-1",
+				assistantSeq: 2,
+				beforeId: 30,
+				limit: 20,
+			},
+		});
+
+		await act(async () => {
+			resolvePage({
+				total: 40,
+				errorCount: 1,
+				hasEarlier: false,
+				nextBeforeId: null,
+				items: [
+					{
+						id: 20,
+						session_id: "sess-1",
+						assistant_seq: 2,
+						tool_id: "tool-20",
+						name: "Read",
+						input_json: "{}",
+						result_text: "preview",
+						result_length: 500,
+						result_truncated: 1,
+						is_error: 0,
+						subagent_json: null,
+						activity_json: null,
+					},
+				],
+			});
+			await first;
+		});
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "PREPEND_TOOL_EVENT_PAGE",
+			id: "response-1",
+			expectedBeforeId: 30,
+			events: [
+				expect.objectContaining({
+					id: "tool-20",
+					resultTruncated: true,
+					detailSessionId: "sess-1",
+				}),
+			],
+			page: {
+				total: 40,
+				errorCount: 1,
+				hasEarlier: false,
+				nextBeforeId: null,
+			},
+		});
 	});
 
 	it("shows base messages before optional question history finishes", async () => {
@@ -756,6 +849,8 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 		expect(loadHistoryCalls).toHaveLength(2);
 		expect(loadHistoryCalls[0][0].items[0].id).toBe("persisted-message:1");
 		expect(loadHistoryCalls[1][0].items[0].id).toBe("persisted-message:1");
+		expect(loadHistoryCalls[0][0].preserveToolEventPages).toBeUndefined();
+		expect(loadHistoryCalls[1][0].preserveToolEventPages).toBe(true);
 
 		// Second LOAD_HISTORY includes the assistant message
 		const secondItems = loadHistoryCalls[1][0].items as { role: string }[];
