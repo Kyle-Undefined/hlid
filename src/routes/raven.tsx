@@ -3741,6 +3741,10 @@ function RavenMessagePane({
 			runtime.loadOlderHistory,
 		);
 	}, [runtime.loadOlderHistory, scrollRef]);
+	const obsidianCapture = useMemo(
+		() => configuredObsidianCapture(config.vault),
+		[config.vault],
+	);
 	const {
 		fork: forkFromMessage,
 		forkingMessageId,
@@ -3861,7 +3865,7 @@ function RavenMessagePane({
 											: null
 									}
 									onBranch={handleBranch}
-									obsidianCapture={configuredObsidianCapture(config.vault)}
+									obsidianCapture={obsidianCapture}
 								/>
 							)}
 						</div>

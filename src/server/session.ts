@@ -4225,18 +4225,7 @@ export class SessionManager {
 				emit({ type: "local_command_output", content: event.content });
 				break;
 			case "mcp_status":
-				this.mcpStatusByProvider.set(provider.providerId, event.servers);
-				{
-					const operations = this.getMcpControlOperations();
-					emit({
-						type: "mcp_status",
-						provider_id: provider.providerId,
-						...(operations.length ? { operations } : {}),
-						...(this.agentCwd ? { agent_cwd: this.agentCwd } : {}),
-						...(sessionId ? { session_id: sessionId } : {}),
-						servers: event.servers.map(mapMcpServer),
-					});
-				}
+				this.emitMcpStatus(event.servers, sessionId, emit, provider);
 				break;
 			case "done":
 				this.settleIncompleteSubagents(turn, sessionId, emit);
@@ -4244,6 +4233,24 @@ export class SessionManager {
 				return true;
 		}
 		return false;
+	}
+
+	private emitMcpStatus(
+		statuses: McpServerStatus[],
+		sessionId: string | undefined,
+		emit: (msg: ServerMessage) => void,
+		provider: AgentProvider,
+	): void {
+		this.mcpStatusByProvider.set(provider.providerId, statuses);
+		const operations = this.getMcpControlOperations();
+		emit({
+			type: "mcp_status",
+			provider_id: provider.providerId,
+			...(operations.length ? { operations } : {}),
+			...(this.agentCwd ? { agent_cwd: this.agentCwd } : {}),
+			...(sessionId ? { session_id: sessionId } : {}),
+			servers: statuses.map(mapMcpServer),
+		});
 	}
 
 	private async refreshMcpStatus(
@@ -4255,16 +4262,7 @@ export class SessionManager {
 		if (!session.mcpServerStatus) return [];
 		try {
 			const statuses = await session.mcpServerStatus();
-			this.mcpStatusByProvider.set(provider.providerId, statuses);
-			const operations = this.getMcpControlOperations();
-			emit({
-				type: "mcp_status",
-				provider_id: provider.providerId,
-				...(operations.length ? { operations } : {}),
-				...(this.agentCwd ? { agent_cwd: this.agentCwd } : {}),
-				...(sessionId ? { session_id: sessionId } : {}),
-				servers: statuses.map(mapMcpServer),
-			});
+			this.emitMcpStatus(statuses, sessionId, emit, provider);
 			return statuses;
 		} catch {
 			// Runtime MCP discovery is optional and must not fail a turn.

@@ -363,9 +363,13 @@ export const MessageList = memo(function MessageList({
 	const liveProjectPreview = useProjectPreview(
 		allProjectPreviewEvents.length > 0 ? sessionId : "",
 	);
-	const projectPreviewEvents = selectActiveProjectPreviewEvents(
-		allProjectPreviewEvents,
-		liveProjectPreview,
+	const projectPreviewEvents = useMemo(
+		() =>
+			selectActiveProjectPreviewEvents(
+				allProjectPreviewEvents,
+				liveProjectPreview,
+			),
+		[allProjectPreviewEvents, liveProjectPreview],
 	);
 	const groupedProjectPreviewEventIds = useMemo(() => {
 		if (allProjectPreviewEvents.length === 0) {

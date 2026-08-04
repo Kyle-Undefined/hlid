@@ -299,6 +299,27 @@ describe("ClaudeProvider — event mapping", () => {
 					},
 				},
 				{
+					type: "user",
+					tool_use_result: {
+						tasks: [
+							{
+								id: "8",
+								subject: "Duplicate replay",
+								status: "pending",
+							},
+						],
+					},
+					message: {
+						content: [
+							{
+								type: "tool_result",
+								tool_use_id: "task-list-1",
+								content: "duplicate result",
+							},
+						],
+					},
+				},
+				{
 					type: "result",
 					subtype: "success",
 					total_cost_usd: 0,
@@ -339,6 +360,9 @@ describe("ClaudeProvider — event mapping", () => {
 				],
 			},
 		});
+		expect(
+			events.filter((event) => event.type === "tool_activity_update"),
+		).toHaveLength(1);
 	});
 
 	it("surfaces structured Claude assistant failures as terminal provider errors", async () => {

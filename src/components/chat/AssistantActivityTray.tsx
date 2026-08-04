@@ -235,6 +235,7 @@ export function AssistantActivityTray({
 					{(earlierCount > 0 || loadFeedback) && (
 						<button
 							type="button"
+							data-activity-load-earlier={startIndex}
 							onClick={loadEarlier}
 							disabled={loadFeedback !== null}
 							aria-label={

@@ -11,6 +11,7 @@ import {
 	win32,
 } from "node:path";
 import { z } from "zod";
+import type { SessionCleanupPreview } from "#/db/types";
 import { dbFetch, requireDbOk } from "#/lib/dbClient";
 import { parseHlidApiIndex } from "../lib/apiIndex";
 import {
@@ -44,24 +45,6 @@ export const HLID_AGENT_NAMESPACE_DESCRIPTION =
 export const MAX_HLID_INLINE_RELIC_CHARS = 2_000_000;
 const STORAGE_CLEANUP_PREVIEW_TTL_MS = 10 * 60 * 1_000;
 const MAX_STORAGE_CLEANUP_PREVIEWS = 256;
-
-type SessionCleanupPreview = {
-	days: number;
-	cutoff: number;
-	sessions: number;
-	messages: number;
-	toolEvents: number;
-	estimatedDatabaseBytes: number;
-	usageQueriesPreserved: number;
-	managedAttachments: number;
-	managedAttachmentBytes: number;
-	retainedRelics: number;
-	retainedRelicBytes: number;
-	vaultLinksDetached: number;
-	planProposals: number;
-	askUserQuestions: number;
-	projectPreviewFeedback: number;
-};
 
 type StorageCleanupPreviewReceipt = {
 	sessionId: string;

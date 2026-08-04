@@ -127,7 +127,7 @@ export class ClaudeBackgroundActivityTracker {
 	}
 
 	stop(taskId: string): void {
-		this.tasks.delete(taskId);
+		this.removeTask(taskId);
 	}
 
 	list(): ProviderBackgroundActivity[] {
@@ -182,9 +182,18 @@ export class ClaudeBackgroundActivityTracker {
 			const toolUseId = nonEmptyString(block.tool_use_id);
 			const result = record(block.content) ?? structuredResult;
 			const taskId = backgroundTaskId(result);
-			if (!taskId) continue;
+			if (!taskId) {
+				if (
+					toolUseId &&
+					![...this.tasks.values()].some((task) => task.toolUseId === toolUseId)
+				) {
+					this.tools.delete(toolUseId);
+				}
+				continue;
+			}
 			const now = Date.now();
 			const current = this.tasks.get(taskId);
+			const recentOutput = resultOutput(result);
 			this.tasks.set(taskId, {
 				taskId,
 				...(toolUseId ? { toolUseId } : {}),
@@ -194,8 +203,8 @@ export class ClaudeBackgroundActivityTracker {
 				backgrounded: true,
 				startedAtMs: current?.startedAtMs ?? now,
 				updatedAtMs: now,
-				...(resultOutput(result)
-					? { recentOutput: resultOutput(result) }
+				...(recentOutput
+					? { recentOutput }
 					: current?.recentOutput
 						? { recentOutput: current.recentOutput }
 						: {}),
@@ -212,7 +221,7 @@ export class ClaudeBackgroundActivityTracker {
 		const taskId = nonEmptyString(taskMessage.task_id);
 		if (!taskId) return;
 		if (subtype === "task_notification") {
-			this.tasks.delete(taskId);
+			this.removeTask(taskId);
 			return;
 		}
 		const now = Date.now();
@@ -257,7 +266,7 @@ export class ClaudeBackgroundActivityTracker {
 		const update = record(taskMessage.patch) ?? {};
 		const status = nonEmptyString(update.status);
 		if (status === "completed" || status === "failed" || status === "killed") {
-			this.tasks.delete(taskId);
+			this.removeTask(taskId);
 			return;
 		}
 		this.tasks.set(taskId, {
@@ -273,5 +282,11 @@ export class ClaudeBackgroundActivityTracker {
 				: {}),
 			updatedAtMs: now,
 		});
+	}
+
+	private removeTask(taskId: string): void {
+		const toolUseId = this.tasks.get(taskId)?.toolUseId;
+		this.tasks.delete(taskId);
+		if (toolUseId) this.tools.delete(toolUseId);
 	}
 }

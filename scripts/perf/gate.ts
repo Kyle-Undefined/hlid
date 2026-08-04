@@ -450,13 +450,18 @@ try {
 	await collectGarbage(desktopContext, desktopPage);
 	const desktopInitial = await snapshot(desktopContext, desktopPage);
 
-	const reveal = desktopPage.getByRole("button", {
-		name: /Show \d+ earlier tool calls/,
-	});
+	const reveal = desktopPage.locator("[data-activity-load-earlier]");
+	const revealWindow = await reveal.getAttribute("data-activity-load-earlier");
+	if (!revealWindow) {
+		throw new Error("Activity history pagination marker is missing");
+	}
+	const currentReveal = desktopPage.locator(
+		`[data-activity-load-earlier="${revealWindow}"]`,
+	);
 	const beforeReveal = await snapshot(desktopContext, desktopPage);
 	const toolRevealStartedAt = performance.now();
-	await reveal.click();
-	await reveal.waitFor({ state: "hidden" });
+	await currentReveal.click();
+	await currentReveal.waitFor({ state: "hidden" });
 	await desktopPage.evaluate(
 		() =>
 			new Promise<void>((resolveFrame) =>

@@ -129,6 +129,49 @@ describe("ClaudeBackgroundActivityTracker", () => {
 		]);
 	});
 
+	it("drops settled foreground tool metadata instead of retaining it for the session", () => {
+		const tracker = new ClaudeBackgroundActivityTracker("claude", "/work");
+		tracker.observe(
+			message({
+				type: "assistant",
+				session_id: "sdk-session-foreground",
+				message: {
+					content: [
+						{
+							type: "tool_use",
+							id: "settled-tool",
+							name: "Bash",
+							input: { command: "pwd" },
+						},
+					],
+				},
+			}),
+		);
+		tracker.observe(
+			message({
+				type: "user",
+				session_id: "sdk-session-foreground",
+				message: {
+					content: [
+						{
+							type: "tool_result",
+							tool_use_id: "settled-tool",
+							content: "done",
+						},
+					],
+				},
+			}),
+		);
+
+		expect(
+			(
+				tracker as unknown as {
+					tools: Map<string, unknown>;
+				}
+			).tools.size,
+		).toBe(0);
+	});
+
 	it("marks the exact foreground candidate when the host backgrounds it", () => {
 		const tracker = new ClaudeBackgroundActivityTracker("claude", "/work");
 		for (const [taskId, toolUseId] of [

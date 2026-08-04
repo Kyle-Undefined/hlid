@@ -1009,6 +1009,7 @@ class ClaudeSubagentTracker {
 	recordTaskActivityResult(toolId: string, result: unknown): AgentEvent[] {
 		const tool = this.taskActivityTools.get(toolId);
 		if (!tool) return [];
+		this.taskActivityTools.delete(toolId);
 		const taskActivity = claudeTaskActivityResult(
 			tool.name,
 			tool.input,

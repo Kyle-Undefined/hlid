@@ -153,12 +153,15 @@ export function useMessageListView({
 	// (matched by toolUseID === ToolEvent.id) instead of a separate row, so a
 	// long run of approvals doesn't stack up above each tool call.
 	const permissionLabelsRef = useRef(new Map<string, string>());
-	const nextPermissionLabels = new Map<string, string>();
-	for (const m of messages) {
-		if (m.role !== "permission") continue;
-		const label = approvedLabel(m.decision);
-		if (label) nextPermissionLabels.set(m.id, label);
-	}
+	const nextPermissionLabels = useMemo(() => {
+		const labels = new Map<string, string>();
+		for (const message of messages) {
+			if (message.role !== "permission") continue;
+			const label = approvedLabel(message.decision);
+			if (label) labels.set(message.id, label);
+		}
+		return labels;
+	}, [messages]);
 	if (!mapsEqual(permissionLabelsRef.current, nextPermissionLabels)) {
 		permissionLabelsRef.current = nextPermissionLabels;
 	}
