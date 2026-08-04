@@ -5,7 +5,6 @@ import {
 	HLID_DELEGATION_CONTROL_OWNERSHIP_ERROR,
 	isHlidDelegationControlOwned,
 } from "../lib/hlidDelegation";
-import { isTranscriptPagingSpecialToolName } from "../lib/toolEventPaging";
 import { clampInt, uid } from "../lib/utils";
 import {
 	msUntilNextLocalDay,
@@ -298,16 +297,20 @@ async function getSessionMessages(url: URL): Promise<Response> {
 	const minSeq = pageMessages[0]?.seq;
 	if (minSeq === undefined) return Response.json([]);
 	const maxSeq = pageMessages.at(-1)?.seq ?? minSeq;
-	const [messages, toolEvents, attachments, steerTargetSeqs] =
-		await Promise.all([
-			Promise.resolve(pageMessages),
-			db.getSessionToolEventSummaries(sessionId, minSeq, undefined, maxSeq),
-			db.getAttachmentsForSession(sessionId, minSeq, undefined, maxSeq),
-			toolEventPageSize === undefined
-				? Promise.resolve([])
-				: db.getSessionSteerTargetSeqs(sessionId, minSeq, maxSeq),
-		]);
-	const steeredAssistantSeqs = new Set(steerTargetSeqs);
+	const [toolEventWindow, attachments] = await Promise.all([
+		toolEventPageSize === undefined
+			? db
+					.getSessionToolEventSummaries(sessionId, minSeq, undefined, maxSeq)
+					.then((items) => ({ items, pages: [] }))
+			: db.getSessionToolEventTranscriptWindow(
+					sessionId,
+					minSeq,
+					maxSeq,
+					toolEventPageSize,
+				),
+		db.getAttachmentsForSession(sessionId, minSeq, undefined, maxSeq),
+	]);
+	const toolEvents = toolEventWindow.items;
 	const toolsBySeq = new Map<number, (typeof toolEvents)[number][]>();
 	for (const te of toolEvents) {
 		if (te.assistant_seq == null) continue;
@@ -315,6 +318,12 @@ async function getSessionMessages(url: URL): Promise<Response> {
 		list.push(te);
 		toolsBySeq.set(te.assistant_seq, list);
 	}
+	const toolPagesBySeq = new Map(
+		toolEventWindow.pages.map(({ assistantSeq, ...page }) => [
+			assistantSeq,
+			page,
+		]),
+	);
 	const attachBySeq = new Map<number, (typeof attachments)[number][]>();
 	for (const a of attachments) {
 		if (a.message_seq == null) continue;
@@ -322,42 +331,17 @@ async function getSessionMessages(url: URL): Promise<Response> {
 		list.push(a);
 		attachBySeq.set(a.message_seq, list);
 	}
-	const enriched = messages.map((m) => {
+	const enriched = pageMessages.map((m) => {
 		const allToolEvents =
 			m.role === "assistant" ? (toolsBySeq.get(m.seq) ?? []) : undefined;
-		if (allToolEvents === undefined || toolEventPageSize === undefined) {
-			return {
-				...m,
-				toolEvents: allToolEvents,
-				attachments:
-					m.role === "user" ? (attachBySeq.get(m.seq) ?? []) : undefined,
-			};
-		}
-		const mayPage =
-			m.query_id != null &&
-			!steeredAssistantSeqs.has(m.seq) &&
-			allToolEvents.every(
-				(event) =>
-					event.result_text !== null &&
-					event.subagent_json == null &&
-					event.activity_json == null &&
-					!isTranscriptPagingSpecialToolName(event.name),
-			);
-		const hasEarlier = mayPage && allToolEvents.length > toolEventPageSize;
-		if (!hasEarlier) {
-			return { ...m, toolEvents: allToolEvents };
-		}
-		const toolEvents = allToolEvents.slice(-toolEventPageSize);
+		const toolEventPage =
+			m.role === "assistant" ? toolPagesBySeq.get(m.seq) : undefined;
 		return {
 			...m,
-			toolEvents,
-			toolEventPage: {
-				total: allToolEvents.length,
-				errorCount: allToolEvents.filter((event) => event.is_error === 1)
-					.length,
-				hasEarlier: true,
-				nextBeforeId: toolEvents[0]?.id ?? null,
-			},
+			toolEvents: allToolEvents,
+			attachments:
+				m.role === "user" ? (attachBySeq.get(m.seq) ?? []) : undefined,
+			...(toolEventPage ? { toolEventPage } : {}),
 		};
 	});
 	return Response.json(enriched);

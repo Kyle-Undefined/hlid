@@ -19,9 +19,9 @@ const {
 	mockSetSessionPinned,
 	mockGetSessionMessages,
 	mockGetSessionToolEventSummaries,
+	mockGetSessionToolEventTranscriptWindow,
 	mockGetSessionToolEventPage,
 	mockGetSessionToolEventDetail,
-	mockGetSessionSteerTargetSeqs,
 	mockGetAttachmentsForSession,
 	mockGetProviderUsage,
 	mockGetLogs,
@@ -62,9 +62,9 @@ const {
 	mockSetSessionPinned: vi.fn(),
 	mockGetSessionMessages: vi.fn(),
 	mockGetSessionToolEventSummaries: vi.fn(),
+	mockGetSessionToolEventTranscriptWindow: vi.fn(),
 	mockGetSessionToolEventPage: vi.fn(),
 	mockGetSessionToolEventDetail: vi.fn(),
-	mockGetSessionSteerTargetSeqs: vi.fn(),
 	mockGetAttachmentsForSession: vi.fn(),
 	mockGetProviderUsage: vi.fn(),
 	mockGetLogs: vi.fn(),
@@ -107,9 +107,9 @@ vi.mock("../db", () => ({
 	setSessionPinned: mockSetSessionPinned,
 	getSessionMessages: mockGetSessionMessages,
 	getSessionToolEventSummaries: mockGetSessionToolEventSummaries,
+	getSessionToolEventTranscriptWindow: mockGetSessionToolEventTranscriptWindow,
 	getSessionToolEventPage: mockGetSessionToolEventPage,
 	getSessionToolEventDetail: mockGetSessionToolEventDetail,
-	getSessionSteerTargetSeqs: mockGetSessionSteerTargetSeqs,
 	getAttachmentsForSession: mockGetAttachmentsForSession,
 	getProviderUsage: mockGetProviderUsage,
 	getLogs: mockGetLogs,
@@ -307,7 +307,10 @@ describe("handleDbRoute — POST provider history import", () => {
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	mockGetSessionSteerTargetSeqs.mockResolvedValue([]);
+	mockGetSessionToolEventTranscriptWindow.mockResolvedValue({
+		items: [],
+		pages: [],
+	});
 	mockGetHlidDelegationByChildSession.mockReset();
 	mockGetHlidDelegationByChildSession.mockResolvedValue(null);
 	mockAbandonInterruptedHlidDelegation.mockReset();
@@ -2188,21 +2191,45 @@ describe("handleDbRoute — GET /db/session-messages", () => {
 		);
 	});
 
-	it("compacts eligible settled tool histories only when explicitly requested", async () => {
+	it("maps a mixed DB-selected tool window and leaves legacy reads complete", async () => {
 		mockGetSessionMessages.mockResolvedValue([
 			{ id: 1, seq: 2, role: "assistant", text: "done", query_id: 42 },
+			{ id: 2, seq: 4, role: "assistant", text: "active", query_id: null },
 		]);
-		mockGetSessionToolEventSummaries.mockResolvedValue(
-			Array.from({ length: 25 }, (_, index) => ({
-				id: index + 1,
-				assistant_seq: 2,
-				name: "Read",
-				result_text: "ok",
-				is_error: index === 3 ? 1 : 0,
-				subagent_json: null,
-				activity_json: null,
-			})),
-		);
+		const eligibleEvents = Array.from({ length: 25 }, (_, index) => ({
+			id: index + 1,
+			assistant_seq: 2,
+			name: "Read",
+			result_text: "ok",
+			is_error: index === 3 ? 1 : 0,
+			subagent_json: null,
+			activity_json: null,
+		}));
+		const activeEvents = Array.from({ length: 21 }, (_, index) => ({
+			id: index + 101,
+			assistant_seq: 4,
+			name: "Read",
+			result_text: index === 20 ? null : "ok",
+			is_error: 0,
+			subagent_json: null,
+			activity_json: null,
+		}));
+		mockGetSessionToolEventSummaries.mockResolvedValue([
+			...eligibleEvents,
+			...activeEvents,
+		]);
+		mockGetSessionToolEventTranscriptWindow.mockResolvedValue({
+			items: [...eligibleEvents.slice(-20), ...activeEvents],
+			pages: [
+				{
+					assistantSeq: 2,
+					total: 25,
+					errorCount: 1,
+					hasEarlier: true,
+					nextBeforeId: 6,
+				},
+			],
+		});
 		mockGetAttachmentsForSession.mockResolvedValue([]);
 
 		const compact = await handleDbRoute(
@@ -2212,38 +2239,49 @@ describe("handleDbRoute — GET /db/session-messages", () => {
 			}),
 			makeRequest(),
 		);
-		const [compactRow] = (await compact?.json()) as Array<{
+		const compactRows = (await compact?.json()) as Array<{
 			toolEvents: Array<{ id: number }>;
-			toolEventPage: Record<string, unknown>;
+			toolEventPage?: Record<string, unknown>;
 		}>;
-		expect(compactRow.toolEvents.map((event) => event.id)).toEqual(
+		expect(compactRows[0].toolEvents.map((event) => event.id)).toEqual(
 			Array.from({ length: 20 }, (_, index) => index + 6),
 		);
-		expect(compactRow.toolEventPage).toEqual({
+		expect(compactRows[0].toolEventPage).toEqual({
 			total: 25,
 			errorCount: 1,
 			hasEarlier: true,
 			nextBeforeId: 6,
 		});
+		expect(compactRows[1].toolEvents).toHaveLength(21);
+		expect(compactRows[1].toolEventPage).toBeUndefined();
+		expect(mockGetSessionToolEventTranscriptWindow).toHaveBeenCalledWith(
+			"s1",
+			2,
+			4,
+			20,
+		);
+		expect(mockGetSessionToolEventSummaries).not.toHaveBeenCalled();
 
 		const legacy = await handleDbRoute(
 			makeUrl("/db/session-messages", { session_id: "s1" }),
 			makeRequest(),
 		);
-		const [legacyRow] = (await legacy?.json()) as Array<{
+		const legacyRows = (await legacy?.json()) as Array<{
 			toolEvents: unknown[];
 			toolEventPage?: unknown;
 		}>;
-		expect(legacyRow.toolEvents).toHaveLength(25);
-		expect(legacyRow.toolEventPage).toBeUndefined();
+		expect(legacyRows[0].toolEvents).toHaveLength(25);
+		expect(legacyRows[1].toolEvents).toHaveLength(21);
+		expect(legacyRows[0].toolEventPage).toBeUndefined();
+		expect(legacyRows[1].toolEventPage).toBeUndefined();
 	});
 
-	it("omits page metadata when an eligible history fits on one page", async () => {
+	it("omits page metadata when the DB returns a complete one-page history", async () => {
 		mockGetSessionMessages.mockResolvedValue([
 			{ id: 1, seq: 2, role: "assistant", text: "done", query_id: 42 },
 		]);
-		mockGetSessionToolEventSummaries.mockResolvedValue(
-			Array.from({ length: 20 }, (_, index) => ({
+		mockGetSessionToolEventTranscriptWindow.mockResolvedValue({
+			items: Array.from({ length: 20 }, (_, index) => ({
 				id: index + 1,
 				assistant_seq: 2,
 				name: "Read",
@@ -2252,7 +2290,8 @@ describe("handleDbRoute — GET /db/session-messages", () => {
 				subagent_json: null,
 				activity_json: null,
 			})),
-		);
+			pages: [],
+		});
 		mockGetAttachmentsForSession.mockResolvedValue([]);
 
 		const response = await handleDbRoute(
@@ -2270,42 +2309,24 @@ describe("handleDbRoute — GET /db/session-messages", () => {
 		expect(row.toolEventPage).toBeUndefined();
 	});
 
-	it.each([
-		["unfinished response", { query_id: null }],
-		["unresolved result", { event: { result_text: null } }],
-		[
-			"special transcript tool",
-			{ event: { name: "mcp__hlid__capture_project_preview" } },
-		],
-		["subagent snapshot", { event: { subagent_json: "{}" } }],
-		["structured activity", { event: { activity_json: "{}" } }],
-		["accepted steer", { steer: true }],
-	])("keeps %s tool histories complete", async (_label, guard) => {
+	it("keeps assistant page metadata off a user row with the same sequence", async () => {
 		mockGetSessionMessages.mockResolvedValue([
-			{
-				id: 1,
-				seq: 2,
-				role: "assistant",
-				text: "done",
-				query_id: "query_id" in guard ? guard.query_id : 42,
-			},
+			{ id: 1, seq: 2, role: "assistant", text: "done", query_id: 42 },
+			{ id: 2, seq: 2, role: "user", text: "same sequence" },
 		]);
-		mockGetSessionToolEventSummaries.mockResolvedValue(
-			Array.from({ length: 21 }, (_, index) => ({
-				id: index + 1,
-				assistant_seq: 2,
-				name: "Read",
-				result_text: "ok",
-				is_error: 0,
-				subagent_json: null,
-				activity_json: null,
-				...(index === 0 && "event" in guard ? guard.event : {}),
-			})),
-		);
+		mockGetSessionToolEventTranscriptWindow.mockResolvedValue({
+			items: [],
+			pages: [
+				{
+					assistantSeq: 2,
+					total: 25,
+					errorCount: 0,
+					hasEarlier: true,
+					nextBeforeId: 6,
+				},
+			],
+		});
 		mockGetAttachmentsForSession.mockResolvedValue([]);
-		mockGetSessionSteerTargetSeqs.mockResolvedValue(
-			"steer" in guard && guard.steer ? [2] : [],
-		);
 
 		const response = await handleDbRoute(
 			makeUrl("/db/session-messages", {
@@ -2314,12 +2335,12 @@ describe("handleDbRoute — GET /db/session-messages", () => {
 			}),
 			makeRequest(),
 		);
-		const [row] = (await response?.json()) as Array<{
-			toolEvents: unknown[];
+		const rows = (await response?.json()) as Array<{
+			role: string;
 			toolEventPage?: unknown;
 		}>;
-		expect(row.toolEvents).toHaveLength(21);
-		expect(row.toolEventPage).toBeUndefined();
+		expect(rows[0].toolEventPage).toBeDefined();
+		expect(rows[1].toolEventPage).toBeUndefined();
 	});
 });
 

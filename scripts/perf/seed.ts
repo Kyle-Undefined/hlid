@@ -3,7 +3,9 @@ import {
 	appendToolEvent,
 	createSession,
 	getDb,
+	recordQuery,
 	setCurrentSessionId,
+	setMessageQueryId,
 	setSessionAgentCwd,
 	setSessionProviderId,
 	setSessionProviderSession,
@@ -61,6 +63,31 @@ for (let seq = 0; seq < messageCount; seq++) {
 }
 
 const toolAssistantSeq = messageCount - 1;
+const settledQuery = await recordQuery(
+	PERF_SESSION_ID,
+	{
+		cost: 0,
+		cost_known: true,
+		estimated_cost: null,
+		input_tokens: 1_200,
+		output_tokens: 600,
+		cache_read_tokens: 0,
+		cache_creation_tokens: 0,
+		duration_ms: 1_000,
+		turns: 1,
+		context_window: 200_000,
+		stop_reason: "end_turn",
+		tokens_in_context: 1_800,
+		model: "fake-fast",
+		agent_cwd: root,
+	},
+	"acp:opencode",
+);
+await setMessageQueryId(
+	PERF_SESSION_ID,
+	toolAssistantSeq,
+	settledQuery.queryId,
+);
 for (let index = 0; index < toolCount; index++) {
 	const toolId = `perf-tool-${index}`;
 	await appendToolEvent(

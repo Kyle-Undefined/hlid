@@ -455,13 +455,21 @@ try {
 	if (!revealWindow) {
 		throw new Error("Activity history pagination marker is missing");
 	}
-	const currentReveal = desktopPage.locator(
-		`[data-activity-load-earlier="${revealWindow}"]`,
-	);
+	const currentRevealSelector = `[data-activity-load-earlier="${revealWindow}"]`;
+	const currentReveal = desktopPage.locator(currentRevealSelector);
 	const beforeReveal = await snapshot(desktopContext, desktopPage);
 	const toolRevealStartedAt = performance.now();
 	await currentReveal.click();
-	await currentReveal.waitFor({ state: "hidden" });
+	await desktopPage.waitForFunction(
+		(selector) => {
+			const button = document.querySelector(selector);
+			return (
+				button === null ||
+				button.getAttribute("aria-label")?.startsWith("Loaded ") === true
+			);
+		},
+		currentRevealSelector,
+	);
 	await desktopPage.evaluate(
 		() =>
 			new Promise<void>((resolveFrame) =>

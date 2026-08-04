@@ -143,6 +143,20 @@ export type ToolEventSummaryPage = ToolEventPageMeta & {
 	items: ToolEventSummaryRow[];
 };
 
+/** One compacted assistant response returned by a transcript-window read. */
+export type ToolEventTranscriptPage = ToolEventPageMeta & {
+	assistantSeq: number;
+};
+
+/**
+ * Tool summaries selected for an initial transcript window. Responses omitted
+ * from pages are complete; listed responses contain only their newest page.
+ */
+export type ToolEventTranscriptWindow = {
+	items: ToolEventSummaryRow[];
+	pages: ToolEventTranscriptPage[];
+};
+
 /** Full result returned only when a historical tool event is expanded. */
 export type ToolEventDetailRow = Pick<
 	ToolEventRow,

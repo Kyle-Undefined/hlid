@@ -42,6 +42,7 @@ import {
 	getSessionToolEventDetail,
 	getSessionToolEventPage,
 	getSessionToolEventSummaries,
+	getSessionToolEventTranscriptWindow,
 	setAskUserQuestionResolution,
 	setMessageProviderTurnId,
 	setMessageQueryId,
@@ -1876,6 +1877,123 @@ describe("tool events", () => {
 			Array.from({ length: 45 }, (_, index) => `tool-${index}`),
 		);
 		expect(new Set(chronological.map((row) => row.id)).size).toBe(45);
+	});
+
+	it("selects payloads only for the newest eligible page while keeping guarded responses complete", async () => {
+		const database = freshDb();
+		await createSession("s1", "L", "m");
+
+		async function appendAssistant(
+			seq: number,
+			text: string,
+			settled = true,
+		): Promise<void> {
+			await appendMessage("s1", seq, "assistant", text);
+			if (!settled) return;
+			const query = await recordQuery("s1", baseQuery());
+			await setMessageQueryId("s1", seq, query.queryId);
+		}
+
+		async function appendEvents(
+			seq: number,
+			prefix: string,
+			count: number,
+			options: { specialAt?: number; unresolvedAt?: number } = {},
+		): Promise<void> {
+			for (let index = 0; index < count; index++) {
+				const toolId = `${prefix}-${index}`;
+				const marker = `${prefix.toUpperCase()}-INPUT-${index}`;
+				await appendToolEvent(
+					"s1",
+					seq,
+					toolId,
+					index === options.specialAt
+						? "mcp__hlid__capture_project_preview"
+						: "Read",
+					{ marker, payload: "x".repeat(4_096) },
+				);
+				if (index !== options.unresolvedAt) {
+					await setToolEventResult(
+						"s1",
+						toolId,
+						`${prefix.toUpperCase()}-RESULT-${index}-${"y".repeat(1_024)}`,
+						prefix === "eligible" && index === 0,
+					);
+				}
+			}
+		}
+
+		await appendAssistant(0, "eligible");
+		await appendEvents(0, "eligible", 6);
+
+		await appendAssistant(2, "unfinished", false);
+		await appendEvents(2, "unfinished", 4);
+
+		await appendAssistant(4, "unresolved");
+		await appendEvents(4, "unresolved", 4, { unresolvedAt: 0 });
+
+		await appendAssistant(6, "special");
+		await appendEvents(6, "special", 4, { specialAt: 0 });
+
+		await appendAssistant(8, "steered");
+		await appendEvents(8, "steered", 4);
+		await appendMessage("s1", 99, "user", "steer", "turn-steer", 8);
+
+		await appendAssistant(10, "subagent");
+		await appendEvents(10, "subagent", 4);
+		database.run(
+			"UPDATE tool_events SET subagent_json = '{}' WHERE session_id = 's1' AND tool_id = 'subagent-0'",
+		);
+
+		await appendAssistant(12, "activity");
+		await appendEvents(12, "activity", 4);
+		database.run(
+			"UPDATE tool_events SET activity_json = '{}' WHERE session_id = 's1' AND tool_id = 'activity-0'",
+		);
+
+		// Duplicate assistant sequences are compacted only when every owning row is
+		// settled, so an active sibling can never lose its historical tool context.
+		await appendAssistant(14, "settled duplicate");
+		await appendAssistant(14, "active duplicate", false);
+		await appendEvents(14, "duplicate", 4);
+
+		await appendAssistant(16, "exactly one page");
+		await appendEvents(16, "exact", 2);
+
+		const window = await getSessionToolEventTranscriptWindow("s1", 0, 16, 2);
+		const bySeq = new Map<number, (typeof window.items)[number][]>();
+		for (const item of window.items) {
+			const items = bySeq.get(item.assistant_seq) ?? [];
+			items.push(item);
+			bySeq.set(item.assistant_seq, items);
+		}
+
+		expect(bySeq.get(0)?.map((row) => row.tool_id)).toEqual([
+			"eligible-4",
+			"eligible-5",
+		]);
+		for (const seq of [2, 4, 6, 8, 10, 12, 14]) {
+			expect(bySeq.get(seq)).toHaveLength(4);
+		}
+		expect(bySeq.get(16)).toHaveLength(2);
+		expect(window.pages).toEqual([
+			{
+				assistantSeq: 0,
+				total: 6,
+				errorCount: 1,
+				hasEarlier: true,
+				nextBeforeId: bySeq.get(0)?.[0]?.id ?? null,
+			},
+		]);
+
+		const selectedPayload = JSON.stringify(window.items);
+		expect(selectedPayload).not.toContain("ELIGIBLE-INPUT-0");
+		expect(selectedPayload).not.toContain("ELIGIBLE-RESULT-0");
+		expect(selectedPayload).toContain("ELIGIBLE-INPUT-4");
+		expect(selectedPayload).toContain("UNFINISHED-INPUT-0");
+		expect(
+			await getSessionToolEventTranscriptWindow("missing", 0, 16, 2),
+		).toEqual({ items: [], pages: [] });
 	});
 
 	it("scopes tool-adjacent transcript cards to the requested sequence window", async () => {

@@ -1,3 +1,4 @@
+import { isTranscriptPagingSpecialToolName } from "../lib/toolEventPaging";
 import type { SubagentSnapshot, TaskActivity } from "../server/agentProvider";
 import { TOOL_RESULT_PREVIEW_CHARS } from "../server/protocol";
 import { markAnalyticsChanged } from "./analyticsRevision";
@@ -7,6 +8,7 @@ import type {
 	ToolEventDetailRow,
 	ToolEventSummaryPage,
 	ToolEventSummaryRow,
+	ToolEventTranscriptWindow,
 } from "./types";
 
 export type ToolEventDimensions = {
@@ -743,25 +745,6 @@ export async function getSessionMessages(
 		.all(sessionId);
 }
 
-/** Assistant sequences in a window that have at least one persisted steer. */
-export async function getSessionSteerTargetSeqs(
-	sessionId: string,
-	minAssistantSeq: number,
-	maxAssistantSeq: number,
-): Promise<number[]> {
-	const db = await getDb();
-	return db
-		.query<{ steer_target_seq: number }, [string, number, number]>(
-			`SELECT DISTINCT steer_target_seq
-			 FROM messages
-			 WHERE session_id = ?
-			   AND steer_target_seq BETWEEN ? AND ?
-			 ORDER BY steer_target_seq`,
-		)
-		.all(sessionId, minAssistantSeq, maxAssistantSeq)
-		.map((row) => row.steer_target_seq);
-}
-
 export async function getSessionContextManifests(
 	sessionId: string,
 	limit = 20,
@@ -856,6 +839,32 @@ const TOOL_EVENT_SUMMARY_SELECT = `id, session_id, assistant_seq, tool_id, name,
 	CASE WHEN COALESCE(result_length, length(COALESCE(result_text, ''))) > ${TOOL_RESULT_PREVIEW_CHARS} THEN 1 ELSE 0 END AS result_truncated,
 	is_error, subagent_json, activity_json`;
 
+const QUALIFIED_TOOL_EVENT_SUMMARY_SELECT = `event.id, event.session_id, event.assistant_seq, event.tool_id, event.name, event.input_json,
+	CASE WHEN event.result_text IS NULL THEN NULL ELSE COALESCE(event.result_preview, substr(event.result_text, 1, ${TOOL_RESULT_PREVIEW_CHARS})) END AS result_text,
+	COALESCE(event.result_length, length(event.result_text)) AS result_length,
+	CASE WHEN COALESCE(event.result_length, length(COALESCE(event.result_text, ''))) > ${TOOL_RESULT_PREVIEW_CHARS} THEN 1 ELSE 0 END AS result_truncated,
+	event.is_error, event.subagent_json, event.activity_json`;
+
+type ToolEventTranscriptProbeRow = {
+	id: number;
+	assistant_seq: number;
+	name: string;
+	result_unresolved: number;
+	has_subagent: number;
+	has_activity: number;
+	is_error: number | null;
+};
+
+type ToolEventTranscriptCountRow = {
+	assistant_seq: number;
+	total: number;
+};
+
+type ToolEventPageCutoff = {
+	assistantSeq: number;
+	cutoffId: number;
+};
+
 export async function getSessionToolEventSummaries(
 	sessionId: string,
 	minAssistantSeq?: number,
@@ -872,6 +881,162 @@ export async function getSessionToolEventSummaries(
 		maxSequence: maxAssistantSeq,
 		unboundedOrderBy: "id ASC",
 	});
+}
+
+/**
+ * Initial transcript read that pages only fully settled, query-owned responses.
+ *
+ * A covering count pass first identifies only responses large enough to page.
+ * The eligibility probe then reads payload-free headers for those candidates,
+ * and a final bulk query joins the cutoff map before projecting input/result
+ * columns, so discarded historical rows are never materialized in JS.
+ */
+export async function getSessionToolEventTranscriptWindow(
+	sessionId: string,
+	minAssistantSeq: number,
+	maxAssistantSeq: number,
+	pageSize = 20,
+): Promise<ToolEventTranscriptWindow> {
+	const db = await getDb();
+	const boundedPageSize = Math.min(100, Math.max(1, Math.trunc(pageSize)));
+
+	return db.transaction(() => {
+		const responseCounts = db
+			.query<
+				ToolEventTranscriptCountRow,
+				[string, number, number, string, number, number, string, number, number]
+			>(
+				`WITH response_state AS (
+					SELECT assistant.seq AS assistant_seq,
+					       MIN(CASE WHEN assistant.query_id IS NULL THEN 0 ELSE 1 END) AS settled
+					FROM messages assistant
+					WHERE assistant.session_id = ?
+					  AND assistant.role = 'assistant'
+					  AND assistant.seq BETWEEN ? AND ?
+					GROUP BY assistant.seq
+				), steered AS (
+					SELECT DISTINCT message.steer_target_seq AS assistant_seq
+					FROM messages message
+					WHERE message.session_id = ?
+					  AND message.steer_target_seq BETWEEN ? AND ?
+				)
+				SELECT event.assistant_seq,
+				       COUNT(*) AS total
+				FROM tool_events event
+				JOIN response_state response
+				  ON response.assistant_seq = event.assistant_seq
+				LEFT JOIN steered
+				  ON steered.assistant_seq = event.assistant_seq
+				WHERE event.session_id = ?
+				  AND event.assistant_seq BETWEEN ? AND ?
+				  AND response.settled = 1
+				  AND steered.assistant_seq IS NULL
+				GROUP BY event.assistant_seq
+				ORDER BY event.assistant_seq ASC`,
+			)
+			.all(
+				sessionId,
+				minAssistantSeq,
+				maxAssistantSeq,
+				sessionId,
+				minAssistantSeq,
+				maxAssistantSeq,
+				sessionId,
+				minAssistantSeq,
+				maxAssistantSeq,
+			);
+		const candidateAssistantSeqs = responseCounts
+			.filter((row) => row.total > boundedPageSize)
+			.map((row) => row.assistant_seq);
+		const probeRows =
+			candidateAssistantSeqs.length === 0
+				? []
+				: db
+						.query<ToolEventTranscriptProbeRow, [string, string]>(
+							`WITH candidate_sequences AS MATERIALIZED (
+								SELECT CAST(value AS INTEGER) AS assistant_seq
+								FROM json_each(?)
+							)
+							SELECT event.id,
+							       event.assistant_seq,
+							       event.name,
+							       CASE WHEN event.result_text IS NULL THEN 1 ELSE 0 END AS result_unresolved,
+							       CASE WHEN event.subagent_json IS NULL THEN 0 ELSE 1 END AS has_subagent,
+							       CASE WHEN event.activity_json IS NULL THEN 0 ELSE 1 END AS has_activity,
+							       event.is_error
+							FROM candidate_sequences candidate
+							CROSS JOIN tool_events event
+							WHERE event.session_id = ?
+							  AND event.assistant_seq = candidate.assistant_seq
+							ORDER BY event.assistant_seq ASC, event.id ASC`,
+						)
+						.all(JSON.stringify(candidateAssistantSeqs), sessionId);
+
+		const candidates = new Map<number, ToolEventTranscriptProbeRow[]>();
+		for (const row of probeRows) {
+			const rows = candidates.get(row.assistant_seq) ?? [];
+			rows.push(row);
+			candidates.set(row.assistant_seq, rows);
+		}
+
+		const cutoffs: ToolEventPageCutoff[] = [];
+		const pages: ToolEventTranscriptWindow["pages"] = [];
+		for (const [assistantSeq, rows] of candidates) {
+			const mayPage = rows.every(
+				(row) =>
+					row.result_unresolved === 0 &&
+					row.has_subagent === 0 &&
+					row.has_activity === 0 &&
+					!isTranscriptPagingSpecialToolName(row.name),
+			);
+			if (!mayPage || rows.length <= boundedPageSize) continue;
+			const cutoffId = rows.at(-boundedPageSize)?.id;
+			if (cutoffId === undefined) continue;
+			cutoffs.push({ assistantSeq, cutoffId });
+			pages.push({
+				assistantSeq,
+				total: rows.length,
+				errorCount: rows.filter((row) => row.is_error === 1).length,
+				hasEarlier: true,
+				nextBeforeId: cutoffId,
+			});
+		}
+
+		const items = db
+			.query<ToolEventSummaryRow, [string, string, number, number, string]>(
+				`WITH page_cutoffs AS MATERIALIZED (
+					SELECT CAST(json_extract(value, '$.assistantSeq') AS INTEGER) AS assistant_seq,
+					       CAST(json_extract(value, '$.cutoffId') AS INTEGER) AS cutoff_id
+					FROM json_each(?)
+				), selected_events AS (
+					SELECT ${QUALIFIED_TOOL_EVENT_SUMMARY_SELECT}
+					FROM tool_events event
+					WHERE event.session_id = ?
+					  AND event.assistant_seq BETWEEN ? AND ?
+					  AND NOT EXISTS (
+						  SELECT 1 FROM page_cutoffs cutoff
+						  WHERE cutoff.assistant_seq = event.assistant_seq
+					  )
+					UNION ALL
+					SELECT ${QUALIFIED_TOOL_EVENT_SUMMARY_SELECT}
+					FROM page_cutoffs cutoff
+					CROSS JOIN tool_events event
+					WHERE event.session_id = ?
+					  AND event.assistant_seq = cutoff.assistant_seq
+					  AND event.id >= cutoff.cutoff_id
+				)
+				SELECT * FROM selected_events
+				ORDER BY assistant_seq ASC, id ASC`,
+			)
+			.all(
+				JSON.stringify(cutoffs),
+				sessionId,
+				minAssistantSeq,
+				maxAssistantSeq,
+				sessionId,
+			);
+		return { items, pages };
+	})();
 }
 
 /** Returns an exclusive backwards page while preserving ascending transcript order. */
