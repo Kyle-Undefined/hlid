@@ -19,10 +19,13 @@ set up, `Hlið` is happy.
 
 - Keeps agent sessions around with live streaming, visible tool calls,
   approvals, attachments, queued follow-ups, inline questions, plan review,
-  and subagent activity. Supported `Claude` and `Codex` chats can be forked
-  whole, and `Claude` can branch from a specific reply. Native `Codex` chats
-  keep their goals and token budgets visible too. The provider, model, effort,
-  and permission mode all stay with the chat they belong to.
+  and subagent activity. A turn waiting on a provider usage window survives a
+  restart, and sleeping sessions stay visible in Attention until that window
+  resets. Supported `Claude` and `Codex` chats can be forked whole, and `Claude`
+  can branch from a specific reply or preview a checkpoint before rewinding its
+  tracked file edits. Native `Codex` chats keep their goals and token budgets
+  visible too. The provider, model, effort, and permission mode all stay with
+  the chat they belong to.
 - When provider-native subagents are not enough, agents can create durable
   child sessions owned by `Hlið`. Each one is a normal `Raven` session with its
   own provider, workspace, transcript, permissions, usage, and `Ledger` row.
@@ -42,6 +45,11 @@ set up, `Hlið` is happy.
 - Lets agents publish generated `HTML`, `PDFs`, images, and reports straight to
   `Relics` from a normal chat. The existing `Relics` previews stay as the viewer,
   and publishing does not need an `HTML` plan turn.
+- Keeps provider-generated images in the conversation and in `Relics`, with the
+  prompt, dimensions, preview, and download together. On a supported `Windows`
+  host, `Codex` can also hand an interactive visualization to a fresh native
+  worker and bring the sandboxed result back into `Raven` for zooming and
+  full-screen inspection.
 - Uses the official `Obsidian CLI` for the things only `Obsidian` knows about:
   the active note, indexed search, backlinks, tasks, properties, Bases, and
   local file history. Agents get a curated set of tools for reading and
@@ -66,11 +74,14 @@ set up, `Hlið` is happy.
   `Claude CLI` mode for the times when the full terminal makes more sense than
   the structured chat `UI`. Agents can start a session-scoped `Project Preview`,
   inspect and control it at desktop, tablet, or mobile sizes, catch browser
-  errors, save approved captures, and work from annotated visual feedback.
+  errors, move through retained captures, save an approved capture, and work
+  from annotated visual feedback.
 - Keeps linked vaults and workspaces, provider commands, permissions, scoped
-  `MCP` servers, `ACP` agents, provider extensions, `Umbod`, networking,
-  updates, and lifecycle controls together. Source repositories can stay in
-  `WSL` where they belong.
+  `MCP` servers, provider Apps and connectors, `ACP` agents, provider
+  extensions, `Umbod`, networking, updates, and lifecycle controls together.
+  Supported live `Claude` sessions can reconnect, enable, disable, or tighten
+  approval for one `MCP` server without replacing the whole provider session.
+  Source repositories can stay in `WSL` where they belong.
 - Checks `Hlið`, `Claude`, `Codex`, and enabled `ACP` agents for updates. It
   shows the right command or in-app flow for each installation, but it does not
   quietly run installers.

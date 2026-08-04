@@ -162,13 +162,17 @@ from other clients. `Ledger` only covers requests made through `Hlið`.
 Account-wide quotas and subscription limits are not available as `Hlið` usage
 windows, so automatic usage-window sleep does not apply to this route.
 
-![Raven conversation showing agent output and tool activity](images/raven-tool-activity.png)
+![Raven conversation showing a bounded Activity card for tool calls](images/raven-tool-activity.png)
 
-*Tool calls stay in the conversation. No mystery spinner while the agent does who knows what.*
+*`Activity` keeps a response's tool calls together without turning the
+conversation into a wall of details.*
 
 While a run is active:
 
-- Tool calls show up inline and can be expanded when the details matter.
+- Each response keeps its tool calls in one **Activity** card. It summarizes
+  running calls, errors, and steering, follows the live tail while open, and
+  collapses completed history by default. Long runs load earlier calls in
+  bounded batches instead of mounting the whole tool transcript at once.
 - Permission cards can approve once, approve for the session, save a permanent
   approval, or deny with feedback.
 - Another prompt gets queued instead of interrupting the current turn. Supported
@@ -189,8 +193,16 @@ While a run is active:
   continue eligible work interrupted by a `Hlið` restart.
 - Long chats load the newest history first. **LOAD OLDER HISTORY** pulls in the
   earlier turns without jumping the scroll position around.
+- Supported `Claude` runs can move active Bash commands and subagents into the
+  background without ending the response. `Raven` keeps running provider work
+  in a separate **BACKGROUND ACTIVITY** panel with recent output and the exact
+  stop controls that provider exposes.
 - Agent output can render tables, alerts, highlighted text, `Mermaid`, and
   `LaTeX` math using `$...$`, `$$...$$`, `\(...\)`, or `\[...\]`.
+- Provider-generated images stay inline with their prompt, dimensions, download,
+  and managed `Relics` copy. On a supported `Windows` host, `Codex` can also
+  return a sandboxed interactive visualization that expands in the conversation
+  and can be zoomed or maximized.
 - The message copy button copies the rendered text.
 
 Files can be dropped onto the composer or added with the attachment button.
@@ -281,12 +293,34 @@ without asking the model to interpret a pretend slash command. `/context` opens
 when that runtime supports it. `/rename` changes the `Hlið` session label, and
 `/archive` moves the current session into `Ledger`'s archived view.
 
+The **APPS** control beside the composer appears when the selected provider has
+an Apps catalog. It separates installed and available Apps from `MCP`
+connectors, reports configuration, authentication, and current usability, and
+can start a supported provider-owned authentication flow. The inventory is
+scoped to the active provider account, this `Hlið` host, the selected workspace,
+and, in `Raven`, the current session. An available listing is not the same thing
+as an installed and usable App.
+
+The **MCP** control shows the live server inventory for this provider context.
+Supported live `Claude` sessions can reconnect a server or enable and disable it
+without clearing the recorded conversation. When the session uses
+**Auto-approve all** and `Umbod` is not enforcing approvals, one server can
+inherit the session behavior, force **ask**, or use `Claude`'s native
+**auto-check** classifier. A per-server choice can only tighten native approval;
+it never bypasses `Hlið` policy.
+
 `Hlið` keeps a compact context receipt for supported turns. Open it from the turn
 or with `/context` to see exactly what `Hlið` supplied: the provider selection,
 skills, exact references, attachments, permissions, and other bounded context.
 The receipt records where everything came from without copying the full contents
 of a large selected file. Older receipts stay with their turns, so looking at
 the current context does not rewrite history.
+
+When `Claude` records a file checkpoint for a user turn, that message gets a
+rewind control. `Hlið` always previews the affected files and line totals before
+offering **REWIND FILES**. `Claude` only tracks edits made through its `Write`,
+`Edit`, and `NotebookEdit` tools. `Bash` changes, directories, `Git` state,
+other tool side effects, and conversation history are not rewound.
 
 `Claude` workflows stay `Claude` workflows. `/workflows` can inspect saved and
 recent runs, open their exact source, run or rerun one, stop or resume supported
@@ -320,9 +354,10 @@ the shell is still there.
 
 The session-attention button collects live and restart-interrupted work without
 switching sessions behind your back. It groups approvals, questions, errors,
-running work, queues, forks, and delegated children. Pick one to open its
-session directly, or hand the whole list to `Ledger`. The configurable hotkey
-in `Forge` opens the same drawer.
+running work, sleeping sessions, queues, forks, and delegated children. Queued
+turns waiting on a provider usage window survive a `Hlið` restart. Pick one to
+open its session directly, or hand the whole list to `Ledger`. The configurable
+hotkey in `Forge` opens the same drawer.
 
 Use `Hlið` delegation for work that needs to be durable and inspectable on its
 own. A child starts in the parent's configured workspace by default and can use
@@ -349,10 +384,12 @@ the active workspace.
 The agent can inspect the rendered page, navigate and interact inside the
 preview origin, check console errors and failed requests, and switch between
 fit, desktop, tablet, and mobile viewports. `Raven` can reload, restart, stop, or
-open the preview in a normal browser. The feedback tool captures the current
-frame so you can draw, highlight, add text, leave a comment, and send the marked
-up image back to the session. Saving an exact `PNG` into the workspace is a
-separate permissioned write.
+open the preview in a normal browser. Agent captures are retained with their
+route and capture time, so the Preview pane and historical capture cards can
+move backward and forward through the session's frames. The feedback tool
+captures the current frame so you can draw, highlight, add text, leave a
+comment, and send the marked up image back to the session. Saving an exact `PNG`
+into the workspace is a separate permissioned write.
 
 Agent-controlled preview tabs use an isolated `Chromium` profile by default. If a
 preview truly needs signed-in state, **FORGE → Agents → Browser profile** can
@@ -529,14 +566,17 @@ not configured for that entry stay hidden.
   `Codex Computer Use` defaults when the `Windows` capability exists. The vault
   editor follows the configured vault provider. Global files are shown only for
   provider families configured by the vault or an `Einherjar`, grouped by their
-  `Windows` or `WSL` runtime. Edits take effect when the matching provider
-  conversation starts or reloads.
+  `Windows` or `WSL` runtime. A provider's current capability snapshot separates
+  integrated, provider-native, and unavailable behavior with its supporting
+  runtime evidence. Edits take effect when the matching provider conversation
+  starts or reloads.
 - **Access** has network, `TLS`, password, and trusted-device settings.
 - **Experience** has built-in or custom desktop/mobile themes, input behavior,
   the provider-entry visibility toggle for the `/` picker, `HTML` plan defaults,
   voice, and browser-local privacy mode. `Hlið` and vault entries always remain
   visible; the toggle controls every provider-badged skill, command, or plugin.
-- **Integrations** manages `CLIProxyAPI`, `MCP`, `Umbod`, and the `ACP` catalog.
+- **Integrations** manages provider Apps and connectors, `CLIProxyAPI`, `MCP`,
+  `Umbod`, and the `ACP` catalog.
 - **Extensions** manages installed `Claude` and `Codex` plugins and their
   marketplaces.
 - **Developer** switches between the event log, local `API` reference, and pricing
@@ -563,6 +603,12 @@ session. Working-context changes still need a provider-session reload. That
 clears the live provider conversation but leaves its recorded `Ledger` history
 alone.
 
+**Integrations → Apps and Connectors** shows each capable provider separately.
+Installed and available Apps stay distinct from lower-level `MCP` connectors,
+and every row reports whether it is configured, authenticated, and usable in
+the current host and workspace. Supported OAuth flows open in the provider's
+browser flow and `Hlið` refreshes readiness when authentication finishes.
+
 **Extensions** keeps the `Claude` and `Codex` inventories separate. Browse an
 installed package or marketplace, filter by environment or category, and
 review one package before installing it. The review shows its files and every
@@ -577,8 +623,9 @@ threshold or after the provider reports a hard limit. `Hlið` uses the five-hour
 window when it has one, otherwise it uses weekly usage. The `Raven` banner shows
 which window filled up and when the session should wake. **RESUME NOW** wakes
 every sleeping session on that provider and lets them keep going until the
-current window resets. Maximum sleep keeps a session from waiting past the
-configured cap.
+current window resets. The sleeping turn and its queued follow-ups are stored in
+the database, so a normal `Hlið` restart does not lose them. Maximum sleep keeps
+a session from waiting past the configured cap.
 
 **Developer → Pricing** shows the built-in model and alias timelines and edits
 `pricing-overrides.toml` for local rules. Rates and aliases can use UTC
@@ -793,12 +840,12 @@ in `Ledger`.
 
 ## Maintenance and troubleshooting
 
-Agents can use Hlið's deferred maintenance tools to inspect storage, preview
+Agents can use `Hlið`'s deferred maintenance tools to inspect storage, preview
 age-based session cleanup, perform an approved cleanup, and run a lightweight
 SQLite checkpoint and optimize pass. Cleanup previews are short-lived and bound
-to the Raven session that requested them; if the impact changes, Hlid requires a
+to the `Raven` session that requested them; if the impact changes, `Hlið` requires a
 fresh preview. Cleanup preserves immutable Ledger usage while removing linked
-Hlid-owned Relics and detaching vault-owned files.
+`Hlið`-owned `Relics` and detaching vault-owned files.
 
 Physical database reclaim remains a confirmed **Forge → Advanced** action. It is
 not exposed as an agent tool or in Hlið's curated agent API. Reclaim rewrites the
