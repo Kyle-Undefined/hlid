@@ -377,10 +377,17 @@ export function AssistantMsg({
 	);
 	const activeSubagentEvents = useMemo(
 		() =>
-			persistentTranscriptPlan.activeSubagentEventIndices.map(
-				(eventIndex) => message.toolEvents[eventIndex],
-			),
-		[message.toolEvents, persistentTranscriptPlan.activeSubagentEventIndices],
+			persistentTranscriptPlan.activeSubagentEventIndices
+				.map((eventIndex) => message.toolEvents[eventIndex])
+				.filter(
+					(event) =>
+						!(providerId === "codex" && isHlidVisualizationToolEvent(event)),
+				),
+		[
+			message.toolEvents,
+			persistentTranscriptPlan.activeSubagentEventIndices,
+			providerId,
+		],
 	);
 	const groupedPreviewEvents = useMemo(
 		() =>

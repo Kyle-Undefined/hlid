@@ -2,6 +2,24 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { READ_ALOUD_PREFERENCES_KEY } from "#/lib/readAloud";
+
+const codexRealtime = vi.hoisted(() => ({
+	startCodexReadAloud:
+		vi.fn<
+			(
+				text: string,
+				callbacks: {
+					onPlaying: () => void;
+					onEnded: () => void;
+					onError: (message: string) => void;
+				},
+			) => void
+		>(),
+	stopCodexReadAloud: vi.fn(),
+}));
+
+vi.mock("./codexRealtimeStore", () => codexRealtime);
+
 import {
 	__resetReadAloudForTesting,
 	refreshReadAloudPreferences,
@@ -269,14 +287,14 @@ describe("readAloudStore", () => {
 		).toEqual({ voiceURI: localVoice.voiceURI });
 	});
 
-	it("falls back to device speech when Codex realtime preview is disabled", async () => {
+	it("falls back to device speech for a legacy Codex read-aloud setting", async () => {
 		vi.stubGlobal(
 			"fetch",
 			vi.fn().mockResolvedValue(
 				Response.json({
 					voice: {
 						read_aloud_provider: "codex",
-						codex_live_mode: false,
+						codex_live_mode: true,
 					},
 				}),
 			),
@@ -286,6 +304,19 @@ describe("readAloudStore", () => {
 		await act(refreshReadAloudPreferences);
 
 		expect(result.current.provider).toBe("device");
+	});
+
+	it("normalizes a legacy Codex preference before starting playback", () => {
+		const { result } = renderHook(() => useReadAloudState());
+		act(() => setReadAloudPreferences({ provider: "codex" }));
+		act(() => startReadAloud("message-1", "Read this response."));
+
+		expect(result.current).toMatchObject({
+			messageId: "message-1",
+			phase: "speaking",
+		});
+		expect(speech.speak).toHaveBeenCalledOnce();
+		expect(codexRealtime.startCodexReadAloud).not.toHaveBeenCalled();
 	});
 
 	it("plays Microsoft host audio with exact media pause and resume", () => {

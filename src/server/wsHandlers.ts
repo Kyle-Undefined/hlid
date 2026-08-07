@@ -74,6 +74,11 @@ interface MessageContext {
 	shellPool?: ShellSessionPool;
 }
 
+// Cockpit dictation may need a native Codex manager without owning a durable
+// Raven session. Keep that implementation detail off PoolEntry while retaining
+// enough identity to retire the temporary manager after a successful stop.
+const voiceOnlyRealtimeEntries = new WeakSet<PoolEntry>();
+
 const KNOWN_RAVEN_PERMISSION_MODES = new Set([
 	"default",
 	"acceptEdits",
@@ -336,10 +341,12 @@ async function handleRealtimeControl(
 		context.pool.get(msg.session_id) ??
 		context.pool.findByDbSessionId(msg.session_id);
 	let createdForRealtime = false;
+	let createdWithoutSessionSelection = false;
 	if (!entry && msg.type === "realtime_start") {
 		const selection = await db
 			.getSessionSelection(msg.session_id)
 			.catch(() => null);
+		createdWithoutSessionSelection = selection === null;
 		const targetCwd =
 			msg.agent_cwd ??
 			selection?.agentCwd ??
@@ -350,10 +357,22 @@ async function handleRealtimeControl(
 			resolveAgentName(targetCwd),
 		);
 		if (!created) return;
-		entry = created;
-		createdForRealtime = true;
+		const owner = context.pool.claimDbSessionId(created, msg.session_id);
+		if (owner !== created) {
+			context.pool.close(created.sessionId);
+		} else {
+			createdForRealtime = true;
+		}
+		entry = owner;
+		if (
+			createdForRealtime &&
+			createdWithoutSessionSelection &&
+			msg.mode === "dictation"
+		) {
+			voiceOnlyRealtimeEntries.add(entry);
+		}
 		subscribeToEntry(context, entry);
-		sendSessionCreated(context, entry);
+		if (createdForRealtime) sendSessionCreated(context, entry);
 		entry.runState.send(context.ws, {
 			type: "status",
 			...entry.manager.getStatus(),
@@ -363,23 +382,63 @@ async function handleRealtimeControl(
 	if (!entry) {
 		// A late browser stop after server-owned error teardown is intentionally
 		// idempotent. Never route it into the permanent vault session.
-		if (msg.type === "realtime_stop") return;
+		if (msg.type === "realtime_stop") {
+			if (msg.mode) {
+				send(context.ws, {
+					type: "realtime_state",
+					session_id: msg.session_id,
+					...(msg.request_id ? { request_id: msg.request_id } : {}),
+					mode: msg.mode,
+					state: "closed",
+				});
+			}
+			return;
+		}
+		if (msg.type === "realtime_speak") {
+			send(context.ws, {
+				type: "realtime_error",
+				session_id: msg.session_id,
+				...(msg.request_id ? { request_id: msg.request_id } : {}),
+				mode: msg.mode,
+				message: "No Codex voice session is active.",
+			});
+			return;
+		}
 		send(context.ws, {
 			type: "error",
 			message: "No Codex voice session is active.",
 		});
 		return;
 	}
+	if (
+		msg.type === "realtime_start" &&
+		context.ws.data.subscribedSessionId !== entry.sessionId
+	) {
+		subscribeToEntry(context, entry);
+	}
 	let retired = false;
-	const retireFailedRealtimeEntry = () => {
-		if (!createdForRealtime || retired) return;
+	const retireRealtimeEntry = () => {
+		if (retired) return;
 		retired = true;
+		voiceOnlyRealtimeEntries.delete(entry);
 		context.pool.close(entry.sessionId);
 		resubscribeClosedSessionClients(context.pool, entry.sessionId);
 		broadcast({ type: "session_closed", session_id: entry.sessionId });
 		broadcastSessionsStatus(context);
 	};
+	const retireFailedRealtimeEntry = () => {
+		if (!createdForRealtime) return;
+		retireRealtimeEntry();
+	};
+	const retireVoiceOnlyRealtimeEntry = () => {
+		if (!voiceOnlyRealtimeEntries.has(entry)) return;
+		retireRealtimeEntry();
+	};
+	let terminalEventEmitted = false;
 	try {
+		if (msg.type === "realtime_start") {
+			entry.manager.syncRealtimeConfig(loadConfig());
+		}
 		const control =
 			msg.type === "realtime_start"
 				? {
@@ -389,23 +448,74 @@ async function handleRealtimeControl(
 						voice: msg.voice,
 					}
 				: msg.type === "realtime_speak"
-					? { action: "speak" as const, text: msg.text }
+					? {
+							action: "speak" as const,
+							mode: msg.mode,
+							text: msg.text,
+						}
 					: { action: "stop" as const };
 		await entry.manager.controlRealtime(control, {
 			sessionId: msg.session_id,
+			transient: voiceOnlyRealtimeEntries.has(entry),
+			...(msg.request_id ? { requestId: msg.request_id } : {}),
 			agentCwd: msg.type === "realtime_start" ? msg.agent_cwd : undefined,
 			emit: (event) => {
-				send(context.ws, event);
+				if (
+					(event.type === "realtime_error" ||
+						(event.type === "realtime_state" && event.state === "closed")) &&
+					(msg.type !== "realtime_stop" ||
+						msg.request_id === undefined ||
+						event.request_id === msg.request_id)
+				) {
+					terminalEventEmitted = true;
+				}
+				const durableLiveActivity =
+					event.type === "tool_event" ||
+					event.type === "tool_result" ||
+					event.type === "tool_update" ||
+					event.type === "tool_activity_update" ||
+					event.type === "attachment_created";
+				if (
+					durableLiveActivity ||
+					(event.type === "realtime_transcript" &&
+						event.mode === "live" &&
+						event.done &&
+						event.db_id !== undefined)
+				) {
+					// Durable Live transcript and activity content belongs on every Raven
+					// subscriber. SDP, transport state, audio deltas, and provisional
+					// captions remain private to the browser owning this WebRTC connection.
+					entry.runState.broadcast(event);
+				} else {
+					send(context.ws, event);
+				}
 				if (event.type === "realtime_error") {
 					retireFailedRealtimeEntry();
+				} else if (
+					msg.type === "realtime_start" &&
+					event.type === "realtime_state" &&
+					event.state === "closed"
+				) {
+					retireVoiceOnlyRealtimeEntry();
 				}
 			},
 		});
+		if (msg.type === "realtime_stop" && msg.mode && !terminalEventEmitted) {
+			send(context.ws, {
+				type: "realtime_state",
+				session_id: msg.session_id,
+				...(msg.request_id ? { request_id: msg.request_id } : {}),
+				mode: msg.mode,
+				state: "closed",
+			});
+		}
+		if (msg.type === "realtime_stop") retireVoiceOnlyRealtimeEntry();
 	} catch (error) {
-		if (msg.type === "realtime_start") {
+		if (msg.type === "realtime_start" || msg.type === "realtime_speak") {
 			send(context.ws, {
 				type: "realtime_error",
 				session_id: msg.session_id,
+				request_id: msg.request_id,
 				mode: msg.mode,
 				message: error instanceof Error ? error.message : "Codex voice failed",
 			});

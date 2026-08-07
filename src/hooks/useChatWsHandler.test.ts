@@ -212,6 +212,126 @@ describe("useChatWsHandler — session id domains", () => {
 });
 
 describe("useChatWsHandler — immediate messages", () => {
+	it("attaches targeted Live tools without borrowing the typed-turn pending ref", () => {
+		const { handler, dispatch, refs } = renderHandler();
+		handler({
+			type: "tool_event",
+			id: "live-tool-1",
+			name: "exec_command",
+			input: { cmd: "git status --short" },
+			realtime_utterance_id: "utterance-assistant-1",
+			realtime_session_id: "realtime-1",
+			transcript_seq: 5,
+			fork_supported: false,
+		});
+
+		expect(dispatch.mock.calls.map(([action]) => action)).toEqual([
+			{
+				type: "UPSERT_REALTIME_TRANSCRIPT",
+				id: "utterance-assistant-1",
+				role: "assistant",
+				text: "",
+				done: false,
+				realtimeSessionId: "realtime-1",
+				transcriptSeq: 5,
+				forkSupported: false,
+			},
+			{
+				type: "ADD_TOOL_EVENT",
+				id: "utterance-assistant-1",
+				event: expect.objectContaining({
+					type: "tool_event",
+					id: "live-tool-1",
+				}),
+			},
+		]);
+		expect(refs.pendingIdRef.current).toBeNull();
+	});
+
+	it("upserts Raven Live transcript deltas with stable wire identity", () => {
+		const { handler, dispatch } = renderHandler();
+		handler({
+			type: "realtime_transcript",
+			session_id: "session-1",
+			mode: "live",
+			role: "user",
+			text: "Hello ",
+			done: false,
+			utterance_id: "utterance-user-1",
+			realtime_session_id: "realtime-1",
+			transcript_seq: 4,
+			source: "codex_realtime",
+			fork_supported: false,
+		});
+
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "UPSERT_REALTIME_TRANSCRIPT",
+			id: "utterance-user-1",
+			role: "user",
+			text: "Hello ",
+			done: false,
+			realtimeSessionId: "realtime-1",
+			transcriptSeq: 4,
+			forkSupported: false,
+		});
+	});
+
+	it("forwards an empty final so the reducer can remove that provisional bubble", () => {
+		const { handler, dispatch } = renderHandler();
+		handler({
+			type: "realtime_transcript",
+			session_id: "session-1",
+			mode: "live",
+			role: "assistant",
+			text: " ",
+			done: true,
+			utterance_id: "private-utterance",
+			realtime_session_id: "realtime-1",
+			transcript_seq: 5,
+			source: "codex_realtime",
+			fork_supported: false,
+		});
+
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "UPSERT_REALTIME_TRANSCRIPT",
+			id: "private-utterance",
+			role: "assistant",
+			text: " ",
+			done: true,
+			realtimeSessionId: "realtime-1",
+			transcriptSeq: 5,
+			forkSupported: false,
+		});
+	});
+
+	it("leaves one-shot dictation transcripts to their dedicated consumer", () => {
+		const { handler, dispatch } = renderHandler();
+		handler({
+			type: "realtime_transcript",
+			session_id: "session-1",
+			mode: "dictation",
+			role: "user",
+			text: "Typed from dictation",
+			done: true,
+		});
+
+		expect(dispatch).not.toHaveBeenCalled();
+	});
+
+	it("discards provisional Live bubbles when the realtime call closes", () => {
+		const { handler, dispatch } = renderHandler();
+		handler({
+			type: "realtime_state",
+			session_id: "session-1",
+			mode: "live",
+			state: "closed",
+		});
+
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "DISCARD_REALTIME_PARTIALS",
+		});
+	});
+
 	it("marks the exact user turn when Claude captures a file checkpoint", () => {
 		const { handler, dispatch } = renderHandler();
 		handler({

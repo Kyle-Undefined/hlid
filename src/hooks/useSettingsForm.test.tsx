@@ -156,6 +156,32 @@ describe("useSettingsForm autosave", () => {
 		expect(result.current.savedMsg).toBe("saved");
 	});
 
+	it("surfaces a runtime warning without marking the persisted save as failed", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(
+				Response.json({
+					ok: true,
+					runtime_synced: false,
+					warning: "Codex runtime synchronization returned 503.",
+				}),
+			),
+		);
+		const { result } = renderHook(() =>
+			useSettingsForm(initialSettings(), vi.fn().mockResolvedValue(undefined)),
+		);
+
+		act(() => result.current.setUi({ ...result.current.ui, htmlPlans: true }));
+		await advance(800);
+
+		expect(result.current.error).toBeNull();
+		expect(result.current.dirty).toBe(false);
+		expect(result.current.savedMsg).toBe("saved");
+		expect(result.current.warning).toBe(
+			"Codex runtime synchronization returned 503.",
+		);
+	});
+
 	it("uses a stable fallback for invalid error bodies and network failures", async () => {
 		const fetchMock = vi
 			.fn()

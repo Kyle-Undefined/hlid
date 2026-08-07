@@ -7,6 +7,7 @@ import {
 	LoaderCircle,
 	MessageSquare,
 	Mic,
+	MicOff,
 	Monitor,
 	Paperclip,
 	ShieldCheck,
@@ -125,6 +126,7 @@ import { mapMcpServer } from "#/lib/mcp";
 import { configuredObsidianCapture } from "#/lib/obsidianCapture";
 import { isCliProxyProvider } from "#/lib/providerIds";
 import {
+	codexRealtimeAvailability,
 	effortOptionsFor,
 	modelInputAvailability,
 	modelOptions,
@@ -1892,6 +1894,7 @@ function useRavenVoice(
 		[config.voice.auto_send, handleSend, input, setInput, textareaRef],
 	);
 	const providerId = props.activeProviderId;
+	const codexProvider = providers.find((provider) => provider.id === "codex");
 	const selectedAgent = (config.agents ?? []).find(
 		(agent) => agent.path === props.session.agentSkillContext,
 	);
@@ -1902,11 +1905,7 @@ function useRavenVoice(
 		config.codex?.model;
 	const codexAudio =
 		providerId === "codex"
-			? modelInputAvailability(
-					providers.find((provider) => provider.id === "codex"),
-					activeModel,
-					"audio",
-				)
+			? modelInputAvailability(codexProvider, activeModel, "audio")
 			: {
 					available: false,
 					reason: "Talk to Codex requires the native Codex provider.",
@@ -1931,6 +1930,30 @@ function useRavenVoice(
 			providerId,
 		],
 	);
+	const discardLivePartials = useCallback(
+		() => props.runtime.dispatch({ type: "DISCARD_REALTIME_PARTIALS" }),
+		[props.runtime.dispatch],
+	);
+	const realtime = useCodexRealtime({
+		sessionId: props.session.sessionIdRef.current,
+		agentCwd: props.session.agentSkillContext,
+		providerId,
+		voice: config.voice.codex_voice,
+		onDictation: onTranscription,
+		onLiveClosed: discardLivePartials,
+	});
+	const configuredDictation =
+		providerId === "codex"
+			? codexRealtimeAvailability(
+					config.voice.codex_live_mode,
+					codexProvider,
+					initialVoiceInfo.codexRealtimeBackend,
+				)
+			: {
+					available: false,
+					reason: "Dictate with Codex requires the native Codex provider.",
+				};
+	const realtimeDictationActive = realtime.mode === "dictation";
 	const voice = useVoiceInput({
 		config: config.voice,
 		initialInfo: initialVoiceInfo,
@@ -1938,13 +1961,20 @@ function useRavenVoice(
 		onAudioTurn,
 		codexTurnAvailable: providerId === "codex" && codexAudio.available,
 		codexTurnUnavailableReason: codexAudio.reason,
-	});
-	const realtime = useCodexRealtime({
-		sessionId: props.session.sessionIdRef.current,
-		agentCwd: props.session.agentSkillContext,
-		providerId,
-		voice: config.voice.codex_voice,
-		onDictation: onTranscription,
+		codexDictation: {
+			available: configuredDictation.available && !realtime.unavailableReason,
+			unavailableReason:
+				realtime.unavailableReason ??
+				(configuredDictation.available
+					? undefined
+					: configuredDictation.reason),
+			phase: realtimeDictationActive ? realtime.phase : "idle",
+			error: realtimeDictationActive ? realtime.error : null,
+			start: () => realtime.start("dictation"),
+			stop: realtime.stop,
+			cancel: realtime.cancel,
+			clearError: realtime.clearError,
+		},
 	});
 	return {
 		...voice,
@@ -1957,17 +1987,24 @@ function useRavenVoice(
 				? "Raven Live failed"
 				: config.voice.input_provider === "codex"
 					? "voice message failed"
-					: "voice transcription failed",
+					: config.voice.input_provider === "codex_dictation"
+						? "Codex dictation failed"
+						: "voice transcription failed",
 		clearError: () => {
 			voice.clearError();
 			if (realtime.mode === "live") realtime.clearError();
 		},
 		livePhase: realtime.mode === "live" ? realtime.phase : "idle",
-		liveTranscript: realtime.mode === "live" ? realtime.transcript : "",
 		liveUnavailable: realtime.unavailableReason,
+		liveMicrophoneMuted: realtime.liveMicrophoneMuted,
 		startLive: () => realtime.start("live"),
 		stopLive: realtime.stop,
+		toggleLiveMicrophone: realtime.toggleLiveMicrophone,
 	};
+}
+
+function isRavenLiveInteractionLocked(phase: RavenVoice["livePhase"]): boolean {
+	return phase === "starting" || phase === "connected" || phase === "stopping";
 }
 
 function useRavenQueueActions(props: RavenActionProps) {
@@ -3760,7 +3797,9 @@ function RavenMessagePane({
 	const canBranch =
 		composerProps.providers.find(
 			(provider) => provider.id === composerProps.activeProviderId,
-		)?.forkCapability?.throughMessage === true && !runtime.isRunning;
+		)?.forkCapability?.throughMessage === true &&
+		!runtime.isRunning &&
+		!isRavenLiveInteractionLocked(composerProps.voice.livePhase);
 	const canSteerQueued =
 		runtime.isRunning &&
 		(isClaudeRuntimeProvider(composerProps.activeProviderId) ||
@@ -3934,6 +3973,7 @@ function OptionGroup({
 function ChatModelBadge({
 	session,
 	runtime,
+	voice,
 	viewport,
 	showModelPopup,
 	setShowModelPopup,
@@ -3960,6 +4000,7 @@ function ChatModelBadge({
 		runtime;
 	const { sessionId } = session;
 	const displayedModel = activeModel ?? model;
+	const liveActive = isRavenLiveInteractionLocked(voice.livePhase);
 	const displayedEffort = activeEffort ?? effort;
 	const displayedPermissionMode = activePermissionMode ?? permissionMode;
 	const permissionBadge =
@@ -3995,8 +4036,12 @@ function ChatModelBadge({
 	const { modelBadgeRef } = viewport;
 	const popupRef = useRef<HTMLDivElement>(null);
 	useEffect(() => {
+		if (liveActive && showModelPopup) {
+			setShowModelPopup(false);
+			return;
+		}
 		if (showModelPopup) popupRef.current?.focus();
-	}, [showModelPopup]);
+	}, [liveActive, setShowModelPopup, showModelPopup]);
 	return (
 		<>
 			{activeProviderLabel && (
@@ -4006,6 +4051,7 @@ function ChatModelBadge({
 				>
 					<button
 						type="button"
+						disabled={liveActive}
 						aria-haspopup="dialog"
 						aria-expanded={showModelPopup}
 						aria-label={badgeParts.join(" · ")}
@@ -4013,7 +4059,12 @@ function ChatModelBadge({
 							e.stopPropagation();
 							setShowModelPopup((v) => !v);
 						}}
-						className={`block max-w-full text-[9px] tracking-widest px-2 py-0.5 uppercase bg-background border cursor-pointer transition-colors ${
+						title={
+							liveActive
+								? "Stop Raven Live to change the session model"
+								: undefined
+						}
+						className={`block max-w-full text-[9px] tracking-widest px-2 py-0.5 uppercase bg-background border cursor-pointer transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
 							modelMismatch
 								? "text-status-warning/80 border-status-warning/60"
 								: "text-muted-foreground/50 border-border/70 hover:text-foreground/70 hover:border-primary/40"
@@ -4077,7 +4128,7 @@ function ChatModelBadge({
 							)}
 							<OptionGroup
 								label="cli"
-								disabled={wsStatus !== "connected"}
+								disabled={wsStatus !== "connected" || liveActive}
 								options={providers
 									.filter(
 										(provider) =>
@@ -4117,7 +4168,7 @@ function ChatModelBadge({
 							<OptionGroup
 								label="model"
 								divider
-								disabled={wsStatus !== "connected"}
+								disabled={wsStatus !== "connected" || liveActive}
 								options={modelPickerOptions.map((m) => ({
 									value: m.value,
 									label: m.label,
@@ -4143,7 +4194,7 @@ function ChatModelBadge({
 							<OptionGroup
 								label="effort"
 								divider
-								disabled={wsStatus !== "connected"}
+								disabled={wsStatus !== "connected" || liveActive}
 								options={effortOptions.map((e) => ({
 									value: e.value,
 									label: e.label,
@@ -4166,7 +4217,7 @@ function ChatModelBadge({
 							<OptionGroup
 								label="permission"
 								divider
-								disabled={wsStatus !== "connected"}
+								disabled={wsStatus !== "connected" || liveActive}
 								options={permissionOptions.map((p) => ({
 									value: p.value,
 									label: p.label,
@@ -4359,12 +4410,44 @@ function ChatInputNotices({
 					</button>
 				</div>
 			)}
-			{(voice.livePhase === "starting" || voice.livePhase === "connected") && (
-				<output className="block px-4 py-2 border-b border-primary/20 bg-primary/5 text-[10px] text-primary/80 leading-relaxed">
-					Raven Live ·{" "}
-					{voice.liveTranscript ||
-						(voice.livePhase === "starting" ? "connecting…" : "listening…")}
-				</output>
+			{isRavenLiveInteractionLocked(voice.livePhase) && (
+				<div className="flex items-center gap-3 px-4 py-1 border-b border-primary/20 bg-primary/5 text-primary/80">
+					<output className="min-w-0 flex-1 text-[10px] leading-relaxed">
+						Raven Live ·{" "}
+						{voice.livePhase === "starting"
+							? "connecting…"
+							: voice.livePhase === "stopping"
+								? "stopping…"
+								: voice.liveMicrophoneMuted
+									? "microphone muted"
+									: "listening…"}
+					</output>
+					{voice.livePhase === "connected" && (
+						<button
+							type="button"
+							onClick={voice.toggleLiveMicrophone}
+							aria-pressed={voice.liveMicrophoneMuted}
+							aria-label={
+								voice.liveMicrophoneMuted
+									? "Unmute Raven Live microphone"
+									: "Mute Raven Live microphone"
+							}
+							title={
+								voice.liveMicrophoneMuted
+									? "Unmute Raven Live microphone"
+									: "Mute Raven Live microphone"
+							}
+							className="min-h-10 px-3 inline-flex shrink-0 items-center gap-1.5 border border-primary/25 bg-background/60 text-[10px] text-primary hover:bg-primary/10 transition-colors"
+						>
+							{voice.liveMicrophoneMuted ? (
+								<MicOff className="w-3.5 h-3.5" />
+							) : (
+								<Mic className="w-3.5 h-3.5" />
+							)}
+							{voice.liveMicrophoneMuted ? "Unmute" : "Mute"}
+						</button>
+					)}
+				</div>
 			)}
 			<div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-1.5 border-b border-border/40">
 				{messages.length === 0 && agentList.length > 0 && (
@@ -4562,6 +4645,7 @@ function ChatInputControls(props: ChatComposerProps) {
 function ChatVoiceControls(props: ChatVoiceControlsProps) {
 	const { config, runtime, voice } = props;
 	const { wsStatus, isRunning } = runtime;
+	const starting = voice.phase === "starting";
 	const processing =
 		voice.phase === "transcribing" || voice.phase === "submitting";
 	const { actionLabel, title } = voiceInputPresentation({
@@ -4572,41 +4656,49 @@ function ChatVoiceControls(props: ChatVoiceControlsProps) {
 		localState: voice.status.state,
 		hotkey: config.voice.hotkey,
 	});
-	const liveActive =
-		voice.livePhase === "starting" || voice.livePhase === "connected";
+	const liveActive = isRavenLiveInteractionLocked(voice.livePhase);
 	return (
 		<>
 			<button
 				type="button"
 				onClick={() => {
+					if (starting) return;
 					if (voice.phase === "recording") voice.stop();
 					else void voice.start();
 				}}
 				onFocus={voice.refresh}
 				disabled={
 					wsStatus !== "connected" ||
+					starting ||
 					(!voice.ready && voice.phase !== "recording") ||
-					processing
+					processing ||
+					liveActive
 				}
-				className={`px-2 py-2 md:py-3 transition-colors shrink-0 disabled:opacity-30 ${voice.phase === "recording" ? "text-destructive" : "text-muted-foreground/45 hover:text-muted-foreground"}`}
+				className={`px-2 py-2 md:py-3 transition-colors shrink-0 disabled:opacity-30 ${voice.phase === "recording" ? "text-destructive" : starting ? "text-primary" : "text-muted-foreground/45 hover:text-muted-foreground"}`}
 				aria-label={
-					voice.phase === "recording" ? "Stop recording" : actionLabel
+					starting
+						? "Connecting Codex dictation"
+						: voice.phase === "recording"
+							? "Stop recording"
+							: actionLabel
 				}
-				title={title}
+				title={starting ? "Connecting Codex dictation" : title}
 			>
-				{voice.phase === "recording" ? (
+				{starting ? (
+					<LoaderCircle className="w-3.5 h-3.5 animate-spin" />
+				) : voice.phase === "recording" ? (
 					<Square className="w-3.5 h-3.5 fill-current" />
 				) : (
 					<Mic className="w-3.5 h-3.5" />
 				)}
 			</button>
-			{voice.phase === "recording" && (
+			{(starting || voice.phase === "recording") && (
 				<button
 					type="button"
 					onClick={voice.cancel}
 					className="px-2 py-2 md:py-3 text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0"
-					aria-label="Cancel recording"
-					title="Cancel recording"
+					aria-label={starting ? "Cancel Codex dictation" : "Cancel recording"}
+					title={starting ? "Cancel Codex dictation" : "Cancel recording"}
 				>
 					<X className="w-3.5 h-3.5" />
 				</button>
@@ -4621,6 +4713,7 @@ function ChatVoiceControls(props: ChatVoiceControlsProps) {
 						wsStatus !== "connected" ||
 						props.activeProviderId !== "codex" ||
 						isRunning ||
+						voice.livePhase === "stopping" ||
 						voice.liveUnavailable !== null
 					}
 					className={`px-2 py-2 md:py-3 transition-colors shrink-0 disabled:opacity-30 ${
@@ -4628,17 +4721,25 @@ function ChatVoiceControls(props: ChatVoiceControlsProps) {
 							? "text-primary"
 							: "text-muted-foreground/45 hover:text-muted-foreground"
 					}`}
-					aria-label={liveActive ? "Stop Raven Live" : "Start Raven Live"}
+					aria-label={
+						voice.livePhase === "stopping"
+							? "Stopping Raven Live"
+							: liveActive
+								? "Stop Raven Live"
+								: "Start Raven Live"
+					}
 					title={
 						props.activeProviderId !== "codex"
 							? "Raven Live requires a native Codex session"
 							: voice.liveUnavailable
 								? voice.liveUnavailable
-								: isRunning
-									? "Wait for the current turn to finish"
-									: liveActive
-										? "Stop Raven Live"
-										: "Start Raven Live"
+								: voice.livePhase === "stopping"
+									? "Waiting for Raven Live to finish"
+									: isRunning
+										? "Wait for the current turn to finish"
+										: liveActive
+											? "Stop Raven Live"
+											: "Start Raven Live"
 					}
 				>
 					{liveActive ? (
@@ -4677,6 +4778,13 @@ function handleComposerKeyDown(
 		enterToSubmit: config.ui.enter_to_submit,
 	});
 	if (!action) return;
+	if (
+		action === "submit" &&
+		isRavenLiveInteractionLocked(props.voice.livePhase)
+	) {
+		event.preventDefault();
+		return;
+	}
 	event.preventDefault();
 	const activePicker = vaultPickerOpen ? vaultPicker : picker;
 	const submit = runComposerPickerAction(action, activePicker, () => {
@@ -4707,10 +4815,20 @@ function composerPlaceholder(
 	delegationSteering: boolean,
 	delegatedNativeSteeringAvailable: boolean,
 ): string {
+	if (voice.phase === "starting") return "connecting Codex dictation…";
 	if (voice.phase === "recording") {
-		return `${voice.engine === "codex" ? "recording for Codex" : "recording for Whisper"}… ${voice.seconds}s`;
+		return `${
+			voice.engine === "codex"
+				? "recording a Codex voice message"
+				: voice.engine === "codex_dictation"
+					? "dictating with Codex"
+					: "recording for Whisper"
+		}… ${voice.seconds}s`;
 	}
-	if (voice.phase === "transcribing") return "transcribing locally…";
+	if (voice.phase === "transcribing")
+		return voice.engine === "codex_dictation"
+			? "finalizing Codex dictation…"
+			: "transcribing locally…";
 	if (voice.phase === "submitting") return "sending voice message to Codex…";
 	if (wsStatus !== "connected") return "connecting…";
 	if (delegationSteering) {
@@ -4727,13 +4845,24 @@ function composerPlaceholder(
 function voiceAnnouncement(voice: RavenVoice): string {
 	if (voice.livePhase === "starting") return "Starting Raven Live";
 	if (voice.livePhase === "connected")
-		return voice.liveTranscript
-			? `Raven Live: ${voice.liveTranscript}`
-			: "Raven Live connected";
+		return voice.liveMicrophoneMuted
+			? "Raven Live microphone muted"
+			: "Raven Live microphone active";
+	if (voice.livePhase === "stopping") return "Stopping Raven Live";
+	if (voice.phase === "starting") return "Connecting Codex dictation";
 	if (voice.phase === "recording") {
-		return `${voice.engine === "codex" ? "Recording a Codex voice message" : "Recording for Local Whisper"}, ${voice.seconds} seconds`;
+		return `${
+			voice.engine === "codex"
+				? "Recording a Codex voice message"
+				: voice.engine === "codex_dictation"
+					? "Dictating with Codex"
+					: "Recording for Local Whisper"
+		}, ${voice.seconds} seconds`;
 	}
-	if (voice.phase === "transcribing") return "Transcribing audio locally";
+	if (voice.phase === "transcribing")
+		return voice.engine === "codex_dictation"
+			? "Finalizing Codex dictation"
+			: "Transcribing audio locally";
 	if (voice.phase === "submitting") return "Sending voice message to Codex";
 	return voice.error ?? "";
 }
@@ -4864,6 +4993,7 @@ function useChatSessionFork({
 	session,
 	activeProviderId,
 	providers,
+	voice,
 }: ChatComposerProps) {
 	const { isRunning, messages } = runtime;
 	const forkState = useForkSession(session.sessionId);
@@ -4874,7 +5004,10 @@ function useChatSessionFork({
 		...forkState,
 		forking: forkState.forkingMessageId === "session",
 		canFork:
-			forkCapability?.kind === "exact" && !isRunning && messages.length > 0,
+			forkCapability?.kind === "exact" &&
+			!isRunning &&
+			!isRavenLiveInteractionLocked(voice.livePhase) &&
+			messages.length > 0,
 	};
 }
 
@@ -4897,6 +5030,7 @@ function ChatActionButtons({
 	runtime,
 	input,
 	activeSkills,
+	voice,
 	canSend,
 	canQueue,
 	handleSend,
@@ -4905,6 +5039,7 @@ function ChatActionButtons({
 }: ChatComposerProps & { sessionFork: ChatSessionFork }) {
 	const { send, isRunning, messages } = runtime;
 	const { forkError, dismissForkError } = sessionFork;
+	const liveActive = isRavenLiveInteractionLocked(voice.livePhase);
 	const nativeGoalCommand =
 		/^\/goal(?:\s|$)/i.test(input.trim()) ||
 		activeSkills.some(
@@ -4957,9 +5092,12 @@ function ChatActionButtons({
 				<button
 					type="button"
 					onClick={() => handleSend()}
-					disabled={!canSend}
+					disabled={!canSend || liveActive}
 					className="order-9 min-h-11 self-start shrink-0 px-4 py-2 text-[10px] font-bold tracking-widest text-primary/70 uppercase transition-colors hover:text-primary disabled:text-muted-foreground/35 md:min-h-0 md:py-3"
 					aria-label="Send"
+					title={
+						liveActive ? "Stop Raven Live to send a typed message" : undefined
+					}
 				>
 					RUN
 				</button>

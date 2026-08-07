@@ -55,12 +55,14 @@ function useForgeReadAloudPreferences(
 	};
 	return {
 		preferences: {
-			provider: voice.read_aloud_provider,
+			provider:
+				voice.read_aloud_provider === "codex"
+					? "device"
+					: voice.read_aloud_provider,
 			voiceURI: browserPreferences.voiceURI,
 			microsoftVoiceId: voice.read_aloud_voice,
 			neuralVoiceId: voice.tts_voice,
 			rate: voice.read_aloud_rate,
-			codexVoice: voice.codex_voice,
 		},
 		update,
 	};
@@ -83,7 +85,6 @@ export function ReadAloudSection({
 		<Section title="Read aloud">
 			<SpeechEngineField
 				preferences={preferences}
-				voice={voice}
 				microsoft={microsoft.inventory}
 				update={update}
 			/>
@@ -98,9 +99,7 @@ export function ReadAloudSection({
 				preview={preview}
 				update={update}
 			/>
-			{preferences.provider !== "codex" && (
-				<ReadingSpeedField rate={preferences.rate} update={update} />
-			)}
+			<ReadingSpeedField rate={preferences.rate} update={update} />
 		</Section>
 	);
 }

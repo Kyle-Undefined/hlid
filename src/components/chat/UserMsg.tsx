@@ -47,6 +47,8 @@ export function UserMsg({
 	const isRunning = queueState?.kind === "running";
 	const isSteering = queueState?.kind === "steering";
 	const isPromoting = queueState?.kind === "promoting";
+	const isLivePartial =
+		message.source === "codex_realtime" && message.streaming === true;
 	const contextTarget = message.hasContextReceipt
 		? {
 				...(message.transcriptSeq !== undefined
@@ -63,7 +65,9 @@ export function UserMsg({
 				? "NEXT"
 				: isQueued
 					? `Q${queueState.index + 1}`
-					: "ME";
+					: isLivePartial
+						? "LIVE"
+						: "ME";
 	return (
 		<div className="group flex items-start justify-end gap-3 py-3 border-b border-border/40">
 			<div
@@ -85,6 +89,9 @@ export function UserMsg({
 							style={{ overflowWrap: "anywhere" }}
 						>
 							{message.text}
+							{isLivePartial && (
+								<span className="inline-block w-[7px] h-[1em] ml-1 align-middle bg-primary/50 cursor-blink" />
+							)}
 						</div>
 					</PrivacyMask>
 				)}
@@ -103,6 +110,7 @@ export function UserMsg({
 					!isRunning &&
 					!isSteering &&
 					!isPromoting &&
+					!isLivePartial &&
 					(message.text ||
 						(contextTarget && onViewContext) ||
 						(message.hasFileCheckpoint && onPreviewFileRewind)) && (

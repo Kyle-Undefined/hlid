@@ -42,7 +42,37 @@ const state = vi.hoisted(() => ({
 	voiceOptions: null as null | {
 		onAudioTurn?: (audio: Blob) => void | Promise<void>;
 		codexTurnAvailable?: boolean;
+		codexDictation?: {
+			available: boolean;
+			unavailableReason?: string;
+			start: () => Promise<void>;
+		};
 	},
+	voicePhase: "idle" as
+		| "idle"
+		| "starting"
+		| "recording"
+		| "transcribing"
+		| "submitting"
+		| "error",
+	voiceEngine: "local" as "local" | "codex" | "codex_dictation",
+	voiceReady: false,
+	voiceStart: vi.fn(),
+	voiceStop: vi.fn(),
+	voiceCancel: vi.fn(),
+	realtimeMode: null as "dictation" | "read-aloud" | "live" | null,
+	realtimePhase: "idle" as
+		| "idle"
+		| "starting"
+		| "connected"
+		| "stopping"
+		| "error",
+	realtimeLiveMicrophoneMuted: false,
+	realtimeStart: vi.fn(),
+	realtimeStop: vi.fn(),
+	realtimeCancel: vi.fn(),
+	realtimeToggleLiveMicrophone: vi.fn(),
+	realtimeClearError: vi.fn(),
 	uploadVoiceRecording: vi.fn(),
 	terminalProps: null as null | {
 		active: boolean;
@@ -143,20 +173,36 @@ vi.mock("#/hooks/projectPreviewStore", () => ({
 	useProjectPreview: () => state.preview,
 	useProjectPreviewPresentationRequest: () => 0,
 }));
+vi.mock("#/hooks/codexRealtimeStore", async (importOriginal) => ({
+	...(await importOriginal<typeof import("#/hooks/codexRealtimeStore")>()),
+	useCodexRealtime: () => ({
+		phase: state.realtimePhase,
+		mode: state.realtimeMode,
+		transcript: "",
+		error: null,
+		unavailableReason: null,
+		liveMicrophoneMuted: state.realtimeLiveMicrophoneMuted,
+		start: state.realtimeStart,
+		stop: state.realtimeStop,
+		cancel: state.realtimeCancel,
+		toggleLiveMicrophone: state.realtimeToggleLiveMicrophone,
+		clearError: state.realtimeClearError,
+	}),
+}));
 vi.mock("#/hooks/useVoiceInput", () => ({
 	uploadVoiceRecording: state.uploadVoiceRecording,
 	useVoiceInput: (options: typeof state.voiceOptions) => {
 		state.voiceOptions = options;
 		return {
-			phase: "idle",
-			engine: "local",
+			phase: state.voicePhase,
+			engine: state.voiceEngine,
 			seconds: 0,
 			error: null,
-			ready: false,
+			ready: state.voiceReady,
 			status: { state: "unavailable", model: "" },
-			start: vi.fn(),
-			stop: vi.fn(),
-			cancel: vi.fn(),
+			start: state.voiceStart,
+			stop: state.voiceStop,
+			cancel: state.voiceCancel,
 			refresh: vi.fn(),
 			clearError: vi.fn(),
 		};
@@ -197,6 +243,8 @@ vi.mock("#/hooks/useWsSelectors", () => ({
 vi.mock("#/hooks/wsStore", () => ({
 	subscribeToSession: state.subscribeToSession,
 	subscribeMessage: vi.fn(() => () => {}),
+	subscribeStatus: vi.fn(() => () => {}),
+	getSnapshot: () => ({ wsStatus: state.wsStatus }),
 	send: state.send,
 	enqueueChat: state.enqueueChat,
 	removeFromQueue: vi.fn(),
@@ -285,6 +333,12 @@ beforeEach(() => {
 	state.handleChatWsMessage.mockReset();
 	state.onAgentChange = null;
 	state.voiceOptions = null;
+	state.voicePhase = "idle";
+	state.voiceEngine = "local";
+	state.voiceReady = false;
+	state.realtimeMode = null;
+	state.realtimePhase = "idle";
+	state.realtimeLiveMicrophoneMuted = false;
 	state.uploadVoiceRecording.mockResolvedValue({
 		id: "voice-1",
 		path: "/library/voice-1/voice-message.wav",
@@ -548,6 +602,158 @@ describe("Raven composed submission behavior", () => {
 				],
 			}),
 		);
+	});
+
+	it("offers realtime Codex dictation without model audio input", () => {
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as Record<string, unknown>),
+				vault_provider: "codex",
+				voice: {
+					...(state.loaderData.config as { voice: Record<string, unknown> })
+						.voice,
+					enabled: true,
+					input_provider: "codex_dictation",
+					codex_live_mode: true,
+					codex_voice: "marin",
+				},
+				codex: { model: "gpt-text" },
+			},
+			providers: [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					capabilities: { realtime: true },
+					models: [
+						{
+							value: "gpt-text",
+							label: "GPT Text",
+							inputModalities: ["text", "image"],
+						},
+					],
+				},
+			],
+			voiceInfo: {
+				status: { state: "unavailable", model: "" },
+				models: [],
+				codexRealtimeBackend: { available: true },
+			},
+		};
+
+		render(<ChatPage />);
+
+		expect(state.voiceOptions?.codexTurnAvailable).toBe(false);
+		expect(state.voiceOptions?.codexDictation?.available).toBe(true);
+	});
+
+	it("shows a tap-to-mute control only while Raven Live is connected", () => {
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as Record<string, unknown>),
+				vault_provider: "codex",
+				voice: {
+					...(state.loaderData.config as { voice: Record<string, unknown> })
+						.voice,
+					enabled: true,
+					input_provider: "codex_dictation",
+					codex_live_mode: true,
+					codex_voice: "marin",
+				},
+				codex: { model: "gpt-text" },
+			},
+			providers: [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					capabilities: { realtime: true },
+					models: [
+						{
+							value: "gpt-text",
+							label: "GPT Text",
+							inputModalities: ["text", "image"],
+						},
+					],
+				},
+			],
+			voiceInfo: {
+				status: { state: "unavailable", model: "" },
+				models: [],
+				codexRealtimeBackend: { available: true },
+			},
+		};
+		state.realtimeMode = "live";
+		state.realtimePhase = "starting";
+
+		const { rerender } = render(<ChatPage />);
+		expect(screen.getByText(/Raven Live · connecting/)).toBeTruthy();
+		expect(
+			screen.queryByRole("button", { name: "Mute Raven Live microphone" }),
+		).toBeNull();
+
+		state.realtimePhase = "connected";
+		rerender(<ChatPage />);
+		expect(screen.getByText(/Raven Live · listening/)).toBeTruthy();
+		const stop = screen.getByRole("button", { name: "Stop Raven Live" });
+		const mute = screen.getByRole("button", {
+			name: "Mute Raven Live microphone",
+		});
+		expect(mute.getAttribute("aria-pressed")).toBe("false");
+		fireEvent.click(mute);
+		expect(state.realtimeToggleLiveMicrophone).toHaveBeenCalledOnce();
+		expect(state.realtimeStop).not.toHaveBeenCalled();
+		expect(stop).toBeTruthy();
+
+		state.realtimeLiveMicrophoneMuted = true;
+		rerender(<ChatPage />);
+		expect(screen.getByText(/Raven Live · microphone muted/)).toBeTruthy();
+		const unmute = screen.getByRole("button", {
+			name: "Unmute Raven Live microphone",
+		});
+		expect(unmute.getAttribute("aria-pressed")).toBe("true");
+		fireEvent.click(unmute);
+		expect(state.realtimeToggleLiveMicrophone).toHaveBeenCalledTimes(2);
+		expect(state.realtimeStop).not.toHaveBeenCalled();
+		expect(
+			screen.getByRole("button", { name: "Stop Raven Live" }),
+		).toBeTruthy();
+
+		state.realtimePhase = "stopping";
+		rerender(<ChatPage />);
+		expect(screen.getByText(/Raven Live · stopping/)).toBeTruthy();
+		expect(
+			screen.queryByRole("button", { name: "Mute Raven Live microphone" }),
+		).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: "Unmute Raven Live microphone" }),
+		).toBeNull();
+	});
+
+	it("shows a cancellable connecting state for Codex dictation", () => {
+		state.voicePhase = "starting";
+		state.voiceEngine = "codex_dictation";
+		state.voiceReady = true;
+
+		render(<ChatPage />);
+
+		const composer = screen.getByRole("combobox") as HTMLTextAreaElement;
+		expect(composer.placeholder).toBe("connecting Codex dictation…");
+		expect(screen.getByText("Connecting Codex dictation")).toBeTruthy();
+		const connecting = screen.getByRole("button", {
+			name: "Connecting Codex dictation",
+		}) as HTMLButtonElement;
+		expect(connecting.disabled).toBe(true);
+		expect(connecting.querySelector(".animate-spin")).not.toBeNull();
+		expect(screen.queryByRole("button", { name: "Stop recording" })).toBeNull();
+		fireEvent.click(
+			screen.getByRole("button", { name: "Cancel Codex dictation" }),
+		);
+		expect(state.voiceCancel).toHaveBeenCalledOnce();
+		expect(state.voiceStart).not.toHaveBeenCalled();
+		expect(state.voiceStop).not.toHaveBeenCalled();
 	});
 
 	it("requests authoritative provider metadata when the WebSocket connects", async () => {

@@ -174,11 +174,31 @@ export type ProviderGoalControlResult = {
 
 export type ProviderRealtimeMode = "dictation" | "live" | "read-aloud";
 
+/**
+ * Ordinary Codex item notifications that remain useful while Live owns the
+ * user-visible text/audio channel. They bypass the dormant normal-turn event
+ * queue so Raven can render and persist tool activity without replaying the
+ * mirrored assistant transcript.
+ */
+export type ProviderRealtimeActivity = Extract<
+	AgentEvent,
+	{
+		type:
+			| "tool_start"
+			| "tool_update"
+			| "tool_activity_update"
+			| "tool_result"
+			| "generated_media";
+	}
+>;
+
 export type ProviderRealtimeEvent =
-	| { type: "started" }
+	| { type: "started"; realtimeSessionId?: string }
 	| { type: "sdp"; sdp: string }
+	| { type: "audio_output_started" }
 	| { type: "transcript_delta"; role: string; delta: string }
 	| { type: "transcript_done"; role: string; text: string }
+	| { type: "activity"; event: ProviderRealtimeActivity }
 	| { type: "error"; message: string }
 	| { type: "closed"; reason?: string };
 

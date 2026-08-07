@@ -86,42 +86,64 @@ function mapSessionRows(
 	planRows: PlanRow[],
 	aukRows: AukRow[],
 ) {
-	const messageItems = rows.map((r) => ({
-		kind: "message" as const,
-		timestamp: r.timestamp,
-		// DB row ids are globally unique and stable across reconnect/page fetches.
-		// A user row with turn_id retains its live queue identity so history and
-		// the running-turn event cannot render the same prompt twice.
-		id:
-			r.role === "user" && r.turn_id ? r.turn_id : `persisted-message:${r.id}`,
-		// Real messages.id primary key, exposed separately from the synthetic
-		// `id` above so callers don't have to parse it back out of a string.
-		// Used by the "branch from here" fork action (assistant rows only).
-		dbId: r.id,
-		role: r.role,
-		text: r.text,
-		seq: r.seq,
-		hasContextReceipt: Boolean(r.context_manifest_json),
-		hasFileCheckpoint: Boolean(r.checkpoint_uuid),
-		steerTargetSeq: r.steer_target_seq,
-		steerToolEventIndex: r.steer_tool_event_index,
-		cost:
-			r.query_estimated_cost ??
-			(r.query_cost_known === 1 ? (r.query_cost ?? 0) : null),
-		costEstimated: r.query_estimated_cost != null,
-		toolEvents: r.toolEvents?.map((te) =>
-			mapSessionToolEventSummary(te, r.session_id),
-		),
-		...(r.toolEventPage ? { toolEventPage: r.toolEventPage } : {}),
-		attachments: r.attachments?.map((a) => ({
-			id: a.id,
-			path: a.path,
-			filename: a.filename,
-			mime: a.mime,
-			kind: a.kind,
-		})),
-		recap: r.recap,
-	}));
+	const messageItems = rows.map((r) => {
+		const realtimeUtteranceId =
+			r.source === "codex_realtime" && r.utterance_id
+				? r.utterance_id
+				: undefined;
+		const realtimeSource = realtimeUtteranceId
+			? ("codex_realtime" as const)
+			: undefined;
+		return {
+			kind: "message" as const,
+			timestamp: r.timestamp,
+			// Realtime rows retain the same utterance identity from provisional delta
+			// through history hydration. Ordinary user rows keep their queued turn id;
+			// every other row uses the globally unique database id.
+			id: realtimeUtteranceId
+				? realtimeUtteranceId
+				: r.role === "user" && r.turn_id
+					? r.turn_id
+					: `persisted-message:${r.id}`,
+			// Real messages.id primary key, exposed separately from the synthetic
+			// `id` above so callers don't have to parse it back out of a string.
+			// Used by the "branch from here" fork action (assistant rows only).
+			dbId: r.id,
+			role: r.role,
+			text: r.text,
+			seq: r.seq,
+			...(realtimeSource
+				? {
+						source: realtimeSource,
+						utteranceId: realtimeUtteranceId,
+						...(r.realtime_session_id
+							? { realtimeSessionId: r.realtime_session_id }
+							: {}),
+						forkSupported: r.fork_supported === 1,
+					}
+				: {}),
+			hasContextReceipt: Boolean(r.context_manifest_json),
+			hasFileCheckpoint: Boolean(r.checkpoint_uuid),
+			steerTargetSeq: r.steer_target_seq,
+			steerToolEventIndex: r.steer_tool_event_index,
+			cost:
+				r.query_estimated_cost ??
+				(r.query_cost_known === 1 ? (r.query_cost ?? 0) : null),
+			costEstimated: r.query_estimated_cost != null,
+			toolEvents: r.toolEvents?.map((te) =>
+				mapSessionToolEventSummary(te, r.session_id),
+			),
+			...(r.toolEventPage ? { toolEventPage: r.toolEventPage } : {}),
+			attachments: r.attachments?.map((a) => ({
+				id: a.id,
+				path: a.path,
+				filename: a.filename,
+				mime: a.mime,
+				kind: a.kind,
+			})),
+			recap: r.recap,
+		};
+	});
 	const permissionItems = permEvents.map((p) => ({
 		kind: "permission" as const,
 		timestamp: p.timestamp,
@@ -399,6 +421,36 @@ function replayBufferDeduped(
 	}
 }
 
+function isLiveRealtimeFrame(message: ServerMessage): boolean {
+	if (
+		(message.type === "realtime_transcript" ||
+			message.type === "realtime_state" ||
+			message.type === "realtime_error") &&
+		message.mode === "live"
+	) {
+		return true;
+	}
+	return (
+		(message.type === "tool_event" ||
+			message.type === "tool_result" ||
+			message.type === "tool_update" ||
+			message.type === "tool_activity_update") &&
+		Boolean(message.realtime_utterance_id)
+	);
+}
+
+function isPersistedWriteMarker(message: ServerMessage): boolean {
+	return (
+		message.type === "done" ||
+		message.type === "error" ||
+		message.type === "turn_steered" ||
+		(message.type === "realtime_transcript" &&
+			message.mode === "live" &&
+			message.done &&
+			message.db_id !== undefined)
+	);
+}
+
 /**
  * When one turn completes while the history refresh is in flight, the queue
  * can already have started the next turn by the time the final page arrives.
@@ -505,19 +557,13 @@ export async function loadSessionSnapshot({
 	if (isCancelled()) return null;
 	let newlyBuffered = wsStore.drainMessageBuffer();
 	let bufferedMessages = [...newlyBuffered];
-	const hasPersistedWriteMarker = (messages: ServerMessage[]) =>
-		messages.some(
-			(message) =>
-				message.type === "done" ||
-				message.type === "error" ||
-				message.type === "turn_steered",
-		);
 	// Done and steer acknowledgements follow their transcript writes; an error
-	// is followed by final persistence before the queue advances. If one arrives
-	// while the DB read is in flight, that page may predate the final assistant
-	// or steering rows. Refresh before opening the reducer gate.
+	// is followed by final persistence before the queue advances. Durable Live
+	// finals likewise carry their messages.id only after the transcript write.
+	// If one arrives while the DB read is in flight, that page may predate the
+	// authoritative row. Refresh before opening the reducer gate.
 	for (let retry = 0; retry < 2; retry++) {
-		if (!hasPersistedWriteMarker(newlyBuffered)) break;
+		if (!newlyBuffered.some(isPersistedWriteMarker)) break;
 		page = await readBasePage();
 		if (isCancelled()) return null;
 		newlyBuffered = wsStore.drainMessageBuffer();
@@ -525,7 +571,7 @@ export async function loadSessionSnapshot({
 	}
 	// If both bounded refreshes raced another persisted completion, the last
 	// marker still predates one final authoritative read.
-	if (hasPersistedWriteMarker(newlyBuffered)) {
+	if (newlyBuffered.some(isPersistedWriteMarker)) {
 		page = await readBasePage();
 		if (isCancelled()) return null;
 		bufferedMessages = [...bufferedMessages, ...wsStore.drainMessageBuffer()];
@@ -594,8 +640,16 @@ export async function loadSessionSnapshot({
 			}
 		}
 	} else {
-		// Session done before history loaded — DB has complete data, discard buffer.
+		// An idle ordinary turn has no live assistant to receive stale chunks or
+		// interaction events. Raven Live is independent of that run state, though,
+		// so replay only its frames after LOAD_HISTORY. Drain once more to include a
+		// terminal/final frame that arrived after the last pre-load buffer read.
+		const liveRealtimeFrames = [
+			...bufferedMessages,
+			...wsStore.drainMessageBuffer(),
+		].filter(isLiveRealtimeFrame);
 		wsStore.clearMessageBuffer();
+		for (const message of liveRealtimeFrames) handleWsMessage(message);
 	}
 
 	void ctxRead.then(

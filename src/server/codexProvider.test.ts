@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
 vi.mock("node:fs/promises", () => ({
@@ -73,6 +73,11 @@ import {
 	windowsComputerUseHostAvailable,
 	windowsComputerUseModel,
 } from "./codexProvider";
+import {
+	CODEX_REALTIME_ACCOUNT_UNAVAILABLE,
+	getCodexRealtimeBackendStatus,
+	resetCodexRealtimeBackendStatus,
+} from "./codexRealtimeStatus";
 import { executeHlidAgentToolRich } from "./hlidAgentTools";
 import { HLID_HELP_TOPICS } from "./hlidHelp";
 import { executeObsidianAgentTool } from "./obsidianAgentTools";
@@ -260,6 +265,16 @@ describe("CodexProvider capability declarations", () => {
 		});
 	});
 
+	it("uses the configured executable for provider availability", async () => {
+		vi.mocked(resolveCodexExecutable).mockReturnValue(undefined);
+
+		await expect(
+			new CodexProvider({
+				metadataExecutable: () => "/configured/codex",
+			}).check(),
+		).resolves.toEqual({ available: true });
+	});
+
 	it("observes and controls exact Codex background terminals", async () => {
 		const backgroundTerminals: Array<Record<string, unknown>> = [
 			{
@@ -436,13 +451,20 @@ describe("CodexProvider capability declarations", () => {
 		vi.mocked(spawn).mockReturnValue(proc as never);
 		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
 
-		const result = await new CodexProvider().forkSession?.({
+		const result = await new CodexProvider({
+			metadataExecutable: () => "/configured/codex",
+		}).forkSession?.({
 			sessionId: "thread-source",
 			cwd: "/work/project",
 			cutoff: { kind: "turn", id: "turn-7" },
 		});
 
 		expect(result).toEqual({ sessionId: "thread-fork" });
+		expect(spawn).toHaveBeenCalledWith(
+			"/configured/codex",
+			["app-server", "--listen", "stdio://"],
+			expect.any(Object),
+		);
 		const fork = writes
 			.map(
 				(value) => JSON.parse(value) as { method?: string; params?: unknown },
@@ -1236,6 +1258,29 @@ describe("fetchCodexModels", () => {
 		);
 	});
 
+	it("uses a feature-enabled app server for configured metadata", async () => {
+		const { proc } = makeFakeProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		await new CodexProvider({
+			realtimeEnabled: () => true,
+			metadataExecutable: () => "/configured/codex",
+		}).listModels?.();
+
+		expect(spawn).toHaveBeenCalledWith(
+			"/configured/codex",
+			[
+				"--enable",
+				"realtime_conversation",
+				"app-server",
+				"--listen",
+				"stdio://",
+			],
+			expect.any(Object),
+		);
+	});
+
 	it("passes includeHidden through to the model/list RPC params", async () => {
 		const { proc, writes } = makeFakeProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);
@@ -1412,6 +1457,35 @@ describe("CodexProvider.listSkills", () => {
 	});
 });
 
+describe("CodexProvider.discoverCapabilities", () => {
+	beforeEach(() => {
+		__resetCodexAppServersForTesting();
+	});
+
+	it("uses the configured executable and realtime feature identity", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		await new CodexProvider({
+			realtimeEnabled: () => true,
+			metadataExecutable: () => "/configured/codex",
+		}).discoverCapabilities?.({ cwd: "/work/project" });
+
+		expect(spawn).toHaveBeenCalledWith(
+			"/configured/codex",
+			[
+				"--enable",
+				"realtime_conversation",
+				"app-server",
+				"--listen",
+				"stdio://",
+			],
+			expect.any(Object),
+		);
+	});
+});
+
 describe("CodexProvider Apps and connector integration", () => {
 	beforeEach(() => {
 		__resetCodexAppServersForTesting();
@@ -1540,6 +1614,26 @@ function makeFakeSessionProc(
 		/** Leave the native background-terminal request pending during active turns. */
 		deferBackgroundTerminals?: boolean;
 		terminateResult?: boolean;
+		realtimeStartError?: string;
+		deferRealtimeStart?: boolean;
+		onRealtimeStopResponse?: (threadId: string) => void;
+		configReadResult?: unknown;
+		deferConfigRead?: boolean;
+		threadId?: string;
+		resumeTurns?: Array<Record<string, unknown>>;
+		threadReadTurns?: Array<Record<string, unknown>>;
+		turnIds?: string[];
+		steerMismatch?: {
+			expectedTurnId: string;
+			actualTurnId: string;
+			quoted?: boolean;
+		};
+		interruptMismatch?: {
+			expectedTurnId: string;
+			actualTurnId: string;
+		};
+		interruptError?: string;
+		onTurnInterruptResponse?: (turnId: string) => void;
 	} = {},
 ): {
 	proc: FakeProc;
@@ -1551,6 +1645,8 @@ function makeFakeSessionProc(
 	const writes: string[] = [];
 	let turnCounter = 0;
 	let threadCounter = 0;
+	let steerCounter = 0;
+	let interruptCounter = 0;
 	proc.stdin = {
 		write: vi.fn((data: string) => {
 			writes.push(data);
@@ -1564,6 +1660,26 @@ function makeFakeSessionProc(
 					stdout.emit(
 						"data",
 						Buffer.from(`${JSON.stringify({ id: msg.id, result: {} })}\n`),
+					);
+				} else if (msg.method === "config/read") {
+					if (opts.deferConfigRead) return;
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify({
+								id: msg.id,
+								result: opts.configReadResult ?? {
+									config: {
+										features: {
+											plugins: false,
+											apps: false,
+											hooks: false,
+										},
+										mcp_servers: {},
+									},
+								},
+							})}\n`,
+						),
 					);
 				} else if (
 					msg.method === "thread/resume" &&
@@ -1592,12 +1708,17 @@ function makeFakeSessionProc(
 								id: msg.id,
 								result: {
 									thread: {
-										id: opts.uniqueThreadIds
-											? `thread-${threadCounter}`
-											: "thread-1",
+										id: opts.threadId
+											? opts.threadId
+											: opts.uniqueThreadIds
+												? `thread-${threadCounter}`
+												: "thread-1",
 										...(opts.threadModel === null
 											? {}
 											: { model: opts.threadModel ?? "gpt-5.4" }),
+										...(msg.method === "thread/resume"
+											? { turns: opts.resumeTurns ?? [] }
+											: {}),
 									},
 								},
 							})}\n`,
@@ -1635,22 +1756,94 @@ function makeFakeSessionProc(
 					);
 				} else if (msg.method === "turn/start") {
 					turnCounter++;
+					const turnId =
+						opts.turnIds?.[turnCounter - 1] ?? `turn-${turnCounter}`;
 					stdout.emit(
 						"data",
 						Buffer.from(
 							`${JSON.stringify({
 								id: msg.id,
-								result: { turn: { id: `turn-${turnCounter}` } },
+								result: { turn: { id: turnId } },
 							})}\n`,
 						),
 					);
 				} else if (msg.method === "turn/steer") {
+					steerCounter++;
+					if (opts.steerMismatch && steerCounter === 1) {
+						const {
+							actualTurnId,
+							expectedTurnId,
+							quoted = true,
+						} = opts.steerMismatch;
+						const quote = quoted ? "`" : "";
+						stdout.emit(
+							"data",
+							Buffer.from(
+								`${JSON.stringify({
+									id: msg.id,
+									error: {
+										message: `expected active turn id ${quote}${expectedTurnId}${quote} but found ${quote}${actualTurnId}${quote}`,
+									},
+								})}\n`,
+							),
+						);
+						return;
+					}
 					stdout.emit(
 						"data",
 						Buffer.from(
 							`${JSON.stringify({
 								id: msg.id,
 								result: { turnId: msg.params?.expectedTurnId },
+							})}\n`,
+						),
+					);
+				} else if (msg.method === "turn/interrupt") {
+					interruptCounter++;
+					const requestedTurnId = String(msg.params?.turnId ?? "");
+					if (opts.interruptError && interruptCounter === 1) {
+						stdout.emit(
+							"data",
+							Buffer.from(
+								`${JSON.stringify({
+									id: msg.id,
+									error: { message: opts.interruptError },
+								})}\n`,
+							),
+						);
+						return;
+					}
+					if (opts.interruptMismatch && interruptCounter === 1) {
+						stdout.emit(
+							"data",
+							Buffer.from(
+								`${JSON.stringify({
+									id: msg.id,
+									error: {
+										message: `expected active turn id ${opts.interruptMismatch.expectedTurnId} but found ${opts.interruptMismatch.actualTurnId}`,
+									},
+								})}\n`,
+							),
+						);
+						return;
+					}
+					stdout.emit(
+						"data",
+						Buffer.from(`${JSON.stringify({ id: msg.id, result: {} })}\n`),
+					);
+					opts.onTurnInterruptResponse?.(requestedTurnId);
+				} else if (msg.method === "thread/read") {
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify({
+								id: msg.id,
+								result: {
+									thread: {
+										id: opts.threadId ?? "thread-1",
+										turns: opts.threadReadTurns ?? [],
+									},
+								},
 							})}\n`,
 						),
 					);
@@ -1666,6 +1859,37 @@ function makeFakeSessionProc(
 						),
 					);
 				} else if (msg.method === "thread/compact/start") {
+					stdout.emit(
+						"data",
+						Buffer.from(`${JSON.stringify({ id: msg.id, result: {} })}\n`),
+					);
+				} else if (msg.method === "thread/realtime/start") {
+					if (opts.deferRealtimeStart) return;
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify(
+								opts.realtimeStartError
+									? {
+											id: msg.id,
+											error: { message: opts.realtimeStartError },
+										}
+									: { id: msg.id, result: {} },
+							)}\n`,
+						),
+					);
+				} else if (msg.method === "thread/realtime/appendSpeech") {
+					stdout.emit(
+						"data",
+						Buffer.from(`${JSON.stringify({ id: msg.id, result: {} })}\n`),
+					);
+				} else if (msg.method === "thread/realtime/stop") {
+					stdout.emit(
+						"data",
+						Buffer.from(`${JSON.stringify({ id: msg.id, result: {} })}\n`),
+					);
+					opts.onRealtimeStopResponse?.(String(msg.params?.threadId ?? ""));
+				} else if (msg.method === "thread/unsubscribe") {
 					stdout.emit(
 						"data",
 						Buffer.from(`${JSON.stringify({ id: msg.id, result: {} })}\n`),
@@ -1760,6 +1984,16 @@ function makeFakeSessionProc(
 							})}\n`,
 						),
 					);
+				} else if (
+					msg.method === "experimentalFeature/list" ||
+					msg.method === "permissionProfile/list" ||
+					msg.method === "collaborationMode/list" ||
+					msg.method === "hooks/list"
+				) {
+					stdout.emit(
+						"data",
+						Buffer.from(`${JSON.stringify({ id: msg.id, result: {} })}\n`),
+					);
 				} else if (msg.method === "mcpServerStatus/list") {
 					stdout.emit(
 						"data",
@@ -1837,14 +2071,31 @@ function threadStartParams(writes: string[]): Array<Record<string, unknown>> {
 		.map((m) => m.params as Record<string, unknown>);
 }
 
+const activeFakeTurnIds = new WeakMap<FakeProc, string>();
+
 function emitSessionNotification(
 	proc: FakeProc,
 	method: string,
 	params: Record<string, unknown>,
 ): void {
+	const nestedTurn =
+		params.turn && typeof params.turn === "object"
+			? (params.turn as Record<string, unknown>)
+			: {};
+	const turnFromNotification =
+		typeof params.turnId === "string"
+			? params.turnId
+			: typeof nestedTurn.id === "string"
+				? nestedTurn.id
+				: null;
+	if (turnFromNotification) activeFakeTurnIds.set(proc, turnFromNotification);
+	const normalizedParams =
+		method.startsWith("item/") && typeof params.turnId !== "string"
+			? { ...params, turnId: activeFakeTurnIds.get(proc) ?? "turn-1" }
+			: params;
 	proc.stdout.emit(
 		"data",
-		Buffer.from(`${JSON.stringify({ method, params })}\n`),
+		Buffer.from(`${JSON.stringify({ method, params: normalizedParams })}\n`),
 	);
 }
 
@@ -1917,6 +2168,1033 @@ function baseCodexParams(
 		...overrides,
 	};
 }
+
+describe("CodexAgentSession — realtime backend readiness", () => {
+	beforeEach(() => {
+		__resetCodexAppServersForTesting();
+		resetCodexRealtimeBackendStatus();
+		vi.mocked(spawn).mockReset();
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+		resetCodexRealtimeBackendStatus();
+	});
+
+	it("marks the backend available only after Codex returns an SDP answer", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const onEvent = vi.fn();
+		const session = new CodexProvider().query(
+			baseCodexParams({ codexRealtimeEnabled: true }),
+		);
+
+		await session.startRealtime?.({
+			mode: "live",
+			sdp: "v=0\r\no=hlid",
+			onEvent,
+		});
+		expect(getCodexRealtimeBackendStatus()).toEqual({});
+		emitSessionNotification(proc, "thread/realtime/started", {
+			threadId: "thread-1",
+			realtimeSessionId: "provider-realtime-1",
+		});
+		expect(onEvent).toHaveBeenCalledWith({
+			type: "started",
+			realtimeSessionId: "provider-realtime-1",
+		});
+
+		emitSessionNotification(proc, "thread/realtime/sdp", {
+			threadId: "thread-1",
+			sdp: "v=0\r\no=codex",
+		});
+		expect(getCodexRealtimeBackendStatus()).toMatchObject({
+			available: true,
+			observedAt: expect.any(Number),
+		});
+		expect(onEvent).toHaveBeenCalledWith({
+			type: "sdp",
+			sdp: "v=0\r\no=codex",
+		});
+		session.cancel();
+	});
+
+	it("does not turn an unfinished dictation tail into an ordinary chat delegation", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const session = new CodexProvider().query(
+			baseCodexParams({ codexRealtimeEnabled: true }),
+		);
+
+		await session.startRealtime?.({
+			mode: "dictation",
+			sdp: "v=0\r\no=hlid",
+			onEvent: vi.fn(),
+		});
+
+		const start = writes
+			.map(
+				(value) =>
+					JSON.parse(value) as {
+						method?: string;
+						params?: Record<string, unknown>;
+					},
+			)
+			.find((message) => message.method === "thread/realtime/start");
+		expect(start?.params).toMatchObject({
+			clientManagedHandoffs: true,
+			flushTranscriptTailOnSessionEnd: false,
+			prompt:
+				"Transcribe the user's speech faithfully. Do not answer or act on it.",
+		});
+		session.cancel();
+	});
+
+	it("starts dictation in a hardened ephemeral thread without resuming Raven", async () => {
+		const { proc, writes } = makeFakeSessionProc({
+			threadId: "dictation-thread-1",
+			configReadResult: {
+				config: {
+					features: { plugins: false, apps: false, hooks: false },
+					mcp_servers: Object.fromEntries([
+						["filesystem", { command: "unsafe" }],
+						["server.with.dot", { url: "https://unsafe.example" }],
+						["slash/name", { command: "unsafe" }],
+						['quote"name', { command: "unsafe" }],
+						["__proto__", { command: "unsafe" }],
+					]),
+				},
+			},
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const canUseTool = vi.fn().mockResolvedValue({ behavior: "allow" });
+		const session = new CodexProvider().query(
+			baseCodexParams({
+				codexRealtimeEnabled: true,
+				sessionId: "raven-main-thread",
+				serviceTier: "priority",
+				canUseTool,
+			}),
+		);
+
+		await expect(
+			session.startRealtime?.({
+				mode: "dictation",
+				sdp: "v=0\r\no=hlid",
+				onEvent: vi.fn(),
+			}),
+		).resolves.toEqual({ providerSessionId: "dictation-thread-1" });
+
+		expect(spawn).toHaveBeenCalledTimes(1);
+		expect(spawn).toHaveBeenCalledWith(
+			"/usr/bin/codex",
+			[
+				"--enable",
+				"realtime_conversation",
+				"-c",
+				"features.plugins=false",
+				"-c",
+				"features.apps=false",
+				"-c",
+				"features.hooks=false",
+				"app-server",
+				"--listen",
+				"stdio://",
+			],
+			expect.any(Object),
+		);
+		const methods = writeMethods(writes);
+		expect(methods).not.toContain("thread/resume");
+		expect(methods.indexOf("config/read")).toBeLessThan(
+			methods.indexOf("thread/start"),
+		);
+		expect(threadStartParams(writes)).toEqual([
+			expect.objectContaining({
+				cwd: "/tmp/codex-test",
+				model: "gpt-5.4",
+				serviceTier: "priority",
+				ephemeral: true,
+				approvalPolicy: "never",
+				sandbox: "read-only",
+				environments: [],
+				dynamicTools: [],
+				selectedCapabilityRoots: [],
+				developerInstructions: expect.stringContaining(
+					"Do not use tools, read or write files, access the network",
+				),
+				config: expect.objectContaining({
+					web_search: "disabled",
+					agents: { enabled: false },
+					features: {
+						realtime_conversation: true,
+						multi_agent: false,
+						multi_agent_v2: false,
+						apps: false,
+						plugins: false,
+						tool_suggest: false,
+						unified_exec: false,
+						hooks: false,
+						goals: false,
+						memories: false,
+						image_generation: false,
+						standalone_web_search: false,
+						deferred_executor: false,
+						request_permissions_tool: false,
+						token_budget: false,
+						current_time_reminder: false,
+						shell_tool: false,
+					},
+					orchestrator: {
+						skills: { enabled: false },
+						mcp: { enabled: false },
+					},
+					tools: {
+						update_plan: { enabled: false },
+						experimental_request_user_input: { enabled: false },
+					},
+					skills: { include_instructions: false },
+					notify: [],
+					include_apps_instructions: false,
+					include_collaboration_mode_instructions: false,
+					include_environment_context: false,
+					mcp_servers: expect.objectContaining(
+						Object.fromEntries([
+							["filesystem", { enabled: false }],
+							["server.with.dot", { enabled: false }],
+							["slash/name", { enabled: false }],
+							['quote"name', { enabled: false }],
+							["__proto__", { enabled: false }],
+						]),
+					),
+				}),
+			}),
+		]);
+		expect(canUseTool).not.toHaveBeenCalled();
+
+		session.cancel();
+		expect(proc.kill).not.toHaveBeenCalled();
+		expect(
+			writes
+				.map((value) => JSON.parse(value) as Record<string, unknown>)
+				.find((message) => message.method === "thread/unsubscribe"),
+		).toEqual({
+			id: expect.any(Number),
+			method: "thread/unsubscribe",
+			params: { threadId: "dictation-thread-1" },
+		});
+		await expect(session[Symbol.asyncIterator]().next()).resolves.toEqual({
+			value: undefined,
+			done: true,
+		});
+	});
+
+	it("fails dictation without relaunching when WSL startup is broken", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const failed = makeFakeSessionProc();
+		failed.proc.stdin.write = vi.fn((data: string) => {
+			failed.writes.push(data);
+		});
+		vi.mocked(spawn).mockReturnValue(failed.proc as never);
+		const onEvent = vi.fn();
+		const session = new CodexProvider().query(
+			baseCodexParams({
+				codexRealtimeEnabled: true,
+				sessionId: "raven-old-thread",
+			}),
+		);
+
+		const starting = session.startRealtime?.({
+			mode: "dictation",
+			sdp: "v=0\r\no=wsl-retry",
+			onEvent,
+		});
+		if (!starting) throw new Error("Expected Codex realtime start support");
+		expect(writeMethods(failed.writes)).toEqual(["initialize"]);
+		failed.proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`\0${[..."Error code: Wsl/Service/E_UNEXPECTED"].join("\0")}\0\r\0\n\0`,
+			),
+		);
+		failed.proc.emit("exit", 255);
+
+		await expect(starting).rejects.toThrow(
+			"Save any work running in WSL, restart WSL, then try again",
+		);
+		expect(spawn).toHaveBeenCalledOnce();
+		expect(writeMethods(failed.writes)).toEqual(["initialize"]);
+		expect(writeMethods(failed.writes)).not.toContain("thread/resume");
+		expect(onEvent).not.toHaveBeenCalled();
+		expect(getCodexRealtimeBackendStatus()).toEqual({});
+
+		session.cancel();
+		warn.mockRestore();
+	});
+
+	it("uses the same WSL recovery guidance for an ordinary typed turn", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const failed = makeFakeSessionProc();
+		failed.proc.stdin.write = vi.fn((data: string) => {
+			failed.writes.push(data);
+		});
+		vi.mocked(spawn).mockReturnValue(failed.proc as never);
+		const session = new CodexProvider().query(
+			baseCodexParams({
+				codexRealtimeEnabled: true,
+				sessionId: "raven-old-thread",
+			}),
+		);
+
+		const sending = session.send("Typed turn after dictation");
+		failed.proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`\0${[..."Error code: Wsl/Service/E_UNEXPECTED"].join("\0")}\0\r\0\n\0`,
+			),
+		);
+		failed.proc.emit("exit", 255);
+
+		await expect(sending).rejects.toThrow(
+			"Save any work running in WSL, restart WSL, then try again",
+		);
+		expect(spawn).toHaveBeenCalledOnce();
+		expect(writeMethods(failed.writes)).toEqual(["initialize"]);
+		expect(writeMethods(failed.writes)).not.toContain("thread/resume");
+
+		session.cancel();
+		warn.mockRestore();
+	});
+
+	it("fails closed when launch-time dictation isolation is not effective", async () => {
+		const { proc, writes } = makeFakeSessionProc({
+			configReadResult: {
+				config: {
+					features: { plugins: true, apps: false, hooks: false },
+					mcp_servers: {},
+				},
+			},
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const session = new CodexProvider().query(
+			baseCodexParams({ codexRealtimeEnabled: true }),
+		);
+
+		await expect(
+			session.startRealtime?.({
+				mode: "dictation",
+				sdp: "v=0\r\no=hlid",
+				onEvent: vi.fn(),
+			}),
+		).rejects.toThrow(
+			"Codex dictation isolation failed: feature plugins is not confirmed disabled",
+		);
+		expect(writeMethods(writes)).not.toContain("thread/start");
+		expect(proc.kill).not.toHaveBeenCalled();
+	});
+
+	it("routes only exact dictation realtime events and rejects every server request", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const onEvent = vi.fn();
+		const canUseTool = vi.fn().mockResolvedValue({ behavior: "allow" });
+		const session = new CodexProvider().query(
+			baseCodexParams({ codexRealtimeEnabled: true, canUseTool }),
+		);
+		const events = session[Symbol.asyncIterator]();
+
+		await session.startRealtime?.({
+			mode: "dictation",
+			sdp: "v=0\r\no=hlid",
+			onEvent,
+		});
+		emitSessionNotification(proc, "thread/realtime/transcript/done", {
+			threadId: "another-thread",
+			role: "user",
+			text: "Wrong thread",
+		});
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			item: { id: "ordinary-tool", type: "commandExecution" },
+		});
+		emitSessionNotification(proc, "thread/realtime/transcript/done", {
+			threadId: "thread-1",
+			role: "user",
+			text: "Exact transcript",
+		});
+		expect(onEvent).toHaveBeenCalledTimes(1);
+		expect(onEvent).toHaveBeenCalledWith({
+			type: "transcript_done",
+			role: "user",
+			text: "Exact transcript",
+		});
+
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 91,
+					method: "item/tool/call",
+					params: {
+						threadId: "thread-1",
+						tool: "forbidden",
+					},
+				})}\n`,
+			),
+		);
+		await vi.waitFor(() => {
+			const response = writes
+				.map((value) => JSON.parse(value) as Record<string, unknown>)
+				.find((message) => message.id === 91);
+			expect(response).toEqual({
+				id: 91,
+				error: { message: "Codex dictation does not allow server requests" },
+			});
+		});
+		expect(canUseTool).not.toHaveBeenCalled();
+
+		emitSessionNotification(proc, "thread/realtime/error", {
+			threadId: "thread-1",
+			message: "isolated realtime failure",
+		});
+		expect(onEvent).toHaveBeenLastCalledWith({
+			type: "error",
+			message: "isolated realtime failure",
+		});
+		expect(proc.kill).not.toHaveBeenCalled();
+		session.cancel();
+		expect(proc.kill).not.toHaveBeenCalled();
+		expect(writeMethods(writes)).toContain("thread/unsubscribe");
+		await expect(events.next()).resolves.toEqual({
+			value: undefined,
+			done: true,
+		});
+	});
+
+	it("retains the realtime handler for final transcript and closed notifications after the stop response", async () => {
+		let markStopResponse = () => {};
+		const stopResponse = new Promise<void>((resolve) => {
+			markStopResponse = resolve;
+		});
+		const { proc, writes } = makeFakeSessionProc({
+			onRealtimeStopResponse: markStopResponse,
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const onEvent = vi.fn();
+		const session = new CodexProvider().query(
+			baseCodexParams({ codexRealtimeEnabled: true }),
+		);
+
+		await session.startRealtime?.({
+			mode: "dictation",
+			sdp: "v=0\r\no=hlid",
+			onEvent,
+		});
+		const stopping = session.stopRealtime?.();
+		if (!stopping) throw new Error("Expected Codex realtime stop support");
+		await stopResponse;
+		let settled = false;
+		void stopping.then(() => {
+			settled = true;
+		});
+		await Promise.resolve();
+		expect(settled).toBe(false);
+
+		emitSessionNotification(proc, "thread/realtime/transcript/done", {
+			threadId: "thread-1",
+			role: "user",
+			text: "Tail transcript",
+		});
+		expect(onEvent).toHaveBeenLastCalledWith({
+			type: "transcript_done",
+			role: "user",
+			text: "Tail transcript",
+		});
+		emitSessionNotification(proc, "thread/realtime/closed", {
+			threadId: "thread-1",
+			reason: "requested",
+		});
+		await stopping;
+
+		expect(onEvent.mock.calls).toEqual([
+			[
+				{
+					type: "transcript_done",
+					role: "user",
+					text: "Tail transcript",
+				},
+			],
+			[{ type: "closed", reason: "requested" }],
+		]);
+		emitSessionNotification(proc, "thread/realtime/transcript/done", {
+			threadId: "thread-1",
+			role: "user",
+			text: "Too late",
+		});
+		expect(onEvent).toHaveBeenCalledTimes(2);
+		expect(proc.kill).not.toHaveBeenCalled();
+		expect(writeMethods(writes)).toContain("thread/unsubscribe");
+	});
+
+	it("bounds the stop wait when Codex omits the closed notification", async () => {
+		vi.useFakeTimers();
+		let markStopResponse = () => {};
+		const stopResponse = new Promise<void>((resolve) => {
+			markStopResponse = resolve;
+		});
+		const { proc } = makeFakeSessionProc({
+			onRealtimeStopResponse: markStopResponse,
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const onEvent = vi.fn();
+		const session = new CodexProvider().query(
+			baseCodexParams({ codexRealtimeEnabled: true }),
+		);
+
+		await session.startRealtime?.({
+			mode: "dictation",
+			sdp: "v=0\r\no=hlid",
+			onEvent,
+		});
+		const stopping = session.stopRealtime?.();
+		if (!stopping) throw new Error("Expected Codex realtime stop support");
+		await stopResponse;
+		let settled = false;
+		void stopping.then(() => {
+			settled = true;
+		});
+
+		await vi.advanceTimersByTimeAsync(1_999);
+		expect(settled).toBe(false);
+		await vi.advanceTimersByTimeAsync(1);
+		await stopping;
+		expect(settled).toBe(true);
+
+		emitSessionNotification(proc, "thread/realtime/transcript/done", {
+			threadId: "thread-1",
+			role: "user",
+			text: "Too late",
+		});
+		expect(onEvent).not.toHaveBeenCalled();
+		expect(proc.kill).not.toHaveBeenCalled();
+	});
+
+	it("releases the ephemeral thread when dictation start fails", async () => {
+		const { proc, writes } = makeFakeSessionProc({
+			realtimeStartError: "dictation could not start",
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const session = new CodexProvider().query(
+			baseCodexParams({ codexRealtimeEnabled: true }),
+		);
+
+		await expect(
+			session.startRealtime?.({
+				mode: "dictation",
+				sdp: "v=0\r\no=hlid",
+				onEvent: vi.fn(),
+			}),
+		).rejects.toThrow("dictation could not start");
+		expect(proc.kill).not.toHaveBeenCalled();
+		expect(writeMethods(writes)).toContain("thread/unsubscribe");
+		session.cancel();
+		expect(proc.kill).not.toHaveBeenCalled();
+	});
+
+	it("stops and cleans up dictation while isolated startup is still pending", async () => {
+		const { proc, writes } = makeFakeSessionProc({ deferConfigRead: true });
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const session = new CodexProvider().query(
+			baseCodexParams({ codexRealtimeEnabled: true }),
+		);
+		const starting = session.startRealtime?.({
+			mode: "dictation",
+			sdp: "v=0\r\no=hlid",
+			onEvent: vi.fn(),
+		});
+		if (!starting) throw new Error("Expected Codex realtime start support");
+		const startFailure = expect(starting).rejects.toThrow(
+			"Codex dictation stopped",
+		);
+		await vi.waitFor(() => {
+			expect(writeMethods(writes)).toContain("config/read");
+		});
+
+		await session.stopRealtime?.();
+		await startFailure;
+		expect(writeMethods(writes)).not.toContain("thread/start");
+		expect(proc.kill).not.toHaveBeenCalled();
+	});
+
+	it("stops dictation while realtime startup is pending without killing the shared process", async () => {
+		const { proc, writes } = makeFakeSessionProc({ deferRealtimeStart: true });
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const session = new CodexProvider().query(
+			baseCodexParams({ codexRealtimeEnabled: true }),
+		);
+		const starting = session.startRealtime?.({
+			mode: "dictation",
+			sdp: "v=0\r\no=hlid",
+			onEvent: vi.fn(),
+		});
+		if (!starting) throw new Error("Expected Codex realtime start support");
+		await vi.waitFor(() => {
+			expect(writeMethods(writes)).toContain("thread/realtime/start");
+		});
+
+		await session.stopRealtime?.();
+		await expect(starting).rejects.toThrow("Codex dictation stopped");
+		expect(writeMethods(writes)).toContain("thread/realtime/stop");
+		expect(writeMethods(writes)).toContain("thread/unsubscribe");
+		expect(proc.kill).not.toHaveBeenCalled();
+	});
+
+	it("does not tear down the shared process after a dictation RPC times out", async () => {
+		vi.useFakeTimers();
+		const { proc, writes } = makeFakeSessionProc({ deferConfigRead: true });
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const session = new CodexProvider().query(
+			baseCodexParams({ codexRealtimeEnabled: true }),
+		);
+		const starting = session.startRealtime?.({
+			mode: "dictation",
+			sdp: "v=0\r\no=hlid",
+			onEvent: vi.fn(),
+		});
+		if (!starting) throw new Error("Expected Codex realtime start support");
+		const startFailure = expect(starting).rejects.toThrow(
+			"Codex app-server config/read timed out after 15000ms",
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(writeMethods(writes)).toContain("config/read");
+
+		await vi.advanceTimersByTimeAsync(15_000);
+		await startFailure;
+		expect(proc.kill).not.toHaveBeenCalled();
+		session.cancel();
+		expect(proc.kill).not.toHaveBeenCalled();
+	});
+
+	it("reports a shared dictation process exit without re-killing the dead child", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const onEvent = vi.fn();
+		const session = new CodexProvider().query(
+			baseCodexParams({ codexRealtimeEnabled: true }),
+		);
+
+		await session.startRealtime?.({
+			mode: "dictation",
+			sdp: "v=0\r\no=hlid",
+			onEvent,
+		});
+		proc.emit("exit", 17);
+
+		expect(onEvent).toHaveBeenCalledWith({
+			type: "error",
+			message: "Codex app-server exited (code 17)",
+		});
+		expect(proc.kill).not.toHaveBeenCalled();
+		session.cancel();
+		expect(proc.kill).not.toHaveBeenCalled();
+	});
+
+	it("never falls through to Raven when speech arrives after dictation cleanup", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const session = new CodexProvider().query(
+			baseCodexParams({
+				codexRealtimeEnabled: true,
+				sessionId: "raven-main-thread",
+			}),
+		);
+
+		await session.startRealtime?.({
+			mode: "dictation",
+			sdp: "v=0\r\no=hlid",
+			onEvent: vi.fn(),
+		});
+		emitSessionNotification(proc, "thread/realtime/closed", {
+			threadId: "thread-1",
+			reason: "provider closed",
+		});
+
+		await expect(session.appendRealtimeSpeech?.("late speech")).rejects.toThrow(
+			"No active Codex dictation session",
+		);
+		expect(spawn).toHaveBeenCalledTimes(1);
+		expect(writeMethods(writes)).not.toContain("thread/resume");
+		expect(threadStartParams(writes)).toHaveLength(1);
+		expect(writeMethods(writes)).toContain("thread/unsubscribe");
+		expect(proc.kill).not.toHaveBeenCalled();
+	});
+
+	it("reuses the hardened process with fresh ephemeral threads for dictation and read-aloud", async () => {
+		let realtimeProc: FakeProc | null = null;
+		const reusable = makeFakeSessionProc({
+			uniqueThreadIds: true,
+			onRealtimeStopResponse: (threadId) => {
+				if (!realtimeProc) return;
+				emitSessionNotification(realtimeProc, "thread/realtime/closed", {
+					threadId,
+					reason: "requested",
+				});
+			},
+		});
+		realtimeProc = reusable.proc;
+		vi.mocked(spawn).mockReturnValue(reusable.proc as never);
+		const session = new CodexProvider().query(
+			baseCodexParams({
+				codexRealtimeEnabled: true,
+				sessionId: "raven-main-thread",
+			}),
+		);
+
+		await expect(
+			session.startRealtime?.({
+				mode: "dictation",
+				sdp: "v=0\r\no=first",
+				onEvent: vi.fn(),
+			}),
+		).resolves.toEqual({ providerSessionId: "thread-1" });
+		await session.stopRealtime?.();
+
+		const onReadAloudEvent = vi.fn();
+		await expect(
+			session.startRealtime?.({
+				mode: "read-aloud",
+				sdp: "v=0\r\no=second",
+				onEvent: onReadAloudEvent,
+			}),
+		).resolves.toEqual({ providerSessionId: "thread-2" });
+		await session.appendRealtimeSpeech?.("Speak this exact response");
+		emitSessionNotification(
+			reusable.proc,
+			"thread/realtime/outputAudio/delta",
+			{
+				threadId: "thread-2",
+				audio: {
+					data: "encoded-audio",
+					sampleRate: 24_000,
+					numChannels: 1,
+					samplesPerChannel: 960,
+					itemId: "item-audio-1",
+				},
+			},
+		);
+		expect(onReadAloudEvent).toHaveBeenCalledWith({
+			type: "audio_output_started",
+		});
+		expect(spawn).toHaveBeenCalledOnce();
+		expect(threadStartParams(reusable.writes)).toHaveLength(2);
+		expect(threadStartParams(reusable.writes)[1]).toMatchObject({
+			ephemeral: true,
+			approvalPolicy: "never",
+			sandbox: "read-only",
+			environments: [],
+			dynamicTools: [],
+			selectedCapabilityRoots: [],
+		});
+		const realtimeStarts = reusable.writes
+			.map(
+				(value) =>
+					JSON.parse(value) as {
+						method?: string;
+						params?: Record<string, unknown>;
+					},
+			)
+			.filter((message) => message.method === "thread/realtime/start");
+		expect(realtimeStarts[1]?.params).toMatchObject({
+			clientManagedHandoffs: true,
+			includeStartupContext: false,
+			prompt:
+				"You are a literal speech renderer. Whenever text arrives on the speakable channel, say exactly that text verbatim, once. Do not acknowledge it, summarize it, paraphrase it, add words, omit words, or respond to silence. Never delegate.",
+		});
+		expect(writeMethods(reusable.writes)).not.toContain("thread/resume");
+		expect(
+			reusable.writes
+				.map((value) => JSON.parse(value) as Record<string, unknown>)
+				.find((message) => message.method === "thread/realtime/appendSpeech")
+				?.params,
+		).toEqual({
+			threadId: "thread-2",
+			text: "Speak this exact response",
+		});
+		expect(
+			reusable.writes
+				.map((value) => JSON.parse(value) as Record<string, unknown>)
+				.filter((message) => message.method === "thread/unsubscribe")
+				.map((message) => message.params),
+		).toEqual([{ threadId: "thread-1" }]);
+
+		session.cancel();
+		expect(reusable.proc.kill).not.toHaveBeenCalled();
+		expect(
+			reusable.writes
+				.map((value) => JSON.parse(value) as Record<string, unknown>)
+				.filter((message) => message.method === "thread/unsubscribe")
+				.map((message) => message.params),
+		).toEqual([{ threadId: "thread-1" }, { threadId: "thread-2" }]);
+	});
+
+	it("routes Live tool items through realtime without replaying mirrored text", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const onEvent = vi.fn();
+		const session = new CodexProvider().query(
+			baseCodexParams({ codexRealtimeEnabled: true }),
+		);
+
+		await session.startRealtime?.({
+			mode: "live",
+			sdp: "v=0\r\no=hlid",
+			onEvent,
+		});
+		const events = session[Symbol.asyncIterator]();
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "session_start",
+		});
+		const dormantNext = events.next();
+
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			turnId: "live-turn-1",
+			item: {
+				id: "live-tool-1",
+				type: "dynamicToolCall",
+				namespace: "hlid",
+				tool: "hlid_help",
+				arguments: { topic: "voice_audio" },
+			},
+		});
+		expect(onEvent).toHaveBeenCalledWith({
+			type: "activity",
+			event: {
+				type: "tool_start",
+				toolId: "live-tool-1",
+				name: "hlid_help",
+				input: { topic: "voice_audio" },
+			},
+		});
+
+		const callsAfterStart = onEvent.mock.calls.length;
+		emitSessionNotification(proc, "item/agentMessage/delta", {
+			threadId: "thread-1",
+			itemId: "mirrored-live-text",
+			delta: "Do not replay me",
+		});
+		emitSessionNotification(proc, "item/completed", {
+			threadId: "thread-1",
+			turnId: "live-turn-1",
+			item: {
+				id: "mirrored-live-text",
+				type: "agentMessage",
+				text: "Do not replay me",
+			},
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "live-turn-1", status: "completed" },
+		});
+		expect(onEvent).toHaveBeenCalledTimes(callsAfterStart);
+
+		emitSessionNotification(proc, "item/completed", {
+			threadId: "thread-1",
+			turnId: "live-turn-1",
+			item: {
+				id: "live-tool-1",
+				type: "dynamicToolCall",
+				namespace: "hlid",
+				tool: "hlid_help",
+				status: "completed",
+				success: true,
+				contentItems: [{ type: "inputText", text: "available" }],
+			},
+		});
+		expect(onEvent).toHaveBeenLastCalledWith({
+			type: "activity",
+			event: {
+				type: "tool_result",
+				toolId: "live-tool-1",
+				content: "available",
+			},
+		});
+		session.cancel();
+		await expect(dormantNext).resolves.toMatchObject({ done: true });
+	});
+
+	it("settles a hidden Live turn and keeps its late completion out of the next query", async () => {
+		const liveTurnId = "019fd230-1111-7000-8000-000000000001";
+		const freshTurnId = "019fd230-2222-7000-8000-000000000002";
+		let realtimeProc: FakeProc | null = null;
+		const fake = makeFakeSessionProc({
+			threadReadTurns: [{ id: liveTurnId, status: "inProgress" }],
+			turnIds: [freshTurnId],
+			onRealtimeStopResponse: () => {
+				if (!realtimeProc) return;
+				emitSessionNotification(realtimeProc, "thread/realtime/closed", {
+					threadId: "thread-1",
+					reason: "requested",
+				});
+			},
+		});
+		realtimeProc = fake.proc;
+		vi.mocked(spawn).mockReturnValue(fake.proc as never);
+		const onEvent = vi.fn();
+		const session = new CodexProvider().query(
+			baseCodexParams({ codexRealtimeEnabled: true }),
+		);
+		const events = session[Symbol.asyncIterator]();
+
+		await session.startRealtime?.({
+			mode: "live",
+			sdp: "v=0\r\no=hlid",
+			onEvent,
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "session_start",
+		});
+		emitSessionNotification(fake.proc, "turn/started", {
+			threadId: "thread-1",
+			turn: { id: liveTurnId },
+		});
+
+		await session.stopRealtime?.();
+		const requests = fake.writes.map(
+			(value) =>
+				JSON.parse(value) as {
+					method?: string;
+					params?: Record<string, unknown>;
+				},
+		);
+		expect(requests.map((request) => request.method)).toEqual(
+			expect.arrayContaining([
+				"thread/realtime/stop",
+				"thread/read",
+				"turn/interrupt",
+			]),
+		);
+		expect(
+			requests.find((request) => request.method === "turn/interrupt")?.params,
+		).toEqual({ threadId: "thread-1", turnId: liveTurnId });
+
+		await session.send("typed after Live");
+		emitSessionNotification(fake.proc, "turn/started", {
+			threadId: "thread-1",
+			turn: { id: freshTurnId },
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "provider_turn_id",
+			id: freshTurnId,
+		});
+		emitSessionNotification(fake.proc, "item/agentMessage/delta", {
+			threadId: "thread-1",
+			turnId: liveTurnId,
+			itemId: "late-live-message",
+			delta: "late live text",
+		});
+		emitSessionNotification(fake.proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: liveTurnId, status: "interrupted" },
+		});
+		emitSessionNotification(fake.proc, "item/agentMessage/delta", {
+			threadId: "thread-1",
+			turnId: freshTurnId,
+			itemId: "fresh-message",
+			delta: "fresh text",
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "text_delta",
+			text: "fresh text",
+		});
+		emitSessionNotification(fake.proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: freshTurnId, status: "completed" },
+		});
+		expect(await nextDoneEvent(events)).toMatchObject({
+			type: "done",
+			stopReason: "completed",
+		});
+		session.cancel();
+	});
+
+	it("routes Live child completion into the visible subagent card", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const onEvent = vi.fn();
+		const session = new CodexProvider().query(
+			baseCodexParams({ codexRealtimeEnabled: true }),
+		);
+
+		await session.startRealtime?.({
+			mode: "live",
+			sdp: "v=0\r\no=hlid",
+			onEvent,
+		});
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			turnId: "live-turn-1",
+			item: {
+				id: "spawn-live-1",
+				type: "collabAgentToolCall",
+				tool: "spawnAgent",
+				prompt: "Inspect the workspace",
+			},
+		});
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			turnId: "live-turn-1",
+			item: {
+				id: "spawn-live-1",
+				type: "subAgentActivity",
+				agentThreadId: "child-live-1",
+				kind: "started",
+			},
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "child-live-1",
+			turn: { id: "child-turn-1", status: "completed" },
+		});
+
+		expect(onEvent).toHaveBeenLastCalledWith({
+			type: "activity",
+			event: {
+				type: "tool_update",
+				toolId: "spawn-live-1",
+				subagent: expect.objectContaining({
+					agentId: "child-live-1",
+					status: "completed",
+					endedAtMs: expect.any(Number),
+				}),
+			},
+		});
+		session.cancel();
+	});
+
+	it("records a recognized account rejection and returns the safe error", async () => {
+		const { proc } = makeFakeSessionProc({
+			realtimeStartError:
+				'unexpected status 404 Not Found: {"detail":"Not Found"}, url: https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas',
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const session = new CodexProvider().query(
+			baseCodexParams({ codexRealtimeEnabled: true }),
+		);
+
+		await expect(
+			session.startRealtime?.({
+				mode: "live",
+				sdp: "v=0\r\no=hlid",
+				onEvent: vi.fn(),
+			}),
+		).rejects.toThrow(CODEX_REALTIME_ACCOUNT_UNAVAILABLE);
+		expect(getCodexRealtimeBackendStatus()).toMatchObject({
+			available: false,
+			reason: CODEX_REALTIME_ACCOUNT_UNAVAILABLE,
+			observedAt: expect.any(Number),
+		});
+		session.cancel();
+	});
+});
 
 function configureVisualizeBridgeProcesses(): {
 	skillPath: string;
@@ -3144,7 +4422,7 @@ describe("CodexAgentSession — commands", () => {
 						method: "mcpServer/elicitation/request",
 						params: {
 							threadId: "thread-1",
-							turnId: "turn-2",
+							turnId: "turn-1",
 							serverName: "node_repl",
 							mode: "form",
 							message: "Allow Codex to use Calculator?",
@@ -3202,7 +4480,7 @@ describe("CodexAgentSession — commands", () => {
 			emitSessionNotification(child.proc, "turn/completed", {
 				threadId: "thread-1",
 				turn: {
-					id: "turn-2",
+					id: "turn-1",
 					status: "completed",
 					itemsView: "summary",
 					items: [
@@ -3462,6 +4740,198 @@ describe("CodexAgentSession — steering", () => {
 				},
 			],
 		});
+		session.cancel();
+	});
+
+	it.each([
+		true,
+		false,
+	])("adopts Codex's actual active turn and retries a mismatched steer once (quoted=%s)", async (quoted) => {
+		const submittedTurnId = "019fd22c-e9d6-7171-9a9b-90d764f8c1b5";
+		const actualTurnId = "019fd22c-5fc5-7b43-bfd4-b9b4dea60360";
+		const { proc, writes } = makeFakeSessionProc({
+			turnIds: [submittedTurnId],
+			steerMismatch: {
+				expectedTurnId: submittedTurnId,
+				actualTurnId,
+				quoted,
+			},
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(baseCodexParams());
+
+		await session.send("start the work");
+		await expect(session.steer?.("focus on recovery")).resolves.toBeUndefined();
+		await expect(session.steer?.("keep going")).resolves.toBeUndefined();
+
+		const expectedTurnIds = writes
+			.map(
+				(value) =>
+					JSON.parse(value) as {
+						method?: string;
+						params?: Record<string, unknown>;
+					},
+			)
+			.filter((value) => value.method === "turn/steer")
+			.map((value) => value.params?.expectedTurnId);
+		expect(expectedTurnIds).toEqual([
+			submittedTurnId,
+			actualTurnId,
+			actualTurnId,
+		]);
+		session.cancel();
+	});
+});
+
+describe("CodexAgentSession — native turn recovery", () => {
+	beforeEach(() => {
+		__resetCodexAppServersForTesting();
+	});
+
+	it("adopts a raced resumed orphan and ignores both stale turn ids after the fresh turn starts", async () => {
+		const orphanTurnId = "019fd22b-d1c6-70ff-8c0a-2929843e8971";
+		const actualOrphanTurnId = "019fd22c-5fc5-7b43-bfd4-b9b4dea60360";
+		const freshTurnId = "019fd22d-1111-7000-8000-000000000001";
+		const canUseTool = vi.fn().mockResolvedValue({ behavior: "allow" });
+		const { proc, writes } = makeFakeSessionProc({
+			resumeTurns: [{ id: orphanTurnId, status: "inProgress" }],
+			interruptMismatch: {
+				expectedTurnId: orphanTurnId,
+				actualTurnId: actualOrphanTurnId,
+			},
+			turnIds: [freshTurnId],
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({ sessionId: "thread-1", canUseTool }),
+		);
+		const events = session[Symbol.asyncIterator]();
+
+		await session.send("new typed prompt");
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "session_start",
+			sessionId: "thread-1",
+		});
+		const requests = writes.map(
+			(value) =>
+				JSON.parse(value) as {
+					method?: string;
+					params?: Record<string, unknown>;
+				},
+		);
+		expect(requests.map((request) => request.method)).toEqual(
+			expect.arrayContaining(["thread/resume", "turn/interrupt", "turn/start"]),
+		);
+		expect(
+			requests
+				.filter((request) => request.method === "turn/interrupt")
+				.map((request) => request.params),
+		).toEqual([
+			{ threadId: "thread-1", turnId: orphanTurnId },
+			{ threadId: "thread-1", turnId: actualOrphanTurnId },
+		]);
+		expect(
+			requests.findIndex((request) => request.method === "turn/interrupt"),
+		).toBeLessThan(
+			requests.findIndex((request) => request.method === "turn/start"),
+		);
+
+		emitSessionNotification(proc, "turn/started", {
+			threadId: "thread-1",
+			turn: { id: freshTurnId },
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "provider_turn_id",
+			id: freshTurnId,
+		});
+
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 991,
+					method: "item/commandExecution/requestApproval",
+					params: {
+						threadId: "thread-1",
+						turnId: orphanTurnId,
+						itemId: "stale-command",
+					},
+				})}\n`,
+			),
+		);
+		await vi.waitFor(() => {
+			const response = writes
+				.map((value) => JSON.parse(value))
+				.find((value) => value.id === 991);
+			expect(response?.result).toEqual({ decision: "decline" });
+		});
+		expect(canUseTool).not.toHaveBeenCalled();
+
+		emitSessionNotification(proc, "item/agentMessage/delta", {
+			threadId: "thread-1",
+			turnId: orphanTurnId,
+			itemId: "stale-message",
+			delta: "stale text",
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: orphanTurnId, status: "completed" },
+		});
+		emitSessionNotification(proc, "item/agentMessage/delta", {
+			threadId: "thread-1",
+			turnId: actualOrphanTurnId,
+			itemId: "actual-stale-message",
+			delta: "actual stale text",
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: actualOrphanTurnId, status: "completed" },
+		});
+		await expect(
+			session.steer?.("still on the fresh turn"),
+		).resolves.toBeUndefined();
+		const steer = writes
+			.map((value) => JSON.parse(value) as Record<string, unknown>)
+			.find((value) => value.method === "turn/steer");
+		expect((steer?.params as Record<string, unknown>)?.expectedTurnId).toBe(
+			freshTurnId,
+		);
+
+		emitSessionNotification(proc, "item/agentMessage/delta", {
+			threadId: "thread-1",
+			turnId: freshTurnId,
+			itemId: "fresh-message",
+			delta: "fresh text",
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "text_delta",
+			text: "fresh text",
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: freshTurnId, status: "completed" },
+		});
+		expect(await nextDoneEvent(events)).toMatchObject({ type: "done" });
+	});
+
+	it("continues when a resumed in-progress snapshot has already settled", async () => {
+		const orphanTurnId = "019fd22b-d1c6-70ff-8c0a-2929843e8971";
+		const { proc, writes } = makeFakeSessionProc({
+			resumeTurns: [{ id: orphanTurnId, status: "inProgress" }],
+			interruptError: "no active turn to interrupt",
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({ sessionId: "thread-1" }),
+		);
+
+		await expect(session.send("continue normally")).resolves.toBeUndefined();
+		expect(writeMethods(writes)).toEqual(
+			expect.arrayContaining(["turn/interrupt", "turn/start"]),
+		);
 		session.cancel();
 	});
 });
@@ -4863,7 +6333,7 @@ describe("CodexAgentSession — notifications", () => {
 		});
 		emitSessionNotification(proc, "turn/completed", {
 			threadId: "thread-1",
-			turn: { id: "parent-turn", status: "completed" },
+			turn: { id: "turn-1", status: "completed" },
 		});
 		expect(await nextSessionEvent(events)).toMatchObject({ type: "usage" });
 		expect(await nextSessionEvent(events)).toEqual({
@@ -5091,7 +6561,7 @@ describe("CodexAgentSession — notifications", () => {
 		});
 		emitSessionNotification(proc, "turn/completed", {
 			threadId: "thread-1",
-			turn: { id: "parent-turn", status: "completed" },
+			turn: { id: "turn-1", status: "completed" },
 		});
 		expect(await nextSessionEvent(events)).toMatchObject({ type: "usage" });
 
@@ -5160,7 +6630,7 @@ describe("CodexAgentSession — notifications", () => {
 			emitSessionNotification(proc, "turn/completed", {
 				threadId: "thread-1",
 				turn: {
-					id: "parent-turn",
+					id: "turn-1",
 					status: "completed",
 					usage: { inputTokens: 12, outputTokens: 3 },
 				},

@@ -24,7 +24,6 @@ import { loadToken, verifyToken } from "../lib/token";
 import { AcpProvider } from "./acpProvider";
 import { AcpRegistry } from "./acpRegistry";
 import { createAcpRouteHandler } from "./acpRoutes";
-import { computeAllowedAgentRealPaths } from "./agentPaths";
 import type { AgentProvider, McpServerStatus } from "./agentProvider";
 import { buildApiIndex } from "./apiIndex";
 import { handleAttachmentRoute } from "./attachmentRoutes";
@@ -50,12 +49,18 @@ import {
 	closeIdleCodexAppServers,
 	listCodexAppServers,
 	prewarmCodexAppServer,
+	waitForCodexAppServerTerminations,
 } from "./codexAppServer";
 import {
 	CodexProvider,
+	codexLaunchConfig,
 	invalidateCodexHostCapabilities,
 	refreshCodexHostCapabilities,
 } from "./codexProvider";
+import {
+	getCodexRealtimeBackendStatus,
+	resetCodexRealtimeBackendStatus,
+} from "./codexRealtimeStatus";
 import { loadConfig } from "./config";
 import { formatPersistentConsoleMessage } from "./consoleLog";
 import {
@@ -306,7 +311,14 @@ const acpCatalog = await acpRegistry.catalog(config);
 const cliProxy = new CliProxyManager(config.cliproxy);
 const providers = new Map<string, AgentProvider>([
 	["claude", new ClaudeProvider()],
-	["codex", new CodexProvider()],
+	[
+		"codex",
+		new CodexProvider({
+			realtimeEnabled: () => loadConfig().voice.codex_live_mode === true,
+			metadataExecutable: () =>
+				loadConfig().codex.executable ?? resolveCodexExecutable(),
+		}),
+	],
 ]);
 function cliProxyProviders(connection: CliProxyConnection): AgentProvider[] {
 	const routed: AgentProvider[] = [
@@ -391,6 +403,8 @@ const handleProviderAppRoute = createProviderAppRouteHandler({
 	},
 });
 let cliProxyAccountsKey = JSON.stringify(cliProxy.status().accounts);
+let activeCodexRealtimeEnabled = config.voice.codex_live_mode === true;
+let activeCodexExecutable = config.codex.executable ?? resolveCodexExecutable();
 let providerCatalogRevision = getDataRevisions().providers;
 subscribeDataRevisions((revisions) => {
 	if (revisions.providers !== providerCatalogRevision) {
@@ -539,6 +553,7 @@ async function cleanupForShutdown(): Promise<void> {
 	shellPool.closeAll();
 	closeAllCodexAppServers();
 	closeUmbod();
+	await waitForCodexAppServerTerminations();
 	await projectPreviewManager.closeAll();
 }
 
@@ -760,6 +775,14 @@ function handleCodexRoute(url: URL, req: Request): Response | null {
 	}
 	const closed = listCodexAppServers().filter((server) => server.alive).length;
 	closeAllCodexAppServers();
+	const codex = providers.get("codex");
+	if (codex) {
+		modelCatalog.register(codex, { refreshIdentity: true });
+		providerCapabilityCatalog.register(codex);
+	}
+	providerCatalogSnapshot.invalidate();
+	invalidateCodexHostCapabilities();
+	bumpDataRevision("providers");
 	return Response.json({ ok: true, closed });
 }
 
@@ -888,8 +911,15 @@ async function handleConflictRoute(
 	}
 }
 
-async function syncCliProxyRuntime(): Promise<void> {
+let cliProxyRuntimeSyncTail: Promise<void> = Promise.resolve();
+
+async function applyCliProxyRuntimeConfig(): Promise<void> {
 	const latest = loadConfig();
+	const nextCodexExecutable =
+		latest.codex.executable ?? resolveCodexExecutable();
+	const codexRealtimeChanged =
+		(latest.voice.codex_live_mode === true) !== activeCodexRealtimeEnabled;
+	const codexExecutableChanged = nextCodexExecutable !== activeCodexExecutable;
 	await cliProxy.syncConfig(latest.cliproxy);
 	await cliProxy.syncWslAgents(
 		(latest.agents ?? []).map((agent) => agent.path),
@@ -928,6 +958,47 @@ async function syncCliProxyRuntime(): Promise<void> {
 		bumpDataRevision("providers");
 	}
 	pool.syncConfig(latest);
+	if (codexRealtimeChanged || codexExecutableChanged) {
+		activeCodexRealtimeEnabled = latest.voice.codex_live_mode === true;
+		activeCodexExecutable = nextCodexExecutable;
+		resetCodexRealtimeBackendStatus();
+		const codex = providers.get("codex");
+		if (codex) {
+			providerCapabilityCatalog.register(codex);
+			if (codexExecutableChanged) {
+				modelCatalog.register(codex, { refreshIdentity: true });
+			}
+		}
+		providerCatalogSnapshot.invalidate();
+		bumpDataRevision("providers");
+
+		if (nextCodexExecutable) {
+			const launch = codexLaunchConfig({
+				cwd: latest.vault.path || process.cwd(),
+				executable: nextCodexExecutable,
+				enableRealtime: activeCodexRealtimeEnabled,
+			});
+			void prewarmCodexAppServer(
+				launch.appServer,
+				CODEX_STARTUP_WARM_TIMEOUT_MS,
+			).catch((error) => {
+				console.warn(
+					"[codex app-server] runtime config warm-up failed:",
+					error instanceof Error ? error.message : String(error),
+				);
+			});
+		}
+	}
+}
+
+function syncCliProxyRuntime(): Promise<void> {
+	const pending = cliProxyRuntimeSyncTail.then(() =>
+		applyCliProxyRuntimeConfig(),
+	);
+	// Keep the queue usable after a failed sync while returning the original
+	// rejection to the caller that owns this attempt.
+	cliProxyRuntimeSyncTail = pending.catch(() => {});
+	return pending;
 }
 
 function syncCliProxyAccountCatalogs(): void {
@@ -1029,6 +1100,7 @@ const VOICE_ROUTE_HANDLERS: Record<string, ServerRouteHandler> = {
 		return Response.json({
 			status: voice.status(),
 			models: await voice.models(refresh),
+			codexRealtimeBackend: getCodexRealtimeBackendStatus(),
 		});
 	},
 	"POST /voice/sync": async () => {
@@ -1307,8 +1379,16 @@ if (isCompiled) {
 	const warmups: Promise<void>[] = [];
 	const codexExecutable = config.codex.executable ?? resolveCodexExecutable();
 	if (codexExecutable) {
+		const codexLaunch = codexLaunchConfig({
+			cwd: config.vault.path || process.cwd(),
+			executable: codexExecutable,
+			enableRealtime: config.voice.codex_live_mode === true,
+		});
 		warmups.push(
-			prewarmCodexAppServer(codexExecutable, CODEX_STARTUP_WARM_TIMEOUT_MS)
+			prewarmCodexAppServer(
+				codexLaunch.appServer,
+				CODEX_STARTUP_WARM_TIMEOUT_MS,
+			)
 				.then((warmed) => {
 					if (!warmed) {
 						console.warn(
@@ -1326,7 +1406,6 @@ if (isCompiled) {
 	}
 	const vaultPath = config.vault.path || process.cwd();
 	const claudeExecutable = resolveClaudeExecutable();
-	const allowedAgentRealPaths = computeAllowedAgentRealPaths(config);
 	const claudeScopes = [
 		{
 			cacheCwd: vaultPath,
@@ -1349,7 +1428,9 @@ if (isCompiled) {
 					agentMode: scope.agentMode,
 					agentCwd: scope.agentCwd,
 					vaultPath,
-					allowedAgentRealPaths,
+					// Startup metadata has no attachments/resources, so it does not need
+					// canonical agent roots. Avoid probing every WSL UNC share here.
+					allowedAgentRealPaths: [],
 					claudeExecutable,
 					safeAttachments: [],
 				});

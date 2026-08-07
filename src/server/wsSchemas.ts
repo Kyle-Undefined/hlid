@@ -218,6 +218,7 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 	z.strictObject({
 		type: z.literal("realtime_start"),
 		session_id: id,
+		request_id: id.optional(),
 		mode: z.enum(["dictation", "live", "read-aloud"]),
 		sdp: z
 			.string()
@@ -229,6 +230,8 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 	z.strictObject({
 		type: z.literal("realtime_speak"),
 		session_id: id,
+		request_id: id,
+		mode: z.literal("read-aloud"),
 		text: z
 			.string()
 			.trim()
@@ -238,6 +241,8 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 	z.strictObject({
 		type: z.literal("realtime_stop"),
 		session_id: id,
+		request_id: id.optional(),
+		mode: z.enum(["dictation", "live", "read-aloud"]).optional(),
 	}),
 	z.strictObject({
 		type: z.literal("sync_mcp_list"),

@@ -61,6 +61,14 @@ export type ToolEventMessage = {
 	name: string;
 	input: unknown;
 	id: string;
+	/** Exact Raven Live assistant bubble that owns this tool call. */
+	realtime_utterance_id?: string;
+	/** Hlid-owned Live generation used to discard only matching partial rows. */
+	realtime_session_id?: string;
+	/** Durable assistant sequence shared with the eventual Live transcript row. */
+	transcript_seq?: number;
+	/** Live tool rows currently share the same no-fork boundary as speech rows. */
+	fork_supported?: boolean;
 	/** Populated client-side once a matching tool_result arrives or from history. */
 	result?: string;
 	/** Historical result is only a preview and should be fetched when expanded. */
@@ -77,12 +85,18 @@ export type ToolUpdateMessage = {
 	type: "tool_update";
 	id: string;
 	subagent: SubagentSnapshot;
+	realtime_utterance_id?: string;
+	realtime_session_id?: string;
+	transcript_seq?: number;
 };
 
 export type ToolActivityUpdateMessage = {
 	type: "tool_activity_update";
 	id: string;
 	taskActivity: TaskActivity;
+	realtime_utterance_id?: string;
+	realtime_session_id?: string;
+	transcript_seq?: number;
 };
 
 export type ToolResultMessage = {
@@ -95,6 +109,9 @@ export type ToolResultMessage = {
 	/** Session scope used to hydrate a compacted live result on expansion. */
 	detailSessionId?: string;
 	isError?: boolean;
+	realtime_utterance_id?: string;
+	realtime_session_id?: string;
+	transcript_seq?: number;
 };
 
 export type DoneMessage = {
@@ -790,6 +807,7 @@ export type RealtimeEventMessage =
 	| {
 			type: "realtime_state";
 			session_id: string;
+			request_id?: string;
 			mode: RealtimeMode;
 			state: "starting" | "connected" | "closed";
 			reason?: string;
@@ -797,13 +815,44 @@ export type RealtimeEventMessage =
 	| {
 			type: "realtime_sdp";
 			session_id: string;
+			request_id?: string;
 			mode: RealtimeMode;
 			sdp: string;
 	  }
 	| {
+			type: "realtime_audio";
+			session_id: string;
+			request_id?: string;
+			mode: RealtimeMode;
+			state: "started";
+	  }
+	| {
 			type: "realtime_transcript";
 			session_id: string;
-			mode: RealtimeMode;
+			request_id?: string;
+			mode: "live";
+			role: "user" | "assistant";
+			text: string;
+			done: boolean;
+			/** Stable Hlid-owned identity for one role-bearing realtime utterance. */
+			utterance_id: string;
+			/** Hlid-owned identity for one realtime start generation. */
+			realtime_session_id: string;
+			/** Provider-owned realtime call identity, when Codex reports one. */
+			provider_realtime_session_id?: string;
+			/** Durable Raven transcript position reserved for this utterance. */
+			transcript_seq: number;
+			/** Persisted messages.id, present only after a final transcript is durable. */
+			db_id?: number;
+			source: "codex_realtime";
+			/** Live rows lack a provider-native turn cutoff in the current protocol. */
+			fork_supported: boolean;
+	  }
+	| {
+			type: "realtime_transcript";
+			session_id: string;
+			request_id?: string;
+			mode: "dictation" | "read-aloud";
 			role: string;
 			text: string;
 			done: boolean;
@@ -811,6 +860,7 @@ export type RealtimeEventMessage =
 	| {
 			type: "realtime_error";
 			session_id: string;
+			request_id?: string;
 			mode: RealtimeMode;
 			message: string;
 	  };
@@ -1137,6 +1187,7 @@ export type ClientRealtimeMessage =
 	| {
 			type: "realtime_start";
 			session_id: string;
+			request_id?: string;
 			mode: RealtimeMode;
 			sdp: string;
 			voice?: string;
@@ -1145,11 +1196,16 @@ export type ClientRealtimeMessage =
 	| {
 			type: "realtime_speak";
 			session_id: string;
+			request_id: string;
+			mode: "read-aloud";
 			text: string;
 	  }
 	| {
 			type: "realtime_stop";
 			session_id: string;
+			request_id?: string;
+			/** Lets the server acknowledge teardown even after the live entry retired. */
+			mode?: RealtimeMode;
 	  };
 
 export type ClientSyncMcpListMessage = {

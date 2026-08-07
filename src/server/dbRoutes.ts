@@ -922,8 +922,13 @@ async function forkSession({
 
 	const liveEntry = pool?.findByDbSessionId(sourceId) ?? pool?.get(sourceId);
 	const hasRunningTurn = liveEntry?.manager.getStatus().state === "running";
-	if (hasRunningTurn || hasLiveTerminalSession(terminalPool, sourceId)) {
-		return new Response("Cannot fork a running session — stop it first", {
+	const hasRealtime = liveEntry?.manager.hasActiveRealtime?.() === true;
+	if (
+		hasRunningTurn ||
+		hasRealtime ||
+		hasLiveTerminalSession(terminalPool, sourceId)
+	) {
+		return new Response("Cannot fork an active session. Stop it first.", {
 			status: 409,
 		});
 	}
@@ -950,6 +955,12 @@ async function forkSession({
 		}
 		forkMessage = message;
 		throughSeq = message.seq;
+	}
+	if (forkMessage?.forkSupported === false) {
+		return new Response(
+			"This realtime transcript does not expose a native Codex fork boundary",
+			{ status: 422 },
+		);
 	}
 
 	const forkCapability =

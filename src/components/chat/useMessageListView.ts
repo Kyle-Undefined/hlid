@@ -93,6 +93,48 @@ export function groupAcceptedSteers(messages: ChatMessage[]): {
 }
 
 /**
+ * Codex Live can speak a short progress update, run a tool, then continue
+ * speaking without the person taking another turn. Those are distinct durable
+ * provider utterances, but they are one conversational response in Raven.
+ * Keep the transcript records intact and fold only adjacent assistant
+ * utterances from the same Live session for presentation.
+ */
+export function groupConsecutiveLiveAssistantMessages(
+	messages: ChatMessage[],
+): ChatMessage[] {
+	const grouped: ChatMessage[] = [];
+	for (const message of messages) {
+		const previous = grouped.at(-1);
+		if (
+			message.role !== "assistant" ||
+			message.source !== "codex_realtime" ||
+			!message.realtimeSessionId ||
+			previous?.role !== "assistant" ||
+			previous.source !== "codex_realtime" ||
+			previous.realtimeSessionId !== message.realtimeSessionId
+		) {
+			grouped.push(message);
+			continue;
+		}
+
+		const text = [previous.text, message.text]
+			.filter((part) => part.trim().length > 0)
+			.join("\n\n");
+		grouped[grouped.length - 1] = {
+			...previous,
+			text,
+			toolEvents: [...previous.toolEvents, ...message.toolEvents],
+			streaming: message.streaming,
+			// A visual group represents multiple persisted transcript rows, so it
+			// cannot safely be used as a single branch target.
+			dbId: undefined,
+			forkSupported: false,
+		};
+	}
+	return grouped;
+}
+
+/**
  * Derives everything MessageList needs to render from the raw transcript +
  * queue: the bounded "load older" window, which permission cards fold into
  * their tool block, per-queued-message running/queued state, and queued
@@ -137,9 +179,11 @@ export function useMessageListView({
 	// page expands this window by the number of rows the server actually returned;
 	// later live messages then displace the oldest rendered rows instead of growing
 	// the mounted transcript forever.
-	const { messages: groupedMessages, acceptedSteersByAssistantId } = useMemo(
-		() => groupAcceptedSteers(messages),
-		[messages],
+	const { messages: steerGroupedMessages, acceptedSteersByAssistantId } =
+		useMemo(() => groupAcceptedSteers(messages), [messages]);
+	const groupedMessages = useMemo(
+		() => groupConsecutiveLiveAssistantMessages(steerGroupedMessages),
+		[steerGroupedMessages],
 	);
 	const hiddenHistoryCount = isCursorLoadReserved
 		? 0

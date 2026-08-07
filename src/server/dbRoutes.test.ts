@@ -1137,6 +1137,31 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		expect(res.status).toBe(422);
 	});
 
+	it("returns 422 for a Live row without a native fork boundary", async () => {
+		mockGetSessionById.mockResolvedValue({
+			...sampleRow,
+			provider_id: "codex",
+		});
+		mockGetMessageForFork.mockResolvedValue({
+			sessionId: "abc-123",
+			seq: 3,
+			role: "assistant",
+			sdkUuid: null,
+			providerTurnId: null,
+			forkSupported: false,
+		});
+		const res = await handleDbRoute(
+			makeUrl("/db/session/fork"),
+			forkRequest({ id: "abc-123", messageId: 42 }),
+			makePool(),
+		);
+		if (!res) throw new Error("Expected a Response, got null");
+		expect(res.status).toBe(422);
+		expect(await res.text()).toContain(
+			"does not expose a native Codex fork boundary",
+		);
+	});
+
 	it("resolves messageId to a native uuid and forwards a typed message cutoff", async () => {
 		mockGetSessionById.mockResolvedValue({
 			...sampleRow,
@@ -1232,7 +1257,10 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 	it("returns 409 when the source session has a running turn", async () => {
 		const pool = makePool({
 			findByDbSessionId: vi.fn().mockReturnValue({
-				manager: { getStatus: () => ({ state: "running" }) },
+				manager: {
+					getStatus: () => ({ state: "running" }),
+					hasActiveRealtime: () => false,
+				},
 			}),
 		});
 		const res = await handleDbRoute(
@@ -1258,7 +1286,10 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 			.mockResolvedValue({ sessionId: "native-forked-id" });
 		const pool = makePool({
 			findByDbSessionId: vi.fn().mockReturnValue({
-				manager: { getStatus: () => ({ state: "idle" }) },
+				manager: {
+					getStatus: () => ({ state: "idle" }),
+					hasActiveRealtime: () => false,
+				},
 			}),
 			getProvider: vi.fn().mockReturnValue({
 				providerId: "claude",
@@ -1281,6 +1312,25 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		if (!res) throw new Error("Expected a Response, got null");
 		expect(res.status).toBe(200);
 		expect(mockForkSession).toHaveBeenCalledOnce();
+	});
+
+	it("returns 409 while Raven Live is active", async () => {
+		const pool = makePool({
+			findByDbSessionId: vi.fn().mockReturnValue({
+				manager: {
+					getStatus: () => ({ state: "idle" }),
+					hasActiveRealtime: () => true,
+				},
+			}),
+		});
+		const res = await handleDbRoute(
+			makeUrl("/db/session/fork"),
+			forkRequest({ id: "live-session" }),
+			pool,
+		);
+		if (!res) throw new Error("Expected a Response, got null");
+		expect(res.status).toBe(409);
+		expect(mockGetSessionById).not.toHaveBeenCalled();
 	});
 
 	it("returns 404 when the source session doesn't exist", async () => {

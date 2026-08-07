@@ -32,6 +32,17 @@ async function responseError(response: Response): Promise<string> {
 	}
 }
 
+async function responseWarning(response: Response): Promise<string | null> {
+	try {
+		const body = (await response.json()) as { warning?: unknown };
+		return typeof body.warning === "string" && body.warning.trim()
+			? body.warning.trim()
+			: null;
+	} catch {
+		return null;
+	}
+}
+
 export function useSettingsForm(
 	initial: SettingsInitial,
 	onSaved: () => Promise<void>,
@@ -56,6 +67,7 @@ export function useSettingsForm(
 	const [dirty, setDirty] = useState(false);
 	const [savedMsg, setSavedMsg] = useState<"saved" | "restart" | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const [warning, setWarning] = useState<string | null>(null);
 	const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const mountedRef = useRef(true);
@@ -100,6 +112,7 @@ export function useSettingsForm(
 		savingRef.current = true;
 		setSaving(true);
 		setError(null);
+		setWarning(null);
 		setSavedMsg(null);
 		if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
 		const revision = revisionRef.current;
@@ -116,11 +129,13 @@ export function useSettingsForm(
 				body: JSON.stringify(config),
 			});
 			if (!response.ok) throw new Error(await responseError(response));
+			const runtimeWarning = await responseWarning(response);
 			if (!mountedRef.current) return;
 			if (revision === revisionRef.current) {
 				dirtyRef.current = false;
 				setDirty(false);
 			}
+			setWarning(runtimeWarning);
 			setSavedMsg(requiresRestart ? "restart" : "saved");
 			if (!requiresRestart) {
 				savedTimerRef.current = setTimeout(() => setSavedMsg(null), 3000);
@@ -249,6 +264,7 @@ export function useSettingsForm(
 		dirty,
 		savedMsg,
 		error,
+		warning,
 		save,
 	};
 }

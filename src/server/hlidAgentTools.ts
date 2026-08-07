@@ -20,6 +20,7 @@ import {
 } from "../lib/hlidContext";
 import type { ProviderInfo } from "../lib/providerTypes";
 import type { AgentToolPayload } from "./agentToolResult";
+import { loadConfig } from "./config";
 import { buildHlidApiDiscoveryResponse } from "./hlidApiDiscovery";
 import {
 	cancelHlidAgentSchema,
@@ -862,8 +863,15 @@ export type HlidAgentToolContext = HlidOperatingContext;
 async function liveHlidOperatingContext(
 	context: HlidAgentToolContext,
 ): Promise<HlidAgentToolContext> {
+	let codexRealtimeEnabled = context.codexRealtimeEnabled;
+	try {
+		codexRealtimeEnabled = loadConfig().voice.codex_live_mode === true;
+	} catch {
+		// The provider-captured value remains a safe fallback during config I/O.
+	}
 	let live: HlidAgentToolContext = {
 		...context,
+		codexRealtimeEnabled,
 		registeredHlidTools: HLID_AGENT_TOOL_SPECS.map((spec) => spec.name),
 	};
 	if (context.sessionId) {
@@ -895,7 +903,7 @@ async function liveHlidOperatingContext(
 			// Persisted selections are best-effort; provider context remains usable.
 		}
 	}
-	const [providerCatalog, voiceSnapshot, ttsSnapshot] = await Promise.all([
+	const [providerCatalog, voiceRuntime, ttsSnapshot] = await Promise.all([
 		(async () => {
 			try {
 				const providerParams = new URLSearchParams({
@@ -922,8 +930,15 @@ async function liveHlidOperatingContext(
 				if (!response.ok) return undefined;
 				const body = (await response.json()) as {
 					status?: HlidOperatingContext["voiceSnapshot"];
+					codexRealtimeBackend?: {
+						available?: unknown;
+						reason?: unknown;
+					};
 				};
-				return body.status;
+				return {
+					status: body.status,
+					backend: body.codexRealtimeBackend,
+				};
 			} catch {
 				return undefined;
 			}
@@ -941,6 +956,20 @@ async function liveHlidOperatingContext(
 			}
 		})(),
 	]);
+	if (voiceRuntime) {
+		live = {
+			...live,
+			codexRealtimeBackendAvailable:
+				typeof voiceRuntime.backend?.available === "boolean"
+					? voiceRuntime.backend.available
+					: undefined,
+			codexRealtimeBackendReason:
+				typeof voiceRuntime.backend?.reason === "string" &&
+				voiceRuntime.backend.reason.trim()
+					? voiceRuntime.backend.reason.trim()
+					: undefined,
+		};
+	}
 	const providerSnapshot = providerCatalog?.find(
 		(provider) => provider.id === live.providerId,
 	);
@@ -957,7 +986,7 @@ async function liveHlidOperatingContext(
 		],
 		...(providerSnapshot ? { providerSnapshot } : {}),
 		...(providerCatalog ? { providerCatalog } : {}),
-		...(voiceSnapshot ? { voiceSnapshot } : {}),
+		...(voiceRuntime?.status ? { voiceSnapshot: voiceRuntime.status } : {}),
 		...(ttsSnapshot ? { ttsSnapshot } : {}),
 	};
 }

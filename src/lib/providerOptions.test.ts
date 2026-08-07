@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+	codexRealtimeAvailability,
 	configuredVaultModel,
 	defaultEffortFor,
 	effortOptionsFor,
 	modelInputAvailability,
 	modelOptions,
 	normalizeEffortForPlanMode,
+	providerAdvertisesInput,
 	resolveActiveProviderId,
 } from "./providerOptions";
 import type { ProviderInfo } from "./providerTypes";
@@ -93,6 +95,109 @@ describe("modelInputAvailability", () => {
 			available: false,
 			modelLabel: "Sonnet",
 			reason: "Sonnet has not reported audio input support.",
+		});
+	});
+
+	it("reports an unavailable provider before inspecting cached model data", () => {
+		expect(
+			modelInputAvailability(
+				{ ...codex, available: false, unavailableReason: "Codex is offline" },
+				"audio-model",
+				"audio",
+			),
+		).toEqual({ available: false, reason: "Codex is offline" });
+	});
+});
+
+describe("providerAdvertisesInput", () => {
+	it("finds support in any selectable catalog model", () => {
+		const providerWithAudio: ProviderInfo = {
+			...provider,
+			models: [
+				...(provider.models ?? []),
+				{
+					value: "audio-model",
+					label: "Audio Model",
+					inputModalities: ["text", "audio"],
+				},
+			],
+		};
+		expect(providerAdvertisesInput(providerWithAudio, "audio")).toEqual({
+			available: true,
+			modelLabel: "Audio Model",
+		});
+	});
+
+	it("does not advertise a hidden-only input capability", () => {
+		expect(
+			providerAdvertisesInput(
+				{
+					...provider,
+					models: [
+						{
+							value: "hidden-audio",
+							label: "Hidden Audio",
+							hidden: true,
+							inputModalities: ["audio"],
+						},
+					],
+				},
+				"audio",
+			),
+		).toEqual({
+			available: false,
+			reason: "No selectable Claude model advertises audio input.",
+		});
+	});
+});
+
+describe("codexRealtimeAvailability", () => {
+	const realtimeProvider: ProviderInfo = {
+		id: "codex",
+		label: "Codex",
+		available: true,
+		capabilities: { realtime: true },
+	};
+
+	it("requires preview and a realtime-capable Codex provider", () => {
+		expect(
+			codexRealtimeAvailability(false, realtimeProvider, { available: true }),
+		).toEqual({
+			available: false,
+			reason: "Enable Codex realtime Developer Preview to use Codex dictation.",
+		});
+		expect(
+			codexRealtimeAvailability(
+				true,
+				{ ...realtimeProvider, capabilities: { realtime: false } },
+				{ available: true },
+			),
+		).toEqual({
+			available: false,
+			reason:
+				"The current Codex provider does not advertise realtime conversation support.",
+		});
+	});
+
+	it("treats an unknown backend as viable until first use", () => {
+		expect(
+			codexRealtimeAvailability(true, realtimeProvider, undefined),
+		).toEqual({
+			available: true,
+			reason:
+				"Account and backend support will be confirmed when Codex dictation starts.",
+		});
+	});
+
+	it("uses a known backend failure as the unavailable reason", () => {
+		expect(
+			codexRealtimeAvailability(true, realtimeProvider, {
+				available: false,
+				reason: "Realtime is unavailable for this account",
+			}),
+		).toEqual({
+			available: false,
+			reason: "Realtime is unavailable for this account",
 		});
 	});
 });

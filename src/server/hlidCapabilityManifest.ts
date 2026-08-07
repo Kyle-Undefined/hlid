@@ -46,6 +46,7 @@ type ManifestState = {
 	selectedModel: SelectedModel | undefined;
 	modelAudioAvailable: boolean | undefined;
 	providerRealtime: boolean;
+	providerRealtimeFeature: boolean | undefined;
 	hostCapabilities:
 		| Record<string, { label: string; available: boolean; reason?: string }>
 		| undefined;
@@ -54,9 +55,11 @@ type ManifestState = {
 type VoiceState = {
 	localDictationAvailability: Availability;
 	localReadAloudAvailability: Availability;
+	codexDictationAvailability: Availability;
 	nativeAudioAvailability: Availability;
 	ravenLiveAvailability: Availability;
 	voiceAvailability: Availability;
+	realtimeConfigured: boolean;
 	realtimeAvailable: boolean;
 	realtimeClientReady: boolean;
 };
@@ -192,6 +195,25 @@ function hostCapabilitiesSnapshot(
 	);
 }
 
+function providerExperimentalFeatureEnabled(
+	provider: ProviderInfo | undefined,
+	feature: string,
+): boolean | undefined {
+	const snapshot = provider?.capabilitySnapshot;
+	if (!snapshot || snapshot.status === "stale") return undefined;
+	const capability = snapshot.capabilities.find(
+		(item) =>
+			item.id ===
+			providerCapabilityId(provider.id, "experimental-feature", feature),
+	);
+	if (!capability || capability.availability === "conditional")
+		return undefined;
+	return (
+		capability.availability === "available" ||
+		capability.availability === "provider-native"
+	);
+}
+
 function buildManifestState(
 	context: HlidOperatingContext,
 	maxOrchestrationTargetCatalogChars: number,
@@ -236,6 +258,10 @@ function buildManifestState(
 		selectedModel,
 		modelAudioAvailable: selectedModel?.inputModalities?.includes("audio"),
 		providerRealtime: provider?.capabilities?.realtime === true,
+		providerRealtimeFeature: providerExperimentalFeatureEnabled(
+			provider,
+			"realtime_conversation",
+		),
 		hostCapabilities: hostCapabilitiesSnapshot(provider),
 	};
 }
@@ -272,31 +298,46 @@ function buildVoiceState(state: ManifestState): VoiceState {
 			: state.modelAudioAvailable === true
 				? "provider-native"
 				: "conditional";
-	const realtimeClientReady =
+	const realtimeConfigured =
+		state.providerId === "codex" &&
+		state.provider?.available !== false &&
 		state.providerRealtime &&
-		state.context.codexRealtimeEnabled === true &&
-		state.modelAudioAvailable === true;
+		state.context.codexRealtimeEnabled === true;
+	const realtimeClientReady =
+		realtimeConfigured &&
+		(state.providerRealtimeFeature === true ||
+			state.context.codexRealtimeBackendAvailable === true);
 	const realtimeAvailable =
-		realtimeClientReady && state.context.codexRealtimeBackendAvailable === true;
-	const ravenLiveAvailability: Availability = realtimeAvailable
-		? "provider-native"
-		: realtimeClientReady ||
-				(state.providerRealtime &&
-					state.context.codexRealtimeEnabled === true &&
-					state.modelAudioAvailable === undefined)
-			? "conditional"
-			: "unavailable";
+		realtimeConfigured && state.context.codexRealtimeBackendAvailable === true;
+	const codexDictationAvailability: Availability = !realtimeConfigured
+		? "unavailable"
+		: state.context.codexRealtimeBackendAvailable === false
+			? "unavailable"
+			: realtimeAvailable
+				? "provider-native"
+				: "conditional";
+	const ravenLiveAvailability: Availability = !realtimeConfigured
+		? "unavailable"
+		: realtimeAvailable
+			? "provider-native"
+			: state.providerRealtimeFeature === false ||
+					state.context.codexRealtimeBackendAvailable === false
+				? "unavailable"
+				: "conditional";
 	return {
 		localDictationAvailability,
 		localReadAloudAvailability,
+		codexDictationAvailability,
 		nativeAudioAvailability,
 		ravenLiveAvailability,
 		voiceAvailability: combinedAvailability([
 			localDictationAvailability,
 			localReadAloudAvailability,
+			codexDictationAvailability,
 			nativeAudioAvailability,
 			ravenLiveAvailability,
 		]),
+		realtimeConfigured,
 		realtimeAvailable,
 		realtimeClientReady,
 	};
@@ -426,7 +467,10 @@ function buildRegistrySnapshot(state: ManifestState) {
 		features: {
 			codexRealtimeEnabled: context.codexRealtimeEnabled ?? false,
 			codexRealtimeBackendAvailable:
-				context.codexRealtimeBackendAvailable ?? false,
+				context.codexRealtimeBackendAvailable ?? null,
+			codexRealtimeBackendReason: context.codexRealtimeBackendReason
+				? boundedValue(context.codexRealtimeBackendReason, 300)
+				: null,
 		},
 		orchestrationTargets: state.orchestrationTargets,
 	};
@@ -680,6 +724,28 @@ function localReadAloudMode(
 	};
 }
 
+function codexDictationMode(
+	state: ManifestState,
+	voice: VoiceState,
+): CapabilityMode {
+	return {
+		owner: "provider",
+		availability: voice.codexDictationAvailability,
+		providerGuidance: providerGuidance(state, "provider-capability-catalog"),
+		summary: !voice.realtimeConfigured
+			? "Codex realtime dictation requires the native Codex provider, its realtime capability, and the Hlid preview setting. The selected coding model's audio modalities do not gate dictation."
+			: state.context.codexRealtimeBackendAvailable === false
+				? boundedValue(
+						state.context.codexRealtimeBackendReason ??
+							"Codex realtime dictation is unavailable for the signed-in account or realtime backend.",
+						300,
+					)
+				: voice.realtimeAvailable
+					? "Codex realtime dictation is available and returns editable text to the composer. It is independent of the selected coding model's audio modalities."
+					: "Codex realtime dictation is ready to try and returns editable text to the composer. Account backend support is confirmed on first use, independently of the selected coding model's audio modalities.",
+	};
+}
+
 function nativeAudioMode(
 	state: ManifestState,
 	voice: VoiceState,
@@ -690,10 +756,10 @@ function nativeAudioMode(
 		providerGuidance: providerGuidance(state, "provider-model-catalog"),
 		summary:
 			state.modelAudioAvailable === true
-				? "The selected provider model advertises native audio input."
+				? "Talk to Codex is available because the selected provider model advertises native audio input."
 				: state.modelAudioAvailable === false
-					? "The selected provider model does not advertise native audio input."
-					: "Native audio input depends on the selected provider model's current modalities.",
+					? "Talk to Codex is unavailable because the selected provider model does not advertise native audio input."
+					: "Talk to Codex is a normal provider audio turn whose availability depends on the selected model's current modalities.",
 	};
 }
 
@@ -706,10 +772,16 @@ function ravenLiveMode(
 		availability: voice.ravenLiveAvailability,
 		providerGuidance: providerGuidance(state, "provider-capability-catalog"),
 		summary: voice.realtimeAvailable
-			? "Raven Live is supported by the active provider transport, selected model, Hlid feature flag, and backend."
-			: voice.realtimeClientReady
-				? "Raven Live is client-ready; backend availability is confirmed only when the realtime session starts."
-				: "Raven Live requires a supporting provider transport, the Hlid feature flag, an audio-capable model, and backend availability.",
+			? "Raven Live is supported by the active Codex transport, Hlid preview setting, provider feature, and account backend."
+			: state.context.codexRealtimeBackendAvailable === false
+				? boundedValue(
+						state.context.codexRealtimeBackendReason ??
+							"Raven Live is unavailable for the signed-in account or realtime backend.",
+						300,
+					)
+				: voice.realtimeClientReady
+					? "Raven Live is client-ready; account backend availability is confirmed only when the realtime session starts."
+					: "Raven Live requires native Codex, the Hlid preview setting, the provider realtime feature, and account backend availability. The selected coding model's audio modalities do not gate Live.",
 	};
 }
 
@@ -719,9 +791,10 @@ function voiceCapability(state: ManifestState, voice: VoiceState): Capability {
 		owner: "hlid",
 		availability: voice.voiceAvailability,
 		summary:
-			"Voice is reported as separate local dictation, local neural read aloud, provider-native audio input, and Raven Live modes.",
+			"Voice is reported as separate local Whisper dictation, Codex realtime editable dictation, normal provider audio turns, local neural read aloud, and Raven Live modes.",
 		modes: {
 			local_dictation: localDictationMode(state, voice),
+			codex_dictation: codexDictationMode(state, voice),
 			local_read_aloud: localReadAloudMode(state, voice),
 			native_audio_input: nativeAudioMode(state, voice),
 			raven_live: ravenLiveMode(state, voice),

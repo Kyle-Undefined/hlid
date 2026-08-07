@@ -17,6 +17,7 @@ import {
 	declaredPathKey,
 	expandTilde,
 	isPathAccessibleFromRuntime,
+	parseWslUncSyntax,
 	toProviderRuntimePath,
 } from "../lib/paths";
 import { permissionToolDisplayName } from "../lib/permissionPresentation";
@@ -59,6 +60,7 @@ import type {
 	ProviderGoalControlResult,
 	ProviderMcpServerApplyResult,
 	ProviderMcpServerDefinition,
+	ProviderRealtimeActivity,
 	ProviderRealtimeEvent,
 	ProviderRealtimeMode,
 	ProviderRealtimeStartResult,
@@ -279,6 +281,8 @@ type TurnState = {
 	pendingToolActivityUpdates: Map<string, TaskActivity>;
 	/** In-flight inserts that tool results await before exposing lazy detail. */
 	pendingToolEventWrites: Map<string, Promise<boolean>>;
+	/** In-flight subagent/task-activity snapshots that terminal history must await. */
+	pendingToolMetadataWrites: Set<Promise<void>>;
 	/**
 	 * Reserved seq for the assistant message of this turn. Allocated lazily on
 	 * the first text_delta or tool_start so live writes (text streaming, tool
@@ -612,6 +616,7 @@ function buildAgentQueryParams(options: {
 	hostSessionId: string | undefined;
 	resumeProviderSessionId: string | null;
 	historyResumeMode: AgentQueryParams["historyResumeMode"];
+	persistSession?: boolean;
 	extraDirs: Set<string>;
 	signal: AbortSignal | undefined;
 	agentSettings: AgentSettings | undefined;
@@ -646,6 +651,7 @@ function buildAgentQueryParams(options: {
 		hostSessionId: options.hostSessionId,
 		sessionId: options.resumeProviderSessionId ?? undefined,
 		historyResumeMode: options.historyResumeMode,
+		persistSession: options.persistSession,
 		additionalDirectories:
 			options.extraDirs.size > 0
 				? Array.from(options.extraDirs)
@@ -742,6 +748,25 @@ function buildQueryData(
 	};
 }
 
+function configuredAgentIdentity(
+	path: string,
+): { mapKey: string; resolvedPath: string } | undefined {
+	const expanded = expandTilde(path);
+	if (parseWslUncSyntax(expanded)) {
+		return { mapKey: declaredPathKey(expanded), resolvedPath: expanded };
+	}
+	try {
+		const resolvedPath = realpathSync(expanded);
+		return { mapKey: resolvedPath, resolvedPath };
+	} catch {
+		return undefined;
+	}
+}
+
+function agentMapKey(path: string): string {
+	return parseWslUncSyntax(path) ? declaredPathKey(path) : path;
+}
+
 function buildAgentMaps(config: HlidConfig): {
 	providers: Map<string, string>;
 	settings: Map<string, AgentSettings>;
@@ -749,14 +774,11 @@ function buildAgentMaps(config: HlidConfig): {
 	const providers = new Map<string, string>();
 	const settings = new Map<string, AgentSettings>();
 	for (const agent of config.agents ?? []) {
-		try {
-			const realPath = realpathSync(expandTilde(agent.path));
-			providers.set(realPath, agent.provider ?? "claude");
-			const agentSettings = configuredAgentSettings(agent);
-			if (agentSettings) settings.set(realPath, agentSettings);
-		} catch {
-			// Paths may not exist yet; they become available on the next config sync.
-		}
+		const identity = configuredAgentIdentity(agent.path);
+		if (!identity) continue;
+		providers.set(identity.mapKey, agent.provider ?? "claude");
+		const agentSettings = configuredAgentSettings(agent);
+		if (agentSettings) settings.set(identity.mapKey, agentSettings);
 	}
 	return { providers, settings };
 }
@@ -802,20 +824,17 @@ function configuredSessionDefaultsFromMaps(
 	configuredAgentCwd: string | undefined,
 	agentMaps: ReturnType<typeof buildAgentMaps>,
 ): ConfiguredSessionDefaults {
-	let configuredAgentPath: string | undefined;
-	if (configuredAgentCwd) {
-		try {
-			configuredAgentPath = realpathSync(expandTilde(configuredAgentCwd));
-		} catch {
-			configuredAgentPath = undefined;
-		}
-	}
-	const configuredAgent = configuredAgentPath
-		? agentMaps.settings.get(configuredAgentPath)
+	const configuredAgentIdentityValue = configuredAgentCwd
+		? configuredAgentIdentity(configuredAgentCwd)
+		: undefined;
+	const configuredAgentPath = configuredAgentIdentityValue?.resolvedPath;
+	const configuredAgent = configuredAgentIdentityValue
+		? agentMaps.settings.get(configuredAgentIdentityValue.mapKey)
 		: undefined;
 	const vaultProviderId = config.vault_provider ?? "claude";
-	const providerId = configuredAgentPath
-		? (agentMaps.providers.get(configuredAgentPath) ?? vaultProviderId)
+	const providerId = configuredAgentIdentityValue
+		? (agentMaps.providers.get(configuredAgentIdentityValue.mapKey) ??
+			vaultProviderId)
 		: vaultProviderId;
 	return sessionDefaultsFromSelection(
 		config,
@@ -900,6 +919,7 @@ function createTurnState(
 		pendingToolUpdates: new Map(),
 		pendingToolActivityUpdates: new Map(),
 		pendingToolEventWrites: new Map(),
+		pendingToolMetadataWrites: new Set(),
 		reservedAssistantSeq: null,
 		assistantRowWrite: null,
 		pendingSteerTargetSeqs: new Set(),
@@ -1032,6 +1052,8 @@ export class SessionManager {
 	// chat switch / abort.
 	private agentSession: AgentSession | null = null;
 	private agentSessionKey: string | null = null;
+	/** Exact provider wrapper that owns the active realtime transport. */
+	private realtimeAgentSession: AgentSession | null = null;
 	private backgroundActivities: ProviderBackgroundActivity[] = [];
 	private backgroundActivityChangeHandler: (() => void) | null = null;
 	private backgroundActivityWriteTail: Promise<void> = Promise.resolve();
@@ -1041,7 +1063,21 @@ export class SessionManager {
 		timer?: ReturnType<typeof setTimeout>;
 	} | null = null;
 	private realtimeMode: ProviderRealtimeMode | null = null;
+	/** Browser request identity that owns the active realtime generation. */
+	private realtimeRequestId: string | null = null;
+	private realtimeCloseNotifier:
+		| ((
+				reason?: string,
+				emitOverride?: (message: ServerMessage) => void,
+		  ) => Promise<void>)
+		| null = null;
 	private realtimeStopPromise: Promise<void> | null = null;
+	private realtimeStopMode: ProviderRealtimeMode | null = null;
+	private realtimeStoppingGeneration: number | null = null;
+	/** Final Live transcript writes are ordered exactly as provider events arrive. */
+	private realtimeTranscriptWriteTail: Promise<void> = Promise.resolve();
+	/** Invalidates provider callbacks after stop, abort, or a replacement start. */
+	private realtimeGeneration = 0;
 	private codexRealtimeEnabled = false;
 	// Slice C: turn id of the currently running turn — threaded into the
 	// emitted `done` event so clients can correlate completions to specific
@@ -1081,7 +1117,9 @@ export class SessionManager {
 		if (this.providerOverride) {
 			providerId = this.providerOverride;
 		} else if (agentCwd) {
-			providerId = this.agentProviderMap.get(agentCwd) ?? this.vaultProviderId;
+			providerId =
+				this.agentProviderMap.get(agentMapKey(agentCwd)) ??
+				this.vaultProviderId;
 		} else {
 			providerId = this.vaultProviderId;
 		}
@@ -1113,7 +1151,11 @@ export class SessionManager {
 			this.configuredAgentCwd,
 			agentMaps,
 		);
-		if (configuredDefaults.agentCwd && !this.agentCwd) {
+		if (
+			configuredDefaults.agentCwd &&
+			!parseWslUncSyntax(configuredDefaults.agentCwd) &&
+			!this.agentCwd
+		) {
 			this.agentCwd = configuredDefaults.agentCwd;
 			this.agentMode = resolveAgentMode(configuredDefaults.agentCwd);
 		}
@@ -1188,12 +1230,77 @@ export class SessionManager {
 		this.clearSessionProvenance();
 	}
 
+	private reconcileCodexRuntimeIdentity(
+		previousCodexRealtimeEnabled: boolean,
+		previousCodexExecutable: string | undefined,
+	): void {
+		const codexRealtimeChanged =
+			previousCodexRealtimeEnabled !== this.codexRealtimeEnabled;
+		const codexExecutableChanged =
+			previousCodexExecutable !== this.codexExecutable;
+		const codexRuntimeIdentityChanged =
+			codexRealtimeChanged || codexExecutableChanged;
+		if (!codexRuntimeIdentityChanged) return;
+		const activeProviderId = this.agentSessionKey?.split("|", 1)[0];
+		const activeSession =
+			activeProviderId === "codex" ? this.agentSession : null;
+		const retireOrdinaryCodexSession = () => {
+			if (!activeSession || this.agentSession !== activeSession) return;
+			if (this.state === "running") {
+				this.restartProviderRuntimeAfterTurn = true;
+				return;
+			}
+			this.stopBackgroundActivityObserver();
+			activeSession.cancel();
+			this.agentSession = null;
+			this.agentSessionKey = null;
+		};
+		const mustStopRealtime =
+			Boolean(this.realtimeAgentSession && this.realtimeMode) &&
+			((previousCodexRealtimeEnabled && !this.codexRealtimeEnabled) ||
+				codexExecutableChanged);
+		if (mustStopRealtime) {
+			const closeReason =
+				previousCodexRealtimeEnabled && !this.codexRealtimeEnabled
+					? "Codex realtime voice was disabled in Forge."
+					: "The Codex executable changed in Forge.";
+			void this.stopRealtimeSession(closeReason).then(
+				retireOrdinaryCodexSession,
+				retireOrdinaryCodexSession,
+			);
+		} else {
+			retireOrdinaryCodexSession();
+		}
+	}
+
+	/**
+	 * Refresh only the process-identity settings required to start Codex realtime.
+	 * Unlike syncConfig, this deliberately avoids rebuilding filesystem-backed
+	 * agent maps on the latency-sensitive WebSocket control path.
+	 */
+	private matchesRealtimeRequest(requestId: string | undefined): boolean {
+		return this.realtimeRequestId === (requestId ?? null);
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Called by WebSocket realtime controls in wsHandlers.
+	syncRealtimeConfig(config: Pick<HlidConfig, "codex" | "voice">): void {
+		const previousCodexRealtimeEnabled = this.codexRealtimeEnabled;
+		const previousCodexExecutable = this.codexExecutable;
+		this.codexRealtimeEnabled = config.voice?.codex_live_mode ?? false;
+		this.codexExecutable = config.codex?.executable;
+		this.reconcileCodexRuntimeIdentity(
+			previousCodexRealtimeEnabled,
+			previousCodexExecutable,
+		);
+	}
+
 	// Lightweight config refresh — updates runtime settings without resetting
 	// session history or conversation continuity. Safe to call when idle.
 	// Returns true if an effective status field changed (so callers can broadcast it).
 	syncConfig(config: HlidConfig): boolean {
 		const previous = this.getStatus();
 		const previousCodexRealtimeEnabled = this.codexRealtimeEnabled;
+		const previousCodexExecutable = this.codexExecutable;
 		const nextProviderId = config.vault_provider ?? "claude";
 		const providerChanged =
 			this.providerOverride === null && nextProviderId !== this.vaultProviderId;
@@ -1205,22 +1312,10 @@ export class SessionManager {
 			this.permissionModeOverride = null;
 		}
 		this.applyConfig(config, !providerChanged);
-		if (
-			previousCodexRealtimeEnabled !== this.codexRealtimeEnabled &&
-			this.agentSession &&
-			isCodexRuntimeProvider(
-				this.providerSessionProviderId ?? this.getProviderId(),
-			)
-		) {
-			if (this.state === "running") {
-				this.restartProviderRuntimeAfterTurn = true;
-			} else {
-				this.stopBackgroundActivityObserver();
-				this.agentSession.cancel();
-				this.agentSession = null;
-				this.agentSessionKey = null;
-			}
-		}
+		this.reconcileCodexRuntimeIdentity(
+			previousCodexRealtimeEnabled,
+			previousCodexExecutable,
+		);
 		void this.agentSession?.setWindowsComputerUse?.(this.windowsComputerUse);
 		const current = this.getStatus();
 		return (
@@ -1494,6 +1589,7 @@ export class SessionManager {
 	 * setModel(model?: string) semantics).
 	 */
 	async setModel(model?: string): Promise<void> {
+		this.assertRealtimeIdle("changing the model");
 		this.modelOverride = { value: model };
 		this.model = model ?? "";
 		await Promise.all([
@@ -1522,6 +1618,7 @@ export class SessionManager {
 			persistSessionSelection?: boolean;
 		} = {},
 	): Promise<void> {
+		this.assertRealtimeIdle("switching CLI");
 		if (!this.providers.has(providerId)) {
 			throw new Error(`Unknown or unavailable provider: ${providerId}`);
 		}
@@ -1587,6 +1684,7 @@ export class SessionManager {
 	 * change applies starting with the next turn.
 	 */
 	async setPermissionMode(mode: string): Promise<void> {
+		this.assertRealtimeIdle("changing permissions");
 		if (!KNOWN_PERMISSION_MODES.has(mode)) {
 			throw new Error(`Unknown permission mode: ${mode}`);
 		}
@@ -1610,6 +1708,7 @@ export class SessionManager {
 	 */
 	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket set_effort dispatch in wsHandlers.
 	async setEffort(effort: string): Promise<void> {
+		this.assertRealtimeIdle("changing effort");
 		this.effortOverride = effort;
 		this.effort = effort;
 		await (this.currentSessionId
@@ -1703,7 +1802,9 @@ export class SessionManager {
 		) {
 			return this.providerSessionProviderId;
 		}
-		return this.resolveProvider(agentCwd ?? this.agentCwd).providerId;
+		return this.resolveProvider(
+			agentCwd ?? this.agentCwd ?? this.configuredAgentCwd,
+		).providerId;
 	}
 
 	getSessionLabel(): string | null {
@@ -2485,22 +2586,43 @@ export class SessionManager {
 					sdp: string;
 					voice?: string;
 			  }
-			| { action: "speak"; text: string }
+			| { action: "speak"; mode: "read-aloud"; text: string }
 			| { action: "stop" },
 		options: {
 			sessionId: string;
+			requestId?: string;
 			agentCwd?: string;
+			/** Skip Raven session persistence for Cockpit-only dictation. */
+			transient?: boolean;
 			emit: (msg: ServerMessage) => void;
 		},
 	): Promise<void> {
 		if (control.action === "speak") {
-			if (!this.agentSession?.appendRealtimeSpeech || !this.realtimeMode)
+			if (
+				!this.realtimeAgentSession?.appendRealtimeSpeech ||
+				this.realtimeMode !== control.mode
+			) {
 				throw new Error("No Codex voice session is active.");
-			await this.agentSession.appendRealtimeSpeech(control.text);
+			}
+			if (!this.matchesRealtimeRequest(options.requestId)) {
+				throw new Error(
+					"This Codex voice request was replaced by a newer session.",
+				);
+			}
+			await this.realtimeAgentSession.appendRealtimeSpeech(control.text);
 			return;
 		}
 		if (control.action === "stop") {
-			await this.stopRealtimeSession();
+			if (
+				this.realtimeMode &&
+				!this.matchesRealtimeRequest(options.requestId)
+			) {
+				// The WebSocket handler publishes the request-correlated idempotent
+				// close acknowledgement. Do not let an old browser generation tear down
+				// the replacement that now owns this manager.
+				return;
+			}
+			await this.stopRealtimeSession(undefined, options.emit);
 			return;
 		}
 		if (!this.codexRealtimeEnabled) {
@@ -2508,61 +2630,512 @@ export class SessionManager {
 				"Codex realtime voice is disabled. Enable the Developer Preview in Forge first.",
 			);
 		}
-		if (this.isRunning()) {
+		if (control.mode === "live" && this.isRunning()) {
 			throw new Error(
 				"Wait for the current turn to finish before starting Live.",
 			);
 		}
-		if (this.realtimeMode) {
+		if (this.realtimeStopPromise) {
+			await this.realtimeStopPromise.catch(() => {});
+		} else if (this.realtimeMode) {
 			await this.stopRealtimeSession().catch(() => {});
 		}
-		await this.initSessionContext(
-			options.sessionId,
-			options.agentCwd,
-			control.mode === "live" ? "Live voice" : "Voice",
-		);
-		const {
-			provider,
-			agentSettings,
-			resumeProviderSessionId,
-			ownershipGeneration,
-		} = await this.prepareProviderForTurn(options.sessionId);
+		const persistenceSessionId = options.transient
+			? undefined
+			: options.sessionId;
+		let provider: AgentProvider;
+		let agentSettings: AgentSettings | undefined;
+		let resumeProviderSessionId: string | null = null;
+		let ownershipGeneration: number;
+		let realtimeAgentCwd = this.agentCwd;
+		let realtimeAgentMode = this.agentMode;
+		if (control.mode === "live") {
+			await this.initSessionContext(
+				persistenceSessionId,
+				options.agentCwd,
+				"Live voice",
+			);
+			({
+				provider,
+				agentSettings,
+				resumeProviderSessionId,
+				ownershipGeneration,
+			} = await this.prepareProviderForTurn(persistenceSessionId));
+			realtimeAgentCwd = this.agentCwd;
+			realtimeAgentMode = this.agentMode;
+		} else {
+			// Restoring an idle archived chat is safe, but an active ordinary turn owns
+			// every mutable Raven field. Speech must only observe that established
+			// context while the turn is running.
+			if (
+				!this.isRunning() &&
+				persistenceSessionId &&
+				persistenceSessionId !== this.currentSessionId
+			) {
+				await this.initSessionContext(
+					persistenceSessionId,
+					options.agentCwd,
+					"Voice",
+					false,
+				);
+			}
+			realtimeAgentCwd =
+				options.agentCwd ?? this.agentCwd ?? this.configuredAgentCwd;
+			if (realtimeAgentCwd !== this.agentCwd) realtimeAgentMode = "cwd";
+			const configuredProvider = this.resolveProvider(realtimeAgentCwd);
+			provider =
+				(this.providerSessionProviderId
+					? this.providers.get(this.providerSessionProviderId)
+					: undefined) ?? configuredProvider;
+			const configuredProviderId = realtimeAgentCwd
+				? (this.agentProviderMap.get(agentMapKey(realtimeAgentCwd)) ??
+					this.vaultProviderId)
+				: this.vaultProviderId;
+			agentSettings =
+				realtimeAgentCwd && provider.providerId === configuredProviderId
+					? this.agentSettingsMap.get(agentMapKey(realtimeAgentCwd))
+					: undefined;
+			ownershipGeneration = this.providerOwnershipGeneration;
+		}
 		if (provider.providerId !== "codex") {
 			throw new Error(
 				"Codex voice is only available in native Codex sessions.",
 			);
 		}
 		const { activeCwd, extraDirs, executable } = resolveExecutionContext({
-			agentMode: this.agentMode,
-			agentCwd: this.agentCwd,
+			agentMode: realtimeAgentMode,
+			agentCwd: realtimeAgentCwd,
 			vaultPath: this.vaultPath,
 			allowedAgentRealPaths: this.allowedAgentRealPaths,
 			claudeExecutable: this.codexExecutable,
 			wrapperCommand: "codex",
 			safeAttachments: [],
 		});
-		const agentSession = this.getOrCreateAgentSession({
-			provider,
-			sessionId: options.sessionId,
-			resumeProviderSessionId,
-			activeCwd,
-			extraDirs,
-			executable,
-			agentSettings,
-			planMode: false,
-			emit: options.emit,
-		});
+		const agentSession =
+			control.mode === "live"
+				? this.getOrCreateAgentSession({
+						provider,
+						sessionId: persistenceSessionId,
+						resumeProviderSessionId,
+						activeCwd,
+						extraDirs,
+						executable,
+						agentSettings,
+						planMode: false,
+						emit: options.emit,
+					})
+				: this.createDetachedRealtimeAgentSession({
+						provider,
+						activeCwd,
+						executable,
+						agentSettings,
+						agentMode: realtimeAgentMode,
+					});
+		this.realtimeAgentSession = agentSession;
 		if (!agentSession.startRealtime) {
+			this.retireAgentSessionAfterRealtime(agentSession);
 			throw new Error(
 				"The active Codex version does not support realtime voice.",
 			);
 		}
+		const realtimeGeneration = ++this.realtimeGeneration;
+		this.realtimeRequestId = options.requestId ?? null;
+		const requestIdentity = options.requestId
+			? { request_id: options.requestId }
+			: {};
+		let terminalPending = false;
+		let terminalPublished = false;
+		let terminalFailureMessage: string | null = null;
+		let terminalFailureDeferredDuringStop = false;
+		let terminalCompletion: Promise<void> | null = null;
+		let deferredCloseReason: string | undefined;
+		let terminalEmitter = options.emit;
+		const realtimeSessionId =
+			control.mode === "live" ? `raven-live-${randomUUID()}` : null;
+		let providerRealtimeSessionId: string | undefined;
+		let audioOutputStarted = false;
+		type RealtimeUtterance = {
+			utteranceId: string;
+			transcriptSeq: number;
+		};
+		type RealtimeTranscriptRole = "user" | "assistant";
+		const activeUtterances = new Map<
+			RealtimeTranscriptRole,
+			RealtimeUtterance
+		>();
+		const utteranceFor = (role: RealtimeTranscriptRole): RealtimeUtterance => {
+			const active = activeUtterances.get(role);
+			if (active) return active;
+			const transcriptSeq = this.messageSeq++;
+			const utterance = {
+				utteranceId: `codex-realtime-${transcriptSeq}`,
+				transcriptSeq,
+			};
+			activeUtterances.set(role, utterance);
+			return utterance;
+		};
+		const transcriptMetadata = (utterance: RealtimeUtterance) => ({
+			utterance_id: utterance.utteranceId,
+			realtime_session_id: realtimeSessionId as string,
+			...(providerRealtimeSessionId
+				? { provider_realtime_session_id: providerRealtimeSessionId }
+				: {}),
+			transcript_seq: utterance.transcriptSeq,
+			source: "codex_realtime" as const,
+			fork_supported: false,
+		});
+		type LiveAssistantActivity = {
+			utterance: RealtimeUtterance;
+			turn: TurnState;
+			finalQueued: boolean;
+			completedToolIds: Set<string>;
+		};
+		let currentLiveAssistantActivity: LiveAssistantActivity | null = null;
+		const liveActivitiesByUtterance = new Map<string, LiveAssistantActivity>();
+		const liveActivitiesByToolId = new Map<string, LiveAssistantActivity>();
+		const liveAssistantActivity = (): LiveAssistantActivity => {
+			const utterance = utteranceFor("assistant");
+			if (
+				currentLiveAssistantActivity?.utterance.utteranceId ===
+				utterance.utteranceId
+			) {
+				return currentLiveAssistantActivity;
+			}
+			const turn = createTurnState(
+				this.selectedModelFor(agentSettings),
+				ownershipGeneration,
+			);
+			// Live transcript persistence owns the messages row. Tool persistence can
+			// safely use the reserved sequence before that row is finalized.
+			turn.reservedAssistantSeq = utterance.transcriptSeq;
+			turn.assistantRowWrite = Promise.resolve();
+			const activity = {
+				utterance,
+				turn,
+				finalQueued: false,
+				completedToolIds: new Set<string>(),
+			};
+			currentLiveAssistantActivity = activity;
+			liveActivitiesByUtterance.set(utterance.utteranceId, activity);
+			return activity;
+		};
+		let flushLiveToolOnlyActivities: () => Promise<void> = async () => {};
+		let settleLiveActivities: () => Promise<void> = async () => {};
+		const beginTerminal = (
+			publishClosed: (
+				reason?: string,
+				emitOverride?: (message: ServerMessage) => void,
+			) => Promise<void>,
+		) => {
+			if (
+				terminalPending ||
+				terminalPublished ||
+				this.realtimeCloseNotifier !== publishClosed
+			) {
+				return false;
+			}
+			terminalPending = true;
+			this.realtimeCloseNotifier = null;
+			return true;
+		};
+		const retireAfterUnsolicitedTerminal = () => {
+			// An explicit stop still owns its wrapper until stopRealtimeSession has
+			// finished provider teardown. A provider-owned close has no such outer
+			// cleanup, so retire it here before delayed provider events or request-local
+			// callbacks can enter the next ordinary query.
+			if (this.realtimeStopMode === control.mode) return;
+			this.retireAgentSessionAfterRealtime(agentSession);
+		};
+		const finishTerminal = async (
+			publish: () => void,
+			clearRealtimeMode = true,
+		) => {
+			await this.drainRealtimeTranscriptWrites();
+			await settleLiveActivities();
+			await this.drainRealtimeTranscriptWrites();
+			await flushLiveToolOnlyActivities();
+			await this.drainRealtimeTranscriptWrites();
+			if (
+				terminalPublished ||
+				(this.realtimeCloseNotifier !== null &&
+					this.realtimeCloseNotifier !== publishClosed)
+			) {
+				return;
+			}
+			terminalPublished = true;
+			if (terminalFailureMessage) {
+				if (!terminalFailureDeferredDuringStop) {
+					await this.stopRealtimeSession().catch(() => {});
+				}
+				terminalEmitter({
+					type: "realtime_error",
+					session_id: options.sessionId,
+					...requestIdentity,
+					mode: control.mode,
+					message: terminalFailureMessage,
+				});
+				retireAfterUnsolicitedTerminal();
+				return;
+			}
+			if (clearRealtimeMode) {
+				this.realtimeMode = null;
+				this.realtimeRequestId = null;
+			}
+			publish();
+			retireAfterUnsolicitedTerminal();
+		};
+		const publishClosed = (
+			reason?: string,
+			emitOverride?: (message: ServerMessage) => void,
+		): Promise<void> => {
+			if (reason) deferredCloseReason = reason;
+			if (emitOverride) terminalEmitter = emitOverride;
+			if (this.realtimeStoppingGeneration === realtimeGeneration) {
+				return Promise.resolve();
+			}
+			if (terminalCompletion) return terminalCompletion;
+			if (!beginTerminal(publishClosed)) return Promise.resolve();
+			terminalCompletion = finishTerminal(() =>
+				terminalEmitter({
+					type: "realtime_state",
+					session_id: options.sessionId,
+					...requestIdentity,
+					mode: control.mode,
+					state: "closed",
+					...(deferredCloseReason ? { reason: deferredCloseReason } : {}),
+				}),
+			);
+			return terminalCompletion;
+		};
+		const publishError = (message: string): Promise<void> => {
+			terminalFailureMessage = message;
+			if (this.realtimeStoppingGeneration === realtimeGeneration) {
+				terminalFailureDeferredDuringStop = true;
+				return Promise.resolve();
+			}
+			if (terminalCompletion) return terminalCompletion;
+			if (!beginTerminal(publishClosed)) return Promise.resolve();
+			terminalCompletion = finishTerminal(() => {}, false);
+			return terminalCompletion;
+		};
+		const queuePersistedLiveTranscriptFinal = (
+			role: RealtimeTranscriptRole,
+			text: string,
+			utterance: RealtimeUtterance,
+		): Promise<void> => {
+			const activity = liveActivitiesByUtterance.get(utterance.utteranceId);
+			if (activity?.finalQueued) return Promise.resolve();
+			if (activity) activity.finalQueued = true;
+			const pending = this.realtimeTranscriptWriteTail.then(async () => {
+				const persisted = await db.appendRealtimeTranscriptMessage({
+					sessionId: options.sessionId,
+					seq: utterance.transcriptSeq,
+					role,
+					text,
+					utteranceId: utterance.utteranceId,
+					realtimeSessionId: realtimeSessionId as string,
+					providerRealtimeSessionId,
+				});
+				if (persisted.inserted) bumpDataRevision("sessions");
+				options.emit({
+					type: "realtime_transcript",
+					session_id: options.sessionId,
+					...requestIdentity,
+					mode: "live",
+					role,
+					text,
+					done: true,
+					db_id: persisted.id,
+					...transcriptMetadata(utterance),
+				});
+			});
+			this.realtimeTranscriptWriteTail = pending.then(
+				() => undefined,
+				() => undefined,
+			);
+			void pending.catch((error) => {
+				logDbError("append realtime transcript", error);
+				void publishError(
+					"Raven Live stopped because its transcript could not be saved.",
+				);
+			});
+			return pending.catch(() => {});
+		};
+		const queueLiveTranscriptFinal = (
+			event: Extract<ProviderRealtimeEvent, { type: "transcript_done" }>,
+		) => {
+			const text = event.text.trim();
+			const role =
+				event.role === "user" || event.role === "assistant" ? event.role : null;
+			if (!role || !realtimeSessionId) return;
+			const active = activeUtterances.get(role);
+			const utterance = active ?? (text ? utteranceFor(role) : undefined);
+			if (!utterance) return;
+			activeUtterances.delete(role);
+			const activity = liveActivitiesByUtterance.get(utterance.utteranceId);
+			if (role === "assistant" && currentLiveAssistantActivity === activity) {
+				currentLiveAssistantActivity = null;
+			}
+			if (!text && !(activity?.turn.hadToolEvents ?? false)) {
+				options.emit({
+					type: "realtime_transcript",
+					session_id: options.sessionId,
+					...requestIdentity,
+					mode: "live",
+					role,
+					text: "",
+					done: true,
+					...transcriptMetadata(utterance),
+				});
+				return;
+			}
+			void queuePersistedLiveTranscriptFinal(role, text, utterance);
+		};
+		flushLiveToolOnlyActivities = async () => {
+			const pending = [...liveActivitiesByUtterance.values()].filter(
+				(activity) => activity.turn.hadToolEvents && !activity.finalQueued,
+			);
+			for (const activity of pending) {
+				await Promise.all(activity.turn.pendingToolEventWrites.values());
+				await Promise.all(activity.turn.pendingToolMetadataWrites.values());
+				await queuePersistedLiveTranscriptFinal(
+					"assistant",
+					"",
+					activity.utterance,
+				);
+			}
+		};
+		const emitLiveActivityMessage = (
+			activity: LiveAssistantActivity,
+			message: ServerMessage,
+		) => {
+			if (
+				message.type !== "tool_event" &&
+				message.type !== "tool_result" &&
+				message.type !== "tool_update" &&
+				message.type !== "tool_activity_update"
+			) {
+				options.emit(message);
+				return;
+			}
+			options.emit({
+				...message,
+				realtime_utterance_id: activity.utterance.utteranceId,
+				realtime_session_id: realtimeSessionId as string,
+				transcript_seq: activity.utterance.transcriptSeq,
+				...(message.type === "tool_event" ? { fork_supported: false } : {}),
+			});
+		};
+		const ownerForLiveActivity = (
+			event: ProviderRealtimeActivity,
+		): LiveAssistantActivity => {
+			const existing = liveActivitiesByToolId.get(event.toolId);
+			if (existing) return existing;
+			const activity = liveAssistantActivity();
+			liveActivitiesByToolId.set(event.toolId, activity);
+			return activity;
+		};
+		const queueLiveActivityWork = (work: () => Promise<void>) => {
+			const pending = this.realtimeTranscriptWriteTail.then(work);
+			this.realtimeTranscriptWriteTail = pending.then(
+				() => undefined,
+				() => undefined,
+			);
+			void pending.catch((error) =>
+				logDbError("process realtime tool activity", error),
+			);
+		};
+		const publishLiveActivity = (event: ProviderRealtimeActivity) => {
+			const activity = ownerForLiveActivity(event);
+			const emit = (message: ServerMessage) =>
+				emitLiveActivityMessage(activity, message);
+			switch (event.type) {
+				case "tool_start":
+					this.handleToolStart(
+						event,
+						activity.turn,
+						options.sessionId,
+						emit,
+						provider,
+					);
+					break;
+				case "tool_update":
+					this.handleToolUpdate(event, activity.turn, options.sessionId, emit);
+					break;
+				case "tool_activity_update":
+					this.handleToolActivityUpdate(
+						event,
+						activity.turn,
+						options.sessionId,
+						emit,
+					);
+					break;
+				case "tool_result":
+					queueLiveActivityWork(async () => {
+						await this.handleToolResult(
+							event,
+							activity.turn,
+							options.sessionId,
+							emit,
+						);
+						activity.completedToolIds.add(event.toolId);
+					});
+					break;
+				case "generated_media":
+					queueLiveActivityWork(async () => {
+						await this.handleGeneratedMedia(
+							event,
+							activity.turn,
+							options.sessionId,
+							emit,
+							provider,
+						);
+						activity.completedToolIds.add(event.toolId);
+					});
+					break;
+			}
+		};
+		settleLiveActivities = async () => {
+			for (const activity of liveActivitiesByUtterance.values()) {
+				const emit = (message: ServerMessage) =>
+					emitLiveActivityMessage(activity, message);
+				this.settleIncompleteSubagents(activity.turn, options.sessionId, emit);
+				for (const tool of activity.turn.pendingToolEvents) {
+					if (activity.completedToolIds.has(tool.toolId)) continue;
+					queueLiveActivityWork(async () => {
+						await this.handleToolResult(
+							{
+								type: "tool_result",
+								toolId: tool.toolId,
+								content:
+									"Raven Live ended before Codex reported this tool's result.",
+								isError: true,
+							},
+							activity.turn,
+							options.sessionId,
+							emit,
+						);
+						activity.completedToolIds.add(tool.toolId);
+					});
+				}
+			}
+		};
 		const publish = (event: ProviderRealtimeEvent) => {
+			if (
+				this.realtimeGeneration !== realtimeGeneration ||
+				this.realtimeAgentSession !== agentSession ||
+				terminalPending ||
+				terminalPublished
+			) {
+				return;
+			}
 			switch (event.type) {
 				case "started":
+					providerRealtimeSessionId = event.realtimeSessionId;
 					options.emit({
 						type: "realtime_state",
 						session_id: options.sessionId,
+						...requestIdentity,
 						mode: control.mode,
 						state: "connected",
 					});
@@ -2571,61 +3144,85 @@ export class SessionManager {
 					options.emit({
 						type: "realtime_sdp",
 						session_id: options.sessionId,
+						...requestIdentity,
 						mode: control.mode,
 						sdp: event.sdp,
 					});
 					break;
-				case "transcript_delta":
+				case "audio_output_started":
+					if (audioOutputStarted) break;
+					audioOutputStarted = true;
+					options.emit({
+						type: "realtime_audio",
+						session_id: options.sessionId,
+						...requestIdentity,
+						mode: control.mode,
+						state: "started",
+					});
+					break;
+				case "transcript_delta": {
+					if (!event.delta) break;
+					if (control.mode !== "live") {
+						options.emit({
+							type: "realtime_transcript",
+							session_id: options.sessionId,
+							...requestIdentity,
+							mode: control.mode,
+							role: event.role,
+							text: event.delta,
+							done: false,
+						});
+						break;
+					}
+					if (event.role !== "user" && event.role !== "assistant") break;
+					const utterance = utteranceFor(event.role);
 					options.emit({
 						type: "realtime_transcript",
 						session_id: options.sessionId,
-						mode: control.mode,
+						...requestIdentity,
+						mode: "live",
 						role: event.role,
 						text: event.delta,
 						done: false,
+						...transcriptMetadata(utterance),
 					});
 					break;
+				}
 				case "transcript_done":
-					options.emit({
-						type: "realtime_transcript",
-						session_id: options.sessionId,
-						mode: control.mode,
-						role: event.role,
-						text: event.text,
-						done: true,
-					});
+					if (control.mode === "live") {
+						queueLiveTranscriptFinal(event);
+					} else {
+						options.emit({
+							type: "realtime_transcript",
+							session_id: options.sessionId,
+							...requestIdentity,
+							mode: control.mode,
+							role: event.role,
+							text: event.text,
+							done: true,
+						});
+					}
+					break;
+				case "activity":
+					if (control.mode === "live") publishLiveActivity(event.event);
 					break;
 				case "error":
-					// Capture and begin provider teardown before publishing the error.
-					// The WebSocket layer may retire a voice-only pool entry as soon
-					// as it receives this terminal event.
-					void this.stopRealtimeSession().catch(() => {});
-					options.emit({
-						type: "realtime_error",
-						session_id: options.sessionId,
-						mode: control.mode,
-						message: event.message,
-					});
+					void publishError(event.message);
 					break;
 				case "closed":
-					options.emit({
-						type: "realtime_state",
-						session_id: options.sessionId,
-						mode: control.mode,
-						state: "closed",
-						...(event.reason ? { reason: event.reason } : {}),
-					});
-					this.realtimeMode = null;
+					void publishClosed(event.reason);
 					break;
 			}
 		};
 		options.emit({
 			type: "realtime_state",
 			session_id: options.sessionId,
+			...requestIdentity,
 			mode: control.mode,
 			state: "starting",
 		});
 		this.realtimeMode = control.mode;
+		this.realtimeCloseNotifier = publishClosed;
 		let result: ProviderRealtimeStartResult;
 		try {
 			result = await agentSession.startRealtime({
@@ -2635,33 +3232,112 @@ export class SessionManager {
 				onEvent: publish,
 			});
 		} catch (error) {
-			this.realtimeMode = null;
+			// A user can stop Dictate while its isolated Codex process is still
+			// starting. That deliberately kills the startup transport, which rejects
+			// the original start promise with "Codex dictation stopped". The stop
+			// path already owns the terminal closed state, so do not turn an explicit
+			// stop into a visible startup failure.
+			const stoppedDuringStartup =
+				this.realtimeStopMode === control.mode ||
+				(this.realtimeGeneration !== realtimeGeneration &&
+					this.realtimeMode !== control.mode);
+			if (stoppedDuringStartup) {
+				await this.realtimeStopPromise?.catch(() => {});
+				return;
+			}
+			if (
+				this.realtimeGeneration === realtimeGeneration &&
+				this.realtimeCloseNotifier === publishClosed
+			) {
+				this.realtimeGeneration += 1;
+				this.realtimeCloseNotifier = null;
+				this.realtimeMode = null;
+				this.realtimeRequestId = null;
+				this.retireAgentSessionAfterRealtime(agentSession);
+			}
 			throw error;
 		}
-		const accepted = await this.persistProviderSession(
-			options.sessionId,
-			provider.providerId,
-			result.providerSessionId,
-			ownershipGeneration,
-		);
+		// Speech runs on a transient realtime thread. Its result must never replace
+		// the Raven chat thread that the next ordinary turn will resume.
+		const accepted =
+			control.mode === "live"
+				? await this.persistProviderSession(
+						options.sessionId,
+						provider.providerId,
+						result.providerSessionId,
+						ownershipGeneration,
+					)
+				: this.providerOwnershipGeneration === ownershipGeneration;
 		if (!accepted) {
-			this.realtimeMode = null;
+			await this.stopRealtimeSession().catch(() => {});
 			throw new Error(
 				"The provider changed while realtime startup was in progress.",
 			);
 		}
-		this.providerSessionId = result.providerSessionId;
-		this.providerSessionProviderId = provider.providerId;
+		if (control.mode === "live") {
+			this.providerSessionId = result.providerSessionId;
+			this.providerSessionProviderId = provider.providerId;
+		}
 	}
 
-	private stopRealtimeSession(): Promise<void> {
+	private retireAgentSessionAfterRealtime(
+		agentSession: AgentSession | null,
+	): void {
+		if (!agentSession) return;
+		if (this.realtimeAgentSession === agentSession) {
+			this.realtimeAgentSession = null;
+		}
+		if (this.agentSession !== agentSession) {
+			agentSession.cancel();
+			return;
+		}
+		// Realtime wrappers capture request-local callbacks and can also retain
+		// provider events after their transport closes. Detaching the wrapper keeps
+		// those callbacks and queues out of the next typed turn. providerSessionId
+		// remains intact, so that turn cold-resumes through a fresh wrapper.
+		this.stopBackgroundActivityObserver();
+		agentSession.cancel();
+		this.agentSession = null;
+		this.agentSessionKey = null;
+	}
+
+	private stopRealtimeSession(
+		reason?: string,
+		emitTerminal?: (message: ServerMessage) => void,
+	): Promise<void> {
 		if (this.realtimeStopPromise) return this.realtimeStopPromise;
-		const agentSession = this.agentSession;
+		const stoppingMode = this.realtimeMode;
+		if (!stoppingMode) return Promise.resolve();
+		const stoppingGeneration = this.realtimeGeneration;
+		const agentSession = this.realtimeAgentSession;
+		const closeNotifier = this.realtimeCloseNotifier;
+		this.realtimeStopMode = stoppingMode;
+		this.realtimeStoppingGeneration = stoppingGeneration;
 		const stopping = (async () => {
 			try {
 				await agentSession?.stopRealtime?.();
 			} finally {
-				this.realtimeMode = null;
+				await this.drainRealtimeTranscriptWrites();
+				const ownsStoppingGeneration =
+					this.realtimeStoppingGeneration === stoppingGeneration;
+				if (ownsStoppingGeneration) {
+					this.realtimeStoppingGeneration = null;
+					if (this.realtimeGeneration === stoppingGeneration) {
+						this.realtimeGeneration += 1;
+					}
+					await closeNotifier?.(reason, emitTerminal);
+				}
+				if (
+					ownsStoppingGeneration &&
+					this.realtimeAgentSession === agentSession &&
+					this.realtimeStopMode === stoppingMode
+				) {
+					this.realtimeCloseNotifier = null;
+					this.realtimeMode = null;
+					this.realtimeRequestId = null;
+					this.realtimeStopMode = null;
+					this.retireAgentSessionAfterRealtime(agentSession);
+				}
 			}
 		})();
 		this.realtimeStopPromise = stopping;
@@ -2776,7 +3452,28 @@ export class SessionManager {
 		return this.state === "running";
 	}
 
+	/** Live is provider work even though it does not use the ordinary turn queue. */
+	// fallow-ignore-next-line unused-class-member -- Read by dbRoutes before allowing a session fork.
+	hasActiveRealtime(): boolean {
+		return this.realtimeMode !== null || this.realtimeStopPromise !== null;
+	}
+
+	private assertRealtimeIdle(action: string): void {
+		if (this.realtimeMode === "live" || this.realtimeStopMode === "live") {
+			throw new Error(`Stop Raven Live before ${action}.`);
+		}
+	}
+
+	private async drainRealtimeTranscriptWrites(): Promise<void> {
+		for (;;) {
+			const pending = this.realtimeTranscriptWriteTail;
+			await pending.catch(() => {});
+			if (pending === this.realtimeTranscriptWriteTail) return;
+		}
+	}
+
 	abort(): void {
+		this.realtimeGeneration += 1;
 		this.unregisterUmbodApprovalSession?.();
 		this.unregisterUmbodApprovalSession = null;
 		this.permissions.clearAll();
@@ -2806,16 +3503,28 @@ export class SessionManager {
 		// Slice B: tear down the long-lived AgentSession so the next runQuery
 		// rebuilds the SDK stream from scratch.
 		this.stopBackgroundActivityObserver();
+		if (
+			this.realtimeAgentSession &&
+			this.realtimeAgentSession !== this.agentSession
+		) {
+			this.realtimeAgentSession.cancel();
+		}
+		this.realtimeAgentSession = null;
 		this.agentSession?.cancel();
 		this.agentSession = null;
 		this.agentSessionKey = null;
 		this.realtimeMode = null;
+		this.realtimeRequestId = null;
+		this.realtimeCloseNotifier = null;
 		this.realtimeStopPromise = null;
+		this.realtimeStopMode = null;
+		this.realtimeStoppingGeneration = null;
 		this.restartAgentSessionForEffort = false;
 	}
 
 	/** Stop native processes while retaining every pre-dispatch durable turn. */
 	suspendForRestart(): void {
+		this.realtimeGeneration += 1;
 		this.suspendingForRestart = true;
 		this.unregisterUmbodApprovalSession?.();
 		this.unregisterUmbodApprovalSession = null;
@@ -2824,11 +3533,22 @@ export class SessionManager {
 		this.planModeManager.clearAll();
 		this.abortController?.abort();
 		this.stopBackgroundActivityObserver();
+		if (
+			this.realtimeAgentSession &&
+			this.realtimeAgentSession !== this.agentSession
+		) {
+			this.realtimeAgentSession.cancel();
+		}
+		this.realtimeAgentSession = null;
 		this.agentSession?.cancel();
 		this.agentSession = null;
 		this.agentSessionKey = null;
 		this.realtimeMode = null;
+		this.realtimeRequestId = null;
+		this.realtimeCloseNotifier = null;
 		this.realtimeStopPromise = null;
+		this.realtimeStopMode = null;
+		this.realtimeStoppingGeneration = null;
 	}
 
 	/**
@@ -2848,10 +3568,31 @@ export class SessionManager {
 		const retiresOverride = Boolean(
 			this.providerOverride && providerIds.has(this.providerOverride),
 		);
-		if (!retiresActiveSession && !retiresResumeSession && !retiresOverride) {
+		const retiresRealtimeSession = Boolean(
+			this.realtimeAgentSession && providerIds.has("codex"),
+		);
+		if (
+			!retiresActiveSession &&
+			!retiresResumeSession &&
+			!retiresOverride &&
+			!retiresRealtimeSession
+		) {
 			return false;
 		}
 
+		if (retiresRealtimeSession) {
+			this.realtimeGeneration += 1;
+			if (this.realtimeAgentSession !== this.agentSession) {
+				this.realtimeAgentSession?.cancel();
+			}
+			this.realtimeAgentSession = null;
+			this.realtimeMode = null;
+			this.realtimeRequestId = null;
+			this.realtimeCloseNotifier = null;
+			this.realtimeStopPromise = null;
+			this.realtimeStopMode = null;
+			this.realtimeStoppingGeneration = null;
+		}
 		if (retiresActiveSession) {
 			this.stopBackgroundActivityObserver();
 			this.agentSession?.cancel();
@@ -3080,7 +3821,7 @@ export class SessionManager {
 			const label = userMessage.slice(0, SESSION_LABEL_LENGTH).toUpperCase();
 			this.currentSessionLabel = label;
 			const agentSettings = this.agentCwd
-				? this.agentSettingsMap.get(this.agentCwd)
+				? this.agentSettingsMap.get(agentMapKey(this.agentCwd))
 				: undefined;
 			const selectedModel =
 				this.modelOverride !== null
@@ -3752,6 +4493,16 @@ export class SessionManager {
 			.catch((e) => logDbError("setMessageProviderTurnId", e));
 	}
 
+	private trackToolMetadataWrite(
+		turn: TurnState,
+		write: Promise<void>,
+		label: string,
+	): void {
+		const tracked = write.catch((error) => logDbError(label, error));
+		turn.pendingToolMetadataWrites.add(tracked);
+		void tracked.finally(() => turn.pendingToolMetadataWrites.delete(tracked));
+	}
+
 	private handleToolStart(
 		event: Extract<AgentEvent, { type: "tool_start" }>,
 		turn: TurnState,
@@ -3813,15 +4564,19 @@ export class SessionManager {
 					turn.persistedToolIds.add(toolId);
 					const latest = turn.pendingToolUpdates.get(toolId);
 					if (latest) {
-						void db
-							.setToolEventSubagent(sessionId, toolId, latest)
-							.catch((e) => logDbError("setToolEventSubagent (live)", e));
+						this.trackToolMetadataWrite(
+							turn,
+							db.setToolEventSubagent(sessionId, toolId, latest),
+							"setToolEventSubagent (live)",
+						);
 					}
 					const latestActivity = turn.pendingToolActivityUpdates.get(toolId);
 					if (latestActivity) {
-						void db
-							.setToolEventActivity(sessionId, toolId, latestActivity)
-							.catch((e) => logDbError("setToolEventActivity (live)", e));
+						this.trackToolMetadataWrite(
+							turn,
+							db.setToolEventActivity(sessionId, toolId, latestActivity),
+							"setToolEventActivity (live)",
+						);
 					}
 					return true;
 				})
@@ -3852,9 +4607,11 @@ export class SessionManager {
 		if (pending) pending.subagent = event.subagent;
 		emit({ type: "tool_update", id: event.toolId, subagent: event.subagent });
 		if (sessionId && turn.persistedToolIds.has(event.toolId)) {
-			void db
-				.setToolEventSubagent(sessionId, event.toolId, event.subagent)
-				.catch((e) => logDbError("setToolEventSubagent (live)", e));
+			this.trackToolMetadataWrite(
+				turn,
+				db.setToolEventSubagent(sessionId, event.toolId, event.subagent),
+				"setToolEventSubagent (live)",
+			);
 		}
 	}
 
@@ -3875,9 +4632,11 @@ export class SessionManager {
 			taskActivity: event.taskActivity,
 		});
 		if (sessionId && turn.persistedToolIds.has(event.toolId)) {
-			void db
-				.setToolEventActivity(sessionId, event.toolId, event.taskActivity)
-				.catch((e) => logDbError("setToolEventActivity (live)", e));
+			this.trackToolMetadataWrite(
+				turn,
+				db.setToolEventActivity(sessionId, event.toolId, event.taskActivity),
+				"setToolEventActivity (live)",
+			);
 		}
 	}
 
@@ -4404,6 +5163,7 @@ export class SessionManager {
 		emit: (msg: ServerMessage) => void,
 		options: RunQueryOptions = {},
 	): Promise<void> {
+		this.assertRealtimeIdle("sending a message");
 		const args: RunQueryArgs = { userMessage, emit, options };
 		if (isDurableInteractiveTurn(args)) {
 			args.durableReady = this.persistDurableTurn(args);
@@ -6024,6 +6784,52 @@ export class SessionManager {
 		});
 	}
 
+	private createDetachedRealtimeAgentSession(options: {
+		provider: AgentProvider;
+		activeCwd: string;
+		executable: string | undefined;
+		agentSettings: AgentSettings | undefined;
+		agentMode: "cwd" | "context";
+	}): AgentSession {
+		const { provider, activeCwd, executable, agentSettings, agentMode } =
+			options;
+		return provider.query(
+			buildAgentQueryParams({
+				activeCwd,
+				providerId: provider.providerId,
+				vaultName: this.vaultName,
+				agentMode,
+				hostSessionId: undefined,
+				resumeProviderSessionId: null,
+				historyResumeMode: "none",
+				persistSession: false,
+				extraDirs: new Set(),
+				signal: undefined,
+				agentSettings,
+				modelOverride: this.modelOverride,
+				effortOverride: this.effortOverride,
+				serviceTierOverride: this.serviceTierOverride,
+				defaultModel: this.agentCwd ? undefined : this.model,
+				configuredPermissionMode: "default",
+				planMode: false,
+				planHtmlPath: null,
+				defaultEffort: this.effort,
+				defaultMaxTurns: 1,
+				executable,
+				windowsComputerUse: undefined,
+				policyEnforced: false,
+				usageGateEnforced: false,
+				codexRealtimeEnabled: this.codexRealtimeEnabled,
+				sandboxModeOverride: "read-only",
+				beforeToolUse: undefined,
+				canUseTool: async () => ({
+					behavior: "deny",
+					message: "Isolated speech sessions cannot use tools.",
+				}),
+			}),
+		);
+	}
+
 	private getOrCreateAgentSession(options: {
 		provider: AgentProvider;
 		sessionId: string | undefined;
@@ -6035,6 +6841,8 @@ export class SessionManager {
 		planMode: boolean | undefined;
 		emit: (msg: ServerMessage) => void;
 		onGoalChange?: AgentQueryParams["onGoalChange"];
+		/** Dictation owns an isolated process and must not initialize the ordinary thread. */
+		observeBackgroundActivities?: boolean;
 	}): AgentSession {
 		const {
 			provider,
@@ -6047,6 +6855,7 @@ export class SessionManager {
 			planMode,
 			emit,
 			onGoalChange,
+			observeBackgroundActivities = true,
 		} = options;
 		const desiredKey = `${provider.providerId}|${sessionId ?? "ephemeral"}|${this.agentCwd ?? ""}`;
 		if (
@@ -6066,10 +6875,12 @@ export class SessionManager {
 			if (onGoalChange) {
 				this.agentSession.setGoalChangeHandler?.(onGoalChange);
 			}
-			this.startBackgroundActivityObserver(
-				this.agentSession,
-				provider.providerId,
-			);
+			if (observeBackgroundActivities) {
+				this.startBackgroundActivityObserver(
+					this.agentSession,
+					provider.providerId,
+				);
+			}
 			return this.agentSession;
 		}
 		this.restartProviderRuntimeAfterTurn = false;
@@ -6134,7 +6945,9 @@ export class SessionManager {
 		this.agentSession = session;
 		this.agentSessionKey = desiredKey;
 		this.restartAgentSessionForEffort = false;
-		this.startBackgroundActivityObserver(session, provider.providerId);
+		if (observeBackgroundActivities) {
+			this.startBackgroundActivityObserver(session, provider.providerId);
+		}
 		return session;
 	}
 
@@ -6154,11 +6967,12 @@ export class SessionManager {
 				? this.providers.get(this.providerSessionProviderId)
 				: undefined) ?? configuredProvider;
 		const configuredProviderId = this.agentCwd
-			? (this.agentProviderMap.get(this.agentCwd) ?? this.vaultProviderId)
+			? (this.agentProviderMap.get(agentMapKey(this.agentCwd)) ??
+				this.vaultProviderId)
 			: this.vaultProviderId;
 		const agentSettings =
 			this.agentCwd && provider.providerId === configuredProviderId
-				? this.agentSettingsMap.get(this.agentCwd)
+				? this.agentSettingsMap.get(agentMapKey(this.agentCwd))
 				: undefined;
 		const sameProvider = this.providerSessionProviderId === provider.providerId;
 		const resumeProviderSessionId = sameProvider

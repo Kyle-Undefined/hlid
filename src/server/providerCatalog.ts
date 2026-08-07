@@ -30,6 +30,8 @@ export type CachedList<T> = {
 	get(refresh?: boolean): Promise<{ value: T; source: CatalogSource }>;
 	/** Return memory/persisted/fallback immediately without awaiting discovery. */
 	getCached(): Promise<{ value: T; source: CatalogSource }>;
+	/** Retire this cache so an obsolete in-flight fetch cannot publish stale data. */
+	dispose(): void;
 };
 
 const DEFAULT_TTL_MS = 6 * 3600_000;
@@ -64,6 +66,10 @@ export function createCachedList<T>(opts: {
 	fetchTimeoutMs?: number;
 	/** How long to reuse persisted/fallback data before retrying a failed fetch. */
 	failureTtlMs?: number;
+	/** Skip persisted data when this cache represents a changed runtime identity. */
+	allowPersistedFallback?: boolean;
+	/** Make the first cached read wait for bounded live discovery. */
+	waitForInitialFetch?: boolean;
 	fetcher: () => Promise<T>;
 	fallback: T;
 	/** Called after a successful live fetch refreshes the in-memory snapshot. */
@@ -80,8 +86,12 @@ export function createCachedList<T>(opts: {
 		source: CatalogSource;
 	} | null = null;
 	let inflight: Promise<{ value: T; source: CatalogSource }> | null = null;
+	let disposed = false;
 
 	async function readPersisted(): Promise<{ value: T; source: CatalogSource }> {
+		if (opts.allowPersistedFallback === false) {
+			return { value: opts.fallback, source: "fallback" };
+		}
 		try {
 			const raw = await db.getSetting(opts.persistKey);
 			if (raw != null) {
@@ -102,6 +112,7 @@ export function createCachedList<T>(opts: {
 			const value = fetchTimeoutMs
 				? await withTimeout(fetch, fetchTimeoutMs)
 				: await fetch;
+			if (disposed) return { value, source: "live" };
 			memory = { value, fetchedAt: Date.now(), source: "live" };
 			void db
 				.saveSetting(opts.persistKey, JSON.stringify(value))
@@ -119,28 +130,39 @@ export function createCachedList<T>(opts: {
 			// A failed warm-up used to leave the cache empty, so every Raven loader
 			// immediately spawned another inspection process and concurrent tabs all
 			// waited on it. Reuse the safe value briefly before a later retry.
-			memory = { ...fallback, fetchedAt: Date.now() };
+			if (!disposed) memory = { ...fallback, fetchedAt: Date.now() };
 			return fallback;
 		}
 	}
 
+	function getValue(
+		refresh = false,
+	): Promise<{ value: T; source: CatalogSource }> {
+		const memoryTtl = memory?.source === "live" ? ttlMs : failureTtlMs;
+		if (!refresh && memory && Date.now() - memory.fetchedAt < memoryTtl) {
+			return Promise.resolve({ value: memory.value, source: "memory" });
+		}
+		if (inflight) return inflight;
+		const pending = doFetch().finally(() => {
+			inflight = null;
+		});
+		inflight = pending;
+		return pending;
+	}
+
 	return {
 		get(refresh = false) {
-			const memoryTtl = memory?.source === "live" ? ttlMs : failureTtlMs;
-			if (!refresh && memory && Date.now() - memory.fetchedAt < memoryTtl) {
-				return Promise.resolve({ value: memory.value, source: "memory" });
-			}
-			if (inflight) return inflight;
-			const p = doFetch().finally(() => {
-				inflight = null;
-			});
-			inflight = p;
-			return p;
+			return getValue(refresh);
 		},
 		getCached() {
 			if (memory)
 				return Promise.resolve({ value: memory.value, source: "memory" });
+			if (opts.waitForInitialFetch) return getValue();
 			return readPersisted();
+		},
+		dispose() {
+			disposed = true;
+			memory = null;
 		},
 	};
 }
@@ -160,12 +182,17 @@ export function createModelCatalog(
 ): {
 	modelsFor(p: AgentProvider, refresh?: boolean): Promise<ProviderModelInfo[]>;
 	cachedModelsFor(p: AgentProvider): Promise<ProviderModelInfo[]>;
-	register(p: AgentProvider): void;
+	register(p: AgentProvider, options?: { refreshIdentity?: boolean }): void;
 	/** Fire-and-forget warm-up of every provider's cache; never rejects. */
 	warm(): void;
 } {
 	const caches = new Map<string, CachedList<ProviderModelInfo[]>>();
-	const register = (p: AgentProvider) => {
+	const register = (
+		p: AgentProvider,
+		options: { refreshIdentity?: boolean } = {},
+	) => {
+		caches.get(p.providerId)?.dispose();
+		caches.delete(p.providerId);
 		if (!p.listModels) return;
 		const listModels = p.listModels.bind(p);
 		caches.set(
@@ -175,6 +202,8 @@ export function createModelCatalog(
 				fetcher: () => listModels(),
 				fallback: staticModels(p),
 				fetchTimeoutMs: 12_000,
+				allowPersistedFallback: !options.refreshIdentity,
+				waitForInitialFetch: options.refreshIdentity,
 				onChange: () => onChange?.(p.providerId),
 			}),
 		);
@@ -193,8 +222,9 @@ export function createModelCatalog(
 			const cache = caches.get(p.providerId);
 			if (!cache) return staticModels(p);
 			const { value } = await cache.getCached();
-			// Refresh stale/missing discovery in the background. Navigation gets the
-			// last safe value instead of waiting on an external CLI inspection.
+			// Normal navigation gets the last safe value while refreshing in the
+			// background. A cache replaced for a runtime identity change waits once
+			// for bounded live discovery so stale binary metadata cannot leak through.
 			void cache.get().catch(() => {});
 			return value;
 		},
@@ -253,7 +283,10 @@ export function createProviderCapabilityCatalog(
 		if (existing) return existing.cache;
 		if (caches.size >= MAX_PROVIDER_CAPABILITY_WORKSPACES) {
 			const oldest = caches.keys().next().value;
-			if (oldest !== undefined) caches.delete(oldest);
+			if (oldest !== undefined) {
+				caches.get(oldest)?.cache.dispose();
+				caches.delete(oldest);
+			}
 		}
 		const discover = provider.discoverCapabilities.bind(provider);
 		const workspaceHash = createHash("sha256")
@@ -280,7 +313,9 @@ export function createProviderCapabilityCatalog(
 	const register = (provider: AgentProvider) => {
 		registered.set(provider.providerId, provider);
 		for (const [key, value] of caches) {
-			if (value.providerId === provider.providerId) caches.delete(key);
+			if (value.providerId !== provider.providerId) continue;
+			value.cache.dispose();
+			caches.delete(key);
 		}
 	};
 
@@ -574,14 +609,16 @@ export function createProviderCatalogSnapshot(
 			includeProviderCapabilities,
 			discoveryCwd,
 		);
-		const flightKey = `${snapshotKey}:${loadOptions?.refresh ? "live" : "cached"}:${
+		const refreshGeneration = generation;
+		const flightKey = `${refreshGeneration}:${snapshotKey}:${
+			loadOptions?.refresh ? "live" : "cached"
+		}:${
 			loadOptions.preferCachedProviderCapabilities === false
 				? "await-provider"
 				: "cached-provider"
 		}`;
 		const current = inflight.get(flightKey);
 		if (current) return current;
-		const refreshGeneration = generation;
 		const pending = load(providerList(), catalog, {
 			...loadOptions,
 			discoveryCwd,

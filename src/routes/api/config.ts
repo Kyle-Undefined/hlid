@@ -17,10 +17,12 @@ export async function handleGetConfig(request: Request): Promise<Response> {
 export async function handlePostConfig(request: Request): Promise<Response> {
 	const forbidden = forbiddenResponse(request);
 	if (forbidden) return forbidden;
+	let current: ReturnType<typeof HlidConfigSchema.parse>;
 	let config: ReturnType<typeof HlidConfigSchema.parse>;
 	try {
+		current = loadConfig();
 		config = HlidConfigSchema.parse(
-			restoreConfigSecrets(await request.json(), loadConfig()),
+			restoreConfigSecrets(await request.json(), current),
 		);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : "Invalid config";
@@ -61,8 +63,37 @@ export async function handlePostConfig(request: Request): Promise<Response> {
 		return Response.json({ error: "Failed to write config" }, { status: 500 });
 	}
 	void dbFetch("/voice/sync", { method: "POST" }).catch(() => {});
-	void dbFetch("/cliproxy/sync", { method: "POST" }).catch(() => {});
-	return Response.json({ ok: true });
+	const runtimeSync = dbFetch("/cliproxy/sync", { method: "POST" });
+	const codexRuntimeIdentityChanged =
+		current.voice.codex_live_mode !== config.voice.codex_live_mode ||
+		current.codex.executable !== config.codex.executable;
+	if (!codexRuntimeIdentityChanged) {
+		void runtimeSync.catch(() => {});
+		return Response.json({ ok: true });
+	}
+	// Realtime launch flags and the executable are process identity. Wait for the
+	// runtime transition, while keeping the already-persisted config save truthful
+	// if the follow-up synchronization itself fails.
+	let runtimeWarning: string | undefined;
+	try {
+		const response = await runtimeSync;
+		if (!response.ok) {
+			runtimeWarning = `Codex runtime synchronization returned ${response.status}.`;
+		}
+	} catch (error) {
+		runtimeWarning = `Codex runtime synchronization failed: ${
+			error instanceof Error ? error.message : String(error)
+		}.`;
+	}
+	if (runtimeWarning) {
+		console.warn(`[config] ${runtimeWarning}`);
+		return Response.json({
+			ok: true,
+			runtime_synced: false,
+			warning: runtimeWarning,
+		});
+	}
+	return Response.json({ ok: true, runtime_synced: true });
 }
 
 export const Route = createFileRoute("/api/config")({

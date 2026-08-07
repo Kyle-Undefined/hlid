@@ -9,32 +9,8 @@ import type { MicrosoftVoiceInventory } from "./useReadAloudControls";
 const RATE_OPTIONS = [0.75, 1, 1.25, 1.5, 2] as const;
 const WINDOWS_VOICE_GUIDE =
 	"https://support.microsoft.com/en-us/accessibility/windows/narrator/appendix-a-supported-languages-and-voices";
-const CODEX_VOICES = [
-	"alloy",
-	"arbor",
-	"ash",
-	"ballad",
-	"breeze",
-	"cedar",
-	"coral",
-	"cove",
-	"echo",
-	"ember",
-	"juniper",
-	"maple",
-	"marin",
-	"sage",
-	"shimmer",
-	"sol",
-	"spruce",
-	"vale",
-	"verse",
-] as const;
-
 type VoiceConfig = HlidConfig["voice"];
-export type ReadAloudViewPreferences = ReadAloudPreferences & {
-	codexVoice: VoiceConfig["codex_voice"];
-};
+export type ReadAloudViewPreferences = ReadAloudPreferences;
 export type ReadAloudUpdater = (patch: Partial<VoiceConfig>) => void;
 type PreviewControls = {
 	state: "idle" | "loading" | "playing";
@@ -47,12 +23,10 @@ const selectClass =
 
 export function SpeechEngineField({
 	preferences,
-	voice,
 	microsoft,
 	update,
 }: {
 	preferences: ReadAloudViewPreferences;
-	voice: VoiceConfig;
 	microsoft: MicrosoftVoiceInventory | null;
 	update: ReadAloudUpdater;
 }) {
@@ -73,18 +47,13 @@ export function SpeechEngineField({
 					Microsoft host
 				</option>
 				<option value="neural">Local neural</option>
-				{(voice.codex_live_mode || preferences.provider === "codex") && (
-					<option value="codex">Codex realtime · Developer Preview</option>
-				)}
 			</select>
 		</Field>
 	);
 }
 
 function readAloudProvider(value: string): VoiceConfig["read_aloud_provider"] {
-	return value === "microsoft" || value === "neural" || value === "codex"
-		? value
-		: "device";
+	return value === "microsoft" || value === "neural" ? value : "device";
 }
 
 function DeviceVoiceField({
@@ -359,38 +328,6 @@ function NeuralVoiceFields({
 	);
 }
 
-function CodexVoiceField({
-	voice,
-	update,
-}: {
-	voice: VoiceConfig["codex_voice"];
-	update: ReadAloudUpdater;
-}) {
-	return (
-		<Field
-			label="Codex voice"
-			hint="used for experimental Codex read aloud and Raven Live"
-		>
-			<select
-				value={voice}
-				onChange={(event) =>
-					update({
-						codex_voice: event.target.value as VoiceConfig["codex_voice"],
-					})
-				}
-				aria-label="Codex realtime voice"
-				className={selectClass}
-			>
-				{CODEX_VOICES.map((option) => (
-					<option key={option} value={option}>
-						{option}
-					</option>
-				))}
-			</select>
-		</Field>
-	);
-}
-
 export function ReadAloudProviderFields({
 	voice,
 	preferences,
@@ -437,7 +374,7 @@ export function ReadAloudProviderFields({
 			/>
 		);
 	}
-	return <CodexVoiceField voice={preferences.codexVoice} update={update} />;
+	return null;
 }
 
 export function ReadingSpeedField({

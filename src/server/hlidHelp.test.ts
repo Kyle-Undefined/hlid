@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { ProviderCapabilityDescriptor } from "../lib/providerCapabilityTypes";
+import type {
+	ProviderCapabilityDescriptor,
+	ProviderCapabilitySnapshot,
+} from "../lib/providerCapabilityTypes";
 import { runtimeEnvironments } from "./hlidCapabilityManifest";
 import {
 	buildHlidCapabilityManifest,
@@ -50,6 +53,29 @@ function providerHelpContext(
 				capabilities,
 			},
 		},
+	};
+}
+
+function codexRealtimeFeatureSnapshot(
+	enabled: boolean,
+): ProviderCapabilitySnapshot {
+	return {
+		contractVersion: 1,
+		providerId: "codex",
+		status: "current",
+		source: "live",
+		revision: `v1-realtime-${enabled ? "enabled" : "disabled"}`,
+		observedAt: 1,
+		capabilities: [
+			providerCapability({
+				id: "codex:experimental-feature:realtime_conversation",
+				label: "Realtime conversation",
+				scope: "provider",
+				integration: "provider-native",
+				readiness: enabled ? "ready" : "unavailable",
+				availability: enabled ? "provider-native" : "unavailable",
+			}),
+		],
 	};
 }
 
@@ -651,7 +677,7 @@ describe("Hlid operating guidance", () => {
 		expect(parsed.orchestrationTargets.providers[0].id).toBe("provider-0");
 	});
 
-	it("derives Computer Use and realtime audio from live host, feature, model, and backend evidence", () => {
+	it("derives Computer Use and voice modes from live host, feature, model, and backend evidence", () => {
 		const context = {
 			providerId: "codex",
 			model: "gpt-audio",
@@ -679,6 +705,7 @@ describe("Hlid operating guidance", () => {
 					>,
 					realtime: true,
 				},
+				capabilitySnapshot: codexRealtimeFeatureSnapshot(true),
 				hostCapabilities: {
 					windowsComputerUse: {
 						label: "Windows Computer Use",
@@ -699,6 +726,7 @@ describe("Hlid operating guidance", () => {
 			availability: "available",
 			modes: {
 				local_dictation: { availability: "available" },
+				codex_dictation: { availability: "provider-native" },
 				native_audio_input: {
 					availability: "provider-native",
 					providerGuidance: {
@@ -735,11 +763,102 @@ describe("Hlid operating guidance", () => {
 			availability: "available",
 			modes: {
 				local_dictation: { availability: "available" },
+				codex_dictation: { availability: "unavailable" },
 				native_audio_input: { availability: "provider-native" },
 				raven_live: { availability: "unavailable" },
 			},
 		});
 		expect(disabled.registry.revision).not.toBe(manifest.registry.revision);
+	});
+
+	it("keeps coding-model audio separate from Raven Live readiness", () => {
+		const context: HlidOperatingContext = {
+			providerId: "codex",
+			model: "gpt-text",
+			codexRealtimeEnabled: true,
+			providerSnapshot: {
+				id: "codex",
+				label: "Codex",
+				available: true,
+				models: [
+					{
+						value: "gpt-text",
+						label: "Text and image",
+						inputModalities: ["text", "image"],
+					},
+				],
+				capabilities: { realtime: true },
+				capabilitySnapshot: codexRealtimeFeatureSnapshot(true),
+			},
+		};
+		const unknownBackend = buildHlidCapabilityManifest(context);
+
+		expect(
+			unknownBackend.capabilities.find((item) => item.id === "voice_audio"),
+		).toMatchObject({
+			modes: {
+				native_audio_input: { availability: "unavailable" },
+				codex_dictation: { availability: "conditional" },
+				raven_live: { availability: "conditional" },
+			},
+		});
+
+		const accepted = buildHlidCapabilityManifest({
+			...context,
+			codexRealtimeBackendAvailable: true,
+		});
+		expect(
+			accepted.capabilities.find((item) => item.id === "voice_audio"),
+		).toMatchObject({
+			modes: {
+				codex_dictation: { availability: "provider-native" },
+				raven_live: { availability: "provider-native" },
+			},
+		});
+
+		const providerSnapshot = context.providerSnapshot;
+		if (!providerSnapshot) throw new Error("Codex provider fixture is missing");
+		const featureDisabled = buildHlidCapabilityManifest({
+			...context,
+			providerSnapshot: {
+				...providerSnapshot,
+				capabilitySnapshot: codexRealtimeFeatureSnapshot(false),
+			},
+		});
+		expect(
+			featureDisabled.capabilities.find((item) => item.id === "voice_audio"),
+		).toMatchObject({
+			modes: {
+				codex_dictation: { availability: "conditional" },
+				raven_live: { availability: "unavailable" },
+			},
+		});
+
+		const accountRejected = buildHlidCapabilityManifest({
+			...context,
+			codexRealtimeBackendAvailable: false,
+			codexRealtimeBackendReason:
+				"Codex realtime voice is not available for this ChatGPT account yet.",
+		});
+		expect(
+			accountRejected.capabilities.find((item) => item.id === "voice_audio"),
+		).toMatchObject({
+			modes: {
+				codex_dictation: {
+					availability: "unavailable",
+					summary:
+						"Codex realtime voice is not available for this ChatGPT account yet.",
+				},
+				raven_live: {
+					availability: "unavailable",
+					summary:
+						"Codex realtime voice is not available for this ChatGPT account yet.",
+				},
+			},
+		});
+		expect(accountRejected.registry.revision).not.toBe(
+			unknownBackend.registry.revision,
+		);
 	});
 
 	it("keeps realtime conditional until the backend accepts a session", () => {
@@ -759,6 +878,7 @@ describe("Hlid operating guidance", () => {
 					},
 				],
 				capabilities: { realtime: true },
+				capabilitySnapshot: codexRealtimeFeatureSnapshot(true),
 			},
 		});
 		expect(
@@ -767,9 +887,33 @@ describe("Hlid operating guidance", () => {
 			availability: "available",
 			modes: {
 				native_audio_input: { availability: "provider-native" },
+				codex_dictation: { availability: "conditional" },
 				raven_live: { availability: "conditional" },
 			},
 		});
+	});
+
+	it("explains that dictation, Talk to Codex, and Raven Live have independent gates", () => {
+		const response = JSON.parse(
+			buildHlidHelpResponse("voice_audio", {
+				providerId: "codex",
+				codexRealtimeEnabled: true,
+			}),
+		) as { guidance: string[] };
+		const guidance = response.guidance.join(" ");
+
+		expect(guidance).toContain(
+			"Codex realtime dictation is separate editable composer input.",
+		);
+		expect(guidance).toContain(
+			"it does not require an audio-capable selected coding model",
+		);
+		expect(guidance).toContain(
+			"Talk to Codex is a normal provider audio turn and requires an audio-capable selected coding model.",
+		);
+		expect(guidance).toContain(
+			"Raven Live is an ongoing realtime conversation.",
+		);
 	});
 
 	it("keeps registry revisions stable across equivalent input ordering", () => {

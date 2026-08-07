@@ -88,12 +88,14 @@ const CATEGORIES = [
 			"Custom theme",
 			"Custom palette",
 			"Read aloud",
+			"Codex realtime",
+			"Raven Live",
 			"Voice input",
 			"Whisper models",
 			"Privacy",
 		],
 		keywords:
-			"theme mobile enter skills plans read aloud speech speaker whisper microphone demo",
+			"theme mobile enter skills plans read aloud speech speaker whisper microphone codex realtime raven live developer preview demo",
 		group: "primary",
 	},
 	{
@@ -766,10 +768,27 @@ function SaveStatus({
 			{!state.saving && !state.error && state.dirty && (
 				<span className="text-status-warning">Unsaved changes…</span>
 			)}
-			{!state.dirty && state.savedMsg === "saved" && (
+			{!state.saving && !state.error && !state.dirty && state.warning && (
+				<span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-2 text-status-warning">
+					{state.savedMsg === "restart" && (
+						<button
+							type="button"
+							onClick={onRestartRequired}
+							className="shrink-0 border border-status-warning/40 px-1.5 py-0.5 hover:bg-status-warning/10"
+						>
+							Restart required
+						</button>
+					)}
+					<span className="min-w-0 break-words [overflow-wrap:anywhere]">
+						{state.savedMsg === "restart" ? "Changes saved. " : "Saved. "}
+						{state.warning}
+					</span>
+				</span>
+			)}
+			{!state.dirty && !state.warning && state.savedMsg === "saved" && (
 				<span className="text-status-success">Saved</span>
 			)}
-			{state.savedMsg === "restart" && (
+			{!state.warning && state.savedMsg === "restart" && (
 				<span className="inline-flex items-center gap-2 text-status-warning">
 					<button
 						type="button"

@@ -515,6 +515,9 @@ const BUFFERED_MESSAGE_TYPES: ReadonlySet<ServerMessage["type"]> = new Set([
 	"ask_user_question_resolved",
 	"plan_mode_exit",
 	"plan_mode_exit_resolved",
+	"realtime_transcript",
+	"realtime_state",
+	"realtime_error",
 ]);
 
 function updateMessageBuffer(msg: ServerMessage): void {

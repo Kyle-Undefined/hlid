@@ -234,7 +234,7 @@ describe("writeConfig — voice section", () => {
 		expect(toml).toContain("tts_threads = 8");
 	});
 
-	it("preserves Talk to Codex input and realtime Developer Preview", () => {
+	it("preserves Talk to Codex while migrating legacy Codex read aloud", () => {
 		const config = HlidConfigSchema.parse({
 			voice: {
 				input_provider: "codex",
@@ -246,9 +246,26 @@ describe("writeConfig — voice section", () => {
 		writeConfig(config);
 		const toml = capturedToml();
 		expect(toml).toContain('input_provider = "codex"');
-		expect(toml).toContain('read_aloud_provider = "codex"');
+		expect(toml).toContain('read_aloud_provider = "device"');
 		expect(toml).toContain('codex_voice = "cedar"');
 		expect(toml).toContain("codex_live_mode = true");
+	});
+
+	it("round-trips Codex realtime dictation without changing the default", () => {
+		const config = HlidConfigSchema.parse({
+			voice: {
+				input_provider: "codex_dictation",
+				codex_live_mode: true,
+			},
+		});
+		const toml = serializeConfig(config);
+		expect(toml).toContain('input_provider = "codex_dictation"');
+		expect(HlidConfigSchema.parse(parse(toml)).voice.input_provider).toBe(
+			"codex_dictation",
+		);
+		expect(HlidConfigSchema.parse({ voice: {} }).voice.input_provider).toBe(
+			"local",
+		);
 	});
 
 	it("allows the recording hotkey to be cleared", () => {

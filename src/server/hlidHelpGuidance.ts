@@ -94,9 +94,11 @@ export const TOPIC_GUIDANCE: Record<HlidHelpTopic, string[]> = {
 		"The worker closes after the task while its progress, usage, duration, and estimated cost remain associated with Hlid.",
 	],
 	voice_audio: [
-		"Local Whisper dictation is user input and is separate from provider-native audio turns or Raven Live.",
+		"Local Whisper dictation is editable user input produced by Hlid's local speech model.",
+		"Codex realtime dictation is separate editable composer input. It requires the native Codex realtime capability, the Hlid preview setting, and account backend support, but it does not require an audio-capable selected coding model.",
 		"Local neural read aloud is host-generated output. It uses its own downloaded model and runtime, independently of Whisper input and provider-native audio.",
-		"Native Codex audio requires an audio-capable selected model. Raven Live additionally requires the Hlid feature flag and provider backend support.",
+		"Talk to Codex is a normal provider audio turn and requires an audio-capable selected coding model.",
+		"Raven Live is an ongoing realtime conversation. It is independent of the selected coding model's audio modalities and requires the Hlid preview setting, the provider realtime feature, and account backend support.",
 		"Do not claim audio or realtime availability from the provider name alone; use the live capability state.",
 	],
 	providers: [

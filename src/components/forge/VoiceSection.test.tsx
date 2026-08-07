@@ -8,6 +8,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_VOICE_CONFIG } from "#/config";
+import type { ProviderInfo } from "#/lib/providerTypes";
 
 const server = vi.hoisted(() => ({
 	getInfo: vi.fn(),
@@ -53,6 +54,26 @@ const baseInfo: VoiceInfo = {
 			recommended: true,
 			downloadUrl: "https://example.test/base.bin",
 			installed: false,
+		},
+	],
+};
+
+const codexProvider: ProviderInfo = {
+	id: "codex",
+	label: "Codex",
+	available: true,
+	capabilities: { realtime: true },
+	models: [
+		{
+			value: "text-model",
+			label: "Text Model",
+			isDefault: true,
+			inputModalities: ["text", "image"],
+		},
+		{
+			value: "audio-model",
+			label: "Audio Model",
+			inputModalities: ["text", "image", "audio"],
 		},
 	],
 };
@@ -235,27 +256,203 @@ describe("VoiceSection", () => {
 		).toBeTruthy();
 	});
 
-	it("keeps microphone actions separate from realtime Developer Preview", () => {
+	it("presents Whisper, Codex dictation, and Talk to Codex separately", () => {
 		const onChange = vi.fn();
 		render(
 			<VoiceSection
+				voice={{ ...DEFAULT_VOICE_CONFIG, codex_live_mode: true }}
+				onChange={onChange}
+				initialInfo={baseInfo}
+				codexProvider={codexProvider}
+				codexModel="audio-model"
+			/>,
+		);
+
+		const microphoneAction = screen.getByLabelText(
+			"Microphone action",
+		) as HTMLSelectElement;
+		expect(microphoneAction.value).toBe("local");
+		expect(
+			screen.getByRole("option", { name: "Dictate with Whisper" }),
+		).toBeTruthy();
+		expect(
+			(
+				screen.getByRole("option", {
+					name: "Dictate with Codex · Preview",
+				}) as HTMLOptionElement
+			).disabled,
+		).toBe(false);
+		expect(
+			(
+				screen.getByRole("option", {
+					name: "Talk to Codex",
+				}) as HTMLOptionElement
+			).disabled,
+		).toBe(false);
+		fireEvent.change(microphoneAction, {
+			target: { value: "codex_dictation" },
+		});
+		expect(onChange).toHaveBeenCalledWith({
+			input_provider: "codex_dictation",
+		});
+		fireEvent.change(screen.getByLabelText("Microphone action"), {
+			target: { value: "codex" },
+		});
+		expect(onChange).toHaveBeenCalledWith({ input_provider: "codex" });
+		fireEvent.click(
+			screen.getByRole("checkbox", { name: "Developer Preview" }),
+		);
+
+		expect(onChange).toHaveBeenCalledWith({
+			codex_live_mode: false,
+		});
+		fireEvent.change(screen.getByLabelText("Codex realtime voice"), {
+			target: { value: "cedar" },
+		});
+		expect(onChange).toHaveBeenCalledWith({ codex_voice: "cedar" });
+		expect(
+			screen.getByText(
+				"Shared preview setup for two separate actions: Codex dictation and Raven Live.",
+			),
+		).toBeTruthy();
+	});
+
+	it("explains why Codex dictation is unavailable when preview is off", () => {
+		render(
+			<VoiceSection
 				voice={DEFAULT_VOICE_CONFIG}
+				onChange={vi.fn()}
+				initialInfo={baseInfo}
+				codexProvider={codexProvider}
+				codexModel="audio-model"
+			/>,
+		);
+
+		expect(
+			(
+				screen.getByRole("option", {
+					name: "Dictate with Codex · Preview · unavailable",
+				}) as HTMLOptionElement
+			).disabled,
+		).toBe(true);
+		expect(
+			screen.getByText(
+				"Enable Codex realtime Developer Preview to use Codex dictation.",
+			),
+		).toBeTruthy();
+	});
+
+	it("uses a known realtime backend rejection for Codex dictation", () => {
+		render(
+			<VoiceSection
+				voice={{ ...DEFAULT_VOICE_CONFIG, codex_live_mode: true }}
+				onChange={vi.fn()}
+				initialInfo={{
+					...baseInfo,
+					codexRealtimeBackend: {
+						available: false,
+						reason: "Realtime is unavailable for this account",
+					},
+				}}
+				codexProvider={codexProvider}
+				codexModel="audio-model"
+			/>,
+		);
+
+		expect(
+			(
+				screen.getByRole("option", {
+					name: "Dictate with Codex · Preview · unavailable",
+				}) as HTMLOptionElement
+			).disabled,
+		).toBe(true);
+		expect(
+			screen.getByText("Realtime is unavailable for this account"),
+		).toBeTruthy();
+	});
+
+	it("keeps draft behavior for Codex dictation without Whisper-only controls", () => {
+		render(
+			<VoiceSection
+				voice={{
+					...DEFAULT_VOICE_CONFIG,
+					codex_live_mode: true,
+					input_provider: "codex_dictation",
+				}}
+				onChange={vi.fn()}
+				initialInfo={baseInfo}
+				codexProvider={codexProvider}
+				codexModel="audio-model"
+			/>,
+		);
+
+		expect(screen.getByLabelText("After transcription")).toBeTruthy();
+		expect(screen.queryByLabelText("Whisper acceleration")).toBeNull();
+		expect(screen.queryByLabelText("Whisper threads")).toBeNull();
+	});
+
+	it("retains a disabled legacy Talk to Codex selection without audio models", () => {
+		const providerWithoutAudio: ProviderInfo = {
+			...codexProvider,
+			models: codexProvider.models?.slice(0, 1),
+		};
+		const { unmount } = render(
+			<VoiceSection
+				voice={DEFAULT_VOICE_CONFIG}
+				onChange={vi.fn()}
+				initialInfo={baseInfo}
+				codexProvider={providerWithoutAudio}
+				codexModel="text-model"
+			/>,
+		);
+		expect(screen.queryByRole("option", { name: /Talk to Codex/ })).toBeNull();
+
+		unmount();
+		render(
+			<VoiceSection
+				voice={{ ...DEFAULT_VOICE_CONFIG, input_provider: "codex" }}
+				onChange={vi.fn()}
+				initialInfo={baseInfo}
+				codexProvider={providerWithoutAudio}
+				codexModel="text-model"
+			/>,
+		);
+
+		const microphoneAction = screen.getByLabelText(
+			"Microphone action",
+		) as HTMLSelectElement;
+		expect(microphoneAction.value).toBe("codex");
+		expect(
+			(
+				screen.getByRole("option", {
+					name: "Talk to Codex · unavailable",
+				}) as HTMLOptionElement
+			).disabled,
+		).toBe(true);
+	});
+
+	it("disabling preview only resets Codex dictation", () => {
+		const onChange = vi.fn();
+		render(
+			<VoiceSection
+				voice={{
+					...DEFAULT_VOICE_CONFIG,
+					codex_live_mode: true,
+					input_provider: "codex_dictation",
+					read_aloud_provider: "codex",
+				}}
 				onChange={onChange}
 				initialInfo={baseInfo}
 			/>,
 		);
 
-		expect(
-			(screen.getByLabelText("Microphone action") as HTMLSelectElement).value,
-		).toBe("local");
-		fireEvent.change(screen.getByLabelText("Microphone action"), {
-			target: { value: "codex" },
-		});
-		expect(onChange).toHaveBeenCalledWith({ input_provider: "codex" });
-		fireEvent.click(screen.getByRole("checkbox", { name: "Codex realtime" }));
+		fireEvent.click(
+			screen.getByRole("checkbox", { name: "Developer Preview" }),
+		);
 
 		expect(onChange).toHaveBeenCalledWith({
-			codex_live_mode: true,
+			codex_live_mode: false,
+			input_provider: "local",
 		});
 	});
 });

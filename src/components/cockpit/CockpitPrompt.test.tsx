@@ -159,6 +159,45 @@ describe("CockpitPrompt placeholder", () => {
 		expect(textarea().disabled).toBe(true);
 	});
 
+	it("distinguishes Codex dictation from a Codex voice message", () => {
+		const { rerender } = render(
+			<CockpitPrompt
+				{...makeProps({
+					voice: makeVoice({
+						engine: "codex_dictation",
+						phase: "starting",
+					} as never),
+				})}
+			/>,
+		);
+		expect(textarea().placeholder).toBe("connecting Codex dictation…");
+
+		rerender(
+			<CockpitPrompt
+				{...makeProps({
+					voice: makeVoice({
+						engine: "codex_dictation",
+						phase: "recording",
+						seconds: 4,
+					} as never),
+				})}
+			/>,
+		);
+		expect(textarea().placeholder).toBe("dictating with Codex… 4s");
+
+		rerender(
+			<CockpitPrompt
+				{...makeProps({
+					voice: makeVoice({
+						engine: "codex_dictation",
+						phase: "transcribing",
+					} as never),
+				})}
+			/>,
+		);
+		expect(textarea().placeholder).toBe("finalizing Codex dictation…");
+	});
+
 	it("shows offline placeholder when disconnected", () => {
 		render(<CockpitPrompt {...makeProps({ isConnected: false })} />);
 		expect(textarea().placeholder).toBe("server offline…");
@@ -362,6 +401,27 @@ describe("VoiceButton", () => {
 		expect(voice.stop).toHaveBeenCalledOnce();
 		fireEvent.click(screen.getByRole("button", { name: "Cancel recording" }));
 		expect(voice.cancel).toHaveBeenCalledOnce();
+	});
+
+	it("shows a cancellable connecting state for Codex dictation", () => {
+		const voice = makeVoice({
+			engine: "codex_dictation",
+			phase: "starting",
+		} as never);
+		render(<CockpitPrompt {...makeProps({ voice })} />);
+
+		const connecting = screen.getByRole("button", {
+			name: "Connecting Codex dictation",
+		}) as HTMLButtonElement;
+		expect(connecting.disabled).toBe(true);
+		expect(connecting.querySelector(".animate-spin")).not.toBeNull();
+		expect(screen.queryByRole("button", { name: "Stop recording" })).toBeNull();
+		fireEvent.click(
+			screen.getByRole("button", { name: "Cancel Codex dictation" }),
+		);
+		expect(voice.cancel).toHaveBeenCalledOnce();
+		expect(voice.start).not.toHaveBeenCalled();
+		expect(voice.stop).not.toHaveBeenCalled();
 	});
 
 	it("hints enabling voice when disabled in config", () => {

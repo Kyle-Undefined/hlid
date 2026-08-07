@@ -247,9 +247,7 @@ export function refreshReadAloudPreferences(): Promise<void> {
 		applyReadAloudSharedPreferences({
 			provider:
 				voice?.read_aloud_provider === "microsoft" ||
-				voice?.read_aloud_provider === "neural" ||
-				(voice?.read_aloud_provider === "codex" &&
-					voice.codex_live_mode === true)
+				voice?.read_aloud_provider === "neural"
 					? voice.read_aloud_provider
 					: "device",
 			microsoftVoiceId:
@@ -786,10 +784,14 @@ function startCodexProviderReadAloud(
 		},
 		onError: (message) => {
 			if (currentGeneration !== generation) return;
+			const detail = message
+				.trim()
+				.replace(/^(?:Codex read aloud failed:\s*)+/i, "")
+				.trim();
 			updateState({
 				messageId,
 				phase: "error",
-				error: `Codex read aloud failed: ${message}`,
+				error: `Codex read aloud failed:${detail ? ` ${detail}` : ""}`,
 			});
 		},
 	});

@@ -288,6 +288,185 @@ describe("useLoadChatHistory — initial load", () => {
 		).toBe(true);
 	});
 
+	it("restores Raven Live rows with their stable utterance identity", async () => {
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			{
+				...makeRow("assistant", "Persisted voice reply", 1000),
+				source: "codex_realtime",
+				utterance_id: "utterance-assistant-1",
+				realtime_session_id: "realtime-1",
+				fork_supported: 0,
+			},
+		]);
+		const dispatch = vi.fn();
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+
+		await act(async () => {});
+		const load = dispatch.mock.calls.find(
+			([action]) => action.type === "LOAD_HISTORY",
+		)?.[0];
+		expect(load.items).toEqual([
+			expect.objectContaining({
+				id: "utterance-assistant-1",
+				dbId: expect.any(Number),
+				source: "codex_realtime",
+				utteranceId: "utterance-assistant-1",
+				realtimeSessionId: "realtime-1",
+				forkSupported: false,
+			}),
+		]);
+	});
+
+	it("refreshes a stale idle snapshot after a buffered durable Live final", async () => {
+		const prior = makeRow("user", "Earlier message", 1000);
+		const liveRow = {
+			...makeRow("assistant", "Persisted during hydration", 2000),
+			source: "codex_realtime",
+			utterance_id: "utterance-assistant-refresh",
+			realtime_session_id: "realtime-refresh",
+			fork_supported: 0,
+		};
+		const durableFinal: ServerMessage = {
+			type: "realtime_transcript",
+			session_id: "sess-1",
+			mode: "live",
+			role: "assistant",
+			text: liveRow.text,
+			done: true,
+			utterance_id: liveRow.utterance_id,
+			realtime_session_id: liveRow.realtime_session_id,
+			transcript_seq: liveRow.seq,
+			db_id: liveRow.id,
+			source: "codex_realtime",
+			fork_supported: false,
+		};
+		vi.mocked(getSessionDataFn)
+			.mockResolvedValueOnce([prior])
+			.mockResolvedValueOnce([prior, liveRow]);
+		vi.mocked(wsStore.drainMessageBuffer)
+			.mockReturnValueOnce([durableFinal])
+			.mockReturnValueOnce([])
+			.mockReturnValueOnce([]);
+		const dispatch = vi.fn();
+		const handleWsMessage = vi.fn();
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+
+		await vi.waitFor(() => expect(getSessionDataFn).toHaveBeenCalledTimes(2));
+		const load = dispatch.mock.calls.find(
+			([action]) => action.type === "LOAD_HISTORY",
+		)?.[0];
+		expect(load?.items).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					id: liveRow.utterance_id,
+					text: liveRow.text,
+					dbId: liveRow.id,
+					source: "codex_realtime",
+				}),
+			]),
+		);
+		expect(handleWsMessage).toHaveBeenCalledWith(durableFinal);
+	});
+
+	it("replays only Live frames for an idle session, including the final buffer tail", async () => {
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			makeRow("assistant", "Existing reply", 1000),
+		]);
+		const partial: ServerMessage = {
+			type: "realtime_transcript",
+			session_id: "sess-1",
+			mode: "live",
+			role: "user",
+			text: "Still speaking",
+			done: false,
+			utterance_id: "utterance-user-tail",
+			realtime_session_id: "realtime-tail",
+			transcript_seq: 2,
+			source: "codex_realtime",
+			fork_supported: false,
+		};
+		const closed: ServerMessage = {
+			type: "realtime_state",
+			session_id: "sess-1",
+			mode: "live",
+			state: "closed",
+		};
+		const tool: ServerMessage = {
+			type: "tool_event",
+			id: "live-tool-tail",
+			name: "hlid_help",
+			input: { topic: "voice_audio" },
+			realtime_utterance_id: "utterance-assistant-tail",
+			realtime_session_id: "realtime-tail",
+			transcript_seq: 3,
+			fork_supported: false,
+		};
+		const result: ServerMessage = {
+			type: "tool_result",
+			id: "live-tool-tail",
+			content: "available",
+			realtime_utterance_id: "utterance-assistant-tail",
+			realtime_session_id: "realtime-tail",
+			transcript_seq: 3,
+		};
+		vi.mocked(wsStore.drainMessageBuffer)
+			.mockReturnValueOnce([
+				partial,
+				tool,
+				{ type: "chunk", text: "stale ordinary turn" },
+			])
+			.mockReturnValueOnce([
+				result,
+				closed,
+				{
+					type: "realtime_error",
+					session_id: "sess-1",
+					mode: "dictation",
+					message: "unrelated dictation",
+				},
+			]);
+		const handleWsMessage = vi.fn();
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch: vi.fn(),
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+
+		await vi.waitFor(() => expect(handleWsMessage).toHaveBeenCalledTimes(4));
+		expect(handleWsMessage.mock.calls.map(([message]) => message)).toEqual([
+			partial,
+			tool,
+			result,
+			closed,
+		]);
+	});
+
 	it("maps persisted exact, estimated, zero, and unknown query costs into history", async () => {
 		vi.mocked(getSessionDataFn).mockResolvedValue([
 			{

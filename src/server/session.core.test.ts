@@ -44,6 +44,7 @@ vi.mock("node:fs", async () =>
 import * as fsMock from "node:fs";
 import type { HlidConfig } from "../config";
 import * as dbMock from "../db";
+import { computeAllowedAgentRealPaths, isAllowedAgentPath } from "./agentPaths";
 import type {
 	AgentEvent,
 	AgentProvider,
@@ -52,11 +53,13 @@ import type {
 	McpServerStatus,
 } from "./agentProvider";
 import { waitForClaudeWarmupSnapshot } from "./claudeWarmup";
+import { resolveExecutionContext } from "./executionContext";
 import { readObsidianNote } from "./obsidianCli";
 import { buildPromptAsync } from "./promptBuilder";
 import type { ServerMessage } from "./protocol";
 import { resolveDeclaredSessionDefaults, SessionManager } from "./session";
 import {
+	makeCaptureProvider,
 	makeConfig,
 	makeProvider,
 	makeProviders,
@@ -392,6 +395,60 @@ describe("SessionManager — restoreMcpStatus", () => {
 // ── syncConfig ────────────────────────────────────────────────────────────────
 
 describe("SessionManager — syncConfig", () => {
+	it("refreshes realtime identity without canonicalizing WSL agent paths", async () => {
+		const { provider, captured } = makeCaptureProvider("codex");
+		const base = makeConfig("gpt-5.6-sol");
+		const config = {
+			...base,
+			vault_provider: "codex",
+			codex: {
+				model: "gpt-5.6-sol",
+				effort: "high",
+				permission_mode: "default",
+				turn_recaps: false,
+				executable: "C:\\old\\codex.cmd",
+			},
+			voice: { ...base.voice, codex_live_mode: false },
+			agents: [
+				{
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\project",
+					provider: "codex",
+				},
+			],
+		} as HlidConfig;
+		vi.mocked(fsMock.realpathSync).mockClear();
+		const sm = new SessionManager(
+			config,
+			makeProviders(provider),
+			"\\\\wsl$\\ubuntu-24.04\\home\\kyle\\project\\.",
+		);
+		expect(fsMock.realpathSync).not.toHaveBeenCalled();
+		expect(sm.getStatus().model).toBe("gpt-5.6-sol");
+		expect(sm.getAgentCwd()).toBeUndefined();
+		expect(sm.getProviderId()).toBe("codex");
+
+		vi.mocked(fsMock.realpathSync).mockClear();
+		vi.mocked(computeAllowedAgentRealPaths).mockClear();
+
+		const enabled = structuredClone(config);
+		enabled.voice.codex_live_mode = true;
+		enabled.codex.executable = "C:\\new\\codex.cmd";
+		sm.syncRealtimeConfig(enabled);
+
+		expect(fsMock.realpathSync).not.toHaveBeenCalled();
+		expect(computeAllowedAgentRealPaths).not.toHaveBeenCalled();
+		vi.mocked(isAllowedAgentPath).mockReturnValueOnce(true);
+		await sm.runQuery("hello", () => {}, {
+			sessionId: "realtime-narrow-sync",
+			agentCwd: "\\\\wsl$\\ubuntu-24.04\\home\\kyle\\project\\.",
+		});
+		expect(fsMock.realpathSync).toHaveBeenCalledTimes(1);
+		expect(captured.params).toMatchObject({ codexRealtimeEnabled: true });
+		expect(resolveExecutionContext).toHaveBeenLastCalledWith(
+			expect.objectContaining({ claudeExecutable: "C:\\new\\codex.cmd" }),
+		);
+	});
+
 	it("returns false when model unchanged", () => {
 		const sm = new SessionManager(
 			makeConfig("model-a"),
@@ -494,6 +551,159 @@ describe("SessionManager — syncConfig", () => {
 			model: "gpt-5.4",
 			effort: "high",
 		});
+	});
+
+	it("cold-resumes an idle Codex thread after realtime preview is enabled", async () => {
+		const queryParams: AgentQueryParams[] = [];
+		const cancels: Array<ReturnType<typeof vi.fn>> = [];
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(params): AgentSession {
+				queryParams.push(params);
+				const cancel = vi.fn();
+				cancels.push(cancel);
+				const events = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "codex-thread-1" };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => events[Symbol.asyncIterator](),
+					cancel,
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		};
+		const base = makeConfig("gpt-5.6-sol");
+		const config = {
+			...base,
+			vault_provider: "codex",
+			codex: {
+				model: "gpt-5.6-sol",
+				effort: "high",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+			voice: { ...base.voice, codex_live_mode: false },
+		} as HlidConfig;
+		const sm = new SessionManager(config, makeProviders(provider));
+
+		await sm.runQuery("first", () => {}, {
+			sessionId: "realtime-config-session",
+		});
+		expect(queryParams[0]).toMatchObject({ codexRealtimeEnabled: false });
+
+		const enabled = structuredClone(config);
+		enabled.voice.codex_live_mode = true;
+		sm.syncConfig(enabled);
+
+		expect(cancels[0]).toHaveBeenCalledOnce();
+		await sm.runQuery("second", () => {}, {
+			sessionId: "realtime-config-session",
+		});
+		expect(queryParams).toHaveLength(2);
+		expect(queryParams[1]).toMatchObject({
+			codexRealtimeEnabled: true,
+			sessionId: "codex-thread-1",
+		});
+	});
+
+	it("cold-resumes an idle Codex thread with a changed executable", async () => {
+		vi.mocked(resolveExecutionContext)
+			.mockReturnValueOnce({
+				activeCwd: "/tmp/hlid-test-cwd",
+				extraDirs: new Set(),
+				executable: "/old/codex",
+			})
+			.mockReturnValueOnce({
+				activeCwd: "/tmp/hlid-test-cwd",
+				extraDirs: new Set(),
+				executable: "/new/codex",
+			});
+		const queryParams: AgentQueryParams[] = [];
+		const cancels: Array<ReturnType<typeof vi.fn>> = [];
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(params): AgentSession {
+				queryParams.push(params);
+				const cancel = vi.fn();
+				cancels.push(cancel);
+				const events = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "codex-thread-1" };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => events[Symbol.asyncIterator](),
+					cancel,
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		};
+		const base = makeConfig("gpt-5.6-sol");
+		const config = {
+			...base,
+			vault_provider: "codex",
+			codex: {
+				model: "gpt-5.6-sol",
+				effort: "high",
+				permission_mode: "default",
+				turn_recaps: false,
+				executable: "/old/codex",
+			},
+		} as HlidConfig;
+		const sm = new SessionManager(config, makeProviders(provider));
+
+		await sm.runQuery("first", () => {}, {
+			sessionId: "executable-config-session",
+		});
+		expect(queryParams[0]).toMatchObject({ executable: "/old/codex" });
+
+		const changed = structuredClone(config);
+		changed.codex.executable = "/new/codex";
+		sm.syncConfig(changed);
+
+		expect(cancels[0]).toHaveBeenCalledOnce();
+		await sm.runQuery("second", () => {}, {
+			sessionId: "executable-config-session",
+		});
+		expect(queryParams[1]).toMatchObject({
+			executable: "/new/codex",
+			sessionId: "codex-thread-1",
+		});
+	});
+
+	it("does not retire a CLIProxy Codex session when native Live preview changes", async () => {
+		const { provider, getSession } = makeSwitchableProvider(
+			{},
+			"cliproxy:codex-native",
+		);
+		const base = makeConfig("gpt-5.6-sol");
+		const config = {
+			...base,
+			vault_provider: "cliproxy:codex-native",
+			voice: { ...base.voice, codex_live_mode: false },
+		} as HlidConfig;
+		const sm = new SessionManager(config, makeProviders(provider));
+
+		await sm.runQuery("first", () => {}, {
+			sessionId: "cliproxy-realtime-config-session",
+		});
+		const enabled = structuredClone(config);
+		enabled.voice.codex_live_mode = true;
+		sm.syncConfig(enabled);
+
+		expect(getSession()?.cancel).not.toHaveBeenCalled();
 	});
 });
 

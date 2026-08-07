@@ -36,6 +36,7 @@ import {
 import { ProviderUsageStrip } from "#/components/usage/ProviderUsageStrip";
 import { RoutinesWindowSection } from "#/components/usage/UsageWindowSections";
 import { FirstRunWizard } from "#/components/wizard/FirstRunWizard";
+import { useCodexRealtime } from "#/hooks/codexRealtimeStore";
 import { useCockpitLiveData } from "#/hooks/useCockpitLiveData";
 import { isCockpitQueueTarget, useCockpitRun } from "#/hooks/useCockpitRun";
 import { useCommands } from "#/hooks/useCommands";
@@ -61,6 +62,7 @@ import { optionalLoaderValue } from "#/lib/loaderFallback";
 import { isCliProxyProvider } from "#/lib/providerIds";
 import type { ModelInputAvailability } from "#/lib/providerOptions";
 import {
+	codexRealtimeAvailability,
 	configuredVaultModel,
 	modelInputAvailability,
 	resolveActiveProviderId,
@@ -433,6 +435,7 @@ function useCockpitVoice(
 	composer: CockpitComposer,
 	upload: CockpitUpload,
 	providerId: string,
+	codexProvider: ProviderInfo | undefined,
 	codexAudio: ModelInputAvailability,
 	handleRun: (
 		overrideText?: string,
@@ -440,10 +443,8 @@ function useCockpitVoice(
 	) => Promise<void>,
 ) {
 	const { prompt, setPrompt, textareaRef } = composer;
-	return useVoiceInput({
-		config: config.voice,
-		initialInfo: initialVoiceInfo,
-		onTranscription: (text) => {
+	const onTranscription = useCallback(
+		(text: string) => {
 			if (config.voice.auto_send) {
 				void handleRun(text);
 				return;
@@ -454,6 +455,43 @@ function useCockpitVoice(
 			setPrompt(insertAtSelection(prompt, text, start, end));
 			requestAnimationFrame(() => textareaRef.current?.focus());
 		},
+		[config.voice.auto_send, handleRun, prompt, setPrompt, textareaRef],
+	);
+	const dictationContextKey = `${providerId}\0${composer.selectedAgentPath}`;
+	const dictationSessionRef = useRef({
+		contextKey: dictationContextKey,
+		sessionId: uid(),
+	});
+	if (dictationSessionRef.current.contextKey !== dictationContextKey) {
+		dictationSessionRef.current = {
+			contextKey: dictationContextKey,
+			sessionId: uid(),
+		};
+	}
+	const dictationSessionId = dictationSessionRef.current.sessionId;
+	const realtime = useCodexRealtime({
+		sessionId: dictationSessionId,
+		agentCwd: composer.selectedAgentPath,
+		providerId,
+		voice: config.voice.codex_voice,
+		onDictation: onTranscription,
+	});
+	const configuredDictation =
+		providerId === "codex"
+			? codexRealtimeAvailability(
+					config.voice.codex_live_mode,
+					codexProvider,
+					initialVoiceInfo.codexRealtimeBackend,
+				)
+			: {
+					available: false,
+					reason: "Dictate with Codex requires the native Codex provider.",
+				};
+	const realtimeDictationActive = realtime.mode === "dictation";
+	return useVoiceInput({
+		config: config.voice,
+		initialInfo: initialVoiceInfo,
+		onTranscription,
 		onAudioTurn: async (audio) => {
 			if (providerId !== "codex") {
 				throw new Error("Talk to Codex requires the native Codex provider");
@@ -468,6 +506,20 @@ function useCockpitVoice(
 		},
 		codexTurnAvailable: providerId === "codex" && codexAudio.available,
 		codexTurnUnavailableReason: codexAudio.reason,
+		codexDictation: {
+			available: configuredDictation.available && !realtime.unavailableReason,
+			unavailableReason:
+				realtime.unavailableReason ??
+				(configuredDictation.available
+					? undefined
+					: configuredDictation.reason),
+			phase: realtimeDictationActive ? realtime.phase : "idle",
+			error: realtimeDictationActive ? realtime.error : null,
+			start: () => realtime.start("dictation"),
+			stop: realtime.stop,
+			cancel: realtime.cancel,
+			clearError: realtime.clearError,
+		},
 	});
 }
 
@@ -747,7 +799,9 @@ function CockpitPage() {
 	}, [refreshRoutines, routinesRevision]);
 	useEffect(() => {
 		if (
-			(!routineDialogOpen && config.voice.input_provider !== "codex") ||
+			(!routineDialogOpen &&
+				config.voice.input_provider !== "codex" &&
+				config.voice.input_provider !== "codex_dictation") ||
 			routineProviders.length > 0
 		)
 			return;
@@ -1059,6 +1113,7 @@ function CockpitPage() {
 		composer,
 		upload,
 		commandProviderId,
+		routineProviders.find((provider) => provider.id === "codex"),
 		modelInputAvailability(
 			routineProviders.find((provider) => provider.id === "codex"),
 			configuredRunModel,

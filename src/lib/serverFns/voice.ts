@@ -7,7 +7,15 @@ import type { VoiceModelInfo, VoiceStatus } from "#/server/voice";
 
 const parseModelName = (raw: string) => z.string().min(1).parse(raw);
 
-export type VoiceInfo = { status: VoiceStatus; models: VoiceModelInfo[] };
+export type VoiceInfo = {
+	status: VoiceStatus;
+	models: VoiceModelInfo[];
+	codexRealtimeBackend?: {
+		available?: boolean;
+		reason?: string;
+		observedAt?: number;
+	};
+};
 
 export const getVoiceInfoFn = createServerFn({ method: "GET" })
 	.validator((raw) => optionalRefreshSchema.parse(raw))

@@ -23,7 +23,10 @@ import type { QueuedChatMessage } from "#/hooks/wsChatQueueStore";
 import type { AssistantMessage, ChatMessage, UserMessage } from "./chatReducer";
 import { reducer } from "./chatReducer";
 import { MessageList } from "./MessageList";
-import { useMessageListView } from "./useMessageListView";
+import {
+	groupConsecutiveLiveAssistantMessages,
+	useMessageListView,
+} from "./useMessageListView";
 
 const projectPreviewState = vi.hoisted(() => ({
 	live: null as
@@ -300,6 +303,70 @@ function renderList(args: RenderListArgs) {
 }
 
 describe("MessageList — orphan queue rendering", () => {
+	it("folds consecutive Codex Live assistant utterances into one response", () => {
+		const first: AssistantMessage = {
+			...assistantMsg("live-progress", 1),
+			text: "I am checking that now.",
+			source: "codex_realtime",
+			realtimeSessionId: "live-1",
+			utteranceId: "live-progress",
+			transcriptSeq: 5,
+			dbId: 50,
+			forkSupported: true,
+		};
+		const second: AssistantMessage = {
+			...assistantMsg("live-result", 1),
+			text: "It is ready.",
+			source: "codex_realtime",
+			realtimeSessionId: "live-1",
+			utteranceId: "live-result",
+			transcriptSeq: 6,
+			dbId: 51,
+			forkSupported: true,
+		};
+
+		const grouped = groupConsecutiveLiveAssistantMessages([first, second]);
+
+		expect(grouped).toHaveLength(1);
+		expect(grouped[0]).toMatchObject({
+			id: "live-progress",
+			text: "I am checking that now.\n\nIt is ready.",
+			streaming: false,
+			dbId: undefined,
+			forkSupported: false,
+		});
+		expect(grouped[0]).toMatchObject({
+			role: "assistant",
+			toolEvents: [
+				{ id: "live-progress-tool-0" },
+				{ id: "live-result-tool-0" },
+			],
+		});
+	});
+
+	it("keeps Live assistant responses separate when the person speaks between them", () => {
+		const liveAssistant = (id: string): AssistantMessage => ({
+			...assistantMsg(id, 0),
+			source: "codex_realtime",
+			realtimeSessionId: "live-1",
+		});
+		const messages = groupConsecutiveLiveAssistantMessages([
+			liveAssistant("first"),
+			{
+				...userMsg("spoken-user", "Thanks"),
+				source: "codex_realtime",
+				realtimeSessionId: "live-1",
+			},
+			liveAssistant("second"),
+		]);
+
+		expect(messages.map((message) => message.id)).toEqual([
+			"first",
+			"spoken-user",
+			"second",
+		]);
+	});
+
 	it("routes background control only into the streaming assistant activity", () => {
 		const onBackgroundActivity = vi.fn();
 		const active = {

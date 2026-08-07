@@ -106,6 +106,292 @@ describe("MARK_USER_CONTEXT_RECEIPT", () => {
 
 // ── ADD_ASSISTANT ─────────────────────────────────────────────────────────────
 
+describe("Raven Live transcript", () => {
+	it("appends provisional deltas into one ordinary user bubble", () => {
+		let state = reducer(empty(), {
+			type: "UPSERT_REALTIME_TRANSCRIPT",
+			id: "utterance-user-1",
+			role: "user",
+			text: "Hello ",
+			done: false,
+			realtimeSessionId: "realtime-1",
+			transcriptSeq: 4,
+			forkSupported: false,
+		});
+		state = reducer(state, {
+			type: "UPSERT_REALTIME_TRANSCRIPT",
+			id: "utterance-user-1",
+			role: "user",
+			text: "Raven",
+			done: false,
+			realtimeSessionId: "realtime-1",
+			transcriptSeq: 4,
+			forkSupported: false,
+		});
+
+		expect(state).toHaveLength(1);
+		expect(state[0]).toMatchObject({
+			id: "utterance-user-1",
+			role: "user",
+			text: "Hello Raven",
+			streaming: true,
+			source: "codex_realtime",
+			utteranceId: "utterance-user-1",
+			realtimeSessionId: "realtime-1",
+			transcriptSeq: 4,
+			forkSupported: false,
+		});
+	});
+
+	it("replaces provisional text with the authoritative final assistant row", () => {
+		let state = reducer(empty(), {
+			type: "UPSERT_REALTIME_TRANSCRIPT",
+			id: "utterance-assistant-1",
+			role: "assistant",
+			text: "Hi K",
+			done: false,
+			realtimeSessionId: "realtime-1",
+			transcriptSeq: 5,
+		});
+		state = reducer(state, {
+			type: "UPSERT_REALTIME_TRANSCRIPT",
+			id: "utterance-assistant-1",
+			role: "assistant",
+			text: "Hi, Kyle.",
+			done: true,
+			realtimeSessionId: "realtime-1",
+			transcriptSeq: 5,
+			dbId: 42,
+			forkSupported: false,
+		});
+
+		expect(state).toHaveLength(1);
+		expect(state[0]).toMatchObject({
+			id: "utterance-assistant-1",
+			role: "assistant",
+			text: "Hi, Kyle.",
+			streaming: false,
+			dbId: 42,
+			transcriptSeq: 5,
+			forkSupported: false,
+			cost: null,
+			toolEvents: [],
+		});
+	});
+
+	it("removes only the matching provisional bubble for an empty final", () => {
+		const settled = reducer(empty(), {
+			type: "UPSERT_REALTIME_TRANSCRIPT",
+			id: "settled",
+			role: "assistant",
+			text: "Keep me",
+			done: true,
+		});
+		const provisional = reducer(settled, {
+			type: "UPSERT_REALTIME_TRANSCRIPT",
+			id: "private-utterance",
+			role: "user",
+			text: "private partial",
+			done: false,
+		});
+		const state = reducer(provisional, {
+			type: "UPSERT_REALTIME_TRANSCRIPT",
+			id: "private-utterance",
+			role: "user",
+			text: "   ",
+			done: true,
+		});
+
+		expect(state.map((message) => message.id)).toEqual(["settled"]);
+	});
+
+	it("settles an empty Live assistant bubble when it owns tool activity", () => {
+		let state = reducer(empty(), {
+			type: "UPSERT_REALTIME_TRANSCRIPT",
+			id: "utterance-assistant-tools",
+			role: "assistant",
+			text: "",
+			done: false,
+			realtimeSessionId: "realtime-1",
+			transcriptSeq: 5,
+		});
+		state = reducer(state, {
+			type: "ADD_TOOL_EVENT",
+			id: "utterance-assistant-tools",
+			event: {
+				type: "tool_event",
+				id: "tool-1",
+				name: "hlid_help",
+				input: { topic: "voice_audio" },
+			},
+		});
+		state = reducer(state, {
+			type: "UPSERT_REALTIME_TRANSCRIPT",
+			id: "utterance-assistant-tools",
+			role: "assistant",
+			text: "",
+			done: true,
+			realtimeSessionId: "realtime-1",
+			transcriptSeq: 5,
+			dbId: 44,
+			forkSupported: false,
+		});
+
+		expect(state).toHaveLength(1);
+		expect(state[0]).toMatchObject({
+			id: "utterance-assistant-tools",
+			role: "assistant",
+			text: "",
+			streaming: false,
+			dbId: 44,
+			toolEvents: [expect.objectContaining({ id: "tool-1" })],
+		});
+	});
+
+	it("does not duplicate repeated finals or regress for a delayed partial", () => {
+		const final = reducer(empty(), {
+			type: "UPSERT_REALTIME_TRANSCRIPT",
+			id: "utterance-user-1",
+			role: "user",
+			text: "Final words",
+			done: true,
+			dbId: 9,
+		});
+		const repeated = reducer(final, {
+			type: "UPSERT_REALTIME_TRANSCRIPT",
+			id: "utterance-user-1",
+			role: "user",
+			text: "Final words",
+			done: true,
+			dbId: 9,
+		});
+		const delayed = reducer(repeated, {
+			type: "UPSERT_REALTIME_TRANSCRIPT",
+			id: "utterance-user-1",
+			role: "user",
+			text: " stale",
+			done: false,
+		});
+
+		expect(repeated).toBe(final);
+		expect(delayed).toBe(final);
+		expect(delayed[0]).toMatchObject({ text: "Final words", streaming: false });
+	});
+
+	it("drops only provisional bubbles for the closed realtime session", () => {
+		const first = reducer(empty(), {
+			type: "UPSERT_REALTIME_TRANSCRIPT",
+			id: "partial-1",
+			role: "user",
+			text: "First",
+			done: false,
+			realtimeSessionId: "realtime-1",
+		});
+		const second = reducer(first, {
+			type: "UPSERT_REALTIME_TRANSCRIPT",
+			id: "partial-2",
+			role: "assistant",
+			text: "Second",
+			done: false,
+			realtimeSessionId: "realtime-2",
+		});
+		const state = reducer(second, {
+			type: "DISCARD_REALTIME_PARTIALS",
+			realtimeSessionId: "realtime-1",
+		});
+
+		expect(state.map((message) => message.id)).toEqual(["partial-2"]);
+	});
+
+	it("lets durable history settle the matching provisional bubble", () => {
+		const provisional = reducer(empty(), {
+			type: "UPSERT_REALTIME_TRANSCRIPT",
+			id: "utterance-user-1",
+			role: "user",
+			text: "Provisional",
+			done: false,
+		});
+		const hydrated = reducer(provisional, {
+			type: "HYDRATE_HISTORY",
+			items: [
+				{
+					kind: "message",
+					id: "utterance-user-1",
+					role: "user",
+					text: "Persisted final",
+					dbId: 27,
+					seq: 8,
+					source: "codex_realtime",
+					utteranceId: "utterance-user-1",
+					forkSupported: false,
+				},
+			],
+		});
+
+		expect(hydrated).toHaveLength(1);
+		expect(hydrated[0]).toMatchObject({
+			text: "Persisted final",
+			streaming: false,
+			dbId: 27,
+			transcriptSeq: 8,
+		});
+	});
+
+	it("keeps newer Live tool state when delayed history hydrates the bubble", () => {
+		let state = reducer(empty(), {
+			type: "UPSERT_REALTIME_TRANSCRIPT",
+			id: "utterance-assistant-tools",
+			role: "assistant",
+			text: "",
+			done: false,
+		});
+		state = reducer(state, {
+			type: "ADD_TOOL_EVENT",
+			id: "utterance-assistant-tools",
+			event: {
+				type: "tool_event",
+				id: "live-tool-1",
+				name: "hlid_help",
+				input: { topic: "voice_audio" },
+			},
+		});
+		state = reducer(state, {
+			type: "ADD_TOOL_RESULT",
+			toolUseId: "live-tool-1",
+			content: "new result",
+		});
+
+		const hydrated = reducer(state, {
+			type: "HYDRATE_HISTORY",
+			items: [
+				{
+					kind: "message",
+					id: "utterance-assistant-tools",
+					role: "assistant",
+					text: "Finished",
+					source: "codex_realtime",
+					utteranceId: "utterance-assistant-tools",
+					toolEvents: [
+						{
+							type: "tool_event",
+							id: "live-tool-1",
+							name: "hlid_help",
+							input: { topic: "voice_audio" },
+							result: "stale result",
+						},
+					],
+				},
+			],
+		});
+
+		expect(hydrated[0]).toMatchObject({
+			text: "Finished",
+			streaming: false,
+			toolEvents: [expect.objectContaining({ result: "new result" })],
+		});
+	});
+});
+
 describe("ADD_ASSISTANT", () => {
 	it("appends an assistant message in streaming state", () => {
 		const state = reducer(empty(), { type: "ADD_ASSISTANT", id: "a1" });

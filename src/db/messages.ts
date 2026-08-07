@@ -48,6 +48,81 @@ export async function appendMessage(
 	return Number(result.lastInsertRowid);
 }
 
+export type RealtimeTranscriptMessageInput = {
+	sessionId: string;
+	seq: number;
+	role: "user" | "assistant";
+	text: string;
+	utteranceId: string;
+	realtimeSessionId: string;
+	providerRealtimeSessionId?: string;
+};
+
+/**
+ * Persist one authoritative provider realtime transcript part. The unique
+ * session/utterance key makes retries idempotent and returns the original row.
+ */
+export async function appendRealtimeTranscriptMessage(
+	input: RealtimeTranscriptMessageInput,
+): Promise<{ id: number; seq: number; inserted: boolean }> {
+	const db = await getDb();
+	const result = db.run(
+		`INSERT OR IGNORE INTO messages
+		 (session_id, seq, role, text, timestamp, source, utterance_id,
+		  realtime_session_id, provider_realtime_session_id, fork_supported)
+		 VALUES (?, ?, ?, ?, unixepoch(), 'codex_realtime', ?, ?, ?, 0)`,
+		[
+			input.sessionId,
+			input.seq,
+			input.role,
+			input.text,
+			input.utteranceId,
+			input.realtimeSessionId,
+			input.providerRealtimeSessionId ?? null,
+		],
+	);
+	const row = db
+		.query<
+			{
+				id: number;
+				seq: number;
+				role: string;
+				text: string;
+				source: string | null;
+				realtime_session_id: string | null;
+				provider_realtime_session_id: string | null;
+				fork_supported: number | null;
+			},
+			[string, string]
+		>(
+			`SELECT id, seq, role, text, source, realtime_session_id,
+			        provider_realtime_session_id, fork_supported
+			 FROM messages
+			 WHERE session_id = ? AND utterance_id = ?`,
+		)
+		.get(input.sessionId, input.utteranceId);
+	if (!row) {
+		throw new Error(
+			`appendRealtimeTranscriptMessage: row missing for session=${input.sessionId} utterance=${input.utteranceId}`,
+		);
+	}
+	if (
+		row.seq !== input.seq ||
+		row.role !== input.role ||
+		row.text !== input.text ||
+		row.source !== "codex_realtime" ||
+		row.realtime_session_id !== input.realtimeSessionId ||
+		row.provider_realtime_session_id !==
+			(input.providerRealtimeSessionId ?? null) ||
+		row.fork_supported !== 0
+	) {
+		throw new Error(
+			`appendRealtimeTranscriptMessage: utterance collision for session=${input.sessionId} utterance=${input.utteranceId}`,
+		);
+	}
+	return { id: row.id, seq: row.seq, inserted: result.changes > 0 };
+}
+
 /** Find a Raven user row already persisted for an idempotent client turn. */
 export async function getUserMessageSeqByTurnId(
 	sessionId: string,
@@ -248,6 +323,7 @@ export async function getMessageForFork(id: number): Promise<{
 	role: string;
 	sdkUuid: string | null;
 	providerTurnId: string | null;
+	forkSupported: boolean | null;
 } | null> {
 	const db = await getDb();
 	const row = db
@@ -258,10 +334,12 @@ export async function getMessageForFork(id: number): Promise<{
 				role: string;
 				sdk_uuid: string | null;
 				provider_turn_id: string | null;
+				fork_supported: number | null;
 			},
 			[number]
 		>(
-			`SELECT session_id, seq, role, sdk_uuid, provider_turn_id FROM messages WHERE id = ?`,
+			`SELECT session_id, seq, role, sdk_uuid, provider_turn_id, fork_supported
+			 FROM messages WHERE id = ?`,
 		)
 		.get(id);
 	return row
@@ -271,6 +349,8 @@ export async function getMessageForFork(id: number): Promise<{
 				role: row.role,
 				sdkUuid: row.sdk_uuid,
 				providerTurnId: row.provider_turn_id,
+				forkSupported:
+					row.fork_supported === null ? null : row.fork_supported === 1,
 			}
 		: null;
 }
@@ -304,10 +384,12 @@ export async function copyForkedSessionTranscript(
 			`INSERT INTO messages
 				 (session_id, seq, role, text, timestamp, recap, turn_id, sdk_uuid,
 				  provider_turn_id, steer_target_seq, context_manifest_json,
-				  steer_tool_event_index)
+				  steer_tool_event_index, source, utterance_id,
+				  realtime_session_id, provider_realtime_session_id, fork_supported)
 				 SELECT ?, seq, role, text, timestamp, recap, turn_id, sdk_uuid,
 				        provider_turn_id, steer_target_seq, context_manifest_json,
-				        steer_tool_event_index
+				        steer_tool_event_index, source, utterance_id,
+				        realtime_session_id, provider_realtime_session_id, fork_supported
 				 FROM messages WHERE session_id = ?${messageFilter}
 			 ORDER BY seq ASC, id ASC`,
 			messageParams,

@@ -143,6 +143,21 @@ describe("ForgeSettings search", () => {
 		expect(screen.getByRole("option", { name: "Integrations" })).toBeTruthy();
 	});
 
+	it("routes Raven Live searches to Experience", async () => {
+		renderSettings();
+		fireEvent.change(
+			screen.getByRole("textbox", { name: "Filter setting categories" }),
+			{
+				target: { value: "Raven Live" },
+			},
+		);
+
+		await waitFor(() =>
+			expect(screen.getByRole("heading", { name: "Experience" })).toBeTruthy(),
+		);
+		expect(screen.getByRole("option", { name: "Experience" })).toBeTruthy();
+	});
+
 	it("offers an explicit retry after an autosave failure", () => {
 		const save = vi.fn();
 		render(
@@ -167,6 +182,37 @@ describe("ForgeSettings search", () => {
 		);
 		fireEvent.click(screen.getByRole("button", { name: "Retry save" }));
 		expect(save).toHaveBeenCalledOnce();
+	});
+
+	it("shows a runtime warning without hiding a required restart", () => {
+		const warning = "Codex runtime synchronization returned 503.";
+		render(
+			<ForgeSettings
+				initial={{} as never}
+				state={
+					{
+						saving: false,
+						dirty: false,
+						error: null,
+						warning,
+						savedMsg: "restart",
+						save: vi.fn(),
+						ui: {
+							theme: "tan",
+							mobileTheme: "same",
+							customTheme: TAN_THEME,
+							mobileCustomTheme: TAN_THEME,
+						},
+					} as never
+				}
+			/>,
+		);
+
+		expect(screen.getByText(`Changes saved. ${warning}`)).toBeTruthy();
+		expect(
+			screen.getByRole("button", { name: "Restart required" }),
+		).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Retry save" })).toBeNull();
 	});
 
 	it("wraps long header statuses without hiding recovery actions", () => {

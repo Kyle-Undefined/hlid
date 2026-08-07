@@ -71,6 +71,7 @@ export type HlidOperatingContext = {
 	agentMode?: "cwd" | "context";
 	codexRealtimeEnabled?: boolean;
 	codexRealtimeBackendAvailable?: boolean;
+	codexRealtimeBackendReason?: string;
 	voiceSnapshot?: {
 		state:
 			| "disabled"

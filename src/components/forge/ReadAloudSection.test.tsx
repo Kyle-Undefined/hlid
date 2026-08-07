@@ -112,7 +112,7 @@ describe("ReadAloudSection", () => {
 		);
 	});
 
-	it("offers Codex read aloud and its native voices", () => {
+	it("keeps Codex read aloud hidden when the realtime preview is enabled", () => {
 		vi.stubGlobal(
 			"fetch",
 			vi.fn().mockResolvedValue(
@@ -122,24 +122,17 @@ describe("ReadAloudSection", () => {
 				}),
 			),
 		);
-		const onChange = vi.fn();
 		render(
 			<Harness
-				onChange={onChange}
 				initialVoice={{ ...DEFAULT_VOICE_CONFIG, codex_live_mode: true }}
 			/>,
 		);
-		fireEvent.change(screen.getByLabelText("Read aloud speech engine"), {
-			target: { value: "codex" },
-		});
-		fireEvent.change(screen.getByLabelText("Codex realtime voice"), {
-			target: { value: "cedar" },
-		});
-		expect(onChange).toHaveBeenCalledWith({
-			read_aloud_provider: "codex",
-		});
-		expect(onChange).toHaveBeenCalledWith({ codex_voice: "cedar" });
-		expect(screen.queryByLabelText("Read aloud speed")).toBeNull();
+		expect(
+			screen
+				.getByLabelText("Read aloud speech engine")
+				.querySelector('option[value="codex"]'),
+		).toBeNull();
+		expect(screen.getByLabelText("Read aloud speed")).toBeTruthy();
 	});
 
 	it("keeps Codex realtime read aloud hidden outside Developer Preview", () => {

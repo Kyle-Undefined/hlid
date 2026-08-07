@@ -77,6 +77,7 @@ export {
 	appendAskUserQuestion,
 	appendMessage,
 	appendPlanProposal,
+	appendRealtimeTranscriptMessage,
 	appendToolEvent,
 	copyForkedSessionTranscript,
 	getAssistantMessageText,

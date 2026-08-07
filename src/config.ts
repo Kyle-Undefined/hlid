@@ -265,13 +265,16 @@ export const DEFAULT_VOICE_CONFIG = {
 const VoiceSchema = z.object({
 	enabled: z.boolean().default(DEFAULT_VOICE_CONFIG.enabled),
 	input_provider: z
-		.enum(["local", "codex"])
+		.enum(["local", "codex_dictation", "codex"])
 		.default(DEFAULT_VOICE_CONFIG.input_provider),
 	model: z.string().default(DEFAULT_VOICE_CONFIG.model),
 	language: z.string().min(1).default(DEFAULT_VOICE_CONFIG.language),
 	auto_send: z.boolean().default(DEFAULT_VOICE_CONFIG.auto_send),
 	read_aloud_provider: z
 		.enum(["device", "microsoft", "neural", "codex"])
+		.transform((provider): "device" | "microsoft" | "neural" | "codex" =>
+			provider === "codex" ? "device" : provider,
+		)
 		.default(DEFAULT_VOICE_CONFIG.read_aloud_provider),
 	read_aloud_voice: z.string().default(DEFAULT_VOICE_CONFIG.read_aloud_voice),
 	read_aloud_rate: z

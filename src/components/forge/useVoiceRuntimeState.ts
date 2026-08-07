@@ -1,4 +1,10 @@
-import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
+import {
+	type Dispatch,
+	type SetStateAction,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
 import type { HlidConfig } from "#/config";
 import {
 	getTtsInfoFn,
@@ -75,13 +81,21 @@ export function useTtsRuntimeState(voice: HlidConfig["voice"]) {
 	const [info, setInfo] = useState<TtsInfo>(UNAVAILABLE_TTS_INFO);
 	const [busy, setBusy] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const neuralRuntimeKey =
+		voice.read_aloud_provider === "neural"
+			? `${voice.tts_model}\0${voice.tts_threads}`
+			: null;
+	const priorNeuralRuntimeKey = useRef<string | null | undefined>(undefined);
 	useEffect(() => {
 		void getTtsInfoFn().then(setInfo);
 	}, []);
 	useRuntimePolling(info, busy, getTtsInfoFn, setInfo, setBusy);
-	// Refresh after the auto-saved TTS settings reach the server.
-	// biome-ignore lint/correctness/useExhaustiveDependencies: these saved fields intentionally trigger a runtime sync
+	// Sync only when local neural speech becomes effective, changes while active,
+	// or stops being effective. Other read-aloud engines do not own this runtime.
 	useEffect(() => {
+		const priorKey = priorNeuralRuntimeKey.current;
+		priorNeuralRuntimeKey.current = neuralRuntimeKey;
+		if (neuralRuntimeKey === null && priorKey == null) return;
 		const timer = setTimeout(
 			() =>
 				void syncTtsConfigFn()
@@ -93,6 +107,6 @@ export function useTtsRuntimeState(voice: HlidConfig["voice"]) {
 			1200,
 		);
 		return () => clearTimeout(timer);
-	}, [voice.read_aloud_provider, voice.tts_model, voice.tts_threads]);
+	}, [neuralRuntimeKey]);
 	return { info, setInfo, busy, setBusy, error, setError };
 }

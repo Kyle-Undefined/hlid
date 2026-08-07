@@ -140,7 +140,8 @@ function staticEvidence(input: {
 			source: "hlid-adapter",
 			maturity: "experimental",
 			operations: ["start", "append-speech", "stop"],
-			reason: "Selected model, Hlid configuration, and backend still gate use.",
+			reason:
+				"Hlid preview configuration, the provider feature, and account backend still gate use.",
 		});
 	}
 	if (capabilities?.appCatalog) {

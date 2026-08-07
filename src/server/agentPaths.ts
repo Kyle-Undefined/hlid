@@ -13,12 +13,20 @@ import { loadConfig } from "./config";
 export function resolveAgentMode(agentRealPath: string): "context" | "cwd" {
 	try {
 		const cfg = loadConfig();
+		const expandedCandidate = expandTilde(agentRealPath);
+		const candidateWsl = parseWslUncSyntax(expandedCandidate);
 		const matched = (cfg.agents ?? []).find((a) => {
-			try {
-				return samePath(
-					realpathSync(resolve(expandTilde(a.path))),
-					agentRealPath,
+			const expandedAgent = expandTilde(a.path);
+			const configuredWsl = parseWslUncSyntax(expandedAgent);
+			if (candidateWsl || configuredWsl) {
+				return (
+					candidateWsl !== null &&
+					configuredWsl !== null &&
+					declaredPathKey(expandedAgent) === declaredPathKey(expandedCandidate)
 				);
+			}
+			try {
+				return samePath(realpathSync(resolve(expandedAgent)), agentRealPath);
 			} catch {
 				return false;
 			}
@@ -33,12 +41,20 @@ export function resolveAgentMode(agentRealPath: string): "context" | "cwd" {
 	}
 }
 
-/** Resolve all configured agent paths to their real filesystem paths. */
+/** Resolve native agent roots; retain WSL declarations for deferred authorization. */
 export function computeAllowedAgentRealPaths(config: HlidConfig): string[] {
 	const paths: string[] = [];
 	for (const agent of config.agents ?? []) {
+		const expanded = expandTilde(agent.path);
+		if (parseWslUncSyntax(expanded)) {
+			// WSL UNC canonicalization can synchronously wake or wait on the distro.
+			// Retain the exact declared root; the requested execution path is still
+			// canonicalized before isAllowedAgentPath authorizes it.
+			paths.push(expanded);
+			continue;
+		}
 		try {
-			paths.push(realpathSync(resolve(expandTilde(agent.path))));
+			paths.push(realpathSync(resolve(expanded)));
 		} catch {
 			// agent dir missing, skip. Will be rejected at use site.
 		}
@@ -46,12 +62,23 @@ export function computeAllowedAgentRealPaths(config: HlidConfig): string[] {
 	return paths;
 }
 
-/** Return true if candidate matches any of the allowed agent real paths. */
+/** Return true if a canonical candidate matches any configured agent root. */
 export function isAllowedAgentPath(
 	allowed: string[],
 	candidate: string,
 ): boolean {
-	return allowed.some((p) => samePath(p, candidate));
+	const candidateWsl = parseWslUncSyntax(candidate);
+	return allowed.some((path) => {
+		const allowedWsl = parseWslUncSyntax(path);
+		if (candidateWsl || allowedWsl) {
+			return (
+				candidateWsl !== null &&
+				allowedWsl !== null &&
+				declaredPathKey(path) === declaredPathKey(candidate)
+			);
+		}
+		return samePath(path, candidate);
+	});
 }
 
 /** Resolve a candidate only when it still matches a configured agent path. */

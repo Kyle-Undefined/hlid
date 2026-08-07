@@ -54,6 +54,7 @@ describe("POST /api/config — handlePostConfig", () => {
 	beforeEach(() => {
 		vi.resetAllMocks();
 		mockForbiddenResponse.mockReturnValue(null);
+		mockLoadConfig.mockReturnValue(HlidConfigSchema.parse({}));
 		vi.mocked(dbFetch).mockResolvedValue(new Response());
 	});
 
@@ -86,6 +87,97 @@ describe("POST /api/config — handlePostConfig", () => {
 		const postResponse = await handlePostConfig(post(publicValue));
 		expect(postResponse.status).toBe(200);
 		expect(writeConfig).toHaveBeenCalledWith(current);
+	});
+
+	it("waits for runtime synchronization when Codex Live changes", async () => {
+		let finishRuntimeSync: (response: Response) => void = () => {};
+		const runtimeSync = new Promise<Response>((resolve) => {
+			finishRuntimeSync = resolve;
+		});
+		vi.mocked(dbFetch).mockImplementation((path) =>
+			path === "/cliproxy/sync" ? runtimeSync : Promise.resolve(new Response()),
+		);
+		const next = HlidConfigSchema.parse({
+			voice: { codex_live_mode: true },
+		});
+		let settled = false;
+
+		const pending = handlePostConfig(post(next)).then((response) => {
+			settled = true;
+			return response;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(settled).toBe(false);
+
+		finishRuntimeSync(new Response());
+		const response = await pending;
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({
+			ok: true,
+			runtime_synced: true,
+		});
+	});
+
+	it.each([
+		[
+			"a rejected request",
+			() => Promise.reject(new Error("bridge unavailable")),
+			"Codex runtime synchronization failed: bridge unavailable.",
+		],
+		[
+			"a non-success response",
+			() => Promise.resolve(new Response(null, { status: 503 })),
+			"Codex runtime synchronization returned 503.",
+		],
+	])("reports %s without claiming the persisted config save failed", async (_label, runtimeResult, warning) => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		vi.mocked(dbFetch).mockImplementation((path) =>
+			path === "/cliproxy/sync"
+				? runtimeResult()
+				: Promise.resolve(new Response()),
+		);
+		const next = HlidConfigSchema.parse({
+			voice: { codex_live_mode: true },
+		});
+
+		const response = await handlePostConfig(post(next));
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({
+			ok: true,
+			runtime_synced: false,
+			warning,
+		});
+		expect(writeConfig).toHaveBeenCalledWith(next);
+		expect(warn).toHaveBeenCalledWith(`[config] ${warning}`);
+		warn.mockRestore();
+	});
+
+	it("waits for runtime synchronization when the Codex executable changes", async () => {
+		const current = HlidConfigSchema.parse({
+			codex: { executable: "/old/codex" },
+		});
+		mockLoadConfig.mockReturnValue(current);
+		let finishRuntimeSync: (response: Response) => void = () => {};
+		const runtimeSync = new Promise<Response>((resolve) => {
+			finishRuntimeSync = resolve;
+		});
+		vi.mocked(dbFetch).mockImplementation((path) =>
+			path === "/cliproxy/sync" ? runtimeSync : Promise.resolve(new Response()),
+		);
+		const next = structuredClone(current);
+		next.codex.executable = "/new/codex";
+		let settled = false;
+
+		const pending = handlePostConfig(post(next)).then((response) => {
+			settled = true;
+			return response;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(settled).toBe(false);
+
+		finishRuntimeSync(new Response());
+		expect((await pending).status).toBe(200);
 	});
 
 	it.each([

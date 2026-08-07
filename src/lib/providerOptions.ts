@@ -24,6 +24,16 @@ export type ModelInputAvailability = {
 	reason?: string;
 };
 
+export type CodexRealtimeAvailability = {
+	available: boolean;
+	reason?: string;
+};
+
+export type CodexRealtimeBackendStatus = {
+	available?: boolean;
+	reason?: string;
+};
+
 /** Models the provider exposes for picking, with `hidden: true` entries filtered out. */
 export function modelOptions(p: ProviderInfo | undefined): ModelOptions {
 	return (p?.models ?? []).filter((m) => m.hidden !== true);
@@ -39,6 +49,12 @@ export function modelInputAvailability(
 		return {
 			available: false,
 			reason: "The provider model catalog is still loading.",
+		};
+	}
+	if (!p.available) {
+		return {
+			available: false,
+			reason: p.unavailableReason ?? `${p.label} is unavailable.`,
 		};
 	}
 	const visibleModels = modelOptions(p);
@@ -63,6 +79,86 @@ export function modelInputAvailability(
 		reason: model.inputModalities
 			? `${model.label} does not support ${modality} input.`
 			: `${model.label} has not reported ${modality} input support.`,
+	};
+}
+
+/** Resolve whether any selectable model currently advertises an input kind. */
+export function providerAdvertisesInput(
+	p: ProviderInfo | undefined,
+	modality: "text" | "image" | "audio",
+): ModelInputAvailability {
+	if (!p) {
+		return {
+			available: false,
+			reason: "The provider model catalog is still loading.",
+		};
+	}
+	if (!p.available) {
+		return {
+			available: false,
+			reason: p.unavailableReason ?? `${p.label} is unavailable.`,
+		};
+	}
+	const model = modelOptions(p).find((candidate) =>
+		candidate.inputModalities?.includes(modality),
+	);
+	return model
+		? { available: true, modelLabel: model.label }
+		: {
+				available: false,
+				reason: `No selectable ${p.label} model advertises ${modality} input.`,
+			};
+}
+
+/** Resolve whether Codex realtime dictation is viable from current Forge state. */
+export function codexRealtimeAvailability(
+	previewEnabled: boolean,
+	provider: ProviderInfo | undefined,
+	backend: CodexRealtimeBackendStatus | undefined,
+): CodexRealtimeAvailability {
+	if (!previewEnabled) {
+		return {
+			available: false,
+			reason: "Enable Codex realtime Developer Preview to use Codex dictation.",
+		};
+	}
+	if (!provider) {
+		return {
+			available: false,
+			reason: "The Codex provider catalog is still loading.",
+		};
+	}
+	if (!provider.available) {
+		return {
+			available: false,
+			reason:
+				provider.unavailableReason ??
+				"The native Codex provider is unavailable.",
+		};
+	}
+	if (provider.capabilities?.realtime !== true) {
+		return {
+			available: false,
+			reason:
+				"The current Codex provider does not advertise realtime conversation support.",
+		};
+	}
+	if (backend?.available === false) {
+		return {
+			available: false,
+			reason:
+				backend.reason ??
+				"Codex realtime voice is unavailable for the current account or backend.",
+		};
+	}
+	return {
+		available: true,
+		...(backend?.available === undefined
+			? {
+					reason:
+						"Account and backend support will be confirmed when Codex dictation starts.",
+				}
+			: {}),
 	};
 }
 

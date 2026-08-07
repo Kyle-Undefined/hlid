@@ -15,6 +15,15 @@ export type UserMessage = {
 	id: string;
 	role: "user";
 	text: string;
+	/** True while Raven Live is still receiving this spoken utterance. */
+	streaming?: boolean;
+	/** Provider-native speech mirrored into Raven's durable transcript. */
+	source?: "codex_realtime";
+	/** Stable provider/Hlid correlation for a Raven Live utterance. */
+	utteranceId?: string;
+	realtimeSessionId?: string;
+	dbId?: number;
+	forkSupported?: boolean;
 	attachments?: ChatAttachment[];
 	/** Persisted transcript sequence, available after history hydration. */
 	transcriptSeq?: number;
@@ -40,6 +49,12 @@ export type AssistantMessage = {
 	/** User turn that opened this live assistant response. */
 	turnId?: string;
 	text: string;
+	/** Provider-native speech mirrored into Raven's durable transcript. */
+	source?: "codex_realtime";
+	/** Stable provider/Hlid correlation for a Raven Live utterance. */
+	utteranceId?: string;
+	realtimeSessionId?: string;
+	forkSupported?: boolean;
 	toolEvents: ToolEventMessage[];
 	/** Bounded historical suffix metadata; omitted for live or specialized responses. */
 	toolEventPage?: ToolEventPageMeta;
@@ -138,6 +153,10 @@ export type HistoryItem =
 			toolEventPage?: ToolEventPageMeta;
 			attachments?: ChatAttachment[];
 			recap?: string | null;
+			source?: "codex_realtime";
+			utteranceId?: string;
+			realtimeSessionId?: string;
+			forkSupported?: boolean;
 	  }
 	| {
 			kind: "permission";
@@ -172,6 +191,21 @@ export type Action =
 	| { type: "MARK_USER_CONTEXT_RECEIPT"; id: string }
 	| { type: "MARK_USER_FILE_CHECKPOINT"; id: string }
 	| { type: "REMOVE_USER"; id: string }
+	| {
+			type: "UPSERT_REALTIME_TRANSCRIPT";
+			id: string;
+			role: "user" | "assistant";
+			text: string;
+			done: boolean;
+			realtimeSessionId?: string;
+			transcriptSeq?: number;
+			dbId?: number;
+			forkSupported?: boolean;
+	  }
+	| {
+			type: "DISCARD_REALTIME_PARTIALS";
+			realtimeSessionId?: string;
+	  }
 	| {
 			/**
 			 * Slice C polish: move the promoted user msg to position right
@@ -596,7 +630,17 @@ function historyItemToMessage(item: HistoryItem): ChatMessage {
 			id: item.id,
 			role: "user",
 			text: item.text,
+			...(item.source === "codex_realtime" ? { streaming: false } : {}),
 			attachments: item.attachments,
+			...(item.source ? { source: item.source } : {}),
+			...(item.utteranceId ? { utteranceId: item.utteranceId } : {}),
+			...(item.realtimeSessionId
+				? { realtimeSessionId: item.realtimeSessionId }
+				: {}),
+			...(item.dbId !== undefined ? { dbId: item.dbId } : {}),
+			...(item.forkSupported !== undefined
+				? { forkSupported: item.forkSupported }
+				: {}),
 			...(item.seq !== undefined ? { transcriptSeq: item.seq } : {}),
 			...(item.hasContextReceipt ? { hasContextReceipt: true } : {}),
 			...(item.hasFileCheckpoint ? { hasFileCheckpoint: true } : {}),
@@ -613,6 +657,14 @@ function historyItemToMessage(item: HistoryItem): ChatMessage {
 			id: item.id,
 			role: "assistant",
 			text: item.text,
+			...(item.source ? { source: item.source } : {}),
+			...(item.utteranceId ? { utteranceId: item.utteranceId } : {}),
+			...(item.realtimeSessionId
+				? { realtimeSessionId: item.realtimeSessionId }
+				: {}),
+			...(item.forkSupported !== undefined
+				? { forkSupported: item.forkSupported }
+				: {}),
 			toolEvents: item.toolEvents ?? [],
 			...(item.toolEventPage ? { toolEventPage: item.toolEventPage } : {}),
 			streaming: false,
@@ -788,7 +840,34 @@ function hydrateHistory(
 	for (let index = 0; index < hydrated.length; index++) {
 		const message = hydrated[index] as ChatMessage;
 		const key = hydratedKeys[index] as string;
-		if (keyIndex.has(key)) {
+		const existingIndex = keyIndex.get(key);
+		if (existingIndex !== undefined) {
+			// A durable Raven Live row can hydrate while its provisional bubble is
+			// still mounted. The persisted row is authoritative and must settle that
+			// exact bubble instead of being discarded as a duplicate key.
+			if (
+				(message.role === "user" || message.role === "assistant") &&
+				message.source === "codex_realtime"
+			) {
+				const current = merged[existingIndex];
+				if (message.role === "assistant" && current?.role === "assistant") {
+					const liveTools = new Map(
+						current.toolEvents.map((event) => [event.id, event]),
+					);
+					const toolEvents = message.toolEvents.map((event) => {
+						const live = liveTools.get(event.id);
+						if (!live) return event;
+						liveTools.delete(event.id);
+						return { ...event, ...live };
+					});
+					merged[existingIndex] = {
+						...message,
+						toolEvents: [...toolEvents, ...liveTools.values()],
+					};
+				} else {
+					merged[existingIndex] = message;
+				}
+			}
 			previousHydratedKey = key;
 			continue;
 		}
@@ -816,6 +895,102 @@ function hydrateHistory(
 	}
 
 	return orderPersistedSteers(merged);
+}
+
+function realtimeMetadata(
+	action: Extract<Action, { type: "UPSERT_REALTIME_TRANSCRIPT" }>,
+) {
+	return {
+		source: "codex_realtime" as const,
+		utteranceId: action.id,
+		...(action.realtimeSessionId
+			? { realtimeSessionId: action.realtimeSessionId }
+			: {}),
+		...(action.transcriptSeq !== undefined
+			? { transcriptSeq: action.transcriptSeq }
+			: {}),
+		...(action.dbId !== undefined ? { dbId: action.dbId } : {}),
+		...(action.forkSupported !== undefined
+			? { forkSupported: action.forkSupported }
+			: {}),
+	};
+}
+
+function upsertRealtimeTranscript(
+	state: ChatMessage[],
+	action: Extract<Action, { type: "UPSERT_REALTIME_TRANSCRIPT" }>,
+): ChatMessage[] {
+	const index = state.findIndex(
+		(message) => message.id === action.id && message.role === action.role,
+	);
+	const existing = index === -1 ? undefined : state[index];
+	const keepsToolOnlyAssistant =
+		action.role === "assistant" &&
+		existing?.role === "assistant" &&
+		existing.toolEvents.length > 0;
+	if (
+		action.done &&
+		action.text.trim().length === 0 &&
+		!keepsToolOnlyAssistant
+	) {
+		if (
+			index === -1 ||
+			(existing?.role !== "user" && existing?.role !== "assistant") ||
+			existing.source !== "codex_realtime" ||
+			existing.streaming !== true
+		) {
+			return state;
+		}
+		return state.filter((_, candidateIndex) => candidateIndex !== index);
+	}
+	// A final row is authoritative. Ignore a delayed provider delta rather than
+	// putting the settled bubble back into a provisional streaming state.
+	if (
+		!action.done &&
+		(existing?.role === "user" || existing?.role === "assistant") &&
+		existing.streaming === false
+	) {
+		return state;
+	}
+	const existingText =
+		existing?.role === "user" || existing?.role === "assistant"
+			? existing.text
+			: "";
+	const text = action.done ? action.text : `${existingText}${action.text}`;
+	const metadata = realtimeMetadata(action);
+	const message: UserMessage | AssistantMessage =
+		action.role === "user"
+			? {
+					id: action.id,
+					role: "user",
+					text,
+					streaming: !action.done,
+					...metadata,
+				}
+			: {
+					id: action.id,
+					role: "assistant",
+					text,
+					toolEvents: existing?.role === "assistant" ? existing.toolEvents : [],
+					streaming: !action.done,
+					cost: existing?.role === "assistant" ? existing.cost : null,
+					...metadata,
+				};
+	if (index === -1) return [...state, message];
+	const current = state[index];
+	if (
+		current?.role === message.role &&
+		current.text === message.text &&
+		current.streaming === message.streaming &&
+		current.transcriptSeq === message.transcriptSeq &&
+		current.dbId === message.dbId &&
+		current.forkSupported === message.forkSupported
+	) {
+		return state;
+	}
+	return state.map((candidate, candidateIndex) =>
+		candidateIndex === index ? message : candidate,
+	);
 }
 
 export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
@@ -857,6 +1032,19 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 			);
 		case "REMOVE_USER":
 			return state.filter((m) => !(m.id === action.id && m.role === "user"));
+		case "UPSERT_REALTIME_TRANSCRIPT":
+			return upsertRealtimeTranscript(state, action);
+		case "DISCARD_REALTIME_PARTIALS":
+			return state.filter(
+				(message) =>
+					!(
+						(message.role === "user" || message.role === "assistant") &&
+						message.source === "codex_realtime" &&
+						message.streaming === true &&
+						(action.realtimeSessionId === undefined ||
+							message.realtimeSessionId === action.realtimeSessionId)
+					),
+			);
 		case "PROMOTE_USER": {
 			return promoteUser(state, action.turnId, action.pendingTurnIds);
 		}

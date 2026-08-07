@@ -742,6 +742,61 @@ describe("wsStore — Slice A: immediate-send drain", () => {
 		]);
 	});
 
+	it("buffers Live frames addressed by DB id while subscribed by pool id", () => {
+		currentWs.onmessage?.({
+			data: JSON.stringify({
+				type: "sessions_status",
+				sessions: [
+					{
+						session_id: "live-pool-id",
+						db_session_id: "chat-db-id",
+						agent_cwd: "/project",
+						agent_name: "Project",
+						state: "idle",
+						model: "gpt-test",
+						hasPendingPermissions: false,
+					},
+				],
+			}),
+		});
+		wsStore.subscribeToSession("live-pool-id");
+		wsStore.setBufferingEnabled(true);
+		const frames = [
+			{
+				type: "realtime_transcript",
+				session_id: "chat-db-id",
+				mode: "live",
+				role: "assistant",
+				text: "Persist me",
+				done: true,
+				utterance_id: "codex-realtime-buffered",
+				realtime_session_id: "raven-live-buffered",
+				transcript_seq: 4,
+				db_id: 44,
+				source: "codex_realtime",
+				fork_supported: false,
+			},
+			{
+				type: "realtime_state",
+				session_id: "chat-db-id",
+				mode: "live",
+				state: "closed",
+			},
+			{
+				type: "realtime_error",
+				session_id: "chat-db-id",
+				mode: "live",
+				message: "terminal test",
+			},
+		];
+
+		for (const frame of frames) {
+			currentWs.onmessage?.({ data: JSON.stringify(frame) });
+		}
+
+		expect(wsStore.drainMessageBuffer()).toEqual(frames);
+	});
+
 	it("removeFromQueue does NOT send cancel_queued for items not yet sent (ws closed at enqueue)", () => {
 		currentWs.readyState = WS_STATES.CLOSED;
 		currentWs.send.mockClear();

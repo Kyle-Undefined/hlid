@@ -1,7 +1,12 @@
 import type { HlidConfig } from "#/config";
-import { modelInputAvailability } from "#/lib/providerOptions";
+import {
+	codexRealtimeAvailability,
+	modelInputAvailability,
+	providerAdvertisesInput,
+} from "#/lib/providerOptions";
 import type { ProviderInfo } from "#/lib/providerTypes";
 import type { VoiceInfo } from "#/lib/serverFns/voice";
+import { CodexRealtimeSection } from "./CodexRealtimeSection";
 import { ReadAloudSection } from "./ReadAloudSection";
 import { TtsModelsSection } from "./TtsModelsSection";
 import {
@@ -28,6 +33,13 @@ export function VoiceSection({
 }) {
 	const voiceRuntime = useVoiceRuntimeState(initialInfo, voice);
 	const ttsRuntime = useTtsRuntimeState(voice);
+	const codexAudio = modelInputAvailability(codexProvider, codexModel, "audio");
+	const codexAudioCatalog = providerAdvertisesInput(codexProvider, "audio");
+	const codexDictation = codexRealtimeAvailability(
+		voice.codex_live_mode,
+		codexProvider,
+		voiceRuntime.info.codexRealtimeBackend,
+	);
 
 	return (
 		<div className="space-y-6">
@@ -36,6 +48,7 @@ export function VoiceSection({
 				onChange={onChange}
 				ttsInfo={ttsRuntime.info}
 			/>
+			<CodexRealtimeSection voice={voice} onChange={onChange} />
 			<TtsModelsSection
 				voice={voice}
 				onChange={onChange}
@@ -50,7 +63,9 @@ export function VoiceSection({
 				voice={voice}
 				onChange={onChange}
 				status={voiceRuntime.info.status}
-				codexAudio={modelInputAvailability(codexProvider, codexModel, "audio")}
+				codexAudio={codexAudio}
+				codexAudioCatalog={codexAudioCatalog}
+				codexDictation={codexDictation}
 			/>
 			<WhisperModelsSection
 				voice={voice}

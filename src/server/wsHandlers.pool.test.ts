@@ -1057,6 +1057,8 @@ describe("message — delegated-child ownership", () => {
 			{
 				type: "realtime_speak",
 				session_id: "delegated-db",
+				request_id: "read-aloud-request",
+				mode: "read-aloud",
 				text: "Take over",
 			},
 		],

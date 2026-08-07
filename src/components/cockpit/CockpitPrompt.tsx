@@ -1,6 +1,7 @@
 import {
 	CalendarClock,
 	FileCode,
+	LoaderCircle,
 	Mic,
 	Paperclip,
 	ShieldCheck,
@@ -90,7 +91,9 @@ function VoiceError({ voice }: { voice: VoiceState }) {
 			<div className="flex-1 text-[10px] text-destructive/80 leading-relaxed">
 				{voice.engine === "codex"
 					? "voice message failed"
-					: "voice transcription failed"}
+					: voice.engine === "codex_dictation"
+						? "Codex dictation failed"
+						: "voice transcription failed"}
 				: {voice.error}
 			</div>
 			<button
@@ -111,9 +114,19 @@ function promptPlaceholder(
 	activeSkills: ActiveCockpitSkill[],
 	vaultReferenceCount: number,
 ): string {
+	if (voice.phase === "starting") return "connecting Codex dictation…";
 	if (voice.phase === "recording")
-		return `${voice.engine === "codex" ? "recording for Codex" : "recording for Whisper"}… ${voice.seconds}s`;
-	if (voice.phase === "transcribing") return "transcribing locally…";
+		return `${
+			voice.engine === "codex"
+				? "recording a Codex voice message"
+				: voice.engine === "codex_dictation"
+					? "dictating with Codex"
+					: "recording for Whisper"
+		}… ${voice.seconds}s`;
+	if (voice.phase === "transcribing")
+		return voice.engine === "codex_dictation"
+			? "finalizing Codex dictation…"
+			: "transcribing locally…";
 	if (voice.phase === "submitting") return "sending voice message to Codex…";
 	if (!isConnected) return "server offline…";
 	if (activeSkills.length > 0 || vaultReferenceCount > 0)
@@ -250,6 +263,7 @@ function VoiceButton({
 	voice,
 	isConnected,
 }: Pick<PromptProps, "config" | "voice" | "isConnected">) {
+	const starting = voice.phase === "starting";
 	const recording = voice.phase === "recording";
 	const { actionLabel, title } = voiceInputPresentation({
 		enabled: config.voice.enabled,
@@ -263,31 +277,44 @@ function VoiceButton({
 		<>
 			<button
 				type="button"
-				onClick={() => (recording ? voice.stop() : void voice.start())}
+				onClick={() => {
+					if (starting) return;
+					if (recording) voice.stop();
+					else void voice.start();
+				}}
 				onFocus={voice.refresh}
 				disabled={
 					!isConnected ||
+					starting ||
 					(!voice.ready && !recording) ||
 					voice.phase === "transcribing" ||
 					voice.phase === "submitting"
 				}
-				className={`transition-colors shrink-0 disabled:opacity-30 ${recording ? "text-destructive" : "text-muted-foreground/45 hover:text-muted-foreground"}`}
-				aria-label={recording ? "Stop recording" : actionLabel}
-				title={title}
+				className={`transition-colors shrink-0 disabled:opacity-30 ${recording ? "text-destructive" : starting ? "text-primary" : "text-muted-foreground/45 hover:text-muted-foreground"}`}
+				aria-label={
+					starting
+						? "Connecting Codex dictation"
+						: recording
+							? "Stop recording"
+							: actionLabel
+				}
+				title={starting ? "Connecting Codex dictation" : title}
 			>
-				{recording ? (
+				{starting ? (
+					<LoaderCircle className="w-3.5 h-3.5 animate-spin" />
+				) : recording ? (
 					<Square className="w-3.5 h-3.5 fill-current" />
 				) : (
 					<Mic className="w-3.5 h-3.5" />
 				)}
 			</button>
-			{recording && (
+			{(starting || recording) && (
 				<button
 					type="button"
 					onClick={voice.cancel}
 					className="text-muted-foreground/45 hover:text-muted-foreground"
-					aria-label="Cancel recording"
-					title="Cancel recording"
+					aria-label={starting ? "Cancel Codex dictation" : "Cancel recording"}
+					title={starting ? "Cancel Codex dictation" : "Cancel recording"}
 				>
 					<X className="w-3.5 h-3.5" />
 				</button>

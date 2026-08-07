@@ -168,9 +168,7 @@ export function normalizeReadAloudPreferences(
 	const candidate = value as Partial<ReadAloudPreferences>;
 	return {
 		provider:
-			candidate.provider === "microsoft" ||
-			candidate.provider === "codex" ||
-			candidate.provider === "neural"
+			candidate.provider === "microsoft" || candidate.provider === "neural"
 				? candidate.provider
 				: "device",
 		voiceURI: typeof candidate.voiceURI === "string" ? candidate.voiceURI : "",

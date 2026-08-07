@@ -38,4 +38,30 @@ describe("voiceInputPresentation", () => {
 			}).title,
 		).toBe("Realtime unavailable");
 	});
+
+	it("presents Codex realtime dictation as editable dictation", () => {
+		expect(
+			voiceInputPresentation({
+				enabled: true,
+				engine: "codex_dictation",
+				ready: true,
+				localState: "unavailable",
+				hotkey: "Alt+Shift+KeyV",
+			}),
+		).toEqual({
+			actionLabel: "Dictate with Codex",
+			title: "Dictate with Codex (Alt + Shift + V)",
+		});
+	});
+
+	it("uses a truthful fallback for unavailable Codex dictation", () => {
+		expect(
+			voiceInputPresentation({
+				enabled: true,
+				engine: "codex_dictation",
+				ready: false,
+				localState: "ready",
+			}).title,
+		).toBe("Dictate with Codex is unavailable");
+	});
 });

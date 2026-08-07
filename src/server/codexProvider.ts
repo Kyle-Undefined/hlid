@@ -39,6 +39,7 @@ import type {
 	ProviderGoalControl,
 	ProviderGoalControlResult,
 	ProviderModelInfo,
+	ProviderRealtimeActivity,
 	ProviderRealtimeEvent,
 	ProviderRealtimeStart,
 	ProviderRealtimeStartResult,
@@ -123,6 +124,11 @@ import type {
 	TurnSteerParams,
 	UserInput,
 } from "./codexProtocol";
+import {
+	CODEX_REALTIME_ACCOUNT_UNAVAILABLE,
+	markCodexRealtimeBackendAccepted,
+	markCodexRealtimeBackendError,
+} from "./codexRealtimeStatus";
 import { bumpDataRevision } from "./dataRevision";
 import { resolveProviderExecutableForCwd } from "./executionContext";
 import {
@@ -161,6 +167,33 @@ type ApprovalRequestResult =
 	| CommandExecutionRequestApprovalResponse
 	| FileChangeRequestApprovalResponse;
 
+type ProviderRealtimeEventHandler = (event: ProviderRealtimeEvent) => void;
+
+type OwnedSpeechRuntime = {
+	mode: Exclude<ProviderRealtimeStart["mode"], "live">;
+	conn: CodexAppServer;
+	threadId: string | null;
+	handler: ThreadHandler | null;
+	eventHandler: ProviderRealtimeEventHandler;
+	started: boolean;
+	cleaned: boolean;
+	threadReleased: boolean;
+	realtimeStartRequested: boolean;
+	stopRequested: boolean;
+	startCancelled: Promise<never>;
+	cancelStart: (error: Error) => void;
+};
+
+const CODEX_REALTIME_STOP_CLOSE_GRACE_MS = 2_000;
+const CODEX_SPEECH_RELEASE_TIMEOUT_MS = 2_000;
+const CODEX_SPEECH_REGISTRY_VERSION = "hlid-speech-v1";
+
+const CODEX_SPEECH_DEVELOPER_INSTRUCTIONS =
+	"This is an isolated speech-only thread. Do not use tools, read or write files, access the network, take actions, or produce ordinary chat responses. For dictation, only transcribe the user's speech through realtime transcript events. For read-aloud, only speak the exact client-supplied text.";
+
+const CODEX_READ_ALOUD_REALTIME_PROMPT =
+	"You are a literal speech renderer. Whenever text arrives on the speakable channel, say exactly that text verbatim, once. Do not acknowledge it, summarize it, paraphrase it, add words, omit words, or respond to silence. Never delegate.";
+
 class AsyncQueue<T> {
 	private values: T[] = [];
 	private waiters: Array<(value: IteratorResult<T>) => void> = [];
@@ -191,6 +224,18 @@ class AsyncQueue<T> {
 	}
 }
 
+function isProviderRealtimeActivity(
+	event: AgentEvent,
+): event is ProviderRealtimeActivity {
+	return (
+		event.type === "tool_start" ||
+		event.type === "tool_update" ||
+		event.type === "tool_activity_update" ||
+		event.type === "tool_result" ||
+		event.type === "generated_media"
+	);
+}
+
 function asObj(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object"
 		? (value as Record<string, unknown>)
@@ -200,6 +245,25 @@ function asObj(value: unknown): Record<string, unknown> {
 function isMissingRolloutError(error: unknown): boolean {
 	const message = error instanceof Error ? error.message : String(error);
 	return /no rollout found for thread id/i.test(message);
+}
+
+function codexActiveTurnMismatch(error: unknown): {
+	expectedTurnId: string;
+	actualTurnId: string;
+} | null {
+	const message = error instanceof Error ? error.message : String(error);
+	const match = message.match(
+		/expected active turn id\s+[`'"]?([0-9a-f-]+)[`'"]?\s+but found\s+[`'"]?([0-9a-f-]+)[`'"]?/i,
+	);
+	if (!match?.[1] || !match[2]) return null;
+	return { expectedTurnId: match[1], actualTurnId: match[2] };
+}
+
+function codexTurnAlreadySettled(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return /no active turn(?: to interrupt)?|active turn (?:was |is )?(?:already )?(?:complete|completed|settled)|turn .+ (?:was |is )?(?:already )?(?:complete|completed|not active)/i.test(
+		message,
+	);
 }
 
 function skillsFromListResponse(value: unknown): Record<string, unknown>[] {
@@ -1564,7 +1628,7 @@ export function codexRealtimeErrorMessage(error: unknown): string {
 		/unexpected status 404 Not Found/i.test(message) &&
 		/backend-api\/codex\/realtime\/calls/i.test(message)
 	) {
-		return "Codex realtime voice is not available for this ChatGPT account yet.";
+		return CODEX_REALTIME_ACCOUNT_UNAVAILABLE;
 	}
 	return message;
 }
@@ -1721,6 +1785,7 @@ export async function fetchCodexModels(opts?: {
 	executable?: string;
 	cwd?: string;
 	profile?: CodexProviderProfile;
+	enableRealtime?: boolean;
 	/** Use a disposable transport when the caller may already occupy the shared one. */
 	dedicated?: boolean;
 }): Promise<ProviderModelInfo[]> {
@@ -1728,6 +1793,7 @@ export async function fetchCodexModels(opts?: {
 		cwd: opts?.cwd ?? process.cwd(),
 		executable: opts?.executable,
 		profile: opts?.profile,
+		enableRealtime: opts?.enableRealtime,
 	});
 	const conn = opts?.dedicated
 		? new CodexAppServer(launch.appServer)
@@ -1986,6 +2052,12 @@ class CodexAgentSession implements AgentSession {
 	private ready: Promise<void> | null = null;
 	private threadId: string | null = null;
 	private activeTurnId: string | null = null;
+	private activeTurnIdIsAuthoritative = false;
+	private pendingOrphanTurnId: string | null = null;
+	private ordinaryQueryActive = false;
+	private ordinaryTurnStartPending = false;
+	private ownedOrdinaryTurnIds = new Set<string>();
+	private suppressedTurnIds = new Set<string>();
 	private activeTurnModel: string | null = null;
 	private canceled = false;
 	private endAfterTurn = false;
@@ -2020,10 +2092,20 @@ class CodexAgentSession implements AgentSession {
 	/** Dedicated transport owned by a one-shot Windows-native worker. */
 	private ownedConnection: CodexAppServer | null = null;
 	private goalChangeHandler: AgentQueryParams["onGoalChange"];
-	private realtimeEventHandler:
-		| ((event: ProviderRealtimeEvent) => void)
-		| null = null;
+	private realtimeEventHandler: ProviderRealtimeEventHandler | null = null;
+	private realtimeCloseWaiter: {
+		eventHandler: ProviderRealtimeEventHandler;
+		resolve: () => void;
+	} | null = null;
 	private realtimeMode: ProviderRealtimeStart["mode"] | null = null;
+	private liveTurnIsolationActive = false;
+	private liveHiddenTurnId: string | null = null;
+	private ownedSpeech: OwnedSpeechRuntime | null = null;
+	private realtimeTransportOwner: "speech" | "main" | null = null;
+	private realtimeSpeechMode: Exclude<
+		ProviderRealtimeStart["mode"],
+		"live"
+	> | null = null;
 	private backgroundActivities = new Map<string, ProviderBackgroundActivity>();
 	/**
 	 * Root-thread commands currently running through structured provider items.
@@ -2059,11 +2141,22 @@ class CodexAgentSession implements AgentSession {
 		this.canceled = true;
 		this.clearPendingDone();
 		this.events.close();
+		const ownedSpeech = this.ownedSpeech;
+		if (ownedSpeech) {
+			this.cleanupOwnedSpeech(
+				ownedSpeech,
+				new Error(`Codex ${ownedSpeech.mode} cancelled`),
+			);
+		} else {
+			const realtimeCloseWaiter = this.realtimeCloseWaiter;
+			this.realtimeCloseWaiter = null;
+			realtimeCloseWaiter?.resolve();
+		}
 		// Normal sessions share an app-server and must only detach. Delegated
 		// Windows workers own a fresh app-server so every task reloads the
 		// native provider's current plugin paths and runtime state.
 		if (this.conn && this.threadId) {
-			if (this.realtimeEventHandler) {
+			if (!ownedSpeech && this.realtimeEventHandler) {
 				void this.conn
 					.request("thread/realtime/stop", { threadId: this.threadId })
 					.catch(() => {});
@@ -2083,6 +2176,11 @@ class CodexAgentSession implements AgentSession {
 		this.conn = null;
 		this.realtimeEventHandler = null;
 		this.realtimeMode = null;
+		this.liveTurnIsolationActive = false;
+		this.liveHiddenTurnId = null;
+		this.ordinaryQueryActive = false;
+		this.ordinaryTurnStartPending = false;
+		this.ownedOrdinaryTurnIds.clear();
 	}
 
 	closeInput(): void {
@@ -2105,6 +2203,128 @@ class CodexAgentSession implements AgentSession {
 			threadId: this.threadId,
 			turnId: this.activeTurnId,
 		});
+	}
+
+	private rememberSuppressedTurn(turnId: string): void {
+		if (!turnId) return;
+		this.suppressedTurnIds.add(turnId);
+		// UUIDv7 turn ids are unique for the lifetime of the process. Keep a small
+		// tombstone window so notifications emitted after turn/interrupt resolves
+		// cannot be mistaken for a later Hlid query.
+		if (this.suppressedTurnIds.size <= 32) return;
+		const oldest = this.suppressedTurnIds.values().next().value;
+		if (typeof oldest === "string") this.suppressedTurnIds.delete(oldest);
+	}
+
+	private notificationTurnId(obj: Record<string, unknown>): string {
+		const direct = obj.turnId;
+		if (typeof direct === "string") return direct;
+		const nested = asObj(obj.turn).id;
+		return typeof nested === "string" ? nested : "";
+	}
+
+	private inProgressTurnId(thread: Record<string, unknown>): string | null {
+		const turns = Array.isArray(thread.turns) ? thread.turns : [];
+		for (let index = turns.length - 1; index >= 0; index--) {
+			const turn = asObj(turns[index]);
+			if (turn.status === "inProgress" && typeof turn.id === "string") {
+				return turn.id;
+			}
+		}
+		return null;
+	}
+
+	private adoptUnownedNativeTurn(turnId: string): void {
+		if (!turnId) return;
+		this.activeTurnId = turnId;
+		this.activeTurnIdIsAuthoritative = true;
+		this.pendingOrphanTurnId = turnId;
+	}
+
+	private async interruptSuppressedTurn(turnId: string): Promise<void> {
+		if (!this.threadId || !turnId) return;
+		let interruptedTurnId = turnId;
+		this.rememberSuppressedTurn(interruptedTurnId);
+		try {
+			await this.request("turn/interrupt", {
+				threadId: this.threadId,
+				turnId: interruptedTurnId,
+			});
+		} catch (error) {
+			if (codexTurnAlreadySettled(error)) {
+				// The resume/read snapshot can race the native turn's completion.
+				// Treat that as the same settled outcome as a successful interrupt.
+			} else {
+				const mismatch = codexActiveTurnMismatch(error);
+				if (!mismatch || mismatch.expectedTurnId !== interruptedTurnId) {
+					throw error;
+				}
+				interruptedTurnId = mismatch.actualTurnId;
+				this.rememberSuppressedTurn(interruptedTurnId);
+				this.activeTurnId = interruptedTurnId;
+				this.activeTurnIdIsAuthoritative = true;
+				try {
+					await this.request("turn/interrupt", {
+						threadId: this.threadId,
+						turnId: interruptedTurnId,
+					});
+				} catch (retryError) {
+					if (!codexTurnAlreadySettled(retryError)) throw retryError;
+				}
+			}
+		}
+		if (
+			this.activeTurnId === turnId ||
+			this.activeTurnId === interruptedTurnId
+		) {
+			this.activeTurnId = null;
+			this.activeTurnIdIsAuthoritative = false;
+		}
+		if (
+			this.pendingOrphanTurnId === turnId ||
+			this.pendingOrphanTurnId === interruptedTurnId
+		) {
+			this.pendingOrphanTurnId = null;
+		}
+		if (this.liveHiddenTurnId === interruptedTurnId) {
+			this.liveHiddenTurnId = null;
+		}
+	}
+
+	private async settleUnownedNativeTurn(): Promise<void> {
+		const orphanTurnId =
+			this.pendingOrphanTurnId ??
+			(this.activeTurnId && !this.ownedOrdinaryTurnIds.has(this.activeTurnId)
+				? this.activeTurnId
+				: null);
+		if (!orphanTurnId) return;
+		await this.interruptSuppressedTurn(orphanTurnId);
+	}
+
+	private async readInProgressNativeTurnId(): Promise<string | null> {
+		if (!this.threadId) return null;
+		try {
+			const result = asObj(
+				await this.request("thread/read", {
+					threadId: this.threadId,
+					includeTurns: true,
+				}),
+			);
+			return this.inProgressTurnId(asObj(result.thread));
+		} catch {
+			// Live turn notifications are authoritative when thread/read is not
+			// available on an older app-server.
+			return this.liveHiddenTurnId;
+		}
+	}
+
+	private async settleLiveNativeTurn(): Promise<void> {
+		const discoveredTurnId = await this.readInProgressNativeTurnId();
+		const liveTurnId = discoveredTurnId ?? this.liveHiddenTurnId;
+		if (!liveTurnId) return;
+		this.liveHiddenTurnId = liveTurnId;
+		this.adoptUnownedNativeTurn(liveTurnId);
+		await this.interruptSuppressedTurn(liveTurnId);
 	}
 
 	private async readBackgroundTerminals(): Promise<
@@ -2411,16 +2631,41 @@ class CodexAgentSession implements AgentSession {
 				(path): UserInput => ({ type: "localAudio", path }),
 			),
 		];
-		await this.request("turn/steer", {
-			threadId: this.threadId,
-			expectedTurnId: this.activeTurnId,
-			input,
-		} satisfies TurnSteerParams);
+		const expectedTurnId = this.activeTurnId;
+		try {
+			await this.request("turn/steer", {
+				threadId: this.threadId,
+				expectedTurnId,
+				input,
+			} satisfies TurnSteerParams);
+		} catch (error) {
+			const mismatch = codexActiveTurnMismatch(error);
+			if (
+				!mismatch ||
+				mismatch.expectedTurnId !== expectedTurnId ||
+				!this.ordinaryQueryActive ||
+				this.activeTurnId !== expectedTurnId
+			) {
+				throw error;
+			}
+			// turn/start can return a submission id while Codex routes that input to
+			// an older native turn. Treat the app-server's mismatch as authoritative
+			// and retry this steer once, matching the native clients' recovery.
+			this.activeTurnId = mismatch.actualTurnId;
+			this.activeTurnIdIsAuthoritative = true;
+			this.ownedOrdinaryTurnIds.add(mismatch.actualTurnId);
+			await this.request("turn/steer", {
+				threadId: this.threadId,
+				expectedTurnId: mismatch.actualTurnId,
+				input,
+			} satisfies TurnSteerParams);
+		}
 	}
 
 	async send(message: string, opts?: SendOptions): Promise<void> {
 		await this.ensureReady();
 		if (!this.threadId) throw new Error("Codex thread did not start");
+		await this.settleUnownedNativeTurn();
 		if ((opts?.audioPaths?.length ?? 0) > 0) {
 			await this.assertAudioInputSupported();
 		}
@@ -2509,9 +2754,31 @@ class CodexAgentSession implements AgentSession {
 				: {}),
 		};
 		this.activeTurnModel = this.params.model ?? this.resolvedModel;
-		const result = asObj(await this.request("turn/start", params));
-		const turn = asObj(result.turn);
-		if (typeof turn.id === "string") this.activeTurnId = turn.id;
+		this.ordinaryQueryActive = true;
+		this.ordinaryTurnStartPending = true;
+		try {
+			const result = asObj(await this.request("turn/start", params));
+			const turn = asObj(result.turn);
+			if (typeof turn.id === "string") {
+				// A turn/started notification is native authority and can race ahead of
+				// this response. Never replace that actual id with the newer submission
+				// id returned by turn/start.
+				if (!this.activeTurnIdIsAuthoritative || !this.activeTurnId) {
+					this.activeTurnId = turn.id;
+					this.activeTurnIdIsAuthoritative = false;
+					this.ownedOrdinaryTurnIds.add(turn.id);
+				} else if (this.activeTurnId === turn.id) {
+					this.ownedOrdinaryTurnIds.add(turn.id);
+				}
+			}
+		} catch (error) {
+			if (this.ownedOrdinaryTurnIds.size === 0) {
+				this.ordinaryQueryActive = false;
+			}
+			throw error;
+		} finally {
+			this.ordinaryTurnStartPending = false;
+		}
 	}
 
 	private async sendWithSkill(
@@ -2777,16 +3044,35 @@ class CodexAgentSession implements AgentSession {
 		const target = args?.trim()
 			? { type: "custom", instructions: args.trim() }
 			: { type: "uncommittedChanges" };
+		await this.settleUnownedNativeTurn();
 		this.activeTurnModel = this.params.model ?? this.resolvedModel;
-		const result = asObj(
-			await this.request("review/start", {
-				threadId: this.threadId,
-				target,
-				delivery: "inline",
-			}),
-		);
-		const turn = asObj(result.turn);
-		if (typeof turn.id === "string") this.activeTurnId = turn.id;
+		this.ordinaryQueryActive = true;
+		this.ordinaryTurnStartPending = true;
+		try {
+			const result = asObj(
+				await this.request("review/start", {
+					threadId: this.threadId,
+					target,
+					delivery: "inline",
+				}),
+			);
+			const turn = asObj(result.turn);
+			if (
+				typeof turn.id === "string" &&
+				(!this.activeTurnIdIsAuthoritative || !this.activeTurnId)
+			) {
+				this.activeTurnId = turn.id;
+				this.activeTurnIdIsAuthoritative = false;
+				this.ownedOrdinaryTurnIds.add(turn.id);
+			}
+		} catch (error) {
+			if (this.ownedOrdinaryTurnIds.size === 0) {
+				this.ordinaryQueryActive = false;
+			}
+			throw error;
+		} finally {
+			this.ordinaryTurnStartPending = false;
+		}
 	}
 
 	async controlGoal(
@@ -2844,39 +3130,40 @@ class CodexAgentSession implements AgentSession {
 	async startRealtime(
 		request: ProviderRealtimeStart,
 	): Promise<ProviderRealtimeStartResult> {
+		const eventHandler = request.onEvent;
 		try {
 			if (!this.params.codexRealtimeEnabled) {
 				throw new Error(
 					"Codex realtime voice is disabled. Enable the Developer Preview in Forge first.",
 				);
 			}
+			if (request.mode !== "live") {
+				// Keep this tombstone after terminal cleanup so a late realtime_speak
+				// cannot fall through and initialize Raven's ordinary thread.
+				this.realtimeTransportOwner = "speech";
+				this.realtimeSpeechMode = request.mode;
+				return await this.startOwnedSpeech(request);
+			}
 			await this.ensureReady();
+			await this.settleUnownedNativeTurn();
 			const threadId = this.threadId;
 			if (!threadId) throw new Error("Codex thread did not start");
-			this.realtimeEventHandler = request.onEvent;
+			this.realtimeEventHandler = eventHandler;
 			this.realtimeMode = request.mode;
-			const params: ThreadRealtimeStartParams = {
-				threadId,
-				outputModality: codexRealtimeOutputModality(),
-				transport: { type: "webrtc", sdp: request.sdp },
-				version: codexRealtimeVersion(request.mode),
-				voice: request.voice as RealtimeVoice | undefined,
-				includeStartupContext: request.mode === "live",
-				clientManagedHandoffs: request.mode !== "live",
-				flushTranscriptTailOnSessionEnd: request.mode === "dictation",
-				...(request.mode === "dictation"
-					? {
-							prompt:
-								"Transcribe the user's speech faithfully. Do not answer or act on it.",
-						}
-					: {}),
-			};
+			if (request.mode === "live") this.liveTurnIsolationActive = true;
+			const params = this.realtimeStartParams(request, threadId);
 			await this.request("thread/realtime/start", params);
+			this.realtimeTransportOwner = "main";
+			this.realtimeSpeechMode = null;
 			return { providerSessionId: threadId };
 		} catch (error) {
-			this.realtimeEventHandler = null;
-			this.realtimeMode = null;
+			if (this.realtimeEventHandler === eventHandler) {
+				this.realtimeEventHandler = null;
+				this.realtimeMode = null;
+			}
+			if (request.mode === "live") this.liveTurnIsolationActive = false;
 			const message = codexRealtimeErrorMessage(error);
+			markCodexRealtimeBackendError(message);
 			if (
 				/method not found|unknown method|-32601|realtime_conversation/i.test(
 					message,
@@ -2886,11 +3173,327 @@ class CodexAgentSession implements AgentSession {
 					"Codex voice requires Codex CLI 0.145.0 or newer with realtime conversation support.",
 				);
 			}
+			throw new Error(message);
+		}
+	}
+
+	private realtimeStartParams(
+		request: ProviderRealtimeStart,
+		threadId: string,
+	): ThreadRealtimeStartParams {
+		return {
+			threadId,
+			outputModality: codexRealtimeOutputModality(),
+			transport: { type: "webrtc", sdp: request.sdp },
+			version: codexRealtimeVersion(request.mode),
+			voice: request.voice as RealtimeVoice | undefined,
+			includeStartupContext: request.mode === "live",
+			clientManagedHandoffs: request.mode !== "live",
+			// Codex tail flushing creates an ordinary chat delegation rather than a
+			// realtime transcript final. Dictation must remain editable composer text.
+			flushTranscriptTailOnSessionEnd: false,
+			...(request.mode === "dictation"
+				? {
+						prompt:
+							"Transcribe the user's speech faithfully. Do not answer or act on it.",
+					}
+				: request.mode === "read-aloud"
+					? { prompt: CODEX_READ_ALOUD_REALTIME_PROMPT }
+					: {}),
+		};
+	}
+
+	private async startOwnedSpeech(
+		request: ProviderRealtimeStart,
+	): Promise<ProviderRealtimeStartResult> {
+		if (request.mode === "live") {
+			throw new Error("Live cannot use the isolated Codex speech thread");
+		}
+		if (this.ownedSpeech) {
+			this.cleanupOwnedSpeech(
+				this.ownedSpeech,
+				new Error(`Codex ${this.ownedSpeech.mode} replaced by a new session`),
+			);
+		}
+		const launch = codexLaunchConfig({
+			cwd: this.params.cwd,
+			executable: this.params.executable,
+			profile: {
+				...this.providerProfile,
+				// Speech is reusable across recordings and read-aloud requests, but
+				// never shares a process identity with Live or an ordinary conversation.
+				registryKey: JSON.stringify([
+					CODEX_SPEECH_REGISTRY_VERSION,
+					this.providerProfile?.registryKey ?? null,
+				]),
+				args: [
+					...(this.providerProfile?.args ?? []),
+					"-c",
+					"features.plugins=false",
+					"-c",
+					"features.apps=false",
+					"-c",
+					"features.hooks=false",
+				],
+			},
+			enableRealtime: true,
+		});
+		const conn = acquireCodexAppServer(launch.appServer);
+		let cancelStart = (_error: Error): void => {};
+		const startCancelled = new Promise<never>((_resolve, reject) => {
+			cancelStart = reject;
+		});
+		// Cleanup can happen after startup has completed, when no stage race still
+		// owns this rejection. Keep that terminal signal handled in either case.
+		void startCancelled.catch(() => {});
+		const runtime: OwnedSpeechRuntime = {
+			mode: request.mode,
+			conn,
+			threadId: null,
+			handler: null,
+			eventHandler: request.onEvent,
+			started: false,
+			cleaned: false,
+			threadReleased: false,
+			realtimeStartRequested: false,
+			stopRequested: false,
+			startCancelled,
+			cancelStart,
+		};
+		this.ownedSpeech = runtime;
+		try {
+			await this.waitForOwnedSpeech(runtime, conn.ready);
+			const configRead = asObj(
+				await this.waitForOwnedSpeech(
+					runtime,
+					conn.requestOptional("config/read", {
+						cwd: launch.rpcCwd,
+						includeLayers: false,
+					}),
+				),
+			);
+			const effectiveMcpServers = asObj(asObj(configRead.config).mcp_servers);
+			const effectiveFeatures = asObj(asObj(configRead.config).features);
+			for (const feature of ["plugins", "apps", "hooks"]) {
+				if (effectiveFeatures[feature] !== false) {
+					throw new Error(
+						`Codex ${runtime.mode} isolation failed: feature ${feature} is not confirmed disabled`,
+					);
+				}
+			}
+			const disabledMcpServers = Object.fromEntries(
+				Object.keys(effectiveMcpServers).map((name) => [
+					name,
+					{ enabled: false },
+				]),
+			);
+			const threadId = await this.waitForOwnedSpeech(
+				runtime,
+				conn
+					.requestOptional("thread/start", {
+						cwd: launch.rpcCwd,
+						...(this.params.model ? { model: this.params.model } : {}),
+						...(this.params.serviceTier
+							? { serviceTier: this.params.serviceTier }
+							: {}),
+						ephemeral: true,
+						approvalPolicy: "never",
+						sandbox: "read-only",
+						environments: [],
+						dynamicTools: [],
+						selectedCapabilityRoots: [],
+						developerInstructions: CODEX_SPEECH_DEVELOPER_INSTRUCTIONS,
+						config: {
+							web_search: "disabled",
+							agents: { enabled: false },
+							features: {
+								realtime_conversation: true,
+								multi_agent: false,
+								multi_agent_v2: false,
+								apps: false,
+								plugins: false,
+								tool_suggest: false,
+								unified_exec: false,
+								hooks: false,
+								goals: false,
+								memories: false,
+								image_generation: false,
+								standalone_web_search: false,
+								deferred_executor: false,
+								request_permissions_tool: false,
+								token_budget: false,
+								current_time_reminder: false,
+								shell_tool: false,
+							},
+							orchestrator: {
+								skills: { enabled: false },
+								mcp: { enabled: false },
+							},
+							tools: {
+								update_plan: { enabled: false },
+								experimental_request_user_input: { enabled: false },
+							},
+							skills: { include_instructions: false },
+							notify: [],
+							include_apps_instructions: false,
+							include_collaboration_mode_instructions: false,
+							include_environment_context: false,
+							mcp_servers: disabledMcpServers,
+						},
+					} satisfies ThreadStartParams)
+					.then((rawResult) => {
+						const startedThreadId = String(
+							asObj(asObj(rawResult).thread).id ?? "",
+						);
+						if (!startedThreadId) {
+							throw new Error(
+								`Codex ${runtime.mode} thread start did not return a thread id`,
+							);
+						}
+						runtime.threadId = startedThreadId;
+						if (runtime.cleaned) this.releaseOwnedSpeechThread(runtime);
+						return startedThreadId;
+					}),
+			);
+			runtime.handler = {
+				onNotification: (method, params) => {
+					if (runtime.cleaned || !method.startsWith("thread/realtime/")) {
+						return;
+					}
+					const handled = this.handleRealtimeNotification(
+						method,
+						params,
+						threadId,
+						runtime.eventHandler,
+					);
+					if (
+						handled &&
+						(method === "thread/realtime/closed" ||
+							method === "thread/realtime/error")
+					) {
+						if (method === "thread/realtime/closed") {
+							runtime.stopRequested = true;
+						}
+						this.cleanupOwnedSpeech(
+							runtime,
+							new Error(
+								method === "thread/realtime/error"
+									? codexRealtimeErrorMessage(asObj(params).message)
+									: `Codex ${runtime.mode} closed`,
+							),
+						);
+					}
+				},
+				onRequest: async () => {
+					throw new Error(
+						`Codex ${runtime.mode} does not allow server requests`,
+					);
+				},
+				onExit: (error) => {
+					if (runtime.cleaned) return;
+					if (runtime.started) {
+						const message = codexRealtimeErrorMessage(error);
+						markCodexRealtimeBackendError(message);
+						runtime.eventHandler({ type: "error", message });
+					}
+					this.cleanupOwnedSpeech(runtime, error);
+				},
+			};
+			conn.attachThread(threadId, runtime.handler);
+			this.realtimeEventHandler = runtime.eventHandler;
+			this.realtimeMode = request.mode;
+			runtime.realtimeStartRequested = true;
+			await this.waitForOwnedSpeech(
+				runtime,
+				conn.requestOptional(
+					"thread/realtime/start",
+					this.realtimeStartParams(request, threadId),
+				),
+			);
+			if (runtime.cleaned) {
+				throw new Error(`Codex ${runtime.mode} process exited while starting`);
+			}
+			runtime.started = true;
+			return { providerSessionId: threadId };
+		} catch (error) {
+			this.cleanupOwnedSpeech(
+				runtime,
+				error instanceof Error ? error : new Error(String(error)),
+			);
 			throw error;
 		}
 	}
 
+	private waitForOwnedSpeech<T>(
+		runtime: OwnedSpeechRuntime,
+		operation: Promise<T>,
+	): Promise<T> {
+		return Promise.race([operation, runtime.startCancelled]);
+	}
+
+	private releaseOwnedSpeechThread(runtime: OwnedSpeechRuntime): void {
+		const threadId = runtime.threadId;
+		if (!threadId || runtime.threadReleased) return;
+		runtime.threadReleased = true;
+		if (runtime.handler) {
+			runtime.conn.detachThread(threadId, runtime.handler);
+			runtime.handler = null;
+		}
+		if (runtime.realtimeStartRequested && !runtime.stopRequested) {
+			runtime.stopRequested = true;
+			void runtime.conn
+				.requestOptional(
+					"thread/realtime/stop",
+					{ threadId } satisfies ThreadRealtimeStopParams,
+					CODEX_SPEECH_RELEASE_TIMEOUT_MS,
+				)
+				.catch(() => {});
+		}
+		// Ephemeral speech threads are deliberately not resumed. Unsubscribe is
+		// best effort so older app-servers can still share the hardened process.
+		void runtime.conn
+			.requestOptional(
+				"thread/unsubscribe",
+				{ threadId },
+				CODEX_SPEECH_RELEASE_TIMEOUT_MS,
+			)
+			.catch(() => {});
+	}
+
+	private cleanupOwnedSpeech(runtime: OwnedSpeechRuntime, error: Error): void {
+		if (runtime.cleaned) return;
+		runtime.cleaned = true;
+		runtime.cancelStart(error);
+		if (this.ownedSpeech === runtime) this.ownedSpeech = null;
+		this.releaseOwnedSpeechThread(runtime);
+		const closeWaiter = this.realtimeCloseWaiter;
+		if (closeWaiter?.eventHandler === runtime.eventHandler) {
+			this.realtimeCloseWaiter = null;
+			closeWaiter.resolve();
+		}
+		if (this.realtimeEventHandler === runtime.eventHandler) {
+			this.realtimeEventHandler = null;
+			this.realtimeMode = null;
+		}
+	}
+
 	async appendRealtimeSpeech(text: string): Promise<void> {
+		const ownedSpeech = this.ownedSpeech;
+		if (ownedSpeech && !ownedSpeech.cleaned) {
+			if (ownedSpeech.mode !== "read-aloud") {
+				throw new Error("The active Codex speech session is not read-aloud.");
+			}
+			const threadId = ownedSpeech.threadId;
+			if (!threadId) throw new Error("Codex read-aloud thread did not start");
+			const params: ThreadRealtimeAppendSpeechParams = { threadId, text };
+			await ownedSpeech.conn.request("thread/realtime/appendSpeech", params);
+			return;
+		}
+		if (this.realtimeTransportOwner === "speech") {
+			throw new Error(
+				`No active Codex ${this.realtimeSpeechMode ?? "speech"} session.`,
+			);
+		}
 		await this.ensureReady();
 		const threadId = this.threadId;
 		if (!threadId) throw new Error("Codex thread did not start");
@@ -2899,18 +3502,91 @@ class CodexAgentSession implements AgentSession {
 	}
 
 	async stopRealtime(): Promise<void> {
-		if (!this.realtimeEventHandler && !this.realtimeMode) return;
+		const startingOwnedSpeech = this.ownedSpeech;
+		if (
+			!this.realtimeEventHandler &&
+			!this.realtimeMode &&
+			!startingOwnedSpeech &&
+			!this.liveTurnIsolationActive
+		) {
+			return;
+		}
+		const eventHandler =
+			startingOwnedSpeech?.eventHandler ?? this.realtimeEventHandler;
+		const ownedSpeech =
+			eventHandler && startingOwnedSpeech?.eventHandler === eventHandler
+				? startingOwnedSpeech
+				: null;
+		const stoppingLive = !ownedSpeech && this.liveTurnIsolationActive;
+		let resolveClosed = () => {};
+		const closed = new Promise<void>((resolve) => {
+			resolveClosed = resolve;
+		});
+		const closeWaiter = eventHandler
+			? { eventHandler, resolve: resolveClosed }
+			: null;
+		if (closeWaiter) this.realtimeCloseWaiter = closeWaiter;
+		let closeGraceTimer: ReturnType<typeof setTimeout> | undefined;
 		try {
-			await this.ensureReady();
-			const threadId = this.threadId;
-			if (!threadId) return;
-			const params: ThreadRealtimeStopParams = { threadId };
-			await this.request("thread/realtime/stop", params);
+			if (ownedSpeech) {
+				if (!ownedSpeech.started) {
+					ownedSpeech.cancelStart(
+						new Error(`Codex ${ownedSpeech.mode} stopped`),
+					);
+				}
+				const threadId = ownedSpeech.threadId;
+				if (!threadId) return;
+				const params: ThreadRealtimeStopParams = { threadId };
+				ownedSpeech.stopRequested = true;
+				try {
+					await ownedSpeech.conn.requestOptional(
+						"thread/realtime/stop",
+						params,
+					);
+				} catch (error) {
+					if (!ownedSpeech.cleaned) throw error;
+				}
+			} else if (this.realtimeEventHandler || this.realtimeMode) {
+				await this.ensureReady();
+				const threadId = this.threadId;
+				if (!threadId) return;
+				const params: ThreadRealtimeStopParams = { threadId };
+				await this.request("thread/realtime/stop", params);
+			}
+			if (closeWaiter) {
+				await Promise.race([
+					closed,
+					new Promise<void>((resolve) => {
+						closeGraceTimer = setTimeout(
+							resolve,
+							CODEX_REALTIME_STOP_CLOSE_GRACE_MS,
+						);
+					}),
+				]);
+			}
+			if (stoppingLive) await this.settleLiveNativeTurn();
 		} finally {
-			// The stop response is authoritative even if Codex does not emit a
-			// separate closed notification afterward.
-			this.realtimeEventHandler = null;
-			this.realtimeMode = null;
+			if (closeGraceTimer !== undefined) clearTimeout(closeGraceTimer);
+			if (this.realtimeCloseWaiter === closeWaiter) {
+				this.realtimeCloseWaiter = null;
+			}
+			// Codex can acknowledge the stop RPC before publishing the final
+			// transcript and closed notifications. Retain this exact handler for a
+			// bounded terminal grace, but never clear a newer realtime session.
+			if (this.realtimeEventHandler === eventHandler) {
+				this.realtimeEventHandler = null;
+				this.realtimeMode = null;
+			}
+			if (ownedSpeech) {
+				this.cleanupOwnedSpeech(
+					ownedSpeech,
+					new Error(`Codex ${ownedSpeech.mode} stopped`),
+				);
+			}
+			if (stoppingLive) {
+				this.liveTurnIsolationActive = false;
+				this.liveHiddenTurnId = null;
+			}
 		}
 	}
 
@@ -3063,6 +3739,12 @@ class CodexAgentSession implements AgentSession {
 			throw new Error("Codex thread start did not return a thread id");
 		}
 		this.threadId = thread.id;
+		if (this.params.sessionId) {
+			const resumedActiveTurnId = this.inProgressTurnId(thread);
+			if (resumedActiveTurnId) {
+				this.adoptUnownedNativeTurn(resumedActiveTurnId);
+			}
+		}
 		this.resolvedModel =
 			typeof thread.model === "string" && thread.model.trim()
 				? thread.model
@@ -3101,7 +3783,8 @@ class CodexAgentSession implements AgentSession {
 
 	private handleAppServerExit(error: Error): void {
 		const resumeThreadId = this.threadId ?? this.params.sessionId;
-		const interruptedTurn = this.activeTurnId !== null;
+		const interruptedTurn =
+			this.ordinaryQueryActive && this.activeTurnId !== null;
 		if (resumeThreadId) {
 			this.params = { ...this.params, sessionId: resumeThreadId };
 		}
@@ -3113,6 +3796,11 @@ class CodexAgentSession implements AgentSession {
 		this.ready = null;
 		this.threadId = null;
 		this.activeTurnId = null;
+		this.activeTurnIdIsAuthoritative = false;
+		this.pendingOrphanTurnId = null;
+		this.ordinaryQueryActive = false;
+		this.ordinaryTurnStartPending = false;
+		this.ownedOrdinaryTurnIds.clear();
 		this.threadHandler = null;
 		this.attachedThreadIds.clear();
 
@@ -3986,6 +4674,20 @@ class CodexAgentSession implements AgentSession {
 			}
 			return this.deniedServerRequestResult(method);
 		}
+		if (!this.ownsServerRequest(params)) {
+			if (method === "item/tool/requestUserInput") return { answers: {} };
+			if (method === "item/tool/call") {
+				return dynamicToolFailure(
+					new Error(
+						"The Codex turn that requested this tool is no longer active",
+					),
+				);
+			}
+			if (method === "mcpServer/elicitation/request") {
+				return { action: "decline", content: null, _meta: null };
+			}
+			return this.deniedServerRequestResult(method);
+		}
 		if (method === "item/tool/requestUserInput") {
 			return this.handleRequestUserInput(params);
 		}
@@ -4046,6 +4748,27 @@ class CodexAgentSession implements AgentSession {
 		return allowed
 			? this.allowedServerRequestResult(method, params)
 			: this.deniedServerRequestResult(method);
+	}
+
+	private ownsServerRequest(params: Record<string, unknown>): boolean {
+		if (this.delegatedWindowsWorker?.kind === "computer-use") return true;
+		const requestThreadId =
+			typeof params.threadId === "string" ? params.threadId : this.threadId;
+		if (requestThreadId && requestThreadId !== this.threadId) {
+			return (
+				this.queryChildThreadIds.has(requestThreadId) ||
+				(this.realtimeMode === "live" &&
+					this.liveTurnIsolationActive &&
+					this.subagentByThread.has(requestThreadId))
+			);
+		}
+		const requestTurnId =
+			typeof params.turnId === "string" ? params.turnId : null;
+		if (this.realtimeMode === "live" && this.liveTurnIsolationActive) {
+			return !requestTurnId || requestTurnId === this.liveHiddenTurnId;
+		}
+		if (!this.ordinaryQueryActive) return false;
+		return !requestTurnId || this.ownedOrdinaryTurnIds.has(requestTurnId);
 	}
 
 	private async handleRequestUserInput(
@@ -4182,6 +4905,9 @@ class CodexAgentSession implements AgentSession {
 		this.childLastUsage.clear();
 		this.cumulativeUsageTurns.clear();
 		this.queryChildThreadIds.clear();
+		this.ordinaryQueryActive = false;
+		this.ordinaryTurnStartPending = false;
+		this.ownedOrdinaryTurnIds.clear();
 	}
 
 	private clearPendingDone(): void {
@@ -4191,7 +4917,10 @@ class CodexAgentSession implements AgentSession {
 	}
 
 	private ownsOpenQuery(): boolean {
-		return this.activeTurnId !== null || this.pendingDone !== null;
+		return (
+			(this.ordinaryQueryActive && this.activeTurnId !== null) ||
+			this.pendingDone !== null
+		);
 	}
 
 	private usageModel(): string | undefined {
@@ -4312,6 +5041,8 @@ class CodexAgentSession implements AgentSession {
 		const id = asObj(obj.turn).id;
 		if (typeof id === "string") {
 			this.activeTurnId = id;
+			this.activeTurnIdIsAuthoritative = true;
+			this.ownedOrdinaryTurnIds.add(id);
 			this.events.push({ type: "provider_turn_id", id });
 		}
 		if (this.threadId) this.cumulativeUsageTurns.delete(this.threadId);
@@ -4353,18 +5084,34 @@ class CodexAgentSession implements AgentSession {
 		});
 	}
 
+	private emitItemActivity(event: AgentEvent): void {
+		if (
+			this.realtimeMode === "live" &&
+			this.realtimeEventHandler &&
+			isProviderRealtimeActivity(event)
+		) {
+			this.realtimeEventHandler({ type: "activity", event });
+			return;
+		}
+		this.events.push(event);
+	}
+
 	private emitReasoning(item: Record<string, unknown>): void {
 		const text = codexReasoningText(item);
 		const id = String(item.id ?? `reasoning-${this.activeTurnId ?? "turn"}`);
 		if (!text || this.emittedReasoningIds.has(id)) return;
 		this.emittedReasoningIds.add(id);
-		this.events.push({
+		this.emitItemActivity({
 			type: "tool_start",
 			toolId: id,
 			name: "Reasoning",
 			input: {},
 		});
-		this.events.push({ type: "tool_result", toolId: id, content: text });
+		this.emitItemActivity({
+			type: "tool_result",
+			toolId: id,
+			content: text,
+		});
 	}
 
 	private handleItemStarted(obj: Record<string, unknown>): void {
@@ -4387,7 +5134,7 @@ class CodexAgentSession implements AgentSession {
 		this.recordBackgroundCommandStarted(item, obj);
 		this.startedItems.set(itemId, item);
 		if (type === "imageGeneration") {
-			this.events.push({
+			this.emitItemActivity({
 				type: "tool_start",
 				toolId: itemId,
 				name: "ImageGeneration",
@@ -4433,7 +5180,7 @@ class CodexAgentSession implements AgentSession {
 			};
 			this.subagentSnapshots.set(itemId, subagent);
 			this.pendingSubagentToolIds.add(itemId);
-			this.events.push({
+			this.emitItemActivity({
 				type: "tool_start",
 				toolId: itemId,
 				name: "spawn_agent",
@@ -4444,7 +5191,7 @@ class CodexAgentSession implements AgentSession {
 		}
 		const taskActivity =
 			toolName === "update_plan" ? codexPlanActivity(input) : undefined;
-		this.events.push({
+		this.emitItemActivity({
 			type: "tool_start",
 			toolId: itemId,
 			name: toolName,
@@ -4455,7 +5202,7 @@ class CodexAgentSession implements AgentSession {
 
 	private emitSubagentUpdate(toolId: string, subagent: SubagentSnapshot): void {
 		this.subagentSnapshots.set(toolId, subagent);
-		this.events.push({ type: "tool_update", toolId, subagent });
+		this.emitItemActivity({ type: "tool_update", toolId, subagent });
 	}
 
 	private updateSubagentFromChild(
@@ -4536,7 +5283,7 @@ class CodexAgentSession implements AgentSession {
 		this.ownChildThread(threadId);
 		this.subagentSnapshots.set(activityId, subagent);
 		this.attachThread(threadId);
-		this.events.push({
+		this.emitItemActivity({
 			type: "tool_start",
 			toolId: activityId,
 			name: "spawn_agent",
@@ -4699,7 +5446,7 @@ class CodexAgentSession implements AgentSession {
 		}
 		if (type === "imageGeneration") {
 			if (!this.startedItems.has(itemId)) {
-				this.events.push({
+				this.emitItemActivity({
 					type: "tool_start",
 					toolId: itemId,
 					name: "ImageGeneration",
@@ -4712,7 +5459,7 @@ class CodexAgentSession implements AgentSession {
 			}
 			if (!this.emittedGeneratedMediaIds.has(itemId)) {
 				this.emittedGeneratedMediaIds.add(itemId);
-				this.events.push({
+				this.emitItemActivity({
 					type: "generated_media",
 					toolId: itemId,
 					kind: "image",
@@ -4737,13 +5484,25 @@ class CodexAgentSession implements AgentSession {
 			this.mergeCollabAgentStates(item);
 			if (item.tool === "wait") return;
 		}
-		this.events.push({
+		this.emitItemActivity({
 			type: "tool_result",
 			toolId: String(item.id ?? type),
 			content: this.completedToolResultContent(item),
 			...(this.completedItemIsError(item) ? { isError: true } : {}),
 		});
 		this.maybeFinalizePendingDone();
+	}
+
+	private observeUnownedItemLifecycle(
+		method: string,
+		obj: Record<string, unknown>,
+	): void {
+		const item = asObj(obj.item);
+		if (method === "item/started") {
+			this.recordBackgroundCommandStarted(item, obj);
+		} else if (method === "item/completed") {
+			this.recordBackgroundCommandCompleted(item, obj);
+		}
 	}
 
 	private recordUsage(usage: AgentEvent | null): void {
@@ -4798,7 +5557,12 @@ class CodexAgentSession implements AgentSession {
 		threadId: string,
 		params: unknown,
 	): void {
-		if (!this.queryChildThreadIds.has(threadId)) return;
+		if (
+			!this.queryChildThreadIds.has(threadId) &&
+			!(this.realtimeMode === "live" && this.subagentByThread.has(threadId))
+		) {
+			return;
+		}
 		const usage = maybeUsage(params);
 		if (usage?.type !== "usage") return;
 		this.childLastUsage.set(threadId, {
@@ -4826,6 +5590,10 @@ class CodexAgentSession implements AgentSession {
 		params: unknown,
 	): Promise<void> {
 		const turn = asObj(obj.turn);
+		const completedTurnId =
+			typeof turn.id === "string" ? turn.id : this.activeTurnId;
+		const completedCurrentTurn =
+			!completedTurnId || this.activeTurnId === completedTurnId;
 		this.handleCompletedTurnAgentMessage(turn);
 		this.recordUsage(maybeUsage(turn) ?? maybeUsage(params));
 		const threadId = this.threadId ?? String(obj.threadId ?? "");
@@ -4839,8 +5607,16 @@ class CodexAgentSession implements AgentSession {
 		}
 		this.cumulativeUsageTurns.delete(threadId);
 		this.queryTurns += 1;
-		this.activeTurnId = null;
+		if (completedTurnId) this.ownedOrdinaryTurnIds.delete(completedTurnId);
+		if (completedCurrentTurn) {
+			this.activeTurnId = null;
+			this.activeTurnIdIsAuthoritative = false;
+		}
 		this.projectRunningCommandActivities();
+		// A provider-driven continuation can start before the prior completion is
+		// delivered. Account for that completed turn, but do not finish or clear
+		// the newer active turn.
+		if (!completedCurrentTurn && this.activeTurnId) return;
 		const plan =
 			this.nativePlanText.trim() ||
 			(this.htmlPlanReady || this.params.planHtmlPath
@@ -4888,29 +5664,34 @@ class CodexAgentSession implements AgentSession {
 	private handleChildTurnCompleted(obj: Record<string, unknown>): void {
 		const threadId = String(obj.threadId ?? "");
 		if (!threadId || threadId === this.threadId) return;
-		if (!this.queryChildThreadIds.has(threadId)) return;
+		const ordinaryChild = this.queryChildThreadIds.has(threadId);
+		const liveChild =
+			this.realtimeMode === "live" && this.subagentByThread.has(threadId);
+		if (!ordinaryChild && !liveChild) return;
 		const turn = asObj(obj.turn);
-		const reportedUsage = maybeUsage(turn) ?? maybeUsage(obj);
-		const capturedFinalTotal =
-			this.recordCumulativeUsage(threadId, turn) ||
-			this.recordCumulativeUsage(threadId, obj);
-		const usage =
-			reportedUsage?.type === "usage"
-				? {
-						inputTokens: reportedUsage.inputTokens,
-						outputTokens: reportedUsage.outputTokens,
-						cacheReadTokens: reportedUsage.cacheReadTokens ?? 0,
-						cacheCreationTokens: reportedUsage.cacheCreationTokens ?? 0,
-					}
-				: this.childLastUsage.get(threadId);
-		if (
-			usage &&
-			!capturedFinalTotal &&
-			!this.cumulativeUsageTurns.has(threadId)
-		) {
-			this.addQueryUsage(usage);
+		if (ordinaryChild) {
+			const reportedUsage = maybeUsage(turn) ?? maybeUsage(obj);
+			const capturedFinalTotal =
+				this.recordCumulativeUsage(threadId, turn) ||
+				this.recordCumulativeUsage(threadId, obj);
+			const usage =
+				reportedUsage?.type === "usage"
+					? {
+							inputTokens: reportedUsage.inputTokens,
+							outputTokens: reportedUsage.outputTokens,
+							cacheReadTokens: reportedUsage.cacheReadTokens ?? 0,
+							cacheCreationTokens: reportedUsage.cacheCreationTokens ?? 0,
+						}
+					: this.childLastUsage.get(threadId);
+			if (
+				usage &&
+				!capturedFinalTotal &&
+				!this.cumulativeUsageTurns.has(threadId)
+			) {
+				this.addQueryUsage(usage);
+			}
+			this.queryTurns += 1;
 		}
-		this.queryTurns += 1;
 		this.childLastUsage.delete(threadId);
 		this.cumulativeUsageTurns.delete(threadId);
 		const rawStatus = String(turn.status ?? "completed");
@@ -4925,84 +5706,214 @@ class CodexAgentSession implements AgentSession {
 			endedAtMs:
 				typeof obj.completedAtMs === "number" ? obj.completedAtMs : Date.now(),
 		});
-		this.queryChildThreadIds.delete(threadId);
-		this.maybeFinalizePendingDone();
+		if (ordinaryChild) {
+			this.queryChildThreadIds.delete(threadId);
+			this.maybeFinalizePendingDone();
+		}
+	}
+
+	private handleRealtimeNotification(
+		method: string,
+		params: unknown,
+		expectedThreadId: string,
+		eventHandler: ProviderRealtimeEventHandler,
+	): boolean {
+		if (String(asObj(params).threadId ?? "") !== expectedThreadId) return false;
+		switch (method) {
+			case "thread/realtime/started": {
+				const notification = params as ThreadRealtimeStartedNotification;
+				eventHandler({
+					type: "started",
+					...(notification.realtimeSessionId
+						? { realtimeSessionId: notification.realtimeSessionId }
+						: {}),
+				});
+				return true;
+			}
+			case "thread/realtime/sdp": {
+				const notification = params as ThreadRealtimeSdpNotification;
+				markCodexRealtimeBackendAccepted();
+				eventHandler({ type: "sdp", sdp: notification.sdp });
+				return true;
+			}
+			case "thread/realtime/outputAudio/delta": {
+				// WebRTC carries the audio and does not currently mirror this notification
+				// onto the app-server sideband. Keep it as an optional start signal for
+				// transports such as websocket that do emit output-audio deltas.
+				eventHandler({ type: "audio_output_started" });
+				return true;
+			}
+			case "thread/realtime/transcript/delta": {
+				const notification =
+					params as ThreadRealtimeTranscriptDeltaNotification;
+				eventHandler({
+					type: "transcript_delta",
+					role: notification.role,
+					delta: notification.delta,
+				});
+				return true;
+			}
+			case "thread/realtime/transcript/done": {
+				const notification = params as ThreadRealtimeTranscriptDoneNotification;
+				eventHandler({
+					type: "transcript_done",
+					role: notification.role,
+					text: notification.text,
+				});
+				return true;
+			}
+			case "thread/realtime/error": {
+				const notification = params as ThreadRealtimeErrorNotification;
+				const message = codexRealtimeErrorMessage(notification.message);
+				markCodexRealtimeBackendError(message);
+				eventHandler({ type: "error", message });
+				return true;
+			}
+			case "thread/realtime/closed": {
+				const notification = params as ThreadRealtimeClosedNotification;
+				// Deliver terminal state before cleanup so the transcript owner can commit
+				// its final UI state while the exact callback is still authoritative.
+				eventHandler({
+					type: "closed",
+					...(notification.reason ? { reason: notification.reason } : {}),
+				});
+				const closeWaiter = this.realtimeCloseWaiter;
+				if (closeWaiter?.eventHandler === eventHandler) {
+					this.realtimeCloseWaiter = null;
+					closeWaiter.resolve();
+				}
+				if (this.realtimeEventHandler === eventHandler) {
+					this.realtimeEventHandler = null;
+					this.realtimeMode = null;
+				}
+				return true;
+			}
+			default:
+				return false;
+		}
 	}
 
 	private handleNotification(method: string, params: unknown): void {
 		const obj = asObj(params);
+		if (method.startsWith("thread/realtime/")) {
+			if (this.ownedSpeech) return;
+			const eventHandler =
+				this.realtimeEventHandler ?? this.realtimeCloseWaiter?.eventHandler;
+			if (eventHandler && this.threadId) {
+				this.handleRealtimeNotification(
+					method,
+					params,
+					this.threadId,
+					eventHandler,
+				);
+			}
+			return;
+		}
 		const notificationThreadId = String(
 			obj.threadId ?? asObj(obj.thread).id ?? "",
 		);
 		const childNotification =
 			notificationThreadId.length > 0 && notificationThreadId !== this.threadId;
+		const parentNotification = !childNotification;
 		if (
-			this.realtimeMode === "live" &&
-			(method.startsWith("turn/") || method.startsWith("item/"))
+			childNotification &&
+			this.liveTurnIsolationActive &&
+			this.realtimeMode !== "live" &&
+			!this.queryChildThreadIds.has(notificationThreadId)
 		) {
-			// Live voice receives its user-visible transcript and audio through
-			// the realtime channel. Do not leave a second, unconsumed copy of
-			// its background Codex turn in the ordinary AgentEvent queue.
+			return;
+		}
+		const notificationTurnId = this.notificationTurnId(obj);
+		if (
+			parentNotification &&
+			notificationTurnId &&
+			this.suppressedTurnIds.has(notificationTurnId)
+		) {
+			return;
+		}
+		const isolatingLiveTurn =
+			this.realtimeMode === "live" || this.liveTurnIsolationActive;
+		if (isolatingLiveTurn && parentNotification) {
+			if (method === "turn/started") {
+				const id = asObj(obj.turn).id;
+				if (typeof id === "string") {
+					this.liveHiddenTurnId = id;
+					this.activeTurnId = id;
+					this.activeTurnIdIsAuthoritative = true;
+				}
+				return;
+			}
+			if (method === "turn/completed") {
+				const id = asObj(obj.turn).id;
+				if (typeof id === "string" && this.liveHiddenTurnId === id) {
+					this.liveHiddenTurnId = null;
+					if (this.activeTurnId === id) {
+						this.activeTurnId = null;
+						this.activeTurnIdIsAuthoritative = false;
+					}
+				}
+				return;
+			}
+			if (method === "thread/tokenUsage/updated") return;
+		}
+		if (this.realtimeMode === "live") {
+			// Live voice receives its user-visible transcript and audio through the
+			// realtime channel. Keep the mirrored turn lifecycle and assistant text
+			// out of the dormant ordinary AgentEvent queue, but retain item boundaries
+			// so their normalized tool activity can use the realtime callback.
+			// Parent turn notifications mirror the Live response, but child turn
+			// completion is the authoritative terminal signal for a visible subagent
+			// card and must still flow through emitItemActivity.
+			if (method.startsWith("turn/") && !childNotification) return;
+			if (
+				method.startsWith("item/") &&
+				method !== "item/started" &&
+				method !== "item/completed"
+			) {
+				return;
+			}
+			const liveItemType = String(asObj(obj.item).type);
+			if (
+				(method === "item/started" || method === "item/completed") &&
+				(liveItemType === "agentMessage" || liveItemType === "userMessage")
+			) {
+				return;
+			}
+		}
+		if (
+			parentNotification &&
+			this.realtimeMode !== "live" &&
+			method.startsWith("item/") &&
+			!this.ordinaryQueryActive
+		) {
+			this.observeUnownedItemLifecycle(method, obj);
+			return;
+		}
+		if (
+			parentNotification &&
+			this.realtimeMode !== "live" &&
+			method.startsWith("item/") &&
+			(!notificationTurnId ||
+				!this.ownedOrdinaryTurnIds.has(notificationTurnId))
+		) {
+			if (notificationTurnId && this.ordinaryTurnStartPending) {
+				this.ownedOrdinaryTurnIds.add(notificationTurnId);
+				this.activeTurnId = notificationTurnId;
+				this.activeTurnIdIsAuthoritative = true;
+			} else {
+				this.observeUnownedItemLifecycle(method, obj);
+				return;
+			}
+		}
+		if (
+			parentNotification &&
+			method === "thread/tokenUsage/updated" &&
+			notificationTurnId &&
+			!this.ownedOrdinaryTurnIds.has(notificationTurnId)
+		) {
 			return;
 		}
 		switch (method) {
-			case "thread/realtime/started": {
-				const notification = params as ThreadRealtimeStartedNotification;
-				if (!childNotification && notification.threadId === this.threadId)
-					this.realtimeEventHandler?.({ type: "started" });
-				break;
-			}
-			case "thread/realtime/sdp": {
-				const notification = params as ThreadRealtimeSdpNotification;
-				if (!childNotification && notification.threadId === this.threadId)
-					this.realtimeEventHandler?.({
-						type: "sdp",
-						sdp: notification.sdp,
-					});
-				break;
-			}
-			case "thread/realtime/transcript/delta": {
-				const notification =
-					params as ThreadRealtimeTranscriptDeltaNotification;
-				if (!childNotification && notification.threadId === this.threadId)
-					this.realtimeEventHandler?.({
-						type: "transcript_delta",
-						role: notification.role,
-						delta: notification.delta,
-					});
-				break;
-			}
-			case "thread/realtime/transcript/done": {
-				const notification = params as ThreadRealtimeTranscriptDoneNotification;
-				if (!childNotification && notification.threadId === this.threadId)
-					this.realtimeEventHandler?.({
-						type: "transcript_done",
-						role: notification.role,
-						text: notification.text,
-					});
-				break;
-			}
-			case "thread/realtime/error": {
-				const notification = params as ThreadRealtimeErrorNotification;
-				if (!childNotification && notification.threadId === this.threadId)
-					this.realtimeEventHandler?.({
-						type: "error",
-						message: codexRealtimeErrorMessage(notification.message),
-					});
-				break;
-			}
-			case "thread/realtime/closed": {
-				const notification = params as ThreadRealtimeClosedNotification;
-				if (!childNotification && notification.threadId === this.threadId) {
-					this.realtimeEventHandler?.({
-						type: "closed",
-						...(notification.reason ? { reason: notification.reason } : {}),
-					});
-					this.realtimeEventHandler = null;
-					this.realtimeMode = null;
-				}
-				break;
-			}
 			case "thread/goal/updated": {
 				const notification = params as ThreadGoalUpdatedNotification;
 				if (!childNotification && notification.goal) {
@@ -5021,7 +5932,15 @@ class CodexAgentSession implements AgentSession {
 				if (!childNotification) this.handleThreadStarted(obj);
 				break;
 			case "turn/started":
-				if (!childNotification) this.handleTurnStarted(obj);
+				if (!childNotification) {
+					const id = asObj(obj.turn).id;
+					if (typeof id !== "string") break;
+					if (!this.ordinaryQueryActive) {
+						this.adoptUnownedNativeTurn(id);
+						break;
+					}
+					this.handleTurnStarted(obj);
+				}
 				break;
 			case "item/agentMessage/delta":
 				if (!childNotification) this.handleAgentMessageDelta(obj);
@@ -5041,14 +5960,33 @@ class CodexAgentSession implements AgentSession {
 			case "thread/tokenUsage/updated":
 				if (childNotification) {
 					this.handleChildTokenUsageUpdated(notificationThreadId, params);
-				} else this.handleTokenUsageUpdated(params);
+				} else if (this.ordinaryQueryActive)
+					this.handleTokenUsageUpdated(params);
 				break;
 			case "mcpServer/startupStatus/updated":
 				this.handleMcpStartupStatus(obj);
 				break;
 			case "turn/completed":
 				if (childNotification) this.handleChildTurnCompleted(obj);
-				else void this.handleTurnCompleted(obj, params);
+				else {
+					const id = asObj(obj.turn).id;
+					if (typeof id === "string" && this.pendingOrphanTurnId === id) {
+						this.pendingOrphanTurnId = null;
+						if (this.activeTurnId === id) {
+							this.activeTurnId = null;
+							this.activeTurnIdIsAuthoritative = false;
+						}
+						break;
+					}
+					if (
+						!this.ordinaryQueryActive ||
+						typeof id !== "string" ||
+						!this.ownedOrdinaryTurnIds.has(id)
+					) {
+						break;
+					}
+					void this.handleTurnCompleted(obj, params);
+				}
 				break;
 		}
 	}
@@ -5112,6 +6050,8 @@ export class CodexProvider implements AgentProvider {
 		throughMessage: true,
 	} as const;
 	protected readonly providerProfile?: CodexProviderProfile;
+	private readonly realtimeEnabled: () => boolean;
+	private readonly metadataExecutable: () => string | undefined;
 	private readonly appAuthAttempts = new Map<string, CodexAppAuthAttempt>();
 
 	constructor(
@@ -5119,11 +6059,30 @@ export class CodexProvider implements AgentProvider {
 			providerId?: string;
 			label?: string;
 			profile?: CodexProviderProfile;
+			/** Current Hlid preview state for provider-owned metadata operations. */
+			realtimeEnabled?: () => boolean;
+			/** Current configured executable for provider-owned metadata operations. */
+			metadataExecutable?: () => string | undefined;
 		} = {},
 	) {
 		this.providerId = options.providerId ?? "codex";
 		this.label = options.label ?? "Codex";
 		this.providerProfile = options.profile;
+		this.realtimeEnabled = options.realtimeEnabled ?? (() => false);
+		this.metadataExecutable =
+			options.metadataExecutable ?? (() => resolveCodexExecutable());
+	}
+
+	private metadataLaunchConfig(params: {
+		cwd: string;
+		executable?: string;
+	}): CodexLaunchConfig {
+		return codexLaunchConfig({
+			cwd: params.cwd,
+			executable: params.executable ?? this.metadataExecutable(),
+			profile: this.providerProfile,
+			enableRealtime: this.realtimeEnabled(),
+		});
 	}
 
 	/** Offline fallback for listModels() — used when the live `model/list` RPC fails. */
@@ -5178,7 +6137,7 @@ export class CodexProvider implements AgentProvider {
 	] as const;
 
 	async check(): Promise<{ available: boolean; reason?: string }> {
-		const exe = resolveCodexExecutable();
+		const exe = this.metadataExecutable();
 		if (!exe) return { available: false, reason: "Codex CLI not found" };
 		return { available: true };
 	}
@@ -5188,10 +6147,7 @@ export class CodexProvider implements AgentProvider {
 		cwd: string;
 		executable?: string;
 	}): Promise<ProviderSkillInfo[]> {
-		const launch = codexLaunchConfig({
-			...context,
-			profile: this.providerProfile,
-		});
+		const launch = this.metadataLaunchConfig(context);
 		const conn = acquireCodexAppServer(launch.appServer);
 		await conn.ready;
 		const result = await conn.request("skills/list", {
@@ -5232,10 +6188,7 @@ export class CodexProvider implements AgentProvider {
 	}
 
 	async discoverCapabilities(context: { cwd: string }) {
-		const launch = codexLaunchConfig({
-			cwd: context.cwd,
-			profile: this.providerProfile,
-		});
+		const launch = this.metadataLaunchConfig(context);
 		const conn = acquireCodexAppServer(launch.appServer);
 		await conn.ready;
 		return discoverCodexProviderCapabilities({
@@ -5249,10 +6202,7 @@ export class CodexProvider implements AgentProvider {
 	async listApps(
 		context: ProviderAppCatalogRequest,
 	): Promise<ProviderAppCatalogPage> {
-		const launch = codexLaunchConfig({
-			cwd: context.cwd,
-			profile: this.providerProfile,
-		});
+		const launch = this.metadataLaunchConfig(context);
 		const conn = acquireCodexAppServer(launch.appServer);
 		await conn.ready;
 		const limit = Math.max(1, Math.min(100, Math.trunc(context.limit ?? 50)));
@@ -5309,10 +6259,7 @@ export class CodexProvider implements AgentProvider {
 	async startAppAuthentication(
 		request: ProviderAppAuthenticationRequest,
 	): Promise<ProviderAppAuthenticationStart> {
-		const launch = codexLaunchConfig({
-			cwd: request.cwd,
-			profile: this.providerProfile,
-		});
+		const launch = this.metadataLaunchConfig({ cwd: request.cwd });
 		const conn = acquireCodexAppServer(launch.appServer);
 		await conn.ready;
 		const key = `${request.target.kind}:${request.target.id}`;
@@ -5363,7 +6310,11 @@ export class CodexProvider implements AgentProvider {
 	}
 
 	async listModels(): Promise<ProviderModelInfo[]> {
-		return fetchCodexModels({ profile: this.providerProfile });
+		return fetchCodexModels({
+			executable: this.metadataExecutable(),
+			profile: this.providerProfile,
+			enableRealtime: this.realtimeEnabled(),
+		});
 	}
 
 	// fallow-ignore-next-line unused-class-member -- Invoked through AgentProvider.forkSession by dbRoutes.
@@ -5374,13 +6325,12 @@ export class CodexProvider implements AgentProvider {
 		const cwd = params.cwd ?? process.cwd();
 		const executable = resolveProviderExecutableForCwd(
 			cwd,
-			resolveCodexExecutable(),
+			this.metadataExecutable(),
 			"codex",
 		);
-		const launch = codexLaunchConfig({
+		const launch = this.metadataLaunchConfig({
 			cwd,
 			executable,
-			profile: this.providerProfile,
 		});
 		const conn = acquireCodexAppServer(launch.appServer);
 		await conn.ready;

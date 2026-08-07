@@ -13,6 +13,22 @@ type ChatWsHandlerContext = {
 	setRateLimit: (rateLimit: RateLimitMessage | null) => void;
 };
 
+type RealtimeTranscriptWireMessage = Extract<
+	ServerMessage,
+	{ type: "realtime_transcript" }
+> & {
+	utterance_id?: string;
+	realtime_session_id?: string;
+	transcript_seq?: number;
+	db_id?: number;
+	fork_supported?: boolean;
+};
+
+type RealtimeTerminalWireMessage = Extract<
+	ServerMessage,
+	{ type: "realtime_state" | "realtime_error" }
+> & { realtime_session_id?: string };
+
 function planText(input: unknown): string {
 	const plan = (input as { plan?: unknown }).plan;
 	if (plan == null) return "";
@@ -97,6 +113,86 @@ function dispatchImmediateMessage(
 				content: msg.content,
 			});
 			return true;
+		case "tool_event":
+			if (!msg.realtime_utterance_id) return false;
+			// Live tool calls target their provider-owned assistant utterance
+			// directly. Do not borrow pendingIdRef, which is reserved for ordinary
+			// typed turns and would otherwise capture the next non-Live response.
+			dispatch({
+				type: "UPSERT_REALTIME_TRANSCRIPT",
+				id: msg.realtime_utterance_id,
+				role: "assistant",
+				text: "",
+				done: false,
+				...(msg.realtime_session_id
+					? { realtimeSessionId: msg.realtime_session_id }
+					: {}),
+				...(msg.transcript_seq !== undefined
+					? { transcriptSeq: msg.transcript_seq }
+					: {}),
+				...(msg.fork_supported !== undefined
+					? { forkSupported: msg.fork_supported }
+					: {}),
+			});
+			dispatch({
+				type: "ADD_TOOL_EVENT",
+				id: msg.realtime_utterance_id,
+				event: msg,
+			});
+			return true;
+		case "realtime_transcript": {
+			// Dictation and read-aloud keep their dedicated consumers. Only Live is
+			// mirrored into Raven's ordinary transcript.
+			if (msg.mode !== "live") return true;
+			const transcript = msg as RealtimeTranscriptWireMessage;
+			if (
+				!transcript.utterance_id ||
+				(transcript.role !== "user" && transcript.role !== "assistant")
+			) {
+				return true;
+			}
+			dispatch({
+				type: "UPSERT_REALTIME_TRANSCRIPT",
+				id: transcript.utterance_id,
+				role: transcript.role,
+				text: transcript.text,
+				done: transcript.done,
+				...(transcript.realtime_session_id
+					? { realtimeSessionId: transcript.realtime_session_id }
+					: {}),
+				...(transcript.transcript_seq !== undefined
+					? { transcriptSeq: transcript.transcript_seq }
+					: {}),
+				...(transcript.db_id !== undefined ? { dbId: transcript.db_id } : {}),
+				...(transcript.fork_supported !== undefined
+					? { forkSupported: transcript.fork_supported }
+					: {}),
+			});
+			return true;
+		}
+		case "realtime_state":
+			if (msg.mode === "live" && msg.state === "closed") {
+				const terminal = msg as RealtimeTerminalWireMessage;
+				dispatch({
+					type: "DISCARD_REALTIME_PARTIALS",
+					...(terminal.realtime_session_id
+						? { realtimeSessionId: terminal.realtime_session_id }
+						: {}),
+				});
+			}
+			return true;
+		case "realtime_error": {
+			if (msg.mode === "live") {
+				const terminal = msg as RealtimeTerminalWireMessage;
+				dispatch({
+					type: "DISCARD_REALTIME_PARTIALS",
+					...(terminal.realtime_session_id
+						? { realtimeSessionId: terminal.realtime_session_id }
+						: {}),
+				});
+			}
+			return true;
+		}
 		case "error":
 			if (msg.turn_scoped) return false;
 			dispatch({

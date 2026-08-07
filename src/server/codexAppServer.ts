@@ -7,10 +7,9 @@
  *
  * The app-server protocol is explicitly multi-thread: every notification and
  * server-initiated approval request carries a `threadId`, and thread/start +
- * turn/start both accept a per-thread `cwd`. So hlid keeps ONE app-server
- * process per executable (native codex gets a single global instance; each
- * WSL agent's generated .cmd wrapper is its own executable and therefore its
- * own instance) and multiplexes all sessions over it as threads.
+ * turn/start both accept a per-thread `cwd`. So Hlid keeps one app-server per
+ * process identity: executable, global launch args, and non-secret registry
+ * profile. Sessions with the same identity are multiplexed over it as threads.
  *
  * Lifecycle: lazily spawned on first acquire, retained while RPCs or threads
  * are active, and reaped after an idle grace period. It respawns on the next
@@ -18,15 +17,71 @@
  * server's SIGINT/SIGTERM handlers.
  */
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { resetCodexRealtimeBackendStatus } from "./codexRealtimeStatus";
 
 export type CodexAppServerLaunch = {
 	executable: string;
-	/** Distinguishes app servers that share an executable but use different providers. */
+	/**
+	 * Distinguishes app servers that share an executable but use different
+	 * providers or environment-backed identities. Keep credentials themselves
+	 * out of this value; use a stable non-secret fingerprint instead.
+	 */
 	registryKey?: string;
-	/** Global Codex arguments placed before the app-server subcommand. */
+	/**
+	 * Global Codex arguments placed before the app-server subcommand. Their
+	 * exact order is part of the shared app-server identity.
+	 */
 	args?: string[];
+	/**
+	 * Environment overrides for this process. Callers must represent any
+	 * identity-affecting values in `registryKey` so secrets do not enter map keys.
+	 */
 	env?: Record<string, string>;
 };
+
+type CodexAppServerStartupFailure = "wsl-service-unexpected";
+
+const CODEX_WSL_STARTUP_RECOVERY_MESSAGE =
+	"WSL could not start Codex. Save any work running in WSL, restart WSL, then try again. Your Raven chat is still intact.";
+
+/**
+ * Process exits keep the existing user-facing message while carrying enough
+ * bounded structure for callers to distinguish a confirmed transient launcher
+ * failure from an ordinary Codex exit. Raw child output is never retained.
+ */
+class CodexAppServerExitError extends Error {
+	constructor(
+		readonly exitCode: number | null,
+		readonly startupFailure: CodexAppServerStartupFailure | undefined,
+		readonly initialized: boolean,
+	) {
+		super(`Codex app-server exited (code ${exitCode ?? "null"})`);
+		this.name = "CodexAppServerExitError";
+	}
+}
+
+class CodexWslStartupError extends Error {
+	constructor(cause: Error) {
+		super(CODEX_WSL_STARTUP_RECOVERY_MESSAGE, { cause });
+		this.name = "CodexWslStartupError";
+	}
+}
+
+type CodexAppServerTerminationLaunch = {
+	executable: string;
+	args: string[];
+};
+
+function codexAppServerTerminationLaunch(
+	pid: number | undefined,
+	platform: NodeJS.Platform = process.platform,
+): CodexAppServerTerminationLaunch | null {
+	if (platform !== "win32" || !pid || pid <= 0) return null;
+	return {
+		executable: "taskkill.exe",
+		args: ["/PID", String(pid), "/T", "/F"],
+	};
+}
 
 function normalizeLaunch(
 	launch: string | CodexAppServerLaunch,
@@ -35,7 +90,15 @@ function normalizeLaunch(
 }
 
 function launchRegistryKey(launch: CodexAppServerLaunch): string {
-	return `${launch.executable}\0${launch.registryKey ?? "native"}`;
+	// Every launch arg precedes `app-server` and can change process-global
+	// behavior (for example `--enable realtime_conversation`). Preserve exact
+	// ordering because repeated `-c` overrides can be order-sensitive. Env values
+	// are deliberately excluded; registryKey carries their non-secret identity.
+	return JSON.stringify([
+		launch.executable,
+		launch.registryKey ?? null,
+		launch.args ?? [],
+	]);
 }
 
 type JsonRpcMessage = {
@@ -55,6 +118,7 @@ const MAX_CODEX_DIAGNOSTIC_CHARS = 500;
 const REMOTE_PLUGIN_SYNC_WARNING_COOLDOWN_MS = 60 * 60_000;
 const APP_CATALOG_DEGRADED_WARNING =
 	"Codex app catalog refresh is degraded; provider sessions remain available";
+const pendingCodexAppServerTerminations = new Set<Promise<void>>();
 let lastRemotePluginSyncWarningAt = Number.NEGATIVE_INFINITY;
 // biome-ignore lint/complexity/useRegexLiterals: constructor avoids a literal control character rejected by noControlCharactersInRegex
 const ANSI_ESCAPE = new RegExp("\\x1b\\[[0-9;]*m", "g");
@@ -227,6 +291,9 @@ export class CodexAppServer {
 	private omittedStderrChars = 0;
 	private stderrOmissionTimer: ReturnType<typeof setTimeout> | undefined;
 	private dead = false;
+	private initialized = false;
+	private startupFailure: CodexAppServerStartupFailure | undefined;
+	private termination: Promise<void> | null = null;
 	private idleTimer: ReturnType<typeof setTimeout> | undefined;
 	private activeServerRequests = 0;
 	private accountRateLimitsRevision = 0;
@@ -248,6 +315,7 @@ export class CodexAppServer {
 			idleTimeoutMs,
 			configuredMetadataIdleTimeoutMs(),
 		),
+		private readonly hostPlatform: NodeJS.Platform = process.platform,
 	) {
 		const launch = normalizeLaunch(launchValue);
 		this.executable = launch.executable;
@@ -267,9 +335,22 @@ export class CodexAppServer {
 				...(launch.env ? { env: { ...process.env, ...launch.env } } : {}),
 			},
 		);
-		this.proc.on("error", (err) => this.fail(err));
+		this.proc.on("error", (err) => this.fail(this.withStartupFailure(err)));
 		this.proc.on("exit", (code) => {
-			this.fail(new Error(`Codex app-server exited (code ${code ?? "null"})`));
+			// The Windows launcher normally terminates diagnostics with a newline,
+			// but preserve the classification if the final stdout/stderr chunk is
+			// partial when the child exits.
+			this.observeStartupDiagnostic(this.lineBuffer);
+			this.observeStartupDiagnostic(this.stderrBuffer);
+			this.fail(
+				this.withStartupFailure(
+					new CodexAppServerExitError(
+						code,
+						this.startupFailure,
+						this.initialized,
+					),
+				),
+			);
 		});
 		this.proc.stdout.on("data", (chunk: Buffer) => this.onStdout(chunk));
 		this.proc.stderr.on("data", (chunk: Buffer) => this.onStderr(chunk));
@@ -283,6 +364,7 @@ export class CodexAppServer {
 					mcpServerOpenaiFormElicitation: true,
 				},
 			});
+			this.initialized = true;
 			this.notify("initialized", {});
 		})();
 		// Callers that never await .ready (or that race a fail()) must not
@@ -366,13 +448,17 @@ export class CodexAppServer {
 		const id = this.nextId++;
 		return new Promise((resolve, reject) => {
 			const timer = setTimeout(() => {
-				const error = new Error(
+				const rawError = new Error(
 					`Codex app-server ${method} timed out after ${timeoutMs}ms`,
 				);
+				const error =
+					method === "initialize"
+						? this.withStartupFailure(rawError)
+						: rawError;
 				if (terminateOnTimeout) {
 					// A live process that no longer answers a required RPC is not
 					// reusable. Respawn instead of attaching to a poisoned singleton.
-					this.terminate(error);
+					void this.terminate(error);
 					return;
 				}
 				// Optional metadata can fail independently of conversation traffic.
@@ -411,12 +497,67 @@ export class CodexAppServer {
 	}
 
 	kill(error = new Error("Codex app-server closed")): void {
-		this.terminate(error);
+		void this.terminate(error);
 	}
 
-	private terminate(error: Error): void {
+	private terminate(error: Error): Promise<void> {
+		if (this.termination) return this.termination;
+		if (this.dead) return Promise.resolve();
 		this.fail(error);
-		this.proc.kill();
+		const termination = codexAppServerTerminationLaunch(
+			this.proc.pid,
+			this.hostPlatform,
+		);
+		if (!termination) {
+			this.proc.kill();
+			this.termination = Promise.resolve();
+			return this.termination;
+		}
+		const pending = new Promise<void>((resolve) => {
+			try {
+				const terminator = spawn(termination.executable, termination.args, {
+					stdio: "ignore",
+					windowsHide: true,
+				});
+				let settled = false;
+				let fallback: ReturnType<typeof setTimeout> | undefined;
+				const finish = (successful: boolean) => {
+					if (settled) return;
+					settled = true;
+					if (fallback !== undefined) clearTimeout(fallback);
+					if (!successful) this.proc.kill();
+					resolve();
+				};
+				terminator.once("error", () => finish(false));
+				terminator.once("exit", (code) => finish(code === 0));
+				fallback = setTimeout(() => {
+					terminator.kill();
+					finish(false);
+				}, 2_000);
+				fallback.unref?.();
+				terminator.unref();
+			} catch {
+				this.proc.kill();
+				resolve();
+			}
+		});
+		this.termination = pending;
+		pendingCodexAppServerTerminations.add(pending);
+		void pending.then(() => pendingCodexAppServerTerminations.delete(pending));
+		return pending;
+	}
+
+	private withStartupFailure(error: Error): Error {
+		this.observeStartupDiagnostic(this.lineBuffer);
+		this.observeStartupDiagnostic(this.stderrBuffer);
+		if (
+			this.initialized ||
+			this.startupFailure !== "wsl-service-unexpected" ||
+			error instanceof CodexWslStartupError
+		) {
+			return error;
+		}
+		return new CodexWslStartupError(error);
 	}
 
 	private fail(err: Error): void {
@@ -475,7 +616,7 @@ export class CodexAppServer {
 			) {
 				return;
 			}
-			this.terminate(new Error("Codex app-server idle timeout"));
+			void this.terminate(new Error("Codex app-server idle timeout"));
 		}, idleDelay);
 		this.idleTimer = timer;
 		// An idle helper must never keep the Hlid server process alive.
@@ -483,6 +624,10 @@ export class CodexAppServer {
 	}
 
 	private write(message: JsonRpcMessage): void {
+		// A server-initiated request can settle after its owning thread has already
+		// closed the transport. Dropping that stale response is required: writing to
+		// a killed child's stdin emits EPIPE as an unhandled stream error in Node.
+		if (this.dead) return;
 		this.proc.stdin.write(`${JSON.stringify(message)}\n`);
 	}
 
@@ -509,6 +654,7 @@ export class CodexAppServer {
 	}
 
 	private handleStderrLine(line: string): void {
+		this.observeStartupDiagnostic(line);
 		const summary = summarizeCodexStderr(line);
 		if (summary === null) return;
 		if (summary === undefined) {
@@ -565,10 +711,23 @@ export class CodexAppServer {
 			try {
 				msg = JSON.parse(line) as JsonRpcMessage;
 			} catch {
+				this.observeStartupDiagnostic(line);
 				console.warn("[codex app-server] non-JSON output:", line);
 				continue;
 			}
 			this.handleMessage(msg);
+		}
+	}
+
+	private observeStartupDiagnostic(line: string): void {
+		const hasWslServiceFailure = line
+			.replaceAll("\0", "")
+			.split(/\r?\n/)
+			.some((part) =>
+				/^\uFEFF?Error code:\s*Wsl\/Service\/E_UNEXPECTED$/i.test(part.trim()),
+			);
+		if (!this.initialized && hasWslServiceFailure) {
+			this.startupFailure = "wsl-service-unexpected";
 		}
 	}
 
@@ -644,8 +803,8 @@ export class CodexAppServer {
 const servers = new Map<string, CodexAppServer>();
 
 /**
- * Get the shared app-server for `executable`, spawning (or respawning after a
- * crash) as needed. Await `.ready` before issuing RPCs.
+ * Get the shared app-server for this exact process identity, spawning (or
+ * respawning after a crash) as needed. Await `.ready` before issuing RPCs.
  */
 export function acquireCodexAppServer(
 	launchValue: string | CodexAppServerLaunch,
@@ -672,10 +831,10 @@ export function acquireCodexAppServer(
  * to continue in the background.
  */
 export async function prewarmCodexAppServer(
-	executable: string,
+	launchValue: string | CodexAppServerLaunch,
 	waitTimeoutMs?: number,
 ): Promise<boolean> {
-	const server = acquireCodexAppServer(executable);
+	const server = acquireCodexAppServer(launchValue);
 	if (waitTimeoutMs === undefined) {
 		await server.ready;
 		return true;
@@ -699,6 +858,14 @@ export async function prewarmCodexAppServer(
 export function closeAllCodexAppServers(): void {
 	for (const server of servers.values()) server.kill();
 	servers.clear();
+	resetCodexRealtimeBackendStatus();
+}
+
+/** Wait for exact Windows wrapper-tree cleanup started by shared or owned servers. */
+export async function waitForCodexAppServerTerminations(): Promise<void> {
+	while (pendingCodexAppServerTerminations.size > 0) {
+		await Promise.all([...pendingCodexAppServerTerminations]);
+	}
 }
 
 /**
@@ -736,5 +903,6 @@ export function listCodexAppServers(): Array<{
 
 export function __resetCodexAppServersForTesting(): void {
 	closeAllCodexAppServers();
+	pendingCodexAppServerTerminations.clear();
 	lastRemotePluginSyncWarningAt = Number.NEGATIVE_INFINITY;
 }

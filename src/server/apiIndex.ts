@@ -200,7 +200,7 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		method: "GET",
 		path: "/voice?refresh=1",
 		server: "api",
-		desc: "Local Whisper runtime status and cached model catalog; ?refresh=1 refreshes the catalog.",
+		desc: "Local Whisper runtime status, cached model catalog, and observed Codex realtime backend readiness; ?refresh=1 refreshes the Whisper catalog.",
 	},
 	{
 		method: "POST",

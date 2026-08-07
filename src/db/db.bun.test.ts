@@ -31,6 +31,7 @@ import {
 	appendAskUserQuestion,
 	appendMessage,
 	appendPlanProposal,
+	appendRealtimeTranscriptMessage,
 	appendToolEvent,
 	copyForkedSessionTranscript,
 	getMessageForFork,
@@ -1424,6 +1425,55 @@ describe("sessions — deleteSession", () => {
 
 describe("messages", () => {
 	beforeEach(() => freshDb());
+
+	it("persists realtime transcript provenance idempotently", async () => {
+		await createSession("s1", "Live", "gpt-5.6-sol");
+		const input = {
+			sessionId: "s1",
+			seq: 3,
+			role: "assistant" as const,
+			text: "Hello from Live",
+			utteranceId: "codex-realtime-3",
+			realtimeSessionId: "raven-live-test",
+			providerRealtimeSessionId: "provider-call-test",
+		};
+		const inserted = await appendRealtimeTranscriptMessage(input);
+		const duplicate = await appendRealtimeTranscriptMessage(input);
+
+		expect(inserted.inserted).toBe(true);
+		expect(duplicate).toEqual({ ...inserted, inserted: false });
+		expect(await getMessageForFork(inserted.id)).toMatchObject({
+			forkSupported: false,
+		});
+		expect(await getSessionMessages("s1")).toMatchObject([
+			{
+				id: inserted.id,
+				seq: 3,
+				role: "assistant",
+				text: "Hello from Live",
+				query_id: null,
+				source: "codex_realtime",
+				utterance_id: "codex-realtime-3",
+				realtime_session_id: "raven-live-test",
+				provider_realtime_session_id: "provider-call-test",
+				fork_supported: 0,
+			},
+		]);
+		await expect(
+			appendRealtimeTranscriptMessage({ ...input, text: "collision" }),
+		).rejects.toThrow("utterance collision");
+		await createSession("fork", "Live copy", "gpt-5.6-sol");
+		expect(await copyForkedSessionTranscript("s1", "fork")).toBe(1);
+		expect(await getSessionMessages("fork")).toMatchObject([
+			{
+				source: "codex_realtime",
+				utterance_id: "codex-realtime-3",
+				realtime_session_id: "raven-live-test",
+				provider_realtime_session_id: "provider-call-test",
+				fork_supported: 0,
+			},
+		]);
+	});
 
 	it("appends and retrieves messages in seq order", async () => {
 		await createSession("s1", "L", "m");

@@ -8,8 +8,12 @@ const db = vi.hoisted(() => ({
 	dbFetch: vi.fn(),
 	requireDbOk: vi.fn(),
 }));
+const config = vi.hoisted(() => ({
+	loadConfig: vi.fn(),
+}));
 
 vi.mock("#/lib/dbClient", () => db);
+vi.mock("./config", () => config);
 
 function storageStats(overrides: Record<string, number> = {}) {
 	return {
@@ -60,6 +64,9 @@ import { HLID_HELP_TOPICS } from "./hlidHelp";
 describe("Hlid agent tools", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		config.loadConfig.mockReturnValue({
+			voice: { codex_live_mode: false },
+		});
 		db.dbFetch.mockImplementation(() =>
 			Promise.resolve(
 				Response.json({
@@ -1045,6 +1052,9 @@ describe("Hlid agent tools", () => {
 	});
 
 	it("combines the live provider catalog, feature flag, model, and registered tools", async () => {
+		config.loadConfig.mockReturnValue({
+			voice: { codex_live_mode: true },
+		});
 		db.dbFetch
 			.mockResolvedValueOnce(
 				Response.json({
@@ -1067,6 +1077,26 @@ describe("Hlid agent tools", () => {
 								},
 							],
 							capabilities: { realtime: true },
+							capabilitySnapshot: {
+								contractVersion: 1,
+								providerId: "codex",
+								status: "current",
+								source: "live",
+								revision: "v1-realtime-enabled",
+								observedAt: 1,
+								capabilities: [
+									{
+										id: "codex:experimental-feature:realtime_conversation",
+										label: "Realtime conversation",
+										scope: "provider",
+										support: "advertised",
+										integration: "provider-native",
+										readiness: "ready",
+										source: "provider-runtime",
+										availability: "provider-native",
+									},
+								],
+							},
 							hostCapabilities: {
 								windowsComputerUse: {
 									label: "Windows Computer Use",
@@ -1080,6 +1110,7 @@ describe("Hlid agent tools", () => {
 			.mockResolvedValueOnce(
 				Response.json({
 					status: { state: "ready", model: "base" },
+					codexRealtimeBackend: { available: true, observedAt: 1 },
 				}),
 			);
 
@@ -1090,7 +1121,7 @@ describe("Hlid agent tools", () => {
 				{
 					providerId: "codex",
 					sessionId: "session-1",
-					codexRealtimeEnabled: true,
+					codexRealtimeEnabled: false,
 				},
 			),
 		);
@@ -1103,11 +1134,14 @@ describe("Hlid agent tools", () => {
 					local_dictation: expect.objectContaining({
 						availability: "available",
 					}),
+					codex_dictation: expect.objectContaining({
+						availability: "provider-native",
+					}),
 					native_audio_input: expect.objectContaining({
 						availability: "provider-native",
 					}),
 					raven_live: expect.objectContaining({
-						availability: "conditional",
+						availability: "provider-native",
 					}),
 				}),
 			}),
@@ -1121,6 +1155,7 @@ describe("Hlid agent tools", () => {
 			]),
 		});
 		expect(db.dbFetch).toHaveBeenCalledWith("/voice");
+		expect(config.loadConfig).toHaveBeenCalled();
 	});
 
 	it("starts a session-scoped preview through Hlid's internal API", async () => {

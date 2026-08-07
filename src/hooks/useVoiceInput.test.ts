@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, fireEvent, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deferred } from "#/test/utils";
 
@@ -8,6 +8,7 @@ vi.mock("#/lib/serverFns/voice", () => ({ getVoiceInfoFn: vi.fn() }));
 
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import {
+	type CodexDictationController,
 	readTranscriptionResponse,
 	uploadVoiceRecording,
 	useVoiceInput,
@@ -299,6 +300,149 @@ describe("useVoiceInput", () => {
 		expect(onTranscription).not.toHaveBeenCalled();
 		expect(fetchMock).not.toHaveBeenCalled();
 		expect(result.current.phase).toBe("idle");
+	});
+
+	it("delegates Codex dictation without creating a second media recorder", async () => {
+		const getUserMedia = vi.fn();
+		Object.defineProperty(navigator, "mediaDevices", {
+			value: { getUserMedia },
+			configurable: true,
+		});
+		vi.stubGlobal("MediaRecorder", FakeMediaRecorder);
+		const start = vi.fn(async () => {});
+		const stop = vi.fn();
+		const cancel = vi.fn();
+		const clearError = vi.fn();
+		const controller = (
+			phase: CodexDictationController["phase"],
+			error: string | null = null,
+		): CodexDictationController => ({
+			available: true,
+			phase,
+			error,
+			start,
+			stop,
+			cancel,
+			clearError,
+		});
+		const { result, rerender } = renderHook(
+			({ dictation }) =>
+				useVoiceInput({
+					config: { ...config, input_provider: "codex_dictation" },
+					initialInfo: readyInfo,
+					onTranscription: vi.fn(),
+					codexDictation: dictation,
+				}),
+			{ initialProps: { dictation: controller("idle") } },
+		);
+
+		expect(result.current.ready).toBe(true);
+		await act(() => result.current.start());
+		expect(start).toHaveBeenCalledOnce();
+		expect(getUserMedia).not.toHaveBeenCalled();
+		expect(FakeMediaRecorder.instances).toHaveLength(0);
+
+		rerender({ dictation: controller("starting") });
+		expect(result.current.phase).toBe("starting");
+		expect(result.current.seconds).toBe(0);
+		fireEvent.keyDown(window, {
+			code: "KeyV",
+			altKey: true,
+			shiftKey: true,
+		});
+		expect(cancel).toHaveBeenCalledOnce();
+		expect(start).toHaveBeenCalledOnce();
+		expect(stop).not.toHaveBeenCalled();
+
+		rerender({ dictation: controller("connected") });
+		expect(result.current.phase).toBe("recording");
+		act(() => result.current.stop());
+		expect(stop).toHaveBeenCalledOnce();
+
+		rerender({ dictation: controller("stopping") });
+		expect(result.current.phase).toBe("transcribing");
+		act(() => result.current.cancel());
+		expect(cancel).toHaveBeenCalledTimes(2);
+
+		rerender({ dictation: controller("error", "Realtime failed") });
+		expect(result.current.phase).toBe("error");
+		expect(result.current.error).toBe("Realtime failed");
+		act(() => result.current.clearError());
+		expect(clearError).toHaveBeenCalledOnce();
+	});
+
+	it("starts the Codex dictation timer only after the connection opens", () => {
+		vi.useFakeTimers();
+		try {
+			const stop = vi.fn();
+			const controller = (
+				phase: CodexDictationController["phase"],
+			): CodexDictationController => ({
+				available: true,
+				phase,
+				error: null,
+				start: vi.fn(async () => {}),
+				stop,
+				cancel: vi.fn(),
+				clearError: vi.fn(),
+			});
+			const { result, rerender } = renderHook(
+				({ dictation }) =>
+					useVoiceInput({
+						config: {
+							...config,
+							input_provider: "codex_dictation",
+							max_recording_seconds: 1,
+						},
+						initialInfo: readyInfo,
+						onTranscription: vi.fn(),
+						codexDictation: dictation,
+					}),
+				{ initialProps: { dictation: controller("starting") } },
+			);
+
+			act(() => vi.advanceTimersByTime(1_500));
+			expect(result.current.phase).toBe("starting");
+			expect(result.current.seconds).toBe(0);
+			expect(stop).not.toHaveBeenCalled();
+
+			rerender({ dictation: controller("connected") });
+			act(() => vi.advanceTimersByTime(1_250));
+			expect(result.current.seconds).toBe(1);
+			expect(stop).toHaveBeenCalledOnce();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("reports why Codex dictation is unavailable", async () => {
+		const codexDictation: CodexDictationController = {
+			available: false,
+			unavailableReason: "Enable Codex realtime preview",
+			phase: "idle",
+			error: null,
+			start: vi.fn(async () => {}),
+			stop: vi.fn(),
+			cancel: vi.fn(),
+			clearError: vi.fn(),
+		};
+		const { result } = renderHook(() =>
+			useVoiceInput({
+				config: { ...config, input_provider: "codex_dictation" },
+				initialInfo: readyInfo,
+				onTranscription: vi.fn(),
+				codexDictation,
+			}),
+		);
+
+		expect(result.current.ready).toBe(false);
+		expect(result.current.unavailableReason).toBe(
+			"Enable Codex realtime preview",
+		);
+		await act(() => result.current.start());
+		expect(result.current.phase).toBe("error");
+		expect(result.current.error).toBe("Enable Codex realtime preview");
+		expect(codexDictation.start).not.toHaveBeenCalled();
 	});
 
 	it("stages a WAV as a managed voice attachment", async () => {

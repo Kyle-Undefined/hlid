@@ -43,6 +43,11 @@ export function mockDbModule() {
 		clearCurrentSessionId: vi.fn().mockResolvedValue(undefined),
 		setCurrentSessionId: vi.fn().mockResolvedValue(undefined),
 		appendMessage: vi.fn().mockResolvedValue(undefined),
+		appendRealtimeTranscriptMessage: vi.fn(async (input: { seq: number }) => ({
+			id: input.seq + 1_000,
+			seq: input.seq,
+			inserted: true,
+		})),
 		appendToolEvent: vi.fn().mockResolvedValue(undefined),
 		appendPlanProposal: vi.fn().mockResolvedValue(undefined),
 		setPlanProposalDecision: vi.fn().mockResolvedValue(undefined),

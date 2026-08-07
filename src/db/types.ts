@@ -107,6 +107,16 @@ export type MessageRow = {
 	context_manifest_json?: string | null;
 	/** Durable usage query owned by this completed assistant response. */
 	query_id?: number | null;
+	/** Hlid transcript source. NULL identifies ordinary typed/provider turns. */
+	source?: string | null;
+	/** Stable Hlid-owned identity for a provider realtime utterance. */
+	utterance_id?: string | null;
+	/** Hlid-owned realtime start generation. */
+	realtime_session_id?: string | null;
+	/** Provider-owned realtime call identity, when one was reported. */
+	provider_realtime_session_id?: string | null;
+	/** Explicit row-level fork support; NULL defers to ordinary provider rules. */
+	fork_supported?: number | null;
 	/** Joined query fields projected only by getSessionMessages(). */
 	query_cost?: number | null;
 	query_cost_known?: number | null;

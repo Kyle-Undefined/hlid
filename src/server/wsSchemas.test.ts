@@ -583,21 +583,95 @@ describe("chat WebSocket runtime schema", () => {
 				JSON.stringify({
 					type: "realtime_start",
 					session_id: "session-1",
+					request_id: "realtime-request-1",
 					mode: "live",
 					sdp: "v=0\r\n",
 					voice: "marin",
 				}),
 			),
-		).toMatchObject({ type: "realtime_start", mode: "live", voice: "marin" });
+		).toMatchObject({
+			type: "realtime_start",
+			request_id: "realtime-request-1",
+			mode: "live",
+			voice: "marin",
+		});
 		expect(
 			parseClientMessage(
 				JSON.stringify({
 					type: "realtime_speak",
 					session_id: "session-1",
+					request_id: "realtime-request-1",
+					mode: "read-aloud",
 					text: "Read this response",
 				}),
 			),
-		).toMatchObject({ type: "realtime_speak" });
+		).toMatchObject({
+			type: "realtime_speak",
+			request_id: "realtime-request-1",
+			mode: "read-aloud",
+		});
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "realtime_speak",
+					session_id: "session-1",
+					text: "Uncorrelated speech",
+				}),
+			),
+		).toBeNull();
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "realtime_stop",
+					session_id: "session-1",
+					request_id: "realtime-request-1",
+					mode: "live",
+				}),
+			),
+		).toEqual({
+			type: "realtime_stop",
+			session_id: "session-1",
+			request_id: "realtime-request-1",
+			mode: "live",
+		});
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "realtime_stop",
+					session_id: "session-1",
+				}),
+			),
+		).toEqual({ type: "realtime_stop", session_id: "session-1" });
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "realtime_stop",
+					session_id: "session-1",
+					mode: "unknown",
+				}),
+			),
+		).toBeNull();
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "realtime_start",
+					session_id: "session-1",
+					request_id: "",
+					mode: "live",
+					sdp: "v=0\r\n",
+				}),
+			),
+		).toBeNull();
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "realtime_stop",
+					session_id: "session-1",
+					request_id: "x".repeat(257),
+					mode: "live",
+				}),
+			),
+		).toBeNull();
 		expect(
 			parseClientMessage(
 				JSON.stringify({

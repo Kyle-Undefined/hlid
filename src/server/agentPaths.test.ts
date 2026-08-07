@@ -38,6 +38,15 @@ describe("isAllowedAgentPath", () => {
 			true,
 		);
 	});
+
+	it("matches equivalent WSL declarations without mounting the share", () => {
+		expect(
+			isAllowedAgentPath(
+				["\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\project"],
+				"\\\\wsl$\\ubuntu-24.04\\home\\kyle\\project\\.",
+			),
+		).toBe(true);
+	});
 });
 
 // ── computeAllowedAgentRealPaths ─────────────────────────────────────────────
@@ -92,6 +101,16 @@ describe("computeAllowedAgentRealPaths", () => {
 		} as never);
 		// May or may not exist — just confirm it doesn't throw
 		expect(Array.isArray(result)).toBe(true);
+	});
+
+	it("retains a declared WSL root without requiring it to be mounted", () => {
+		const declared =
+			"\\\\wsl.localhost\\Unavailable-Distro\\home\\kyle\\project";
+		expect(
+			computeAllowedAgentRealPaths({
+				agents: [{ path: declared, mode: "cwd" }],
+			} as never),
+		).toEqual([declared]);
 	});
 });
 
@@ -195,6 +214,20 @@ describe("resolveAgentMode", () => {
 	it("returns 'cwd' when no agents match", () => {
 		vi.mocked(loadConfig).mockReturnValue({ agents: [] } as never);
 		expect(resolveAgentMode(agentDir)).toBe("cwd");
+	});
+
+	it("matches a WSL alias without requiring the share to be mounted", () => {
+		vi.mocked(loadConfig).mockReturnValue({
+			agents: [
+				{
+					path: "\\\\wsl.localhost\\Unavailable-Distro\\home\\kyle\\project",
+					mode: "context",
+				},
+			],
+		} as never);
+		expect(
+			resolveAgentMode("\\\\wsl$\\unavailable-distro\\home\\kyle\\project\\."),
+		).toBe("context");
 	});
 
 	it("returns 'cwd' when loadConfig throws (error swallowed)", () => {

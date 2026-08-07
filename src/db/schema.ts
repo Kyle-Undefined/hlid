@@ -490,6 +490,23 @@ function applyMigrations(db: Db): void {
 		db.run(`ALTER TABLE messages ADD COLUMN query_id INTEGER`);
 	});
 
+	// Provider-native realtime turns are mirrored into Raven without replaying
+	// them to the provider. Keep their transport provenance and unsupported
+	// fork boundary on the visible row so hydration stays honest. A NULL query_id
+	// remains the accounting truth for these provider speech-to-speech turns.
+	runMigration(db, "_migrated_messages_realtime_provenance_v1", (db) => {
+		db.run(`ALTER TABLE messages ADD COLUMN source TEXT`);
+		db.run(`ALTER TABLE messages ADD COLUMN utterance_id TEXT`);
+		db.run(`ALTER TABLE messages ADD COLUMN realtime_session_id TEXT`);
+		db.run(`ALTER TABLE messages ADD COLUMN provider_realtime_session_id TEXT`);
+		db.run(`ALTER TABLE messages ADD COLUMN fork_supported INTEGER`);
+		db.run(
+			`CREATE UNIQUE INDEX idx_messages_session_utterance_id
+			 ON messages(session_id, utterance_id)
+			 WHERE utterance_id IS NOT NULL`,
+		);
+	});
+
 	// Durable provenance lets Raven and Ledger link an exact fork back to its
 	// source even after both provider processes and Hlid itself restart.
 	runMigration(db, "_migrated_sessions_fork_provenance", (db) => {

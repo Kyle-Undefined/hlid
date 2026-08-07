@@ -75,6 +75,27 @@ beforeEach(() => {
 // ── applyReplayTransition — shared buffer/error semantics ────────────────────
 
 describe("applyReplayTransition", () => {
+	it("retains tool activity in order so a reconnect can rebuild a Live card", () => {
+		const state: ReplayState = { buffer: [], lastError: null };
+		const start = {
+			type: "tool_event" as const,
+			id: "live-tool-1",
+			name: "exec_command",
+			input: { cmd: "git status --short" },
+			realtime_utterance_id: "codex-realtime-1",
+		};
+		const result = {
+			type: "tool_result" as const,
+			id: "live-tool-1",
+			content: "clean",
+		};
+
+		applyReplayTransition(state, start);
+		applyReplayTransition(state, result);
+
+		expect(state.buffer).toEqual([start, result]);
+	});
+
 	it("accumulates chunk, tool_event, permission_request, permission_resolved", () => {
 		const state = makeState();
 		applyReplayTransition(state, { type: "chunk", text: "hello" });

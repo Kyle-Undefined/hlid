@@ -4,6 +4,7 @@
  * DB is mocked; only the cache/catalog logic under test is real.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ProviderCapabilityDiscovery } from "../lib/providerCapabilityTypes";
 import type { ProviderInfo } from "../lib/providerTypes";
 
 // ── mocks ─────────────────────────────────────────────────────────────────────
@@ -257,6 +258,53 @@ describe("createCachedList", () => {
 			source: "fallback",
 		});
 	});
+
+	it("does not publish an in-flight result after the cache is disposed", async () => {
+		let resolveFetch: (value: string[]) => void = () => {};
+		const fetcher = vi.fn(
+			() =>
+				new Promise<string[]>((resolve) => {
+					resolveFetch = resolve;
+				}),
+		);
+		const onChange = vi.fn();
+		const cache = createCachedList<string[]>({
+			persistKey: "k:disposed",
+			fetcher,
+			fallback: [],
+			onChange,
+		});
+
+		const pending = cache.get();
+		cache.dispose();
+		resolveFetch(["obsolete"]);
+
+		await expect(pending).resolves.toEqual({
+			value: ["obsolete"],
+			source: "live",
+		});
+		expect(mockSaveSetting).not.toHaveBeenCalled();
+		expect(onChange).not.toHaveBeenCalled();
+	});
+
+	it("waits for live data and ignores persisted fallback after an identity change", async () => {
+		mockGetSetting.mockResolvedValue(JSON.stringify(["obsolete"]));
+		const fetcher = vi.fn().mockResolvedValue(["current"]);
+		const cache = createCachedList<string[]>({
+			persistKey: "k:identity-change",
+			fetcher,
+			fallback: [],
+			allowPersistedFallback: false,
+			waitForInitialFetch: true,
+		});
+
+		await expect(cache.getCached()).resolves.toEqual({
+			value: ["current"],
+			source: "live",
+		});
+		expect(fetcher).toHaveBeenCalledOnce();
+		expect(mockGetSetting).not.toHaveBeenCalled();
+	});
 });
 
 // ── createModelCatalog ────────────────────────────────────────────────────────
@@ -344,6 +392,37 @@ describe("createModelCatalog", () => {
 
 		expect(models).toEqual([{ value: "fallback-1", label: "Fallback" }]);
 	});
+
+	it("does not persist model discovery from a provider cache replaced in flight", async () => {
+		let resolveOld: (value: ProviderModelInfo[]) => void = () => {};
+		const oldProvider = makeProvider({
+			providerId: "codex",
+			listModels: vi.fn(
+				() =>
+					new Promise<ProviderModelInfo[]>((resolve) => {
+						resolveOld = resolve;
+					}),
+			),
+		});
+		const newModels = [{ value: "new", label: "New" }];
+		const newProvider = makeProvider({
+			providerId: "codex",
+			listModels: vi.fn().mockResolvedValue(newModels),
+		});
+		const catalog = createModelCatalog(new Map([["codex", oldProvider]]));
+
+		const oldRead = catalog.modelsFor(oldProvider);
+		catalog.register(newProvider);
+		expect(await catalog.modelsFor(newProvider)).toEqual(newModels);
+		resolveOld([{ value: "old", label: "Old" }]);
+		await oldRead;
+
+		expect(mockSaveSetting).toHaveBeenCalledOnce();
+		expect(mockSaveSetting).toHaveBeenCalledWith(
+			"model_catalog:codex",
+			JSON.stringify(newModels),
+		);
+	});
 });
 
 describe("createProviderCapabilityCatalog", () => {
@@ -408,6 +487,106 @@ describe("createProviderCapabilityCatalog", () => {
 		expect(discoverCapabilities).toHaveBeenCalledTimes(2);
 		expect(mockSaveSetting.mock.calls[0]?.[0]).not.toBe(
 			mockSaveSetting.mock.calls[1]?.[0],
+		);
+	});
+
+	it("rediscovers realtime capability evidence after the provider is registered again", async () => {
+		let realtimeEnabled = false;
+		const discoverCapabilities = vi.fn().mockImplementation(() =>
+			Promise.resolve({
+				observedAt: realtimeEnabled ? 2 : 1,
+				evidence: [
+					{
+						id: "codex:experimental-feature:realtime_conversation",
+						label: "Realtime conversation",
+						scope: "provider" as const,
+						support: realtimeEnabled
+							? ("advertised" as const)
+							: ("not-advertised" as const),
+						integration: "integrated" as const,
+						readiness: realtimeEnabled
+							? ("ready" as const)
+							: ("unavailable" as const),
+						source: "provider-runtime" as const,
+					},
+				],
+			}),
+		);
+		const provider = makeProvider({
+			providerId: "codex",
+			discoverCapabilities,
+		});
+		const catalog = createProviderCapabilityCatalog(
+			new Map([[provider.providerId, provider]]),
+			"/work/project",
+		);
+		const loadSnapshot = async () =>
+			(
+				await loadProviderCatalog(
+					[provider],
+					{
+						modelsFor: vi.fn().mockResolvedValue([]),
+						capabilitiesFor: catalog.capabilitiesFor,
+					},
+					{
+						includeProviderCapabilities: true,
+						discoveryCwd: "/work/project",
+					},
+				)
+			)[0]?.capabilitySnapshot;
+
+		expect(
+			(await loadSnapshot())?.capabilities.find(
+				(capability) =>
+					capability.id === "codex:experimental-feature:realtime_conversation",
+			)?.availability,
+		).toBe("unavailable");
+
+		realtimeEnabled = true;
+		catalog.register(provider);
+
+		expect(
+			(await loadSnapshot())?.capabilities.find(
+				(capability) =>
+					capability.id === "codex:experimental-feature:realtime_conversation",
+			)?.availability,
+		).toBe("available");
+		expect(discoverCapabilities).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not persist capability evidence from a provider cache replaced in flight", async () => {
+		let resolveOld: (value: ProviderCapabilityDiscovery) => void = () => {};
+		const oldProvider = makeProvider({
+			providerId: "codex",
+			discoverCapabilities: vi.fn(
+				() =>
+					new Promise<ProviderCapabilityDiscovery>((resolve) => {
+						resolveOld = resolve;
+					}),
+			),
+		});
+		const currentDiscovery = { observedAt: 2, evidence: [] };
+		const newProvider = makeProvider({
+			providerId: "codex",
+			discoverCapabilities: vi.fn().mockResolvedValue(currentDiscovery),
+		});
+		const catalog = createProviderCapabilityCatalog(
+			new Map([["codex", oldProvider]]),
+			"/work/project",
+		);
+
+		const oldRead = catalog.capabilitiesFor(oldProvider);
+		catalog.register(newProvider);
+		expect((await catalog.capabilitiesFor(newProvider))?.discovery).toEqual(
+			currentDiscovery,
+		);
+		resolveOld({ observedAt: 1, evidence: [] });
+		await oldRead;
+
+		expect(mockSaveSetting).toHaveBeenCalledOnce();
+		expect(mockSaveSetting).toHaveBeenCalledWith(
+			expect.stringMatching(/^provider_capabilities:codex:[0-9a-f]{16}$/),
+			JSON.stringify(currentDiscovery),
 		);
 	});
 });
@@ -586,6 +765,96 @@ describe("loadProviderCatalog", () => {
 });
 
 describe("createProviderCatalogSnapshot", () => {
+	it("publishes fresh models and realtime evidence after a runtime restart", async () => {
+		let runtime = "old" as "old" | "new";
+		const provider = makeProvider({
+			providerId: "codex",
+			listModels: vi.fn(
+				(): Promise<ProviderModelInfo[]> =>
+					Promise.resolve([
+						{
+							value: runtime === "old" ? "old-model" : "new-audio-model",
+							label: runtime === "old" ? "Old model" : "New audio model",
+							inputModalities: runtime === "old" ? ["text"] : ["text", "audio"],
+						},
+					]),
+			),
+			discoverCapabilities: vi.fn(() =>
+				Promise.resolve({
+					observedAt: runtime === "old" ? 1 : 2,
+					evidence: [
+						{
+							id: "codex:experimental-feature:realtime_conversation",
+							label: "Realtime conversation",
+							scope: "provider" as const,
+							support:
+								runtime === "old"
+									? ("not-advertised" as const)
+									: ("advertised" as const),
+							integration: "integrated" as const,
+							readiness:
+								runtime === "old"
+									? ("unavailable" as const)
+									: ("ready" as const),
+							source: "provider-runtime" as const,
+						},
+					],
+				}),
+			),
+		});
+		const providers = new Map([["codex", provider]]);
+		const models = createModelCatalog(providers);
+		const capabilities = createProviderCapabilityCatalog(
+			providers,
+			"/work/project",
+		);
+		const snapshot = createProviderCatalogSnapshot([provider], {
+			modelsFor: models.modelsFor,
+			cachedModelsFor: models.cachedModelsFor,
+			capabilitiesFor: capabilities.capabilitiesFor,
+			cachedCapabilitiesFor: capabilities.cachedCapabilitiesFor,
+		});
+		const read = (refresh: boolean) =>
+			snapshot.get({
+				refresh,
+				includeProviderCapabilities: true,
+				preferCachedProviderCapabilities: false,
+				discoveryCwd: "/work/project",
+			});
+
+		const before = (await read(true))[0];
+		expect(before?.models?.map((model) => model.value)).toEqual(["old-model"]);
+		expect(
+			before?.capabilitySnapshot?.capabilities.find(
+				(capability) =>
+					capability.id === "codex:experimental-feature:realtime_conversation",
+			)?.availability,
+		).toBe("unavailable");
+
+		runtime = "new";
+		mockGetSetting.mockResolvedValue(
+			JSON.stringify([{ value: "old-model", label: "Persisted old model" }]),
+		);
+		models.register(provider, { refreshIdentity: true });
+		capabilities.register(provider);
+		snapshot.invalidate();
+
+		const after = (await read(false))[0];
+		expect(after?.models).toEqual([
+			expect.objectContaining({
+				value: "new-audio-model",
+				inputModalities: ["text", "audio"],
+			}),
+		]);
+		expect(
+			after?.capabilitySnapshot?.capabilities.find(
+				(capability) =>
+					capability.id === "codex:experimental-feature:realtime_conversation",
+			)?.availability,
+		).toBe("available");
+		expect(provider.listModels).toHaveBeenCalledTimes(2);
+	});
+
 	it("reuses one materialized response for capability and base reads", async () => {
 		const check = vi.fn().mockResolvedValue({ available: true });
 		const hostCapabilities = vi.fn().mockResolvedValue({
@@ -712,7 +981,7 @@ describe("createProviderCatalogSnapshot", () => {
 		expect(check).toHaveBeenCalledTimes(2);
 	});
 
-	it("does not let an invalidated in-flight read repopulate the cache", async () => {
+	it("starts a new read immediately after invalidating an in-flight snapshot", async () => {
 		let resolveFirst: ((value: ProviderInfo[]) => void) | undefined;
 		const load = vi
 			.fn()
@@ -747,6 +1016,12 @@ describe("createProviderCatalogSnapshot", () => {
 
 		const first = snapshot.get({ includeHostCapabilities: true });
 		snapshot.invalidate();
+		const second = snapshot.get({ includeHostCapabilities: true });
+		expect(load).toHaveBeenCalledTimes(2);
+		expect((await second)[0]?.hostCapabilities?.windowsComputerUse).toEqual({
+			label: "Windows Computer Use",
+			available: true,
+		});
 		resolveFirst?.([
 			{
 				id: "codex",

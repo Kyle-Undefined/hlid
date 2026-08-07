@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_VOICE_CONFIG } from "#/config";
+import { DEFAULT_VOICE_CONFIG, type HlidConfig } from "#/config";
 
 const voiceServer = vi.hoisted(() => ({
 	getInfo: vi.fn(),
@@ -48,6 +48,13 @@ const idleTts = {
 	status: { state: "disabled" as const, model: "" },
 	models: [],
 };
+
+const voiceConfig = (
+	patch: Partial<HlidConfig["voice"]> = {},
+): HlidConfig["voice"] => ({
+	...DEFAULT_VOICE_CONFIG,
+	...patch,
+});
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -98,9 +105,129 @@ describe("voice runtime polling", () => {
 		expect(vi.getTimerCount()).toBe(0);
 	});
 
-	it("surfaces delayed TTS sync failures and cancels its timer", async () => {
-		ttsServer.sync.mockRejectedValue(new Error("TTS runtime unavailable"));
+	it("does not sync local neural TTS on an ordinary non-neural mount", async () => {
 		const view = renderHook(() => useTtsRuntimeState(DEFAULT_VOICE_CONFIG));
+
+		await act(() => vi.advanceTimersByTimeAsync(1_200));
+		expect(ttsServer.getInfo).toHaveBeenCalledOnce();
+		expect(ttsServer.sync).not.toHaveBeenCalled();
+
+		view.unmount();
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("ignores non-neural provider and dormant runtime-setting changes", async () => {
+		const view = renderHook(({ voice }) => useTtsRuntimeState(voice), {
+			initialProps: { voice: voiceConfig() },
+		});
+
+		view.rerender({
+			voice: voiceConfig({
+				read_aloud_provider: "microsoft",
+				tts_model: "dormant-model",
+				tts_threads: 12,
+			}),
+		});
+		view.rerender({
+			voice: voiceConfig({
+				read_aloud_provider: "codex",
+				tts_model: "another-dormant-model",
+				tts_threads: 16,
+			}),
+		});
+
+		await act(() => vi.advanceTimersByTimeAsync(1_200));
+		expect(ttsServer.sync).not.toHaveBeenCalled();
+	});
+
+	it("syncs when neural TTS becomes effective, changes, and is disabled", async () => {
+		const view = renderHook(({ voice }) => useTtsRuntimeState(voice), {
+			initialProps: { voice: voiceConfig() },
+		});
+
+		view.rerender({
+			voice: voiceConfig({
+				read_aloud_provider: "neural",
+				tts_model: "neural-a",
+				tts_threads: 4,
+			}),
+		});
+		await act(() => vi.advanceTimersByTimeAsync(1_200));
+		expect(ttsServer.sync).toHaveBeenCalledTimes(1);
+
+		view.rerender({
+			voice: voiceConfig({
+				read_aloud_provider: "neural",
+				tts_model: "neural-b",
+				tts_threads: 8,
+			}),
+		});
+		await act(() => vi.advanceTimersByTimeAsync(1_200));
+		expect(ttsServer.sync).toHaveBeenCalledTimes(2);
+
+		view.rerender({
+			voice: voiceConfig({
+				read_aloud_provider: "device",
+				tts_model: "neural-b",
+				tts_threads: 8,
+			}),
+		});
+		await act(() => vi.advanceTimersByTimeAsync(1_200));
+		expect(ttsServer.sync).toHaveBeenCalledTimes(3);
+	});
+
+	it("keeps a pending neural shutdown across rapid non-neural changes", async () => {
+		const view = renderHook(({ voice }) => useTtsRuntimeState(voice), {
+			initialProps: {
+				voice: voiceConfig({ read_aloud_provider: "neural" }),
+			},
+		});
+
+		await act(() => vi.advanceTimersByTimeAsync(1_200));
+		expect(ttsServer.sync).toHaveBeenCalledTimes(1);
+
+		view.rerender({
+			voice: voiceConfig({ read_aloud_provider: "device" }),
+		});
+		await act(() => vi.advanceTimersByTimeAsync(600));
+		view.rerender({
+			voice: voiceConfig({ read_aloud_provider: "codex" }),
+		});
+		await act(() => vi.advanceTimersByTimeAsync(600));
+
+		// device and Codex have the same effective null runtime key, so the second
+		// transition must not cancel the shutdown scheduled when neural was left.
+		expect(ttsServer.sync).toHaveBeenCalledTimes(2);
+	});
+
+	it("syncs local neural TTS on a neural mount", async () => {
+		const view = renderHook(() =>
+			useTtsRuntimeState(
+				voiceConfig({
+					read_aloud_provider: "neural",
+					tts_model: "neural-a",
+				}),
+			),
+		);
+
+		await act(() => vi.advanceTimersByTimeAsync(1_200));
+		expect(ttsServer.sync).toHaveBeenCalledOnce();
+		expect(ttsServer.getInfo).toHaveBeenCalledTimes(2);
+
+		view.unmount();
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("surfaces delayed neural TTS sync failures and cancels its timer", async () => {
+		ttsServer.sync.mockRejectedValue(new Error("TTS runtime unavailable"));
+		const view = renderHook(() =>
+			useTtsRuntimeState(
+				voiceConfig({
+					read_aloud_provider: "neural",
+					tts_model: "neural-a",
+				}),
+			),
+		);
 
 		await act(() => vi.advanceTimersByTimeAsync(1_200));
 		expect(view.result.current.error).toBe("TTS runtime unavailable");

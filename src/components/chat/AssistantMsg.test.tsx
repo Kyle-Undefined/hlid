@@ -547,6 +547,36 @@ describe("AssistantMsg", () => {
 		).toBeTruthy();
 	});
 
+	it("renders an active Codex visualization worker only once", () => {
+		const visualization: ToolEventMessage = {
+			type: "tool_event",
+			id: "tool-visualization",
+			name: "mcp__hlid__create_visualization",
+			input: { request: "Show the response path" },
+			subagent: {
+				provider: "codex",
+				agentId: "visualization-worker-1",
+				kind: "workflow",
+				status: "running",
+				currentStep: "Building visualization",
+				startedAtMs: 1,
+			},
+		};
+
+		render(
+			<AssistantMsg
+				message={makeMsg({
+					streaming: true,
+					toolEvents: [visualization],
+				})}
+				providerId="codex"
+				sessionId="session-1"
+			/>,
+		);
+
+		expect(screen.getAllByText("Building visualization")).toHaveLength(1);
+	});
+
 	it("keeps the accepted steer below the Activity tray as later tools arrive", () => {
 		const before = {
 			type: "tool_event" as const,

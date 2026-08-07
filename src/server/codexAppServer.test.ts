@@ -11,13 +11,20 @@ import {
 	listCodexAppServers,
 	prewarmCodexAppServer,
 	type ThreadHandler,
+	waitForCodexAppServerTerminations,
 } from "./codexAppServer";
+import {
+	getCodexRealtimeBackendStatus,
+	markCodexRealtimeBackendAccepted,
+} from "./codexRealtimeStatus";
 
 type FakeProc = InstanceType<typeof EventEmitter> & {
+	pid?: number;
 	stdin: { write: ReturnType<typeof vi.fn> };
 	stdout: InstanceType<typeof EventEmitter>;
 	stderr: InstanceType<typeof EventEmitter>;
 	kill: ReturnType<typeof vi.fn>;
+	unref?: ReturnType<typeof vi.fn>;
 };
 
 function makeFakeProc(): { proc: FakeProc; writes: string[] } {
@@ -339,6 +346,118 @@ describe("CodexAppServer idle lifecycle", () => {
 		);
 	});
 
+	it("normalizes encoded WSL service output into actionable startup recovery", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const wslFailure = makeFakeProc();
+		wslFailure.proc.stdin.write = vi.fn();
+		vi.mocked(spawn).mockReturnValue(wslFailure.proc as never);
+		const failedServer = new CodexAppServer("C:\\Hlid\\codex-wrapper.cmd");
+		live.add(failedServer);
+		const failedReady = failedServer.ready.catch((error: unknown) => error);
+
+		wslFailure.proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`\0${[..."Error code: Wsl/Service/E_UNEXPECTED"].join("\0")}\0\r\0\n\0`,
+			),
+		);
+		wslFailure.proc.emit("exit", 255);
+		const classified = await failedReady;
+
+		expect(classified).toEqual(
+			expect.objectContaining({
+				name: "CodexWslStartupError",
+				message: expect.stringContaining(
+					"Save any work running in WSL, restart WSL, then try again",
+				),
+			}),
+		);
+		expect((classified as Error).name).toBe("CodexWslStartupError");
+		expect((classified as Error).cause).toEqual(
+			expect.objectContaining({
+				message: "Codex app-server exited (code 255)",
+				exitCode: 255,
+			}),
+		);
+
+		const genericFailure = makeFakeProc();
+		genericFailure.proc.stdin.write = vi.fn();
+		vi.mocked(spawn).mockReturnValue(genericFailure.proc as never);
+		const genericServer = new CodexAppServer("C:\\Hlid\\codex-wrapper.cmd");
+		live.add(genericServer);
+		const genericReady = genericServer.ready.catch((error: unknown) => error);
+		genericFailure.proc.stdout.emit(
+			"data",
+			Buffer.from("Catastrophic failure\n"),
+		);
+		genericFailure.proc.emit("exit", 255);
+		expect(((await genericReady) as Error).name).not.toBe(
+			"CodexWslStartupError",
+		);
+		warn.mockRestore();
+	});
+
+	it("uses WSL recovery guidance when initialize hangs after an encoded service failure", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const fake = makeFakeProc();
+		fake.proc.stdin.write = vi.fn();
+		vi.mocked(spawn).mockReturnValue(fake.proc as never);
+		const server = new CodexAppServer("C:\\Hlid\\codex-wrapper.cmd");
+		live.add(server);
+		const ready = server.ready.catch((error: unknown) => error);
+		fake.proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`\0${[..."Error code: Wsl/Service/E_UNEXPECTED"].join("\0")}\0\r\0\n\0`,
+			),
+		);
+
+		await vi.advanceTimersByTimeAsync(15_000);
+		const failure = await ready;
+		expect((failure as Error).name).toBe("CodexWslStartupError");
+		expect(failure).toEqual(
+			expect.objectContaining({
+				message: expect.stringContaining("Your Raven chat is still intact"),
+			}),
+		);
+		expect(fake.proc.kill).toHaveBeenCalledOnce();
+		warn.mockRestore();
+	});
+
+	it("targets the exact Windows wrapper tree for termination", async () => {
+		const app = makeFakeProc();
+		app.proc.pid = 321;
+		const terminator = makeFakeProc();
+		terminator.proc.unref = vi.fn();
+		vi.mocked(spawn)
+			.mockReturnValueOnce(app.proc as never)
+			.mockReturnValueOnce(terminator.proc as never);
+		const server = new CodexAppServer(
+			"C:\\Hlid\\codex-wrapper.cmd",
+			50,
+			undefined,
+			5,
+			"win32",
+		);
+		live.add(server);
+		await server.ready;
+
+		server.kill();
+		expect(spawn).toHaveBeenNthCalledWith(
+			2,
+			"taskkill.exe",
+			["/PID", "321", "/T", "/F"],
+			expect.objectContaining({ stdio: "ignore", windowsHide: true }),
+		);
+		expect(app.proc.kill).not.toHaveBeenCalled();
+		server.kill();
+		expect(spawn).toHaveBeenCalledTimes(2);
+
+		terminator.proc.emit("exit", 0);
+		await waitForCodexAppServerTerminations();
+		expect(app.proc.kill).not.toHaveBeenCalled();
+	});
+
 	it("removes an idle server from the registry and respawns on demand", async () => {
 		vi.stubEnv("HLID_CODEX_APP_SERVER_IDLE_MS", "50");
 		const firstFake = makeFakeProc();
@@ -403,6 +522,83 @@ describe("CodexAppServer idle lifecycle", () => {
 				}),
 			]),
 		);
+	});
+
+	it("does not reuse an unflagged prewarm for realtime conversation", async () => {
+		vi.stubEnv("HLID_CODEX_APP_SERVER_IDLE_MS", "1000");
+		const unflaggedFake = makeFakeProc();
+		const realtimeFake = makeFakeProc();
+		vi.mocked(spawn)
+			.mockReturnValueOnce(unflaggedFake.proc as never)
+			.mockReturnValueOnce(realtimeFake.proc as never);
+
+		await expect(prewarmCodexAppServer("/usr/bin/codex")).resolves.toBe(true);
+		const unflagged = acquireCodexAppServer("/usr/bin/codex");
+		const realtime = acquireCodexAppServer({
+			executable: "/usr/bin/codex",
+			args: ["--enable", "realtime_conversation"],
+		});
+		await realtime.ready;
+
+		expect(realtime).not.toBe(unflagged);
+		expect(spawn).toHaveBeenCalledTimes(2);
+		expect(spawn).toHaveBeenNthCalledWith(
+			2,
+			"/usr/bin/codex",
+			[
+				"--enable",
+				"realtime_conversation",
+				"app-server",
+				"--listen",
+				"stdio://",
+			],
+			expect.any(Object),
+		);
+		expect(listCodexAppServers()).toHaveLength(2);
+	});
+
+	it("clears observed realtime backend readiness when app servers restart", () => {
+		markCodexRealtimeBackendAccepted(123);
+		expect(getCodexRealtimeBackendStatus()).toEqual({
+			available: true,
+			observedAt: 123,
+		});
+
+		__resetCodexAppServersForTesting();
+
+		expect(getCodexRealtimeBackendStatus()).toEqual({});
+	});
+
+	it("reuses an alive server for equivalent launch configurations", async () => {
+		vi.stubEnv("HLID_CODEX_APP_SERVER_IDLE_MS", "1000");
+		const fake = makeFakeProc();
+		vi.mocked(spawn).mockReturnValue(fake.proc as never);
+
+		await expect(
+			prewarmCodexAppServer({
+				executable: "/usr/bin/codex",
+				registryKey: "cliproxy:profile-fingerprint",
+				args: ["--enable", "realtime_conversation"],
+				env: { HLID_CLIPROXY_API_KEY: "secret" },
+			}),
+		).resolves.toBe(true);
+		const first = acquireCodexAppServer({
+			executable: "/usr/bin/codex",
+			registryKey: "cliproxy:profile-fingerprint",
+			args: ["--enable", "realtime_conversation"],
+			env: { HLID_CLIPROXY_API_KEY: "secret" },
+		});
+		const second = acquireCodexAppServer({
+			executable: "/usr/bin/codex",
+			registryKey: "cliproxy:profile-fingerprint",
+			args: ["--enable", "realtime_conversation"],
+			env: { HLID_CLIPROXY_API_KEY: "secret" },
+		});
+		await first.ready;
+
+		expect(second).toBe(first);
+		expect(spawn).toHaveBeenCalledOnce();
+		expect(listCodexAppServers()).toHaveLength(1);
 	});
 
 	it("does not deregister a replacement acquired by an exit handler", async () => {
@@ -752,6 +948,35 @@ describe("CodexAppServer idle lifecycle", () => {
 		await Promise.resolve();
 		await vi.advanceTimersByTimeAsync(50);
 		expect(server.alive).toBe(false);
+		expect(proc.kill).toHaveBeenCalledOnce();
+	});
+
+	it("drops a server-request response that settles after the transport dies", async () => {
+		const { server, proc, writes } = await create();
+		let resolveApproval: ((value: unknown) => void) | undefined;
+		const approval = new Promise((resolve) => {
+			resolveApproval = resolve;
+		});
+		const handler: ThreadHandler = {
+			onNotification: vi.fn(),
+			onRequest: vi.fn(() => approval),
+			onExit: vi.fn(),
+		};
+		server.attachThread("thread-1", handler);
+		serverRequest(proc, 99, "thread-1");
+		await Promise.resolve();
+		expect(handler.onRequest).toHaveBeenCalledOnce();
+
+		server.kill(new Error("thread closed"));
+		resolveApproval?.({ decision: "accept" });
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(
+			writes
+				.map((line) => JSON.parse(line) as { id?: number })
+				.filter((message) => message.id === 99),
+		).toEqual([]);
 		expect(proc.kill).toHaveBeenCalledOnce();
 	});
 });

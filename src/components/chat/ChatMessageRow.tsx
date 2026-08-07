@@ -160,7 +160,11 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 						: undefined
 				}
 				onLoadEarlierToolEvents={onLoadEarlierToolEvents}
-				canBranch={canBranch}
+				canBranch={
+					canBranch &&
+					(message.source !== "codex_realtime" ||
+						message.forkSupported === true)
+				}
 				branching={message.dbId != null && forkingMessageId === message.dbId}
 				onBranch={onBranch}
 				obsidianCapture={obsidianCapture}

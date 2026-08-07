@@ -37,6 +37,9 @@ export function applyReplayTransition(
 	} else if (
 		msg.type === "chunk" ||
 		msg.type === "tool_event" ||
+		msg.type === "tool_result" ||
+		msg.type === "tool_update" ||
+		msg.type === "tool_activity_update" ||
 		msg.type === "permission_request" ||
 		msg.type === "permission_resolved"
 	) {
