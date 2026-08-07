@@ -2,7 +2,10 @@ import { createRouter as createTanStackRouter } from "@tanstack/react-router";
 import { LoaderCircle } from "lucide-react";
 import { ErrorFallback } from "./components/ErrorBoundary";
 import { installAuthRedirect } from "./lib/authClient";
-import { SCROLL_TO_TOP_SELECTORS } from "./lib/scrollContainers";
+import {
+	SCROLL_TO_TOP_SELECTORS,
+	shouldRestoreRouteScroll,
+} from "./lib/scrollContainers";
 import { routeTree } from "./routeTree.gen";
 
 function RouterError({ error, reset }: { error: Error; reset: () => void }) {
@@ -37,7 +40,8 @@ export function getRouter() {
 	installAuthRedirect();
 	const router = createTanStackRouter({
 		routeTree,
-		scrollRestoration: true,
+		scrollRestoration: ({ location }) =>
+			shouldRestoreRouteScroll(location.pathname),
 		scrollToTopSelectors: [...SCROLL_TO_TOP_SELECTORS],
 		// Viewport preloading eagerly resolves every visible sidebar destination.
 		// On the shell that means loading Forge, Ledger, Vault, and the rest before

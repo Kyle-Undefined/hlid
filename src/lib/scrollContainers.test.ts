@@ -12,6 +12,7 @@ import {
 	resetWindowScroll,
 	SCROLL_TO_TOP_SELECTORS,
 	scrollChatToBottom,
+	shouldRestoreRouteScroll,
 	touchMovesTowardOlderMessages,
 } from "./scrollContainers";
 
@@ -20,6 +21,12 @@ describe("route scroll containers", () => {
 		expect(isRavenPath("/raven")).toBe(true);
 		expect(isRavenPath("/raven/")).toBe(true);
 		expect(isRavenPath("/ledger")).toBe(false);
+	});
+
+	it("leaves Raven scroll ownership to its bottom-anchor logic", () => {
+		expect(shouldRestoreRouteScroll("/raven")).toBe(false);
+		expect(shouldRestoreRouteScroll("/raven/")).toBe(false);
+		expect(shouldRestoreRouteScroll("/ledger")).toBe(true);
 	});
 
 	it("scrolls the Raven transcript directly without scrollIntoView", () => {

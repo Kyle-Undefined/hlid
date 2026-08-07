@@ -3,6 +3,16 @@ export function isRavenPath(pathname: string): boolean {
 }
 
 /**
+ * Raven owns its transcript position so live content growth can preserve a
+ * bottom anchor. Restoring a cached numeric offset after Raven has mounted can
+ * move an active transcript away from that anchor; normal pages still use the
+ * router's scroll restoration.
+ */
+export function shouldRestoreRouteScroll(pathname: string): boolean {
+	return !isRavenPath(pathname);
+}
+
+/**
  * TanStack Router otherwise identifies nested scroll containers from their DOM
  * position. Raven, Relics, and Ledger each put their primary scroller in the
  * same structural slot, so Raven's auto-scroll position can be restored onto a
