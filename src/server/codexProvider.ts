@@ -242,6 +242,53 @@ function asObj(value: unknown): Record<string, unknown> {
 		: {};
 }
 
+const CODEX_MCP_STATUS_PAGE_SIZE = 100;
+const CODEX_MCP_STATUS_MAX_PAGES = 32;
+
+async function readCodexMcpServerStatuses(
+	request: (
+		params: ListMcpServerStatusParams,
+		timeoutMs: number,
+	) => Promise<unknown>,
+	options: {
+		detail: NonNullable<ListMcpServerStatusParams["detail"]>;
+		timeoutMs: number;
+	},
+): Promise<ListMcpServerStatusResponse> {
+	const data: ListMcpServerStatusResponse["data"] = [];
+	const seenCursors = new Set<string>();
+	let cursor: string | undefined;
+	let nextCursor: string | null = null;
+	for (let page = 0; page < CODEX_MCP_STATUS_MAX_PAGES; page++) {
+		const response = asObj(
+			await request(
+				{
+					limit: CODEX_MCP_STATUS_PAGE_SIZE,
+					detail: options.detail,
+					...(cursor ? { cursor } : {}),
+				},
+				options.timeoutMs,
+			),
+		);
+		const pageData = Array.isArray(response.data)
+			? response.data
+			: page === 0 && Array.isArray(response.servers)
+				? response.servers
+				: [];
+		data.push(...(pageData as ListMcpServerStatusResponse["data"]));
+		nextCursor =
+			typeof response.nextCursor === "string" && response.nextCursor.trim()
+				? response.nextCursor
+				: null;
+		if (!nextCursor || seenCursors.has(nextCursor)) {
+			return { data, nextCursor: null };
+		}
+		seenCursors.add(nextCursor);
+		cursor = nextCursor;
+	}
+	return { data, nextCursor };
+}
+
 function isMissingRolloutError(error: unknown): boolean {
 	const message = error instanceof Error ? error.message : String(error);
 	return /no rollout found for thread id/i.test(message);
@@ -3593,14 +3640,12 @@ class CodexAgentSession implements AgentSession {
 	async mcpServerStatus(): Promise<McpServerStatus[]> {
 		try {
 			const { conn } = await this.metadataConnection();
-			const result = asObj(
-				await conn.requestOptional("mcpServerStatus/list", {}, 5_000),
+			const result = await readCodexMcpServerStatuses(
+				(params, timeoutMs) =>
+					conn.requestOptional("mcpServerStatus/list", params, timeoutMs),
+				{ detail: "toolsAndAuthOnly", timeoutMs: 5_000 },
 			);
-			const servers = Array.isArray(result.data)
-				? result.data
-				: Array.isArray(result.servers)
-					? result.servers
-					: [];
+			const servers = result.data;
 			return servers.flatMap((server) => {
 				const obj = asObj(server);
 				const name = String(obj.name ?? obj.serverName ?? "");
@@ -3613,7 +3658,9 @@ class CodexAgentSession implements AgentSession {
 							? raw
 							: raw === "pending"
 								? "pending"
-								: "connected";
+								: raw === "unknown"
+									? "pending"
+									: "connected";
 				return [{ name, status }];
 			});
 		} catch {
@@ -4774,6 +4821,10 @@ class CodexAgentSession implements AgentSession {
 	private async handleRequestUserInput(
 		params: Record<string, unknown>,
 	): Promise<{ answers: Record<string, { answers: string[] }> }> {
+		// Codex 0.147 makes this lifecycle explicit. A non-blocking request may be
+		// resolved by the provider without a user response, so never leave Hlid's
+		// shared blocking-input card waiting after the native request has moved on.
+		if (params.isBlocking === false) return { answers: {} };
 		if (typeof this.params.canUseTool !== "function") return { answers: {} };
 		const itemId = String(params.itemId ?? "request-user-input");
 		const decision = await this.params.canUseTool("AskUserQuestion", params, {
@@ -6214,14 +6265,14 @@ export class CodexProvider implements AgentProvider {
 		const installedParams: AppsInstalledParams = {
 			...(context.refresh ? { forceRefresh: true } : {}),
 		};
-		const mcpParams: ListMcpServerStatusParams = {
-			limit: 100,
-			detail: "full",
-		};
 		const settled = await Promise.allSettled([
 			conn.requestOptional("app/list", appsParams, 15_000),
 			conn.requestOptional("app/installed", installedParams, 15_000),
-			conn.requestOptional("mcpServerStatus/list", mcpParams, 15_000),
+			readCodexMcpServerStatuses(
+				(params, timeoutMs) =>
+					conn.requestOptional("mcpServerStatus/list", params, timeoutMs),
+				{ detail: "full", timeoutMs: 15_000 },
+			),
 		]);
 		const issues: string[] = [];
 		const result = (index: number, method: string): unknown => {

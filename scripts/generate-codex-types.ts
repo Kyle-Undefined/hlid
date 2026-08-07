@@ -24,7 +24,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, normalize } from "node:path";
 
-const CLI_VERSION_PIN = "0.146.0";
+const CLI_VERSION_PIN = "0.147.0";
 
 const root = join(import.meta.dir, "..");
 const outDir = join(root, "src", "server", "codexProtocol");

@@ -1237,7 +1237,7 @@ describe("fetchCodexModels", () => {
 			.find((message) => message.method === "initialize");
 		expect(initialize?.params?.capabilities).toEqual({
 			experimentalApi: true,
-			mcpServerOpenaiFormElicitation: true,
+			extensions: { "openai/form": {} },
 		});
 		expect(models).toEqual(mapCodexModels(MODEL_LIST_FIXTURE));
 		// The shared app-server stays alive for reuse — never killed per call.
@@ -1995,13 +1995,17 @@ function makeFakeSessionProc(
 						Buffer.from(`${JSON.stringify({ id: msg.id, result: {} })}\n`),
 					);
 				} else if (msg.method === "mcpServerStatus/list") {
+					const mcpStatusResult =
+						typeof opts.mcpStatusResult === "function"
+							? opts.mcpStatusResult(msg.params ?? {})
+							: (opts.mcpStatusResult ?? {});
 					stdout.emit(
 						"data",
 						Buffer.from(
 							`${JSON.stringify(
 								opts.mcpStatusError
 									? { id: msg.id, error: { message: "unsupported" } }
-									: { id: msg.id, result: opts.mcpStatusResult ?? {} },
+									: { id: msg.id, result: mcpStatusResult },
 							)}\n`,
 						),
 					);
@@ -6896,6 +6900,7 @@ describe("CodexAgentSession — notifications", () => {
 						threadId: "thread-1",
 						turnId: "turn-1",
 						itemId: "ask-1",
+						isBlocking: true,
 						questions: [
 							{
 								id: "database",
@@ -6928,6 +6933,41 @@ describe("CodexAgentSession — notifications", () => {
 				answers: { database: { answers: ["SQLite"] } },
 			});
 		});
+		session.cancel();
+	});
+
+	it("acknowledges non-blocking request_user_input without opening Hlid's blocking UI", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi.fn().mockResolvedValue({ behavior: "allow" });
+		const session = new CodexProvider().query(baseCodexParams({ canUseTool }));
+		await session.send("optional question");
+
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 780,
+					method: "item/tool/requestUserInput",
+					params: {
+						threadId: "thread-1",
+						turnId: "turn-1",
+						itemId: "optional-question",
+						isBlocking: false,
+						questions: [],
+					},
+				})}\n`,
+			),
+		);
+
+		await vi.waitFor(() => {
+			const response = writes
+				.map((line) => JSON.parse(line))
+				.find((message) => message.id === 780);
+			expect(response?.result).toEqual({ answers: {} });
+		});
+		expect(canUseTool).not.toHaveBeenCalled();
 		session.cancel();
 	});
 
@@ -6966,6 +7006,7 @@ describe("CodexAgentSession — notifications", () => {
 						threadId: "thread-1",
 						turnId: "question-turn",
 						itemId: "question-1",
+						isBlocking: true,
 						questions: [
 							{
 								id: "choice",
@@ -7752,6 +7793,7 @@ describe("CodexAgentSession — mcpServerStatus", () => {
 					{ name: "sentry", status: "failed" },
 					{ name: "grafana", status: "disabled" },
 					{ name: "chrome", status: "pending" },
+					{ name: "calendar", authStatus: "unknown" },
 					{ name: "github", status: "running" },
 					{ serverName: "playwright", authStatus: "notLoggedIn" },
 					{ status: "running" }, // nameless — dropped
@@ -7764,6 +7806,7 @@ describe("CodexAgentSession — mcpServerStatus", () => {
 			{ name: "sentry", status: "failed" },
 			{ name: "grafana", status: "disabled" },
 			{ name: "chrome", status: "pending" },
+			{ name: "calendar", status: "pending" },
 			{ name: "github", status: "connected" },
 			{ name: "playwright", status: "needs-auth" },
 			{ name: "bare", status: "pending" },
@@ -7779,6 +7822,37 @@ describe("CodexAgentSession — mcpServerStatus", () => {
 		});
 		expect(await session.mcpServerStatus?.()).toEqual([
 			{ name: "linear", status: "connected" },
+		]);
+		session.cancel();
+	});
+
+	it("reads every MCP status page using the provider's opaque cursor", async () => {
+		const { proc, writes } = makeFakeSessionProc({
+			mcpStatusResult: (params: Record<string, unknown>) =>
+				params.cursor === "mcp-page-2"
+					? {
+							data: [{ name: "sentry", authStatus: "bearerToken" }],
+							nextCursor: null,
+						}
+					: {
+							data: [{ name: "github", authStatus: "bearerToken" }],
+							nextCursor: "mcp-page-2",
+						},
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(baseCodexParams());
+
+		expect(await session.mcpServerStatus?.()).toEqual([
+			{ name: "github", status: "connected" },
+			{ name: "sentry", status: "connected" },
+		]);
+		const requests = writes
+			.map((line) => JSON.parse(line))
+			.filter((message) => message.method === "mcpServerStatus/list");
+		expect(requests.map((message) => message.params)).toEqual([
+			{ limit: 100, detail: "toolsAndAuthOnly" },
+			{ limit: 100, detail: "toolsAndAuthOnly", cursor: "mcp-page-2" },
 		]);
 		session.cancel();
 	});

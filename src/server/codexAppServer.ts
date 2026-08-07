@@ -361,7 +361,7 @@ export class CodexAppServer {
 				clientInfo: { name: "hlid", title: "Hlid", version: "0.0.0" },
 				capabilities: {
 					experimentalApi: true,
-					mcpServerOpenaiFormElicitation: true,
+					extensions: { "openai/form": {} },
 				},
 			});
 			this.initialized = true;

@@ -1,5 +1,5 @@
 // AUTO-GENERATED — Hlid-owned barrel for vendored codex-cli app-server types.
-// Source version: 0.146.0 (pinned in scripts/generate-codex-types.ts).
+// Source version: 0.147.0 (pinned in scripts/generate-codex-types.ts).
 // Regenerate via `bun scripts/generate-codex-types.ts`; version bumps are
 // deliberate manual updates, not run automatically on every build.
 
