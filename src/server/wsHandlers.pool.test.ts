@@ -214,10 +214,10 @@ function makePool(vaultEntry?: ReturnType<typeof makeEntry>): SessionPool & {
 }
 
 /** Fake WS with per-ws data (matches Bun ServerWebSocket<WsData>). */
-function makeWs(subscribedSessionId = "vault-id") {
+function makeWs(subscribedSessionId = "vault-id", batchedReplay = false) {
 	return {
 		send: vi.fn(),
-		data: { subscribedSessionId } as WsData,
+		data: { subscribedSessionId, batchedReplay } as WsData,
 	};
 }
 
@@ -313,6 +313,89 @@ describe("open (pool)", () => {
 			ws,
 			expect.objectContaining({ type: "chunk" }),
 		);
+	});
+
+	it("defers eager vault replay for batch-capable clients", () => {
+		const vault = makeEntry("vault-id");
+		vault.manager.isRunning.mockReturnValue(true);
+		vault.runState.getReplayBuffer.mockReturnValue([
+			{ type: "chunk", text: "vault output" },
+		]);
+		const pool = makePool(vault);
+		const { open } = createWsHandlers(pool);
+		const ws = makeWs("", true);
+
+		open(ws as never);
+
+		expect(vault.runState.send).not.toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({ type: "chunk" }),
+		);
+		expect(vault.runState.send).not.toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({ type: "session_replay" }),
+		);
+	});
+
+	it("replays the vault once when a capable client restores that focus", async () => {
+		const vault = makeEntry("vault-id");
+		vault.manager.isRunning.mockReturnValue(true);
+		vault.runState.getReplayBuffer.mockReturnValue([
+			{ type: "chunk", text: "vault output" },
+		]);
+		const pool = makePool(vault);
+		const { open, message } = createWsHandlers(pool);
+		const ws = makeWs("", true);
+
+		open(ws as never);
+		await message(
+			ws as never,
+			JSON.stringify({ type: "subscribe_session", session_id: "vault-id" }),
+		);
+
+		expect(
+			vault.runState.send.mock.calls.filter(
+				([target, sent]) => target === ws && sent.type === "session_replay",
+			),
+		).toHaveLength(1);
+	});
+
+	it("skips vault replay before restoring a different focused session", async () => {
+		const vault = makeEntry("vault-id");
+		const other = makeEntry("other-id");
+		vault.manager.isRunning.mockReturnValue(true);
+		other.manager.isRunning.mockReturnValue(true);
+		vault.runState.getReplayBuffer.mockReturnValue([
+			{ type: "chunk", text: "vault output" },
+		]);
+		other.runState.getReplayBuffer.mockReturnValue([
+			{ type: "chunk", text: "focused output" },
+		]);
+		const pool = makePool(vault);
+		pool.get.mockImplementation((id: string) => {
+			if (id === "vault-id") return vault;
+			if (id === "other-id") return other;
+			return undefined;
+		});
+		const { open, message } = createWsHandlers(pool);
+		const ws = makeWs("", true);
+
+		open(ws as never);
+		await message(
+			ws as never,
+			JSON.stringify({ type: "subscribe_session", session_id: "other-id" }),
+		);
+
+		expect(
+			vault.runState.send.mock.calls.filter(
+				([target, sent]) => target === ws && sent.type === "session_replay",
+			),
+		).toHaveLength(0);
+		expect(
+			other.runState.send.mock.calls.filter(
+				([target, sent]) => target === ws && sent.type === "session_replay",
+			),
+		).toHaveLength(1);
 	});
 
 	it("claims ownership and replays pending permission requests when no owner", () => {
@@ -608,6 +691,109 @@ describe("message — subscribe_session", () => {
 			ws,
 			expect.objectContaining({ type: "chunk" }),
 		);
+	});
+
+	it("batches focused replay in order for capable clients", async () => {
+		const vault = makeEntry("vault-id");
+		const other = makeEntry("other-id");
+		other.manager.isRunning.mockReturnValue(true);
+		other.runState.getReplayBuffer.mockReturnValue([
+			{ type: "chunk", text: "one" },
+			{ type: "tool_event", id: "tool-1", name: "Read", input: {} },
+			{ type: "chunk", text: "two" },
+		]);
+		const pool = makePool(vault);
+		pool.get.mockImplementation((id: string) => {
+			if (id === "vault-id") return vault;
+			if (id === "other-id") return other;
+			return undefined;
+		});
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs("vault-id", true);
+
+		await message(
+			ws as never,
+			JSON.stringify({ type: "subscribe_session", session_id: "other-id" }),
+		);
+
+		const replayCalls = other.runState.send.mock.calls.filter(
+			([target, sent]) => target === ws && sent.type === "session_replay",
+		);
+		expect(replayCalls).toHaveLength(1);
+		expect(replayCalls[0]?.[1]).toEqual({
+			type: "session_replay",
+			messages: [
+				{ type: "chunk", text: "one" },
+				{ type: "tool_event", id: "tool-1", name: "Read", input: {} },
+				{ type: "chunk", text: "two" },
+			],
+		});
+		expect(
+			other.runState.send.mock.calls.some(([, sent]) => sent.type === "chunk"),
+		).toBe(false);
+	});
+
+	it("bounds focused replay envelopes by message count", async () => {
+		const vault = makeEntry("vault-id");
+		const other = makeEntry("other-id");
+		other.manager.isRunning.mockReturnValue(true);
+		other.runState.getReplayBuffer.mockReturnValue(
+			Array.from({ length: 101 }, (_, index) => ({
+				type: "chunk" as const,
+				text: String(index),
+			})),
+		);
+		const pool = makePool(vault);
+		pool.get.mockImplementation((id: string) => {
+			if (id === "vault-id") return vault;
+			if (id === "other-id") return other;
+			return undefined;
+		});
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs("vault-id", true);
+
+		await message(
+			ws as never,
+			JSON.stringify({ type: "subscribe_session", session_id: "other-id" }),
+		);
+
+		const batches = other.runState.send.mock.calls
+			.filter(([, sent]) => sent.type === "session_replay")
+			.map(([, sent]) => (sent.type === "session_replay" ? sent.messages : []));
+		expect(batches.map((batch) => batch.length)).toEqual([100, 1]);
+		expect(
+			batches.flat().map((message) => (message as { text: string }).text),
+		).toEqual(Array.from({ length: 101 }, (_, index) => String(index)));
+	});
+
+	it("bounds focused replay envelopes by serialized size", async () => {
+		const vault = makeEntry("vault-id");
+		const other = makeEntry("other-id");
+		other.manager.isRunning.mockReturnValue(true);
+		other.runState.getReplayBuffer.mockReturnValue([
+			{ type: "chunk", text: "a".repeat(140 * 1024) },
+			{ type: "chunk", text: "b".repeat(140 * 1024) },
+		]);
+		const pool = makePool(vault);
+		pool.get.mockImplementation((id: string) => {
+			if (id === "vault-id") return vault;
+			if (id === "other-id") return other;
+			return undefined;
+		});
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs("vault-id", true);
+
+		await message(
+			ws as never,
+			JSON.stringify({ type: "subscribe_session", session_id: "other-id" }),
+		);
+
+		const batchSizes = other.runState.send.mock.calls
+			.filter(([, sent]) => sent.type === "session_replay")
+			.map(([, sent]) =>
+				sent.type === "session_replay" ? sent.messages.length : 0,
+			);
+		expect(batchSizes).toEqual([1, 1]);
 	});
 
 	it("replays pending questions and plans when another device owns the run", async () => {

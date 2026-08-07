@@ -38,6 +38,8 @@ import { parseClientMessage } from "./wsSchemas";
 export type WsData = {
 	isTerminal?: false;
 	subscribedSessionId: string;
+	/** Current Hlid clients opt into bounded reconnect replay envelopes. */
+	batchedReplay?: boolean;
 	/** Set by "clear" so the next "chat" spawns a fresh pool entry without
 	 *  cancelling the current subprocess. */
 	pendingNewSession?: boolean;
@@ -701,6 +703,42 @@ async function subscribeToDetachedSession(
 	sendRestoredPreview(ws, sessionId);
 }
 
+// Keep reconnect envelopes small enough to parse without one unbounded main-
+// thread task. The replay buffer itself remains capped separately by count.
+const SESSION_REPLAY_BATCH_MAX_MESSAGES = 100;
+const SESSION_REPLAY_BATCH_MAX_JSON_CHARS = 256 * 1024;
+
+function sendReplayBuffer(ws: ServerWebSocket<WsData>, entry: PoolEntry): void {
+	const replay = entry.runState.getReplayBuffer();
+	if (!ws.data.batchedReplay) {
+		for (const message of replay) entry.runState.send(ws, message);
+		return;
+	}
+
+	let batch: (typeof replay)[number][] = [];
+	let batchJsonChars = 0;
+	const flush = () => {
+		if (batch.length === 0) return;
+		entry.runState.send(ws, { type: "session_replay", messages: batch });
+		batch = [];
+		batchJsonChars = 0;
+	};
+
+	for (const message of replay) {
+		const messageJsonChars = JSON.stringify(message).length;
+		if (
+			batch.length > 0 &&
+			(batch.length >= SESSION_REPLAY_BATCH_MAX_MESSAGES ||
+				batchJsonChars + messageJsonChars > SESSION_REPLAY_BATCH_MAX_JSON_CHARS)
+		) {
+			flush();
+		}
+		batch.push(message);
+		batchJsonChars += messageJsonChars;
+	}
+	flush();
+}
+
 function subscribeToLiveSession(
 	ws: ServerWebSocket<WsData>,
 	entry: PoolEntry,
@@ -725,9 +763,7 @@ function subscribeToLiveSession(
 	const context = entry.runState.getContextSnapshot?.();
 	if (context) entry.runState.send(ws, context);
 	if (entry.manager.isRunning()) {
-		for (const buffered of entry.runState.getReplayBuffer()) {
-			entry.runState.send(ws, buffered);
-		}
+		sendReplayBuffer(ws, entry);
 		sendPendingInteractions(ws, entry);
 	}
 	// Auto-sleep is transient session state rather than a transcript event, so
@@ -1902,17 +1938,19 @@ export function createWsHandlers(
 			}
 
 			if (vault.manager.isRunning()) {
-				// Replay buffered run events (chunks, tool_events, permission events)
-				// so new connections see what happened since the run started.
-				for (const msg of vault.runState.getReplayBuffer()) {
-					vault.runState.send(ws, msg);
+				// Current clients immediately restore their exact focused session with a
+				// subscribe_session message. Let that be their sole catch-up stream so a
+				// large vault run is not replayed before a different focused chat. Legacy
+				// clients retain the eager per-message behavior.
+				if (!ws.data.batchedReplay) {
+					sendReplayBuffer(ws, vault);
+					const sleep = vault.manager.getSleepState();
+					if (sleep) vault.runState.send(ws, sleep);
+					// A reconnecting client may claim an unowned run, but every connected
+					// client should see the prompt currently blocking that run.
+					if (vault.runState.ownerWs === null) vault.runState.ownerWs = ws;
+					sendPendingInteractions(ws, vault);
 				}
-				const sleep = vault.manager.getSleepState();
-				if (sleep) vault.runState.send(ws, sleep);
-				// A reconnecting client may claim an unowned run, but every connected
-				// client should see the prompt currently blocking that run.
-				if (vault.runState.ownerWs === null) vault.runState.ownerWs = ws;
-				sendPendingInteractions(ws, vault);
 			}
 
 			// Send cached MCP status so clients see server list immediately on connect.

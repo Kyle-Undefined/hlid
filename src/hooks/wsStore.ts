@@ -47,8 +47,11 @@ import {
 // so tests running in Node.js (where WebSocket may be undefined) don't throw.
 const WS_CONNECTING = 0;
 const WS_OPEN = 1;
-const RECONNECT_BASE_MS = 3_000;
+const CONNECT_TIMEOUT_MS = 3_000;
+const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
+const LIFECYCLE_RECOVERY_DEBOUNCE_MS = 250;
+const REPLAY_BATCH_QUERY = "replay_batch=1";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -126,12 +129,17 @@ export const INITIAL_SNAPSHOT: Snapshot = {
 let _snap: Snapshot = { ...INITIAL_SNAPSHOT };
 let _ws: WebSocket | null = null;
 let _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let _connectDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
 let _reconnectAttempts = 0;
+let _socketGeneration = 0;
+let _connectStartedAt: number | null = null;
+let _foregroundRecoveryPending = false;
+let _lastForcedRecoveryAt: number | null = null;
 // Buffers in-flight chunks/tool_events for the current run so they survive SPA navigation.
 // Always written (even when subscribers exist), cleared on run end or new run start.
 let _messageBuffer: ServerMessage[] = [];
 let _bufferingEnabled = true;
-let _pendingPermCount = 0;
+const _pendingInteractionKeys = new Set<string>();
 
 // Subscriber sets — connection and message concerns stay with the transport.
 const statusSubs = new Set<() => void>();
@@ -265,23 +273,23 @@ function getWsUrl(): string {
 
 	if (wsPort) {
 		const proto = window.location.protocol === "https:" ? "wss" : "ws";
-		return `${proto}://${window.location.hostname}:${wsPort}/ws`;
+		return `${proto}://${window.location.hostname}:${wsPort}/ws?${REPLAY_BATCH_QUERY}`;
 	}
 
 	// HTTPS (e.g. Tailscale serve): same-origin, proxy routes /ws
 	if (window.location.protocol === "https:") {
-		return `wss://${window.location.host}/ws`;
+		return `wss://${window.location.host}/ws?${REPLAY_BATCH_QUERY}`;
 	}
 
 	// Compiled build over plain HTTP: same-origin — the UI server bridges /ws
 	// to the API port. Cross-port ws:// is a known adblocker kill target.
 	if (!(import.meta as { env?: { DEV?: boolean } }).env?.DEV) {
-		return `ws://${window.location.host}/ws`;
+		return `ws://${window.location.host}/ws?${REPLAY_BATCH_QUERY}`;
 	}
 
 	// Vite dev over plain HTTP (no /ws proxy): WS server runs on app port + 1
 	const appPort = Number(window.location.port) || 80;
-	return `ws://${window.location.hostname}:${appPort + 1}/ws`;
+	return `ws://${window.location.hostname}:${appPort + 1}/ws?${REPLAY_BATCH_QUERY}`;
 }
 
 function setSnap(next: Partial<Snapshot>) {
@@ -303,7 +311,7 @@ function onStatus(msg: Extract<ServerMessage, { type: "status" }>): void {
 	// clearing here would incorrectly flash the status green. Errors terminate
 	// the interaction and can safely clear it.
 	if (msg.state === "error") {
-		_pendingPermCount = 0;
+		_pendingInteractionKeys.clear();
 	}
 	// Slice C: track the running turn_id so MessageList can render the
 	// correct queue chip on chatQueue entries. When state is not running,
@@ -314,7 +322,7 @@ function onStatus(msg: Extract<ServerMessage, { type: "status" }>): void {
 		model: msg.model,
 		permissionMode: msg.permission_mode ?? _snap.permissionMode,
 		effort: msg.effort ?? _snap.effort,
-		hasPendingPermissions: _pendingPermCount > 0,
+		hasPendingPermissions: _pendingInteractionKeys.size > 0,
 		runningTurnId,
 		// Sleeping only happens while running; a non-running status means any
 		// banner is stale (e.g. the resumed event raced a disconnect).
@@ -342,14 +350,56 @@ function onAgentSleep(
 	});
 }
 
-function onPermissionRequest(): void {
-	_pendingPermCount++;
+function pendingInteractionKey(
+	msg: Extract<
+		ServerMessage,
+		{
+			type:
+				| "permission_request"
+				| "permission_resolved"
+				| "ask_user_question"
+				| "ask_user_question_resolved"
+				| "plan_mode_exit"
+				| "plan_mode_exit_resolved";
+		}
+	>,
+): string {
+	switch (msg.type) {
+		case "permission_request":
+		case "permission_resolved":
+			return `permission:${msg.id}`;
+		case "ask_user_question":
+		case "ask_user_question_resolved":
+			return `question:${msg.id}`;
+		case "plan_mode_exit":
+		case "plan_mode_exit_resolved":
+			return `plan:${msg.id}`;
+	}
+}
+
+function onPermissionRequest(
+	msg: Extract<
+		ServerMessage,
+		{ type: "permission_request" | "ask_user_question" | "plan_mode_exit" }
+	>,
+): void {
+	_pendingInteractionKeys.add(pendingInteractionKey(msg));
 	setSnap({ hasPendingPermissions: true });
 }
 
-function onPermissionResolved(): void {
-	_pendingPermCount = Math.max(0, _pendingPermCount - 1);
-	setSnap({ hasPendingPermissions: _pendingPermCount > 0 });
+function onPermissionResolved(
+	msg: Extract<
+		ServerMessage,
+		{
+			type:
+				| "permission_resolved"
+				| "ask_user_question_resolved"
+				| "plan_mode_exit_resolved";
+		}
+	>,
+): void {
+	_pendingInteractionKeys.delete(pendingInteractionKey(msg));
+	setSnap({ hasPendingPermissions: _pendingInteractionKeys.size > 0 });
 }
 
 function onUsageUpdate(
@@ -452,12 +502,12 @@ function applySessionMessage(msg: ServerMessage): boolean {
 		case "permission_request":
 		case "ask_user_question":
 		case "plan_mode_exit":
-			onPermissionRequest();
+			onPermissionRequest(msg);
 			break;
 		case "permission_resolved":
 		case "ask_user_question_resolved":
 		case "plan_mode_exit_resolved":
-			onPermissionResolved();
+			onPermissionResolved(msg);
 			break;
 		case "usage_update":
 			onUsageUpdate(msg);
@@ -536,13 +586,7 @@ function updateMessageBuffer(msg: ServerMessage): void {
 	if (!_bufferingEnabled) _messageBuffer = [];
 }
 
-function handleSocketMessage(event: MessageEvent): void {
-	let msg: ServerMessage;
-	try {
-		msg = JSON.parse(event.data as string) as ServerMessage;
-	} catch {
-		return;
-	}
+function handleParsedSocketMessage(msg: ServerMessage): void {
 	if (msg.type === "status") {
 		const sessionId =
 			(msg as typeof msg & { session_id?: string }).session_id ??
@@ -560,14 +604,86 @@ function handleSocketMessage(event: MessageEvent): void {
 	for (const subscriber of messageSubs) subscriber(msg);
 }
 
+function handleSocketMessage(event: MessageEvent): void {
+	let msg: ServerMessage;
+	try {
+		msg = JSON.parse(event.data as string) as ServerMessage;
+	} catch {
+		return;
+	}
+	if (msg.type !== "session_replay") {
+		handleParsedSocketMessage(msg);
+		return;
+	}
+	// Reject an unrelated focused-session replay before walking its potentially
+	// large payload. Accepted envelopes are flattened synchronously through the
+	// ordinary path so ordering, buffering, and filtering semantics stay exact
+	// while React can batch the resulting reducer work per envelope.
+	if (isMessageFromAnotherSession(msg)) return;
+	for (const replayed of msg.messages) {
+		handleParsedSocketMessage(
+			msg.session_id === undefined
+				? replayed
+				: ({
+						...replayed,
+						session_id: msg.session_id,
+					} as unknown as ServerMessage),
+		);
+	}
+}
+
 function clearReconnectTimer(): void {
 	if (_reconnectTimer === null) return;
 	clearTimeout(_reconnectTimer);
 	_reconnectTimer = null;
 }
 
+function clearConnectDeadline(): void {
+	if (_connectDeadlineTimer === null) return;
+	clearTimeout(_connectDeadlineTimer);
+	_connectDeadlineTimer = null;
+}
+
+function armConnectDeadline(socket: WebSocket, generation: number): void {
+	clearConnectDeadline();
+	const elapsed =
+		_connectStartedAt === null ? 0 : Date.now() - _connectStartedAt;
+	_connectDeadlineTimer = setTimeout(
+		() => failCurrentSocket(socket, generation),
+		Math.max(0, CONNECT_TIMEOUT_MS - elapsed),
+	);
+}
+
+function isCurrentSocket(socket: WebSocket, generation: number): boolean {
+	return _ws === socket && _socketGeneration === generation;
+}
+
+function retireCurrentSocket(socket: WebSocket, generation: number): boolean {
+	if (!isCurrentSocket(socket, generation)) return false;
+	clearConnectDeadline();
+	_ws = null;
+	_connectStartedAt = null;
+	_socketGeneration++;
+	socket.onopen = null;
+	socket.onerror = null;
+	socket.onclose = null;
+	socket.onmessage = null;
+	if (socket.readyState === WS_CONNECTING || socket.readyState === WS_OPEN) {
+		try {
+			socket.close();
+		} catch {
+			// The attempt is already retired locally.
+		}
+	}
+	return true;
+}
+
 function scheduleReconnect(): void {
-	if (_reconnectTimer !== null || document.visibilityState !== "visible")
+	if (
+		_reconnectTimer !== null ||
+		typeof document === "undefined" ||
+		document.visibilityState !== "visible"
+	)
 		return;
 	const delay = Math.min(
 		RECONNECT_BASE_MS * 2 ** _reconnectAttempts,
@@ -578,6 +694,12 @@ function scheduleReconnect(): void {
 		_reconnectTimer = null;
 		connect();
 	}, delay);
+}
+
+function failCurrentSocket(socket: WebSocket, generation: number): void {
+	if (!retireCurrentSocket(socket, generation)) return;
+	setSnap({ wsStatus: "disconnected" });
+	scheduleReconnect();
 }
 
 function connect() {
@@ -592,71 +714,143 @@ function connect() {
 		return;
 	}
 	if (_ws) {
-		_ws.onopen = null;
-		_ws.onerror = null;
-		_ws.onclose = null;
-		_ws.onmessage = null;
+		retireCurrentSocket(_ws, _socketGeneration);
 	}
 
-	_ws = new WebSocket(getWsUrl());
+	let socket: WebSocket;
+	try {
+		socket = new WebSocket(getWsUrl());
+	} catch {
+		setSnap({ wsStatus: "disconnected" });
+		scheduleReconnect();
+		return;
+	}
+	const generation = ++_socketGeneration;
+	_ws = socket;
+	_connectStartedAt = Date.now();
 	setSnap({ wsStatus: "connecting" });
 
-	_ws.onopen = () => {
+	socket.onopen = () => {
+		if (!isCurrentSocket(socket, generation)) return;
+		clearConnectDeadline();
+		_connectStartedAt = null;
 		clearReconnectTimer();
 		_reconnectAttempts = 0;
-		setSnap({ wsStatus: "connected" });
+		// The focused subscription reconstructs every interaction still pending.
+		// Drop keys from the previous connection so a resolution missed while the
+		// app was suspended cannot leave the local attention state stuck.
+		_pendingInteractionKeys.clear();
+		setSnap({ wsStatus: "connected", hasPendingPermissions: false });
 		const subscribedSessionId = getSubscribedSessionId();
 		if (subscribedSessionId) {
-			_ws?.send(
-				JSON.stringify({
-					type: "subscribe_session",
-					session_id: subscribedSessionId,
-				}),
-			);
+			try {
+				socket.send(
+					JSON.stringify({
+						type: "subscribe_session",
+						session_id: subscribedSessionId,
+					}),
+				);
+			} catch {
+				failCurrentSocket(socket, generation);
+				return;
+			}
 		}
 		// Flush any items enqueued while the connection was down. Already-sent
 		// items are skipped via the _sent flag.
 		drainPendingToServer();
 	};
-	_ws.onerror = () => setSnap({ wsStatus: "disconnected" });
-	_ws.onclose = () => {
-		setSnap({ wsStatus: "disconnected" });
-		scheduleReconnect();
-	};
-	_ws.onmessage = handleSocketMessage;
+	socket.onerror = () => failCurrentSocket(socket, generation);
+	socket.onclose = () => failCurrentSocket(socket, generation);
+	socket.onmessage = handleSocketMessage;
+	armConnectDeadline(socket, generation);
 }
 
 /**
- * On mobile browsers (iOS Safari) the WS onclose event may never fire when
- * the OS backgrounds or suspends the tab (screen lock). This leaves wsStatus
- * as "connected" while the socket is actually dead, so the reconnect effect
- * in useLoadChatHistory never runs and history never reloads after unlock.
- *
- * Proactively call connect() whenever the page becomes visible. connect()
- * already guards against creating a duplicate socket when one is OPEN or
- * CONNECTING, so this is safe to call unconditionally.
+ * Explicit lifecycle recovery resets stale backoff. Visibility resume, network
+ * restoration, and BFCache restoration replace sockets that mobile browsers
+ * may still report as OPEN or CONNECTING. Focus and ordinary pageshow only
+ * ensure a connection, avoiding an expensive transcript reload on every focus.
  */
-function handleVisibilityChange(): void {
-	if (typeof document === "undefined") return;
-	if (document.visibilityState !== "visible") {
-		clearReconnectTimer();
+function recoverConnection(
+	forceReplace: boolean,
+	bypassForceDebounce = false,
+): void {
+	if (
+		typeof document === "undefined" ||
+		document.visibilityState !== "visible"
+	) {
 		return;
 	}
 	clearReconnectTimer();
-	// Mobile browsers can retain an OPEN readyState for a socket that the OS
-	// discarded while the app was backgrounded. Recreate it on resume so the
-	// transcript can catch up, then onopen restores the focused session.
-	if (_ws?.readyState === WS_OPEN) {
-		_ws.onclose = null;
-		_ws.close();
-		_ws = null;
+	_reconnectAttempts = 0;
+	const now = Date.now();
+	const forceCurrentSocket =
+		forceReplace &&
+		(bypassForceDebounce ||
+			_lastForcedRecoveryAt === null ||
+			now - _lastForcedRecoveryAt >= LIFECYCLE_RECOVERY_DEBOUNCE_MS);
+	const connectingTooLong =
+		_ws?.readyState === WS_CONNECTING &&
+		(_connectStartedAt === null ||
+			now - _connectStartedAt >= CONNECT_TIMEOUT_MS);
+	if (_ws && (forceCurrentSocket || connectingTooLong)) {
+		retireCurrentSocket(_ws, _socketGeneration);
 	}
+	if (forceCurrentSocket) _lastForcedRecoveryAt = now;
 	connect();
+	if (_ws?.readyState === WS_CONNECTING && _connectDeadlineTimer === null) {
+		armConnectDeadline(_ws, _socketGeneration);
+	}
+}
+
+function handleVisibilityChange(): void {
+	if (typeof document === "undefined") return;
+	if (document.visibilityState !== "visible") {
+		_foregroundRecoveryPending = true;
+		clearReconnectTimer();
+		clearConnectDeadline();
+		return;
+	}
+	const wasBackgrounded = _foregroundRecoveryPending;
+	_foregroundRecoveryPending = false;
+	recoverConnection(true, wasBackgrounded);
+}
+
+function handlePageHide(): void {
+	_foregroundRecoveryPending = true;
+	clearReconnectTimer();
+	clearConnectDeadline();
+}
+
+function handleOnline(): void {
+	if (document.visibilityState !== "visible") return;
+	const wasBackgrounded = _foregroundRecoveryPending;
+	_foregroundRecoveryPending = false;
+	recoverConnection(true, wasBackgrounded);
+}
+
+function handlePageShow(event: PageTransitionEvent): void {
+	if (document.visibilityState !== "visible") return;
+	const forceReplace = event.persisted || _foregroundRecoveryPending;
+	const wasBackgrounded = _foregroundRecoveryPending;
+	_foregroundRecoveryPending = false;
+	recoverConnection(forceReplace, wasBackgrounded);
+}
+
+function handleFocus(): void {
+	if (document.visibilityState !== "visible") return;
+	const forceReplace = _foregroundRecoveryPending;
+	_foregroundRecoveryPending = false;
+	recoverConnection(forceReplace, forceReplace);
 }
 
 if (typeof window !== "undefined") {
 	connect();
 	document.addEventListener("visibilitychange", handleVisibilityChange);
+	window.addEventListener("pagehide", handlePageHide);
+	window.addEventListener("online", handleOnline);
+	window.addEventListener("pageshow", handlePageShow);
+	window.addEventListener("focus", handleFocus);
 }
 
 // ─── Public API — Connection & snapshot ──────────────────────────────────────
@@ -682,7 +876,7 @@ export function send(msg: ClientMessage): boolean {
 	if (msg.type === "clear") {
 		focusPendingNewSession();
 		setPendingSessionToday(false);
-		_pendingPermCount = 0;
+		_pendingInteractionKeys.clear();
 		setSnap({
 			sessionState: "idle",
 			hasPendingPermissions: false,
@@ -690,10 +884,9 @@ export function send(msg: ClientMessage): boolean {
 		});
 		clearChatQueue();
 	}
-	// Do NOT pre-decrement _pendingPermCount here. The server broadcasts
+	// Do not pre-resolve pending interactions here. The server broadcasts
 	// `permission_resolved` back to all clients (including the sender), and
-	// onPermissionResolved() handles the decrement then. Pre-decrementing here
-	// causes a double-decrement that under-counts concurrent permissions.
+	// onPermissionResolved() removes the matching interaction id then.
 	if (_ws?.readyState === WS_OPEN) {
 		_ws.send(JSON.stringify(msg));
 		return true;
@@ -804,7 +997,7 @@ export function subscribeToSession(sessionId: string): void {
 		runningTurnId: null,
 		sleepState: null,
 	};
-	_pendingPermCount = 0;
+	_pendingInteractionKeys.clear();
 	if (_ws?.readyState === WS_OPEN) {
 		try {
 			_ws.send(
@@ -821,12 +1014,19 @@ export function subscribeToSession(sessionId: string): void {
 /** @internal — resets all module state to initial values; for testing only. */
 export function __resetForTesting(): void {
 	clearReconnectTimer();
+	if (_ws) retireCurrentSocket(_ws, _socketGeneration);
+	else {
+		clearConnectDeadline();
+		_socketGeneration++;
+		_connectStartedAt = null;
+	}
+	_foregroundRecoveryPending = false;
+	_lastForcedRecoveryAt = null;
 	_snap = { ...INITIAL_SNAPSHOT };
-	_ws = null;
 	_reconnectAttempts = 0;
 	_messageBuffer = [];
 	_bufferingEnabled = true;
-	_pendingPermCount = 0;
+	_pendingInteractionKeys.clear();
 	resetChatQueueForTesting();
 	resetLiveStatsForTesting();
 	resetSessionStatusForTesting();

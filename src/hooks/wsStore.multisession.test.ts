@@ -258,6 +258,59 @@ describe("server data revisions", () => {
 });
 
 describe("pending interaction status", () => {
+	it("tracks a replayed pending interaction by id instead of delivery count", () => {
+		receive({
+			type: "session_replay",
+			session_id: "session-a",
+			messages: [
+				{
+					type: "permission_request",
+					id: "permission-1",
+					toolName: "Bash",
+					title: "Run command?",
+				},
+			],
+		});
+		receive({
+			type: "permission_request",
+			id: "permission-1",
+			toolName: "Bash",
+			title: "Run command?",
+		});
+		expect(wsStore.getSnapshot().hasPendingPermissions).toBe(true);
+
+		receive({
+			type: "permission_resolved",
+			id: "permission-1",
+			toolName: "Bash",
+			decision: "approved",
+		});
+		expect(wsStore.getSnapshot().hasPendingPermissions).toBe(false);
+	});
+
+	it("drops stale interaction keys when reconnecting and rebuilds live ones", () => {
+		receive({
+			type: "ask_user_question",
+			id: "question-1",
+			questions: [
+				{ question: "Continue?", options: ["Yes", "No"], multiSelect: false },
+			],
+		});
+		expect(wsStore.getSnapshot().hasPendingPermissions).toBe(true);
+
+		currentWs.onopen?.();
+		expect(wsStore.getSnapshot().hasPendingPermissions).toBe(false);
+
+		receive({
+			type: "ask_user_question",
+			id: "question-2",
+			questions: [
+				{ question: "Still pending?", options: ["Yes"], multiSelect: false },
+			],
+		});
+		expect(wsStore.getSnapshot().hasPendingPermissions).toBe(true);
+	});
+
 	it("does not turn idle-green before a plan interaction resolves", () => {
 		receive({
 			type: "plan_mode_exit",
@@ -454,6 +507,90 @@ describe("subscribeToSession / getSubscribedSessionId", () => {
 // ── session-scoped message filtering ─────────────────────────────────────────
 
 describe("session message filtering", () => {
+	it("flattens focused replay batches in exact order with inherited scope", () => {
+		wsStore.subscribeToSession("session-a");
+		const received: Array<{
+			type: string;
+			session_id?: string;
+			text?: string;
+		}> = [];
+		const unsubscribe = wsStore.subscribeMessage((message) => {
+			received.push(
+				message as { type: string; session_id?: string; text?: string },
+			);
+		});
+
+		receive({
+			type: "session_replay",
+			session_id: "session-a",
+			messages: [
+				{ type: "chunk", text: "one" },
+				{ type: "tool_event", id: "tool-1", name: "Read", input: {} },
+				{ type: "chunk", text: "two" },
+			],
+		});
+		unsubscribe();
+
+		expect(received.map(({ type, text }) => ({ type, text }))).toEqual([
+			{ type: "chunk", text: "one" },
+			{ type: "tool_event", text: undefined },
+			{ type: "chunk", text: "two" },
+		]);
+		expect(
+			received.every((message) => message.session_id === "session-a"),
+		).toBe(true);
+	});
+
+	it("rejects an unrelated replay batch before delivering its messages", () => {
+		wsStore.subscribeToSession("session-b");
+		const received = vi.fn();
+		const unsubscribe = wsStore.subscribeMessage(received);
+
+		receive({
+			type: "session_replay",
+			session_id: "session-a",
+			messages: [{ type: "chunk", text: "wrong chat" }],
+		});
+		unsubscribe();
+
+		expect(received).not.toHaveBeenCalled();
+	});
+
+	it("accepts a replay batch addressed by the focused session's DB alias", () => {
+		receive({
+			type: "sessions_status",
+			sessions: [
+				{
+					session_id: "pool-session",
+					db_session_id: "db-session",
+					agent_cwd: "/project",
+					agent_name: "Project",
+					state: "running",
+					model: "codex",
+					hasPendingPermissions: false,
+				},
+			],
+		});
+		wsStore.subscribeToSession("pool-session");
+		const received = vi.fn();
+		const unsubscribe = wsStore.subscribeMessage(received);
+
+		receive({
+			type: "session_replay",
+			session_id: "db-session",
+			messages: [{ type: "chunk", text: "accepted" }],
+		});
+		unsubscribe();
+
+		expect(received).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "chunk",
+				text: "accepted",
+				session_id: "db-session",
+			}),
+		);
+	});
+
 	it("clears a stale ready Preview when reconnect restoration reports none", () => {
 		const sessionId = "session-preview-stale";
 		applyProjectPreview({

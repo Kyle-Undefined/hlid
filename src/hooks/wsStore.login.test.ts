@@ -19,6 +19,11 @@ it("does not open the authenticated app socket on the login route", async () => 
 
 	await import("./wsStore");
 	document.dispatchEvent(new Event("visibilitychange"));
+	window.dispatchEvent(new Event("online"));
+	window.dispatchEvent(new Event("focus"));
+	const pageShow = new Event("pageshow");
+	Object.defineProperty(pageShow, "persisted", { value: true });
+	window.dispatchEvent(pageShow);
 
 	expect(WebSocketMock).not.toHaveBeenCalled();
 });

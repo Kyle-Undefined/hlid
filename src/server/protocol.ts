@@ -962,6 +962,27 @@ export type ProjectPreviewStatusMessage = {
 	preview: ProjectPreviewSnapshot | null;
 };
 
+/**
+ * Messages retained for an in-flight session so a reconnecting Raven can
+ * reconstruct the active response. Live delivery remains one message at a
+ * time; only reconnect catch-up uses SessionReplayMessage envelopes.
+ */
+export type ReplayBufferMessage =
+	| ChunkMessage
+	| ToolEventMessage
+	| ToolUpdateMessage
+	| ToolActivityUpdateMessage
+	| ToolResultMessage
+	| PermissionRequestMessage
+	| PermissionResolvedMessage;
+
+/** Bounded reconnect catch-up batch for one focused live session. */
+export type SessionReplayMessage = {
+	type: "session_replay";
+	session_id?: string;
+	messages: ReplayBufferMessage[];
+};
+
 export type ServerMessage =
 	| StatusMessage
 	| ChunkMessage
@@ -1003,6 +1024,7 @@ export type ServerMessage =
 	| SessionCreatedMessage
 	| RealtimeEventMessage
 	| ProjectPreviewStatusMessage
+	| SessionReplayMessage
 	| DataRevisionsMessage;
 
 export type ChatAttachment = {

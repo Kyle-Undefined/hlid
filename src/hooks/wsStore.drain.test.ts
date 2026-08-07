@@ -218,6 +218,43 @@ describe("wsStore — Slice A: immediate-send drain", () => {
 		]);
 	});
 
+	it("buffers a reconnect replay batch as ordered logical messages", () => {
+		wsStore.setBufferingEnabled(true);
+		currentWs.onmessage?.({
+			data: JSON.stringify({
+				type: "session_replay",
+				session_id: "s1",
+				messages: [
+					{ type: "chunk", text: "first", offset: 0 },
+					{ type: "tool_event", id: "tool-1", name: "Read", input: {} },
+					{ type: "chunk", text: "second", offset: 5 },
+				],
+			}),
+		});
+
+		expect(wsStore.drainMessageBuffer()).toEqual([
+			{
+				type: "chunk",
+				text: "first",
+				offset: 0,
+				session_id: "s1",
+			},
+			{
+				type: "tool_event",
+				id: "tool-1",
+				name: "Read",
+				input: {},
+				session_id: "s1",
+			},
+			{
+				type: "chunk",
+				text: "second",
+				offset: 5,
+				session_id: "s1",
+			},
+		]);
+	});
+
 	it("buffers steer placement while history is loading", () => {
 		wsStore.setBufferingEnabled(true);
 		currentWs.onmessage?.({

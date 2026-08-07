@@ -755,7 +755,11 @@ async function handleWebSocketRoute(
 	}
 	if (
 		server.upgrade(req, {
-			data: { isTerminal: false, subscribedSessionId: "" },
+			data: {
+				isTerminal: false,
+				subscribedSessionId: "",
+				batchedReplay: url.searchParams.get("replay_batch") === "1",
+			},
 		})
 	) {
 		return undefined;

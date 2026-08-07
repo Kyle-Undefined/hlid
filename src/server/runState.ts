@@ -1,6 +1,6 @@
 import type { ServerWebSocket } from "bun";
 import * as db from "../db";
-import type { ServerMessage } from "./protocol";
+import type { ReplayBufferMessage, ServerMessage } from "./protocol";
 
 // ── Shared replay-buffer transition ──────────────────────────────────────────
 
@@ -9,7 +9,7 @@ import type { ServerMessage } from "./protocol";
 export const REPLAY_BUFFER_MAX = 500;
 
 export interface ReplayState {
-	buffer: ServerMessage[];
+	buffer: ReplayBufferMessage[];
 	lastError: string | null;
 }
 
@@ -142,7 +142,7 @@ export class SessionRunState {
 		}
 	}
 
-	getReplayBuffer(): readonly ServerMessage[] {
+	getReplayBuffer(): readonly ReplayBufferMessage[] {
 		return this.replay.buffer;
 	}
 
