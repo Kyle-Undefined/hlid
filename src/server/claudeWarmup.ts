@@ -20,6 +20,7 @@ import { resolve } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { declaredPathKey, expandTilde, parseWslUncSyntax } from "../lib/paths";
 import type { McpServerStatus, SlashCommand } from "./agentProvider";
+import { buildHlidClaudeSettings } from "./claudeSettings";
 
 export type ClaudeWarmupSnapshot = {
 	/** Slash commands / skills discovered by the CLI at initialize. */
@@ -206,6 +207,7 @@ async function runWarmup(options: ClaudeWarmupOptions): Promise<void> {
 			abortController: ac,
 			persistSession: false,
 			settingSources: ["user", "project", "local"],
+			settings: buildHlidClaudeSettings(),
 			maxTurns: 1,
 			...(additionalDirectories?.length ? { additionalDirectories } : {}),
 			...(executable ? { pathToClaudeCodeExecutable: executable } : {}),

@@ -7,7 +7,6 @@ import type {
 	McpServerConfig as SdkMcpServerConfig,
 	ModelInfo as SdkModelInfo,
 	PermissionMode as SdkPermissionMode,
-	Settings as SdkSettings,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
 	createSdkMcpServer,
@@ -68,6 +67,7 @@ import {
 	type PreparedClaudeMcpServers,
 	prepareClaudeMcpServers,
 } from "./claudeMcpConfig";
+import { buildHlidClaudeSettings } from "./claudeSettings";
 import { getClaudeWarmupSnapshot } from "./claudeWarmup";
 import {
 	deleteClaudeWorkflow,
@@ -107,22 +107,6 @@ const KNOWN_PERMISSION_MODES = new Set<string>([
 	"bypassPermissions",
 	"plan",
 ]);
-
-/**
- * Hlid owns the visible session and approval lifecycle around Claude. Refuse
- * peer-session delivery so model-authored text cannot enter Raven as an
- * ordinary user prompt, and leave forwarded dialogs parked until Hlid resolves
- * them instead of allowing Claude's remote-dialog timeout to cancel them.
- */
-function buildHlidClaudeSettings(
-	disabledMcpjsonServers: string[] = [],
-): SdkSettings {
-	return {
-		crossSessionInbound: "refuse",
-		dialogExpiry: "never",
-		...(disabledMcpjsonServers.length ? { disabledMcpjsonServers } : {}),
-	};
-}
 
 function effectiveSdkPermissionMode(
 	mode: AgentQueryParams["permissionMode"],

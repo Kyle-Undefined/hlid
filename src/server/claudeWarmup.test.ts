@@ -64,6 +64,10 @@ describe("Claude startup metadata cache", () => {
 			expect.objectContaining({
 				cwd: "/tmp/project",
 				persistSession: false,
+				settings: {
+					crossSessionInbound: "refuse",
+					dialogExpiry: "never",
+				},
 				maxTurns: 1,
 				additionalDirectories: ["/tmp/vault"],
 			}),
