@@ -4462,7 +4462,7 @@ function ChatInputNotices({
 						/>
 					</div>
 				)}
-				<div className="flex w-full min-w-0 items-center justify-end gap-3 md:w-auto">
+				<div className="flex w-full min-w-0 items-center justify-end gap-2 md:w-auto md:gap-3">
 					<McpIndicator
 						servers={runtime.mcpServers}
 						align="mobile-left"

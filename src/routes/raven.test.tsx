@@ -1059,12 +1059,24 @@ describe("Raven composed submission behavior", () => {
 	it("keeps agent selection and all composer modes on-screen at mobile widths", () => {
 		state.loaderData = {
 			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				vault_provider: "codex",
+			},
 			agentSkillContext: "/codex-project",
 			agentList: [
 				{
 					path: "/codex-project",
 					name: "Codex project with a long mobile label",
 					provider: "codex",
+				},
+			],
+			providers: [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					capabilities: { appCatalog: true },
 				},
 			],
 		};
@@ -1082,7 +1094,10 @@ describe("Raven composed submission behavior", () => {
 		expect(agentRow?.className).toContain("min-w-0");
 		expect(agentRow?.className).toContain("w-full");
 		expect(modeRow?.className).toContain("w-full");
+		expect(modeRow?.className).toContain("gap-2");
+		expect(modeRow?.className).toContain("md:gap-3");
 		expect(toolbar?.className).toContain("flex-wrap");
+		expect(screen.getByRole("button", { name: "apps" })).toBeTruthy();
 		expect(screen.getByRole("button", { name: "html" })).toBeTruthy();
 	});
 
