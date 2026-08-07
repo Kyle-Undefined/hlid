@@ -86,6 +86,28 @@ describe("ADD_USER", () => {
 		reducer(initial, { type: "ADD_USER", id: "x", text: "x" });
 		expect(initial).toHaveLength(0);
 	});
+
+	it("deduplicates a persisted output replayed after history hydration", () => {
+		const initial = reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [
+				{
+					kind: "message",
+					id: "persisted-message:42",
+					role: "local_command_output",
+					text: "Claude started a new native context",
+				},
+			],
+		});
+		const state = reducer(initial, {
+			type: "ADD_LOCAL_COMMAND_OUTPUT",
+			id: "persisted-message:42",
+			content: "Claude started a new native context",
+		});
+
+		expect(state).toBe(initial);
+		expect(state).toHaveLength(1);
+	});
 });
 
 describe("MARK_USER_CONTEXT_RECEIPT", () => {
@@ -1682,6 +1704,28 @@ describe("LOAD_HISTORY", () => {
 			text: "world",
 			streaming: false,
 		});
+	});
+
+	it("restores a persisted native-context boundary", () => {
+		const state = reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [
+				{
+					kind: "message",
+					id: "context-reset-1",
+					role: "local_command_output",
+					text: "Claude started a new native context",
+				},
+			],
+		});
+
+		expect(state).toEqual([
+			{
+				id: "context-reset-1",
+				role: "local_command_output",
+				content: "Claude started a new native context",
+			},
+		]);
 	});
 
 	it("restores exact, estimated, zero, and unknown assistant costs", () => {

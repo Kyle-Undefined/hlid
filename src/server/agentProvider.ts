@@ -401,6 +401,8 @@ export type ProviderBackgroundActivityControl =
 
 export type AgentEvent =
 	| { type: "session_start"; sessionId: string }
+	/** The provider rotated its native conversation inside the same Hlid session. */
+	| { type: "provider_context_reset"; sessionId: string }
 	/** Claude checkpoint attached to the current root user turn. */
 	| { type: "file_checkpoint"; id: string; providerSessionId: string }
 	| { type: "commands_changed"; commands: SlashCommand[] }

@@ -652,6 +652,13 @@ function historyItemToMessage(item: HistoryItem): ChatMessage {
 				: {}),
 		};
 	}
+	if (item.role === "local_command_output") {
+		return {
+			id: item.id,
+			role: "local_command_output",
+			content: item.text,
+		};
+	}
 	if (item.role === "assistant") {
 		return {
 			id: item.id,
@@ -1171,6 +1178,14 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 		case "SETTLE_ACTIVE_SUBAGENTS":
 			return settleActiveSubagents(state, action.endedAtMs);
 		case "ADD_LOCAL_COMMAND_OUTPUT":
+			if (
+				state.some(
+					(message) =>
+						message.role === "local_command_output" && message.id === action.id,
+				)
+			) {
+				return state;
+			}
 			return [
 				...state,
 				{

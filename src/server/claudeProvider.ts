@@ -7,6 +7,7 @@ import type {
 	McpServerConfig as SdkMcpServerConfig,
 	ModelInfo as SdkModelInfo,
 	PermissionMode as SdkPermissionMode,
+	Settings as SdkSettings,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
 	createSdkMcpServer,
@@ -106,6 +107,22 @@ const KNOWN_PERMISSION_MODES = new Set<string>([
 	"bypassPermissions",
 	"plan",
 ]);
+
+/**
+ * Hlid owns the visible session and approval lifecycle around Claude. Refuse
+ * peer-session delivery so model-authored text cannot enter Raven as an
+ * ordinary user prompt, and leave forwarded dialogs parked until Hlid resolves
+ * them instead of allowing Claude's remote-dialog timeout to cancel them.
+ */
+function buildHlidClaudeSettings(
+	disabledMcpjsonServers: string[] = [],
+): SdkSettings {
+	return {
+		crossSessionInbound: "refuse",
+		dialogExpiry: "never",
+		...(disabledMcpjsonServers.length ? { disabledMcpjsonServers } : {}),
+	};
+}
 
 function effectiveSdkPermissionMode(
 	mode: AgentQueryParams["permissionMode"],
@@ -2014,6 +2031,16 @@ function translateSdkMessage(
 			return { events: tracker.handleToolProgress(message), hadText };
 		case "rate_limit_event":
 			return translateRateLimitMessage(message, hadText);
+		case "conversation_reset":
+			return {
+				events: [
+					{
+						type: "provider_context_reset",
+						sessionId: message.new_conversation_id,
+					},
+				],
+				hadText,
+			};
 		case "result":
 			return translateResultMessage(message, hadText, includeEstimatedCost);
 		default:
@@ -2610,6 +2637,9 @@ class ClaudeAgentSession implements AgentSession {
 				}
 				const message = next.value;
 				this.receivedAnyEvent = true;
+				if (message.type === "conversation_reset") {
+					this.resumeId = message.new_conversation_id;
+				}
 				this.backgroundActivities.observe(message);
 				if (message.type === "result" && isEmptyClaudeIdleBoundary(message)) {
 					// This belongs to the resumed stream's idle state, not the
@@ -3219,6 +3249,7 @@ export class ClaudeProvider implements AgentProvider {
 				abortController: ac,
 				persistSession: false,
 				settingSources: [],
+				settings: buildHlidClaudeSettings(),
 				maxTurns: 1,
 				...(exe ? { pathToClaudeCodeExecutable: exe } : {}),
 				canUseTool: denyAllCanUseTool,
@@ -3254,6 +3285,7 @@ export class ClaudeProvider implements AgentProvider {
 				abortController: ac,
 				persistSession: false,
 				settingSources: ["user", "project", "local"],
+				settings: buildHlidClaudeSettings(),
 				maxTurns: 1,
 				...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
 				canUseTool: denyAllCanUseTool,
@@ -3346,9 +3378,7 @@ export class ClaudeProvider implements AgentProvider {
 				options: {
 					cwd: params.cwd,
 					mcpServers,
-					...(disabledMcpjsonServers.length
-						? { settings: { disabledMcpjsonServers } }
-						: {}),
+					settings: buildHlidClaudeSettings(disabledMcpjsonServers),
 					...(params.additionalDirectories?.length
 						? { additionalDirectories: params.additionalDirectories }
 						: {}),

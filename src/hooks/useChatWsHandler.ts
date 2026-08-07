@@ -109,7 +109,7 @@ function dispatchImmediateMessage(
 		case "local_command_output":
 			dispatch({
 				type: "ADD_LOCAL_COMMAND_OUTPUT",
-				id: uid(),
+				id: msg.id ?? uid(),
 				content: msg.content,
 			});
 			return true;

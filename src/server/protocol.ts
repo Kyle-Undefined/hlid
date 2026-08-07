@@ -410,6 +410,8 @@ export type ToolUseSummaryMessage = {
 
 export type LocalCommandOutputMessage = {
 	type: "local_command_output";
+	/** Stable transcript identity when this output is durably persisted. */
+	id?: string;
 	content: string;
 };
 

@@ -1036,6 +1036,68 @@ describe("SessionManager — local_command_output forwarding", () => {
 	});
 });
 
+describe("SessionManager — provider context reset", () => {
+	it("persists the replacement native id and a visible Raven boundary", async () => {
+		const provider: AgentProvider = {
+			providerId: "claude",
+			label: "Claude",
+			query(): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-before-clear" };
+					yield {
+						type: "provider_context_reset",
+						sessionId: "sdk-after-clear",
+					};
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 0, outputTokens: 0 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		const providerCallCount = vi.mocked(dbMock.setSessionProviderSession).mock
+			.calls.length;
+		const messageCallCount = vi.mocked(dbMock.appendMessage).mock.calls.length;
+		vi.mocked(dbMock.appendMessage)
+			.mockResolvedValueOnce(41)
+			.mockResolvedValueOnce(42);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery("/clear", (message) => emitted.push(message), {
+			sessionId: "sess-clear",
+		});
+
+		expect(
+			vi
+				.mocked(dbMock.setSessionProviderSession)
+				.mock.calls.slice(providerCallCount),
+		).toContainEqual(["sess-clear", "claude", "sdk-after-clear"]);
+		expect(
+			vi.mocked(dbMock.appendMessage).mock.calls.slice(messageCallCount),
+		).toContainEqual([
+			"sess-clear",
+			expect.any(Number),
+			"local_command_output",
+			"Claude started a new native context",
+		]);
+		expect(emitted).toContainEqual({
+			type: "local_command_output",
+			id: "persisted-message:42",
+			content: "Claude started a new native context",
+		});
+	});
+});
+
 describe("SessionManager — deferred MCP discovery", () => {
 	it("refreshes Claude MCP status again when the first turn completes", async () => {
 		const mcpServerStatus = vi

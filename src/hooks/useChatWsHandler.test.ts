@@ -79,6 +79,25 @@ describe("useChatWsHandler — local_command_output", () => {
 		});
 	});
 
+	it("retains a durable transcript id when the server supplies one", () => {
+		const refs = makeRefs();
+		const { result } = renderHook(() =>
+			useChatWsHandler({ dispatch, ...refs, setRateLimit }),
+		);
+
+		result.current({
+			type: "local_command_output",
+			id: "persisted-message:42",
+			content: "Claude started a new native context",
+		});
+
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "ADD_LOCAL_COMMAND_OUTPUT",
+			id: "persisted-message:42",
+			content: "Claude started a new native context",
+		});
+	});
+
 	it("does not dispatch when history is not yet ready", () => {
 		const refs = makeRefs();
 		refs.historyReadyRef.current = false;

@@ -166,6 +166,34 @@ describe("ClaudeProvider — event mapping", () => {
 		expect(events[0]).toEqual({ type: "session_start", sessionId: "sid-abc" });
 	});
 
+	it("yields a provider context reset with Claude's replacement conversation id", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{ type: "system", subtype: "init", session_id: "sid-old", tools: [] },
+				{
+					type: "conversation_reset",
+					new_conversation_id: "sid-new",
+					uuid: "reset-uuid",
+					session_id: "sid-old",
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events).toContainEqual({
+			type: "provider_context_reset",
+			sessionId: "sid-new",
+		});
+	});
+
 	it("surfaces a root replayed user message as a file checkpoint", async () => {
 		vi.mocked(query).mockReturnValueOnce(
 			sdkGen([
@@ -3378,12 +3406,22 @@ describe("ClaudeProvider — listSkills", () => {
 		];
 		const gen = sdkGen([]);
 		gen.supportedCommands = vi.fn().mockResolvedValue(commands);
-		vi.mocked(query).mockReturnValueOnce(gen);
+		let capturedOptions: Record<string, unknown> | undefined;
+		vi.mocked(query).mockImplementationOnce(
+			({ options }: { options?: Record<string, unknown> }) => {
+				capturedOptions = options;
+				return gen;
+			},
+		);
 
 		await expect(
 			new ClaudeProvider().listSkills?.({ cwd: "/work/project" }),
 		).resolves.toEqual([{ name: "voice", description: "Apply voice rules" }]);
 		expect(gen.supportedCommands).toHaveBeenCalledOnce();
+		expect(capturedOptions?.settings).toEqual({
+			crossSessionInbound: "refuse",
+			dialogExpiry: "never",
+		});
 	});
 });
 
@@ -3776,6 +3814,8 @@ describe("ClaudeProvider — live MCP configuration", () => {
 				"local",
 			]);
 			expect(capturedOptions?.settings).toEqual({
+				crossSessionInbound: "refuse",
+				dialogExpiry: "never",
 				disabledMcpjsonServers: ["local", "disabled"],
 			});
 			expect(capturedOptions?.mcpServers).toEqual(
@@ -3868,6 +3908,8 @@ describe("ClaudeProvider — live MCP configuration", () => {
 			}),
 		);
 		expect(capturedOptions?.settings).toEqual({
+			crossSessionInbound: "refuse",
+			dialogExpiry: "never",
 			disabledMcpjsonServers: ["late"],
 		});
 		session.cancel();
@@ -4925,6 +4967,18 @@ describe("ClaudeProvider — check()", () => {
 // ── Slice B: streaming-input mode ─────────────────────────────────────────────
 
 describe("ClaudeProvider — Slice B streaming-input", () => {
+	it("refuses peer-session prompts and keeps Hlid-owned dialogs open", async () => {
+		vi.mocked(query).mockReturnValueOnce(sdkGen([]));
+		const session = new ClaudeProvider().query(baseParams());
+		await session.send("hello");
+
+		expect(vi.mocked(query).mock.calls.at(-1)?.[0].options?.settings).toEqual({
+			crossSessionInbound: "refuse",
+			dialogExpiry: "never",
+		});
+		session.cancel();
+	});
+
 	it("registers Hlid's deferred Relic publisher and curated Obsidian tools", async () => {
 		vi.mocked(query).mockReturnValueOnce(sdkGen([]));
 		const session = new ClaudeProvider().query(
@@ -5554,7 +5608,10 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			// Drain the mock session so query() is initialized.
 		}
 
-		expect(capturedOptions).not.toHaveProperty("settings");
+		expect(capturedOptions?.settings).toEqual({
+			crossSessionInbound: "refuse",
+			dialogExpiry: "never",
+		});
 		expect(capturedOptions?.canUseTool).toBeTypeOf("function");
 	});
 
@@ -5579,7 +5636,10 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			// Drain the mock session so query() is initialized.
 		}
 
-		expect(capturedOptions).not.toHaveProperty("settings");
+		expect(capturedOptions?.settings).toEqual({
+			crossSessionInbound: "refuse",
+			dialogExpiry: "never",
+		});
 		expect(capturedOptions?.settingSources).toEqual([
 			"user",
 			"project",
@@ -5697,7 +5757,10 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			// Drain the mock session so query() is initialized.
 		}
 
-		expect(capturedOptions).not.toHaveProperty("settings");
+		expect(capturedOptions?.settings).toEqual({
+			crossSessionInbound: "refuse",
+			dialogExpiry: "never",
+		});
 		expect(capturedOptions).not.toHaveProperty("hooks");
 	});
 
@@ -5904,6 +5967,10 @@ describe("ClaudeProvider — listModels", () => {
 		// Throwaway-query shape: ephemeral, no persistence, single turn, denies tools.
 		expect(capturedOptions?.persistSession).toBe(false);
 		expect(capturedOptions?.settingSources).toEqual([]);
+		expect(capturedOptions?.settings).toEqual({
+			crossSessionInbound: "refuse",
+			dialogExpiry: "never",
+		});
 		expect(capturedOptions?.maxTurns).toBe(1);
 		const canUseTool = capturedOptions?.canUseTool as CanUseTool;
 		await expect(

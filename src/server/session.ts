@@ -4100,6 +4100,57 @@ export class SessionManager {
 		}
 	}
 
+	/**
+	 * Keep Raven's durable transcript intact when a provider rotates its native
+	 * context (for example Claude's /clear). Persist the replacement native id
+	 * for future resume, then add a small visible boundary to Hlid's transcript.
+	 */
+	private async handleProviderContextReset(
+		event: Extract<AgentEvent, { type: "provider_context_reset" }>,
+		sessionId: string | undefined,
+		provider: AgentProvider,
+		ownershipGeneration: number,
+		emit: (msg: ServerMessage) => void,
+	): Promise<void> {
+		const previousProviderSessionId =
+			this.providerSessionProviderId === provider.providerId
+				? this.providerSessionId
+				: null;
+		await this.handleSessionStart(
+			{ type: "session_start", sessionId: event.sessionId },
+			sessionId,
+			provider,
+			ownershipGeneration,
+			emit,
+		);
+		if (
+			!previousProviderSessionId ||
+			previousProviderSessionId === event.sessionId ||
+			this.providerSessionProviderId !== provider.providerId ||
+			this.providerSessionId !== event.sessionId
+		) {
+			return;
+		}
+
+		const content = `${provider.label ?? provider.providerId} started a new native context`;
+		let id: string | undefined;
+		if (sessionId) {
+			const seq = this.messageSeq++;
+			try {
+				const dbId = await db.appendMessage(
+					sessionId,
+					seq,
+					"local_command_output",
+					content,
+				);
+				if (Number.isInteger(dbId)) id = `persisted-message:${dbId}`;
+			} catch (error) {
+				logDbError("appendMessage (provider context reset)", error);
+			}
+		}
+		emit({ type: "local_command_output", ...(id ? { id } : {}), content });
+	}
+
 	private async promptForHookApproval(
 		call: ToolCall,
 		reason: string,
@@ -5096,6 +5147,15 @@ export class SessionManager {
 		switch (event.type) {
 			case "session_start":
 				await this.handleSessionStart(
+					event,
+					sessionId,
+					provider,
+					turn.providerOwnershipGeneration,
+					emit,
+				);
+				break;
+			case "provider_context_reset":
+				await this.handleProviderContextReset(
 					event,
 					sessionId,
 					provider,
