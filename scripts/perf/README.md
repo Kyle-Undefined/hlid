@@ -4,6 +4,13 @@ The gate builds an isolated Hlid executable, seeds a disposable Raven session,
 and drives the real production UI with Chromium. It never reads or writes the
 repository's live `hlid.db`, `auth.json`, token, config, or provider sessions.
 
+Install the Chromium revision that matches the pinned Playwright version after
+`bun install`, and again whenever Playwright changes:
+
+```sh
+bun run perf:install-browser
+```
+
 Run the short development check while iterating:
 
 ```sh
