@@ -170,9 +170,10 @@ conversation into a wall of details.*
 While a run is active:
 
 - Each response keeps its tool calls in one **Activity** card. It summarizes
-  running calls, errors, and steering, follows the live tail while open, and
-  collapses completed history by default. Long runs load earlier calls in
-  bounded batches instead of mounting the whole tool transcript at once.
+  running calls, errors, and steering, while provider task lists get their own
+  progress rows. The card follows the live tail while open and collapses
+  completed history by default. Long runs load earlier calls in bounded batches
+  instead of mounting the whole tool transcript at once.
 - Permission cards can approve once, approve for the session, save a permanent
   approval, or deny with feedback.
 - Another prompt gets queued instead of interrupting the current turn. Supported
@@ -194,9 +195,10 @@ While a run is active:
 - Long chats load the newest history first. **LOAD OLDER HISTORY** pulls in the
   earlier turns without jumping the scroll position around.
 - Supported `Claude` runs can move active Bash commands and subagents into the
-  background without ending the response. `Raven` keeps running provider work
-  in a separate **BACKGROUND ACTIVITY** panel with recent output and the exact
-  stop controls that provider exposes.
+  background without ending the response. `Codex` can report native background
+  terminals too. `Raven` keeps that provider work in a separate **BACKGROUND
+  ACTIVITY** panel with recent output and the exact stop controls that provider
+  exposes.
 - Agent output can render tables, alerts, highlighted text, `Mermaid`, and
   `LaTeX` math using `$...$`, `$$...$$`, `\(...\)`, or `\[...\]`.
 - Provider-generated images stay inline with their prompt, dimensions, download,
@@ -307,7 +309,9 @@ without clearing the recorded conversation. When the session uses
 **Auto-approve all** and `Umbod` is not enforcing approvals, one server can
 inherit the session behavior, force **ask**, or use `Claude`'s native
 **auto-check** classifier. A per-server choice can only tighten native approval;
-it never bypasses `Hlið` policy.
+it never bypasses `Hlið` policy. When a `Claude` `MCP` server needs structured
+input, `Raven` shows the question inline with its server provenance and keeps it
+there until you answer or decline it.
 
 `Hlið` keeps a compact context receipt for supported turns. Open it from the turn
 or with `/context` to see exactly what `Hlið` supplied: the provider selection,
@@ -321,6 +325,12 @@ rewind control. `Hlið` always previews the affected files and line totals befor
 offering **REWIND FILES**. `Claude` only tracks edits made through its `Write`,
 `Edit`, and `NotebookEdit` tools. `Bash` changes, directories, `Git` state,
 other tool side effects, and conversation history are not rewound.
+
+If `Claude` starts a new native context, such as after `/clear`, `Hlið` keeps the
+recorded `Raven` conversation and inserts **Claude started a new native context**
+at the boundary. The next turn uses the new `Claude` context. `Hlið` also refuses
+messages sent from another `Claude` session instead of letting model-authored
+text show up as if you wrote a new prompt.
 
 `Claude` workflows stay `Claude` workflows. `/workflows` can inspect saved and
 recent runs, open their exact source, run or rerun one, stop or resume supported
@@ -472,6 +482,11 @@ when a provider has a skill with the same name. Removing the imported copy
 leaves the provider's original alone, ready to import again if that seemed like
 a better idea tomorrow.
 
+**Refresh** rescans those installed provider skills. An established live
+`Claude` chat refreshes its native skill list in place. A cold `Claude` chat
+picks up the new list the next time it connects, and the on-disk import catalog
+still refreshes either way.
+
 The same managed files show up under `Relics` in the composer `@` picker. Pick
 one there when an existing attachment, report, or generated plan needs to go
 back into a prompt. It stays a reference to `Hlið`'s managed copy, so there is no
@@ -507,6 +522,11 @@ that old. A row menu handles one rename or delete, pins a useful session to the
 top, or moves it into the archived view. Archiving is reversible, clears its
 pin, and protects the session from age-based cleanup. Supported idle `Claude` and
 `Codex` rows also get the exact fork action.
+
+Age-based cleanup previews the eligible sessions, messages, tool activity,
+database payload, and managed attachments before confirmation. It skips live,
+pinned, archived, imported, pending-turn, and protected delegation-lineage
+sessions. Their usage totals stay in `Ledger` after the session payload is gone.
 
 Delegated rows remember whether they are the parent or child and link back to
 the other side in `Raven`. Parent summaries roll up duration, tokens, cost, and
@@ -598,10 +618,10 @@ The search box filters whole setting categories. Vault `MCP` config stays scoped
 to the vault, and each `Einherjar` entry keeps its own `MCP` config on that agent's
 page. `Hlið` combines those compatibility files with provider-native and live
 runtime discovery into one scoped inventory. It does not dump servers from
-unrelated agents into one global list. `MCP` edits sync into the live vault
-session. Working-context changes still need a provider-session reload. That
-clears the live provider conversation but leaves its recorded `Ledger` history
-alone.
+unrelated agents into one global list. `MCP` edits sync into matching supported
+live `Claude` vault or `Einherjar` sessions. Other provider contexts need a
+provider-session reload before working-context changes take effect. That clears
+the live provider conversation but leaves its recorded `Ledger` history alone.
 
 **Integrations → Apps and Connectors** shows each capable provider separately.
 Installed and available Apps stay distinct from lower-level `MCP` connectors,
@@ -772,10 +792,13 @@ restart. The packaged `Windows` app includes the reviewed `Whisper` runtime, whi
 speech models stay as separate downloads.
 
 **Dictate with Codex · Preview** uses a realtime `Codex` session for the same
-editable draft or automatic send flow. It requires a native `Codex` chat, an
-account with realtime voice, and the **Developer Preview** switch under
-**FORGE → Experience → Voice input → Codex realtime**. It does not use the local
-`Whisper` model.
+editable draft or automatic send flow. It works in `Watch` or `Raven` when native
+`Codex` is selected, the main **Voice** toggle is on, and the **Developer
+Preview** switch under **FORGE → Experience → Voice input → Codex realtime** is
+on. Account and backend support are checked when the realtime session starts.
+The selected coding model does not need audio input. It does not use the local
+`Whisper` model, and its voice comes from the **Shared voice** setting used by
+`Raven Live` too.
 
 **Auto** uses a compatible `GPU` through `Vulkan` when it finds one, then falls back
 to `CPU`. **CPU only** stays on `CPU`. `Hlið` reports the backend and device it picked,
@@ -790,23 +813,28 @@ In `Watch` or `Raven`, tap the microphone once to record and again to stop. On
 desktop, the configured shortcut does the same thing. The default is
 `Alt+Shift+V`.
 
-The browser converts the recording to mono 16 kHz `WAV`, then the `Hlið` host
-transcribes it locally. The audio never becomes an attachment or database row.
-Depending on the `Forge` setting, the text either fills the draft or sends right
-away.
+For **Dictate with Whisper**, the browser converts the recording to mono 16 kHz
+`WAV`, then the `Hlið` host transcribes it locally. The audio never becomes an
+attachment or database row. Depending on the `Forge` setting, the text either
+fills the draft or sends right away.
 
 **Talk to Codex** records the full clip and sends it as a normal audio turn to
 the selected native `Codex` model. It appears only when that model and account
 support audio. Unlike dictation, it does not turn the recording into an
 editable draft first.
 
-With that same account capability and **Developer Preview** switch enabled, an
-idle native `Codex` chat also shows **Raven Live**. It opens a live microphone
-session with two-way audio and a running transcript. This is its own mode, not
-a replacement for local `Whisper` or the normal recorded audio turn.
+With **Developer Preview** enabled, an idle native `Codex` chat also shows
+**Raven Live** when the account and realtime backend support it. The selected
+coding model does not need audio input. `Raven Live` uses **Shared voice** and
+opens a live microphone session with two-way audio and a running transcript.
+You can mute the microphone without ending the session. Stop Live before sending
+a typed message or changing the chat controls. This is its own mode, not a
+replacement for local `Whisper` or the normal recorded audio turn.
 
 Remote microphone capture needs the `HTTPS` endpoint. If it is not working,
-check browser permission, `HTTPS`, the selected model, and the voice toggle.
+check browser permission, `HTTPS`, and the matching `Forge` voice settings. For
+**Talk to Codex**, also check that the selected model accepts audio. Realtime
+dictation and `Raven Live` use the separate account and backend gate.
 
 ### Attachments
 

@@ -126,8 +126,9 @@ the vault directly when the `CLI` is not around.
 - **VAULT** browses notes, projects, memory, and skills, with a jump back into
   the `Obsidian` desktop when the `CLI` is connected.
 - **FORGE** is where all the setup lives: providers, permissions, networking,
-  voice, provider extensions, `Obsidian CLI`, `CLIProxyAPI`, `MCP`, `ACP`,
-  `Umbod`, updates, and lifecycle controls.
+  voice, provider extensions, provider `Apps` and connectors, `Obsidian CLI`,
+  `CLIProxyAPI`, `MCP`, `ACP`, `Umbod`, updates, storage maintenance, and
+  lifecycle controls.
 
 The [user guide](docs/user-guide.md) gets into the meat and potatoes of each
 page and the workflows that connect them.

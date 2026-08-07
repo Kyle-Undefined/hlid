@@ -18,7 +18,8 @@ show_provider_entries = false
 
 [voice]
 enabled = false
-# "local" dictates with Whisper; "codex" sends the full recording as a Codex turn.
+# "local" dictates with Whisper; "codex_dictation" uses Codex realtime;
+# "codex" sends the full recording as a normal Codex turn.
 input_provider = "local"
 model = ""
 language = "auto"
@@ -30,6 +31,7 @@ read_aloud_rate = 1
 tts_model = ""
 tts_voice = "expr-voice-2-f"
 tts_threads = 4
+# Codex dictation and Raven Live share this voice and preview gate.
 codex_voice = "marin"
 codex_live_mode = false
 hotkey = "Alt+Shift+KeyV"
