@@ -748,12 +748,6 @@ rest of a long reply is still being generated. Only the selected model goes
 into memory. The current speech runtime is `CPU`-based, while `Whisper` input can
 use `Vulkan` on its own.
 
-If the signed-in `Codex` account supports realtime voice, you can turn on
-**FORGE → Experience → Voice input → Codex realtime → Developer Preview**.
-That adds **Codex realtime** as a read-aloud engine with its own voice. The
-account gate and the `Forge` switch both have to pass. The local device and
-`Microsoft` choices keep working without it.
-
 The speech engine, host voice, and reading speed live in the `Hlið` config and
 apply to every device. The selected device-browser voice stays on that device
 because every browser can expose a different voice list. `Microsoft`, neural, and
@@ -776,6 +770,12 @@ model, select it, and turn voice on. The model loads locally and stays warm for
 more recordings. Switching models hot-loads the new one without a server
 restart. The packaged `Windows` app includes the reviewed `Whisper` runtime, while
 speech models stay as separate downloads.
+
+**Dictate with Codex · Preview** uses a realtime `Codex` session for the same
+editable draft or automatic send flow. It requires a native `Codex` chat, an
+account with realtime voice, and the **Developer Preview** switch under
+**FORGE → Experience → Voice input → Codex realtime**. It does not use the local
+`Whisper` model.
 
 **Auto** uses a compatible `GPU` through `Vulkan` when it finds one, then falls back
 to `CPU`. **CPU only** stays on `CPU`. `Hlið` reports the backend and device it picked,

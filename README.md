@@ -65,11 +65,11 @@ set up, `Hlið` is happy.
   harness and the actual model identity for every route.
 - Hands a task to a fresh `Windows`-native `Codex Computer Use` worker while
   keeping approvals, `Umbod` policy, and usage accounting inside `Hlið`.
-- Runs `Whisper` locally for editable dictation. Native `Codex` chats can also
-  take a recorded audio turn or use the separately gated `Raven Live` mode.
-  Replies can be read aloud with a local device voice, `Microsoft` speech on the
-  `Windows` host, a downloaded `Kitten` or `Piper` neural voice, or supported
-  `Codex` realtime audio.
+- Runs `Whisper` locally for editable dictation. Supported native `Codex` chats
+  can also use realtime dictation, take a recorded audio turn, or enter the
+  separately gated `Raven Live` mode. Replies can be read aloud with a local
+  device voice, `Microsoft` speech on the `Windows` host, or a downloaded
+  `Kitten` or `Piper` neural voice.
 - Opens a real project shell in `Raven`. There is also an interactive
   `Claude CLI` mode for the times when the full terminal makes more sense than
   the structured chat `UI`. Agents can start a session-scoped `Project Preview`,
