@@ -579,6 +579,85 @@ type AgentSettings = {
 	recapModel?: string;
 };
 
+type RealtimeControl =
+	| {
+			action: "start";
+			mode: ProviderRealtimeMode;
+			sdp: string;
+			voice?: string;
+	  }
+	| { action: "speak"; mode: "read-aloud"; text: string }
+	| { action: "stop" };
+
+type RealtimeStartControl = Extract<RealtimeControl, { action: "start" }>;
+
+type RealtimeControlOptions = {
+	sessionId: string;
+	requestId?: string;
+	agentCwd?: string;
+	/** Skip Raven session persistence for Cockpit-only dictation. */
+	transient?: boolean;
+	emit: (msg: ServerMessage) => void;
+};
+
+type RealtimeProviderContext = {
+	persistenceSessionId: string | undefined;
+	provider: AgentProvider;
+	agentSettings: AgentSettings | undefined;
+	resumeProviderSessionId: string | null;
+	ownershipGeneration: number;
+	realtimeAgentCwd: string | undefined;
+	realtimeAgentMode: "cwd" | "context";
+};
+
+type PreparedRealtimeStart = {
+	provider: AgentProvider;
+	agentSettings: AgentSettings | undefined;
+	ownershipGeneration: number;
+	agentSession: AgentSession;
+	startRealtime: NonNullable<AgentSession["startRealtime"]>;
+};
+
+type RealtimeRequestIdentity = { request_id?: string };
+
+type RealtimeUtterance = {
+	utteranceId: string;
+	transcriptSeq: number;
+};
+
+type RealtimeTranscriptRole = "user" | "assistant";
+
+type LiveAssistantActivity = {
+	utterance: RealtimeUtterance;
+	turn: TurnState;
+	finalQueued: boolean;
+	completedToolIds: Set<string>;
+};
+
+type LiveRealtimeCoordination = {
+	setProviderRealtimeSessionId: (sessionId: string | undefined) => void;
+	publishTranscriptDelta: (
+		event: Extract<ProviderRealtimeEvent, { type: "transcript_delta" }>,
+	) => void;
+	queueTranscriptFinal: (
+		event: Extract<ProviderRealtimeEvent, { type: "transcript_done" }>,
+	) => void;
+	publishActivity: (event: ProviderRealtimeActivity) => void;
+	settleActivities: () => Promise<void>;
+	flushToolOnlyActivities: () => Promise<void>;
+};
+
+type RealtimeCloseNotifier = (
+	reason?: string,
+	emitOverride?: (message: ServerMessage) => void,
+) => Promise<void>;
+
+type RealtimeTerminalLifecycle = {
+	publishClosed: RealtimeCloseNotifier;
+	publishError: (message: string) => Promise<void>;
+	isFinishing: () => boolean;
+};
+
 export type ConfiguredSessionDefaults = {
 	agentCwd?: string;
 	providerId: string;
@@ -2579,23 +2658,70 @@ export class SessionManager {
 
 	// fallow-ignore-next-line unused-class-member -- Called by WebSocket realtime controls in wsHandlers.
 	async controlRealtime(
-		control:
-			| {
-					action: "start";
-					mode: ProviderRealtimeMode;
-					sdp: string;
-					voice?: string;
-			  }
-			| { action: "speak"; mode: "read-aloud"; text: string }
-			| { action: "stop" },
-		options: {
-			sessionId: string;
-			requestId?: string;
-			agentCwd?: string;
-			/** Skip Raven session persistence for Cockpit-only dictation. */
-			transient?: boolean;
-			emit: (msg: ServerMessage) => void;
-		},
+		control: RealtimeControl,
+		options: RealtimeControlOptions,
+	): Promise<void> {
+		if (control.action !== "start") {
+			await this.controlActiveRealtime(control, options);
+			return;
+		}
+
+		const prepared = await this.prepareRealtimeStart(control, options);
+		const realtimeGeneration = ++this.realtimeGeneration;
+		this.realtimeRequestId = options.requestId ?? null;
+		const requestIdentity: RealtimeRequestIdentity = options.requestId
+			? { request_id: options.requestId }
+			: {};
+		let publishRealtimeError = (_message: string): Promise<void> =>
+			Promise.resolve();
+		const liveCoordination =
+			control.mode === "live"
+				? this.createLiveRealtimeCoordination({
+						sessionId: options.sessionId,
+						emit: options.emit,
+						requestIdentity,
+						provider: prepared.provider,
+						agentSettings: prepared.agentSettings,
+						ownershipGeneration: prepared.ownershipGeneration,
+						onError: (message) => {
+							void publishRealtimeError(message);
+						},
+					})
+				: null;
+		const terminal = this.createRealtimeTerminalLifecycle({
+			mode: control.mode,
+			sessionId: options.sessionId,
+			emit: options.emit,
+			requestIdentity,
+			realtimeGeneration,
+			agentSession: prepared.agentSession,
+			liveCoordination,
+		});
+		publishRealtimeError = terminal.publishError;
+		const publish = this.createRealtimeEventPublisher({
+			mode: control.mode,
+			sessionId: options.sessionId,
+			emit: options.emit,
+			requestIdentity,
+			realtimeGeneration,
+			agentSession: prepared.agentSession,
+			liveCoordination,
+			terminal,
+		});
+		await this.startPreparedRealtimeSession({
+			control,
+			options,
+			prepared,
+			realtimeGeneration,
+			requestIdentity,
+			publish,
+			publishClosed: terminal.publishClosed,
+		});
+	}
+
+	private async controlActiveRealtime(
+		control: Exclude<RealtimeControl, { action: "start" }>,
+		options: RealtimeControlOptions,
 	): Promise<void> {
 		if (control.action === "speak") {
 			if (
@@ -2612,19 +2738,18 @@ export class SessionManager {
 			await this.realtimeAgentSession.appendRealtimeSpeech(control.text);
 			return;
 		}
-		if (control.action === "stop") {
-			if (
-				this.realtimeMode &&
-				!this.matchesRealtimeRequest(options.requestId)
-			) {
-				// The WebSocket handler publishes the request-correlated idempotent
-				// close acknowledgement. Do not let an old browser generation tear down
-				// the replacement that now owns this manager.
-				return;
-			}
-			await this.stopRealtimeSession(undefined, options.emit);
+		if (this.realtimeMode && !this.matchesRealtimeRequest(options.requestId)) {
+			// The WebSocket handler publishes the request-correlated idempotent close
+			// acknowledgement. An old browser generation cannot stop its replacement.
 			return;
 		}
+		await this.stopRealtimeSession(undefined, options.emit);
+	}
+
+	private async prepareRealtimeStart(
+		control: RealtimeStartControl,
+		options: RealtimeControlOptions,
+	): Promise<PreparedRealtimeStart> {
 		if (!this.codexRealtimeEnabled) {
 			throw new Error(
 				"Codex realtime voice is disabled. Enable the Developer Preview in Forge first.",
@@ -2640,71 +2765,16 @@ export class SessionManager {
 		} else if (this.realtimeMode) {
 			await this.stopRealtimeSession().catch(() => {});
 		}
-		const persistenceSessionId = options.transient
-			? undefined
-			: options.sessionId;
-		let provider: AgentProvider;
-		let agentSettings: AgentSettings | undefined;
-		let resumeProviderSessionId: string | null = null;
-		let ownershipGeneration: number;
-		let realtimeAgentCwd = this.agentCwd;
-		let realtimeAgentMode = this.agentMode;
-		if (control.mode === "live") {
-			await this.initSessionContext(
-				persistenceSessionId,
-				options.agentCwd,
-				"Live voice",
-			);
-			({
-				provider,
-				agentSettings,
-				resumeProviderSessionId,
-				ownershipGeneration,
-			} = await this.prepareProviderForTurn(persistenceSessionId));
-			realtimeAgentCwd = this.agentCwd;
-			realtimeAgentMode = this.agentMode;
-		} else {
-			// Restoring an idle archived chat is safe, but an active ordinary turn owns
-			// every mutable Raven field. Speech must only observe that established
-			// context while the turn is running.
-			if (
-				!this.isRunning() &&
-				persistenceSessionId &&
-				persistenceSessionId !== this.currentSessionId
-			) {
-				await this.initSessionContext(
-					persistenceSessionId,
-					options.agentCwd,
-					"Voice",
-					false,
-				);
-			}
-			realtimeAgentCwd =
-				options.agentCwd ?? this.agentCwd ?? this.configuredAgentCwd;
-			if (realtimeAgentCwd !== this.agentCwd) realtimeAgentMode = "cwd";
-			const configuredProvider = this.resolveProvider(realtimeAgentCwd);
-			provider =
-				(this.providerSessionProviderId
-					? this.providers.get(this.providerSessionProviderId)
-					: undefined) ?? configuredProvider;
-			const configuredProviderId = realtimeAgentCwd
-				? (this.agentProviderMap.get(agentMapKey(realtimeAgentCwd)) ??
-					this.vaultProviderId)
-				: this.vaultProviderId;
-			agentSettings =
-				realtimeAgentCwd && provider.providerId === configuredProviderId
-					? this.agentSettingsMap.get(agentMapKey(realtimeAgentCwd))
-					: undefined;
-			ownershipGeneration = this.providerOwnershipGeneration;
-		}
-		if (provider.providerId !== "codex") {
+
+		const context = await this.prepareRealtimeProviderContext(control, options);
+		if (context.provider.providerId !== "codex") {
 			throw new Error(
 				"Codex voice is only available in native Codex sessions.",
 			);
 		}
 		const { activeCwd, extraDirs, executable } = resolveExecutionContext({
-			agentMode: realtimeAgentMode,
-			agentCwd: realtimeAgentCwd,
+			agentMode: context.realtimeAgentMode,
+			agentCwd: context.realtimeAgentCwd,
 			vaultPath: this.vaultPath,
 			allowedAgentRealPaths: this.allowedAgentRealPaths,
 			claudeExecutable: this.codexExecutable,
@@ -2714,51 +2784,139 @@ export class SessionManager {
 		const agentSession =
 			control.mode === "live"
 				? this.getOrCreateAgentSession({
-						provider,
-						sessionId: persistenceSessionId,
-						resumeProviderSessionId,
+						provider: context.provider,
+						sessionId: context.persistenceSessionId,
+						resumeProviderSessionId: context.resumeProviderSessionId,
 						activeCwd,
 						extraDirs,
 						executable,
-						agentSettings,
+						agentSettings: context.agentSettings,
 						planMode: false,
 						emit: options.emit,
 					})
 				: this.createDetachedRealtimeAgentSession({
-						provider,
+						provider: context.provider,
 						activeCwd,
 						executable,
-						agentSettings,
-						agentMode: realtimeAgentMode,
+						agentSettings: context.agentSettings,
+						agentMode: context.realtimeAgentMode,
 					});
 		this.realtimeAgentSession = agentSession;
-		if (!agentSession.startRealtime) {
+		const startRealtime = agentSession.startRealtime;
+		if (!startRealtime) {
 			this.retireAgentSessionAfterRealtime(agentSession);
 			throw new Error(
 				"The active Codex version does not support realtime voice.",
 			);
 		}
-		const realtimeGeneration = ++this.realtimeGeneration;
-		this.realtimeRequestId = options.requestId ?? null;
-		const requestIdentity = options.requestId
-			? { request_id: options.requestId }
-			: {};
-		let terminalPending = false;
-		let terminalPublished = false;
-		let terminalFailureMessage: string | null = null;
-		let terminalFailureDeferredDuringStop = false;
-		let terminalCompletion: Promise<void> | null = null;
-		let deferredCloseReason: string | undefined;
-		let terminalEmitter = options.emit;
-		const realtimeSessionId =
-			control.mode === "live" ? `raven-live-${randomUUID()}` : null;
-		let providerRealtimeSessionId: string | undefined;
-		let audioOutputStarted = false;
-		type RealtimeUtterance = {
-			utteranceId: string;
-			transcriptSeq: number;
+		return {
+			provider: context.provider,
+			agentSettings: context.agentSettings,
+			ownershipGeneration: context.ownershipGeneration,
+			agentSession,
+			startRealtime,
 		};
-		type RealtimeTranscriptRole = "user" | "assistant";
+	}
+
+	private async prepareRealtimeProviderContext(
+		control: RealtimeStartControl,
+		options: RealtimeControlOptions,
+	): Promise<RealtimeProviderContext> {
+		const persistenceSessionId = options.transient
+			? undefined
+			: options.sessionId;
+		return control.mode === "live"
+			? this.prepareLiveRealtimeProviderContext(options, persistenceSessionId)
+			: this.prepareSpeechRealtimeProviderContext(
+					options,
+					persistenceSessionId,
+				);
+	}
+
+	private async prepareLiveRealtimeProviderContext(
+		options: RealtimeControlOptions,
+		persistenceSessionId: string | undefined,
+	): Promise<RealtimeProviderContext> {
+		await this.initSessionContext(
+			persistenceSessionId,
+			options.agentCwd,
+			"Live voice",
+		);
+		const {
+			provider,
+			agentSettings,
+			resumeProviderSessionId,
+			ownershipGeneration,
+		} = await this.prepareProviderForTurn(persistenceSessionId);
+		return {
+			persistenceSessionId,
+			provider,
+			agentSettings,
+			resumeProviderSessionId,
+			ownershipGeneration,
+			realtimeAgentCwd: this.agentCwd,
+			realtimeAgentMode: this.agentMode,
+		};
+	}
+
+	private async prepareSpeechRealtimeProviderContext(
+		options: RealtimeControlOptions,
+		persistenceSessionId: string | undefined,
+	): Promise<RealtimeProviderContext> {
+		const establishedAgentMode = this.agentMode;
+		// Restoring an idle archived chat is safe, but an active ordinary turn owns
+		// every mutable Raven field. Speech only observes that established context.
+		if (
+			!this.isRunning() &&
+			persistenceSessionId &&
+			persistenceSessionId !== this.currentSessionId
+		) {
+			await this.initSessionContext(
+				persistenceSessionId,
+				options.agentCwd,
+				"Voice",
+				false,
+			);
+		}
+		const realtimeAgentCwd =
+			options.agentCwd ?? this.agentCwd ?? this.configuredAgentCwd;
+		const realtimeAgentMode =
+			realtimeAgentCwd !== this.agentCwd ? "cwd" : establishedAgentMode;
+		const configuredProvider = this.resolveProvider(realtimeAgentCwd);
+		const provider =
+			(this.providerSessionProviderId
+				? this.providers.get(this.providerSessionProviderId)
+				: undefined) ?? configuredProvider;
+		const configuredProviderId = realtimeAgentCwd
+			? (this.agentProviderMap.get(agentMapKey(realtimeAgentCwd)) ??
+				this.vaultProviderId)
+			: this.vaultProviderId;
+		const agentSettings =
+			realtimeAgentCwd && provider.providerId === configuredProviderId
+				? this.agentSettingsMap.get(agentMapKey(realtimeAgentCwd))
+				: undefined;
+		return {
+			persistenceSessionId,
+			provider,
+			agentSettings,
+			resumeProviderSessionId: null,
+			ownershipGeneration: this.providerOwnershipGeneration,
+			realtimeAgentCwd,
+			realtimeAgentMode,
+		};
+	}
+
+	private createLiveRealtimeCoordination(options: {
+		sessionId: string;
+		emit: (message: ServerMessage) => void;
+		requestIdentity: RealtimeRequestIdentity;
+		provider: AgentProvider;
+		agentSettings: AgentSettings | undefined;
+		ownershipGeneration: number;
+		onError: (message: string) => void;
+	}): LiveRealtimeCoordination {
+		const realtimeSessionId = `raven-live-${randomUUID()}`;
+		let providerRealtimeSessionId: string | undefined;
 		const activeUtterances = new Map<
 			RealtimeTranscriptRole,
 			RealtimeUtterance
@@ -2776,7 +2934,7 @@ export class SessionManager {
 		};
 		const transcriptMetadata = (utterance: RealtimeUtterance) => ({
 			utterance_id: utterance.utteranceId,
-			realtime_session_id: realtimeSessionId as string,
+			realtime_session_id: realtimeSessionId,
 			...(providerRealtimeSessionId
 				? { provider_realtime_session_id: providerRealtimeSessionId }
 				: {}),
@@ -2784,12 +2942,6 @@ export class SessionManager {
 			source: "codex_realtime" as const,
 			fork_supported: false,
 		});
-		type LiveAssistantActivity = {
-			utterance: RealtimeUtterance;
-			turn: TurnState;
-			finalQueued: boolean;
-			completedToolIds: Set<string>;
-		};
 		let currentLiveAssistantActivity: LiveAssistantActivity | null = null;
 		const liveActivitiesByUtterance = new Map<string, LiveAssistantActivity>();
 		const liveActivitiesByToolId = new Map<string, LiveAssistantActivity>();
@@ -2802,8 +2954,8 @@ export class SessionManager {
 				return currentLiveAssistantActivity;
 			}
 			const turn = createTurnState(
-				this.selectedModelFor(agentSettings),
-				ownershipGeneration,
+				this.selectedModelFor(options.agentSettings),
+				options.ownershipGeneration,
 			);
 			// Live transcript persistence owns the messages row. Tool persistence can
 			// safely use the reserved sequence before that row is finalized.
@@ -2818,105 +2970,6 @@ export class SessionManager {
 			currentLiveAssistantActivity = activity;
 			liveActivitiesByUtterance.set(utterance.utteranceId, activity);
 			return activity;
-		};
-		let flushLiveToolOnlyActivities: () => Promise<void> = async () => {};
-		let settleLiveActivities: () => Promise<void> = async () => {};
-		const beginTerminal = (
-			publishClosed: (
-				reason?: string,
-				emitOverride?: (message: ServerMessage) => void,
-			) => Promise<void>,
-		) => {
-			if (
-				terminalPending ||
-				terminalPublished ||
-				this.realtimeCloseNotifier !== publishClosed
-			) {
-				return false;
-			}
-			terminalPending = true;
-			this.realtimeCloseNotifier = null;
-			return true;
-		};
-		const retireAfterUnsolicitedTerminal = () => {
-			// An explicit stop still owns its wrapper until stopRealtimeSession has
-			// finished provider teardown. A provider-owned close has no such outer
-			// cleanup, so retire it here before delayed provider events or request-local
-			// callbacks can enter the next ordinary query.
-			if (this.realtimeStopMode === control.mode) return;
-			this.retireAgentSessionAfterRealtime(agentSession);
-		};
-		const finishTerminal = async (
-			publish: () => void,
-			clearRealtimeMode = true,
-		) => {
-			await this.drainRealtimeTranscriptWrites();
-			await settleLiveActivities();
-			await this.drainRealtimeTranscriptWrites();
-			await flushLiveToolOnlyActivities();
-			await this.drainRealtimeTranscriptWrites();
-			if (
-				terminalPublished ||
-				(this.realtimeCloseNotifier !== null &&
-					this.realtimeCloseNotifier !== publishClosed)
-			) {
-				return;
-			}
-			terminalPublished = true;
-			if (terminalFailureMessage) {
-				if (!terminalFailureDeferredDuringStop) {
-					await this.stopRealtimeSession().catch(() => {});
-				}
-				terminalEmitter({
-					type: "realtime_error",
-					session_id: options.sessionId,
-					...requestIdentity,
-					mode: control.mode,
-					message: terminalFailureMessage,
-				});
-				retireAfterUnsolicitedTerminal();
-				return;
-			}
-			if (clearRealtimeMode) {
-				this.realtimeMode = null;
-				this.realtimeRequestId = null;
-			}
-			publish();
-			retireAfterUnsolicitedTerminal();
-		};
-		const publishClosed = (
-			reason?: string,
-			emitOverride?: (message: ServerMessage) => void,
-		): Promise<void> => {
-			if (reason) deferredCloseReason = reason;
-			if (emitOverride) terminalEmitter = emitOverride;
-			if (this.realtimeStoppingGeneration === realtimeGeneration) {
-				return Promise.resolve();
-			}
-			if (terminalCompletion) return terminalCompletion;
-			if (!beginTerminal(publishClosed)) return Promise.resolve();
-			terminalCompletion = finishTerminal(() =>
-				terminalEmitter({
-					type: "realtime_state",
-					session_id: options.sessionId,
-					...requestIdentity,
-					mode: control.mode,
-					state: "closed",
-					...(deferredCloseReason ? { reason: deferredCloseReason } : {}),
-				}),
-			);
-			return terminalCompletion;
-		};
-		const publishError = (message: string): Promise<void> => {
-			terminalFailureMessage = message;
-			if (this.realtimeStoppingGeneration === realtimeGeneration) {
-				terminalFailureDeferredDuringStop = true;
-				return Promise.resolve();
-			}
-			if (terminalCompletion) return terminalCompletion;
-			if (!beginTerminal(publishClosed)) return Promise.resolve();
-			terminalCompletion = finishTerminal(() => {}, false);
-			return terminalCompletion;
 		};
 		const queuePersistedLiveTranscriptFinal = (
 			role: RealtimeTranscriptRole,
@@ -2933,14 +2986,14 @@ export class SessionManager {
 					role,
 					text,
 					utteranceId: utterance.utteranceId,
-					realtimeSessionId: realtimeSessionId as string,
+					realtimeSessionId,
 					providerRealtimeSessionId,
 				});
 				if (persisted.inserted) bumpDataRevision("sessions");
 				options.emit({
 					type: "realtime_transcript",
 					session_id: options.sessionId,
-					...requestIdentity,
+					...options.requestIdentity,
 					mode: "live",
 					role,
 					text,
@@ -2955,19 +3008,19 @@ export class SessionManager {
 			);
 			void pending.catch((error) => {
 				logDbError("append realtime transcript", error);
-				void publishError(
+				options.onError(
 					"Raven Live stopped because its transcript could not be saved.",
 				);
 			});
 			return pending.catch(() => {});
 		};
-		const queueLiveTranscriptFinal = (
+		const queueTranscriptFinal = (
 			event: Extract<ProviderRealtimeEvent, { type: "transcript_done" }>,
 		) => {
 			const text = event.text.trim();
 			const role =
 				event.role === "user" || event.role === "assistant" ? event.role : null;
-			if (!role || !realtimeSessionId) return;
+			if (!role) return;
 			const active = activeUtterances.get(role);
 			const utterance = active ?? (text ? utteranceFor(role) : undefined);
 			if (!utterance) return;
@@ -2980,7 +3033,7 @@ export class SessionManager {
 				options.emit({
 					type: "realtime_transcript",
 					session_id: options.sessionId,
-					...requestIdentity,
+					...options.requestIdentity,
 					mode: "live",
 					role,
 					text: "",
@@ -2991,7 +3044,7 @@ export class SessionManager {
 			}
 			void queuePersistedLiveTranscriptFinal(role, text, utterance);
 		};
-		flushLiveToolOnlyActivities = async () => {
+		const flushToolOnlyActivities = async () => {
 			const pending = [...liveActivitiesByUtterance.values()].filter(
 				(activity) => activity.turn.hadToolEvents && !activity.finalQueued,
 			);
@@ -3021,7 +3074,7 @@ export class SessionManager {
 			options.emit({
 				...message,
 				realtime_utterance_id: activity.utterance.utteranceId,
-				realtime_session_id: realtimeSessionId as string,
+				realtime_session_id: realtimeSessionId,
 				transcript_seq: activity.utterance.transcriptSeq,
 				...(message.type === "tool_event" ? { fork_supported: false } : {}),
 			});
@@ -3045,7 +3098,7 @@ export class SessionManager {
 				logDbError("process realtime tool activity", error),
 			);
 		};
-		const publishLiveActivity = (event: ProviderRealtimeActivity) => {
+		const publishActivity = (event: ProviderRealtimeActivity) => {
 			const activity = ownerForLiveActivity(event);
 			const emit = (message: ServerMessage) =>
 				emitLiveActivityMessage(activity, message);
@@ -3056,7 +3109,7 @@ export class SessionManager {
 						activity.turn,
 						options.sessionId,
 						emit,
-						provider,
+						options.provider,
 					);
 					break;
 				case "tool_update":
@@ -3088,14 +3141,14 @@ export class SessionManager {
 							activity.turn,
 							options.sessionId,
 							emit,
-							provider,
+							options.provider,
 						);
 						activity.completedToolIds.add(event.toolId);
 					});
 					break;
 			}
 		};
-		settleLiveActivities = async () => {
+		const settleActivities = async () => {
 			for (const activity of liveActivitiesByUtterance.values()) {
 				const emit = (message: ServerMessage) =>
 					emitLiveActivityMessage(activity, message);
@@ -3120,23 +3173,179 @@ export class SessionManager {
 				}
 			}
 		};
-		const publish = (event: ProviderRealtimeEvent) => {
+		const publishTranscriptDelta = (
+			event: Extract<ProviderRealtimeEvent, { type: "transcript_delta" }>,
+		) => {
 			if (
-				this.realtimeGeneration !== realtimeGeneration ||
-				this.realtimeAgentSession !== agentSession ||
+				!event.delta ||
+				(event.role !== "user" && event.role !== "assistant")
+			) {
+				return;
+			}
+			const utterance = utteranceFor(event.role);
+			options.emit({
+				type: "realtime_transcript",
+				session_id: options.sessionId,
+				...options.requestIdentity,
+				mode: "live",
+				role: event.role,
+				text: event.delta,
+				done: false,
+				...transcriptMetadata(utterance),
+			});
+		};
+		return {
+			setProviderRealtimeSessionId: (sessionId) => {
+				providerRealtimeSessionId = sessionId;
+			},
+			publishTranscriptDelta,
+			queueTranscriptFinal,
+			publishActivity,
+			settleActivities,
+			flushToolOnlyActivities,
+		};
+	}
+
+	private createRealtimeTerminalLifecycle(options: {
+		mode: ProviderRealtimeMode;
+		sessionId: string;
+		emit: (message: ServerMessage) => void;
+		requestIdentity: RealtimeRequestIdentity;
+		realtimeGeneration: number;
+		agentSession: AgentSession;
+		liveCoordination: LiveRealtimeCoordination | null;
+	}): RealtimeTerminalLifecycle {
+		let terminalPending = false;
+		let terminalPublished = false;
+		let terminalFailureMessage: string | null = null;
+		let terminalFailureDeferredDuringStop = false;
+		let terminalCompletion: Promise<void> | null = null;
+		let deferredCloseReason: string | undefined;
+		let terminalEmitter = options.emit;
+		const beginTerminal = () => {
+			if (
 				terminalPending ||
-				terminalPublished
+				terminalPublished ||
+				this.realtimeCloseNotifier !== publishClosed
+			) {
+				return false;
+			}
+			terminalPending = true;
+			this.realtimeCloseNotifier = null;
+			return true;
+		};
+		const retireAfterUnsolicitedTerminal = () => {
+			// An explicit stop owns its wrapper through provider teardown. A provider
+			// terminal has no outer cleanup, so retire before delayed events can leak.
+			if (this.realtimeStopMode === options.mode) return;
+			this.retireAgentSessionAfterRealtime(options.agentSession);
+		};
+		const finishTerminal = async (
+			publish: () => void,
+			clearRealtimeMode = true,
+		) => {
+			await this.drainRealtimeTranscriptWrites();
+			await options.liveCoordination?.settleActivities();
+			await this.drainRealtimeTranscriptWrites();
+			await options.liveCoordination?.flushToolOnlyActivities();
+			await this.drainRealtimeTranscriptWrites();
+			if (
+				terminalPublished ||
+				(this.realtimeCloseNotifier !== null &&
+					this.realtimeCloseNotifier !== publishClosed)
+			) {
+				return;
+			}
+			terminalPublished = true;
+			if (terminalFailureMessage) {
+				if (!terminalFailureDeferredDuringStop) {
+					await this.stopRealtimeSession().catch(() => {});
+				}
+				terminalEmitter({
+					type: "realtime_error",
+					session_id: options.sessionId,
+					...options.requestIdentity,
+					mode: options.mode,
+					message: terminalFailureMessage,
+				});
+				retireAfterUnsolicitedTerminal();
+				return;
+			}
+			if (clearRealtimeMode) {
+				this.realtimeMode = null;
+				this.realtimeRequestId = null;
+			}
+			publish();
+			retireAfterUnsolicitedTerminal();
+		};
+		const publishClosed: RealtimeCloseNotifier = (reason, emitOverride) => {
+			if (reason) deferredCloseReason = reason;
+			if (emitOverride) terminalEmitter = emitOverride;
+			if (this.realtimeStoppingGeneration === options.realtimeGeneration) {
+				return Promise.resolve();
+			}
+			if (terminalCompletion) return terminalCompletion;
+			if (!beginTerminal()) return Promise.resolve();
+			terminalCompletion = finishTerminal(() =>
+				terminalEmitter({
+					type: "realtime_state",
+					session_id: options.sessionId,
+					...options.requestIdentity,
+					mode: options.mode,
+					state: "closed",
+					...(deferredCloseReason ? { reason: deferredCloseReason } : {}),
+				}),
+			);
+			return terminalCompletion;
+		};
+		const publishError = (message: string): Promise<void> => {
+			terminalFailureMessage = message;
+			if (this.realtimeStoppingGeneration === options.realtimeGeneration) {
+				terminalFailureDeferredDuringStop = true;
+				return Promise.resolve();
+			}
+			if (terminalCompletion) return terminalCompletion;
+			if (!beginTerminal()) return Promise.resolve();
+			terminalCompletion = finishTerminal(() => {}, false);
+			return terminalCompletion;
+		};
+		return {
+			publishClosed,
+			publishError,
+			isFinishing: () => terminalPending || terminalPublished,
+		};
+	}
+
+	private createRealtimeEventPublisher(options: {
+		mode: ProviderRealtimeMode;
+		sessionId: string;
+		emit: (message: ServerMessage) => void;
+		requestIdentity: RealtimeRequestIdentity;
+		realtimeGeneration: number;
+		agentSession: AgentSession;
+		liveCoordination: LiveRealtimeCoordination | null;
+		terminal: RealtimeTerminalLifecycle;
+	}): (event: ProviderRealtimeEvent) => void {
+		let audioOutputStarted = false;
+		const speechMode = options.mode === "live" ? null : options.mode;
+		return (event) => {
+			if (
+				this.realtimeGeneration !== options.realtimeGeneration ||
+				this.realtimeAgentSession !== options.agentSession ||
+				options.terminal.isFinishing()
 			) {
 				return;
 			}
 			switch (event.type) {
 				case "started":
-					providerRealtimeSessionId = event.realtimeSessionId;
+					options.liveCoordination?.setProviderRealtimeSessionId(
+						event.realtimeSessionId,
+					);
 					options.emit({
 						type: "realtime_state",
 						session_id: options.sessionId,
-						...requestIdentity,
-						mode: control.mode,
+						...options.requestIdentity,
+						mode: options.mode,
 						state: "connected",
 					});
 					break;
@@ -3144,8 +3353,8 @@ export class SessionManager {
 					options.emit({
 						type: "realtime_sdp",
 						session_id: options.sessionId,
-						...requestIdentity,
-						mode: control.mode,
+						...options.requestIdentity,
+						mode: options.mode,
 						sdp: event.sdp,
 					});
 					break;
@@ -3155,48 +3364,35 @@ export class SessionManager {
 					options.emit({
 						type: "realtime_audio",
 						session_id: options.sessionId,
-						...requestIdentity,
-						mode: control.mode,
+						...options.requestIdentity,
+						mode: options.mode,
 						state: "started",
 					});
 					break;
-				case "transcript_delta": {
-					if (!event.delta) break;
-					if (control.mode !== "live") {
+				case "transcript_delta":
+					if (options.liveCoordination) {
+						options.liveCoordination.publishTranscriptDelta(event);
+					} else if (event.delta && speechMode) {
 						options.emit({
 							type: "realtime_transcript",
 							session_id: options.sessionId,
-							...requestIdentity,
-							mode: control.mode,
+							...options.requestIdentity,
+							mode: speechMode,
 							role: event.role,
 							text: event.delta,
 							done: false,
 						});
-						break;
 					}
-					if (event.role !== "user" && event.role !== "assistant") break;
-					const utterance = utteranceFor(event.role);
-					options.emit({
-						type: "realtime_transcript",
-						session_id: options.sessionId,
-						...requestIdentity,
-						mode: "live",
-						role: event.role,
-						text: event.delta,
-						done: false,
-						...transcriptMetadata(utterance),
-					});
 					break;
-				}
 				case "transcript_done":
-					if (control.mode === "live") {
-						queueLiveTranscriptFinal(event);
-					} else {
+					if (options.liveCoordination) {
+						options.liveCoordination.queueTranscriptFinal(event);
+					} else if (speechMode) {
 						options.emit({
 							type: "realtime_transcript",
 							session_id: options.sessionId,
-							...requestIdentity,
-							mode: control.mode,
+							...options.requestIdentity,
+							mode: speechMode,
 							role: event.role,
 							text: event.text,
 							done: true,
@@ -3204,19 +3400,39 @@ export class SessionManager {
 					}
 					break;
 				case "activity":
-					if (control.mode === "live") publishLiveActivity(event.event);
+					options.liveCoordination?.publishActivity(event.event);
 					break;
 				case "error":
-					void publishError(event.message);
+					void options.terminal.publishError(event.message);
 					break;
 				case "closed":
-					void publishClosed(event.reason);
+					void options.terminal.publishClosed(event.reason);
 					break;
 			}
 		};
-		options.emit({
+	}
+
+	private async startPreparedRealtimeSession(options: {
+		control: RealtimeStartControl;
+		options: RealtimeControlOptions;
+		prepared: PreparedRealtimeStart;
+		realtimeGeneration: number;
+		requestIdentity: RealtimeRequestIdentity;
+		publish: (event: ProviderRealtimeEvent) => void;
+		publishClosed: RealtimeCloseNotifier;
+	}): Promise<void> {
+		const {
+			control,
+			options: controlOptions,
+			prepared,
+			realtimeGeneration,
+			requestIdentity,
+			publish,
+			publishClosed,
+		} = options;
+		controlOptions.emit({
 			type: "realtime_state",
-			session_id: options.sessionId,
+			session_id: controlOptions.sessionId,
 			...requestIdentity,
 			mode: control.mode,
 			state: "starting",
@@ -3225,7 +3441,7 @@ export class SessionManager {
 		this.realtimeCloseNotifier = publishClosed;
 		let result: ProviderRealtimeStartResult;
 		try {
-			result = await agentSession.startRealtime({
+			result = await prepared.startRealtime.call(prepared.agentSession, {
 				mode: control.mode,
 				sdp: control.sdp,
 				voice: control.voice,
@@ -3253,7 +3469,7 @@ export class SessionManager {
 				this.realtimeCloseNotifier = null;
 				this.realtimeMode = null;
 				this.realtimeRequestId = null;
-				this.retireAgentSessionAfterRealtime(agentSession);
+				this.retireAgentSessionAfterRealtime(prepared.agentSession);
 			}
 			throw error;
 		}
@@ -3262,12 +3478,12 @@ export class SessionManager {
 		const accepted =
 			control.mode === "live"
 				? await this.persistProviderSession(
-						options.sessionId,
-						provider.providerId,
+						controlOptions.sessionId,
+						prepared.provider.providerId,
 						result.providerSessionId,
-						ownershipGeneration,
+						prepared.ownershipGeneration,
 					)
-				: this.providerOwnershipGeneration === ownershipGeneration;
+				: this.providerOwnershipGeneration === prepared.ownershipGeneration;
 		if (!accepted) {
 			await this.stopRealtimeSession().catch(() => {});
 			throw new Error(
@@ -3276,7 +3492,7 @@ export class SessionManager {
 		}
 		if (control.mode === "live") {
 			this.providerSessionId = result.providerSessionId;
-			this.providerSessionProviderId = provider.providerId;
+			this.providerSessionProviderId = prepared.provider.providerId;
 		}
 	}
 
@@ -3472,6 +3688,29 @@ export class SessionManager {
 		}
 	}
 
+	private tearDownNativeSessionState(): void {
+		this.abortController?.abort();
+		// Tear down long-lived provider wrappers so the next query rebuilds its
+		// event stream instead of retaining request-local callbacks.
+		this.stopBackgroundActivityObserver();
+		if (
+			this.realtimeAgentSession &&
+			this.realtimeAgentSession !== this.agentSession
+		) {
+			this.realtimeAgentSession.cancel();
+		}
+		this.realtimeAgentSession = null;
+		this.agentSession?.cancel();
+		this.agentSession = null;
+		this.agentSessionKey = null;
+		this.realtimeMode = null;
+		this.realtimeRequestId = null;
+		this.realtimeCloseNotifier = null;
+		this.realtimeStopPromise = null;
+		this.realtimeStopMode = null;
+		this.realtimeStoppingGeneration = null;
+	}
+
 	abort(): void {
 		this.realtimeGeneration += 1;
 		this.unregisterUmbodApprovalSession?.();
@@ -3499,26 +3738,7 @@ export class SessionManager {
 			.deletePendingSessionTurns(durableIds)
 			.catch((error) => logDbError("cancel pending turns", error));
 		this.turnQueue.resolveAll();
-		this.abortController?.abort();
-		// Slice B: tear down the long-lived AgentSession so the next runQuery
-		// rebuilds the SDK stream from scratch.
-		this.stopBackgroundActivityObserver();
-		if (
-			this.realtimeAgentSession &&
-			this.realtimeAgentSession !== this.agentSession
-		) {
-			this.realtimeAgentSession.cancel();
-		}
-		this.realtimeAgentSession = null;
-		this.agentSession?.cancel();
-		this.agentSession = null;
-		this.agentSessionKey = null;
-		this.realtimeMode = null;
-		this.realtimeRequestId = null;
-		this.realtimeCloseNotifier = null;
-		this.realtimeStopPromise = null;
-		this.realtimeStopMode = null;
-		this.realtimeStoppingGeneration = null;
+		this.tearDownNativeSessionState();
 		this.restartAgentSessionForEffort = false;
 	}
 
@@ -3531,24 +3751,7 @@ export class SessionManager {
 		this.permissions.clearAll();
 		this.cancelAllAskUserQuestions();
 		this.planModeManager.clearAll();
-		this.abortController?.abort();
-		this.stopBackgroundActivityObserver();
-		if (
-			this.realtimeAgentSession &&
-			this.realtimeAgentSession !== this.agentSession
-		) {
-			this.realtimeAgentSession.cancel();
-		}
-		this.realtimeAgentSession = null;
-		this.agentSession?.cancel();
-		this.agentSession = null;
-		this.agentSessionKey = null;
-		this.realtimeMode = null;
-		this.realtimeRequestId = null;
-		this.realtimeCloseNotifier = null;
-		this.realtimeStopPromise = null;
-		this.realtimeStopMode = null;
-		this.realtimeStoppingGeneration = null;
+		this.tearDownNativeSessionState();
 	}
 
 	/**

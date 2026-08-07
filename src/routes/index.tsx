@@ -36,15 +36,15 @@ import {
 import { ProviderUsageStrip } from "#/components/usage/ProviderUsageStrip";
 import { RoutinesWindowSection } from "#/components/usage/UsageWindowSections";
 import { FirstRunWizard } from "#/components/wizard/FirstRunWizard";
-import { useCodexRealtime } from "#/hooks/codexRealtimeStore";
 import { useCockpitLiveData } from "#/hooks/useCockpitLiveData";
 import { isCockpitQueueTarget, useCockpitRun } from "#/hooks/useCockpitRun";
+import { useCockpitVoice } from "#/hooks/useCockpitVoice";
 import { useCommands } from "#/hooks/useCommands";
 import { useDraft } from "#/hooks/useDraft";
 import { useFileUpload } from "#/hooks/useFileUpload";
 import { useSlashPicker } from "#/hooks/useSlashPicker";
 import { useVaultReferencePicker } from "#/hooks/useVaultReferencePicker";
-import { uploadVoiceRecording, useVoiceInput } from "#/hooks/useVoiceInput";
+import type { useVoiceInput } from "#/hooks/useVoiceInput";
 import { useWsLiveStats } from "#/hooks/useWsSelectors";
 import {
 	getDataRevisionSnapshot,
@@ -56,13 +56,11 @@ import {
 	filterProviderCompatibleCommands,
 	skillCommand,
 } from "#/lib/commands";
-import { insertAtSelection, resizeComposer } from "#/lib/composer";
+import { resizeComposer } from "#/lib/composer";
 import { fmtModel } from "#/lib/formatters";
 import { optionalLoaderValue } from "#/lib/loaderFallback";
 import { isCliProxyProvider } from "#/lib/providerIds";
-import type { ModelInputAvailability } from "#/lib/providerOptions";
 import {
-	codexRealtimeAvailability,
 	configuredVaultModel,
 	modelInputAvailability,
 	resolveActiveProviderId,
@@ -86,8 +84,6 @@ import {
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import { groupSkills, type Skill } from "#/lib/skills";
 import { builtInProviderUsageShells } from "#/lib/usageWindows";
-import { uid } from "#/lib/utils";
-import type { ChatAttachment } from "#/server/protocol";
 
 // ─── route ───────────────────────────────────────────────────────────────────
 
@@ -425,100 +421,6 @@ function useCockpitRunWiring({
 		setWeeklyStats: live.setWeeklyStats,
 		navigateToRaven: (sessionId, agent) => {
 			navigate({ to: "/raven", search: { session: sessionId, agent } });
-		},
-	});
-}
-
-function useCockpitVoice(
-	config: Awaited<ReturnType<typeof getConfig>>,
-	initialVoiceInfo: Awaited<ReturnType<typeof getVoiceInfoFn>>,
-	composer: CockpitComposer,
-	upload: CockpitUpload,
-	providerId: string,
-	codexProvider: ProviderInfo | undefined,
-	codexAudio: ModelInputAvailability,
-	handleRun: (
-		overrideText?: string,
-		overrideAttachments?: ChatAttachment[],
-	) => Promise<void>,
-) {
-	const { prompt, setPrompt, textareaRef } = composer;
-	const onTranscription = useCallback(
-		(text: string) => {
-			if (config.voice.auto_send) {
-				void handleRun(text);
-				return;
-			}
-			const el = textareaRef.current;
-			const start = el?.selectionStart ?? prompt.length;
-			const end = el?.selectionEnd ?? prompt.length;
-			setPrompt(insertAtSelection(prompt, text, start, end));
-			requestAnimationFrame(() => textareaRef.current?.focus());
-		},
-		[config.voice.auto_send, handleRun, prompt, setPrompt, textareaRef],
-	);
-	const dictationContextKey = `${providerId}\0${composer.selectedAgentPath}`;
-	const dictationSessionRef = useRef({
-		contextKey: dictationContextKey,
-		sessionId: uid(),
-	});
-	if (dictationSessionRef.current.contextKey !== dictationContextKey) {
-		dictationSessionRef.current = {
-			contextKey: dictationContextKey,
-			sessionId: uid(),
-		};
-	}
-	const dictationSessionId = dictationSessionRef.current.sessionId;
-	const realtime = useCodexRealtime({
-		sessionId: dictationSessionId,
-		agentCwd: composer.selectedAgentPath,
-		providerId,
-		voice: config.voice.codex_voice,
-		onDictation: onTranscription,
-	});
-	const configuredDictation =
-		providerId === "codex"
-			? codexRealtimeAvailability(
-					config.voice.codex_live_mode,
-					codexProvider,
-					initialVoiceInfo.codexRealtimeBackend,
-				)
-			: {
-					available: false,
-					reason: "Dictate with Codex requires the native Codex provider.",
-				};
-	const realtimeDictationActive = realtime.mode === "dictation";
-	return useVoiceInput({
-		config: config.voice,
-		initialInfo: initialVoiceInfo,
-		onTranscription,
-		onAudioTurn: async (audio) => {
-			if (providerId !== "codex") {
-				throw new Error("Talk to Codex requires the native Codex provider");
-			}
-			const sessionId = upload.uploadSessionIdRef.current ?? uid();
-			upload.uploadSessionIdRef.current = sessionId;
-			const attachment = await uploadVoiceRecording(audio, {
-				sessionId,
-				agentCwd: composer.selectedAgentPath,
-			});
-			await handleRun("Voice message", [attachment]);
-		},
-		codexTurnAvailable: providerId === "codex" && codexAudio.available,
-		codexTurnUnavailableReason: codexAudio.reason,
-		codexDictation: {
-			available: configuredDictation.available && !realtime.unavailableReason,
-			unavailableReason:
-				realtime.unavailableReason ??
-				(configuredDictation.available
-					? undefined
-					: configuredDictation.reason),
-			phase: realtimeDictationActive ? realtime.phase : "idle",
-			error: realtimeDictationActive ? realtime.error : null,
-			start: () => realtime.start("dictation"),
-			stop: realtime.stop,
-			cancel: realtime.cancel,
-			clearError: realtime.clearError,
 		},
 	});
 }

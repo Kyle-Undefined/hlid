@@ -40,25 +40,9 @@ class FakeDataChannel {
 	}
 }
 
-class FakeReceiver {
-	jitterBufferEmittedCount: number | null = 0;
-	getStats = vi.fn(async () => {
-		const report = new Map<string, Record<string, unknown>>();
-		if (this.jitterBufferEmittedCount !== null) {
-			report.set("inbound-audio", {
-				type: "inbound-rtp",
-				kind: "audio",
-				jitterBufferEmittedCount: this.jitterBufferEmittedCount,
-			});
-		}
-		return report as unknown as RTCStatsReport;
-	});
-}
-
 class FakePeerConnection {
 	static instances: FakePeerConnection[] = [];
 	dataChannels: FakeDataChannel[] = [];
-	receivers = [new FakeReceiver()];
 	iceGatheringState = "complete";
 	connectionState = "new";
 	localDescription: RTCSessionDescription | null = null;
@@ -71,7 +55,6 @@ class FakePeerConnection {
 		this.dataChannels.push(channel);
 		return channel as unknown as RTCDataChannel;
 	});
-	getReceivers = vi.fn(() => this.receivers as unknown as RTCRtpReceiver[]);
 	close = vi.fn();
 	setRemoteDescription = vi.fn().mockResolvedValue(undefined);
 
@@ -192,12 +175,6 @@ class FakeAudioContext {
 let createdAudio: HTMLAudioElement | null = null;
 let microphoneTrackStop = vi.fn();
 let microphoneTrack = { enabled: true, stop: microphoneTrackStop };
-
-function receiverFor(peer: FakePeerConnection | undefined): FakeReceiver {
-	const receiver = peer?.receivers[0];
-	if (!receiver) throw new Error("Expected a fake audio receiver");
-	return receiver;
-}
 
 function readAloudDataChannelFor(
 	peer: FakePeerConnection | undefined,
@@ -1701,7 +1678,6 @@ describe("Codex realtime voice client", () => {
 		);
 		expect(callbacks.onPlaying).toHaveBeenCalledOnce();
 
-		receiverFor(peer).jitterBufferEmittedCount = 120;
 		act(() =>
 			dataChannel?.receive(
 				JSON.stringify({
@@ -1898,7 +1874,6 @@ describe("Codex realtime voice client", () => {
 		);
 		expect(callbacks.onPlaying).toHaveBeenCalledOnce();
 		expect(callbacks.onEnded).not.toHaveBeenCalled();
-		receiverFor(peer).jitterBufferEmittedCount = 60;
 		await act(async () => vi.advanceTimersByTimeAsync(999));
 		expect(callbacks.onEnded).not.toHaveBeenCalled();
 		await act(async () => vi.advanceTimersByTimeAsync(1));
@@ -1976,7 +1951,7 @@ describe("Codex realtime voice client", () => {
 		expect(peer?.close).toHaveBeenCalledOnce();
 	});
 
-	it("finishes after the output buffer stops while silent samples continue", async () => {
+	it("finishes after the output buffer stop grace period", async () => {
 		const callbacks = {
 			onPlaying: vi.fn(),
 			onEnded: vi.fn(),
@@ -2026,17 +2001,12 @@ describe("Codex realtime voice client", () => {
 			peer.dataChannels[0]?.receive(
 				JSON.stringify({ type: "output_audio_buffer.started" }),
 			);
-			receiverFor(peer).jitterBufferEmittedCount = 10;
 			peer.dataChannels[0]?.receive(
 				JSON.stringify({ type: "output_audio_buffer.stopped" }),
 			);
 		});
 
-		await act(async () => vi.advanceTimersByTimeAsync(400));
-		receiverFor(peer).jitterBufferEmittedCount = 20;
-		await act(async () => vi.advanceTimersByTimeAsync(400));
-		receiverFor(peer).jitterBufferEmittedCount = 30;
-		await act(async () => vi.advanceTimersByTimeAsync(199));
+		await act(async () => vi.advanceTimersByTimeAsync(999));
 		expect(callbacks.onEnded).not.toHaveBeenCalled();
 
 		await act(async () => vi.advanceTimersByTimeAsync(1));
@@ -2123,17 +2093,9 @@ describe("Codex realtime voice client", () => {
 			});
 		});
 
-		const receiver = receiverFor(peer);
-		for (let step = 1; step <= 6; step += 1) {
-			receiver.jitterBufferEmittedCount = step * 10;
-			await act(async () => vi.advanceTimersByTimeAsync(600));
-		}
-
+		await act(async () => vi.advanceTimersByTimeAsync(3_999));
 		expect(callbacks.onEnded).not.toHaveBeenCalled();
 		expect(peer.close).not.toHaveBeenCalled();
-		receiver.jitterBufferEmittedCount = 70;
-		await act(async () => vi.advanceTimersByTimeAsync(399));
-		expect(callbacks.onEnded).not.toHaveBeenCalled();
 		await act(async () => vi.advanceTimersByTimeAsync(1));
 		expect(callbacks.onEnded).toHaveBeenCalledOnce();
 		expect(callbacks.onError).not.toHaveBeenCalled();
