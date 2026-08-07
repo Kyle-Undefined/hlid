@@ -4,10 +4,12 @@ import {
 	type Client,
 	ClientSideConnection,
 	type ContentBlock,
-	type CreateElicitationRequest,
+	CreateElicitationRequest,
 	type CreateElicitationResponse,
+	ElicitationPropertySchema,
 	type InitializeResponse,
 	type McpServer,
+	MultiSelectItems,
 	ndJsonStream,
 	PROTOCOL_VERSION,
 	type SessionConfigOption,
@@ -231,20 +233,20 @@ function eventsFromUpdate(
 			];
 		}
 		case "plan_update": {
-			const toolId = planEventId ?? `acp-plan-${update.plan.id}`;
+			const toolId = planEventId ?? `acp-plan-${update.plan.planId}`;
 			return [
 				{ type: "tool_start", toolId, name: "UpdatePlan", input: update.plan },
 				{ type: "tool_result", toolId, content: planUpdateText(update) },
 			];
 		}
 		case "plan_removed": {
-			const toolId = planEventId ?? `acp-plan-${update.id}-removed`;
+			const toolId = planEventId ?? `acp-plan-${update.planId}-removed`;
 			return [
 				{
 					type: "tool_start",
 					toolId,
 					name: "UpdatePlan",
-					input: { id: update.id, removed: true },
+					input: { planId: update.planId, removed: true },
 				},
 				{ type: "tool_result", toolId, content: "Plan removed" },
 			];
@@ -454,34 +456,45 @@ type ElicitationField = {
 function elicitationFields(
 	request: CreateElicitationRequest,
 ): ElicitationField[] {
-	if (request.mode !== "form") return [];
+	if (!CreateElicitationRequest.isForm(request)) return [];
 	const properties = request.requestedSchema.properties ?? {};
-	return Object.entries(properties).map(([key, property]) => {
-		const question = property.title?.trim() || key;
+	return Object.entries(properties).flatMap(([key, property]) => {
 		const values = new Map<string, string>();
-		if (property.type === "string") {
+		let type: ElicitationField["type"];
+		if (ElicitationPropertySchema.isString(property)) {
+			type = "string";
 			for (const value of property.enum ?? []) values.set(value, value);
 			for (const item of property.oneOf ?? [])
 				values.set(item.title, item.const);
-		} else if (property.type === "array") {
-			if ("enum" in property.items) {
+		} else if (ElicitationPropertySchema.isArray(property)) {
+			type = "array";
+			if (MultiSelectItems.isString(property.items)) {
 				for (const value of property.items.enum) values.set(value, value);
-			} else {
+			} else if (MultiSelectItems.isTitled(property.items)) {
 				for (const item of property.items.anyOf)
 					values.set(item.title, item.const);
 			}
-		} else if (property.type === "boolean") {
+		} else if (ElicitationPropertySchema.isBoolean(property)) {
+			type = "boolean";
 			values.set("Yes", "true");
 			values.set("No", "false");
+		} else if (ElicitationPropertySchema.isNumber(property)) {
+			type = "number";
+		} else if (ElicitationPropertySchema.isInteger(property)) {
+			type = "integer";
+		} else {
+			return [];
 		}
-		return {
-			key,
-			question,
-			type: property.type,
-			values,
-			freeText: values.size === 0,
-			placeholder: property.description ?? undefined,
-		};
+		return [
+			{
+				key,
+				question: property.title?.trim() || key,
+				type,
+				values,
+				freeText: values.size === 0,
+				placeholder: property.description ?? undefined,
+			},
+		];
 	});
 }
 
@@ -552,7 +565,7 @@ class AcpSession implements AgentSession {
 	private async handleElicitation(
 		request: CreateElicitationRequest,
 	): Promise<CreateElicitationResponse> {
-		if (request.mode !== "form") return { action: "decline" };
+		if (!CreateElicitationRequest.isForm(request)) return { action: "decline" };
 		const fields = elicitationFields(request);
 		if (fields.length === 0) return { action: "decline" };
 		const questions = providerElicitationQuestions(fields);

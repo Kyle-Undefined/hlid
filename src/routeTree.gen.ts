@@ -9,69 +9,44 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as VaultRouteImport } from './routes/vault'
-import { Route as RelicsRouteImport } from './routes/relics'
-import { Route as RavenRouteImport } from './routes/raven'
-import { Route as LoginRouteImport } from './routes/login'
-import { Route as LedgerRouteImport } from './routes/ledger'
-import { Route as ForgeRouteImport } from './routes/forge'
-import { Route as EinherjarRouteImport } from './routes/einherjar'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as ApiVersionRouteImport } from './routes/api/version'
-import { Route as ApiUpdatesRouteImport } from './routes/api/updates'
-import { Route as ApiUmbodRouteImport } from './routes/api/umbod'
-import { Route as ApiTailscaleRouteImport } from './routes/api/tailscale'
-import { Route as ApiPricingRouteImport } from './routes/api/pricing'
-import { Route as ApiLifecycleRouteImport } from './routes/api/lifecycle'
-import { Route as ApiHealthRouteImport } from './routes/api/health'
-import { Route as ApiConfigRouteImport } from './routes/api/config'
+import { Route as EinherjarRouteImport } from './routes/einherjar'
+import { Route as ForgeRouteImport } from './routes/forge'
+import { Route as LedgerRouteImport } from './routes/ledger'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as RavenRouteImport } from './routes/raven'
+import { Route as RelicsRouteImport } from './routes/relics'
+import { Route as VaultRouteImport } from './routes/vault'
 import { Route as ApiBrowseRouteImport } from './routes/api/browse'
+import { Route as ApiConfigRouteImport } from './routes/api/config'
+import { Route as ApiHealthRouteImport } from './routes/api/health'
+import { Route as ApiLifecycleRouteImport } from './routes/api/lifecycle'
+import { Route as ApiPricingRouteImport } from './routes/api/pricing'
+import { Route as ApiTailscaleRouteImport } from './routes/api/tailscale'
+import { Route as ApiUmbodRouteImport } from './routes/api/umbod'
+import { Route as ApiUpdatesRouteImport } from './routes/api/updates'
+import { Route as ApiVersionRouteImport } from './routes/api/version'
 import { Route as ApiAgentsIndexRouteImport } from './routes/api/agents/index'
-import { Route as ApiVoiceTranscribeRouteImport } from './routes/api/voice/transcribe'
-import { Route as ApiVaultSkillsRouteImport } from './routes/api/vault/skills'
-import { Route as ApiVaultMemoryRouteImport } from './routes/api/vault/memory'
-import { Route as ApiReadAloudVoicesRouteImport } from './routes/api/read-aloud/voices'
-import { Route as ApiReadAloudPreviewRouteImport } from './routes/api/read-aloud/preview'
-import { Route as ApiReadAloudAudioRouteImport } from './routes/api/read-aloud/audio'
-import { Route as ApiMcpVaultRouteImport } from './routes/api/mcp/vault'
-import { Route as ApiMcpAgentRouteImport } from './routes/api/mcp/agent'
-import { Route as ApiAuthActionRouteImport } from './routes/api/auth.$action'
-import { Route as ApiAttachmentsUploadRouteImport } from './routes/api/attachments/upload'
-import { Route as ApiAttachmentsIdRouteImport } from './routes/api/attachments/$id'
-import { Route as ApiAgentsValidateRouteImport } from './routes/api/agents/validate'
 import { Route as ApiAgentsClaudemdRouteImport } from './routes/api/agents/claudemd'
-import { Route as ApiMcpVaultToggleRouteImport } from './routes/api/mcp/vault.toggle'
-import { Route as ApiMcpAgentToggleRouteImport } from './routes/api/mcp/agent.toggle'
+import { Route as ApiAgentsValidateRouteImport } from './routes/api/agents/validate'
+import { Route as ApiAttachmentsIdRouteImport } from './routes/api/attachments/$id'
+import { Route as ApiAttachmentsUploadRouteImport } from './routes/api/attachments/upload'
+import { Route as ApiAuthActionRouteImport } from './routes/api/auth.$action'
+import { Route as ApiMcpAgentRouteImport } from './routes/api/mcp/agent'
+import { Route as ApiMcpVaultRouteImport } from './routes/api/mcp/vault'
+import { Route as ApiReadAloudAudioRouteImport } from './routes/api/read-aloud/audio'
+import { Route as ApiReadAloudPreviewRouteImport } from './routes/api/read-aloud/preview'
+import { Route as ApiReadAloudVoicesRouteImport } from './routes/api/read-aloud/voices'
+import { Route as ApiVaultMemoryRouteImport } from './routes/api/vault/memory'
+import { Route as ApiVaultSkillsRouteImport } from './routes/api/vault/skills'
+import { Route as ApiVoiceTranscribeRouteImport } from './routes/api/voice/transcribe'
 import { Route as ApiAttachmentsIdRawRouteImport } from './routes/api/attachments/$id.raw'
+import { Route as ApiMcpAgentToggleRouteImport } from './routes/api/mcp/agent.toggle'
+import { Route as ApiMcpVaultToggleRouteImport } from './routes/api/mcp/vault.toggle'
 
-const VaultRoute = VaultRouteImport.update({
-  id: '/vault',
-  path: '/vault',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const RelicsRoute = RelicsRouteImport.update({
-  id: '/relics',
-  path: '/relics',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const RavenRoute = RavenRouteImport.update({
-  id: '/raven',
-  path: '/raven',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const LoginRoute = LoginRouteImport.update({
-  id: '/login',
-  path: '/login',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const LedgerRoute = LedgerRouteImport.update({
-  id: '/ledger',
-  path: '/ledger',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ForgeRoute = ForgeRouteImport.update({
-  id: '/forge',
-  path: '/forge',
+const IndexRoute = IndexRouteImport.update({
+  id: '/',
+  path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const EinherjarRoute = EinherjarRouteImport.update({
@@ -79,49 +54,34 @@ const EinherjarRoute = EinherjarRouteImport.update({
   path: '/einherjar',
   getParentRoute: () => rootRouteImport,
 } as any)
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
+const ForgeRoute = ForgeRouteImport.update({
+  id: '/forge',
+  path: '/forge',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiVersionRoute = ApiVersionRouteImport.update({
-  id: '/api/version',
-  path: '/api/version',
+const LedgerRoute = LedgerRouteImport.update({
+  id: '/ledger',
+  path: '/ledger',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiUpdatesRoute = ApiUpdatesRouteImport.update({
-  id: '/api/updates',
-  path: '/api/updates',
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiUmbodRoute = ApiUmbodRouteImport.update({
-  id: '/api/umbod',
-  path: '/api/umbod',
+const RavenRoute = RavenRouteImport.update({
+  id: '/raven',
+  path: '/raven',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiTailscaleRoute = ApiTailscaleRouteImport.update({
-  id: '/api/tailscale',
-  path: '/api/tailscale',
+const RelicsRoute = RelicsRouteImport.update({
+  id: '/relics',
+  path: '/relics',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiPricingRoute = ApiPricingRouteImport.update({
-  id: '/api/pricing',
-  path: '/api/pricing',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiLifecycleRoute = ApiLifecycleRouteImport.update({
-  id: '/api/lifecycle',
-  path: '/api/lifecycle',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiHealthRoute = ApiHealthRouteImport.update({
-  id: '/api/health',
-  path: '/api/health',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiConfigRoute = ApiConfigRouteImport.update({
-  id: '/api/config',
-  path: '/api/config',
+const VaultRoute = VaultRouteImport.update({
+  id: '/vault',
+  path: '/vault',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiBrowseRoute = ApiBrowseRouteImport.update({
@@ -129,69 +89,49 @@ const ApiBrowseRoute = ApiBrowseRouteImport.update({
   path: '/api/browse',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiConfigRoute = ApiConfigRouteImport.update({
+  id: '/api/config',
+  path: '/api/config',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiHealthRoute = ApiHealthRouteImport.update({
+  id: '/api/health',
+  path: '/api/health',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiLifecycleRoute = ApiLifecycleRouteImport.update({
+  id: '/api/lifecycle',
+  path: '/api/lifecycle',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPricingRoute = ApiPricingRouteImport.update({
+  id: '/api/pricing',
+  path: '/api/pricing',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiTailscaleRoute = ApiTailscaleRouteImport.update({
+  id: '/api/tailscale',
+  path: '/api/tailscale',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiUmbodRoute = ApiUmbodRouteImport.update({
+  id: '/api/umbod',
+  path: '/api/umbod',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiUpdatesRoute = ApiUpdatesRouteImport.update({
+  id: '/api/updates',
+  path: '/api/updates',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiVersionRoute = ApiVersionRouteImport.update({
+  id: '/api/version',
+  path: '/api/version',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAgentsIndexRoute = ApiAgentsIndexRouteImport.update({
   id: '/api/agents/',
   path: '/api/agents/',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiVoiceTranscribeRoute = ApiVoiceTranscribeRouteImport.update({
-  id: '/api/voice/transcribe',
-  path: '/api/voice/transcribe',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiVaultSkillsRoute = ApiVaultSkillsRouteImport.update({
-  id: '/api/vault/skills',
-  path: '/api/vault/skills',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiVaultMemoryRoute = ApiVaultMemoryRouteImport.update({
-  id: '/api/vault/memory',
-  path: '/api/vault/memory',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiReadAloudVoicesRoute = ApiReadAloudVoicesRouteImport.update({
-  id: '/api/read-aloud/voices',
-  path: '/api/read-aloud/voices',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiReadAloudPreviewRoute = ApiReadAloudPreviewRouteImport.update({
-  id: '/api/read-aloud/preview',
-  path: '/api/read-aloud/preview',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiReadAloudAudioRoute = ApiReadAloudAudioRouteImport.update({
-  id: '/api/read-aloud/audio',
-  path: '/api/read-aloud/audio',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiMcpVaultRoute = ApiMcpVaultRouteImport.update({
-  id: '/api/mcp/vault',
-  path: '/api/mcp/vault',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiMcpAgentRoute = ApiMcpAgentRouteImport.update({
-  id: '/api/mcp/agent',
-  path: '/api/mcp/agent',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiAuthActionRoute = ApiAuthActionRouteImport.update({
-  id: '/api/auth/$action',
-  path: '/api/auth/$action',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiAttachmentsUploadRoute = ApiAttachmentsUploadRouteImport.update({
-  id: '/api/attachments/upload',
-  path: '/api/attachments/upload',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiAttachmentsIdRoute = ApiAttachmentsIdRouteImport.update({
-  id: '/api/attachments/$id',
-  path: '/api/attachments/$id',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiAgentsValidateRoute = ApiAgentsValidateRouteImport.update({
-  id: '/api/agents/validate',
-  path: '/api/agents/validate',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiAgentsClaudemdRoute = ApiAgentsClaudemdRouteImport.update({
@@ -199,20 +139,80 @@ const ApiAgentsClaudemdRoute = ApiAgentsClaudemdRouteImport.update({
   path: '/api/agents/claudemd',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiMcpVaultToggleRoute = ApiMcpVaultToggleRouteImport.update({
-  id: '/toggle',
-  path: '/toggle',
-  getParentRoute: () => ApiMcpVaultRoute,
+const ApiAgentsValidateRoute = ApiAgentsValidateRouteImport.update({
+  id: '/api/agents/validate',
+  path: '/api/agents/validate',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAttachmentsIdRoute = ApiAttachmentsIdRouteImport.update({
+  id: '/api/attachments/$id',
+  path: '/api/attachments/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAttachmentsUploadRoute = ApiAttachmentsUploadRouteImport.update({
+  id: '/api/attachments/upload',
+  path: '/api/attachments/upload',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAuthActionRoute = ApiAuthActionRouteImport.update({
+  id: '/api/auth/$action',
+  path: '/api/auth/$action',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiMcpAgentRoute = ApiMcpAgentRouteImport.update({
+  id: '/api/mcp/agent',
+  path: '/api/mcp/agent',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiMcpVaultRoute = ApiMcpVaultRouteImport.update({
+  id: '/api/mcp/vault',
+  path: '/api/mcp/vault',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiReadAloudAudioRoute = ApiReadAloudAudioRouteImport.update({
+  id: '/api/read-aloud/audio',
+  path: '/api/read-aloud/audio',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiReadAloudPreviewRoute = ApiReadAloudPreviewRouteImport.update({
+  id: '/api/read-aloud/preview',
+  path: '/api/read-aloud/preview',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiReadAloudVoicesRoute = ApiReadAloudVoicesRouteImport.update({
+  id: '/api/read-aloud/voices',
+  path: '/api/read-aloud/voices',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiVaultMemoryRoute = ApiVaultMemoryRouteImport.update({
+  id: '/api/vault/memory',
+  path: '/api/vault/memory',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiVaultSkillsRoute = ApiVaultSkillsRouteImport.update({
+  id: '/api/vault/skills',
+  path: '/api/vault/skills',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiVoiceTranscribeRoute = ApiVoiceTranscribeRouteImport.update({
+  id: '/api/voice/transcribe',
+  path: '/api/voice/transcribe',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAttachmentsIdRawRoute = ApiAttachmentsIdRawRouteImport.update({
+  id: '/raw',
+  path: '/raw',
+  getParentRoute: () => ApiAttachmentsIdRoute,
 } as any)
 const ApiMcpAgentToggleRoute = ApiMcpAgentToggleRouteImport.update({
   id: '/toggle',
   path: '/toggle',
   getParentRoute: () => ApiMcpAgentRoute,
 } as any)
-const ApiAttachmentsIdRawRoute = ApiAttachmentsIdRawRouteImport.update({
-  id: '/raw',
-  path: '/raw',
-  getParentRoute: () => ApiAttachmentsIdRoute,
+const ApiMcpVaultToggleRoute = ApiMcpVaultToggleRouteImport.update({
+  id: '/toggle',
+  path: '/toggle',
+  getParentRoute: () => ApiMcpVaultRoute,
 } as any)
 
 export interface FileRoutesByFullPath {
@@ -471,46 +471,11 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/vault': {
-      id: '/vault'
-      path: '/vault'
-      fullPath: '/vault'
-      preLoaderRoute: typeof VaultRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/relics': {
-      id: '/relics'
-      path: '/relics'
-      fullPath: '/relics'
-      preLoaderRoute: typeof RelicsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/raven': {
-      id: '/raven'
-      path: '/raven'
-      fullPath: '/raven'
-      preLoaderRoute: typeof RavenRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/login': {
-      id: '/login'
-      path: '/login'
-      fullPath: '/login'
-      preLoaderRoute: typeof LoginRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/ledger': {
-      id: '/ledger'
-      path: '/ledger'
-      fullPath: '/ledger'
-      preLoaderRoute: typeof LedgerRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/forge': {
-      id: '/forge'
-      path: '/forge'
-      fullPath: '/forge'
-      preLoaderRoute: typeof ForgeRouteImport
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/einherjar': {
@@ -520,67 +485,46 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EinherjarRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
+    '/forge': {
+      id: '/forge'
+      path: '/forge'
+      fullPath: '/forge'
+      preLoaderRoute: typeof ForgeRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/version': {
-      id: '/api/version'
-      path: '/api/version'
-      fullPath: '/api/version'
-      preLoaderRoute: typeof ApiVersionRouteImport
+    '/ledger': {
+      id: '/ledger'
+      path: '/ledger'
+      fullPath: '/ledger'
+      preLoaderRoute: typeof LedgerRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/updates': {
-      id: '/api/updates'
-      path: '/api/updates'
-      fullPath: '/api/updates'
-      preLoaderRoute: typeof ApiUpdatesRouteImport
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/umbod': {
-      id: '/api/umbod'
-      path: '/api/umbod'
-      fullPath: '/api/umbod'
-      preLoaderRoute: typeof ApiUmbodRouteImport
+    '/raven': {
+      id: '/raven'
+      path: '/raven'
+      fullPath: '/raven'
+      preLoaderRoute: typeof RavenRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/tailscale': {
-      id: '/api/tailscale'
-      path: '/api/tailscale'
-      fullPath: '/api/tailscale'
-      preLoaderRoute: typeof ApiTailscaleRouteImport
+    '/relics': {
+      id: '/relics'
+      path: '/relics'
+      fullPath: '/relics'
+      preLoaderRoute: typeof RelicsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/pricing': {
-      id: '/api/pricing'
-      path: '/api/pricing'
-      fullPath: '/api/pricing'
-      preLoaderRoute: typeof ApiPricingRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/lifecycle': {
-      id: '/api/lifecycle'
-      path: '/api/lifecycle'
-      fullPath: '/api/lifecycle'
-      preLoaderRoute: typeof ApiLifecycleRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/health': {
-      id: '/api/health'
-      path: '/api/health'
-      fullPath: '/api/health'
-      preLoaderRoute: typeof ApiHealthRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/config': {
-      id: '/api/config'
-      path: '/api/config'
-      fullPath: '/api/config'
-      preLoaderRoute: typeof ApiConfigRouteImport
+    '/vault': {
+      id: '/vault'
+      path: '/vault'
+      fullPath: '/vault'
+      preLoaderRoute: typeof VaultRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/browse': {
@@ -590,95 +534,67 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiBrowseRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/config': {
+      id: '/api/config'
+      path: '/api/config'
+      fullPath: '/api/config'
+      preLoaderRoute: typeof ApiConfigRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/health': {
+      id: '/api/health'
+      path: '/api/health'
+      fullPath: '/api/health'
+      preLoaderRoute: typeof ApiHealthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/lifecycle': {
+      id: '/api/lifecycle'
+      path: '/api/lifecycle'
+      fullPath: '/api/lifecycle'
+      preLoaderRoute: typeof ApiLifecycleRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/pricing': {
+      id: '/api/pricing'
+      path: '/api/pricing'
+      fullPath: '/api/pricing'
+      preLoaderRoute: typeof ApiPricingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/tailscale': {
+      id: '/api/tailscale'
+      path: '/api/tailscale'
+      fullPath: '/api/tailscale'
+      preLoaderRoute: typeof ApiTailscaleRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/umbod': {
+      id: '/api/umbod'
+      path: '/api/umbod'
+      fullPath: '/api/umbod'
+      preLoaderRoute: typeof ApiUmbodRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/updates': {
+      id: '/api/updates'
+      path: '/api/updates'
+      fullPath: '/api/updates'
+      preLoaderRoute: typeof ApiUpdatesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/version': {
+      id: '/api/version'
+      path: '/api/version'
+      fullPath: '/api/version'
+      preLoaderRoute: typeof ApiVersionRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/agents/': {
       id: '/api/agents/'
       path: '/api/agents'
       fullPath: '/api/agents/'
       preLoaderRoute: typeof ApiAgentsIndexRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/voice/transcribe': {
-      id: '/api/voice/transcribe'
-      path: '/api/voice/transcribe'
-      fullPath: '/api/voice/transcribe'
-      preLoaderRoute: typeof ApiVoiceTranscribeRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/vault/skills': {
-      id: '/api/vault/skills'
-      path: '/api/vault/skills'
-      fullPath: '/api/vault/skills'
-      preLoaderRoute: typeof ApiVaultSkillsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/vault/memory': {
-      id: '/api/vault/memory'
-      path: '/api/vault/memory'
-      fullPath: '/api/vault/memory'
-      preLoaderRoute: typeof ApiVaultMemoryRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/read-aloud/voices': {
-      id: '/api/read-aloud/voices'
-      path: '/api/read-aloud/voices'
-      fullPath: '/api/read-aloud/voices'
-      preLoaderRoute: typeof ApiReadAloudVoicesRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/read-aloud/preview': {
-      id: '/api/read-aloud/preview'
-      path: '/api/read-aloud/preview'
-      fullPath: '/api/read-aloud/preview'
-      preLoaderRoute: typeof ApiReadAloudPreviewRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/read-aloud/audio': {
-      id: '/api/read-aloud/audio'
-      path: '/api/read-aloud/audio'
-      fullPath: '/api/read-aloud/audio'
-      preLoaderRoute: typeof ApiReadAloudAudioRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/mcp/vault': {
-      id: '/api/mcp/vault'
-      path: '/api/mcp/vault'
-      fullPath: '/api/mcp/vault'
-      preLoaderRoute: typeof ApiMcpVaultRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/mcp/agent': {
-      id: '/api/mcp/agent'
-      path: '/api/mcp/agent'
-      fullPath: '/api/mcp/agent'
-      preLoaderRoute: typeof ApiMcpAgentRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/auth/$action': {
-      id: '/api/auth/$action'
-      path: '/api/auth/$action'
-      fullPath: '/api/auth/$action'
-      preLoaderRoute: typeof ApiAuthActionRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/attachments/upload': {
-      id: '/api/attachments/upload'
-      path: '/api/attachments/upload'
-      fullPath: '/api/attachments/upload'
-      preLoaderRoute: typeof ApiAttachmentsUploadRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/attachments/$id': {
-      id: '/api/attachments/$id'
-      path: '/api/attachments/$id'
-      fullPath: '/api/attachments/$id'
-      preLoaderRoute: typeof ApiAttachmentsIdRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/agents/validate': {
-      id: '/api/agents/validate'
-      path: '/api/agents/validate'
-      fullPath: '/api/agents/validate'
-      preLoaderRoute: typeof ApiAgentsValidateRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/agents/claudemd': {
@@ -688,12 +604,96 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAgentsClaudemdRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/mcp/vault/toggle': {
-      id: '/api/mcp/vault/toggle'
-      path: '/toggle'
-      fullPath: '/api/mcp/vault/toggle'
-      preLoaderRoute: typeof ApiMcpVaultToggleRouteImport
-      parentRoute: typeof ApiMcpVaultRoute
+    '/api/agents/validate': {
+      id: '/api/agents/validate'
+      path: '/api/agents/validate'
+      fullPath: '/api/agents/validate'
+      preLoaderRoute: typeof ApiAgentsValidateRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/attachments/$id': {
+      id: '/api/attachments/$id'
+      path: '/api/attachments/$id'
+      fullPath: '/api/attachments/$id'
+      preLoaderRoute: typeof ApiAttachmentsIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/attachments/upload': {
+      id: '/api/attachments/upload'
+      path: '/api/attachments/upload'
+      fullPath: '/api/attachments/upload'
+      preLoaderRoute: typeof ApiAttachmentsUploadRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/auth/$action': {
+      id: '/api/auth/$action'
+      path: '/api/auth/$action'
+      fullPath: '/api/auth/$action'
+      preLoaderRoute: typeof ApiAuthActionRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/mcp/agent': {
+      id: '/api/mcp/agent'
+      path: '/api/mcp/agent'
+      fullPath: '/api/mcp/agent'
+      preLoaderRoute: typeof ApiMcpAgentRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/mcp/vault': {
+      id: '/api/mcp/vault'
+      path: '/api/mcp/vault'
+      fullPath: '/api/mcp/vault'
+      preLoaderRoute: typeof ApiMcpVaultRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/read-aloud/audio': {
+      id: '/api/read-aloud/audio'
+      path: '/api/read-aloud/audio'
+      fullPath: '/api/read-aloud/audio'
+      preLoaderRoute: typeof ApiReadAloudAudioRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/read-aloud/preview': {
+      id: '/api/read-aloud/preview'
+      path: '/api/read-aloud/preview'
+      fullPath: '/api/read-aloud/preview'
+      preLoaderRoute: typeof ApiReadAloudPreviewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/read-aloud/voices': {
+      id: '/api/read-aloud/voices'
+      path: '/api/read-aloud/voices'
+      fullPath: '/api/read-aloud/voices'
+      preLoaderRoute: typeof ApiReadAloudVoicesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/vault/memory': {
+      id: '/api/vault/memory'
+      path: '/api/vault/memory'
+      fullPath: '/api/vault/memory'
+      preLoaderRoute: typeof ApiVaultMemoryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/vault/skills': {
+      id: '/api/vault/skills'
+      path: '/api/vault/skills'
+      fullPath: '/api/vault/skills'
+      preLoaderRoute: typeof ApiVaultSkillsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/voice/transcribe': {
+      id: '/api/voice/transcribe'
+      path: '/api/voice/transcribe'
+      fullPath: '/api/voice/transcribe'
+      preLoaderRoute: typeof ApiVoiceTranscribeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/attachments/$id/raw': {
+      id: '/api/attachments/$id/raw'
+      path: '/raw'
+      fullPath: '/api/attachments/$id/raw'
+      preLoaderRoute: typeof ApiAttachmentsIdRawRouteImport
+      parentRoute: typeof ApiAttachmentsIdRoute
     }
     '/api/mcp/agent/toggle': {
       id: '/api/mcp/agent/toggle'
@@ -702,12 +702,12 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiMcpAgentToggleRouteImport
       parentRoute: typeof ApiMcpAgentRoute
     }
-    '/api/attachments/$id/raw': {
-      id: '/api/attachments/$id/raw'
-      path: '/raw'
-      fullPath: '/api/attachments/$id/raw'
-      preLoaderRoute: typeof ApiAttachmentsIdRawRouteImport
-      parentRoute: typeof ApiAttachmentsIdRoute
+    '/api/mcp/vault/toggle': {
+      id: '/api/mcp/vault/toggle'
+      path: '/toggle'
+      fullPath: '/api/mcp/vault/toggle'
+      preLoaderRoute: typeof ApiMcpVaultToggleRouteImport
+      parentRoute: typeof ApiMcpVaultRoute
     }
   }
 }

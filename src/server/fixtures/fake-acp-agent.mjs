@@ -229,12 +229,16 @@ agent({ name: "hlid-fake-agent" })
 				sessionId: params.sessionId,
 				update: {
 					sessionUpdate: "plan_update",
-					plan: { type: "markdown", id: "draft", content: "# Draft" },
+					plan: {
+						type: "markdown",
+						planId: "draft",
+						content: "# Draft",
+					},
 				},
 			});
 			await client.notify(methods.client.session.update, {
 				sessionId: params.sessionId,
-				update: { sessionUpdate: "plan_removed", id: "draft" },
+				update: { sessionUpdate: "plan_removed", planId: "draft" },
 			});
 			return { stopReason: "end_turn" };
 		}

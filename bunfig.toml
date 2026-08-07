@@ -5,19 +5,21 @@ minimumReleaseAge = 432000 # 5 days in seconds
 
 # Per-package bypass — only add a name here if a fresh release fixes a known
 # CVE we are exposed to and we accept the supply-chain trade-off.
-#   - mermaid 11.15.0 (2026-05-11) patched CVE-2026-41148/49/59 (CSS injection
-#     via user-supplied diagrams rendered in MermaidBlock.tsx) and CVE-2026-41150
-#     (gantt DoS). That bypass is no longer needed: we're now on mermaid 11.16.0
-#     (2026-06-25) / @mermaid-js/parser 1.2.0 (2026-06-25), both of which cleared
-#     the 5-day floor naturally by 2026-07-04. Removed "mermaid" and
-#     "@mermaid-js/parser" from the excludes below; re-add if a future release
-#     needs to bypass the floor for a CVE fix.
-#   - tailwind-merge 3.6.0 (2026-05-10) adds Tailwind v4.3 support, matching the
-#     tailwindcss version pinned in package.json.
-#   - fast-uri 3.1.4 (2026-07-19) patches GHSA-v2hh-gcrm-f6hx and
-#     GHSA-4c8g-83qw-93j6. The previous locked version is directly exposed
-#     through AJV, so the security fix is allowed through before the floor.
+#   - hono 4.12.34 (2026-08-03) patches GHSA-8j4g-w8fx-2239.
+#   - mermaid 11.16.1 (2026-08-04) patches the current Mermaid audit findings.
+#   - Claude Agent SDK 0.3.224 (2026-08-07) is explicitly selected for upcoming
+#     provider work. Its exact platform companions must resolve with it.
+# Review and remove these exclusions after 2026-08-12.
 minimumReleaseAgeExcludes = [
-  "fast-uri",
-  "tailwind-merge",
+  "@anthropic-ai/claude-agent-sdk",
+  "@anthropic-ai/claude-agent-sdk-darwin-arm64",
+  "@anthropic-ai/claude-agent-sdk-darwin-x64",
+  "@anthropic-ai/claude-agent-sdk-linux-arm64",
+  "@anthropic-ai/claude-agent-sdk-linux-arm64-musl",
+  "@anthropic-ai/claude-agent-sdk-linux-x64",
+  "@anthropic-ai/claude-agent-sdk-linux-x64-musl",
+  "@anthropic-ai/claude-agent-sdk-win32-arm64",
+  "@anthropic-ai/claude-agent-sdk-win32-x64",
+  "hono",
+  "mermaid",
 ]

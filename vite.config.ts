@@ -6,8 +6,8 @@ import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
 import { parse } from "smol-toml";
 import { defineConfig, type Plugin } from "vite";
-import { isAllowedOrigin } from "./src/lib/allowedOrigin";
-import { resolveDevServerPort } from "./src/lib/devServerPort";
+import { isAllowedOrigin } from "./src/lib/allowedOrigin.ts";
+import { resolveDevServerPort } from "./src/lib/devServerPort.ts";
 
 type ServerConfig = {
 	tls_cert_path?: string;
