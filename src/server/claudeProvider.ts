@@ -3,6 +3,7 @@ import { posix, win32 } from "node:path";
 import type {
 	SDKControlGetUsageResponse,
 	SDKMessage,
+	SDKMessageOrigin,
 	EffortLevel as SdkEffortLevel,
 	McpServerConfig as SdkMcpServerConfig,
 	ModelInfo as SdkModelInfo,
@@ -28,6 +29,7 @@ import {
 import { readProjectMcpFile } from "../lib/projectMcp";
 import type {
 	AgentEvent,
+	AgentInputOrigin,
 	AgentProvider,
 	AgentQueryParams,
 	AgentSession,
@@ -261,14 +263,15 @@ export function mapClaudeUsageWindows(
 	];
 }
 
-// SDKUserMessage shape per @anthropic-ai/claude-agent-sdk's sdk.d.ts. Kept
-// minimal here to avoid pulling the deep SDK type — the SDK accepts any
-// object matching this shape.
+// Minimal SDKUserMessage shape used by Hlid's streaming input. The origin
+// remains typed to the SDK's public union, while its source is translated only
+// at this Claude-specific boundary.
 type SdkUserMessage = {
 	type: "user";
 	message: { role: "user"; content: Array<{ type: "text"; text: string }> };
 	parent_tool_use_id: null;
 	priority?: "now" | "next" | "later";
+	origin: SDKMessageOrigin;
 };
 
 /**
@@ -315,15 +318,36 @@ class InputStream {
 	}
 }
 
+function toSdkMessageOrigin(
+	inputOrigin: AgentInputOrigin | undefined,
+): SDKMessageOrigin {
+	switch (inputOrigin) {
+		case "human":
+			return { kind: "human" };
+		case "scheduled-task":
+			return { kind: "task-notification", subkind: "scheduled-trigger" };
+		case "coordinator":
+			return { kind: "coordinator" };
+		case "background-notification":
+			return { kind: "task-notification" };
+		case "auto-continuation":
+			return { kind: "auto-continuation" };
+		default:
+			return { kind: "unclassified" };
+	}
+}
+
 function buildSdkUserMessage(
 	text: string,
 	priority: "now" | "next" | "later",
+	inputOrigin: AgentInputOrigin | undefined,
 ): SdkUserMessage {
 	return {
 		type: "user",
 		message: { role: "user", content: [{ type: "text", text }] },
 		parent_tool_use_id: null,
 		priority,
+		origin: toSdkMessageOrigin(inputOrigin),
 	};
 }
 
@@ -1764,9 +1788,40 @@ function translateUserMessage(
 	hadText: boolean,
 	tracker: ClaudeSubagentTracker,
 ): EventTranslation {
+	const origin = recordValue((message as { origin?: unknown }).origin);
+	const hasInternalSenderTask =
+		typeof origin?.senderTaskId === "string" &&
+		origin.senderTaskId.trim().length > 0;
+	const isProviderPeerMessage =
+		origin !== null &&
+		((origin.kind === "peer" && !hasInternalSenderTask) ||
+			(origin.kind === "task-notification" &&
+				origin.subkind === "peer-send-message"));
+	const peerEvent: AgentEvent[] = isProviderPeerMessage
+		? [
+				{
+					type: "provider_peer_message",
+					...(typeof origin.body === "string" ? { body: origin.body } : {}),
+					...(typeof origin.from === "string"
+						? { fromAddress: origin.from }
+						: {}),
+					...(typeof origin.name === "string"
+						? { claimedName: origin.name }
+						: {}),
+					...(typeof origin.fromSession === "string"
+						? { fromSession: origin.fromSession }
+						: {}),
+					...(typeof origin.verifiedPeerPid === "number" &&
+					Number.isSafeInteger(origin.verifiedPeerPid) &&
+					origin.verifiedPeerPid > 0
+						? { verifiedPeerPid: origin.verifiedPeerPid }
+						: {}),
+				},
+			]
+		: [];
 	const content = (message as { message?: { content?: unknown } }).message
 		?.content;
-	if (!Array.isArray(content)) return { events: [], hadText };
+	if (!Array.isArray(content)) return { events: peerEvent, hadText };
 	const toolResultBlocks = content.filter(
 		(block): block is Record<string, unknown> =>
 			typeof block === "object" &&
@@ -1783,13 +1838,15 @@ function translateUserMessage(
 		(message as { parent_tool_use_id?: unknown }).parent_tool_use_id == null;
 	const isSteeringMessage =
 		(message as { priority?: unknown }).priority === "now";
-	const events: AgentEvent[] =
+	const isHumanMessage = origin?.kind === "human";
+	const checkpointEvents: AgentEvent[] =
 		typeof checkpointId === "string" &&
 		checkpointId &&
 		typeof checkpointSessionId === "string" &&
 		checkpointSessionId &&
 		isRootUserMessage &&
 		!isSteeringMessage &&
+		isHumanMessage &&
 		toolResultBlocks.length === 0
 			? [
 					{
@@ -1799,6 +1856,7 @@ function translateUserMessage(
 					},
 				]
 			: [];
+	const events: AgentEvent[] = [...peerEvent, ...checkpointEvents];
 	events.push(
 		...content.flatMap((block: Record<string, unknown>) => {
 			if (block.type !== "tool_result") return [];
@@ -2167,7 +2225,11 @@ class ClaudeAgentSession implements AgentSession {
 	}
 
 	async send(message: string, opts?: SendOptions): Promise<void> {
-		const sdkMsg = buildSdkUserMessage(message, opts?.priority ?? "next");
+		const sdkMsg = buildSdkUserMessage(
+			message,
+			opts?.priority ?? "next",
+			opts?.inputOrigin,
+		);
 		// Capture the first send so we can replay it if cold-resume retry kicks in.
 		if (this.firstSend === null) this.firstSend = sdkMsg;
 		// Lazily open the SDK query on first send so an empty session that's
@@ -2176,13 +2238,15 @@ class ClaudeAgentSession implements AgentSession {
 		this.inputStream.push(sdkMsg);
 	}
 
-	async steer(message: string): Promise<void> {
+	async steer(message: string, opts?: SendOptions): Promise<void> {
 		// In streaming-input mode Claude's immediate-priority user message is
 		// folded into the active run instead of waiting for the next turn. Claude
 		// still emits the interrupted run's result boundary before it starts the
 		// steered continuation, so translateEvents must keep that boundary open.
 		this.ensureSdkQuery();
-		this.inputStream.push(buildSdkUserMessage(message, "now"));
+		this.inputStream.push(
+			buildSdkUserMessage(message, "now", opts?.inputOrigin),
+		);
 		this.pendingSteerContinuation = true;
 	}
 
@@ -3362,7 +3426,12 @@ export class ClaudeProvider implements AgentProvider {
 				options: {
 					cwd: params.cwd,
 					mcpServers,
-					settings: buildHlidClaudeSettings(disabledMcpjsonServers),
+					settings: buildHlidClaudeSettings(
+						disabledMcpjsonServers,
+						params.onProviderInitiatedTurn
+							? params.claudeCrossSessionInbound
+							: "refuse",
+					),
 					...(params.additionalDirectories?.length
 						? { additionalDirectories: params.additionalDirectories }
 						: {}),

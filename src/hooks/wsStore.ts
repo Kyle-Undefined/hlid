@@ -571,6 +571,7 @@ const BUFFERED_MESSAGE_TYPES: ReadonlySet<ServerMessage["type"]> = new Set([
 	"permission_resolved",
 	"ask_user_question",
 	"ask_user_question_resolved",
+	"ask_user_question_provenance_updated",
 	"plan_mode_exit",
 	"plan_mode_exit_resolved",
 	"realtime_transcript",

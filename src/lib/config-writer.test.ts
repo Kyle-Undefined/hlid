@@ -45,6 +45,7 @@ function makeConfig(overrides: Partial<HlidConfig> = {}): HlidConfig {
 			permission_mode: "default",
 			turn_recaps: true,
 			interactive_mode: false,
+			peer_inbox: false,
 		},
 		ui: {
 			enter_to_submit: true,
@@ -415,10 +416,21 @@ describe("writeConfig — claude section", () => {
 					permission_mode: "default",
 					turn_recaps: false,
 					interactive_mode: false,
+					peer_inbox: false,
 				},
 			}),
 		);
 		expect(capturedToml()).toContain("turn_recaps = false");
+	});
+
+	it("writes the Claude peer inbox only after opt-in", () => {
+		expect(serializeConfig(makeConfig())).not.toContain("peer_inbox");
+		const config = HlidConfigSchema.parse({ claude: { peer_inbox: true } });
+		const serialized = serializeConfig(config);
+		expect(serialized).toContain("peer_inbox = true");
+		expect(HlidConfigSchema.parse(parse(serialized)).claude.peer_inbox).toBe(
+			true,
+		);
 	});
 
 	it("writes max_turns when set", () => {
@@ -430,6 +442,7 @@ describe("writeConfig — claude section", () => {
 					permission_mode: "default",
 					turn_recaps: true,
 					interactive_mode: false,
+					peer_inbox: false,
 					max_turns: 10,
 				},
 			}),
@@ -451,6 +464,7 @@ describe("writeConfig — claude section", () => {
 					permission_mode: "default",
 					turn_recaps: true,
 					interactive_mode: false,
+					peer_inbox: false,
 					recap_model: "claude-sonnet-4-6",
 				},
 			}),

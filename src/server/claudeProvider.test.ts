@@ -68,6 +68,7 @@ import { parseWslUnc } from "../lib/paths";
 import { runBoundedProcess } from "../lib/process";
 import type {
 	AgentEvent,
+	AgentInputOrigin,
 	AgentQueryParams,
 	CanUseTool,
 	SubagentSnapshot,
@@ -202,6 +203,7 @@ describe("ClaudeProvider — event mapping", () => {
 					uuid: "checkpoint-user-id",
 					session_id: "native-claude-session",
 					parent_tool_use_id: null,
+					origin: { kind: "human" },
 					message: {
 						role: "user",
 						content: [{ type: "text", text: "change the file" }],
@@ -224,6 +226,212 @@ describe("ClaudeProvider — event mapping", () => {
 			id: "checkpoint-user-id",
 			providerSessionId: "native-claude-session",
 		});
+	});
+
+	it.each([
+		{
+			label: "scheduled task",
+			origin: { kind: "task-notification", subkind: "scheduled-trigger" },
+		},
+		{ label: "coordinator", origin: { kind: "coordinator" } },
+		{ label: "background task", origin: { kind: "task-notification" } },
+		{ label: "automatic continuation", origin: { kind: "auto-continuation" } },
+		{ label: "unclassified input", origin: { kind: "unclassified" } },
+	])("does not checkpoint $label input", async ({ origin }) => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "user",
+					uuid: "non-human-user-id",
+					session_id: "native-claude-session",
+					parent_tool_use_id: null,
+					origin,
+					message: {
+						role: "user",
+						content: [{ type: "text", text: "automated input" }],
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events.some((event) => event.type === "file_checkpoint")).toBe(
+			false,
+		);
+	});
+
+	it("surfaces peer-origin input without treating it as a file checkpoint", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "user",
+					uuid: "peer-user-id",
+					session_id: "native-claude-session",
+					parent_tool_use_id: null,
+					origin: {
+						kind: "peer",
+						from: "peer-release",
+						name: "Release helper",
+						fromSession: "peer-session-id",
+						body: "Coordinate the release",
+						verifiedPeerPid: 7312,
+					},
+					message: {
+						role: "user",
+						content: [{ type: "text", text: "Coordinate the release" }],
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events).toContainEqual({
+			type: "provider_peer_message",
+			body: "Coordinate the release",
+			fromAddress: "peer-release",
+			claimedName: "Release helper",
+			fromSession: "peer-session-id",
+			verifiedPeerPid: 7312,
+		});
+		expect(events.some((event) => event.type === "file_checkpoint")).toBe(
+			false,
+		);
+	});
+
+	it("surfaces peer-origin input when Claude emits string content", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "user",
+					uuid: "peer-string-user-id",
+					session_id: "native-claude-session",
+					parent_tool_use_id: null,
+					origin: {
+						kind: "peer",
+						from: "peer-release",
+						name: "Release helper",
+						fromSession: "peer-session-id",
+						body: "Coordinate the release",
+						verifiedPeerPid: 7312,
+					},
+					message: {
+						role: "user",
+						content: "Coordinate the release",
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events).toContainEqual({
+			type: "provider_peer_message",
+			body: "Coordinate the release",
+			fromAddress: "peer-release",
+			claimedName: "Release helper",
+			fromSession: "peer-session-id",
+			verifiedPeerPid: 7312,
+		});
+		expect(events.some((event) => event.type === "file_checkpoint")).toBe(
+			false,
+		);
+	});
+
+	it("preserves Claude's peer-send task-notification classification", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "user",
+					uuid: "peer-notification-user-id",
+					session_id: "native-claude-session",
+					parent_tool_use_id: null,
+					origin: {
+						kind: "task-notification",
+						subkind: "peer-send-message",
+					},
+					message: {
+						role: "user",
+						content: "Coordinate the release",
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events).toContainEqual({ type: "provider_peer_message" });
+		expect(events.some((event) => event.type === "file_checkpoint")).toBe(
+			false,
+		);
+	});
+
+	it("keeps in-process agent-team peer messages inside the active provider turn", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "user",
+					uuid: "internal-peer-user-id",
+					session_id: "native-claude-session",
+					parent_tool_use_id: null,
+					origin: {
+						kind: "peer",
+						from: "researcher",
+						senderTaskId: "task-agent-team-1",
+						body: "Internal teammate result",
+					},
+					message: {
+						role: "user",
+						content: [{ type: "text", text: "Internal teammate result" }],
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events.some((event) => event.type === "provider_peer_message")).toBe(
+			false,
+		);
+		expect(events.some((event) => event.type === "file_checkpoint")).toBe(
+			false,
+		);
 	});
 
 	it("yields assistant_message_id with the SDK message's uuid before its content-block events", async () => {
@@ -3107,7 +3315,10 @@ describe("ClaudeProvider — canUseTool pass-through", () => {
 		expect(captured).toMatchObject({
 			onElicitation: expect.any(Function),
 			onUserDialog: expect.any(Function),
-			supportedDialogKinds: ["refusal_fallback_prompt"],
+			supportedDialogKinds: [
+				"refusal_fallback_prompt",
+				"peer_inbound_approval",
+			],
 		});
 	});
 
@@ -4716,6 +4927,55 @@ describe("ClaudeProvider — session resume", () => {
 		).toBe(true);
 	});
 
+	it("preserves the first message origin when a cold resume retries", async () => {
+		const prompts: Array<AsyncIterable<unknown>> = [];
+		vi.mocked(query).mockImplementation(
+			({ prompt }: { prompt: unknown; options?: unknown }) => {
+				prompts.push(prompt as AsyncIterable<unknown>);
+				if (prompts.length === 1) {
+					return sdkStream(async function* () {
+						throw new Error("session not found");
+						// biome-ignore lint/correctness/noUnreachable: satisfies AsyncGenerator contract
+						yield;
+					});
+				}
+				return sdkGen([
+					{ type: "system", subtype: "init", session_id: "new-sid", tools: [] },
+					{
+						type: "result",
+						subtype: "success",
+						total_cost_usd: 0,
+						num_turns: 1,
+						duration_ms: 100,
+						usage: { input_tokens: 10, output_tokens: 5 },
+					},
+				]);
+			},
+		);
+
+		const session = new ClaudeProvider().query(
+			baseParams({ sessionId: "stale-id" }),
+		);
+		await session.send("scheduled replay", { inputOrigin: "scheduled-task" });
+		const original = await prompts[0]?.[Symbol.asyncIterator]().next();
+		for await (const _event of session) {
+			// Drain the replacement query.
+		}
+		const replayed = await prompts[1]?.[Symbol.asyncIterator]().next();
+
+		expect(original?.value).toMatchObject({
+			message: {
+				content: [{ type: "text", text: "scheduled replay" }],
+			},
+			origin: {
+				kind: "task-notification",
+				subkind: "scheduled-trigger",
+			},
+		});
+		expect(replayed?.value).toEqual(original?.value);
+		session.cancel();
+	});
+
 	it("does not retry when events were already received before error", async () => {
 		let callCount = 0;
 		// biome-ignore lint/suspicious/noExplicitAny: test mock — SDK query type has extra internal methods
@@ -4979,6 +5239,37 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 		session.cancel();
 	});
 
+	it("propagates an explicit held-peer policy to the Claude SDK settings", async () => {
+		vi.mocked(query).mockReturnValueOnce(sdkGen([]));
+		const session = new ClaudeProvider().query(
+			baseParams({
+				claudeCrossSessionInbound: "hold",
+				onProviderInitiatedTurn: vi.fn().mockResolvedValue(true),
+			}),
+		);
+		await session.send("hello");
+
+		expect(vi.mocked(query).mock.calls.at(-1)?.[0].options?.settings).toEqual({
+			crossSessionInbound: "hold",
+			dialogExpiry: "never",
+		});
+		session.cancel();
+	});
+
+	it("refuses peer delivery when hold is requested without a continuation owner", async () => {
+		vi.mocked(query).mockReturnValueOnce(sdkGen([]));
+		const session = new ClaudeProvider().query(
+			baseParams({ claudeCrossSessionInbound: "hold" }),
+		);
+		await session.send("hello");
+
+		expect(vi.mocked(query).mock.calls.at(-1)?.[0].options?.settings).toEqual({
+			crossSessionInbound: "refuse",
+			dialogExpiry: "never",
+		});
+		session.cancel();
+	});
+
 	it("registers Hlid's deferred Relic publisher and curated Obsidian tools", async () => {
 		vi.mocked(query).mockReturnValueOnce(sdkGen([]));
 		const session = new ClaudeProvider().query(
@@ -5203,7 +5494,7 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 		session.cancel();
 	});
 
-	it("send() pushes a SDKUserMessage onto the prompt stream", async () => {
+	it("send() pushes a human-origin SDKUserMessage onto the prompt stream", async () => {
 		let capturedPrompt: AsyncIterable<unknown> | undefined;
 		vi.mocked(query).mockImplementationOnce(
 			({ prompt }: { prompt: unknown; options?: unknown }) => {
@@ -5213,7 +5504,7 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 		);
 		const provider = new ClaudeProvider();
 		const session = provider.query(baseParams());
-		await session.send("hello world");
+		await session.send("hello world", { inputOrigin: "human" });
 
 		// Pull the first SDKUserMessage out of the captured stream.
 		const iter = (capturedPrompt as AsyncIterable<unknown>)[
@@ -5230,10 +5521,71 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			result as IteratorResult<{
 				type: string;
 				message: { content: Array<{ type: string; text: string }> };
+				origin: { kind: string };
 			}>
 		).value;
 		expect(sdkMsg.type).toBe("user");
 		expect(sdkMsg.message.content[0].text).toBe("hello world");
+		expect(sdkMsg.origin).toEqual({ kind: "human" });
+	});
+
+	it.each([
+		{
+			label: "missing provenance",
+			inputOrigin: undefined,
+			expected: { kind: "unclassified" },
+		},
+		{
+			label: "scheduled task",
+			inputOrigin: "scheduled-task",
+			expected: {
+				kind: "task-notification",
+				subkind: "scheduled-trigger",
+			},
+		},
+		{
+			label: "coordinator",
+			inputOrigin: "coordinator",
+			expected: { kind: "coordinator" },
+		},
+		{
+			label: "background notification",
+			inputOrigin: "background-notification",
+			expected: { kind: "task-notification" },
+		},
+		{
+			label: "automatic continuation",
+			inputOrigin: "auto-continuation",
+			expected: { kind: "auto-continuation" },
+		},
+		{
+			label: "unclassified input",
+			inputOrigin: "unclassified",
+			expected: { kind: "unclassified" },
+		},
+	] satisfies Array<{
+		label: string;
+		inputOrigin: AgentInputOrigin | undefined;
+		expected: Record<string, string>;
+	}>)("maps $label to the exact Claude origin", async ({
+		inputOrigin,
+		expected,
+	}) => {
+		let capturedPrompt: AsyncIterable<unknown> | undefined;
+		vi.mocked(query).mockImplementationOnce(
+			({ prompt }: { prompt: unknown; options?: unknown }) => {
+				capturedPrompt = prompt as AsyncIterable<unknown>;
+				return sdkGen([]);
+			},
+		);
+		const session = new ClaudeProvider().query(baseParams());
+		await session.send("classified input", { inputOrigin });
+
+		const result = await (capturedPrompt as AsyncIterable<unknown>)
+			[Symbol.asyncIterator]()
+			.next();
+		expect((result.value as { origin?: unknown }).origin).toEqual(expected);
+		session.cancel();
 	});
 
 	it("multiple send() calls in one session result in a single SDK query() invocation", async () => {
@@ -5284,7 +5636,7 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			},
 		);
 		const session = new ClaudeProvider().query(baseParams());
-		await session.steer?.("change direction");
+		await session.steer?.("change direction", { inputOrigin: "human" });
 
 		const iter = (capturedPrompt as AsyncIterable<unknown>)[
 			Symbol.asyncIterator
@@ -5292,6 +5644,7 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 		const result = await iter.next();
 		expect(result.value).toMatchObject({
 			priority: "now",
+			origin: { kind: "human" },
 			message: {
 				content: [{ type: "text", text: "change direction" }],
 			},

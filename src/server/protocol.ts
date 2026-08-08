@@ -525,6 +525,28 @@ export type AskQuestion = {
 	optional?: boolean;
 };
 
+export type AskUserQuestionPeerProvenance = {
+	/** Provider-sanitized and truncated preview. This is not the exact message body. */
+	preview: string;
+	/** Exact envelope-stripped body supplied by the provider after delivery. */
+	body?: string;
+	/** Sender-authored reply address. Treat as a claim, never human authority. */
+	from_address?: string;
+	/** Provider-sanitized sender display name. Treat as reported speech. */
+	claimed_name?: string;
+	/** Sender-claimed session target for navigation only, never authority. */
+	from_session?: string;
+	/** Kernel-verified connecting process, which may be a relay and is not identity. */
+	verified_peer_pid?: number;
+	/** Provider-reported reason the inbound message was held. */
+	hold_cause?:
+		| "mode-mismatch"
+		| "no-mode-asserted"
+		| "explicit-setting"
+		| "bypass-default"
+		| "mode-unknown";
+};
+
 export type AskUserQuestionProvenance = {
 	provider_id: string;
 	kind: "mcp_elicitation" | "provider_dialog";
@@ -540,6 +562,8 @@ export type AskUserQuestionProvenance = {
 	tool_use_id?: string;
 	/** URL-mode MCP elicitation target, rendered as an explicit external link. */
 	url?: string;
+	/** Inbound Claude peer message held outside the model until the user reviews it. */
+	peer?: AskUserQuestionPeerProvenance;
 };
 
 export const ASK_USER_QUESTION_CANCEL_KEY = "__hlid_cancelled__";
@@ -562,6 +586,13 @@ export type AskUserQuestionResolvedMessage = {
 	id: string;
 	answers: AskUserQuestionAnswers;
 	notes?: AskUserQuestionNotes;
+};
+
+/** Late provider provenance learned only after an approved prompt is released. */
+export type AskUserQuestionProvenanceUpdatedMessage = {
+	type: "ask_user_question_provenance_updated";
+	id: string;
+	provenance: AskUserQuestionProvenance;
 };
 
 export type PlanModeExitMessage = {
@@ -1016,6 +1047,7 @@ export type ServerMessage =
 	| ToolUseSummaryMessage
 	| AskUserQuestionMessage
 	| AskUserQuestionResolvedMessage
+	| AskUserQuestionProvenanceUpdatedMessage
 	| PlanModeExitMessage
 	| PlanModeExitResolvedMessage
 	| LocalCommandOutputMessage

@@ -95,6 +95,8 @@ const ClaudeSchema = z.object({
 	recap_model: z.string().optional(),
 	/** When true, Raven spawns the Claude CLI in a PTY instead of using the SDK. */
 	interactive_mode: z.boolean().default(false),
+	/** When true, Raven can hold inbound Claude peer messages for explicit review. */
+	peer_inbox: z.boolean().default(false),
 });
 
 export const DEFAULT_CLIPROXY_CONFIG = {
@@ -417,6 +419,7 @@ export const HlidConfigSchema = z.object({
 		permission_mode: "default" as const,
 		turn_recaps: true,
 		interactive_mode: false,
+		peer_inbox: false,
 	})),
 	cliproxy: CliProxySchema.default(() => ({ ...DEFAULT_CLIPROXY_CONFIG })),
 	codex: CodexSchema.default(() => ({

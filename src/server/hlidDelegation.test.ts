@@ -508,6 +508,7 @@ describe("Hlid delegation manager", () => {
 			"Review the provider boundary",
 			expect.any(Function),
 			expect.objectContaining({
+				inputOrigin: "coordinator",
 				sessionId: "child-1",
 				skillContexts: [],
 				attachments: [],
@@ -950,6 +951,9 @@ describe("Hlid delegation manager", () => {
 		);
 		expect(childManager.runQuery.mock.calls[0]?.[2]?.routineContext).toBe(
 			parentRoutineContext,
+		);
+		expect(childManager.runQuery.mock.calls[0]?.[2]?.inputOrigin).toBe(
+			"coordinator",
 		);
 		expect(pool.close).toHaveBeenCalledWith("child-1");
 		expect(created.routine_run_id).toBe(parentRoutineContext.runId);
@@ -1785,6 +1789,7 @@ describe("Hlid delegation manager", () => {
 			expect.any(Function),
 			"child-1",
 			expect.stringMatching(/^delegation-steer-/),
+			"coordinator",
 		);
 		expect(broadcast).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -2042,6 +2047,7 @@ describe("Hlid delegation manager", () => {
 		const call = childManager.runQuery.mock.calls[0] ?? [];
 		expect(call[0]).toBe("Continue from the durable evidence and finish.");
 		const options = call[2] ?? {};
+		expect(options.inputOrigin).toBe("coordinator");
 		expect(options.skillContexts).toEqual([]);
 		expect(options.attachments).toEqual([]);
 		expect(options.vaultReferences).toEqual([]);

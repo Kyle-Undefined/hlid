@@ -218,6 +218,43 @@ describe("wsStore — Slice A: immediate-send drain", () => {
 		]);
 	});
 
+	it("buffers a late ask provenance update while history is loading", () => {
+		wsStore.setBufferingEnabled(true);
+		currentWs.onmessage?.({
+			data: JSON.stringify({
+				type: "ask_user_question_provenance_updated",
+				id: "peer-ask-1",
+				provenance: {
+					provider_id: "claude",
+					kind: "provider_dialog",
+					source_name: "peer_inbound_approval",
+					peer: {
+						preview: "held preview",
+						body: "Exact delivered body",
+						from_session: "claimed-session-17",
+					},
+				},
+			}),
+		});
+
+		expect(wsStore.drainMessageBuffer()).toEqual([
+			{
+				type: "ask_user_question_provenance_updated",
+				id: "peer-ask-1",
+				provenance: {
+					provider_id: "claude",
+					kind: "provider_dialog",
+					source_name: "peer_inbound_approval",
+					peer: {
+						preview: "held preview",
+						body: "Exact delivered body",
+						from_session: "claimed-session-17",
+					},
+				},
+			},
+		]);
+	});
+
 	it("buffers a reconnect replay batch as ordered logical messages", () => {
 		wsStore.setBufferingEnabled(true);
 		currentWs.onmessage?.({

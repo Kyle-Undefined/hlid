@@ -156,6 +156,7 @@ function createClaudeForm(initial: HlidConfig): ClaudeForm {
 		recapModel: initial.claude.recap_model ?? "",
 		vaultProvider: initial.vault_provider ?? "claude",
 		interactiveMode: initial.claude.interactive_mode ?? false,
+		peerInbox: initial.claude.peer_inbox ?? false,
 	};
 }
 
@@ -348,6 +349,7 @@ export function buildSettingsConfig(
 			turn_recaps: forms.claude.turnRecaps,
 			recap_model: forms.claude.recapModel || undefined,
 			interactive_mode: forms.claude.interactiveMode,
+			peer_inbox: forms.claude.peerInbox,
 		},
 		codex: {
 			model: forms.codex.model,

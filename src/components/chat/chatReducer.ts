@@ -346,6 +346,11 @@ export type Action =
 			answers: AskUserQuestionAnswers;
 			notes?: AskUserQuestionNotes;
 	  }
+	| {
+			type: "UPDATE_ASK_USER_QUESTION_PROVENANCE";
+			id: string;
+			provenance: AskUserQuestionProvenance;
+	  }
 	| { type: "CLEAR" };
 
 const VALID_PERMISSION_DECISIONS = new Set<PermissionMessage["decision"]>([
@@ -1328,6 +1333,11 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				...m,
 				answers: action.answers,
 				...(action.notes !== undefined ? { notes: action.notes } : {}),
+			}));
+		case "UPDATE_ASK_USER_QUESTION_PROVENANCE":
+			return patchMessage(state, action.id, "ask_user_question", (m) => ({
+				...m,
+				provenance: action.provenance,
 			}));
 		case "CLEAR":
 			return [];

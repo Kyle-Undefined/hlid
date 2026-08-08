@@ -49,6 +49,7 @@ import type {
 	AgentQueryParams,
 	AgentSession,
 } from "./agentProvider";
+import { createClaudeHostInteractionHandlers } from "./claudeHostInteractions";
 import { buildPromptAsync } from "./promptBuilder";
 import type { ServerMessage } from "./protocol";
 import { SessionManager } from "./session";
@@ -61,11 +62,123 @@ import {
 	waitFor,
 } from "./session.test-utils";
 
+function peerDoneEvent(): AgentEvent {
+	return {
+		type: "done",
+		cost: 0,
+		turns: 1,
+		durationMs: 0,
+		usage: { inputTokens: 1, outputTokens: 1 },
+	};
+}
+
+function makePeerInboxHarness(): {
+	provider: AgentProvider;
+	pushEvent: (event: AgentEvent) => void;
+	getParams: () => AgentQueryParams;
+	send: ReturnType<typeof vi.fn>;
+	setPermissionMode: ReturnType<typeof vi.fn>;
+	interrupt: ReturnType<typeof vi.fn>;
+	cancel: ReturnType<typeof vi.fn>;
+} {
+	const events: AgentEvent[] = [];
+	const waiters: Array<(event: AgentEvent | null) => void> = [];
+	let params: AgentQueryParams | null = null;
+	let started = false;
+	let closed = false;
+	const send = vi.fn().mockResolvedValue(undefined);
+	const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+	const interrupt = vi.fn().mockResolvedValue(undefined);
+	const cancel = vi.fn(() => {
+		closed = true;
+		while (waiters.length > 0) waiters.shift()?.(null);
+	});
+	const pushEvent = (event: AgentEvent): void => {
+		const waiter = waiters.shift();
+		if (waiter) waiter(event);
+		else events.push(event);
+	};
+	const iterator: AsyncIterator<AgentEvent> = {
+		async next(): Promise<IteratorResult<AgentEvent>> {
+			if (closed) return { value: undefined as never, done: true };
+			if (!started) {
+				started = true;
+				return {
+					value: { type: "session_start", sessionId: "sdk-peer-session" },
+					done: false,
+				};
+			}
+			const event = events.shift();
+			if (event) return { value: event, done: false };
+			return new Promise<IteratorResult<AgentEvent>>((resolve) => {
+				waiters.push((next) => {
+					resolve(
+						next
+							? { value: next, done: false }
+							: { value: undefined as never, done: true },
+					);
+				});
+			});
+		},
+	};
+	const provider: AgentProvider = {
+		providerId: "claude",
+		query(nextParams: AgentQueryParams): AgentSession {
+			params = nextParams;
+			return {
+				[Symbol.asyncIterator]: () => iterator,
+				send,
+				setPermissionMode,
+				interrupt,
+				cancel,
+				mcpServerStatus: () => Promise.resolve([]),
+			};
+		},
+	};
+	return {
+		provider,
+		pushEvent,
+		getParams: () => {
+			if (!params) throw new Error("provider query params were not captured");
+			return params;
+		},
+		send,
+		setPermissionMode,
+		interrupt,
+		cancel,
+	};
+}
+
+function peerInboxConfig(
+	permissionMode: "default" | "bypassPermissions" = "default",
+) {
+	const config = makeConfig();
+	config.claude.peer_inbox = true;
+	config.claude.permission_mode = permissionMode;
+	return config;
+}
+
+async function establishIdlePeerSession(
+	sm: SessionManager,
+	ctl: ReturnType<typeof makePeerInboxHarness>,
+	emit: (message: ServerMessage) => void = () => {},
+): Promise<void> {
+	const turn = sm.runQuery("initial human turn", emit, {
+		inputOrigin: "human",
+		sessionId: "peer-session",
+		turnId: "initial-human-turn",
+	});
+	await waitFor(() => expect(ctl.send).toHaveBeenCalledTimes(1));
+	ctl.pushEvent(peerDoneEvent());
+	await turn;
+}
+
 describe("SessionManager — runQuery queueing", () => {
 	it("persists an interactive turn through the dispatch boundary", async () => {
 		const ctl = makeControllableProvider();
 		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
 		const run = sm.runQuery("durable prompt", () => {}, {
+			inputOrigin: "human",
 			sessionId: "durable-session",
 			turnId: "durable-turn",
 		});
@@ -74,7 +187,7 @@ describe("SessionManager — runQuery queueing", () => {
 		expect(dbMock.enqueuePendingSessionTurn).toHaveBeenCalledWith({
 			turnId: "durable-turn",
 			sessionId: "durable-session",
-			payloadJson: expect.stringContaining('"userMessage":"durable prompt"'),
+			payloadJson: expect.stringContaining('"inputOrigin":"human"'),
 		});
 		expect(dbMock.markPendingSessionTurnDispatching).toHaveBeenCalledWith(
 			"durable-turn",
@@ -137,6 +250,69 @@ describe("SessionManager — runQuery queueing", () => {
 		);
 		ctl.turns[1].resolveDone();
 		await waitFor(() => expect(sm.getStatus().state).toBe("idle"));
+	});
+
+	it.each([
+		{
+			label: "stored coordinator provenance",
+			inputOrigin: "coordinator" as const,
+			expected: "coordinator",
+		},
+		{
+			label: "a legacy row without provenance",
+			inputOrigin: undefined,
+			expected: "unclassified",
+		},
+	])("restores $label without recomputing authority", async ({
+		inputOrigin,
+		expected,
+	}) => {
+		const ctl = makeLongLivedProvider();
+		let sendSpy: ReturnType<typeof vi.fn> | undefined;
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				const session = ctl.provider.query(params);
+				sendSpy = session.send as ReturnType<typeof vi.fn>;
+				return session;
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const now = Math.floor(Date.now() / 1_000);
+		const payload = {
+			userMessage: "restored input",
+			...(inputOrigin ? { inputOrigin } : {}),
+			options: {},
+		};
+
+		expect(
+			sm.restoreDurableTurns(
+				[
+					{
+						turn_id: `restored-${expected}`,
+						session_id: "restored-origin-session",
+						position: 1,
+						payload_json: JSON.stringify(payload),
+						state: "queued",
+						provider_id: null,
+						window_id: null,
+						sleep_reason: null,
+						sleep_until: null,
+						sleep_target: null,
+						sleep_utilization: null,
+						cap_deadline: null,
+						created_at: now,
+						updated_at: now,
+					},
+				],
+				() => {},
+			),
+		).toBe(1);
+		await waitFor(() => expect(sendSpy).toHaveBeenCalledTimes(1));
+		expect(sendSpy).toHaveBeenCalledWith("test prompt", {
+			inputOrigin: expected,
+		});
+		ctl.closeStream();
 	});
 
 	it("reuses a transcript row written before a pre-dispatch restart", async () => {
@@ -646,6 +822,7 @@ describe("SessionManager — steerQueued", () => {
 			() => {},
 			"sess-1",
 			"delegation-steer-1",
+			"coordinator",
 		);
 
 		expect(receipt).toEqual({
@@ -654,7 +831,9 @@ describe("SessionManager — steerQueued", () => {
 			steerSeq: 2,
 			steerToolEventIndex: 0,
 		});
-		expect(steer).toHaveBeenCalledWith("test prompt");
+		expect(steer).toHaveBeenCalledWith("test prompt", {
+			inputOrigin: "coordinator",
+		});
 		expect(sm.getQueueState().pending_turn_ids).toEqual([]);
 		expect(dbMock.appendMessage).toHaveBeenCalledWith(
 			"sess-1",
@@ -685,6 +864,7 @@ describe("SessionManager — steerQueued", () => {
 				() => {},
 				"sess-1",
 				"delegation-steer-unsupported",
+				"coordinator",
 			),
 		).rejects.toThrow("does not support steering");
 		expect(sm.getQueueState().pending_turn_ids).toEqual([]);
@@ -735,9 +915,11 @@ describe("SessionManager — steerQueued", () => {
 			() => {},
 			"sess-1",
 			"delegation-steer-race",
+			"coordinator",
 		);
 		await started;
 		const second = sm.runQuery("second", () => {}, {
+			inputOrigin: "human",
 			sessionId: "sess-1",
 			turnId: "turn-2",
 		});
@@ -780,6 +962,7 @@ describe("SessionManager — steerQueued", () => {
 				() => {},
 				"sess-1",
 				"delegation-steer-persist-failure",
+				"coordinator",
 			),
 		).rejects.toThrow(
 			"Do not retry this instruction automatically because that may duplicate it",
@@ -810,6 +993,7 @@ describe("SessionManager — steerQueued", () => {
 			turn_id: "turn-1",
 		});
 		const second = sm.runQuery("second", () => {}, {
+			inputOrigin: "human",
 			sessionId: "sess-1",
 			turnId: "turn-2",
 		});
@@ -822,7 +1006,9 @@ describe("SessionManager — steerQueued", () => {
 			steerSeq: expect.any(Number),
 			steerToolEventIndex: 0,
 		});
-		expect(steer).toHaveBeenCalledWith("test prompt");
+		expect(steer).toHaveBeenCalledWith("test prompt", {
+			inputOrigin: "human",
+		});
 		expect(sm.getQueueState().pending_turn_ids).toEqual([]);
 		await second;
 
@@ -1661,6 +1847,7 @@ describe("SessionManager — Slice B AgentSession reuse", () => {
 		};
 		const sm = new SessionManager(makeConfig(), makeProviders(wrappedProvider));
 		await sm.runQuery("hello world", () => {}, {
+			inputOrigin: "human",
 			sessionId: "sess-1",
 		});
 		const lastSendSpy = sendSpies[0];
@@ -1671,6 +1858,55 @@ describe("SessionManager — Slice B AgentSession reuse", () => {
 		// buildPromptAsync is mocked at module level to return "test prompt", which
 		// SessionManager forwards verbatim to agentSession.send().
 		expect(sentArg).toBe("test prompt");
+		expect(lastSendSpy.mock.calls[0][1]).toEqual({
+			inputOrigin: "human",
+		});
+		ctl.closeStream();
+	});
+
+	it.each([
+		{
+			label: "a scheduled Routine",
+			options: { inputOrigin: "scheduled-task" as const },
+			expected: "scheduled-task",
+		},
+		{
+			label: "an Hlid delegation",
+			options: {
+				inputOrigin: "coordinator" as const,
+				backgroundSession: true,
+			},
+			expected: "coordinator",
+		},
+		{
+			label: "generic background work",
+			options: { backgroundSession: true },
+			expected: "unclassified",
+		},
+	])("captures $label provenance before provider send", async ({
+		options,
+		expected,
+	}) => {
+		const ctl = makeLongLivedProvider();
+		let sendSpy: ReturnType<typeof vi.fn> | undefined;
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				const session = ctl.provider.query(params);
+				sendSpy = session.send as ReturnType<typeof vi.fn>;
+				return session;
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery("classified input", () => {}, {
+			...options,
+			sessionId: `origin-${expected}`,
+		});
+
+		expect(sendSpy).toHaveBeenCalledWith("test prompt", {
+			inputOrigin: expected,
+		});
 		ctl.closeStream();
 	});
 
@@ -1706,17 +1942,524 @@ describe("SessionManager — Slice B AgentSession reuse", () => {
 		);
 
 		await sm.runQuery("Voice message", () => {}, {
+			inputOrigin: "human",
 			sessionId: "voice-session",
 			attachments: [attachment],
 		});
 
 		expect(sendSpy).toHaveBeenCalledWith("Voice message", {
+			inputOrigin: "human",
 			audioPaths: [attachment.path],
 		});
 		expect(vi.mocked(buildPromptAsync).mock.calls.at(-1)?.[0]).toMatchObject({
 			nativeAudio: true,
 		});
 		ctl.closeStream();
+	});
+});
+
+describe("SessionManager — Claude peer inbox", () => {
+	it("persists an idle approval before releasing the peer into a dedicated default-mode turn", async () => {
+		let resolveDecisionPersistence!: () => void;
+		const decisionPersistence = new Promise<void>((resolve) => {
+			resolveDecisionPersistence = resolve;
+		});
+		vi.mocked(dbMock.appendAskUserQuestion).mockClear();
+		vi.mocked(dbMock.appendAskUserQuestion).mockResolvedValue(undefined);
+		vi.mocked(dbMock.setAskUserQuestionResolution).mockClear();
+		vi.mocked(dbMock.setAskUserQuestionResolution).mockImplementationOnce(
+			() => decisionPersistence,
+		);
+		vi.mocked(dbMock.setAskUserQuestionProvenance).mockClear();
+		vi.mocked(dbMock.appendMessage).mockClear();
+		const ctl = makePeerInboxHarness();
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(
+			peerInboxConfig("bypassPermissions"),
+			makeProviders(ctl.provider),
+		);
+
+		const first = sm.runQuery(
+			"human turn",
+			(message) => emitted.push(message),
+			{
+				sessionId: "peer-session",
+				turnId: "human-turn-1",
+			},
+		);
+		await waitFor(() => expect(ctl.send).toHaveBeenCalledTimes(1));
+		ctl.pushEvent(peerDoneEvent());
+		await first;
+		ctl.setPermissionMode.mockClear();
+		vi.mocked(dbMock.appendMessage).mockClear();
+
+		const params = ctl.getParams();
+		expect(params.claudeCrossSessionInbound).toBe("hold");
+		const handlers = createClaudeHostInteractionHandlers(params);
+		const dialog = handlers.onUserDialog(
+			{
+				dialogKind: "peer_inbound_approval",
+				toolUseID: "native-peer-1",
+				payload: {
+					preview: "Please inspect the failing queue test",
+					fromAddress: "peer-release",
+					claimedName: "Release helper",
+					verifiedPeerPid: 7312,
+					holdCause: "explicit-setting",
+				},
+			},
+			{ signal: new AbortController().signal },
+		);
+		await waitFor(() =>
+			expect(sm.getPendingAskUserQuestions()).toHaveLength(1),
+		);
+		const pending = sm.getPendingAskUserQuestions()[0];
+		if (!pending) throw new Error("peer approval was not registered");
+		expect(pending.provenance).not.toHaveProperty("turn_id");
+		const question = pending.questions[0]?.question;
+		if (!question) throw new Error("peer approval question was missing");
+		const acceptedResponse = sm.handleAskUserQuestionResponse(pending.id, {
+			[question]: ["Deliver to Claude"],
+		});
+		await waitFor(() =>
+			expect(dbMock.setAskUserQuestionResolution).toHaveBeenCalledTimes(1),
+		);
+		await expect(
+			sm.handleAskUserQuestionResponse(pending.id, {
+				[question]: ["Deny"],
+			}),
+		).resolves.toBe(false);
+		expect(ctl.setPermissionMode).not.toHaveBeenCalled();
+		resolveDecisionPersistence();
+		await expect(acceptedResponse).resolves.toBe(true);
+
+		await expect(dialog).resolves.toEqual({
+			behavior: "completed",
+			result: { behavior: "approve" },
+		});
+		expect(dbMock.setAskUserQuestionResolution).toHaveBeenCalledWith(
+			"peer-session",
+			pending.id,
+			JSON.stringify({ [question]: ["Deliver to Claude"] }),
+			null,
+		);
+		expect(ctl.setPermissionMode).toHaveBeenCalledWith("default");
+		expect(ctl.send).toHaveBeenCalledTimes(1);
+
+		const exactBody =
+			"Please inspect the failing queue test in session.queueing.test.ts";
+		ctl.pushEvent({
+			type: "provider_peer_message",
+			body: exactBody,
+			fromAddress: "peer-release",
+			claimedName: "Release helper",
+			fromSession: "native-sender-session",
+			verifiedPeerPid: 7312,
+		});
+		ctl.pushEvent({ type: "text_delta", text: "Peer work complete." });
+		ctl.pushEvent(peerDoneEvent());
+		await waitFor(() => expect(sm.getStatus().state).toBe("idle"));
+
+		expect(dbMock.setAskUserQuestionProvenance).toHaveBeenCalledWith(
+			"peer-session",
+			pending.id,
+			expect.stringContaining(exactBody),
+		);
+		expect(emitted).toContainEqual(
+			expect.objectContaining({
+				type: "ask_user_question_provenance_updated",
+				id: pending.id,
+				provenance: expect.objectContaining({
+					peer: expect.objectContaining({
+						body: exactBody,
+						from_session: "native-sender-session",
+					}),
+				}),
+			}),
+		);
+		expect(
+			vi
+				.mocked(dbMock.appendMessage)
+				.mock.calls.some(
+					(call) => call[2] === "user" && String(call[3]).includes(exactBody),
+				),
+		).toBe(false);
+		expect(ctl.setPermissionMode.mock.calls.at(-1)?.[0]).toBe(
+			"bypassPermissions",
+		);
+		sm.abort();
+	});
+
+	it("runs an approved active-turn peer before a queued human without interrupting either", async () => {
+		vi.mocked(dbMock.appendAskUserQuestion).mockResolvedValue(undefined);
+		vi.mocked(dbMock.setAskUserQuestionResolution).mockResolvedValue(undefined);
+		vi.mocked(dbMock.appendMessage).mockClear();
+		const ctl = makePeerInboxHarness();
+		const sm = new SessionManager(
+			peerInboxConfig(),
+			makeProviders(ctl.provider),
+		);
+		const first = sm.runQuery("first human", () => {}, {
+			sessionId: "peer-priority-session",
+			turnId: "human-turn-1",
+		});
+		await waitFor(() => expect(ctl.send).toHaveBeenCalledTimes(1));
+
+		const handlers = createClaudeHostInteractionHandlers(ctl.getParams());
+		let dialogSettled = false;
+		const dialog = handlers
+			.onUserDialog(
+				{
+					dialogKind: "peer_inbound_approval",
+					toolUseID: "native-peer-2",
+					payload: {
+						preview: "Run before the queued follow-up",
+						fromAddress: "peer-priority",
+						holdCause: "mode-mismatch",
+					},
+				},
+				{ signal: new AbortController().signal },
+			)
+			.then((result) => {
+				dialogSettled = true;
+				return result;
+			});
+		await waitFor(() =>
+			expect(sm.getPendingAskUserQuestions()).toHaveLength(1),
+		);
+		const pending = sm.getPendingAskUserQuestions()[0];
+		if (!pending) throw new Error("peer approval was not registered");
+		expect(pending.provenance).not.toHaveProperty("turn_id");
+		const question = pending.questions[0]?.question;
+		if (!question) throw new Error("peer approval question was missing");
+		await sm.handleAskUserQuestionResponse(pending.id, {
+			[question]: ["Deliver to Claude"],
+		});
+		const second = sm.runQuery("second human", () => {}, {
+			sessionId: "peer-priority-session",
+			turnId: "human-turn-2",
+		});
+		await Promise.resolve();
+		expect(dialogSettled).toBe(false);
+		expect(ctl.send).toHaveBeenCalledTimes(1);
+
+		ctl.pushEvent(peerDoneEvent());
+		await expect(dialog).resolves.toEqual({
+			behavior: "completed",
+			result: { behavior: "approve" },
+		});
+		expect(ctl.send).toHaveBeenCalledTimes(1);
+		expect(sm.promoteQueued("human-turn-2")).toBe(true);
+		expect(ctl.interrupt).not.toHaveBeenCalled();
+		ctl.pushEvent({
+			type: "provider_peer_message",
+			body: "Run before the queued follow-up",
+			fromAddress: "peer-priority",
+		});
+		ctl.pushEvent({ type: "text_delta", text: "Peer response." });
+		ctl.pushEvent(peerDoneEvent());
+		await waitFor(() => expect(ctl.send).toHaveBeenCalledTimes(2));
+		ctl.pushEvent(peerDoneEvent());
+		await Promise.all([first, second]);
+
+		const persistedUserMessages = vi
+			.mocked(dbMock.appendMessage)
+			.mock.calls.filter((call) => call[2] === "user");
+		expect(persistedUserMessages).toHaveLength(2);
+		expect(
+			persistedUserMessages.some((call) =>
+				String(call[3]).includes("Run before the queued follow-up"),
+			),
+		).toBe(false);
+		sm.abort();
+	});
+
+	it("cancels a not-yet-released peer continuation when the inbox is disabled", async () => {
+		vi.mocked(dbMock.appendAskUserQuestion).mockResolvedValue(undefined);
+		vi.mocked(dbMock.setAskUserQuestionResolution).mockResolvedValue(undefined);
+		const ctl = makePeerInboxHarness();
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(
+			peerInboxConfig(),
+			makeProviders(ctl.provider),
+		);
+		await establishIdlePeerSession(sm, ctl, (message) => emitted.push(message));
+		ctl.setPermissionMode.mockClear();
+		let releaseModeChange!: () => void;
+		ctl.setPermissionMode.mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					releaseModeChange = resolve;
+				}),
+		);
+
+		const handlers = createClaudeHostInteractionHandlers(ctl.getParams());
+		const dialog = handlers.onUserDialog(
+			{
+				dialogKind: "peer_inbound_approval",
+				toolUseID: "native-peer-disabled",
+				payload: {
+					preview: "Do not release after opt-out",
+					holdCause: "explicit-setting",
+				},
+			},
+			{ signal: new AbortController().signal },
+		);
+		await waitFor(() =>
+			expect(sm.getPendingAskUserQuestions()).toHaveLength(1),
+		);
+		const pending = sm.getPendingAskUserQuestions()[0];
+		const question = pending?.questions[0]?.question;
+		if (!pending || !question) throw new Error("peer approval was missing");
+		await sm.handleAskUserQuestionResponse(pending.id, {
+			[question]: ["Deliver to Claude"],
+		});
+		await waitFor(() => expect(ctl.setPermissionMode).toHaveBeenCalledTimes(1));
+
+		const disabled = peerInboxConfig();
+		disabled.claude.peer_inbox = false;
+		sm.syncConfig(disabled);
+		await expect(dialog).resolves.toEqual({ behavior: "cancelled" });
+		releaseModeChange();
+		await waitFor(() => expect(sm.getStatus().state).toBe("idle"));
+		expect(ctl.cancel).toHaveBeenCalled();
+		expect(emitted.some((message) => message.type === "error")).toBe(false);
+		sm.abort();
+	});
+
+	it("retires the attached consumer when the provider cancels before release", async () => {
+		vi.mocked(dbMock.appendAskUserQuestion).mockResolvedValue(undefined);
+		vi.mocked(dbMock.setAskUserQuestionResolution).mockResolvedValue(undefined);
+		const ctl = makePeerInboxHarness();
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(
+			peerInboxConfig(),
+			makeProviders(ctl.provider),
+		);
+		await establishIdlePeerSession(sm, ctl, (message) => emitted.push(message));
+		ctl.cancel.mockClear();
+		const params = ctl.getParams();
+		const acquire = params.onProviderInitiatedTurn;
+		if (!acquire) throw new Error("peer continuation callback was missing");
+		const dialogController = new AbortController();
+		params.onProviderInitiatedTurn = async (turn) => {
+			const ready = await acquire(turn);
+			if (ready) dialogController.abort();
+			return ready;
+		};
+		const handlers = createClaudeHostInteractionHandlers(params);
+		const dialog = handlers.onUserDialog(
+			{
+				dialogKind: "peer_inbound_approval",
+				toolUseID: "native-peer-control-cancel",
+				payload: {
+					preview: "Cancelled before provider release",
+					holdCause: "explicit-setting",
+				},
+			},
+			{ signal: dialogController.signal },
+		);
+		await waitFor(() =>
+			expect(sm.getPendingAskUserQuestions()).toHaveLength(1),
+		);
+		const pending = sm.getPendingAskUserQuestions()[0];
+		const question = pending?.questions[0]?.question;
+		if (!pending || !question) throw new Error("peer approval was missing");
+		await sm.handleAskUserQuestionResponse(pending.id, {
+			[question]: ["Deliver to Claude"],
+		});
+
+		await expect(dialog).resolves.toEqual({ behavior: "cancelled" });
+		await waitFor(() => expect(sm.getStatus().state).toBe("idle"));
+		expect(ctl.cancel).toHaveBeenCalledTimes(1);
+		expect(emitted.some((message) => message.type === "error")).toBe(false);
+		sm.abort();
+	});
+
+	it("fails a peer approval closed and clears its card when decision persistence fails", async () => {
+		vi.mocked(dbMock.appendAskUserQuestion).mockResolvedValue(undefined);
+		vi.mocked(dbMock.setAskUserQuestionResolution)
+			.mockRejectedValueOnce(new Error("decision storage unavailable"))
+			.mockResolvedValue(undefined);
+		const ctl = makePeerInboxHarness();
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(
+			peerInboxConfig(),
+			makeProviders(ctl.provider),
+		);
+		await establishIdlePeerSession(sm, ctl, (message) => emitted.push(message));
+		ctl.setPermissionMode.mockClear();
+		const handlers = createClaudeHostInteractionHandlers(ctl.getParams());
+		const dialog = handlers.onUserDialog(
+			{
+				dialogKind: "peer_inbound_approval",
+				toolUseID: "native-peer-storage-failure",
+				payload: {
+					preview: "Do not release without a durable decision",
+					holdCause: "explicit-setting",
+				},
+			},
+			{ signal: new AbortController().signal },
+		);
+		await waitFor(() =>
+			expect(sm.getPendingAskUserQuestions()).toHaveLength(1),
+		);
+		const pending = sm.getPendingAskUserQuestions()[0];
+		const question = pending?.questions[0]?.question;
+		if (!pending || !question) throw new Error("peer approval was missing");
+
+		await expect(
+			sm.handleAskUserQuestionResponse(pending.id, {
+				[question]: ["Deliver to Claude"],
+			}),
+		).rejects.toThrow("decision storage unavailable");
+		await expect(dialog).resolves.toEqual({ behavior: "cancelled" });
+		expect(sm.getPendingAskUserQuestions()).toEqual([]);
+		expect(emitted).toContainEqual({
+			type: "ask_user_question_resolved",
+			id: pending.id,
+			answers: { __hlid_cancelled__: [] },
+		});
+		expect(ctl.setPermissionMode).not.toHaveBeenCalled();
+		sm.abort();
+	});
+
+	it("cancels a held peer immediately when its durable question cannot be inserted", async () => {
+		vi.mocked(dbMock.appendAskUserQuestion).mockResolvedValue(undefined);
+		const ctl = makePeerInboxHarness();
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(
+			peerInboxConfig(),
+			makeProviders(ctl.provider),
+		);
+		await establishIdlePeerSession(sm, ctl, (message) => emitted.push(message));
+		vi.mocked(dbMock.appendAskUserQuestion).mockRejectedValueOnce(
+			new Error("question storage unavailable"),
+		);
+		const handlers = createClaudeHostInteractionHandlers(ctl.getParams());
+
+		await expect(
+			handlers.onUserDialog(
+				{
+					dialogKind: "peer_inbound_approval",
+					toolUseID: "native-peer-insert-failure",
+					payload: {
+						preview: "Do not leave a ghost card",
+						holdCause: "explicit-setting",
+					},
+				},
+				{ signal: new AbortController().signal },
+			),
+		).resolves.toEqual({ behavior: "cancelled" });
+		expect(sm.getPendingAskUserQuestions()).toEqual([]);
+		expect(emitted).toContainEqual(
+			expect.objectContaining({
+				type: "ask_user_question_resolved",
+				answers: { __hlid_cancelled__: [] },
+			}),
+		);
+		sm.abort();
+	});
+
+	it("retries the latest permission mode when it changes during restoration", async () => {
+		vi.mocked(dbMock.appendAskUserQuestion).mockResolvedValue(undefined);
+		vi.mocked(dbMock.setAskUserQuestionResolution).mockResolvedValue(undefined);
+		const ctl = makePeerInboxHarness();
+		const sm = new SessionManager(
+			peerInboxConfig(),
+			makeProviders(ctl.provider),
+		);
+		await establishIdlePeerSession(sm, ctl);
+		ctl.setPermissionMode.mockClear();
+
+		const handlers = createClaudeHostInteractionHandlers(ctl.getParams());
+		const dialog = handlers.onUserDialog(
+			{
+				dialogKind: "peer_inbound_approval",
+				toolUseID: "native-peer-mode-race",
+				payload: {
+					preview: "Change mode during restore",
+					holdCause: "explicit-setting",
+				},
+			},
+			{ signal: new AbortController().signal },
+		);
+		await waitFor(() =>
+			expect(sm.getPendingAskUserQuestions()).toHaveLength(1),
+		);
+		const pending = sm.getPendingAskUserQuestions()[0];
+		const question = pending?.questions[0]?.question;
+		if (!pending || !question) throw new Error("peer approval was missing");
+		await sm.handleAskUserQuestionResponse(pending.id, {
+			[question]: ["Deliver to Claude"],
+		});
+		await expect(dialog).resolves.toEqual({
+			behavior: "completed",
+			result: { behavior: "approve" },
+		});
+		expect(ctl.setPermissionMode).toHaveBeenCalledTimes(1);
+
+		let releaseRestore!: () => void;
+		ctl.setPermissionMode.mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					releaseRestore = resolve;
+				}),
+		);
+		ctl.pushEvent({
+			type: "provider_peer_message",
+			body: "Change mode during restore",
+		});
+		ctl.pushEvent(peerDoneEvent());
+		await waitFor(() => expect(ctl.setPermissionMode).toHaveBeenCalledTimes(2));
+		await sm.setPermissionMode("bypassPermissions");
+		expect(ctl.setPermissionMode).toHaveBeenCalledTimes(2);
+		releaseRestore();
+		await waitFor(() => expect(ctl.setPermissionMode).toHaveBeenCalledTimes(3));
+		await waitFor(() => expect(sm.getStatus().state).toBe("idle"));
+		expect(ctl.setPermissionMode.mock.calls.at(-1)?.[0]).toBe(
+			"bypassPermissions",
+		);
+		sm.abort();
+	});
+
+	it("fails closed on an external peer origin outside an approved continuation", async () => {
+		vi.mocked(dbMock.appendMessage).mockClear();
+		const ctl = makePeerInboxHarness();
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+		const turn = sm.runQuery(
+			"ordinary human turn",
+			(message) => emitted.push(message),
+			{
+				sessionId: "unexpected-peer-session",
+				turnId: "ordinary-human-turn",
+			},
+		);
+		await waitFor(() => expect(ctl.send).toHaveBeenCalledTimes(1));
+		ctl.pushEvent({
+			type: "provider_peer_message",
+			body: "Unapproved external input",
+			fromAddress: "unexpected-peer",
+		});
+		await turn;
+
+		expect(sm.getStatus().state).toBe("error");
+		expect(emitted).toContainEqual(
+			expect.objectContaining({
+				type: "error",
+				message: expect.stringContaining("outside an owned peer continuation"),
+			}),
+		);
+		expect(
+			vi
+				.mocked(dbMock.appendMessage)
+				.mock.calls.some(
+					(call) =>
+						call[2] === "user" && String(call[3]).includes("Unapproved"),
+				),
+		).toBe(false);
+		sm.abort();
 	});
 });
 

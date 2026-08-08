@@ -131,6 +131,7 @@ function child(
 
 describe("Routine detached delegation ownership", () => {
 	let routineContext: RoutinePermissionContext | undefined;
+	let inputOrigin: string | undefined;
 	let close: ReturnType<typeof vi.fn>;
 	let waitForRoutineRun: ReturnType<typeof vi.fn>;
 	let cancelRoutineRun: ReturnType<typeof vi.fn>;
@@ -139,6 +140,7 @@ describe("Routine detached delegation ownership", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		inputOrigin = undefined;
 		close = vi.fn();
 		waitForRoutineRun = vi.fn().mockResolvedValue([child("completed")]);
 		cancelRoutineRun = vi.fn().mockResolvedValue(undefined);
@@ -147,9 +149,12 @@ describe("Routine detached delegation ownership", () => {
 			getProviderId: vi.fn().mockReturnValue("codex"),
 			runQuery: vi.fn(
 				async (_msg: unknown, _emit: unknown, options?: unknown) => {
-					routineContext = (
-						options as { routineContext?: RoutinePermissionContext }
-					)?.routineContext;
+					const runOptions = options as {
+						routineContext?: RoutinePermissionContext;
+						inputOrigin?: string;
+					};
+					routineContext = runOptions?.routineContext;
+					inputOrigin = runOptions?.inputOrigin;
 				},
 			),
 			getStatus: vi.fn().mockReturnValue({ state: "idle" }),
@@ -191,6 +196,7 @@ describe("Routine detached delegation ownership", () => {
 
 		expect(result.status).toBe("succeeded");
 		expect(waitForRoutineRun).toHaveBeenCalledWith(run.id);
+		expect(inputOrigin).toBe("scheduled-task");
 		expect(routineContext).toMatchObject({
 			routineId: routine.id,
 			runId: run.id,

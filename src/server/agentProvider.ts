@@ -405,6 +405,15 @@ export type AgentEvent =
 	| { type: "provider_context_reset"; sessionId: string }
 	/** Claude checkpoint attached to the current root user turn. */
 	| { type: "file_checkpoint"; id: string; providerSessionId: string }
+	/** Provider-authored peer input. Never reinterpret this as a human message. */
+	| {
+			type: "provider_peer_message";
+			body?: string;
+			fromAddress?: string;
+			claimedName?: string;
+			fromSession?: string;
+			verifiedPeerPid?: number;
+	  }
 	| { type: "commands_changed"; commands: SlashCommand[] }
 	| { type: "transport_error"; message: string }
 	/** A distinct root assistant message follows within the same visible turn. */
@@ -536,6 +545,18 @@ export type ToolMeta = {
 		summary?: string;
 		tool_use_id?: string;
 		url?: string;
+		peer?: {
+			preview: string;
+			from_address?: string;
+			claimed_name?: string;
+			verified_peer_pid?: number;
+			hold_cause?:
+				| "mode-mismatch"
+				| "no-mode-asserted"
+				| "explicit-setting"
+				| "bypass-default"
+				| "mode-unknown";
+		};
 	};
 };
 
@@ -566,6 +587,27 @@ export type ProviderApprovalsReviewerChange = {
 export type ProviderApprovalReviewContext = {
 	policyEnforced: boolean;
 	usageGateEnforced: boolean;
+};
+
+export type ProviderInitiatedTurn = {
+	kind: "claude_peer_message";
+	/** Persisted Hlid interaction row that owns this external input. */
+	interactionId: string;
+	sourceName: string;
+	toolUseId?: string;
+	/** Provider-owned preview used only for Raven audit context. */
+	preview: string;
+	fromAddress?: string;
+	claimedName?: string;
+	verifiedPeerPid?: number;
+	/** Provider control-request lifetime; aborting before origin delivery cancels the lease. */
+	signal?: AbortSignal;
+	holdCause?:
+		| "mode-mismatch"
+		| "no-mode-asserted"
+		| "explicit-setting"
+		| "bypass-default"
+		| "mode-unknown";
 };
 
 export type AgentQueryParams = {
@@ -618,6 +660,13 @@ export type AgentQueryParams = {
 	onGoalChange?: (goal: ProviderThreadGoal | null) => void;
 	/** Provider-authoritative approval reviewer changes for truthful live status. */
 	onApprovalsReviewerChange?: (change: ProviderApprovalsReviewerChange) => void;
+	/**
+	 * Acquire a dedicated Raven event consumer before a provider releases an
+	 * externally initiated turn. A false result keeps the provider prompt held.
+	 */
+	onProviderInitiatedTurn?: (turn: ProviderInitiatedTurn) => Promise<boolean>;
+	/** Claude-only inbound peer policy. Hlid never enables automatic acceptance. */
+	claudeCrossSessionInbound?: "refuse" | "hold";
 	/** Explicitly enable Codex's under-development realtime conversation RPCs. */
 	codexRealtimeEnabled?: boolean;
 };
@@ -628,10 +677,24 @@ export type AgentQueryParams = {
  * matching CLI semantics). "now" interrupts the current turn (pending
  * verification in Slice C). "later" appends to end of queue.
  */
+export type AgentInputOrigin =
+	| "human"
+	| "scheduled-task"
+	| "coordinator"
+	| "background-notification"
+	| "auto-continuation"
+	| "unclassified";
+
 export type SendOptions = {
 	priority?: "now" | "next" | "later";
 	/** Provider-visible paths to audio files included as native turn input. */
 	audioPaths?: string[];
+	/**
+	 * Hlid-owned semantic provenance, captured where the input enters Hlid.
+	 * Providers translate this into their native origin model. Missing values
+	 * are never treated as human.
+	 */
+	inputOrigin?: AgentInputOrigin;
 };
 
 export interface AgentSession extends AsyncIterable<AgentEvent> {

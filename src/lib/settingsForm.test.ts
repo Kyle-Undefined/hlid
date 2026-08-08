@@ -14,7 +14,11 @@ describe("settings form conversion", () => {
 				save_to_obsidian_template: "Quick Capture",
 				obsidian_command_allowlist: ["templater-obsidian:insert-templater"],
 			},
-			claude: { max_turns: 12, interactive_mode: true },
+			claude: {
+				max_turns: 12,
+				interactive_mode: true,
+				peer_inbox: true,
+			},
 			codex: {
 				max_turns: 8,
 				windows_computer_use: { model: "gpt-5.5", effort: "inherit" },
@@ -30,6 +34,7 @@ describe("settings form conversion", () => {
 			maxTurns: "12",
 			vaultProvider: "codex",
 			interactiveMode: true,
+			peerInbox: true,
 		});
 		expect(forms.codex.maxTurns).toBe("8");
 		expect(forms.vault.saveToObsidianTemplate).toBe("Quick Capture");
@@ -48,6 +53,18 @@ describe("settings form conversion", () => {
 			planning: "",
 			done: "Done",
 		});
+	});
+
+	it("defaults the Claude peer inbox off and persists an explicit opt-in", () => {
+		const initial = HlidConfigSchema.parse({});
+		expect(initial.claude.peer_inbox).toBe(false);
+		const forms = createSettingsForms(initial);
+		expect(forms.claude.peerInbox).toBe(false);
+
+		forms.claude = { ...forms.claude, peerInbox: true };
+		expect(buildSettingsConfig(initial, forms, false).claude.peer_inbox).toBe(
+			true,
+		);
 	});
 
 	it("round-trips an empty workspace Obsidian template selection", () => {

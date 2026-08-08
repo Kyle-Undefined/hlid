@@ -2443,6 +2443,79 @@ describe("RESOLVE_ASK_USER_QUESTION", () => {
 	});
 });
 
+// ── UPDATE_ASK_USER_QUESTION_PROVENANCE ──────────────────────────────────────
+
+describe("UPDATE_ASK_USER_QUESTION_PROVENANCE", () => {
+	function withResolvedPeer(): ChatMessage[] {
+		const pending = reducer(empty(), {
+			type: "ADD_ASK_USER_QUESTION",
+			id: "peer-ask-1",
+			questions: [
+				{
+					question: "Deliver this held peer message to Claude?",
+					options: ["Deliver to Claude", "Deny"],
+					multiSelect: false,
+				},
+			],
+			provenance: {
+				provider_id: "claude",
+				kind: "provider_dialog",
+				source_name: "peer_inbound_approval",
+				peer: { preview: "truncated preview" },
+			},
+		});
+		return reducer(pending, {
+			type: "RESOLVE_ASK_USER_QUESTION",
+			id: "peer-ask-1",
+			answers: {
+				"Deliver this held peer message to Claude?": ["Deliver to Claude"],
+			},
+		});
+	}
+
+	it("replaces late provenance without losing the resolved decision", () => {
+		const before = withResolvedPeer();
+		const provenance = {
+			provider_id: "claude",
+			kind: "provider_dialog" as const,
+			source_name: "peer_inbound_approval",
+			peer: {
+				preview: "truncated preview",
+				body: "Exact delivered body",
+				from_session: "claimed-session-17",
+			},
+		};
+		const after = reducer(before, {
+			type: "UPDATE_ASK_USER_QUESTION_PROVENANCE",
+			id: "peer-ask-1",
+			provenance,
+		});
+
+		const message = after[0];
+		if (message.role !== "ask_user_question") throw new Error("wrong role");
+		expect(message.provenance).toEqual(provenance);
+		expect(message.answers).toEqual({
+			"Deliver this held peer message to Claude?": ["Deliver to Claude"],
+		});
+	});
+
+	it("returns the same state when the interaction is not loaded", () => {
+		const before = withResolvedPeer();
+		const after = reducer(before, {
+			type: "UPDATE_ASK_USER_QUESTION_PROVENANCE",
+			id: "missing-peer-ask",
+			provenance: {
+				provider_id: "claude",
+				kind: "provider_dialog",
+				source_name: "peer_inbound_approval",
+				peer: { preview: "late preview", body: "late body" },
+			},
+		});
+
+		expect(after).toBe(before);
+	});
+});
+
 // ── ADD_LOCAL_COMMAND_OUTPUT ──────────────────────────────────────────────────
 
 describe("ADD_LOCAL_COMMAND_OUTPUT", () => {

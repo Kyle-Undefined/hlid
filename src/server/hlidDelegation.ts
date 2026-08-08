@@ -881,6 +881,7 @@ export class HlidDelegationManager {
 			(event) => this.emitFor(active.entry, event),
 			delegation.child_session_id,
 			turnId,
+			"coordinator",
 		);
 		active.entry.runState.broadcast({
 			type: "user_message",
@@ -1410,6 +1411,7 @@ export class HlidDelegationManager {
 					this.emitFor(entry, event);
 				},
 				{
+					inputOrigin: "coordinator",
 					sessionId: delegation.child_session_id,
 					skillContexts: payload.skillContexts,
 					attachments: payload.relics,

@@ -181,6 +181,7 @@ export async function runRoutineSession(options: {
 				if (changesSessionAttention(message)) onStatusChange?.();
 			},
 			{
+				inputOrigin: "scheduled-task",
 				sessionId,
 				skillContexts: routine.skillContexts,
 				attachments,

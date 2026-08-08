@@ -17,6 +17,8 @@ export type ClaudeForm = {
 	vaultProvider: string;
 	/** Use Claude CLI directly in a terminal instead of the Agent SDK. */
 	interactiveMode: boolean;
+	/** Hold inbound Claude peer messages for explicit review in Raven. */
+	peerInbox: boolean;
 	/** Codex-only Windows-native Computer Use preferences. */
 	windowsComputerUseModel?: string;
 	windowsComputerUseEffort?: string;
@@ -559,12 +561,20 @@ export function ClaudeSection({
 						activeProvider={activeProvider}
 					/>
 					{isClaude && (
-						<CheckboxField
-							label="Interactive mode"
-							hint='to not go against your "programmatic" usage, if you desire'
-							checked={claude.interactiveMode}
-							onChange={(interactiveMode) => onChange({ interactiveMode })}
-						/>
+						<>
+							<CheckboxField
+								label="Interactive mode"
+								hint='to not go against your "programmatic" usage, if you desire'
+								checked={claude.interactiveMode}
+								onChange={(interactiveMode) => onChange({ interactiveMode })}
+							/>
+							<CheckboxField
+								label="Claude peer inbox"
+								hint="hold inbound cross-session messages for review in Raven before Claude can act; sender claims are not human authority"
+								checked={claude.peerInbox}
+								onChange={(peerInbox) => onChange({ peerInbox })}
+							/>
+						</>
 					)}
 				</>
 			)}

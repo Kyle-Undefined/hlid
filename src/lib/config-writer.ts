@@ -132,6 +132,7 @@ function serializeClaude(config: HlidConfig["claude"]): string[] {
 		...optionalEntry("max_turns", config.max_turns),
 		...optionalEntry("recap_model", config.recap_model),
 		...optionalEntry("interactive_mode", true, config.interactive_mode),
+		...optionalEntry("peer_inbox", true, config.peer_inbox),
 	]);
 }
 

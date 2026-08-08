@@ -44,6 +44,7 @@ import {
 	getSessionToolEventPage,
 	getSessionToolEventSummaries,
 	getSessionToolEventTranscriptWindow,
+	setAskUserQuestionProvenance,
 	setAskUserQuestionResolution,
 	setMessageProviderTurnId,
 	setMessageQueryId,
@@ -3497,6 +3498,43 @@ describe("ask_user_questions", () => {
 		expect(rows[0].provenance_json).toBe(updated);
 	});
 
+	it("updates provenance learned after a held provider prompt is released", async () => {
+		await createSession("s1", "TEST", "claude-sonnet");
+		const preview = JSON.stringify({
+			provider_id: "claude",
+			kind: "provider_dialog",
+			source_name: "peer_inbound_approval",
+			peer: { preview: "Check the failing test" },
+		});
+		const delivered = JSON.stringify({
+			provider_id: "claude",
+			kind: "provider_dialog",
+			source_name: "teammate@project",
+			peer: {
+				preview: "Check the failing test",
+				body: "Check the failing test in session.queueing.test.ts",
+			},
+		});
+		await appendAskUserQuestion(
+			"s1",
+			"req-peer",
+			0,
+			sampleQuestionsJson,
+			preview,
+		);
+		await setAskUserQuestionProvenance("s1", "req-peer", delivered);
+
+		const rows = await getSessionAskUserQuestions("s1");
+		expect(rows[0].provenance_json).toBe(delivered);
+	});
+
+	it("setAskUserQuestionProvenance throws when the row does not exist", async () => {
+		await createSession("s1", "TEST", "claude-sonnet");
+		await expect(
+			setAskUserQuestionProvenance("s1", "missing-id", "{}"),
+		).rejects.toThrow(/no row found/);
+	});
+
 	it("appendAskUserQuestion upserts on the same request_id (retry-safe)", async () => {
 		await createSession("s1", "TEST", "claude-sonnet");
 		await appendAskUserQuestion("s1", "req-1", 0, sampleQuestionsJson);
@@ -3507,6 +3545,35 @@ describe("ask_user_questions", () => {
 		const rows = await getSessionAskUserQuestions("s1");
 		expect(rows).toHaveLength(1);
 		expect(rows[0].questions_json).toBe(updatedJson);
+	});
+
+	it("re-arms a replayed request that was resolved before provider delivery", async () => {
+		await createSession("s1", "TEST", "claude-sonnet");
+		await appendAskUserQuestion("s1", "req-replayed", 3, sampleQuestionsJson);
+		await setAskUserQuestionResolution(
+			"s1",
+			"req-replayed",
+			JSON.stringify({ "Pick?": ["A"] }),
+			JSON.stringify({ "Pick?": "first attempt" }),
+		);
+		const replayedQuestions = JSON.stringify([
+			{ question: "Deliver now?", options: ["Yes", "No"], multiSelect: false },
+		]);
+		await appendAskUserQuestion(
+			"s1",
+			"req-replayed",
+			9,
+			replayedQuestions,
+			JSON.stringify({ provider_id: "claude", kind: "provider_dialog" }),
+		);
+
+		const rows = await getSessionAskUserQuestions("s1");
+		expect(rows[0]).toMatchObject({
+			seq: 9,
+			questions_json: replayedQuestions,
+			answers_json: null,
+			notes_json: null,
+		});
 	});
 
 	it("setAskUserQuestionResolution stores answers and notes", async () => {

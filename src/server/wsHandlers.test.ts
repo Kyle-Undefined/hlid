@@ -137,7 +137,7 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 			.fn()
 			.mockReturnValue({ pending_turn_ids: [], running_turn_id: null }),
 		handlePermissionResponse: vi.fn(),
-		handleAskUserQuestionResponse: vi.fn(),
+		handleAskUserQuestionResponse: vi.fn().mockResolvedValue(true),
 		handlePlanModeExitResponse: vi.fn(),
 		probeMcpStatus: vi.fn().mockResolvedValue(undefined),
 		applyProviderMcpServers: vi.fn().mockResolvedValue({
@@ -1497,6 +1497,31 @@ describe("open", () => {
 			expect.objectContaining({ type: "ask_user_question", id: "aqq-1" }),
 		);
 	});
+
+	it("replays a held peer question while the provider session is idle", () => {
+		const pendingQ = {
+			type: "ask_user_question" as const,
+			id: "peer-idle-1",
+			questions: [
+				{
+					question: "Deliver this held peer message to Claude?",
+					options: ["Deliver to Claude", "Deny"],
+					multiSelect: false,
+				},
+			],
+		};
+		const session = makeSession({
+			isRunning: vi.fn().mockReturnValue(false),
+			getPendingAskUserQuestions: vi.fn().mockReturnValue([pendingQ]),
+		});
+		const { pool, runState } = wrapSession(session);
+		const { open } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		open(ws as never);
+
+		expect(runState.send).toHaveBeenCalledWith(ws, pendingQ);
+	});
 });
 
 // ── close ─────────────────────────────────────────────────────────────────────
@@ -1622,6 +1647,31 @@ describe("message — sync", () => {
 			.map((call) => call[1].type);
 		expect(types).toContain("ask_user_question");
 		expect(types).toContain("plan_mode_exit");
+	});
+
+	it("replays a held peer question on idle sync", async () => {
+		const pendingQuestion = {
+			type: "ask_user_question" as const,
+			id: "peer-idle-sync",
+			questions: [
+				{
+					question: "Deliver this held peer message to Claude?",
+					options: ["Deliver to Claude", "Deny"],
+					multiSelect: false,
+				},
+			],
+		};
+		const session = makeSession({
+			isRunning: vi.fn().mockReturnValue(false),
+			getPendingAskUserQuestions: vi.fn().mockReturnValue([pendingQuestion]),
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(ws as never, JSON.stringify({ type: "sync" }));
+
+		expect(runState.send).toHaveBeenCalledWith(ws, pendingQuestion);
 	});
 });
 
@@ -3110,6 +3160,7 @@ describe("message — chat", () => {
 			"hello",
 			expect.any(Function),
 			expect.objectContaining({
+				inputOrigin: "human",
 				sessionId: "sess-1",
 				skillContexts: "/vault/skills/s.md",
 			}),
@@ -3613,6 +3664,31 @@ describe("message — ask_user_question_response", () => {
 				type: "ask_user_question_response",
 				id: "ghost-id",
 				answers: { "Q?": ["Whatever"] },
+			}),
+		);
+	});
+
+	it("does not broadcast a stale response rejected by the session", async () => {
+		const session = makeSession({
+			handleAskUserQuestionResponse: vi.fn().mockResolvedValue(false),
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "ask_user_question_response",
+				id: "already-answered",
+				answers: { "Q?": ["Late answer"] },
+			}),
+		);
+
+		expect(runState.broadcast).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "ask_user_question_resolved",
+				id: "already-answered",
 			}),
 		);
 	});

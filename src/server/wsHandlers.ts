@@ -198,8 +198,11 @@ function changesSessionAttention(event: ServerMessage): boolean {
 		event.type === "status" ||
 		event.type === "agent_sleep" ||
 		event.type === "permission_request" ||
+		event.type === "permission_resolved" ||
 		event.type === "ask_user_question" ||
+		event.type === "ask_user_question_resolved" ||
 		event.type === "plan_mode_exit" ||
+		event.type === "plan_mode_exit_resolved" ||
 		event.type === "goal_state"
 	);
 }
@@ -780,8 +783,8 @@ function subscribeToLiveSession(
 	if (context) entry.runState.send(ws, context);
 	if (entry.manager.isRunning()) {
 		sendReplayBuffer(ws, entry);
-		sendPendingInteractions(ws, entry);
 	}
+	sendPendingInteractions(ws, entry);
 	// Auto-sleep is transient session state rather than a transcript event, so
 	// it is not part of the normal replay buffer. Re-send it when Raven switches
 	// to an already-sleeping live session just as we do on connect and sync.
@@ -894,8 +897,9 @@ function handleSync(ws: ServerWebSocket<WsData>, entry: PoolEntry): void {
 	// prompt owner.
 	const sleep = entry.manager.getSleepState();
 	if (sleep) entry.runState.send(ws, sleep);
-	if (!entry.manager.isRunning()) return;
-	if (entry.runState.ownerWs === null) entry.runState.ownerWs = ws;
+	if (entry.manager.isRunning() && entry.runState.ownerWs === null) {
+		entry.runState.ownerWs = ws;
+	}
 	// Ownership controls which connection launched the turn, not whether another
 	// subscribed device can see and answer the interaction blocking that turn.
 	sendPendingInteractions(ws, entry);
@@ -1003,12 +1007,17 @@ function handlePermissionResponse(
 		});
 }
 
-function handleAskUserQuestionResponse(
+async function handleAskUserQuestionResponse(
 	context: MessageContext,
 	entry: PoolEntry,
 	msg: MessageOf<"ask_user_question_response">,
-): void {
-	entry.manager.handleAskUserQuestionResponse(msg.id, msg.answers, msg.notes);
+): Promise<void> {
+	const accepted = await entry.manager.handleAskUserQuestionResponse(
+		msg.id,
+		msg.answers,
+		msg.notes,
+	);
+	if (!accepted) return;
 	entry.runState.broadcast({
 		type: "ask_user_question_resolved",
 		id: msg.id,
@@ -1016,18 +1025,6 @@ function handleAskUserQuestionResponse(
 		...(msg.notes !== undefined ? { notes: msg.notes } : {}),
 	});
 	broadcastSessionsStatus(context);
-	const sessionId = entry.manager.getCurrentSessionId();
-	if (!sessionId) return;
-	void db
-		.setAskUserQuestionResolution(
-			sessionId,
-			msg.id,
-			JSON.stringify(msg.answers),
-			msg.notes !== undefined ? JSON.stringify(msg.notes) : null,
-		)
-		.catch((error) => {
-			console.error("[db] setAskUserQuestionResolution failed:", error);
-		});
 }
 
 function handlePlanModeExitResponse(
@@ -1194,6 +1191,7 @@ async function runChatQuery(
 				if (changesSessionAttention(event)) broadcastSessionsStatus(context);
 			},
 			{
+				inputOrigin: "human",
 				sessionId: msg.session_id,
 				skillContexts: msg.skill_contexts ?? msg.skill_context,
 				attachments: msg.attachments,
@@ -1386,6 +1384,7 @@ async function handleSteerActive(
 			},
 			childSessionId,
 			msg.turn_id,
+			"human",
 		);
 		entry.runState.broadcast({
 			type: "user_message",
@@ -1726,7 +1725,7 @@ async function handleSessionMessage(
 			handlePermissionResponse(context, entry, msg);
 			return;
 		case "ask_user_question_response":
-			handleAskUserQuestionResponse(context, entry, msg);
+			await handleAskUserQuestionResponse(context, entry, msg);
 			return;
 		case "plan_mode_exit_response":
 			handlePlanModeExitResponse(context, entry, msg);
@@ -2025,20 +2024,21 @@ export function createWsHandlers(
 				});
 			}
 
-			if (vault.manager.isRunning()) {
-				// Current clients immediately restore their exact focused session with a
-				// subscribe_session message. Let that be their sole catch-up stream so a
-				// large vault run is not replayed before a different focused chat. Legacy
-				// clients retain the eager per-message behavior.
-				if (!ws.data.batchedReplay) {
+			// Current clients immediately restore their exact focused session with a
+			// subscribe_session message. Let that be their sole catch-up stream so a
+			// large vault run is not replayed before a different focused chat. Legacy
+			// clients retain the eager per-message behavior, including provider dialogs
+			// held while the ordinary turn state is idle.
+			if (!ws.data.batchedReplay) {
+				if (vault.manager.isRunning()) {
 					sendReplayBuffer(ws, vault);
 					const sleep = vault.manager.getSleepState();
 					if (sleep) vault.runState.send(ws, sleep);
 					// A reconnecting client may claim an unowned run, but every connected
 					// client should see the prompt currently blocking that run.
 					if (vault.runState.ownerWs === null) vault.runState.ownerWs = ws;
-					sendPendingInteractions(ws, vault);
 				}
+				sendPendingInteractions(ws, vault);
 			}
 
 			// Send cached MCP status so clients see server list immediately on connect.

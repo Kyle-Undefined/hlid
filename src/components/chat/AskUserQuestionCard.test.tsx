@@ -224,6 +224,147 @@ describe("AskUserQuestionCard — provider interaction provenance", () => {
 		).toBe("https://example.test/oauth");
 	});
 
+	it("renders a held peer message as a provider preview with bounded provenance", () => {
+		render(
+			<AskUserQuestionCard
+				message={makeMsg({
+					provenance: {
+						provider_id: "claude",
+						kind: "provider_dialog",
+						source_name: "peer_inbound_approval",
+						peer: {
+							preview: "Please review the deployment plan",
+							claimed_name: "Release helper",
+							from_address: "peer-17",
+							verified_peer_pid: 4242,
+							hold_cause: "mode-mismatch",
+						},
+					},
+				})}
+				onSubmit={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByText("Claude peer inbox")).not.toBeNull();
+		expect(screen.getByText("Held for review")).not.toBeNull();
+		expect(
+			screen.getByText("Claude has not acted on this message."),
+		).not.toBeNull();
+		expect(screen.getByText("Provider preview")).not.toBeNull();
+		expect(
+			screen.getByText("sanitized and truncated by Claude Code"),
+		).not.toBeNull();
+		expect(
+			screen.getByText("Please review the deployment plan"),
+		).not.toBeNull();
+		expect(screen.getByText("Claimed sender")).not.toBeNull();
+		expect(screen.getByText("Release helper")).not.toBeNull();
+		expect(screen.getByText("peer-17")).not.toBeNull();
+		expect(screen.getByText("hold reason mode-mismatch")).not.toBeNull();
+		expect(
+			screen.getByText("connecting PID 4242 (provenance only)"),
+		).not.toBeNull();
+		expect(screen.getByText(/not human authority/i)).not.toBeNull();
+		expect(screen.queryByRole("link", { name: /source session/i })).toBeNull();
+	});
+
+	it.each([
+		[
+			"Deliver to Claude",
+			"Approved for delivery",
+			"This review approved the message for delivery to Claude.",
+			"Delivered message",
+		],
+		[
+			"Deny",
+			"Delivery denied",
+			"The held message was not delivered to Claude.",
+			"Provider preview",
+		],
+	])("retains peer audit context after %s", (answer, stateLabel, stateCopy, contentLabel) => {
+		const question = "Deliver this held peer message to Claude?";
+		render(
+			<AskUserQuestionCard
+				message={makeMsg({
+					questions: [
+						{
+							question,
+							options: ["Deliver to Claude", "Deny"],
+							multiSelect: false,
+						},
+					],
+					answers: { [question]: [answer] },
+					provenance: {
+						provider_id: "claude",
+						kind: "provider_dialog",
+						source_name: "peer_inbound_approval",
+						peer: {
+							preview: "Keep this preview for the audit trail",
+							claimed_name: "Peer helper",
+							...(answer === "Deliver to Claude"
+								? {
+										body: "Exact delivered body",
+										from_session: "claimed-session-17",
+									}
+								: {}),
+						},
+					},
+				})}
+				onSubmit={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByText(stateLabel)).not.toBeNull();
+		expect(screen.getByText(stateCopy)).not.toBeNull();
+		expect(screen.getByText(contentLabel)).not.toBeNull();
+		if (answer === "Deliver to Claude") {
+			expect(screen.getByText("Exact delivered body")).not.toBeNull();
+			expect(
+				screen.queryByText("Keep this preview for the audit trail"),
+			).toBeNull();
+			expect(screen.getByText("Claimed source session")).not.toBeNull();
+			expect(screen.getByText("navigation claim only")).not.toBeNull();
+			expect(screen.getByText("claimed-session-17")).not.toBeNull();
+			expect(screen.queryByRole("link")).toBeNull();
+		} else {
+			expect(
+				screen.getByText("Keep this preview for the audit trail"),
+			).not.toBeNull();
+		}
+		expect(screen.getByText("Peer helper")).not.toBeNull();
+		expect(screen.getByText(answer)).not.toBeNull();
+		expect(
+			screen.getByText(
+				"This decision covered message delivery only, not tool authority.",
+			),
+		).not.toBeNull();
+	});
+
+	it("labels a cancelled peer review without implying an explicit denial", () => {
+		render(
+			<AskUserQuestionCard
+				message={makeMsg({
+					answers: { [ASK_USER_QUESTION_CANCEL_KEY]: [] },
+					provenance: {
+						provider_id: "claude",
+						kind: "provider_dialog",
+						source_name: "peer_inbound_approval",
+						peer: { preview: "Cancelled provider preview" },
+					},
+				})}
+				onSubmit={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByText("Delivery cancelled")).not.toBeNull();
+		expect(
+			screen.getByText(
+				"The review ended before the held message was delivered.",
+			),
+		).not.toBeNull();
+		expect(screen.getByText("Cancelled")).not.toBeNull();
+	});
+
 	it("returns a deterministic shared cancellation marker", () => {
 		const onSubmit = vi.fn();
 		render(

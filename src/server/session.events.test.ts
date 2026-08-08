@@ -103,6 +103,7 @@ describe("SessionManager — native Codex goals", () => {
 			"Finish the release gate",
 			(message) => emitted.push(message),
 			{
+				inputOrigin: "human",
 				sessionId: "goal-session",
 				turnId: "goal-turn",
 				goalStart: {
@@ -117,7 +118,9 @@ describe("SessionManager — native Codex goals", () => {
 			objective: "Finish the release gate",
 			tokenBudget: 50_000,
 		});
-		expect(send).toHaveBeenCalledWith("test prompt");
+		expect(send).toHaveBeenCalledWith("test prompt", {
+			inputOrigin: "human",
+		});
 		expect(controlGoal.mock.invocationCallOrder[0]).toBeLessThan(
 			send.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
 		);
@@ -432,6 +435,7 @@ describe("SessionManager — native Codex realtime", () => {
 			makeProviders(provider),
 		);
 		const typedTurn = manager.runQuery("Keep working", vi.fn(), {
+			inputOrigin: "human",
 			sessionId: "voice-concurrent-read-aloud",
 		});
 		await ordinaryTurnActive;
@@ -483,7 +487,9 @@ describe("SessionManager — native Codex realtime", () => {
 		expect(ordinaryCancel).not.toHaveBeenCalled();
 		releaseOrdinaryTurn();
 		await typedTurn;
-		expect(ordinarySend).toHaveBeenCalledWith("test prompt");
+		expect(ordinarySend).toHaveBeenCalledWith("test prompt", {
+			inputOrigin: "human",
+		});
 	});
 
 	it("keeps delayed speech and stops from a replaced request off the active generation", async () => {
@@ -1371,13 +1377,15 @@ describe("SessionManager — native Codex realtime", () => {
 		await sm.runQuery(
 			"First typed prompt after Live",
 			(message) => emitted.push(message),
-			{ sessionId: "voice-resume" },
+			{ inputOrigin: "human", sessionId: "voice-resume" },
 		);
 
 		expect(query).toHaveBeenCalledTimes(2);
 		expect(query.mock.calls[1]?.[0].sessionId).toBe("sdk-live-thread");
 		expect(liveSend).not.toHaveBeenCalled();
-		expect(resumedSend).toHaveBeenCalledWith("test prompt");
+		expect(resumedSend).toHaveBeenCalledWith("test prompt", {
+			inputOrigin: "human",
+		});
 		expect(emitted.filter((message) => message.type === "chunk")).toEqual([
 			{ type: "chunk", text: "Fresh typed reply", offset: 0 },
 		]);
@@ -1495,6 +1503,7 @@ describe("SessionManager — native Codex realtime", () => {
 		const typedEmitted: ServerMessage[] = [];
 		await expect(
 			sm.runQuery("dictated prompt", (message) => typedEmitted.push(message), {
+				inputOrigin: "human",
 				sessionId: "voice-dictation",
 			}),
 		).resolves.toBeUndefined();
@@ -1504,7 +1513,9 @@ describe("SessionManager — native Codex realtime", () => {
 			query.mock.calls[0]?.[0].canUseTool,
 		);
 		expect(dictationSend).not.toHaveBeenCalled();
-		expect(typedSend).toHaveBeenCalledWith("test prompt");
+		expect(typedSend).toHaveBeenCalledWith("test prompt", {
+			inputOrigin: "human",
+		});
 		expect(typedEmitted).toContainEqual({
 			type: "chunk",
 			text: "Fresh typed reply",
@@ -1626,14 +1637,16 @@ describe("SessionManager — native Codex realtime", () => {
 		await sm.runQuery(
 			"Typed prompt after rejected dictation",
 			(message) => typedEmitted.push(message),
-			{ sessionId: "voice-dictation-rejected" },
+			{ inputOrigin: "human", sessionId: "voice-dictation-rejected" },
 		);
 
 		expect(query).toHaveBeenCalledTimes(2);
 		expect(query.mock.calls[1]?.[0].sessionId).toBe(
 			"sdk-raven-before-rejected-dictation",
 		);
-		expect(typedSend).toHaveBeenCalledWith("test prompt");
+		expect(typedSend).toHaveBeenCalledWith("test prompt", {
+			inputOrigin: "human",
+		});
 		expect(typedEmitted).toContainEqual({
 			type: "chunk",
 			text: "Fresh after rejection",

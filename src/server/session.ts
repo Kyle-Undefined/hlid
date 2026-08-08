@@ -46,6 +46,7 @@ import {
 } from "./agentPaths";
 import type {
 	AgentEvent,
+	AgentInputOrigin,
 	AgentProvider,
 	AgentQueryParams,
 	AgentSession,
@@ -61,6 +62,7 @@ import type {
 	ProviderFileRewindResult,
 	ProviderGoalControl,
 	ProviderGoalControlResult,
+	ProviderInitiatedTurn,
 	ProviderMcpServerApplyResult,
 	ProviderMcpServerDefinition,
 	ProviderRealtimeActivity,
@@ -73,6 +75,7 @@ import type {
 	ProviderWorkflowDeleteInput,
 	ProviderWorkflowSaveInput,
 	ProviderWorkflowSourceInput,
+	SendOptions,
 	SlashCommand,
 	SubagentSnapshot,
 	TaskActivity,
@@ -334,10 +337,24 @@ const TEXT_WRITE_THROTTLE_MS = 800;
 // its native account/rateLimits/updated notifications as the faster path.
 const LIVE_USAGE_REFRESH_MS = 5_000;
 const PROVIDER_HANDOFF_MAX_CHARS = 80_000;
+const CLAUDE_PEER_BODY_MAX_CHARS = 80_000;
+const CLAUDE_PEER_ADDRESS_MAX_CHARS = 1_024;
+const CLAUDE_PEER_NAME_MAX_CHARS = 512;
+const CLAUDE_PEER_SESSION_MAX_CHARS = 1_024;
 const FILE_REWIND_PREVIEW_TTL_MS = 5 * 60_000;
 const BACKGROUND_ACTIVITY_ACTIVE_POLL_MS = 2_000;
 const BACKGROUND_ACTIVITY_IDLE_POLL_MS = 10_000;
 const BACKGROUND_ACTIVITY_LIMIT = 50;
+const PEER_ORIGIN_PREFLIGHT_EVENT_TYPES: ReadonlySet<AgentEvent["type"]> =
+	new Set([
+		"session_start",
+		"provider_context_reset",
+		"provider_peer_message",
+		"commands_changed",
+		"transport_error",
+		"rate_limit",
+		"mcp_status",
+	]);
 
 function normalizeFileRewindResult(
 	result: ProviderFileRewindResult,
@@ -376,17 +393,39 @@ export interface RunQueryOptions {
 	workspaceReferences?: WorkspaceReferenceRequest[];
 	delegationContext?: string;
 	backgroundSession?: boolean;
+	/** Captured at the Hlid input boundary; never inferred from mutable state. */
+	inputOrigin?: AgentInputOrigin;
 }
 
 type RunQueryArgs = {
 	userMessage: string;
 	emit: (msg: ServerMessage) => void;
 	options: RunQueryOptions;
+	readonly inputOrigin: AgentInputOrigin;
 	durableReady?: Promise<boolean>;
+};
+
+type ProviderContinuationJob = {
+	trigger: ProviderInitiatedTurn;
+	sessionId: string;
+	emit: (msg: ServerMessage) => void;
+	provider: AgentProvider;
+	agentSettings: AgentSettings | undefined;
+	ownershipGeneration: number;
+	expectedSessionKey: string;
+	peerOriginObserved: boolean;
+	consumerAttached: boolean;
+	abortController: AbortController;
+	dialogAbortHandler?: () => void;
+	ready: Promise<boolean>;
+	readySettled: boolean;
+	resolveReady: (ready: boolean) => void;
 };
 
 type DurableRunQueryPayload = {
 	userMessage: string;
+	/** Optional only for rows written before input provenance was persisted. */
+	inputOrigin?: AgentInputOrigin;
 	options: Pick<
 		RunQueryOptions,
 		| "skillContexts"
@@ -405,6 +444,7 @@ function durableTurnPayload(args: RunQueryArgs): DurableRunQueryPayload {
 	const o = args.options;
 	return {
 		userMessage: args.userMessage,
+		inputOrigin: args.inputOrigin,
 		options: {
 			...(o.skillContexts !== undefined
 				? { skillContexts: o.skillContexts }
@@ -425,6 +465,22 @@ function durableTurnPayload(args: RunQueryArgs): DurableRunQueryPayload {
 				: {}),
 		},
 	};
+}
+
+const AGENT_INPUT_ORIGINS = new Set<AgentInputOrigin>([
+	"human",
+	"scheduled-task",
+	"coordinator",
+	"background-notification",
+	"auto-continuation",
+	"unclassified",
+]);
+
+function normalizeAgentInputOrigin(value: unknown): AgentInputOrigin {
+	return typeof value === "string" &&
+		AGENT_INPUT_ORIGINS.has(value as AgentInputOrigin)
+		? (value as AgentInputOrigin)
+		: "unclassified";
 }
 
 function isDurableInteractiveTurn(args: RunQueryArgs): boolean {
@@ -450,7 +506,7 @@ type ActiveSteeringTarget = {
 	turnId: string;
 	sessionId: string | null;
 	agentSession: AgentSession;
-	steer: (prompt: string) => Promise<void>;
+	steer: (prompt: string, options?: SendOptions) => Promise<void>;
 	turnState: TurnState;
 	/** Assistant sequence before provider acceptance can race with turn done. */
 	assistantSeqAtCapture: number | null;
@@ -716,6 +772,8 @@ function buildAgentQueryParams(options: {
 	executable: string | undefined;
 	windowsComputerUse: AgentQueryParams["windowsComputerUse"];
 	onGoalChange?: AgentQueryParams["onGoalChange"];
+	onProviderInitiatedTurn?: AgentQueryParams["onProviderInitiatedTurn"];
+	claudeCrossSessionInbound?: AgentQueryParams["claudeCrossSessionInbound"];
 	canUseTool: CanUseTool;
 	beforeToolUse: AgentQueryParams["beforeToolUse"];
 	policyEnforced: boolean;
@@ -775,6 +833,8 @@ function buildAgentQueryParams(options: {
 		executable: options.executable,
 		windowsComputerUse: options.windowsComputerUse,
 		onGoalChange: options.onGoalChange,
+		onProviderInitiatedTurn: options.onProviderInitiatedTurn,
+		claudeCrossSessionInbound: options.claudeCrossSessionInbound,
 		codexRealtimeEnabled: options.codexRealtimeEnabled,
 		settingSources: ["user", "project", "local"],
 		canUseTool: options.canUseTool,
@@ -1044,6 +1104,8 @@ export class SessionManager {
 	private serviceTierOverride: string | null = null;
 	private permissionModeOverride: PermissionMode | null = null;
 	private approvalsReviewerOverride: ProviderApprovalsReviewer | null = null;
+	/** Serializes effective permission changes across isolated provider turns. */
+	private permissionModeGeneration = 0;
 	/** The next provider thread needs the persisted Hlid transcript as context. */
 	private providerHandoffPending = false;
 	/** Provider conversation that has accepted the compact Hlid operating brief. */
@@ -1053,6 +1115,8 @@ export class SessionManager {
 	/** Extension changes made mid-turn retire the native runtime before its next turn. */
 	private restartProviderRuntimeAfterTurn = false;
 	private maxTurns: number | undefined;
+	/** Explicit opt-in; live Claude sessions hold peers for Raven instead of accepting. */
+	private claudePeerInbox = false;
 	private vaultPath!: string;
 	private vaultName!: string;
 	private permissionMode!: PermissionMode;
@@ -1133,10 +1197,27 @@ export class SessionManager {
 	// queued FIFO and drained serially. State stays "running" until the queue
 	// fully drains.
 	private turnQueue = new SessionTurnQueue<RunQueryArgs>();
+	/** Provider-originated turns run before queued human prompts after approval. */
+	private providerContinuationQueue: ProviderContinuationJob[] = [];
 	private isDraining = false;
 	private durableTurns = new Map<string, db.PendingSessionTurnRow>();
 	private cancelledDurableTurns = new Set<string>();
 	private currentTurnArgs: RunQueryArgs | null = null;
+	private currentProviderContinuation: ProviderContinuationJob | null = null;
+	/** Last durable run-state emitter, retained for idle provider dialogs. */
+	private sessionEmit: ((msg: ServerMessage) => void) | null = null;
+	/** Insert barriers prevent an answer from racing its persisted question row. */
+	private askUserQuestionPersistence = new Map<
+		string,
+		{
+			sessionId?: string;
+			pending: Promise<void>;
+			request: Extract<ServerMessage, { type: "ask_user_question" }>;
+			emit: (msg: ServerMessage) => void;
+		}
+	>();
+	/** Only one browser may claim a pending provider/user question response. */
+	private askUserQuestionResponsesInFlight = new Set<string>();
 	private suspendingForRestart = false;
 	// Slice B: long-lived AgentSession per chat. Cached by chat-scoped key so
 	// consecutive turns reuse one provider.query() invocation. Tear down on
@@ -1373,8 +1454,10 @@ export class SessionManager {
 		if (!preserveSessionOverrides || this.effortOverride === null)
 			this.effort = configuredDefaults.effort;
 		this.maxTurns = configuredDefaults.maxTurns;
+		this.claudePeerInbox = config.claude.peer_inbox ?? false;
 		if (!preserveSessionOverrides || this.permissionModeOverride === null)
 			this.permissionMode = configuredDefaults.permissionMode;
+		this.permissionModeGeneration += 1;
 		this.turnRecaps = configuredDefaults.turnRecaps;
 		this.recapModel = configuredDefaults.recapModel;
 		this.claudeExecutable = resolveClaudeExecutable();
@@ -1483,6 +1566,30 @@ export class SessionManager {
 		}
 	}
 
+	private reconcileClaudePeerInbox(previousEnabled: boolean): void {
+		if (previousEnabled === this.claudePeerInbox) return;
+		this.cancelQueuedProviderContinuations();
+		if (
+			!this.claudePeerInbox &&
+			this.currentProviderContinuation &&
+			!this.currentProviderContinuation.readySettled
+		) {
+			this.cancelProviderContinuationBeforeOrigin(
+				this.currentProviderContinuation,
+			);
+		}
+		const activeProviderId = this.agentSessionKey?.split("|", 1)[0];
+		if (activeProviderId !== "claude" || !this.agentSession) return;
+		if (this.state === "running") {
+			this.restartProviderRuntimeAfterTurn = true;
+			return;
+		}
+		this.stopBackgroundActivityObserver();
+		this.agentSession.cancel();
+		this.agentSession = null;
+		this.agentSessionKey = null;
+	}
+
 	/**
 	 * Refresh only the process-identity settings required to start Codex realtime.
 	 * Unlike syncConfig, this deliberately avoids rebuilding filesystem-backed
@@ -1509,6 +1616,7 @@ export class SessionManager {
 	// Returns true if an effective status field changed (so callers can broadcast it).
 	syncConfig(config: HlidConfig): boolean {
 		const previous = this.getStatus();
+		const previousClaudePeerInbox = this.claudePeerInbox;
 		const previousCodexRealtimeEnabled = this.codexRealtimeEnabled;
 		const previousCodexExecutable = this.codexExecutable;
 		const previousApprovalReviewContext: ProviderApprovalReviewContext = {
@@ -1531,6 +1639,7 @@ export class SessionManager {
 			previousCodexRealtimeEnabled,
 			previousCodexExecutable,
 		);
+		this.reconcileClaudePeerInbox(previousClaudePeerInbox);
 		void this.agentSession?.setWindowsComputerUse?.(this.windowsComputerUse);
 		if (
 			previousApprovalReviewContext.policyEnforced !== this.policyEnforced ||
@@ -1768,6 +1877,17 @@ export class SessionManager {
 			: (agentSettings?.model ?? this.model);
 	}
 
+	private desiredPermissionMode(): PermissionMode {
+		const currentAgentSettings = this.agentCwd
+			? this.agentSettingsMap.get(agentMapKey(this.agentCwd))
+			: undefined;
+		return (
+			this.permissionModeOverride ??
+			currentAgentSettings?.permissionMode ??
+			this.permissionMode
+		);
+	}
+
 	private enqueueProviderOwnershipWrite<T>(
 		write: () => Promise<T>,
 	): Promise<T> {
@@ -1984,8 +2104,11 @@ export class SessionManager {
 		}
 		this.permissionModeOverride = mode as PermissionMode;
 		this.permissionMode = mode as PermissionMode;
+		this.permissionModeGeneration += 1;
 		await Promise.all([
-			this.agentSession?.setPermissionMode?.(mode),
+			this.currentProviderContinuation
+				? Promise.resolve()
+				: this.agentSession?.setPermissionMode?.(mode),
 			this.currentSessionId
 				? db.setSessionPermissionMode(this.currentSessionId, mode)
 				: Promise.resolve(),
@@ -3782,6 +3905,282 @@ export class SessionManager {
 		return stopping;
 	}
 
+	private settleProviderContinuationReady(
+		job: ProviderContinuationJob,
+		ready: boolean,
+	): void {
+		if (job.readySettled) return;
+		job.readySettled = true;
+		job.resolveReady(ready);
+	}
+
+	private detachProviderContinuationDialogSignal(
+		job: ProviderContinuationJob,
+	): void {
+		if (!job.dialogAbortHandler) return;
+		job.trigger.signal?.removeEventListener("abort", job.dialogAbortHandler);
+		job.dialogAbortHandler = undefined;
+	}
+
+	private cancelProviderContinuationBeforeOrigin(
+		job: ProviderContinuationJob,
+	): void {
+		if (job.peerOriginObserved) return;
+		job.abortController.abort();
+		this.detachProviderContinuationDialogSignal(job);
+		const queuedIndex = this.providerContinuationQueue.indexOf(job);
+		if (queuedIndex >= 0) this.providerContinuationQueue.splice(queuedIndex, 1);
+		this.settleProviderContinuationReady(job, false);
+		if (
+			this.currentProviderContinuation === job &&
+			job.consumerAttached &&
+			this.agentSessionKey === job.expectedSessionKey &&
+			this.agentSession
+		) {
+			this.stopBackgroundActivityObserver();
+			this.agentSession.cancel();
+			this.agentSession = null;
+			this.agentSessionKey = null;
+		}
+	}
+
+	private cancelQueuedProviderContinuations(): void {
+		const queued = this.providerContinuationQueue.splice(0);
+		for (const job of queued) {
+			job.abortController.abort();
+			this.detachProviderContinuationDialogSignal(job);
+			this.settleProviderContinuationReady(job, false);
+		}
+	}
+
+	private queueProviderInitiatedTurn(options: {
+		trigger: ProviderInitiatedTurn;
+		sessionId: string;
+		emit: (msg: ServerMessage) => void;
+		provider: AgentProvider;
+		agentSettings: AgentSettings | undefined;
+		ownershipGeneration: number;
+		expectedSessionKey: string;
+	}): Promise<boolean> {
+		const duplicate = [
+			...(this.currentProviderContinuation
+				? [this.currentProviderContinuation]
+				: []),
+			...this.providerContinuationQueue,
+		].find(
+			(job) => job.trigger.interactionId === options.trigger.interactionId,
+		);
+		if (duplicate) return duplicate.ready;
+		if (
+			!this.claudePeerInbox ||
+			this.suspendingForRestart ||
+			this.currentSessionId !== options.sessionId ||
+			this.providerOwnershipGeneration !== options.ownershipGeneration ||
+			this.agentSessionKey !== options.expectedSessionKey ||
+			this.agentSession === null
+		) {
+			return Promise.resolve(false);
+		}
+		let resolveReady!: (ready: boolean) => void;
+		const ready = new Promise<boolean>((resolve) => {
+			resolveReady = resolve;
+		});
+		const job: ProviderContinuationJob = {
+			...options,
+			peerOriginObserved: false,
+			consumerAttached: false,
+			abortController: new AbortController(),
+			ready,
+			readySettled: false,
+			resolveReady,
+		};
+		this.providerContinuationQueue.push(job);
+		if (job.trigger.signal) {
+			job.dialogAbortHandler = () =>
+				this.cancelProviderContinuationBeforeOrigin(job);
+			job.trigger.signal.addEventListener("abort", job.dialogAbortHandler, {
+				once: true,
+			});
+			if (job.trigger.signal.aborted) {
+				this.cancelProviderContinuationBeforeOrigin(job);
+				return ready;
+			}
+		}
+		void this.drainTurnQueue();
+		return ready;
+	}
+
+	private async runProviderContinuation(
+		job: ProviderContinuationJob,
+	): Promise<void> {
+		const agentSession = this.agentSession;
+		if (
+			!agentSession ||
+			this.agentSessionKey !== job.expectedSessionKey ||
+			this.currentSessionId !== job.sessionId ||
+			this.providerOwnershipGeneration !== job.ownershipGeneration
+		) {
+			this.settleProviderContinuationReady(job, false);
+			return;
+		}
+		this.currentProviderContinuation = job;
+		this.currentTurnId = undefined;
+		const turn = createTurnState(
+			this.selectedModelFor(job.agentSettings),
+			job.ownershipGeneration,
+		);
+		this.currentTurnState = turn;
+		this.currentTurnPermissionMode = "default";
+		this.currentDelegationHandoff = null;
+		const drainSignal = this.abortController?.signal;
+		const expectedStop = () =>
+			drainSignal?.aborted === true ||
+			job.abortController.signal.aborted ||
+			this.suspendingForRestart ||
+			this.agentSession !== agentSession ||
+			this.agentSessionKey !== job.expectedSessionKey;
+		this.emitRunningStatus(job.emit);
+		try {
+			if (
+				(await this.gateOnUsage(
+					job.provider,
+					job.emit,
+					job.abortController.signal,
+				)) === "aborted"
+			) {
+				this.settleProviderContinuationReady(job, false);
+				return;
+			}
+			if (
+				job.abortController.signal.aborted ||
+				!this.claudePeerInbox ||
+				this.agentSession !== agentSession ||
+				this.agentSessionKey !== job.expectedSessionKey ||
+				this.currentSessionId !== job.sessionId
+			) {
+				this.settleProviderContinuationReady(job, false);
+				return;
+			}
+			await agentSession.setPermissionMode?.("default");
+			if (
+				job.abortController.signal.aborted ||
+				!this.claudePeerInbox ||
+				this.agentSession !== agentSession ||
+				this.agentSessionKey !== job.expectedSessionKey
+			) {
+				this.settleProviderContinuationReady(job, false);
+				return;
+			}
+			const iteration = this.iterateConversation(
+				agentSession,
+				job.sessionId,
+				job.emit,
+				turn,
+				job.provider,
+			);
+			job.consumerAttached = true;
+			// iterateConversation reaches the provider iterator's first next() before
+			// returning this promise, so releasing the dialog after this point cannot
+			// race a queued human turn for ownership of the peer response.
+			this.settleProviderContinuationReady(job, true);
+			await iteration;
+			if (!turn.queryRecorded) {
+				if (expectedStop()) return;
+				throw new Error(
+					"Claude peer continuation ended before a turn boundary",
+				);
+			}
+			this.scheduleTurnRecap({
+				turn,
+				sessionId: job.sessionId,
+				userMessage: "Approved Claude peer message",
+				emit: job.emit,
+				provider: job.provider,
+				agentSettings: job.agentSettings,
+			});
+		} catch (error) {
+			this.settleProviderContinuationReady(job, false);
+			if (!expectedStop()) {
+				this.state = "error";
+				const message =
+					error instanceof Error
+						? error.message
+						: "Claude peer continuation failed";
+				void db.appendLog("error", "session", "peer continuation error", {
+					message,
+					name: error instanceof Error ? error.name : undefined,
+					stack:
+						error instanceof Error ? error.stack?.slice(0, 500) : undefined,
+				});
+				job.emit({ type: "error", message, turn_scoped: true });
+				this.stopBackgroundActivityObserver();
+				agentSession.cancel();
+				if (this.agentSession === agentSession) {
+					this.agentSession = null;
+					this.agentSessionKey = null;
+				}
+			}
+		} finally {
+			let incompleteAssistantSeq: number | null = null;
+			if (job.peerOriginObserved && turn.assistantText) {
+				try {
+					const assistantSeq = await this.persistAssistantMessage(
+						job.sessionId,
+						turn,
+					);
+					incompleteAssistantSeq = assistantSeq;
+					this.persistPendingToolEvents(
+						job.sessionId,
+						assistantSeq,
+						turn,
+						"peer continuation",
+						job.provider.providerId,
+					);
+				} catch (error) {
+					logDbError("appendMessage (peer continuation)", error);
+				}
+			}
+			if (job.peerOriginObserved && !turn.queryRecorded) {
+				await this.persistIncompleteQuery(
+					job.sessionId,
+					turn,
+					job.provider,
+					incompleteAssistantSeq,
+				).catch((error) =>
+					logDbError("recordQuery (peer continuation)", error),
+				);
+			}
+			if (this.agentSession === agentSession) {
+				for (;;) {
+					const permissionModeGeneration = this.permissionModeGeneration;
+					const restorePermissionMode = this.desiredPermissionMode();
+					try {
+						await agentSession.setPermissionMode?.(restorePermissionMode);
+					} catch (error) {
+						logDbError("restore permission mode after peer", error);
+						break;
+					}
+					if (
+						this.agentSession !== agentSession ||
+						permissionModeGeneration === this.permissionModeGeneration
+					) {
+						break;
+					}
+				}
+			}
+			if (this.currentTurnState === turn) {
+				this.currentTurnState = null;
+				this.currentTurnPermissionMode = null;
+				this.currentDelegationHandoff = null;
+			}
+			if (this.currentProviderContinuation === job) {
+				this.currentProviderContinuation = null;
+			}
+			this.detachProviderContinuationDialogSignal(job);
+			this.settleProviderContinuationReady(job, false);
+		}
+	}
+
 	private runGoalContinuation(options: {
 		agentSession: AgentSession;
 		sessionId: string;
@@ -3906,6 +4305,17 @@ export class SessionManager {
 	}
 
 	private tearDownNativeSessionState(): void {
+		this.cancelQueuedProviderContinuations();
+		if (this.currentProviderContinuation) {
+			this.currentProviderContinuation.abortController.abort();
+			this.detachProviderContinuationDialogSignal(
+				this.currentProviderContinuation,
+			);
+			this.settleProviderContinuationReady(
+				this.currentProviderContinuation,
+				false,
+			);
+		}
 		this.abortController?.abort();
 		// Tear down long-lived provider wrappers so the next query rebuilds its
 		// event stream instead of retaining request-local callbacks.
@@ -4066,12 +4476,62 @@ export class SessionManager {
 		return this.askUserQuestions.getPending();
 	}
 
-	handleAskUserQuestionResponse(
+	async handleAskUserQuestionResponse(
 		id: string,
 		answers: AskUserQuestionAnswers,
 		notes?: AskUserQuestionNotes,
-	): void {
-		this.askUserQuestions.complete(id, answers, notes);
+	): Promise<boolean> {
+		if (
+			!this.askUserQuestions.has(id) ||
+			this.askUserQuestionResponsesInFlight.has(id)
+		) {
+			return false;
+		}
+		this.askUserQuestionResponsesInFlight.add(id);
+		const persistence = this.askUserQuestionPersistence.get(id);
+		try {
+			if (persistence) {
+				await persistence.pending;
+			}
+			if (!this.askUserQuestions.has(id)) return false;
+			if (persistence?.sessionId) {
+				await db.setAskUserQuestionResolution(
+					persistence.sessionId,
+					id,
+					JSON.stringify(answers),
+					notes !== undefined ? JSON.stringify(notes) : null,
+				);
+				if (!this.askUserQuestions.has(id)) {
+					await db.setAskUserQuestionResolution(
+						persistence.sessionId,
+						id,
+						JSON.stringify({ [ASK_USER_QUESTION_CANCEL_KEY]: [] }),
+						null,
+					);
+					return false;
+				}
+			}
+			this.askUserQuestions.complete(id, answers, notes);
+			this.askUserQuestionPersistence.delete(id);
+			return true;
+		} catch (error) {
+			if (this.askUserQuestions.has(id)) {
+				this.askUserQuestions.complete(id, {
+					[ASK_USER_QUESTION_CANCEL_KEY]: [],
+				});
+				if (persistence) {
+					this.emitAskUserQuestionCancellation(
+						persistence.request,
+						persistence.sessionId,
+						persistence.emit,
+					);
+				}
+			}
+			this.askUserQuestionPersistence.delete(id);
+			throw error;
+		} finally {
+			this.askUserQuestionResponsesInFlight.delete(id);
+		}
 	}
 
 	handlePlanModeExitResponse(
@@ -5383,6 +5843,16 @@ export class SessionManager {
 		turn: TurnState,
 		provider: AgentProvider,
 	): Promise<boolean> {
+		const providerContinuation = this.currentProviderContinuation;
+		if (
+			providerContinuation &&
+			!providerContinuation.peerOriginObserved &&
+			!PEER_ORIGIN_PREFLIGHT_EVENT_TYPES.has(event.type)
+		) {
+			throw new Error(
+				`Claude peer continuation emitted ${event.type} before its peer origin`,
+			);
+		}
 		switch (event.type) {
 			case "session_start":
 				await this.handleSessionStart(
@@ -5442,6 +5912,73 @@ export class SessionManager {
 					});
 				}
 				break;
+			case "provider_peer_message": {
+				const continuation = this.currentProviderContinuation;
+				if (
+					!sessionId ||
+					provider.providerId !== "claude" ||
+					!continuation ||
+					continuation.sessionId !== sessionId ||
+					continuation.trigger.kind !== "claude_peer_message"
+				) {
+					throw new Error(
+						"Claude emitted a peer message outside an owned peer continuation",
+					);
+				}
+				if (continuation.peerOriginObserved) {
+					throw new Error(
+						"Claude peer continuation emitted more than one peer origin",
+					);
+				}
+				if (
+					(event.body?.length ?? 0) > CLAUDE_PEER_BODY_MAX_CHARS ||
+					(event.fromAddress?.length ?? 0) > CLAUDE_PEER_ADDRESS_MAX_CHARS ||
+					(event.claimedName?.length ?? 0) > CLAUDE_PEER_NAME_MAX_CHARS ||
+					(event.fromSession?.length ?? 0) > CLAUDE_PEER_SESSION_MAX_CHARS
+				) {
+					throw new Error("Claude peer message exceeded Hlid's safe bounds");
+				}
+				continuation.peerOriginObserved = true;
+				this.detachProviderContinuationDialogSignal(continuation);
+				const { trigger } = continuation;
+				const provenance: AskUserQuestionProvenance = {
+					provider_id: "claude",
+					kind: "provider_dialog",
+					source_name:
+						event.fromAddress ?? trigger.fromAddress ?? trigger.sourceName,
+					summary: "Inbound peer message held for review",
+					...(trigger.toolUseId ? { tool_use_id: trigger.toolUseId } : {}),
+					peer: {
+						preview: trigger.preview,
+						...(event.body !== undefined ? { body: event.body } : {}),
+						...((event.fromAddress ?? trigger.fromAddress)
+							? { from_address: event.fromAddress ?? trigger.fromAddress }
+							: {}),
+						...((event.claimedName ?? trigger.claimedName)
+							? { claimed_name: event.claimedName ?? trigger.claimedName }
+							: {}),
+						...(event.fromSession ? { from_session: event.fromSession } : {}),
+						...((event.verifiedPeerPid ?? trigger.verifiedPeerPid)
+							? {
+									verified_peer_pid:
+										event.verifiedPeerPid ?? trigger.verifiedPeerPid,
+								}
+							: {}),
+						...(trigger.holdCause ? { hold_cause: trigger.holdCause } : {}),
+					},
+				};
+				await db.setAskUserQuestionProvenance(
+					sessionId,
+					trigger.interactionId,
+					JSON.stringify(provenance),
+				);
+				emit({
+					type: "ask_user_question_provenance_updated",
+					id: trigger.interactionId,
+					provenance,
+				});
+				break;
+			}
 			case "assistant_message_boundary":
 				turn.assistantMessageBoundaryPending = true;
 				break;
@@ -5666,7 +6203,8 @@ export class SessionManager {
 		options: RunQueryOptions = {},
 	): Promise<void> {
 		this.assertRealtimeIdle("sending a message");
-		const args: RunQueryArgs = { userMessage, emit, options };
+		const inputOrigin = normalizeAgentInputOrigin(options.inputOrigin);
+		const args: RunQueryArgs = { userMessage, emit, options, inputOrigin };
 		if (isDurableInteractiveTurn(args)) {
 			args.durableReady = this.persistDurableTurn(args);
 		}
@@ -5765,6 +6303,7 @@ export class SessionManager {
 			const args: RunQueryArgs = {
 				userMessage: payload.userMessage,
 				emit,
+				inputOrigin: normalizeAgentInputOrigin(payload.inputOrigin),
 				options: {
 					...payload.options,
 					sessionId: row.session_id,
@@ -5971,7 +6510,9 @@ export class SessionManager {
 		onAccepted?: () => void,
 	): Promise<SteeringReceipt> {
 		this.assertActiveSteeringTarget(target);
-		await target.steer(prepared.prompt);
+		await target.steer(prepared.prompt, {
+			inputOrigin: args.inputOrigin,
+		});
 		const steerToolEventIndex = target.turnState.rawToolEventCount;
 		onAccepted?.();
 		try {
@@ -6105,15 +6646,19 @@ export class SessionManager {
 		emit: (msg: ServerMessage) => void,
 		sessionId: string,
 		turnId: string,
+		inputOrigin: AgentInputOrigin,
 	): Promise<SteeringReceipt> {
+		const capturedInputOrigin = normalizeAgentInputOrigin(inputOrigin);
 		const args: RunQueryArgs = {
 			userMessage: instruction,
 			emit,
+			inputOrigin: capturedInputOrigin,
 			options: {
 				sessionId,
 				attachments: [],
 				agentCwd: this.agentCwd,
 				turnId,
+				inputOrigin: capturedInputOrigin,
 			},
 		};
 		const target = this.captureActiveSteeringTarget(args);
@@ -6225,7 +6770,9 @@ export class SessionManager {
 		}
 		// Interrupt current — drain loop's await iterateConversation returns,
 		// drain proceeds to the next queue head (the promoted turn).
-		void this.agentSession?.interrupt?.();
+		if (!this.currentProviderContinuation) {
+			void this.agentSession?.interrupt?.();
+		}
 		return true;
 	}
 
@@ -6236,15 +6783,33 @@ export class SessionManager {
 		// Initialize the abortController once for the whole drain. Status
 		// running is emitted PER ITERATION below (with turn_id) so the client
 		// can distinguish "queued behind" from "currently running."
-		const head = this.turnQueue.peek();
-		if (head && this.state !== "running") {
+		const hasQueuedWork =
+			this.providerContinuationQueue.length > 0 ||
+			this.turnQueue.peek() !== undefined;
+		if (hasQueuedWork && this.state !== "running") {
 			this.state = "running";
 			this.abortController = new AbortController();
 		}
 
 		let lastEmit: ((msg: ServerMessage) => void) | null = null;
 		try {
-			while (this.turnQueue.length > 0) {
+			while (
+				this.providerContinuationQueue.length > 0 ||
+				this.turnQueue.length > 0
+			) {
+				const providerContinuation = this.providerContinuationQueue.shift();
+				if (providerContinuation) {
+					if (this.suspendingForRestart) {
+						this.settleProviderContinuationReady(providerContinuation, false);
+						break;
+					}
+					if (this.state === "error") this.state = "running";
+					lastEmit = providerContinuation.emit;
+					this.currentTurnId = undefined;
+					this.currentTurnArgs = null;
+					await this.runProviderContinuation(providerContinuation);
+					continue;
+				}
 				const next = this.turnQueue.shift();
 				if (!next) break;
 				if (this.suspendingForRestart) break;
@@ -6274,7 +6839,15 @@ export class SessionManager {
 		} finally {
 			this.isDraining = false;
 			this.currentTurnArgs = null;
+			this.currentProviderContinuation = null;
 			this.abortController = null;
+			if (this.restartProviderRuntimeAfterTurn && this.agentSession) {
+				this.stopBackgroundActivityObserver();
+				this.agentSession.cancel();
+				this.agentSession = null;
+				this.agentSessionKey = null;
+				this.restartProviderRuntimeAfterTurn = false;
+			}
 			// Settle final state. Per-turn errors set state="error" via the
 			// runOneTurn catch; preserve that. Otherwise return to idle.
 			if (this.state === "running") this.state = "idle";
@@ -6307,6 +6880,7 @@ export class SessionManager {
 	private async gateOnUsage(
 		provider: AgentProvider,
 		emit: (msg: ServerMessage) => void,
+		signal?: AbortSignal,
 	): Promise<"proceeded" | "aborted"> {
 		const cfg = loadConfig()?.auto_sleep;
 		if (!cfg?.enabled) return "proceeded";
@@ -6318,7 +6892,7 @@ export class SessionManager {
 		return sleepUntilAllowed({
 			providerId,
 			cfg,
-			signal: this.abortController?.signal ?? undefined,
+			signal: signal ?? this.abortController?.signal ?? undefined,
 			capDeadline: recoverable?.cap_deadline,
 			onSleep: async (decision: SleepDecision) => {
 				this.publishSleepState(providerId, decision, emit);
@@ -6513,7 +7087,10 @@ export class SessionManager {
 				interaction,
 			},
 		) => {
-			if ((await this.gateOnUsage(provider, emit)) === "aborted") {
+			if (
+				interaction?.peer === undefined &&
+				(await this.gateOnUsage(provider, emit)) === "aborted"
+			) {
 				return {
 					behavior: "deny",
 					message: "Aborted while sleeping on usage limit",
@@ -6595,17 +7172,7 @@ export class SessionManager {
 		toolUseID: string,
 		title: string | undefined,
 		signal: AbortSignal,
-		interaction:
-			| {
-					provider_id: string;
-					kind: "mcp_elicitation" | "provider_dialog";
-					source_name: string;
-					tool_name?: string;
-					summary?: string;
-					tool_use_id?: string;
-					url?: string;
-			  }
-			| undefined,
+		interaction: Omit<AskUserQuestionProvenance, "turn_id"> | undefined,
 		sessionId: string | undefined,
 		emit: (msg: ServerMessage) => void,
 		resolve: (decision: AgentToolDecision) => void,
@@ -6614,7 +7181,11 @@ export class SessionManager {
 		const provenance: AskUserQuestionProvenance | undefined = interaction
 			? {
 					...interaction,
-					...(this.currentTurnId ? { turn_id: this.currentTurnId } : {}),
+					...(interaction.peer === undefined &&
+					this.currentTurnArgs &&
+					this.currentTurnId
+						? { turn_id: this.currentTurnId }
+						: {}),
 				}
 			: undefined;
 		const request = {
@@ -6623,17 +7194,30 @@ export class SessionManager {
 			questions,
 			...(provenance ? { provenance } : {}),
 		};
-		if (sessionId) {
-			void db
-				.appendAskUserQuestion(
+		const persistence = sessionId
+			? db.appendAskUserQuestion(
 					sessionId,
 					toolUseID,
 					this.messageSeq++,
 					JSON.stringify(questions),
 					provenance ? JSON.stringify(provenance) : null,
 				)
-				.catch((error) => logDbError("appendAskUserQuestion", error));
-		} else {
+			: Promise.resolve();
+		this.askUserQuestionPersistence.set(toolUseID, {
+			...(sessionId ? { sessionId } : {}),
+			pending: persistence,
+			request,
+			emit,
+		});
+		void persistence.catch((error) => {
+			logDbError("appendAskUserQuestion", error);
+			if (!this.askUserQuestions.has(toolUseID)) return;
+			this.askUserQuestions.complete(toolUseID, {
+				[ASK_USER_QUESTION_CANCEL_KEY]: [],
+			});
+			this.emitAskUserQuestionCancellation(request, sessionId, emit);
+		});
+		if (!sessionId) {
 			this.messageSeq++;
 		}
 		const onAbort = () => {
@@ -6674,27 +7258,36 @@ export class SessionManager {
 			id: request.id,
 			answers: { [ASK_USER_QUESTION_CANCEL_KEY]: [] },
 		});
-		if (!sessionId) return;
-		void db
-			.setAskUserQuestionResolution(
-				sessionId,
-				request.id,
-				JSON.stringify({ [ASK_USER_QUESTION_CANCEL_KEY]: [] }),
-				null,
+		const persistence = this.askUserQuestionPersistence.get(request.id);
+		if (!sessionId) {
+			this.askUserQuestionPersistence.delete(request.id);
+			return;
+		}
+		void (persistence?.pending ?? Promise.resolve())
+			.then(() =>
+				db.setAskUserQuestionResolution(
+					sessionId,
+					request.id,
+					JSON.stringify({ [ASK_USER_QUESTION_CANCEL_KEY]: [] }),
+					null,
+				),
 			)
-			.catch((error) => logDbError("cancel ask user question", error));
+			.catch((error) => logDbError("cancel ask user question", error))
+			.finally(() => this.askUserQuestionPersistence.delete(request.id));
 	}
 
 	private cancelAllAskUserQuestions(): void {
 		const pending = this.askUserQuestions.getPending();
 		this.askUserQuestions.clearAll();
-		const emit = this.currentTurnArgs?.emit;
-		if (!emit) return;
 		for (const request of pending) {
+			const persistence = this.askUserQuestionPersistence.get(request.id);
+			const emit =
+				persistence?.emit ?? this.currentTurnArgs?.emit ?? this.sessionEmit;
+			if (!emit) continue;
 			this.emitAskUserQuestionCancellation(
 				request,
-				this.currentSessionId ?? undefined,
-				emit,
+				persistence?.sessionId,
+				persistence?.emit ?? emit,
 			);
 		}
 	}
@@ -6710,7 +7303,9 @@ export class SessionManager {
 		passInput: Record<string, unknown>,
 	): boolean {
 		return Boolean(
-			this.planHtmlPath &&
+			this.currentTurnPermissionMode === "plan" &&
+				this.currentTurnArgs &&
+				this.planHtmlPath &&
 				(toolName === "Write" || toolName === "Edit") &&
 				typeof passInput.file_path === "string" &&
 				(resolvePath(passInput.file_path) === this.planHtmlPath ||
@@ -7067,6 +7662,7 @@ export class SessionManager {
 		// as an auto-allow only after that gate has had a chance to sleep.
 		if (
 			autoApproveTools &&
+			this.currentTurnPermissionMode === "bypassPermissions" &&
 			obsidianCommand === null &&
 			this.activeRoutineContext === null
 		) {
@@ -7346,6 +7942,7 @@ export class SessionManager {
 		planMode: boolean | undefined;
 		emit: (msg: ServerMessage) => void;
 		onGoalChange?: AgentQueryParams["onGoalChange"];
+		ownershipGeneration?: number;
 		/** Dictation owns an isolated process and must not initialize the ordinary thread. */
 		observeBackgroundActivities?: boolean;
 		/** Realtime startup must not reconcile ordinary thread preferences. */
@@ -7362,10 +7959,12 @@ export class SessionManager {
 			planMode,
 			emit,
 			onGoalChange,
+			ownershipGeneration = this.providerOwnershipGeneration,
 			observeBackgroundActivities = true,
 			reconcileApprovalsReviewer = true,
 		} = options;
 		const desiredKey = `${provider.providerId}|${sessionId ?? "ephemeral"}|${this.agentCwd ?? ""}`;
+		if (sessionId) this.sessionEmit = emit;
 		if (
 			this.agentSession &&
 			(this.agentSessionKey !== desiredKey ||
@@ -7405,6 +8004,10 @@ export class SessionManager {
 			!this.policyEnforced &&
 			this.usageGateEnforced;
 		const reviewerOwnershipGeneration = this.providerOwnershipGeneration;
+		const peerInboxEnabled =
+			provider.providerId === "claude" &&
+			Boolean(sessionId) &&
+			this.claudePeerInbox;
 		const session = provider.query(
 			buildAgentQueryParams({
 				activeCwd,
@@ -7441,6 +8044,20 @@ export class SessionManager {
 				executable,
 				windowsComputerUse: this.windowsComputerUse,
 				onGoalChange,
+				onProviderInitiatedTurn:
+					peerInboxEnabled && sessionId
+						? (trigger) =>
+								this.queueProviderInitiatedTurn({
+									trigger,
+									sessionId,
+									emit: this.sessionEmit ?? emit,
+									provider,
+									agentSettings,
+									ownershipGeneration,
+									expectedSessionKey: desiredKey,
+								})
+						: undefined,
+				claudeCrossSessionInbound: peerInboxEnabled ? "hold" : "refuse",
 				policyEnforced: this.policyEnforced,
 				usageGateEnforced: this.usageGateEnforced,
 				codexRealtimeEnabled: this.codexRealtimeEnabled,
@@ -7939,6 +8556,7 @@ export class SessionManager {
 				agentSettings,
 				planMode,
 				emit,
+				ownershipGeneration,
 				onGoalChange: sessionId
 					? (goal) => {
 							this.currentGoal = goal;
@@ -8016,11 +8634,10 @@ export class SessionManager {
 									toProviderRuntimePath(activeCwd, attachment.path),
 								)
 						: [];
-				if (audioPaths.length > 0) {
-					await agentSession.send(providerPrompt, { audioPaths });
-				} else {
-					await agentSession.send(providerPrompt);
-				}
+				await agentSession.send(providerPrompt, {
+					inputOrigin: args.inputOrigin,
+					...(audioPaths.length > 0 ? { audioPaths } : {}),
+				});
 				if (contextManifest.operatingBrief?.included) {
 					this.operatingBriefProviderKey = `${currentProvider.providerId}|${this.currentSessionId ?? "ephemeral"}`;
 				}

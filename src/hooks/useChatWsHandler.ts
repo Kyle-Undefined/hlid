@@ -91,6 +91,13 @@ function dispatchImmediateMessage(
 				notes: msg.notes,
 			});
 			return true;
+		case "ask_user_question_provenance_updated":
+			dispatch({
+				type: "UPDATE_ASK_USER_QUESTION_PROVENANCE",
+				id: msg.id,
+				provenance: msg.provenance,
+			});
+			return true;
 		case "plan_mode_exit":
 			dispatch({
 				type: "ADD_PLAN_PROPOSAL",

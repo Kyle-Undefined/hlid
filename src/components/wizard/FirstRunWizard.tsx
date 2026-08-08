@@ -85,6 +85,7 @@ export function buildFirstRunConfig(s: StructureState): HlidConfig {
 				s.vaultProvider === "claude" ? selectedPermissionMode : "default",
 			turn_recaps: true,
 			interactive_mode: false,
+			peer_inbox: false,
 		},
 		cliproxy: {
 			enabled: false,

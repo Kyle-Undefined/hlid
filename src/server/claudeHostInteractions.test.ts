@@ -6,11 +6,15 @@ import {
 } from "./claudeHostInteractions";
 import { ASK_USER_QUESTION_CANCEL_KEY } from "./protocol";
 
-function params(canUseTool: AgentQueryParams["canUseTool"]): AgentQueryParams {
+function params(
+	canUseTool: AgentQueryParams["canUseTool"],
+	overrides: Partial<AgentQueryParams> = {},
+): AgentQueryParams {
 	return {
 		cwd: "/work",
 		hostSessionId: "hlid-session",
 		canUseTool,
+		...overrides,
 	};
 }
 
@@ -192,6 +196,142 @@ describe("Claude host interactions", () => {
 					source_name: "refusal_fallback_prompt",
 					tool_use_id: "tool-1",
 				}),
+			}),
+		);
+	});
+
+	it("fails closed for a malformed held peer dialog", async () => {
+		const canUseTool = vi.fn();
+		const onProviderInitiatedTurn = vi.fn().mockResolvedValue(true);
+		const handlers = createClaudeHostInteractionHandlers(
+			params(canUseTool, { onProviderInitiatedTurn }),
+		);
+
+		await expect(
+			handlers.onUserDialog(
+				{
+					dialogKind: "peer_inbound_approval",
+					payload: {
+						preview: "",
+						fromAddress: 42,
+						holdCause: "future-cause",
+					},
+				},
+				{ signal: new AbortController().signal },
+			),
+		).resolves.toEqual({ behavior: "cancelled" });
+		expect(canUseTool).not.toHaveBeenCalled();
+		expect(onProviderInitiatedTurn).not.toHaveBeenCalled();
+	});
+
+	it("returns the nested native deny result without releasing a peer message", async () => {
+		const canUseTool = vi.fn(async (_tool, input) => {
+			const question = (
+				input as { questions: Array<{ question: string; options: string[] }> }
+			).questions[0];
+			expect(question.options).toEqual(["Deliver to Claude", "Deny"]);
+			return {
+				behavior: "allow" as const,
+				updatedInput: {
+					answers: { [question.question]: "Deny" },
+				},
+			};
+		});
+		const onProviderInitiatedTurn = vi.fn().mockResolvedValue(true);
+		const handlers = createClaudeHostInteractionHandlers(
+			params(canUseTool, { onProviderInitiatedTurn }),
+		);
+
+		await expect(
+			handlers.onUserDialog(
+				{
+					dialogKind: "peer_inbound_approval",
+					payload: {
+						preview: "Please inspect the failing build",
+						fromAddress: "peer-7",
+						holdCause: "explicit-setting",
+					},
+					toolUseID: "peer-tool-7",
+				},
+				{ signal: new AbortController().signal },
+			),
+		).resolves.toEqual({
+			behavior: "completed",
+			result: { behavior: "deny" },
+		});
+		expect(canUseTool).toHaveBeenCalledWith(
+			"AskUserQuestion",
+			expect.any(Object),
+			expect.objectContaining({
+				interaction: expect.objectContaining({
+					provider_id: "claude",
+					kind: "provider_dialog",
+					source_name: "peer-7",
+					tool_use_id: "peer-tool-7",
+					peer: {
+						preview: "Please inspect the failing build",
+						from_address: "peer-7",
+						hold_cause: "explicit-setting",
+					},
+				}),
+			}),
+		);
+		expect(onProviderInitiatedTurn).not.toHaveBeenCalled();
+	});
+
+	it("approves peer delivery only after the dedicated consumer handshake succeeds", async () => {
+		const canUseTool = vi.fn(async (_tool, input) => {
+			const question = (input as { questions: Array<{ question: string }> })
+				.questions[0];
+			return {
+				behavior: "allow" as const,
+				updatedInput: {
+					answers: { [question.question]: "Deliver to Claude" },
+				},
+			};
+		});
+		const onProviderInitiatedTurn = vi
+			.fn()
+			.mockResolvedValueOnce(false)
+			.mockResolvedValueOnce(true);
+		const handlers = createClaudeHostInteractionHandlers(
+			params(canUseTool, { onProviderInitiatedTurn }),
+		);
+		const request = (toolUseID: string) =>
+			handlers.onUserDialog(
+				{
+					dialogKind: "peer_inbound_approval",
+					payload: {
+						preview: "Coordinate the release",
+						fromAddress: "peer-release",
+						claimedName: "Release helper",
+						verifiedPeerPid: 7312,
+						holdCause: "mode-mismatch",
+					},
+					toolUseID,
+				},
+				{ signal: new AbortController().signal },
+			);
+
+		await expect(request("peer-tool-not-ready")).resolves.toEqual({
+			behavior: "cancelled",
+		});
+		await expect(request("peer-tool-ready")).resolves.toEqual({
+			behavior: "completed",
+			result: { behavior: "approve" },
+		});
+		expect(onProviderInitiatedTurn).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({
+				kind: "claude_peer_message",
+				interactionId: "claude-dialog:hlid-session:peer-tool-ready",
+				sourceName: "peer-release",
+				toolUseId: "peer-tool-ready",
+				preview: "Coordinate the release",
+				fromAddress: "peer-release",
+				claimedName: "Release helper",
+				verifiedPeerPid: 7312,
+				holdCause: "mode-mismatch",
 			}),
 		);
 	});

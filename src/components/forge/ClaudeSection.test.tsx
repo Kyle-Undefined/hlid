@@ -52,6 +52,7 @@ function makeClaude(overrides: Partial<ClaudeForm> = {}): ClaudeForm {
 		recapModel: "",
 		vaultProvider: "claude",
 		interactiveMode: false,
+		peerInbox: false,
 		...overrides,
 	};
 }
@@ -111,6 +112,38 @@ describe("Vault Agent and Computer Use model/effort interplay", () => {
 		);
 
 		expect(screen.getByText("the big one")).not.toBeNull();
+	});
+
+	it("offers the default-off Claude peer inbox only for Claude", () => {
+		const onChange = vi.fn();
+		const { rerender } = render(
+			<ClaudeSection
+				claude={makeClaude()}
+				onChange={onChange}
+				providers={[provider]}
+			/>,
+		);
+
+		const peerInbox = screen.getByRole("checkbox", {
+			name: "Claude peer inbox",
+		}) as HTMLInputElement;
+		expect(peerInbox.checked).toBe(false);
+		expect(
+			screen.getByText(/sender claims are not human authority/i),
+		).not.toBeNull();
+		fireEvent.click(peerInbox);
+		expect(onChange).toHaveBeenCalledWith({ peerInbox: true });
+
+		rerender(
+			<ClaudeSection
+				claude={makeClaude({ vaultProvider: "codex" })}
+				onChange={onChange}
+				providers={[{ ...provider, id: "codex" }]}
+			/>,
+		);
+		expect(
+			screen.queryByRole("checkbox", { name: "Claude peer inbox" }),
+		).toBeNull();
 	});
 
 	it("marks the default model and effort options", () => {

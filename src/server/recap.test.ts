@@ -15,6 +15,7 @@ import type {
 	AgentProvider,
 	AgentQueryParams,
 	AgentSession,
+	SendOptions,
 } from "./agentProvider";
 import { generateTurnRecap } from "./recap";
 
@@ -25,6 +26,7 @@ const mockRecordQuery = vi.mocked(db.recordQuery);
 
 let capturedParams: AgentQueryParams | undefined;
 let capturedSendArg: string | undefined;
+let capturedSendOptions: SendOptions | undefined;
 
 /** Build a mock AgentProvider that captures params and returns the given text. */
 function makeProvider(responseText: string): AgentProvider {
@@ -47,8 +49,9 @@ function makeProvider(responseText: string): AgentProvider {
 			return {
 				[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 				cancel: vi.fn(),
-				send: vi.fn(async (msg: string) => {
+				send: vi.fn(async (msg: string, options?: SendOptions) => {
 					capturedSendArg = msg;
+					capturedSendOptions = options;
 				}),
 			};
 		},
@@ -73,6 +76,26 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	capturedParams = undefined;
 	capturedSendArg = undefined;
+	capturedSendOptions = undefined;
+});
+
+describe("generateTurnRecap — input provenance", () => {
+	it("marks the automated recap prompt unclassified", async () => {
+		await generateTurnRecap({
+			sessionId: null,
+			assistantSeq: 0,
+			userMessage: "req",
+			toolEvents: [],
+			assistantText: "done",
+			emit: vi.fn(),
+			vaultPath: "/vault",
+			executable: undefined,
+			sdkSummary: null,
+			provider: stubEmpty(),
+		});
+
+		expect(capturedSendOptions).toEqual({ inputOrigin: "unclassified" });
+	});
 });
 
 // ── tool summary line building ────────────────────────────────────────────────

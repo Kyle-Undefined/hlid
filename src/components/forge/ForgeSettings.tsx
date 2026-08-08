@@ -166,6 +166,7 @@ function AgentSettings({
 		...providerForm,
 		vaultProvider: state.claude.vaultProvider,
 		interactiveMode: state.claude.interactiveMode,
+		peerInbox: state.claude.peerInbox,
 	};
 	return (
 		<>

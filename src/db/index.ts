@@ -94,6 +94,7 @@ export {
 	getUserMessageCheckpoint,
 	getUserMessageSeqByTurnId,
 	insertForkedMessages,
+	setAskUserQuestionProvenance,
 	setAskUserQuestionResolution,
 	setMessageCheckpointUuid,
 	setMessageProviderTurnId,

@@ -587,6 +587,36 @@ describe("useChatWsHandler — immediate messages", () => {
 		],
 		[
 			{
+				type: "ask_user_question_provenance_updated",
+				id: "question-1",
+				provenance: {
+					provider_id: "claude",
+					kind: "provider_dialog",
+					source_name: "peer_inbound_approval",
+					peer: {
+						preview: "held preview",
+						body: "Exact delivered body",
+						from_session: "claimed-session-17",
+					},
+				},
+			},
+			{
+				type: "UPDATE_ASK_USER_QUESTION_PROVENANCE",
+				id: "question-1",
+				provenance: {
+					provider_id: "claude",
+					kind: "provider_dialog",
+					source_name: "peer_inbound_approval",
+					peer: {
+						preview: "held preview",
+						body: "Exact delivered body",
+						from_session: "claimed-session-17",
+					},
+				},
+			},
+		],
+		[
+			{
 				type: "plan_mode_exit_resolved",
 				id: "plan-1",
 				decision: "approved",

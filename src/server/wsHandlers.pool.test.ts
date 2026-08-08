@@ -123,7 +123,7 @@ function makeManager(
 			.fn()
 			.mockReturnValue({ pending_turn_ids: [], running_turn_id: null }),
 		handlePermissionResponse: vi.fn(),
-		handleAskUserQuestionResponse: vi.fn(),
+		handleAskUserQuestionResponse: vi.fn().mockResolvedValue(true),
 		handlePlanModeExitResponse: vi.fn(),
 		probeMcpStatus: vi.fn().mockResolvedValue(undefined),
 		controlMcpServer: vi
@@ -1147,6 +1147,7 @@ describe("message — delegated-child ownership", () => {
 			expect.any(Function),
 			"delegated-db",
 			"child-steer-1",
+			"human",
 		);
 		expect(child.manager.runQuery).not.toHaveBeenCalled();
 		expect(child.manager.getQueueState().pending_turn_ids).toEqual([]);

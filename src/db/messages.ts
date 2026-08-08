@@ -708,7 +708,7 @@ export async function appendAskUserQuestion(
 	const db = await getDb();
 	db.run(
 		`INSERT INTO ask_user_questions (session_id, request_id, seq, questions_json, provenance_json, timestamp) VALUES (?, ?, ?, ?, ?, unixepoch())
-     ON CONFLICT(request_id) DO UPDATE SET questions_json = excluded.questions_json, provenance_json = excluded.provenance_json`,
+		 ON CONFLICT(request_id) DO UPDATE SET session_id = excluded.session_id, seq = excluded.seq, questions_json = excluded.questions_json, provenance_json = excluded.provenance_json, answers_json = NULL, notes_json = NULL, timestamp = excluded.timestamp`,
 		[sessionId, requestId, seq, questionsJson, provenanceJson ?? null],
 	);
 }
@@ -727,6 +727,23 @@ export async function setAskUserQuestionResolution(
 	if (changes === 0) {
 		throw new Error(
 			`setAskUserQuestionResolution: no row found for session=${sessionId} request_id=${requestId}`,
+		);
+	}
+}
+
+export async function setAskUserQuestionProvenance(
+	sessionId: string,
+	requestId: string,
+	provenanceJson: string,
+): Promise<void> {
+	const db = await getDb();
+	const { changes } = db.run(
+		`UPDATE ask_user_questions SET provenance_json = ? WHERE session_id = ? AND request_id = ?`,
+		[provenanceJson, sessionId, requestId],
+	);
+	if (changes === 0) {
+		throw new Error(
+			`setAskUserQuestionProvenance: no row found for session=${sessionId} request_id=${requestId}`,
 		);
 	}
 }

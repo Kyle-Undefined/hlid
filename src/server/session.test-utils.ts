@@ -52,6 +52,7 @@ export function mockDbModule() {
 		appendPlanProposal: vi.fn().mockResolvedValue(undefined),
 		setPlanProposalDecision: vi.fn().mockResolvedValue(undefined),
 		appendAskUserQuestion: vi.fn().mockResolvedValue(undefined),
+		setAskUserQuestionProvenance: vi.fn().mockResolvedValue(undefined),
 		setAskUserQuestionResolution: vi.fn().mockResolvedValue(undefined),
 		setMessageText: vi.fn().mockResolvedValue(undefined),
 		setMessageRecap: vi.fn().mockResolvedValue(undefined),

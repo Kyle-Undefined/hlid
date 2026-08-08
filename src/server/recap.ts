@@ -140,7 +140,7 @@ export async function generateTurnRecap({
 		// Streaming-input mode: push the recap prompt then close the input so
 		// the SDK process sees EOF after this turn and exits instead of waiting
 		// indefinitely for more messages.
-		await session.send(prompt);
+		await session.send(prompt, { inputOrigin: "unclassified" });
 		session.closeInput?.();
 		let summary = "";
 		let usageRecorded = false;
