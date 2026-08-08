@@ -2052,6 +2052,14 @@ describe("SessionManager — Claude peer inbox", () => {
 		const exactBody =
 			"Please inspect the failing queue test in session.queueing.test.ts";
 		ctl.pushEvent({
+			type: "provider_history_warning",
+			code: "history_mirror_failed",
+			reason: "timeout",
+			providerSessionId: "sdk-peer-session",
+			providerEventId: "33333333-3333-4333-8333-333333333333",
+			scope: "main",
+		});
+		ctl.pushEvent({
 			type: "provider_peer_message",
 			body: exactBody,
 			fromAddress: "peer-release",
@@ -2078,6 +2086,14 @@ describe("SessionManager — Claude peer inbox", () => {
 						from_session: "native-sender-session",
 					}),
 				}),
+			}),
+		);
+		expect(emitted).toContainEqual(
+			expect.objectContaining({
+				type: "local_command_output",
+				content: expect.stringContaining(
+					"future claude resume or fork history may be incomplete",
+				),
 			}),
 		);
 		expect(

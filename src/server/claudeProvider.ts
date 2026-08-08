@@ -407,6 +407,8 @@ const CLAUDE_WORKFLOW_CONTINUATION_GRACE_MS = 60_000;
 const CLAUDE_WORKFLOW_PROGRESS_REFRESH_MS = 1_000;
 const CLAUDE_WORKFLOW_PROGRESS_READ_TIMEOUT_MS = 1_500;
 const CLAUDE_WORKFLOW_PROGRESS_MAX_BYTES = 8 * 1024 * 1024;
+const CLAUDE_HISTORY_WARNING_ID_MAX_CHARS = 1_024;
+const CLAUDE_HISTORY_WARNING_ERROR_CLASSIFY_MAX_CHARS = 2_000;
 
 function claudeUsageBuckets(
 	usage:
@@ -2112,6 +2114,46 @@ class ClaudeSubagentTracker {
 	}
 }
 
+function boundedClaudeHistoryField(
+	value: unknown,
+	maxChars: number,
+): string | undefined {
+	if (
+		typeof value !== "string" ||
+		value.length === 0 ||
+		value.length > maxChars
+	) {
+		return undefined;
+	}
+	for (let index = 0; index < value.length; index++) {
+		const code = value.charCodeAt(index);
+		if (code <= 31 || (code >= 127 && code <= 159)) return undefined;
+	}
+	return value;
+}
+
+function exactClaudeHistoryEventId(value: unknown): string | undefined {
+	const id = boundedClaudeHistoryField(
+		value,
+		CLAUDE_HISTORY_WARNING_ID_MAX_CHARS,
+	);
+	return id &&
+		/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
+		? id
+		: undefined;
+}
+
+function classifyClaudeHistoryWarning(
+	value: unknown,
+): Extract<AgentEvent, { type: "provider_history_warning" }>["reason"] {
+	if (typeof value !== "string" || value.length === 0) return "unknown";
+	return /tim(?:e|ed)[ -]?out/i.test(
+		value.slice(0, CLAUDE_HISTORY_WARNING_ERROR_CLASSIFY_MAX_CHARS),
+	)
+		? "timeout"
+		: "append_rejected";
+}
+
 function translateSystemMessage(
 	message: Extract<SDKMessage, { type: "system" }>,
 	hadText: boolean,
@@ -2135,6 +2177,45 @@ function translateSystemMessage(
 				{
 					type: "local_command_output",
 					content: (message as { content: string }).content,
+				},
+			],
+			hadText,
+		};
+	}
+	if ((message as { subtype: string }).subtype === "mirror_error") {
+		const mirror = message as unknown as {
+			error?: unknown;
+			key?: unknown;
+			uuid?: unknown;
+			session_id?: unknown;
+		};
+		const rawKey =
+			typeof mirror.key === "object" && mirror.key !== null
+				? (mirror.key as Record<string, unknown>)
+				: null;
+		const providerSessionId =
+			boundedClaudeHistoryField(
+				mirror.session_id,
+				CLAUDE_HISTORY_WARNING_ID_MAX_CHARS,
+			) ??
+			boundedClaudeHistoryField(
+				rawKey?.sessionId,
+				CLAUDE_HISTORY_WARNING_ID_MAX_CHARS,
+			);
+		const providerEventId = exactClaudeHistoryEventId(mirror.uuid);
+		const scope =
+			typeof rawKey?.subpath === "string" && rawKey.subpath.length > 0
+				? "subagent"
+				: "main";
+		return {
+			events: [
+				{
+					type: "provider_history_warning",
+					code: "history_mirror_failed",
+					reason: classifyClaudeHistoryWarning(mirror.error),
+					...(providerSessionId ? { providerSessionId } : {}),
+					...(providerEventId ? { providerEventId } : {}),
+					scope,
 				},
 			],
 			hadText,

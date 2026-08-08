@@ -196,6 +196,107 @@ describe("ClaudeProvider — event mapping", () => {
 		});
 	});
 
+	it("surfaces a nonfatal history warning and continues through completion", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "system",
+					subtype: "mirror_error",
+					error: "SessionStore.append timed out",
+					key: {
+						projectKey: "project-key",
+						sessionId: "native-session",
+						subpath: "agent-child",
+					},
+					uuid: "11111111-1111-4111-8111-111111111111",
+					session_id: "native-session",
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events).toContainEqual({
+			type: "provider_history_warning",
+			code: "history_mirror_failed",
+			reason: "timeout",
+			providerSessionId: "native-session",
+			providerEventId: "11111111-1111-4111-8111-111111111111",
+			scope: "subagent",
+		});
+		expect(events.some((event) => event.type === "transport_error")).toBe(
+			false,
+		);
+		expect(events.at(-1)?.type).toBe("done");
+	});
+
+	it("classifies history failures and bounds only useful correlation metadata", async () => {
+		const oversized = "x".repeat(5_000);
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "system",
+					subtype: "mirror_error",
+					error: oversized,
+					key: {
+						projectKey: oversized,
+						sessionId: oversized,
+						subpath: oversized,
+						unknown: oversized,
+					},
+					uuid: oversized,
+					session_id: oversized,
+					unknown: oversized,
+				},
+				{
+					type: "system",
+					subtype: "mirror_error",
+					error: null,
+					key: "not-an-object",
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+			]),
+		);
+
+		const warnings = (await collectEvents(baseParams())).filter(
+			(
+				event,
+			): event is Extract<AgentEvent, { type: "provider_history_warning" }> =>
+				event.type === "provider_history_warning",
+		);
+		expect(warnings).toHaveLength(2);
+		expect(warnings[0]).toMatchObject({
+			reason: "append_rejected",
+			scope: "subagent",
+		});
+		expect(warnings[0]).not.toHaveProperty("providerSessionId");
+		expect(warnings[0]).not.toHaveProperty("providerEventId");
+		expect(warnings[0]).not.toHaveProperty("projectKey");
+		expect(warnings[0]).not.toHaveProperty("error");
+		expect(warnings[0]).not.toHaveProperty("detail");
+		expect(warnings[0]).not.toHaveProperty("unknown");
+		expect(warnings[1]).toEqual({
+			type: "provider_history_warning",
+			code: "history_mirror_failed",
+			reason: "unknown",
+			scope: "main",
+		});
+	});
+
 	it("surfaces a root replayed user message as a file checkpoint", async () => {
 		vi.mocked(query).mockReturnValueOnce(
 			sdkGen([

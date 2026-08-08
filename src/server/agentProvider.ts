@@ -403,6 +403,19 @@ export type AgentEvent =
 	| { type: "session_start"; sessionId: string }
 	/** The provider rotated its native conversation inside the same Hlid session. */
 	| { type: "provider_context_reset"; sessionId: string }
+	/**
+	 * Nonfatal provider history persistence warning. Provider event ids are
+	 * diagnostic correlation only and must never be treated as transcript-frame
+	 * identities.
+	 */
+	| {
+			type: "provider_history_warning";
+			code: "history_mirror_failed";
+			reason: "timeout" | "append_rejected" | "unknown";
+			providerSessionId?: string;
+			providerEventId?: string;
+			scope: "main" | "subagent";
+	  }
 	/** Claude checkpoint attached to the current root user turn. */
 	| { type: "file_checkpoint"; id: string; providerSessionId: string }
 	/** Provider-authored peer input. Never reinterpret this as a human message. */

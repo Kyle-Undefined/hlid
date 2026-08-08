@@ -1098,6 +1098,183 @@ describe("SessionManager — provider context reset", () => {
 	});
 });
 
+describe("SessionManager — provider history warning", () => {
+	it("warn-logs and persists a visible boundary without ending the turn", async () => {
+		const provider: AgentProvider = {
+			providerId: "claude",
+			label: "Claude",
+			query(): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-history-warning" };
+					yield { type: "text_delta", text: "Claude kept going." };
+					yield {
+						type: "provider_history_warning",
+						code: "history_mirror_failed",
+						reason: "timeout",
+						providerSessionId: "sdk-history-warning",
+						providerEventId: "11111111-1111-4111-8111-111111111111",
+						scope: "subagent",
+					};
+					// The SDK UUID is diagnostic correlation, not a provider frame. A
+					// replay of the same warning must not duplicate Raven history.
+					yield {
+						type: "provider_history_warning",
+						code: "history_mirror_failed",
+						reason: "timeout",
+						providerSessionId: "sdk-history-warning",
+						providerEventId: "11111111-1111-4111-8111-111111111111",
+						scope: "subagent",
+					};
+					yield {
+						type: "provider_history_warning",
+						code: "history_mirror_failed",
+						reason: "append_rejected",
+						providerSessionId: "sdk-history-warning",
+						providerEventId: "22222222-2222-4222-8222-222222222222",
+						scope: "subagent",
+					};
+					yield {
+						type: "result_text_fallback",
+						text: "must not duplicate the assistant text",
+					};
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 5, outputTokens: 2 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		const messageCallCount = vi.mocked(dbMock.appendMessage).mock.calls.length;
+		vi.mocked(dbMock.appendLog).mockClear();
+		vi.mocked(dbMock.appendMessage)
+			.mockResolvedValueOnce(71)
+			.mockResolvedValueOnce(72)
+			.mockResolvedValueOnce(73)
+			.mockResolvedValueOnce(74);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery("continue", (message) => emitted.push(message), {
+			sessionId: "sess-history-warning",
+		});
+
+		const content =
+			"Claude could not save part of its native resume history. This turn is continuing, but future Claude resume or fork history may be incomplete.";
+		expect(
+			vi
+				.mocked(dbMock.appendMessage)
+				.mock.calls.slice(messageCallCount)
+				.filter((call) => call[2] === "local_command_output"),
+		).toEqual([
+			[
+				"sess-history-warning",
+				expect.any(Number),
+				"local_command_output",
+				content,
+			],
+			[
+				"sess-history-warning",
+				expect.any(Number),
+				"local_command_output",
+				content,
+			],
+		]);
+		expect(dbMock.appendLog).toHaveBeenCalledWith(
+			"warn",
+			"claude",
+			"Provider native history mirror failed",
+			{
+				sessionId: "sess-history-warning",
+				providerSessionId: "sdk-history-warning",
+				providerEventId: "11111111-1111-4111-8111-111111111111",
+				code: "history_mirror_failed",
+				reason: "timeout",
+				scope: "subagent",
+			},
+		);
+		expect(dbMock.appendLog).toHaveBeenCalledTimes(2);
+		expect(emitted).toContainEqual({
+			type: "local_command_output",
+			id: "persisted-message:73",
+			content,
+		});
+		expect(
+			emitted.filter((message) => message.type === "local_command_output"),
+		).toHaveLength(2);
+		expect(emitted).toContainEqual(
+			expect.objectContaining({ type: "chunk", text: "Claude kept going." }),
+		);
+		expect(emitted.filter((message) => message.type === "chunk")).toEqual([
+			expect.objectContaining({
+				type: "chunk",
+				text: "Claude kept going.",
+			}),
+		]);
+		expect(emitted).toContainEqual(expect.objectContaining({ type: "done" }));
+		expect(emitted.some((message) => message.type === "error")).toBe(false);
+		expect(sm.getStatus().state).toBe("idle");
+	});
+
+	it("still emits an idless warning and completes when local persistence fails", async () => {
+		const provider: AgentProvider = {
+			providerId: "claude",
+			label: "Claude",
+			query(): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield {
+						type: "provider_history_warning",
+						code: "history_mirror_failed",
+						reason: "append_rejected",
+						providerSessionId: "sdk-history-warning-failed-write",
+						providerEventId: "44444444-4444-4444-8444-444444444444",
+						scope: "main",
+					};
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		vi.mocked(dbMock.appendMessage)
+			.mockResolvedValueOnce(70)
+			.mockRejectedValueOnce(new Error("local db unavailable"));
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery("continue", (message) => emitted.push(message), {
+			sessionId: "sess-history-warning-failed-write",
+		});
+
+		expect(emitted).toContainEqual({
+			type: "local_command_output",
+			content:
+				"Claude could not save part of its native resume history. This turn is continuing, but future Claude resume or fork history may be incomplete.",
+		});
+		expect(emitted).toContainEqual(expect.objectContaining({ type: "done" }));
+		expect(emitted.some((message) => message.type === "error")).toBe(false);
+		expect(sm.getStatus().state).toBe("idle");
+	});
+});
+
 describe("SessionManager — deferred MCP discovery", () => {
 	it("refreshes Claude MCP status again when the first turn completes", async () => {
 		const mcpServerStatus = vi

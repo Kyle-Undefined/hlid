@@ -68,7 +68,11 @@ import { useLoadChatHistory } from "./useLoadChatHistory";
 const noopWsHandler = vi.fn();
 
 let _seq = 0;
-function makeRow(role: "user" | "assistant", text: string, timestamp = 1000) {
+function makeRow(
+	role: "user" | "assistant" | "local_command_output",
+	text: string,
+	timestamp = 1000,
+) {
 	const id = ++_seq;
 	return {
 		id,
@@ -287,6 +291,38 @@ describe("useLoadChatHistory — initial load", () => {
 		expect(
 			dispatch.mock.calls.some(([action]) => action.type === "HYDRATE_HISTORY"),
 		).toBe(true);
+	});
+
+	it("replays a persisted provider history warning as local command output", async () => {
+		const content =
+			"Claude could not save part of its native resume history. This turn is continuing, but future Claude resume or fork history may be incomplete.";
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			makeRow("local_command_output", content, 1000),
+		]);
+		const dispatch = vi.fn();
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+
+		await act(async () => {});
+		const load = dispatch.mock.calls.find(
+			([action]) => action.type === "LOAD_HISTORY",
+		)?.[0];
+		expect(load.items).toContainEqual(
+			expect.objectContaining({
+				id: "persisted-message:1",
+				role: "local_command_output",
+				text: content,
+			}),
+		);
 	});
 
 	it("restores Raven Live rows with their stable utterance identity", async () => {

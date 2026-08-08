@@ -401,10 +401,12 @@ const FILE_REWIND_PREVIEW_TTL_MS = 5 * 60_000;
 const BACKGROUND_ACTIVITY_ACTIVE_POLL_MS = 2_000;
 const BACKGROUND_ACTIVITY_IDLE_POLL_MS = 10_000;
 const BACKGROUND_ACTIVITY_LIMIT = 50;
+const PROVIDER_HISTORY_WARNING_DEDUPE_LIMIT = 512;
 const PEER_ORIGIN_PREFLIGHT_EVENT_TYPES: ReadonlySet<AgentEvent["type"]> =
 	new Set([
 		"session_start",
 		"provider_context_reset",
+		"provider_history_warning",
 		"provider_peer_message",
 		"commands_changed",
 		"transport_error",
@@ -1206,6 +1208,8 @@ export class SessionManager {
 	// on subsequent turns so the provider manages history natively.
 	private providerSessionId: string | null = null;
 	private providerSessionProviderId: string | null = null;
+	/** Bounded provider history warnings already surfaced for this chat runtime. */
+	private providerHistoryWarningIds = new Set<string>();
 	/**
 	 * Invalidates async provider results across A→B→A ownership round trips.
 	 * DB ownership mutations are also serialized so an accepted old write always
@@ -1590,6 +1594,7 @@ export class SessionManager {
 	private clearCurrentSessionIdentity(): void {
 		this.currentSessionId = null;
 		this.currentSessionLabel = null;
+		this.providerHistoryWarningIds.clear();
 		this.resetEffectiveApprovalsReviewer();
 		this.clearSessionProvenance();
 	}
@@ -4630,6 +4635,9 @@ export class SessionManager {
 		sessionId: string,
 		updateGlobalFocus = true,
 	): Promise<boolean> {
+		if (this.currentSessionId !== sessionId) {
+			this.providerHistoryWarningIds.clear();
+		}
 		this.providerOwnershipGeneration += 1;
 		this.resetEffectiveApprovalsReviewer();
 		this.clearSessionProvenance();
@@ -4876,6 +4884,30 @@ export class SessionManager {
 		}
 	}
 
+	private async emitDurableLocalCommandOutput(
+		sessionId: string | undefined,
+		content: string,
+		emit: (msg: ServerMessage) => void,
+		dbOperation: string,
+	): Promise<void> {
+		let id: string | undefined;
+		if (sessionId) {
+			const seq = this.messageSeq++;
+			try {
+				const dbId = await db.appendMessage(
+					sessionId,
+					seq,
+					"local_command_output",
+					content,
+				);
+				if (Number.isInteger(dbId)) id = `persisted-message:${dbId}`;
+			} catch (error) {
+				logDbError(dbOperation, error);
+			}
+		}
+		emit({ type: "local_command_output", ...(id ? { id } : {}), content });
+	}
+
 	/**
 	 * Keep Raven's durable transcript intact when a provider rotates its native
 	 * context (for example Claude's /clear). Persist the replacement native id
@@ -4909,22 +4941,59 @@ export class SessionManager {
 		}
 
 		const content = `${provider.label ?? provider.providerId} started a new native context`;
-		let id: string | undefined;
-		if (sessionId) {
-			const seq = this.messageSeq++;
-			try {
-				const dbId = await db.appendMessage(
-					sessionId,
-					seq,
-					"local_command_output",
-					content,
-				);
-				if (Number.isInteger(dbId)) id = `persisted-message:${dbId}`;
-			} catch (error) {
-				logDbError("appendMessage (provider context reset)", error);
+		await this.emitDurableLocalCommandOutput(
+			sessionId,
+			content,
+			emit,
+			"appendMessage (provider context reset)",
+		);
+	}
+
+	/**
+	 * Surface provider-side history loss without changing the live turn's
+	 * lifecycle. The provider continues running after this event, so the warning
+	 * is a durable transcript boundary rather than a transport failure.
+	 */
+	private async handleProviderHistoryWarning(
+		event: Extract<AgentEvent, { type: "provider_history_warning" }>,
+		sessionId: string | undefined,
+		provider: AgentProvider,
+		emit: (msg: ServerMessage) => void,
+	): Promise<void> {
+		if (event.providerSessionId && event.providerEventId) {
+			const warningKey = `${provider.providerId}\0${event.providerSessionId}\0${event.providerEventId}`;
+			if (this.providerHistoryWarningIds.has(warningKey)) return;
+			this.providerHistoryWarningIds.add(warningKey);
+			if (
+				this.providerHistoryWarningIds.size >
+				PROVIDER_HISTORY_WARNING_DEDUPE_LIMIT
+			) {
+				const oldest = this.providerHistoryWarningIds.values().next().value;
+				if (oldest !== undefined) this.providerHistoryWarningIds.delete(oldest);
 			}
 		}
-		emit({ type: "local_command_output", ...(id ? { id } : {}), content });
+		const providerLabel = provider.label ?? provider.providerId;
+		void db.appendLog(
+			"warn",
+			provider.providerId,
+			"Provider native history mirror failed",
+			{
+				sessionId,
+				providerSessionId: event.providerSessionId,
+				providerEventId: event.providerEventId,
+				code: event.code,
+				reason: event.reason,
+				scope: event.scope,
+			},
+		);
+
+		const content = `${providerLabel} could not save part of its native resume history. This turn is continuing, but future ${providerLabel} resume or fork history may be incomplete.`;
+		await this.emitDurableLocalCommandOutput(
+			sessionId,
+			content,
+			emit,
+			"appendMessage (provider history warning)",
+		);
 	}
 
 	private async promptForHookApproval(
@@ -6581,6 +6650,14 @@ export class SessionManager {
 					sessionId,
 					provider,
 					turn.providerOwnershipGeneration,
+					emit,
+				);
+				break;
+			case "provider_history_warning":
+				await this.handleProviderHistoryWarning(
+					event,
+					sessionId,
+					provider,
 					emit,
 				);
 				break;
