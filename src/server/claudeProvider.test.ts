@@ -5,7 +5,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 	query: vi.fn(),
@@ -6143,6 +6143,107 @@ describe("ClaudeProvider — setModel", () => {
 		const provider = new ClaudeProvider();
 		const session = provider.query(baseParams());
 		await expect(session.setModel?.("whatever")).resolves.toBeUndefined();
+	});
+});
+
+// ── setEffort ─────────────────────────────────────────────────────────────────
+
+describe("ClaudeProvider — setEffort", () => {
+	beforeEach(() => {
+		vi.mocked(query).mockClear();
+	});
+
+	it("applies a live direct-Claude effort and retains the active query", async () => {
+		let capturedOptions: Record<string, unknown> | undefined;
+		const gen = sdkGen([]);
+		gen.applyFlagSettings = vi.fn().mockResolvedValue(undefined);
+		gen.setModel = vi.fn().mockResolvedValue(undefined);
+		vi.mocked(query).mockImplementationOnce(({ options }) => {
+			capturedOptions = options as unknown as Record<string, unknown>;
+			return gen;
+		});
+		const requestModel = vi.fn(
+			(model: string, effort: string | undefined) => `${model}:${effort}`,
+		);
+		const session = new ClaudeProvider({ requestModel }).query(
+			baseParams({ model: "claude-opus-4-8", effort: "medium" }),
+		);
+
+		await session.send("hello");
+		expect(capturedOptions?.effort).toBe("medium");
+		await session.setEffort?.("xhigh");
+
+		expect(gen.applyFlagSettings).toHaveBeenCalledWith({
+			effortLevel: "xhigh",
+		});
+		expect(query).toHaveBeenCalledTimes(1);
+		await session.setModel?.("claude-opus-4-8");
+		expect(requestModel).toHaveBeenLastCalledWith("claude-opus-4-8", "xhigh");
+		expect(gen.setModel).toHaveBeenCalledWith("claude-opus-4-8:xhigh");
+		session.cancel();
+	});
+
+	it("updates a cold direct session without spawning and uses it on first send", async () => {
+		let capturedOptions: Record<string, unknown> | undefined;
+		const gen = sdkGen([]);
+		gen.applyFlagSettings = vi.fn().mockResolvedValue(undefined);
+		vi.mocked(query).mockImplementationOnce(({ options }) => {
+			capturedOptions = options as unknown as Record<string, unknown>;
+			return gen;
+		});
+		const requestModel = vi.fn(
+			(model: string, effort: string | undefined) => `${model}:${effort}`,
+		);
+		const session = new ClaudeProvider({ requestModel }).query(
+			baseParams({ model: "claude-sonnet-4-6", effort: "high" }),
+		);
+
+		await expect(session.setEffort?.("low")).resolves.toBeUndefined();
+		expect(query).not.toHaveBeenCalled();
+		await session.send("hello");
+
+		expect(capturedOptions).toMatchObject({
+			effort: "low",
+			model: "claude-sonnet-4-6:low",
+		});
+		expect(gen.applyFlagSettings).not.toHaveBeenCalled();
+		session.cancel();
+	});
+
+	it("keeps the prior effort and active query when live application rejects", async () => {
+		const gen = sdkGen([]);
+		gen.applyFlagSettings = vi
+			.fn()
+			.mockRejectedValue(new Error("effort is unavailable for this model"));
+		gen.setModel = vi.fn().mockResolvedValue(undefined);
+		vi.mocked(query).mockReturnValueOnce(gen);
+		const requestModel = vi.fn(
+			(model: string, effort: string | undefined) => `${model}:${effort}`,
+		);
+		const session = new ClaudeProvider({ requestModel }).query(
+			baseParams({ model: "claude-sonnet-4-6", effort: "high" }),
+		);
+		await session.send("hello");
+
+		await expect(session.setEffort?.("max")).rejects.toThrow(
+			"effort is unavailable for this model",
+		);
+		expect(query).toHaveBeenCalledTimes(1);
+
+		await session.setModel?.("claude-sonnet-4-6");
+		expect(requestModel).toHaveBeenLastCalledWith("claude-sonnet-4-6", "high");
+		expect(gen.setModel).toHaveBeenCalledWith("claude-sonnet-4-6:high");
+		session.cancel();
+	});
+
+	it("rejects effort levels outside the direct Claude catalog", async () => {
+		const session = new ClaudeProvider().query(baseParams());
+
+		await expect(session.setEffort?.("ultra")).rejects.toThrow(
+			"Unknown Claude effort level: ultra",
+		);
+		expect(query).not.toHaveBeenCalled();
+		session.cancel();
 	});
 });
 

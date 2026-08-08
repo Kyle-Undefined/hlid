@@ -181,6 +181,7 @@ import {
 	type McpControlResultMessage,
 	type McpStatusMessage,
 	type RateLimitMessage,
+	type SessionControlRejectedMessage,
 	type SlashCommandsMessage,
 	type WorkflowCatalogMessage,
 	type WorkflowDeleteResultMessage,
@@ -707,12 +708,14 @@ function useRavenChatRuntime({
 	sessionIdRef,
 	agentCwd,
 	expectedProviderId,
+	onSessionControlRejected,
 }: {
 	existingSessionId: string | null;
 	isExplicitSession: boolean;
 	sessionIdRef: { current: string };
 	agentCwd?: string;
 	expectedProviderId?: string;
+	onSessionControlRejected: (message: SessionControlRejectedMessage) => void;
 }) {
 	const [sdkSlashCommands, setSdkSlashCommands] = useState<
 		Array<{
@@ -984,6 +987,10 @@ function useRavenChatRuntime({
 	const handleAllMessages = useCallback(
 		function handleAllMessages(message: Parameters<typeof handleWsMessage>[0]) {
 			if (handleGoalMessage(message)) return;
+			if (message.type === "session_control_rejected") {
+				onSessionControlRejected(message);
+				return;
+			}
 			if (message.type === "file_rewind_result") {
 				handleFileRewindResultMessage(message);
 				return;
@@ -1003,6 +1010,7 @@ function useRavenChatRuntime({
 			handleRuntimeMetadataMessage,
 			handleWorkflowResultMessage,
 			handleWsMessage,
+			onSessionControlRejected,
 		],
 	);
 	const connection = useWs(handleAllMessages);
@@ -2705,12 +2713,38 @@ export function ChatPage() {
 		configuredProviderId,
 		sessionSelection: effectiveSessionSelection,
 	} = providerIdentity;
+	const handleSessionControlRejected = useCallback(
+		(message: SessionControlRejectedMessage) => {
+			if (
+				message.session_id !== undefined &&
+				canonicalSessionId(message.session_id) !==
+					canonicalSessionId(sessionIdRef.current)
+			) {
+				return;
+			}
+			const pending = pendingSessionControlsRef.current;
+			if (
+				message.control !== "effort" ||
+				pending.effort !== message.attempted_value
+			) {
+				return;
+			}
+			const { effort: _rejectedEffort, ...remaining } = pending;
+			pendingSessionControlsRef.current = remaining;
+			setSessionSelection((current) => ({
+				...current,
+				effort: message.authoritative_value,
+			}));
+		},
+		[sessionIdRef],
+	);
 	const runtime = useRavenChatRuntime({
 		existingSessionId,
 		isExplicitSession,
 		sessionIdRef,
 		agentCwd: agentSkillContext,
 		expectedProviderId: activeProviderId,
+		onSessionControlRejected: handleSessionControlRejected,
 	});
 	const {
 		wsStatus,

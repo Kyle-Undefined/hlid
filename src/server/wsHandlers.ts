@@ -28,7 +28,11 @@ import {
 	type StatusMessage,
 } from "./protocol";
 import { broadcast, send, wsState } from "./runState";
-import { resolveDeclaredSessionDefaults } from "./session";
+import {
+	assertSupportedProviderEffort,
+	resolveDeclaredSessionDefaults,
+	UnsupportedProviderEffortError,
+} from "./session";
 import type { PoolEntry, SessionPool } from "./sessionPool";
 import type { ShellSessionPool } from "./shellSessionPool";
 import type { TerminalSessionPool } from "./terminalSessionPool";
@@ -968,6 +972,63 @@ async function handleApprovalsReviewer(
 	entry.runState.broadcast({ type: "status", ...entry.manager.getStatus() });
 }
 
+function sendEffortRejected(
+	ws: ServerWebSocket<WsData>,
+	options: {
+		attempted: string;
+		authoritative: string;
+		sessionId?: string;
+	},
+): void {
+	send(ws, {
+		type: "session_control_rejected",
+		control: "effort",
+		attempted_value: options.attempted,
+		authoritative_value: options.authoritative,
+		...(options.sessionId ? { session_id: options.sessionId } : {}),
+	});
+}
+
+async function handleEffort(
+	context: MessageContext,
+	entry: PoolEntry,
+	msg: MessageOf<"set_effort">,
+): Promise<void> {
+	const targetSessionId =
+		msg.session_id ??
+		entry.manager.getCurrentSessionId() ??
+		context.ws.data.subscribedSessionId;
+	let rejection: unknown;
+	try {
+		await entry.manager.setEffort(msg.effort);
+	} catch (error) {
+		rejection = error;
+	}
+	const ownedEntry =
+		context.pool.get(targetSessionId) ??
+		context.pool.findByDbSessionId(targetSessionId);
+	const subscribedEntry =
+		context.pool.get(context.ws.data.subscribedSessionId) ??
+		context.pool.findByDbSessionId(context.ws.data.subscribedSessionId);
+	if (ownedEntry !== entry || subscribedEntry !== entry) return;
+	const status = entry.manager.getStatus();
+	if (rejection !== undefined) {
+		send(context.ws, {
+			type: "error",
+			message:
+				rejection instanceof Error ? rejection.message : "Invalid effort level",
+		});
+		sendEffortRejected(context.ws, {
+			attempted: msg.effort,
+			authoritative: status.effort,
+			sessionId: targetSessionId,
+		});
+	}
+	// Raven updates its picker optimistically. Always republish the accepted
+	// server value so native rejection or supersession converges immediately.
+	entry.runState.broadcast({ type: "status", ...status });
+}
+
 function handlePermissionResponse(
 	context: MessageContext,
 	entry: PoolEntry,
@@ -1249,36 +1310,92 @@ async function handleChat(
 	const providerChanged =
 		msg.provider !== undefined &&
 		msg.provider !== chatEntry.manager.getProviderId();
+	if (msg.effort !== undefined) {
+		try {
+			chatEntry.manager.validateEffort(
+				msg.effort,
+				providerChanged && msg.provider
+					? msg.provider
+					: chatEntry.manager.getProviderId(),
+			);
+		} catch (error) {
+			const status = chatEntry.manager.getStatus();
+			send(context.ws, {
+				type: "error",
+				message:
+					error instanceof Error ? error.message : "Invalid effort level",
+				turn_scoped: true,
+				...(msg.turn_id !== undefined ? { turn_id: msg.turn_id } : {}),
+			});
+			// A newly created pool entry is focused by its transient UUID. Publish
+			// the durable alias before the scoped rejection so wsStore can route it
+			// exactly and still discard it after a later focus change.
+			broadcastSessionsStatus(context);
+			sendEffortRejected(context.ws, {
+				attempted: msg.effort,
+				authoritative: status.effort,
+				sessionId: msg.session_id,
+			});
+			chatEntry.runState.broadcast({ type: "status", ...status });
+			return;
+		}
+	}
 	// The chat payload repeats the composer's controls so a detached archive or
 	// brand-new chat can apply them atomically when its live manager is created.
 	// Once a chat is already live, the dedicated set_* messages are authoritative.
 	// Reapplying an older render's payload here can race a just-clicked effort/model
 	// change and visibly snap the control back as the turn starts.
-	if (msg.provider && !chatEntry.manager.isRunning() && providerChanged) {
-		await chatEntry.manager.setProvider(msg.provider, {
-			model: msg.model,
-			effort: msg.effort,
-			permissionMode: msg.permission_mode,
-			approvalsReviewer: msg.approvals_reviewer,
+	try {
+		if (msg.provider && !chatEntry.manager.isRunning() && providerChanged) {
+			await chatEntry.manager.setProvider(msg.provider, {
+				model: msg.model,
+				effort: msg.effort,
+				permissionMode: msg.permission_mode,
+				approvalsReviewer: msg.approvals_reviewer,
+			});
+		} else if (currentSessionId === null && !chatEntry.manager.isRunning()) {
+			// Picker changes made before the first submission are addressed to the
+			// not-yet-created DB chat. Apply every repeated control carried by the chat
+			// payload even when the provider itself was left at its configured default.
+			await Promise.all([
+				msg.model !== undefined
+					? chatEntry.manager.setModel(msg.model)
+					: Promise.resolve(),
+				msg.effort !== undefined
+					? chatEntry.manager.setEffort(msg.effort)
+					: Promise.resolve(),
+				msg.permission_mode !== undefined
+					? chatEntry.manager.setPermissionMode(msg.permission_mode)
+					: Promise.resolve(),
+				msg.approvals_reviewer !== undefined
+					? chatEntry.manager.setApprovalsReviewer(msg.approvals_reviewer)
+					: Promise.resolve(),
+			]);
+		}
+	} catch (error) {
+		send(context.ws, {
+			type: "error",
+			message: error instanceof Error ? error.message : "Invalid chat settings",
+			turn_scoped: true,
+			...(msg.turn_id !== undefined ? { turn_id: msg.turn_id } : {}),
 		});
-	} else if (currentSessionId === null && !chatEntry.manager.isRunning()) {
-		// Picker changes made before the first submission are addressed to the
-		// not-yet-created DB chat. Apply every repeated control carried by the chat
-		// payload even when the provider itself was left at its configured default.
-		await Promise.all([
-			msg.model !== undefined
-				? chatEntry.manager.setModel(msg.model)
-				: Promise.resolve(),
-			msg.effort !== undefined
-				? chatEntry.manager.setEffort(msg.effort)
-				: Promise.resolve(),
-			msg.permission_mode !== undefined
-				? chatEntry.manager.setPermissionMode(msg.permission_mode)
-				: Promise.resolve(),
-			msg.approvals_reviewer !== undefined
-				? chatEntry.manager.setApprovalsReviewer(msg.approvals_reviewer)
-				: Promise.resolve(),
-		]);
+		broadcastSessionsStatus(context);
+		if (
+			msg.effort !== undefined &&
+			error instanceof UnsupportedProviderEffortError
+		) {
+			const status = chatEntry.manager.getStatus();
+			sendEffortRejected(context.ws, {
+				attempted: msg.effort,
+				authoritative: status.effort,
+				sessionId: msg.session_id,
+			});
+		}
+		chatEntry.runState.broadcast({
+			type: "status",
+			...chatEntry.manager.getStatus(),
+		});
+		return;
 	}
 	if (created) {
 		// Do not publish the manager's configured defaults between session_created
@@ -1707,11 +1824,7 @@ async function handleSessionMessage(
 			broadcastSessionsStatus(context);
 			return;
 		case "set_effort":
-			await entry.manager.setEffort(msg.effort);
-			entry.runState.broadcast({
-				type: "status",
-				...entry.manager.getStatus(),
-			});
+			await handleEffort(context, entry, msg);
 			broadcastSessionsStatus(context);
 			return;
 		case "sync_mcp_list":
@@ -1876,6 +1989,47 @@ async function handleMessage(
 							message: unavailableReason,
 						});
 						return;
+					}
+				}
+				const effort =
+					msg.type === "set_effort"
+						? msg.effort
+						: msg.type === "set_provider"
+							? msg.effort
+							: undefined;
+				if (effort !== undefined) {
+					const effortProviderId =
+						msg.type === "set_provider" ? msg.provider : saved.providerId;
+					const effortProvider = effortProviderId
+						? context.pool.getProvider(effortProviderId)
+						: undefined;
+					if (effortProvider) {
+						try {
+							assertSupportedProviderEffort(effortProvider, effort);
+						} catch (error) {
+							const status = await restoreDetachedStatus(
+								context.pool,
+								requestedTargetSession,
+							);
+							send(context.ws, {
+								type: "error",
+								message:
+									error instanceof Error
+										? error.message
+										: "Invalid effort level",
+							});
+							sendEffortRejected(context.ws, {
+								attempted: effort,
+								authoritative: status.effort ?? "",
+								sessionId: requestedTargetSession,
+							});
+							send(context.ws, {
+								type: "status",
+								session_id: requestedTargetSession,
+								...status,
+							});
+							return;
+						}
 					}
 				}
 				if (msg.type === "set_provider") {

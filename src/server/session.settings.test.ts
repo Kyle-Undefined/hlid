@@ -65,6 +65,16 @@ import {
 	makeSwitchableProvider,
 } from "./session.test-utils";
 
+function deferred() {
+	let resolve: () => void = () => {};
+	let reject: (reason?: unknown) => void = () => {};
+	const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+		resolve = resolvePromise;
+		reject = rejectPromise;
+	});
+	return { promise, resolve, reject };
+}
+
 describe("SessionManager — setModel", () => {
 	it("updates getStatus().model with no active AgentSession (no-op delegate)", async () => {
 		const sm = new SessionManager(
@@ -840,6 +850,7 @@ describe("SessionManager — setEffort", () => {
 			sessionId: "live-effort",
 		});
 		const firstSession = getSession();
+		vi.mocked(dbMock.setSessionEffort).mockClear();
 
 		await sm.setEffort("xhigh");
 		await sm.runQuery("second", () => {}, {
@@ -852,9 +863,367 @@ describe("SessionManager — setEffort", () => {
 			"live-effort",
 			"xhigh",
 		);
+		expect(sm.getStatus().effort).toBe("xhigh");
+		expect(
+			setEffort.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+		).toBeLessThan(
+			vi.mocked(dbMock.setSessionEffort).mock.invocationCallOrder[0] ?? 0,
+		);
 	});
 
-	it("rebuilds and resumes Claude on the next turn when effort changes", async () => {
+	it("preserves the provider session receiver for live effort methods", async () => {
+		let receiver: AgentSession | undefined;
+		const setEffort = vi.fn(async function (
+			this: AgentSession,
+			_effort: string,
+		) {
+			receiver = this;
+		});
+		const { provider, getSession } = makeSwitchableProvider({ setEffort });
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("first", () => {}, {
+			sessionId: "live-effort-receiver",
+		});
+
+		await sm.setEffort("xhigh");
+
+		expect(receiver).toBe(getSession());
+	});
+
+	it("does not persist, advertise, or rebuild after a live effort rejection", async () => {
+		const setEffort = vi
+			.fn()
+			.mockRejectedValue(new Error("native effort rejected"));
+		const { provider, getSession } = makeSwitchableProvider({ setEffort });
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("first", () => {}, {
+			sessionId: "rejected-live-effort",
+		});
+		const firstSession = getSession();
+		const previousEffort = sm.getStatus().effort;
+		vi.mocked(dbMock.setSessionEffort).mockClear();
+
+		await expect(sm.setEffort("max")).rejects.toThrow("native effort rejected");
+
+		expect(sm.getStatus().effort).toBe(previousEffort);
+		expect(dbMock.setSessionEffort).not.toHaveBeenCalled();
+		expect(firstSession?.cancel).not.toHaveBeenCalled();
+
+		await sm.runQuery("second", () => {}, {
+			sessionId: "rejected-live-effort",
+		});
+		expect(getSession()).toBe(firstSession);
+	});
+
+	it("rolls the live provider back when effort persistence fails", async () => {
+		const setEffort = vi.fn().mockResolvedValue(undefined);
+		const { provider, getSession } = makeSwitchableProvider({ setEffort });
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("first", () => {}, {
+			sessionId: "effort-db-rollback",
+		});
+		const firstSession = getSession();
+		vi.mocked(dbMock.setSessionEffort).mockClear();
+		vi.mocked(dbMock.setSessionEffort).mockRejectedValueOnce(
+			new Error("effort DB unavailable"),
+		);
+
+		await expect(sm.setEffort("max")).rejects.toThrow("effort DB unavailable");
+
+		expect(setEffort.mock.calls).toEqual([["max"], ["medium"]]);
+		expect(sm.getStatus().effort).toBe("medium");
+		expect(firstSession?.cancel).not.toHaveBeenCalled();
+		expect(getSession()).toBe(firstSession);
+	});
+
+	it("retires the live provider when effort rollback fails", async () => {
+		const setEffort = vi
+			.fn()
+			.mockResolvedValueOnce(undefined)
+			.mockRejectedValueOnce(new Error("native rollback failed"));
+		const { provider, getSession } = makeSwitchableProvider({ setEffort });
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("first", () => {}, {
+			sessionId: "effort-db-rollback-failed",
+		});
+		const firstSession = getSession();
+		vi.mocked(dbMock.setSessionEffort).mockClear();
+		vi.mocked(dbMock.setSessionEffort).mockRejectedValueOnce(
+			new Error("effort DB unavailable"),
+		);
+
+		await expect(sm.setEffort("max")).rejects.toThrow("effort DB unavailable");
+
+		expect(setEffort.mock.calls).toEqual([["max"], ["medium"]]);
+		expect(sm.getStatus().effort).toBe("medium");
+		expect(firstSession?.cancel).toHaveBeenCalledOnce();
+
+		await sm.runQuery("second", () => {}, {
+			sessionId: "effort-db-rollback-failed",
+		});
+		expect(getSession()).not.toBe(firstSession);
+	});
+
+	it("serializes concurrent effort changes in invocation order", async () => {
+		const firstApply = deferred();
+		const setEffort = vi.fn((effort: string) =>
+			effort === "high" ? firstApply.promise : Promise.resolve(),
+		);
+		const { provider } = makeSwitchableProvider({ setEffort });
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("first", () => {}, {
+			sessionId: "serialized-live-effort",
+		});
+		vi.mocked(dbMock.setSessionEffort).mockClear();
+
+		const first = sm.setEffort("high");
+		await vi.waitFor(() => expect(setEffort).toHaveBeenCalledOnce());
+		const second = sm.setEffort("max");
+		await Promise.resolve();
+		expect(setEffort).toHaveBeenCalledOnce();
+
+		firstApply.resolve();
+		await Promise.all([first, second]);
+
+		expect(setEffort.mock.calls).toEqual([["high"], ["max"]]);
+		expect(vi.mocked(dbMock.setSessionEffort).mock.calls).toEqual([
+			["serialized-live-effort", "high"],
+			["serialized-live-effort", "max"],
+		]);
+		expect(sm.getStatus().effort).toBe("max");
+	});
+
+	it("continues the effort queue after a rejected operation", async () => {
+		const setEffort = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("first effort rejected"))
+			.mockResolvedValueOnce(undefined);
+		const { provider } = makeSwitchableProvider({ setEffort });
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("first", () => {}, {
+			sessionId: "effort-after-rejection",
+		});
+		vi.mocked(dbMock.setSessionEffort).mockClear();
+
+		const first = sm.setEffort("high");
+		const second = sm.setEffort("xhigh");
+
+		await expect(first).rejects.toThrow("first effort rejected");
+		await expect(second).resolves.toBeUndefined();
+		expect(setEffort.mock.calls).toEqual([["high"], ["xhigh"]]);
+		expect(dbMock.setSessionEffort).toHaveBeenCalledOnce();
+		expect(dbMock.setSessionEffort).toHaveBeenCalledWith(
+			"effort-after-rejection",
+			"xhigh",
+		);
+		expect(sm.getStatus().effort).toBe("xhigh");
+	});
+
+	it("rejects a stale live apply after a same-provider selection replacement", async () => {
+		const applyGate = deferred();
+		const setEffort = vi.fn().mockReturnValue(applyGate.promise);
+		const { provider, getSession } = makeSwitchableProvider({ setEffort });
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("first", () => {}, {
+			sessionId: "superseded-provider-effort",
+		});
+		const firstSession = getSession();
+		vi.mocked(dbMock.setSessionEffort).mockClear();
+
+		const pending = sm.setEffort("max");
+		await vi.waitFor(() => expect(setEffort).toHaveBeenCalledWith("max"));
+		await sm.setProvider("claude", { effort: "low" });
+		applyGate.resolve();
+
+		await expect(pending).rejects.toThrow(
+			"Effort change was superseded by a session or provider change.",
+		);
+		expect(dbMock.setSessionEffort).not.toHaveBeenCalled();
+		expect(sm.getStatus().effort).toBe("low");
+		expect(firstSession?.cancel).toHaveBeenCalledOnce();
+	});
+
+	it("retires a same-provider target when its gated setter rejects after replacement", async () => {
+		const applyGate = deferred();
+		const setEffort = vi.fn().mockReturnValue(applyGate.promise);
+		const { provider, getSession } = makeSwitchableProvider({ setEffort });
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("first", () => {}, {
+			sessionId: "rejected-superseded-provider-effort",
+		});
+		const firstSession = getSession();
+		vi.mocked(dbMock.setSessionEffort).mockClear();
+
+		const pending = sm.setEffort("max");
+		await vi.waitFor(() => expect(setEffort).toHaveBeenCalledWith("max"));
+		await sm.setProvider("claude", { effort: "low" });
+		const rejection = expect(pending).rejects.toThrow("native setter failed");
+		applyGate.reject(new Error("native setter failed"));
+		await rejection;
+
+		expect(dbMock.setSessionEffort).not.toHaveBeenCalled();
+		expect(sm.getStatus().effort).toBe("low");
+		expect(firstSession?.cancel).toHaveBeenCalledOnce();
+
+		await sm.runQuery("second", () => {}, {
+			sessionId: "rejected-superseded-provider-effort",
+		});
+		expect(getSession()).not.toBe(firstSession);
+	});
+
+	it("rejects a stale live apply after session state is reinitialized", async () => {
+		const applyGate = deferred();
+		const setEffort = vi.fn().mockReturnValue(applyGate.promise);
+		const { provider, getSession } = makeSwitchableProvider({ setEffort });
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("first", () => {}, {
+			sessionId: "superseded-session-effort",
+		});
+		const firstSession = getSession();
+		vi.mocked(dbMock.setSessionEffort).mockClear();
+
+		const pending = sm.setEffort("max");
+		await vi.waitFor(() => expect(setEffort).toHaveBeenCalledWith("max"));
+		sm.reinitialize(makeConfig());
+		applyGate.resolve();
+
+		await expect(pending).rejects.toThrow(
+			"Effort change was superseded by a session or provider change.",
+		);
+		expect(dbMock.setSessionEffort).not.toHaveBeenCalled();
+		expect(sm.getStatus().effort).toBe("medium");
+		expect(firstSession?.cancel).toHaveBeenCalledOnce();
+	});
+
+	it.each([
+		["a durable provider default", "medium"],
+		["the durable null sentinel", null],
+	] as const)("compensates a committed effort write with %s when ownership changes during persistence", async (_label, durableEffort) => {
+		const persistenceGate = deferred();
+		const setEffort = vi.fn().mockResolvedValue(undefined);
+		const { provider, getSession } = makeSwitchableProvider({ setEffort });
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const sessionId = `effort-db-ownership-${durableEffort ?? "null"}`;
+		await sm.runQuery("first", () => {}, { sessionId });
+		const firstSession = getSession();
+		vi.mocked(dbMock.setSessionEffort).mockClear();
+		vi.mocked(dbMock.getSessionSelection).mockClear();
+		vi.mocked(dbMock.getSessionSelection).mockResolvedValue({
+			agentCwd: null,
+			providerId: "claude",
+			model: "claude-test",
+			effort: durableEffort,
+			permissionMode: "default",
+			approvalsReviewer: null,
+		});
+		setEffort.mockClear();
+		vi.mocked(dbMock.setSessionEffort).mockImplementationOnce(
+			() => persistenceGate.promise,
+		);
+
+		const pending = sm.setEffort("max");
+		await vi.waitFor(() =>
+			expect(dbMock.setSessionEffort).toHaveBeenCalledWith(sessionId, "max"),
+		);
+		sm.reinitialize(makeConfig());
+		const rejection = expect(pending).rejects.toThrow(
+			"Effort change was superseded by a session or provider change.",
+		);
+		persistenceGate.resolve();
+		await rejection;
+
+		expect(dbMock.getSessionSelection).toHaveBeenCalledOnce();
+		expect(dbMock.getSessionSelection).toHaveBeenCalledWith(sessionId);
+		expect(vi.mocked(dbMock.setSessionEffort).mock.calls).toEqual([
+			[sessionId, "max"],
+			[sessionId, durableEffort],
+		]);
+		expect(sm.getStatus().effort).toBe("medium");
+		expect(firstSession?.cancel).toHaveBeenCalledOnce();
+	});
+
+	it("validates effort catalogs before native or DB work", async () => {
+		const setEffort = vi.fn().mockResolvedValue(undefined);
+		const { provider } = makeSwitchableProvider(
+			{ setEffort },
+			"cliproxy-codex",
+		);
+		Object.assign(provider, {
+			label: "CLIProxy",
+			effortLevels: [
+				{ value: "low", label: "Low" },
+				{ value: "xhigh", label: "X-High" },
+			],
+		});
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		vi.mocked(dbMock.setSessionEffort).mockClear();
+
+		await expect(sm.setEffort("max")).rejects.toThrow(
+			"CLIProxy does not support effort max",
+		);
+
+		expect(setEffort).not.toHaveBeenCalled();
+		expect(dbMock.setSessionEffort).not.toHaveBeenCalled();
+		expect(sm.getStatus().effort).toBe("medium");
+	});
+
+	it("preserves Codex live-model efforts beyond its fallback catalog", async () => {
+		const setEffort = vi.fn().mockResolvedValue(undefined);
+		const { provider } = makeSwitchableProvider({ setEffort }, "codex");
+		Object.assign(provider, {
+			effortLevels: [
+				{ value: "low", label: "Low" },
+				{ value: "medium", label: "Medium" },
+				{ value: "high", label: "High" },
+				{ value: "xhigh", label: "X-High" },
+			],
+		});
+		const config = {
+			...makeConfig("gpt-5.6-sol"),
+			vault_provider: "codex",
+		} as HlidConfig;
+		const sm = new SessionManager(config, makeProviders(provider));
+		await sm.runQuery("first", () => {}, {
+			sessionId: "codex-ultra-effort",
+		});
+		vi.mocked(dbMock.setSessionEffort).mockClear();
+
+		await sm.setEffort("ultra");
+
+		expect(setEffort).toHaveBeenCalledWith("ultra");
+		expect(dbMock.setSessionEffort).toHaveBeenCalledWith(
+			"codex-ultra-effort",
+			"ultra",
+		);
+		expect(sm.getStatus().effort).toBe("ultra");
+	});
+
+	it("validates provider-switch effort before mutating the selection", async () => {
+		const current = makeSwitchableProvider({}, "claude").provider;
+		const target = makeSwitchableProvider({}, "cliproxy-codex").provider;
+		Object.assign(target, {
+			label: "Claude Code · CLIProxy",
+			effortLevels: [{ value: "xhigh", label: "X-High" }],
+		});
+		const sm = new SessionManager(
+			makeConfig(),
+			new Map([
+				["claude", current],
+				["cliproxy-codex", target],
+			]),
+		);
+		vi.mocked(dbMock.setSessionProviderSelection).mockClear();
+
+		await expect(
+			sm.setProvider("cliproxy-codex", { effort: "max" }),
+		).rejects.toThrow("Claude Code · CLIProxy does not support effort max");
+
+		expect(sm.getProviderId()).toBe("claude");
+		expect(sm.getStatus().effort).toBe("medium");
+		expect(dbMock.setSessionProviderSelection).not.toHaveBeenCalled();
+	});
+
+	it("rebuilds and resumes a provider without live effort control", async () => {
 		const params: AgentQueryParams[] = [];
 		const cancels: ReturnType<typeof vi.fn>[] = [];
 		const provider: AgentProvider = {
@@ -886,7 +1255,7 @@ describe("SessionManager — setEffort", () => {
 			sessionId: "claude-effort",
 		});
 
-		await sm.setEffort("max");
+		await sm.setEffort("xhigh");
 		await sm.runQuery("second", () => {}, {
 			sessionId: "claude-effort",
 		});
@@ -894,8 +1263,78 @@ describe("SessionManager — setEffort", () => {
 		expect(params).toHaveLength(2);
 		expect(cancels[0]).toHaveBeenCalledOnce();
 		expect(params[1]).toMatchObject({
-			effort: "max",
+			effort: "xhigh",
 			sessionId: "claude-session-1",
+		});
+	});
+
+	it("holds an immediate next turn behind CLIProxy-style effort persistence", async () => {
+		const persistenceGate = deferred();
+		const params: AgentQueryParams[] = [];
+		const cancels: ReturnType<typeof vi.fn>[] = [];
+		const provider: AgentProvider = {
+			providerId: "cliproxy-codex",
+			effortLevels: [{ value: "xhigh", label: "X-High" }],
+			query(queryParams): AgentSession {
+				params.push(queryParams);
+				const index = params.length;
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield {
+						type: "session_start",
+						sessionId: `cliproxy-session-${index}`,
+					};
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				const cancel = vi.fn();
+				cancels.push(cancel);
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel,
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		};
+		const config = {
+			...makeConfig("gpt-5.6-sol"),
+			vault_provider: "cliproxy-codex",
+		} as HlidConfig;
+		const sm = new SessionManager(config, makeProviders(provider));
+		await sm.runQuery("first", () => {}, {
+			sessionId: "cliproxy-effort-barrier",
+		});
+		vi.mocked(dbMock.setSessionEffort).mockImplementationOnce(
+			() => persistenceGate.promise,
+		);
+
+		const effortChange = sm.setEffort("xhigh");
+		await vi.waitFor(() =>
+			expect(dbMock.setSessionEffort).toHaveBeenCalledWith(
+				"cliproxy-effort-barrier",
+				"xhigh",
+			),
+		);
+		const nextTurn = sm.runQuery("second", () => {}, {
+			sessionId: "cliproxy-effort-barrier",
+		});
+		await Promise.resolve();
+
+		expect(params).toHaveLength(1);
+		expect(cancels[0]).not.toHaveBeenCalled();
+
+		persistenceGate.resolve();
+		await Promise.all([effortChange, nextTurn]);
+
+		expect(params).toHaveLength(2);
+		expect(cancels[0]).toHaveBeenCalledOnce();
+		expect(params[1]).toMatchObject({
+			effort: "xhigh",
+			sessionId: "cliproxy-session-1",
 		});
 	});
 });

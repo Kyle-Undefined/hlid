@@ -440,6 +440,60 @@ beforeEach(() => {
 	};
 });
 
+function configureEffortRejectionSession(): void {
+	state.loaderData = {
+		...state.loaderData,
+		config: {
+			...(state.loaderData.config as object),
+			vault_provider: "claude",
+			claude: {
+				interactive_mode: false,
+				model: "claude-sonnet-4-6",
+				effort: "high",
+				permission_mode: "default",
+			},
+		},
+		existingSessionId: "saved-session",
+		isExplicitSession: true,
+		sessionModel: "claude-sonnet-4-6",
+		sessionProviderId: "claude",
+		sessionEffort: "high",
+		sessionPermissionMode: "default",
+		providers: [
+			{
+				id: "claude",
+				label: "Claude",
+				available: true,
+				models: [
+					{
+						value: "claude-sonnet-4-6",
+						label: "Sonnet 4.6",
+						isDefault: true,
+					},
+				],
+				effortLevels: [
+					{ value: "high", label: "High", isDefault: true },
+					{ value: "max", label: "Max" },
+					{ value: "xhigh", label: "X-High" },
+				],
+				permissionModes: [{ value: "default", label: "Ask", isDefault: true }],
+			},
+		],
+	};
+	state.sessions = [
+		{
+			session_id: "live-session",
+			db_session_id: "saved-session",
+			mode: "sdk",
+			state: "idle",
+			provider_id: "claude",
+			model: "claude-sonnet-4-6",
+			effort: "high",
+			permission_mode: "default",
+		},
+	];
+}
+
 describe("Raven hydration", () => {
 	it("hydrates cached live-session snapshots without entering a render loop", async () => {
 		state.loaderData = {
@@ -2183,6 +2237,94 @@ describe("Raven composed submission behavior", () => {
 
 		fireEvent.focus(screen.getByRole("combobox"));
 		expect(screen.queryByRole("dialog", { name: "Model settings" })).toBeNull();
+	});
+
+	it("rolls an optimistic effort picker back on its correlated rejection", () => {
+		configureEffortRejectionSession();
+		render(<ChatPage />);
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*high.*ask/i,
+			}),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Max" }));
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*max.*ask/i,
+			}),
+		).toBeTruthy();
+		expect(state.send).toHaveBeenCalledWith({
+			type: "set_effort",
+			effort: "max",
+			session_id: "saved-session",
+		});
+
+		act(() => {
+			state.onMessage?.({
+				type: "session_control_rejected",
+				control: "effort",
+				attempted_value: "max",
+				authoritative_value: "high",
+				session_id: "saved-session",
+			});
+		});
+
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*high.*ask/i,
+			}),
+		).toBeTruthy();
+	});
+
+	it("ignores stale or mismatched effort rejections without clearing the pending value", () => {
+		configureEffortRejectionSession();
+		render(<ChatPage />);
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*high.*ask/i,
+			}),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Max" }));
+
+		act(() => {
+			state.onMessage?.({
+				type: "session_control_rejected",
+				control: "effort",
+				attempted_value: "xhigh",
+				authoritative_value: "high",
+				session_id: "saved-session",
+			});
+			state.onMessage?.({
+				type: "session_control_rejected",
+				control: "effort",
+				attempted_value: "max",
+				authoritative_value: "high",
+				session_id: "another-session",
+			});
+		});
+
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*max.*ask/i,
+			}),
+		).toBeTruthy();
+
+		act(() => {
+			state.onMessage?.({
+				type: "session_control_rejected",
+				control: "effort",
+				attempted_value: "max",
+				authoritative_value: "high",
+				session_id: "saved-session",
+			});
+		});
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*high.*ask/i,
+			}),
+		).toBeTruthy();
 	});
 
 	it("only exposes approval reviewers for Codex and carries its default when switching", () => {

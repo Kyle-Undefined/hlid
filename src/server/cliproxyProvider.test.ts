@@ -104,6 +104,7 @@ describe("CLIProxy model routing", () => {
 			effort: "xhigh",
 			canUseTool: vi.fn().mockResolvedValue({ behavior: "allow" }),
 		});
+		expect(session.setEffort).toBeUndefined();
 		await session.send("hello");
 		const events: AgentEvent[] = [];
 		for await (const event of session) events.push(event);
@@ -120,6 +121,58 @@ describe("CLIProxy model routing", () => {
 		expect(events.find((event) => event.type === "done")).not.toHaveProperty(
 			"estimatedCost",
 		);
+	});
+
+	it("restarts from the native session with the new effort model suffix", async () => {
+		const options: Record<string, unknown>[] = [];
+		vi.mocked(query).mockImplementation(({ options: queryOptions }) => {
+			options.push(queryOptions as unknown as Record<string, unknown>);
+			return sdkGen([
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 1,
+					usage: { input_tokens: 1, output_tokens: 1 },
+				},
+			]);
+		});
+		const provider = new CliProxyCodexProvider(config());
+		const run = async (session: ReturnType<typeof provider.query>) => {
+			await session.send("hello");
+			for await (const _event of session) {
+				// drain the long-lived wrapper through its turn result
+			}
+			session.cancel();
+		};
+
+		await run(
+			provider.query({
+				cwd: "/work",
+				model: "gpt-5.6-sol",
+				effort: "medium",
+				canUseTool: vi.fn().mockResolvedValue({ behavior: "allow" }),
+			}),
+		);
+		await run(
+			provider.query({
+				cwd: "/work",
+				model: "gpt-5.6-sol",
+				effort: "xhigh",
+				sessionId: "cliproxy-native-1",
+				canUseTool: vi.fn().mockResolvedValue({ behavior: "allow" }),
+			}),
+		);
+
+		expect(options).toHaveLength(2);
+		expect(options[0]).toMatchObject({ model: "gpt-5.6-sol(medium)" });
+		expect(options[0]).not.toHaveProperty("effort");
+		expect(options[1]).toMatchObject({
+			model: "gpt-5.6-sol(xhigh)",
+			resume: "cliproxy-native-1",
+		});
+		expect(options[1]).not.toHaveProperty("effort");
 	});
 
 	it("retains Claude Code transcript forking through CLIProxy", () => {

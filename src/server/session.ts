@@ -22,7 +22,10 @@ import {
 } from "../lib/paths";
 import { permissionToolDisplayName } from "../lib/permissionPresentation";
 import { compareProviderBackgroundActivity } from "../lib/providerBackgroundActivity";
-import { isCliProxyProvider } from "../lib/providerIds";
+import {
+	CLIPROXY_CODEX_PROVIDER_ID,
+	isCliProxyProvider,
+} from "../lib/providerIds";
 import { estimateProviderCost } from "../lib/providerPricing";
 import {
 	isClaudeRuntimeProvider,
@@ -469,8 +472,26 @@ type RunQueryArgs = {
 	emit: (msg: ServerMessage) => void;
 	options: RunQueryOptions;
 	readonly inputOrigin: AgentInputOrigin;
+	/** Settings work already accepted when this turn entered the queue. */
+	readonly effortReady?: Promise<void>;
 	durableReady?: Promise<boolean>;
 };
+
+type EffortChangeTarget = {
+	sessionId: string | null;
+	providerId: string;
+	providerOwnershipGeneration: number;
+	effortControlGeneration: number;
+	agentSession: AgentSession | null;
+	agentSessionKey: string | null;
+};
+
+class EffortChangeSupersededError extends Error {
+	constructor() {
+		super("Effort change was superseded by a session or provider change.");
+		this.name = "EffortChangeSupersededError";
+	}
+}
 
 type ProviderContinuationJob = {
 	trigger: ProviderInitiatedTurn;
@@ -1171,6 +1192,33 @@ function providerFrameKey(
 	return `${providerSessionId}\0${providerUuid}`;
 }
 
+export function assertSupportedProviderEffort(
+	provider: AgentProvider,
+	effort: string,
+): void {
+	const supported =
+		provider.providerId === "claude"
+			? new Set(["low", "medium", "high", "xhigh", "max"])
+			: provider.providerId === CLIPROXY_CODEX_PROVIDER_ID
+				? new Set(
+						provider.effortLevels?.map((candidate) => candidate.value) ?? [],
+					)
+				: null;
+	// Other provider catalogs can be model-specific and are not complete
+	// allowlists (Codex, for example, adds max/ultra on live model entries).
+	if (!supported || supported.size === 0 || supported.has(effort)) return;
+	throw new UnsupportedProviderEffortError(
+		`${provider.label ?? provider.providerId} does not support effort ${effort}`,
+	);
+}
+
+export class UnsupportedProviderEffortError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "UnsupportedProviderEffortError";
+	}
+}
+
 export class SessionManager {
 	private providers: Map<string, AgentProvider>;
 	private vaultProviderId!: string;
@@ -1194,8 +1242,12 @@ export class SessionManager {
 	private providerHandoffPending = false;
 	/** Provider conversation that has accepted the compact Hlid operating brief. */
 	private operatingBriefProviderKey: string | null = null;
-	/** Providers without a live effort control (currently Claude) restart on the next turn. */
+	/** Providers without a live effort control restart on the next turn. */
 	private restartAgentSessionForEffort = false;
+	/** Ordered settings barrier installed synchronously by every effort request. */
+	private effortChangeTail: Promise<void> = Promise.resolve();
+	/** Invalidates an in-flight effort request when setProvider replaces its selection. */
+	private effortControlGeneration = 0;
 	/** Extension changes made mid-turn retire the native runtime before its next turn. */
 	private restartProviderRuntimeAfterTurn = false;
 	private maxTurns: number | undefined;
@@ -2080,6 +2132,9 @@ export class SessionManager {
 		if (!nextProvider) {
 			throw new Error(`Unknown or unavailable provider: ${providerId}`);
 		}
+		if (selection.effort !== undefined) {
+			assertSupportedProviderEffort(nextProvider, selection.effort);
+		}
 		if (
 			selection.approvalsReviewer !== undefined &&
 			!this.supportedApprovalsReviewer(
@@ -2095,6 +2150,7 @@ export class SessionManager {
 		if (selection.approvalsReviewer === "auto_review" && unavailableReason) {
 			throw new Error(unavailableReason);
 		}
+		this.effortControlGeneration += 1;
 
 		const currentProviderId =
 			this.providerSessionProviderId ??
@@ -2204,28 +2260,165 @@ export class SessionManager {
 
 	/**
 	 * Mid-session effort switch. Session-scoped like setModel/setPermissionMode:
-	 * updates the field `buildAgentQueryParams` reads as the default effort for
-	 * the session's next fresh AgentSession, and delegates to the live
-	 * AgentSession when the active provider supports a live switch (codex).
-	 * On providers without one (claude), the new value still takes effect —
-	 * just starting with the next fresh session rather than the current turn.
+	 * applies a live provider control first when available, then persists and
+	 * advertises the accepted selection. Providers without a live control use
+	 * the persisted value after a restart/resume at the next turn boundary.
 	 */
+	validateEffort(effort: string, providerId = this.getProviderId()): void {
+		const provider =
+			this.providers.get(providerId) ?? this.resolveProvider(this.agentCwd);
+		assertSupportedProviderEffort(provider, effort);
+	}
+
 	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket set_effort dispatch in wsHandlers.
 	async setEffort(effort: string): Promise<void> {
 		this.assertRealtimeIdle("changing effort");
-		this.effortOverride = effort;
-		this.effort = effort;
-		await (this.currentSessionId
-			? db.setSessionEffort(this.currentSessionId, effort)
-			: Promise.resolve());
-		if (!this.agentSession) return;
-		if (this.agentSession.setEffort) {
-			await this.agentSession.setEffort(effort);
+		const provider =
+			this.providers.get(this.getProviderId()) ??
+			this.resolveProvider(this.agentCwd);
+		this.validateEffort(effort, provider.providerId);
+		const target: EffortChangeTarget = {
+			sessionId: this.currentSessionId,
+			providerId: provider.providerId,
+			providerOwnershipGeneration: this.providerOwnershipGeneration,
+			effortControlGeneration: this.effortControlGeneration,
+			agentSession: this.agentSession,
+			agentSessionKey: this.agentSessionKey,
+		};
+		const operation = this.effortChangeTail.then(() =>
+			this.applyEffortChange(target, effort),
+		);
+		// Install a settled barrier before the first provider/DB await so a chat
+		// frame received immediately afterward cannot race the old selection.
+		this.effortChangeTail = operation.then(
+			() => undefined,
+			() => undefined,
+		);
+		return operation;
+	}
+
+	private ownsEffortChangeTarget(target: EffortChangeTarget): boolean {
+		return (
+			this.currentSessionId === target.sessionId &&
+			this.getProviderId() === target.providerId &&
+			this.providerOwnershipGeneration === target.providerOwnershipGeneration &&
+			this.effortControlGeneration === target.effortControlGeneration &&
+			this.agentSession === target.agentSession &&
+			this.agentSessionKey === target.agentSessionKey
+		);
+	}
+
+	private retireEffortTarget(target: EffortChangeTarget): void {
+		if (
+			!target.agentSession ||
+			this.agentSession !== target.agentSession ||
+			this.agentSessionKey !== target.agentSessionKey
+		) {
 			return;
 		}
-		// Do not interrupt an in-flight Claude turn. Rebuild its streaming query
-		// at the next turn boundary and resume from the captured provider session.
-		this.restartAgentSessionForEffort = true;
+		this.stopBackgroundActivityObserver();
+		target.agentSession.cancel();
+		this.agentSession = null;
+		this.agentSessionKey = null;
+		this.restartAgentSessionForEffort = false;
+		this.resetEffectiveApprovalsReviewer();
+	}
+
+	private async persistEffortChange(
+		target: EffortChangeTarget,
+		effort: string,
+	): Promise<void> {
+		if (!target.sessionId) {
+			if (!this.ownsEffortChangeTarget(target)) {
+				throw new EffortChangeSupersededError();
+			}
+			return;
+		}
+		await this.enqueueProviderOwnershipWrite(async () => {
+			if (!this.ownsEffortChangeTarget(target)) {
+				throw new EffortChangeSupersededError();
+			}
+			const previousPersistedEffort =
+				(await db.getSessionSelection(target.sessionId as string))?.effort ??
+				null;
+			if (!this.ownsEffortChangeTarget(target)) {
+				throw new EffortChangeSupersededError();
+			}
+			await db.setSessionEffort(target.sessionId as string, effort);
+			if (!this.ownsEffortChangeTarget(target)) {
+				// The guarded write committed just before ownership changed. Restore
+				// the exact prior durable selection in this same serialized write lane
+				// before a replacement session/provider can enqueue its own selection.
+				await db.setSessionEffort(
+					target.sessionId as string,
+					previousPersistedEffort,
+				);
+				throw new EffortChangeSupersededError();
+			}
+		});
+	}
+
+	private async restoreEffortAfterFailure(
+		target: EffortChangeTarget,
+		previousEffort: string,
+	): Promise<void> {
+		if (!target.agentSession?.setEffort) return;
+		if (!this.ownsEffortChangeTarget(target)) {
+			this.retireEffortTarget(target);
+			return;
+		}
+		try {
+			await target.agentSession.setEffort(previousEffort);
+		} catch {
+			this.retireEffortTarget(target);
+			return;
+		}
+		if (!this.ownsEffortChangeTarget(target)) {
+			this.retireEffortTarget(target);
+		}
+	}
+
+	private async applyEffortChange(
+		target: EffortChangeTarget,
+		effort: string,
+	): Promise<void> {
+		if (!this.ownsEffortChangeTarget(target)) {
+			this.retireEffortTarget(target);
+			throw new EffortChangeSupersededError();
+		}
+		const previousEffort = this.effort;
+		const hasLiveSetter = Boolean(target.agentSession?.setEffort);
+		let liveApplied = false;
+		try {
+			if (target.agentSession?.setEffort) {
+				await target.agentSession.setEffort(effort);
+				liveApplied = true;
+				if (!this.ownsEffortChangeTarget(target)) {
+					throw new EffortChangeSupersededError();
+				}
+			}
+			await this.persistEffortChange(target, effort);
+			if (!this.ownsEffortChangeTarget(target)) {
+				throw new EffortChangeSupersededError();
+			}
+			this.effortOverride = effort;
+			this.effort = effort;
+			if (target.agentSession && !hasLiveSetter) {
+				// Rebuild at the next turn boundary and resume the captured provider
+				// session when the transport encodes effort at process creation.
+				this.restartAgentSessionForEffort = true;
+			}
+		} catch (error) {
+			if (liveApplied) {
+				await this.restoreEffortAfterFailure(target, previousEffort);
+			} else if (
+				error instanceof EffortChangeSupersededError ||
+				!this.ownsEffortChangeTarget(target)
+			) {
+				this.retireEffortTarget(target);
+			}
+			throw error;
+		}
 	}
 
 	/**
@@ -7164,7 +7357,13 @@ export class SessionManager {
 	): Promise<void> {
 		this.assertRealtimeIdle("sending a message");
 		const inputOrigin = normalizeAgentInputOrigin(options.inputOrigin);
-		const args: RunQueryArgs = { userMessage, emit, options, inputOrigin };
+		const args: RunQueryArgs = {
+			userMessage,
+			emit,
+			options,
+			inputOrigin,
+			effortReady: this.effortChangeTail,
+		};
 		if (isDurableInteractiveTurn(args)) {
 			args.durableReady = this.persistDurableTurn(args);
 		}
@@ -7264,6 +7463,7 @@ export class SessionManager {
 				userMessage: payload.userMessage,
 				emit,
 				inputOrigin: normalizeAgentInputOrigin(payload.inputOrigin),
+				effortReady: this.effortChangeTail,
 				options: {
 					...payload.options,
 					sessionId: row.session_id,
@@ -9228,6 +9428,7 @@ export class SessionManager {
 	}
 
 	private async runOneTurn(args: RunQueryArgs): Promise<void> {
+		await (args.effortReady ?? this.effortChangeTail);
 		const { userMessage, emit } = args;
 		const {
 			sessionId,

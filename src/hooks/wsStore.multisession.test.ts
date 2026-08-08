@@ -729,6 +729,69 @@ describe("session message filtering", () => {
 		unsub();
 	});
 
+	it("routes a scoped first-chat rejection only after its pool-to-DB alias arrives", () => {
+		const ravenMessages: unknown[] = [];
+		const unsubscribe = wsStore.subscribeMessage((message) =>
+			ravenMessages.push(message),
+		);
+
+		receive({
+			type: "session_created",
+			session_id: "random-live-pool-id",
+			agent_cwd: "/vault",
+			agent_name: "Vault",
+		});
+		// Before sessions_status establishes the durable alias, the scoped frame
+		// cannot be proven to belong to the newly focused live entry.
+		receive({
+			type: "session_control_rejected",
+			control: "effort",
+			attempted_value: "high",
+			authoritative_value: "xhigh",
+			session_id: "durable-chat-id",
+		});
+		receive({
+			type: "sessions_status",
+			sessions: [
+				{
+					session_id: "random-live-pool-id",
+					db_session_id: "durable-chat-id",
+					agent_cwd: "/vault",
+					agent_name: "Vault",
+					state: "idle",
+					model: "gpt-test",
+					hasPendingPermissions: false,
+				},
+			],
+		});
+		receive({
+			type: "session_control_rejected",
+			control: "effort",
+			attempted_value: "max",
+			authoritative_value: "xhigh",
+			session_id: "durable-chat-id",
+		});
+		wsStore.subscribeToSession("another-live-session");
+		receive({
+			type: "session_control_rejected",
+			control: "effort",
+			attempted_value: "high",
+			authoritative_value: "xhigh",
+			session_id: "durable-chat-id",
+		});
+
+		expect(ravenMessages).toEqual([
+			{
+				type: "session_control_rejected",
+				control: "effort",
+				attempted_value: "max",
+				authoritative_value: "xhigh",
+				session_id: "durable-chat-id",
+			},
+		]);
+		unsubscribe();
+	});
+
 	it("delivers durable goal state while a new chat is focused by its live pool id", () => {
 		receive({
 			type: "session_created",

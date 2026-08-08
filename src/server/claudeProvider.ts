@@ -110,6 +110,21 @@ const KNOWN_PERMISSION_MODES = new Set<string>([
 	"plan",
 ]);
 
+const CLAUDE_SDK_EFFORT_LEVELS = new Set<string>([
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+]);
+
+function claudeSdkEffortLevel(effort: string): SdkEffortLevel {
+	if (!CLAUDE_SDK_EFFORT_LEVELS.has(effort)) {
+		throw new Error(`Unknown Claude effort level: ${effort}`);
+	}
+	return effort as SdkEffortLevel;
+}
+
 function effectiveSdkPermissionMode(
 	mode: AgentQueryParams["permissionMode"],
 	policyEnforced: boolean,
@@ -2894,6 +2909,7 @@ class ClaudeAgentSession implements AgentSession {
 		string,
 		ProviderMcpPermissionModeOverride
 	>();
+	readonly setEffort?: (effort: string) => Promise<void>;
 
 	constructor(
 		makeQuery: (
@@ -2911,6 +2927,7 @@ class ClaudeAgentSession implements AgentSession {
 		private readonly includeEstimatedCost: boolean,
 		private readonly requestModel: (model: string) => string,
 		private readonly normalizeModel: (model: string) => string,
+		enableLiveEffort: boolean,
 		private readonly exposeUsageWindows: boolean,
 		private readonly exposeAccountInfo: boolean,
 		private readonly hostMcpServers: Record<string, SdkMcpServerConfig>,
@@ -2920,6 +2937,9 @@ class ClaudeAgentSession implements AgentSession {
 		this.makeQuery = makeQuery;
 		this.abortController = abortController;
 		this.resumeId = resumeId;
+		if (enableLiveEffort) {
+			this.setEffort = (effort) => this.applyEffort(effort);
+		}
 		this.backgroundActivities = new ClaudeBackgroundActivityTracker(
 			hostParams.providerId ?? "claude",
 			runtimeCwd,
@@ -3204,6 +3224,14 @@ class ClaudeAgentSession implements AgentSession {
 		this.hostParams.model = model;
 		if (!this.sdkQuery) return;
 		await this.sdkQuery.setModel(model ? this.requestModel(model) : model);
+	}
+
+	private async applyEffort(effort: string): Promise<void> {
+		const effortLevel = claudeSdkEffortLevel(effort);
+		if (this.sdkQuery) {
+			await this.sdkQuery.applyFlagSettings({ effortLevel });
+		}
+		this.hostParams.effort = effort;
 	}
 
 	/**
@@ -4736,7 +4764,7 @@ export class ClaudeProvider implements AgentProvider {
 						params.policyEnforced ?? false,
 					),
 					...(this.passSdkEffort
-						? { effort: (params.effort ?? "medium") as SdkEffortLevel }
+						? { effort: claudeSdkEffortLevel(params.effort ?? "medium") }
 						: {}),
 					env: sdkEnv,
 					...(params.maxTurns !== undefined
@@ -4809,6 +4837,7 @@ export class ClaudeProvider implements AgentProvider {
 			this.includeSdkEstimatedCost,
 			(model) => this.requestModel(model, params.effort),
 			this.normalizeModel,
+			this.passSdkEffort,
 			this.exposeUsageWindows,
 			this.exposeAccountInfo,
 			hostMcpServers,

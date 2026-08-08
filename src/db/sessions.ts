@@ -156,7 +156,7 @@ export async function getSessionSelection(
 
 export async function setSessionEffort(
 	sessionId: string,
-	effort: string,
+	effort: string | null,
 ): Promise<void> {
 	const db = await getDb();
 	db.run(`UPDATE sessions SET selected_effort = ? WHERE id = ?`, [

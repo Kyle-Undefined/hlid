@@ -254,6 +254,18 @@ export type ErrorMessage = {
 	turn_scoped?: true;
 };
 
+/** Correlated rejection for one optimistically applied Raven session control. */
+export type SessionControlRejectedMessage = {
+	type: "session_control_rejected";
+	control: "effort";
+	/** Exact optimistic value sent by this client. */
+	attempted_value: string;
+	/** Server-authoritative value retained after the rejection. */
+	authoritative_value: string;
+	/** Hlid session owning the control, when one already exists. */
+	session_id?: string;
+};
+
 /** Exact provider activity requesting an interactive permission decision. */
 export type PermissionRequester = {
 	providerId: string;
@@ -1083,6 +1095,7 @@ export type ServerMessage =
 	| UsageUpdateMessage
 	| ContextUpdateMessage
 	| ErrorMessage
+	| SessionControlRejectedMessage
 	| PermissionRequestMessage
 	| PermissionResolvedMessage
 	| ProviderPermissionDeniedMessage

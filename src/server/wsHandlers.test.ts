@@ -170,6 +170,7 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		setModel: vi.fn().mockResolvedValue(undefined),
 		setProvider: vi.fn().mockResolvedValue(undefined),
 		setEffort: vi.fn().mockResolvedValue(undefined),
+		validateEffort: vi.fn(),
 		setPermissionMode: vi.fn().mockResolvedValue(undefined),
 		setApprovalsReviewer: vi.fn().mockResolvedValue(undefined),
 		stopProviderTask: vi.fn().mockResolvedValue(undefined),
@@ -216,6 +217,16 @@ function wrapSession(session: SessionManager) {
 function lastSentTo(ws: ReturnType<typeof makeWs>): ServerMessage | undefined {
 	const calls = mockSend.mock.calls.filter((c) => c[0] === ws);
 	return calls.length > 0 ? calls[calls.length - 1][1] : undefined;
+}
+
+function deferred() {
+	let resolve: () => void = () => {};
+	let reject: (reason?: unknown) => void = () => {};
+	const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+		resolve = resolvePromise;
+		reject = rejectPromise;
+	});
+	return { promise, resolve, reject };
 }
 
 beforeEach(() => {
@@ -1878,6 +1889,153 @@ describe("message — set_model", () => {
 	});
 });
 
+describe("message — set_effort", () => {
+	it("surfaces a live rejection and republishes the authoritative effort", async () => {
+		const session = makeSession({
+			setEffort: vi.fn().mockRejectedValue(new Error("native effort rejected")),
+			getStatus: vi.fn().mockReturnValue({
+				state: "idle",
+				model: "claude-opus-4-8",
+				permission_mode: "default",
+				effort: "medium",
+			}),
+			getCurrentSessionId: vi.fn().mockReturnValue("vault-id"),
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({ type: "set_effort", effort: "max" }),
+		);
+
+		expect(
+			mockSend.mock.calls
+				.filter((call) => call[0] === ws)
+				.map((call) => call[1]),
+		).toEqual([
+			{ type: "error", message: "native effort rejected" },
+			{
+				type: "session_control_rejected",
+				control: "effort",
+				attempted_value: "max",
+				authoritative_value: "medium",
+				session_id: "vault-id",
+			},
+		]);
+		expect(runState.broadcast).toHaveBeenCalledWith({
+			type: "status",
+			state: "idle",
+			model: "claude-opus-4-8",
+			permission_mode: "default",
+			effort: "medium",
+		});
+	});
+
+	it("does not publish a late effort rejection after the owning entry closes", async () => {
+		const applyGate = deferred();
+		const session = makeSession({
+			setEffort: vi.fn().mockReturnValue(applyGate.promise),
+			getCurrentSessionId: vi.fn().mockReturnValue("vault-id"),
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		const pending = message(
+			ws as never,
+			JSON.stringify({ type: "set_effort", effort: "max" }),
+		);
+		await vi.waitFor(() =>
+			expect(session.setEffort).toHaveBeenCalledWith("max"),
+		);
+		pool.get.mockReturnValue(undefined);
+		pool.findByDbSessionId.mockReturnValue(undefined);
+		applyGate.reject(new Error("late native rejection"));
+		await pending;
+
+		expect(mockSend).not.toHaveBeenCalled();
+		expect(runState.broadcast).not.toHaveBeenCalled();
+	});
+
+	it("rejects an unsupported detached effort before persistence", async () => {
+		const selection = {
+			agentCwd: "/tmp/test",
+			providerId: "cliproxy-codex",
+			model: "gpt-5.6-sol",
+			effort: "xhigh",
+			permissionMode: "default",
+		};
+		vi.mocked(dbMock.getSessionSelection)
+			.mockResolvedValueOnce(selection)
+			.mockResolvedValueOnce(selection);
+		mockLoadConfig.mockReturnValueOnce({
+			vault: { path: "/tmp/test", name: "Test Vault" },
+			claude: {
+				model: "test-model",
+				effort: "medium",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+			cliproxy: {
+				model: "gpt-5.6-sol",
+				effort: "xhigh",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+			agents: [],
+		});
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		pool.getProvider.mockReturnValue({
+			providerId: "cliproxy-codex",
+			label: "Claude Code · CLIProxy",
+			effortLevels: [{ value: "xhigh", label: "X-High" }],
+		} as never);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("detached-cliproxy");
+		vi.mocked(dbMock.setSessionEffort).mockClear();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "set_effort",
+				session_id: "detached-cliproxy",
+				effort: "max",
+			}),
+		);
+
+		expect(
+			mockSend.mock.calls
+				.filter((call) => call[0] === ws)
+				.map((call) => call[1]),
+		).toEqual([
+			{
+				type: "error",
+				message: "Claude Code · CLIProxy does not support effort max",
+			},
+			{
+				type: "session_control_rejected",
+				control: "effort",
+				attempted_value: "max",
+				authoritative_value: "xhigh",
+				session_id: "detached-cliproxy",
+			},
+			{
+				type: "status",
+				session_id: "detached-cliproxy",
+				state: "idle",
+				model: "gpt-5.6-sol",
+				effort: "xhigh",
+				permission_mode: "default",
+			},
+		]);
+		expect(dbMock.setSessionEffort).not.toHaveBeenCalled();
+		expect(session.setEffort).not.toHaveBeenCalled();
+	});
+});
+
 describe("message — set_provider", () => {
 	it("switches the session-scoped CLI and broadcasts the updated status", async () => {
 		const session = makeSession({
@@ -1934,6 +2092,68 @@ describe("message — set_provider", () => {
 
 		expect(session.setProvider).not.toHaveBeenCalled();
 		expect(runState.broadcast).not.toHaveBeenCalled();
+	});
+
+	it("rejects an unsupported detached provider effort before persistence", async () => {
+		const selection = {
+			agentCwd: "/tmp/test",
+			providerId: "claude",
+			model: "claude-sonnet-4-6",
+			effort: "high",
+			permissionMode: "default",
+		};
+		vi.mocked(dbMock.getSessionSelection)
+			.mockResolvedValueOnce(selection)
+			.mockResolvedValueOnce(selection);
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		pool.getProvider.mockReturnValue({
+			providerId: "cliproxy-codex",
+			label: "Claude Code · CLIProxy",
+			effortLevels: [{ value: "xhigh", label: "X-High" }],
+		} as never);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("detached-provider-effort");
+		vi.mocked(dbMock.setSessionProviderSelection).mockClear();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "set_provider",
+				session_id: "detached-provider-effort",
+				provider: "cliproxy-codex",
+				model: "gpt-5.6-sol",
+				effort: "max",
+			}),
+		);
+
+		expect(
+			mockSend.mock.calls
+				.filter((call) => call[0] === ws)
+				.map((call) => call[1]),
+		).toEqual([
+			{
+				type: "error",
+				message: "Claude Code · CLIProxy does not support effort max",
+			},
+			{
+				type: "session_control_rejected",
+				control: "effort",
+				attempted_value: "max",
+				authoritative_value: "high",
+				session_id: "detached-provider-effort",
+			},
+			{
+				type: "status",
+				session_id: "detached-provider-effort",
+				state: "idle",
+				model: "claude-sonnet-4-6",
+				effort: "high",
+				permission_mode: "default",
+			},
+		]);
+		expect(dbMock.setSessionProviderSelection).not.toHaveBeenCalled();
+		expect(session.setProvider).not.toHaveBeenCalled();
 	});
 });
 
@@ -3010,6 +3230,97 @@ describe("message — chat", () => {
 		expect(session.setEffort).toHaveBeenCalledWith("ultra");
 		expect(session.setPermissionMode).toHaveBeenCalledWith("bypassPermissions");
 		expect(session.runQuery).toHaveBeenCalled();
+	});
+
+	it("settles an invalid first-chat effort without claiming a pending turn", async () => {
+		const session = makeSession({
+			getProviderId: vi.fn().mockReturnValue("cliproxy-codex"),
+			getCurrentSessionId: vi.fn().mockReturnValue(null),
+			validateEffort: vi.fn(() => {
+				throw new Error("Claude Code · CLIProxy does not support effort max");
+			}),
+			getStatus: vi.fn().mockReturnValue({
+				state: "idle",
+				model: "gpt-5.6-sol",
+				effort: "xhigh",
+				permission_mode: "default",
+			}),
+		});
+		const { pool, entry, runState } = wrapSession(session);
+		entry.sessionId = "random-live-pool-id";
+		pool.getSessionsStatus.mockReturnValue([
+			{
+				session_id: "random-live-pool-id",
+				db_session_id: "vault-id",
+				agent_cwd: "/tmp/test",
+				agent_name: "Test Vault",
+				state: "idle",
+				model: "gpt-5.6-sol",
+				effort: "xhigh",
+				permission_mode: "default",
+				hasPendingPermissions: false,
+				hasDbSession: true,
+			},
+		]);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "first turn",
+				turn_id: "invalid-effort-turn",
+				session_id: "vault-id",
+				provider: "cliproxy-codex",
+				model: "gpt-5.6-sol",
+				effort: "max",
+			}),
+		);
+
+		expect(
+			mockSend.mock.calls
+				.filter((call) => call[0] === ws)
+				.map((call) => call[1]),
+		).toEqual([
+			{
+				type: "session_created",
+				session_id: "random-live-pool-id",
+				agent_cwd: "/tmp/test",
+				agent_name: "Test Vault",
+			},
+			{
+				type: "error",
+				message: "Claude Code · CLIProxy does not support effort max",
+				turn_scoped: true,
+				turn_id: "invalid-effort-turn",
+			},
+			{
+				type: "session_control_rejected",
+				control: "effort",
+				attempted_value: "max",
+				authoritative_value: "xhigh",
+				session_id: "vault-id",
+			},
+		]);
+		expect(mockBroadcast).toHaveBeenCalledWith({
+			type: "sessions_status",
+			sessions: [
+				expect.objectContaining({
+					session_id: "random-live-pool-id",
+					db_session_id: "vault-id",
+				}),
+			],
+		});
+		const directCalls = mockSend.mock.invocationCallOrder;
+		const sessionsStatusOrder = mockBroadcast.mock.invocationCallOrder[0] ?? 0;
+		expect(directCalls[1] ?? Number.POSITIVE_INFINITY).toBeLessThan(
+			sessionsStatusOrder,
+		);
+		expect(sessionsStatusOrder).toBeLessThan(directCalls[2] ?? 0);
+		expect(session.runQuery).not.toHaveBeenCalled();
+		expect(runState.inFlightChatCount.size).toBe(0);
+		expect(runState.ownerWs).toBeNull();
 	});
 
 	it("applies the approval reviewer carried by a first-chat payload", async () => {
