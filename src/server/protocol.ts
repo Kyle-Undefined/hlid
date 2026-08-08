@@ -1,5 +1,6 @@
 import type { WorkspaceReferenceRequest } from "../lib/vaultReferences";
 import type {
+	ProviderApprovalsReviewer,
 	ProviderGoalStatus,
 	ProviderSavedWorkflow,
 	ProviderThreadGoal,
@@ -25,6 +26,8 @@ export type StatusMessage = {
 	 * it. Persisted on the chat row, never written back to hlid.config.toml.
 	 */
 	permission_mode?: string;
+	/** Codex-native reviewer selected for interactive provider approvals. */
+	approvals_reviewer?: ProviderApprovalsReviewer;
 	/**
 	 * Current effort/thinking level for this session. Session-scoped like
 	 * permission_mode — reflects config defaults until a `set_effort` client
@@ -736,6 +739,8 @@ export type SessionStatusEntry = {
 	effort?: string;
 	/** Current session-scoped permission mode, when available. */
 	permission_mode?: string;
+	/** Codex-native reviewer selected for interactive provider approvals. */
+	approvals_reviewer?: ProviderApprovalsReviewer;
 	/** Live and recently settled provider work that outlives its parent turn. */
 	background_activities?: import("./agentProvider").ProviderBackgroundActivity[];
 	hasPendingPermissions: boolean;
@@ -1074,6 +1079,7 @@ export type ClientChatMessage = {
 	model?: string;
 	effort?: string;
 	permission_mode?: string;
+	approvals_reviewer?: ProviderApprovalsReviewer;
 	/** Start or replace the native Codex goal before submitting this turn. */
 	goal?: GoalStartRequest;
 };
@@ -1299,6 +1305,7 @@ export type ClientSetProviderMessage = {
 	model?: string;
 	effort?: string;
 	permission_mode?: string;
+	approvals_reviewer?: ProviderApprovalsReviewer;
 	session_id?: string;
 };
 
@@ -1310,6 +1317,13 @@ export type ClientSetProviderMessage = {
 export type ClientSetPermissionModeMessage = {
 	type: "set_permission_mode";
 	mode: string;
+	session_id?: string;
+};
+
+/** Mid-session switch for Codex's native interactive-approval reviewer. */
+export type ClientSetApprovalsReviewerMessage = {
+	type: "set_approvals_reviewer";
+	reviewer: ProviderApprovalsReviewer;
 	session_id?: string;
 };
 
@@ -1373,6 +1387,7 @@ export type ClientMessage =
 	| ClientSetProviderMessage
 	| ClientSetModelMessage
 	| ClientSetPermissionModeMessage
+	| ClientSetApprovalsReviewerMessage
 	| ClientSetEffortMessage
 	| ClientWorkflowControlMessage
 	| ClientBackgroundActivityControlMessage;

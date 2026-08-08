@@ -258,7 +258,7 @@ export class SessionPool {
 	getSessionsStatus(): SessionStatusEntry[] {
 		const statuses: SessionStatusEntry[] = [];
 		for (const entry of this.entries.values()) {
-			const { state, model, effort, permission_mode } =
+			const { state, model, effort, permission_mode, approvals_reviewer } =
 				entry.manager.getStatus();
 			const currentDbSessionId = entry.manager.getCurrentSessionId();
 			if (currentDbSessionId) {
@@ -306,6 +306,7 @@ export class SessionPool {
 				model,
 				effort,
 				permission_mode,
+				...(approvals_reviewer ? { approvals_reviewer } : {}),
 				...(backgroundActivities.length > 0
 					? { background_activities: backgroundActivities }
 					: {}),

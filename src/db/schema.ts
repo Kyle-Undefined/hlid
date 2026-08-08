@@ -423,6 +423,13 @@ function applyMigrations(db: Db): void {
 		db.run(`ALTER TABLE sessions ADD COLUMN selected_permission_mode TEXT`);
 	});
 
+	// Codex's native approval reviewer is another session-scoped Raven control.
+	// Keep it in a separate migration so existing databases that already applied
+	// selected_controls still gain the column without rewriting migration state.
+	runMigration(db, "_migrated_sessions_approvals_reviewer", (db) => {
+		db.run(`ALTER TABLE sessions ADD COLUMN selected_approvals_reviewer TEXT`);
+	});
+
 	runMigration(db, "_migrated_queries_tokens_in_context", (db) => {
 		db.run(`ALTER TABLE queries ADD COLUMN tokens_in_context INTEGER`);
 	});

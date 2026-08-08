@@ -1,4 +1,5 @@
 import type { QueuedChatMessage } from "#/hooks/wsChatQueueStore";
+import type { ProviderApprovalsReviewer } from "#/server/agentProvider";
 import type { ChatAttachment, ClientChatMessage } from "#/server/protocol";
 import type { CommandAction } from "./commands";
 import {
@@ -132,6 +133,7 @@ function sessionControlFields(input: {
 	model?: string;
 	effort?: string;
 	permissionMode?: string;
+	approvalsReviewer?: ProviderApprovalsReviewer;
 }) {
 	return {
 		plan_mode: input.planMode || undefined,
@@ -140,6 +142,9 @@ function sessionControlFields(input: {
 		...(input.model ? { model: input.model } : {}),
 		...(input.effort ? { effort: input.effort } : {}),
 		...(input.permissionMode ? { permission_mode: input.permissionMode } : {}),
+		...(input.approvalsReviewer
+			? { approvals_reviewer: input.approvalsReviewer }
+			: {}),
 	};
 }
 
@@ -164,6 +169,7 @@ export function prepareChatSubmission(input: {
 	model?: string;
 	effort?: string;
 	permissionMode?: string;
+	approvalsReviewer?: ProviderApprovalsReviewer;
 	goal?: ClientChatMessage["goal"];
 }): ChatSubmission | null {
 	if (

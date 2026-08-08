@@ -110,6 +110,7 @@ function delegationMutationTarget(
 		case "set_model":
 		case "set_effort":
 		case "set_permission_mode":
+		case "set_approvals_reviewer":
 		case "workflow_control":
 		case "background_activity_control":
 		case "mcp_control":
@@ -638,17 +639,32 @@ async function restoreDetachedStatus(
 	};
 	try {
 		const savedSelection = await db.getSessionSelection(sessionId);
+		const config = loadConfig();
 		const configured = resolveDeclaredSessionDefaults(
-			loadConfig(),
+			config,
 			savedSelection?.agentCwd ?? undefined,
 			savedSelection?.providerId ?? undefined,
 		);
+		const provider = pool.getProvider?.(
+			savedSelection?.providerId ?? configured.providerId,
+		);
+		const defaultReviewer =
+			provider?.approvalReviewers?.find((reviewer) => reviewer.isDefault)
+				?.value ?? provider?.approvalReviewers?.[0]?.value;
+		const userReviewer = provider?.approvalReviewers?.find(
+			(reviewer) => reviewer.value === "user",
+		)?.value;
+		const approvalsReviewer =
+			(config.umbod?.enabled || config.auto_sleep?.enabled) && userReviewer
+				? userReviewer
+				: (savedSelection?.approvalsReviewer ?? defaultReviewer);
 		return {
 			state: "idle",
 			model: savedSelection?.model ?? configured.model,
 			effort: savedSelection?.effort ?? configured.effort,
 			permission_mode:
 				savedSelection?.permissionMode ?? configured.permissionMode,
+			...(approvalsReviewer ? { approvals_reviewer: approvalsReviewer } : {}),
 		};
 	} catch {
 		// A missing/corrupt archived row still gets a safe idle vault snapshot.
@@ -928,6 +944,24 @@ async function handlePermissionMode(
 			servers: cachedMcp.map(mapMcpServer),
 		});
 	}
+}
+
+async function handleApprovalsReviewer(
+	ws: ServerWebSocket<WsData>,
+	entry: PoolEntry,
+	msg: MessageOf<"set_approvals_reviewer">,
+): Promise<void> {
+	try {
+		await entry.manager.setApprovalsReviewer(msg.reviewer);
+	} catch (error) {
+		send(ws, {
+			type: "error",
+			message:
+				error instanceof Error ? error.message : "Invalid approval reviewer",
+		});
+		return;
+	}
+	entry.runState.broadcast({ type: "status", ...entry.manager.getStatus() });
 }
 
 function handlePermissionResponse(
@@ -1227,6 +1261,7 @@ async function handleChat(
 			model: msg.model,
 			effort: msg.effort,
 			permissionMode: msg.permission_mode,
+			approvalsReviewer: msg.approvals_reviewer,
 		});
 	} else if (currentSessionId === null && !chatEntry.manager.isRunning()) {
 		// Picker changes made before the first submission are addressed to the
@@ -1241,6 +1276,9 @@ async function handleChat(
 				: Promise.resolve(),
 			msg.permission_mode !== undefined
 				? chatEntry.manager.setPermissionMode(msg.permission_mode)
+				: Promise.resolve(),
+			msg.approvals_reviewer !== undefined
+				? chatEntry.manager.setApprovalsReviewer(msg.approvals_reviewer)
 				: Promise.resolve(),
 		]);
 	}
@@ -1489,6 +1527,7 @@ async function handleSetProvider(
 		model: msg.model,
 		effort: msg.effort,
 		permissionMode: msg.permission_mode,
+		approvalsReviewer: msg.approvals_reviewer,
 	});
 	entry.runState.broadcast({
 		type: "status",
@@ -1664,6 +1703,10 @@ async function handleSessionMessage(
 			await handlePermissionMode(context.ws, entry, msg);
 			broadcastSessionsStatus(context);
 			return;
+		case "set_approvals_reviewer":
+			await handleApprovalsReviewer(context.ws, entry, msg);
+			broadcastSessionsStatus(context);
+			return;
 		case "set_effort":
 			await entry.manager.setEffort(msg.effort);
 			entry.runState.broadcast({
@@ -1746,6 +1789,7 @@ async function handleMessage(
 			msg.type === "set_model" ||
 			msg.type === "set_effort" ||
 			msg.type === "set_permission_mode" ||
+			msg.type === "set_approvals_reviewer" ||
 			msg.type === "workflow_control" ||
 			msg.type === "background_activity_control" ||
 			msg.type === "mcp_control" ||
@@ -1768,7 +1812,8 @@ async function handleMessage(
 				msg.type === "set_provider" ||
 				msg.type === "set_model" ||
 				msg.type === "set_effort" ||
-				msg.type === "set_permission_mode"
+				msg.type === "set_permission_mode" ||
+				msg.type === "set_approvals_reviewer"
 			) {
 				const saved = await db
 					.getSessionSelection(requestedTargetSession)
@@ -1790,6 +1835,43 @@ async function handleMessage(
 					});
 					return;
 				}
+				const approvalsReviewer =
+					msg.type === "set_approvals_reviewer"
+						? msg.reviewer
+						: msg.type === "set_provider"
+							? msg.approvals_reviewer
+							: undefined;
+				if (approvalsReviewer !== undefined) {
+					const reviewerProviderId =
+						msg.type === "set_provider" ? msg.provider : saved.providerId;
+					const reviewerProvider = reviewerProviderId
+						? context.pool.getProvider(reviewerProviderId)
+						: undefined;
+					if (
+						!reviewerProvider?.approvalReviewers?.some(
+							(candidate) => candidate.value === approvalsReviewer,
+						)
+					) {
+						send(context.ws, {
+							type: "error",
+							message: `${reviewerProvider?.label ?? reviewerProviderId ?? "This provider"} does not support approval reviewer ${approvalsReviewer}`,
+						});
+						return;
+					}
+					const config = loadConfig();
+					const unavailableReason = config.umbod?.enabled
+						? "Auto-review is unavailable while Hlid policy enforcement is enabled."
+						: config.auto_sleep?.enabled
+							? "Auto-review is unavailable while Hlid's auto-sleep usage gate is enabled."
+							: null;
+					if (approvalsReviewer === "auto_review" && unavailableReason) {
+						send(context.ws, {
+							type: "error",
+							message: unavailableReason,
+						});
+						return;
+					}
+				}
 				if (msg.type === "set_provider") {
 					if (!context.pool.getProvider(msg.provider)) {
 						send(context.ws, {
@@ -1805,12 +1887,18 @@ async function handleMessage(
 							model: msg.model,
 							effort: msg.effort,
 							permissionMode: msg.permission_mode,
+							approvalsReviewer: msg.approvals_reviewer,
 						},
 					);
 				} else if (msg.type === "set_model") {
 					await db.setSessionModel(requestedTargetSession, msg.model ?? "");
 				} else if (msg.type === "set_effort") {
 					await db.setSessionEffort(requestedTargetSession, msg.effort);
+				} else if (msg.type === "set_approvals_reviewer") {
+					await db.setSessionApprovalsReviewer(
+						requestedTargetSession,
+						msg.reviewer,
+					);
 				} else {
 					await db.setSessionPermissionMode(requestedTargetSession, msg.mode);
 				}

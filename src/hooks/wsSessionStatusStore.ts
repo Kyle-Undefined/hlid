@@ -141,7 +141,10 @@ export function replaceSessionsStatus(sessions: SessionStatusEntry[]): void {
  */
 export function reconcileSessionStatus(
 	sessionId: string,
-	status: Pick<StatusMessage, "state" | "model" | "effort" | "permission_mode">,
+	status: Pick<
+		StatusMessage,
+		"state" | "model" | "effort" | "permission_mode" | "approvals_reviewer"
+	>,
 ): void {
 	let changed = false;
 	const nextSessionsStatus = sessionsStatus.map((session) => {
@@ -156,7 +159,9 @@ export function reconcileSessionStatus(
 			session.model === status.model &&
 			(status.effort === undefined || session.effort === status.effort) &&
 			(status.permission_mode === undefined ||
-				session.permission_mode === status.permission_mode)
+				session.permission_mode === status.permission_mode) &&
+			(status.approvals_reviewer === undefined ||
+				session.approvals_reviewer === status.approvals_reviewer)
 		) {
 			return session;
 		}
@@ -169,6 +174,9 @@ export function reconcileSessionStatus(
 			...(status.effort !== undefined ? { effort: status.effort } : {}),
 			...(status.permission_mode !== undefined
 				? { permission_mode: status.permission_mode }
+				: {}),
+			...(status.approvals_reviewer !== undefined
+				? { approvals_reviewer: status.approvals_reviewer }
 				: {}),
 		};
 	});

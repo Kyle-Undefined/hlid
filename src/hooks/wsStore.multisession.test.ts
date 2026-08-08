@@ -479,7 +479,9 @@ describe("subscribeToSession / getSubscribedSessionId", () => {
 			model: "gpt-5.4",
 			effort: "xhigh",
 			permission_mode: "bypassPermissions",
+			approvals_reviewer: "auto_review",
 		});
+		expect(wsStore.getSnapshot().approvalsReviewer).toBe("auto_review");
 
 		wsStore.subscribeToSession("session-b");
 
@@ -487,7 +489,26 @@ describe("subscribeToSession / getSubscribedSessionId", () => {
 			model: "",
 			effort: null,
 			permissionMode: null,
+			approvalsReviewer: null,
 		});
+	});
+
+	it("preserves the selected approval reviewer across status updates", () => {
+		wsStore.subscribeToSession("session-a");
+		receive({
+			type: "status",
+			state: "running",
+			model: "gpt-5.6-sol",
+			approvals_reviewer: "auto_review",
+		});
+		expect(wsStore.getSnapshot().approvalsReviewer).toBe("auto_review");
+
+		receive({
+			type: "status",
+			state: "idle",
+			model: "gpt-5.6-sol",
+		});
+		expect(wsStore.getSnapshot().approvalsReviewer).toBe("auto_review");
 	});
 
 	it("restores the focused session when a socket reconnects", () => {

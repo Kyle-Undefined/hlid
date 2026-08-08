@@ -728,6 +728,61 @@ describe("chat WebSocket runtime schema", () => {
 			plan_html: true,
 		});
 	});
+
+	it("accepts session-scoped approval reviewer controls", () => {
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "chat",
+					text: "review this change",
+					approvals_reviewer: "auto_review",
+				}),
+			),
+		).toEqual({
+			type: "chat",
+			text: "review this change",
+			approvals_reviewer: "auto_review",
+		});
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "set_provider",
+					provider: "codex",
+					approvals_reviewer: "user",
+					session_id: "session-1",
+				}),
+			),
+		).toEqual({
+			type: "set_provider",
+			provider: "codex",
+			approvals_reviewer: "user",
+			session_id: "session-1",
+		});
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "set_approvals_reviewer",
+					reviewer: "auto_review",
+					session_id: "session-1",
+				}),
+			),
+		).toEqual({
+			type: "set_approvals_reviewer",
+			reviewer: "auto_review",
+			session_id: "session-1",
+		});
+		expect(
+			parseClientMessage(JSON.stringify({ type: "set_approvals_reviewer" })),
+		).toBeNull();
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "set_approvals_reviewer",
+					reviewer: "guardian_subagent",
+				}),
+			),
+		).toBeNull();
+	});
 });
 
 describe("terminal WebSocket runtime schema", () => {

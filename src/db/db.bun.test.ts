@@ -81,6 +81,7 @@ import {
 	renameSession,
 	setSessionActualModelForProvider,
 	setSessionAgentCwd,
+	setSessionApprovalsReviewer,
 	setSessionArchived,
 	setSessionEffort,
 	setSessionModel,
@@ -159,6 +160,7 @@ describe("session creation", () => {
 		await createSession("delegated-child", "Child", "gpt-5.6-sol", {
 			effort: "high",
 			permissionMode: "acceptEdits",
+			approvalsReviewer: "auto_review",
 			agentCwd: "/work/project",
 			providerId: "codex",
 		});
@@ -168,6 +170,7 @@ describe("session creation", () => {
 			selected_model: "gpt-5.6-sol",
 			selected_effort: "high",
 			selected_permission_mode: "acceptEdits",
+			selected_approvals_reviewer: "auto_review",
 			agent_cwd: "/work/project",
 			provider_id: "codex",
 		});
@@ -867,6 +870,7 @@ describe("sessions — agent_cwd & actual_model", () => {
 		await createSession("s1", "L", "gpt-5.6-sol", {
 			effort: "high",
 			permissionMode: "bypassPermissions",
+			approvalsReviewer: "auto_review",
 		});
 		await setSessionAgentCwd("s1", "/home/kyle/agents/hlid");
 		await setSessionProviderId("s1", "codex");
@@ -877,15 +881,18 @@ describe("sessions — agent_cwd & actual_model", () => {
 			model: "gpt-5.6-sol",
 			effort: "high",
 			permissionMode: "bypassPermissions",
+			approvalsReviewer: "auto_review",
 		});
 
 		await setSessionModel("s1", "gpt-5.6-terra");
 		await setSessionEffort("s1", "xhigh");
 		await setSessionPermissionMode("s1", "default");
+		await setSessionApprovalsReviewer("s1", "user");
 		expect(await getSessionSelection("s1")).toMatchObject({
 			model: "gpt-5.6-terra",
 			effort: "xhigh",
 			permissionMode: "default",
+			approvalsReviewer: "user",
 		});
 	});
 
@@ -897,6 +904,7 @@ describe("sessions — agent_cwd & actual_model", () => {
 			model: "gpt-5.6-sol",
 			effort: null,
 			permissionMode: null,
+			approvalsReviewer: null,
 		});
 	});
 
@@ -928,6 +936,7 @@ describe("sessions — agent_cwd & actual_model", () => {
 			providerId: "codex",
 			effort: "medium",
 			permissionMode: "bypassPermissions",
+			approvalsReviewer: "auto_review",
 		});
 		await setSessionProviderSession("round-trip", "codex", "codex-thread");
 		await setSessionActualModelForProvider(
@@ -941,6 +950,7 @@ describe("sessions — agent_cwd & actual_model", () => {
 			model: "gpt-5.5-mini",
 			effort: "low",
 			permissionMode: "default",
+			approvalsReviewer: "auto_review",
 		});
 		expect(await getSessionActualModel("round-trip")).toBeNull();
 		expect(await getSessionProviderSession("round-trip", "codex")).toBe(
@@ -956,6 +966,7 @@ describe("sessions — agent_cwd & actual_model", () => {
 			model: "gpt-5.5-mini",
 			effort: "medium",
 			permissionMode: "default",
+			approvalsReviewer: "user",
 		});
 		expect(await getSessionActualModel("round-trip")).toBe(
 			"gpt-5.5-mini-20260701",
@@ -965,6 +976,7 @@ describe("sessions — agent_cwd & actual_model", () => {
 			model: "claude-sonnet-5",
 			effort: "high",
 			permissionMode: "default",
+			approvalsReviewer: undefined,
 		});
 
 		expect(await getSessionSelection("round-trip")).toEqual({
@@ -973,6 +985,7 @@ describe("sessions — agent_cwd & actual_model", () => {
 			model: "claude-sonnet-5",
 			effort: "high",
 			permissionMode: "default",
+			approvalsReviewer: null,
 		});
 		expect(await getSessionActualModel("round-trip")).toBeNull();
 		expect(await getSessionProviderSession("round-trip", "claude")).toBeNull();
@@ -999,6 +1012,7 @@ describe("sessions — agent_cwd & actual_model", () => {
 			model: "gpt-5.5",
 			effort: "medium",
 			permissionMode: "bypassPermissions",
+			approvalsReviewer: "auto_review",
 		});
 		expect(await getSessionSelection("round-trip")).toEqual({
 			agentCwd: null,
@@ -1006,6 +1020,7 @@ describe("sessions — agent_cwd & actual_model", () => {
 			model: "gpt-5.5",
 			effort: "medium",
 			permissionMode: "bypassPermissions",
+			approvalsReviewer: "auto_review",
 		});
 		expect(await getSessionActualModel("round-trip")).toBeNull();
 	});
@@ -1015,6 +1030,7 @@ describe("sessions — agent_cwd & actual_model", () => {
 			providerId: "claude",
 			effort: "high",
 			permissionMode: "acceptEdits",
+			approvalsReviewer: "user",
 		});
 		await setSessionProviderSession("legacy-switch", "claude", "claude-thread");
 		await setSessionActualModelForProvider(
@@ -1032,6 +1048,7 @@ describe("sessions — agent_cwd & actual_model", () => {
 			model: "claude-sonnet-5",
 			effort: "high",
 			permissionMode: "acceptEdits",
+			approvalsReviewer: "user",
 		});
 		expect(await getSessionActualModel("legacy-switch")).toBeNull();
 		expect(
@@ -1745,6 +1762,7 @@ describe("messages", () => {
 		await createSession("source", "Codex work", "gpt-5.6-sol", {
 			effort: "high",
 			permissionMode: "default",
+			approvalsReviewer: "auto_review",
 			providerId: "codex",
 		});
 		await setSessionAgentCwd("source", "/work/project");
@@ -1813,6 +1831,7 @@ describe("messages", () => {
 			selected_model: "gpt-5.6-sol",
 			selected_effort: "high",
 			selected_permission_mode: "default",
+			selected_approvals_reviewer: "auto_review",
 			fork_parent_session_id: "source",
 			fork_parent_message_id: assistantId,
 			fork_kind: "exact",

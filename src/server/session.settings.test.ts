@@ -962,6 +962,432 @@ describe("SessionManager — setPermissionMode", () => {
 	});
 });
 
+describe("SessionManager — approval reviewer", () => {
+	function addCodexApprovalReviewers(provider: AgentProvider): AgentProvider {
+		return {
+			...provider,
+			approvalReviewers: [
+				{
+					value: "user",
+					label: "User review",
+					isDefault: true,
+				},
+				{
+					value: "auto_review",
+					label: "Auto-review",
+				},
+			],
+		};
+	}
+
+	function makeCodexConfig(umbodEnabled = false): HlidConfig {
+		return {
+			...makeConfig(),
+			vault_provider: "codex",
+			codex: {
+				model: "gpt-5.6-sol",
+				effort: "medium",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+			umbod: { enabled: umbodEnabled },
+		} as HlidConfig;
+	}
+
+	it("uses the provider default and exposes it in status and query params", async () => {
+		const capture = makeCaptureProvider("codex");
+		const provider = addCodexApprovalReviewers(capture.provider);
+		const sm = new SessionManager(makeCodexConfig(), makeProviders(provider));
+
+		expect(sm.getStatus().approvals_reviewer).toBe("user");
+		await sm.runQuery("hi", () => {}, { sessionId: "review-default" });
+
+		expect(capture.captured.params?.approvalsReviewer).toBe("user");
+		expect(dbMock.createSession).toHaveBeenCalledWith(
+			"review-default",
+			"HI",
+			"gpt-5.6-sol",
+			expect.objectContaining({ approvalsReviewer: "user" }),
+		);
+	});
+
+	it("delegates a live change, updates status, and persists it", async () => {
+		const setApprovalsReviewer = vi.fn().mockResolvedValue(undefined);
+		const switchable = makeSwitchableProvider(
+			{ setApprovalsReviewer },
+			"codex",
+		);
+		const provider = addCodexApprovalReviewers(switchable.provider);
+		const sm = new SessionManager(makeCodexConfig(), makeProviders(provider));
+		await sm.runQuery("first", () => {}, { sessionId: "review-live" });
+		vi.mocked(dbMock.setSessionApprovalsReviewer).mockClear();
+
+		await sm.setApprovalsReviewer("auto_review");
+
+		expect(switchable.getSession()?.setApprovalsReviewer).toHaveBeenCalledWith(
+			"auto_review",
+		);
+		expect(sm.getStatus().approvals_reviewer).toBe("auto_review");
+		expect(dbMock.setSessionApprovalsReviewer).toHaveBeenCalledWith(
+			"review-live",
+			"auto_review",
+		);
+	});
+
+	it("reconciles a durable provider override into status and persistence once", async () => {
+		const capture = makeCaptureProvider("codex");
+		const provider = addCodexApprovalReviewers({
+			...capture.provider,
+			query(params) {
+				const change = {
+					reviewer: "user",
+					source: "thread_response",
+					persistPreference: true,
+				} as const;
+				params.onApprovalsReviewerChange?.(change);
+				params.onApprovalsReviewerChange?.(change);
+				return capture.provider.query(params);
+			},
+		});
+		const sm = new SessionManager(makeCodexConfig(), makeProviders(provider));
+		await sm.setApprovalsReviewer("auto_review");
+		vi.mocked(dbMock.setSessionApprovalsReviewer).mockClear();
+		const emittedReviewers: string[] = [];
+
+		await sm.runQuery(
+			"provider override",
+			(event) => {
+				if (event.type === "status" && event.approvals_reviewer) {
+					emittedReviewers.push(event.approvals_reviewer);
+				}
+			},
+			{ sessionId: "review-provider-override" },
+		);
+
+		expect(capture.captured.params?.approvalsReviewer).toBe("auto_review");
+		expect(sm.getStatus().approvals_reviewer).toBe("user");
+		expect(emittedReviewers).toEqual(["auto_review", "user", "user"]);
+		expect(dbMock.setSessionApprovalsReviewer).toHaveBeenCalledTimes(1);
+		expect(dbMock.setSessionApprovalsReviewer).toHaveBeenCalledWith(
+			"review-provider-override",
+			"user",
+		);
+	});
+
+	it("serializes an explicit selection after an older provider write", async () => {
+		const switchable = makeSwitchableProvider({}, "codex");
+		let report:
+			| NonNullable<AgentQueryParams["onApprovalsReviewerChange"]>
+			| undefined;
+		const provider = addCodexApprovalReviewers({
+			...switchable.provider,
+			query(params) {
+				report = params.onApprovalsReviewerChange;
+				return switchable.provider.query(params);
+			},
+		});
+		const sm = new SessionManager(makeCodexConfig(), makeProviders(provider));
+		await sm.runQuery("establish ownership", () => {}, {
+			sessionId: "review-write-order",
+		});
+		vi.mocked(dbMock.setSessionApprovalsReviewer).mockClear();
+		let releaseOlderWrite: () => void = () => {};
+		const olderWriteGate = new Promise<void>((resolve) => {
+			releaseOlderWrite = resolve;
+		});
+		let durableReviewer = "user";
+		vi.mocked(dbMock.setSessionApprovalsReviewer).mockImplementation(
+			async (_sessionId, reviewer) => {
+				if (reviewer === "auto_review") await olderWriteGate;
+				durableReviewer = reviewer;
+			},
+		);
+
+		report?.({
+			reviewer: "auto_review",
+			source: "thread_settings",
+			persistPreference: true,
+		});
+		await vi.waitFor(() =>
+			expect(dbMock.setSessionApprovalsReviewer).toHaveBeenCalledTimes(1),
+		);
+		const explicitSelection = sm.setApprovalsReviewer("user");
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(dbMock.setSessionApprovalsReviewer).toHaveBeenCalledTimes(1);
+
+		releaseOlderWrite();
+		await explicitSelection;
+
+		expect(
+			vi
+				.mocked(dbMock.setSessionApprovalsReviewer)
+				.mock.calls.map(([, reviewer]) => reviewer),
+		).toEqual(["auto_review", "user"]);
+		expect(durableReviewer).toBe("user");
+		vi.mocked(dbMock.setSessionApprovalsReviewer).mockResolvedValue(undefined);
+	});
+
+	it("keeps a temporary provider override out of the stored preference", async () => {
+		const capture = makeCaptureProvider("codex");
+		const provider = addCodexApprovalReviewers({
+			...capture.provider,
+			query(params) {
+				params.onApprovalsReviewerChange?.({
+					reviewer: "user",
+					source: "thread_response",
+					persistPreference: false,
+				});
+				return capture.provider.query(params);
+			},
+		});
+		const sm = new SessionManager(makeCodexConfig(), makeProviders(provider));
+		await sm.setApprovalsReviewer("auto_review");
+		vi.mocked(dbMock.setSessionApprovalsReviewer).mockClear();
+
+		await sm.runQuery("temporary override", () => {}, {
+			sessionId: "review-temporary-override",
+		});
+
+		expect(sm.getStatus().approvals_reviewer).toBe("user");
+		expect(dbMock.setSessionApprovalsReviewer).not.toHaveBeenCalled();
+		expect(sm.syncConfig(makeCodexConfig())).toBe(true);
+		expect(sm.getStatus().approvals_reviewer).toBe("auto_review");
+		expect(dbMock.setSessionApprovalsReviewer).not.toHaveBeenCalled();
+	});
+
+	it("shows an unexpected authoritative reviewer even under local enforcement", async () => {
+		const capture = makeCaptureProvider("codex");
+		const provider = addCodexApprovalReviewers({
+			...capture.provider,
+			query(params) {
+				params.onApprovalsReviewerChange?.({
+					reviewer: "auto_review",
+					source: "thread_response",
+					persistPreference: false,
+				});
+				return capture.provider.query(params);
+			},
+		});
+		const sm = new SessionManager(
+			makeCodexConfig(true),
+			makeProviders(provider),
+		);
+		vi.mocked(dbMock.setSessionApprovalsReviewer).mockClear();
+
+		await sm.runQuery("provider ignored the forced reviewer", () => {}, {
+			sessionId: "review-unexpected-effective",
+		});
+
+		expect(sm.getStatus().approvals_reviewer).toBe("auto_review");
+		expect(dbMock.setSessionApprovalsReviewer).not.toHaveBeenCalled();
+	});
+
+	it("reconciles an ephemeral provider override without attempting persistence", async () => {
+		const capture = makeCaptureProvider("codex");
+		const provider = addCodexApprovalReviewers({
+			...capture.provider,
+			query(params) {
+				params.onApprovalsReviewerChange?.({
+					reviewer: "user",
+					source: "thread_settings",
+					persistPreference: true,
+				});
+				return capture.provider.query(params);
+			},
+		});
+		const sm = new SessionManager(makeCodexConfig(), makeProviders(provider));
+		await sm.setApprovalsReviewer("auto_review");
+		vi.mocked(dbMock.setSessionApprovalsReviewer).mockClear();
+
+		await sm.runQuery("ephemeral override", () => {});
+
+		expect(sm.getStatus().approvals_reviewer).toBe("user");
+		expect(dbMock.setSessionApprovalsReviewer).not.toHaveBeenCalled();
+	});
+
+	it("ignores a provider report after its session ownership is retired", async () => {
+		const capture = makeCaptureProvider("codex");
+		let report:
+			| NonNullable<AgentQueryParams["onApprovalsReviewerChange"]>
+			| undefined;
+		const provider = addCodexApprovalReviewers({
+			...capture.provider,
+			query(params) {
+				report = params.onApprovalsReviewerChange;
+				return capture.provider.query(params);
+			},
+		});
+		const sm = new SessionManager(makeCodexConfig(), makeProviders(provider));
+		await sm.runQuery("old ownership", () => {}, {
+			sessionId: "review-retired",
+		});
+		sm.reinitialize(makeCodexConfig());
+		vi.mocked(dbMock.setSessionApprovalsReviewer).mockClear();
+
+		report?.({
+			reviewer: "auto_review",
+			source: "thread_settings",
+			persistPreference: true,
+		});
+
+		expect(sm.getStatus().approvals_reviewer).toBe("user");
+		expect(dbMock.setSessionApprovalsReviewer).not.toHaveBeenCalled();
+	});
+
+	it("restores a saved auto-review selection", async () => {
+		const capture = makeCaptureProvider("codex");
+		const provider = addCodexApprovalReviewers(capture.provider);
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "review-restored",
+			label: "RESTORED",
+			selected_approvals_reviewer: "auto_review",
+		} as never);
+		vi.mocked(dbMock.getSessionProviderId).mockResolvedValueOnce("codex");
+		vi.mocked(dbMock.getSessionMessages).mockResolvedValueOnce([
+			{ role: "user", text: "prior" },
+		] as never);
+		const sm = new SessionManager(makeCodexConfig(), makeProviders(provider));
+
+		await sm.runQuery("continue", () => {}, {
+			sessionId: "review-restored",
+		});
+
+		expect(sm.getStatus().approvals_reviewer).toBe("auto_review");
+		expect(capture.captured.params?.approvalsReviewer).toBe("auto_review");
+	});
+
+	it("rejects auto-review while Hlid policy enforcement is enabled", async () => {
+		const capture = makeCaptureProvider("codex");
+		const provider = addCodexApprovalReviewers(capture.provider);
+		const sm = new SessionManager(
+			makeCodexConfig(true),
+			makeProviders(provider),
+		);
+		vi.mocked(dbMock.setSessionApprovalsReviewer).mockClear();
+
+		await expect(sm.setApprovalsReviewer("auto_review")).rejects.toThrow(
+			"Auto-review is unavailable while Hlid policy enforcement is enabled.",
+		);
+		expect(sm.getStatus().approvals_reviewer).toBe("user");
+		expect(dbMock.setSessionApprovalsReviewer).not.toHaveBeenCalled();
+	});
+
+	it("rejects auto-review while Hlid's auto-sleep usage gate is enabled", async () => {
+		const capture = makeCaptureProvider("codex");
+		const provider = addCodexApprovalReviewers(capture.provider);
+		const sm = new SessionManager(
+			{
+				...makeCodexConfig(),
+				auto_sleep: {
+					enabled: true,
+					threshold: 0.95,
+					max_sleep_minutes: 360,
+					resume_buffer_seconds: 60,
+				},
+			} as HlidConfig,
+			makeProviders(provider),
+		);
+		vi.mocked(dbMock.setSessionApprovalsReviewer).mockClear();
+
+		await expect(sm.setApprovalsReviewer("auto_review")).rejects.toThrow(
+			"Auto-review is unavailable while Hlid's auto-sleep usage gate is enabled.",
+		);
+		expect(sm.getStatus().approvals_reviewer).toBe("user");
+		expect(dbMock.setSessionApprovalsReviewer).not.toHaveBeenCalled();
+	});
+
+	it("keeps a saved auto-review preference inactive under policy enforcement", async () => {
+		const capture = makeCaptureProvider("codex");
+		const provider = addCodexApprovalReviewers(capture.provider);
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "review-policy-restore",
+			label: "RESTORED",
+			selected_approvals_reviewer: "auto_review",
+		} as never);
+		vi.mocked(dbMock.getSessionProviderId).mockResolvedValueOnce("codex");
+		vi.mocked(dbMock.getSessionMessages).mockResolvedValueOnce([
+			{ role: "user", text: "prior" },
+		] as never);
+		const sm = new SessionManager(
+			makeCodexConfig(true),
+			makeProviders(provider),
+		);
+
+		await sm.runQuery("continue", () => {}, {
+			sessionId: "review-policy-restore",
+		});
+
+		expect(sm.getStatus().approvals_reviewer).toBe("user");
+		expect(capture.captured.params?.approvalsReviewer).toBe("auto_review");
+	});
+
+	it("updates live enforcement and restores the selected reviewer", async () => {
+		const setApprovalReviewContext = vi.fn();
+		const setApprovalsReviewer = vi.fn().mockResolvedValue(undefined);
+		const switchable = makeSwitchableProvider(
+			{ setApprovalReviewContext, setApprovalsReviewer },
+			"codex",
+		);
+		const provider = addCodexApprovalReviewers(switchable.provider);
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "review-policy-live",
+			label: "RESTORED",
+			selected_approvals_reviewer: "auto_review",
+		} as never);
+		vi.mocked(dbMock.getSessionProviderId).mockResolvedValueOnce("codex");
+		vi.mocked(dbMock.getSessionMessages).mockResolvedValueOnce([
+			{ role: "user", text: "prior" },
+		] as never);
+		const sm = new SessionManager(
+			makeCodexConfig(true),
+			makeProviders(provider),
+		);
+		await sm.runQuery("continue", () => {}, {
+			sessionId: "review-policy-live",
+		});
+
+		expect(sm.getStatus().approvals_reviewer).toBe("user");
+		expect(sm.syncConfig(makeCodexConfig(false))).toBe(true);
+
+		expect(setApprovalReviewContext).toHaveBeenCalledWith({
+			policyEnforced: false,
+			usageGateEnforced: false,
+		});
+		expect(setApprovalsReviewer).toHaveBeenCalledWith("auto_review");
+		expect(sm.getStatus().approvals_reviewer).toBe("auto_review");
+	});
+
+	it("uses and persists the target provider default when switching CLI", async () => {
+		const { provider: claude } = makeCaptureProvider("claude");
+		const { provider: rawCodex } = makeCaptureProvider("codex");
+		const codex = addCodexApprovalReviewers(rawCodex);
+		const sm = new SessionManager(
+			makeConfig(),
+			new Map([
+				["claude", claude],
+				["codex", codex],
+			]),
+		);
+		await sm.runQuery("first", () => {}, { sessionId: "review-switch" });
+		vi.mocked(dbMock.setSessionProviderSelection).mockClear();
+
+		await sm.setProvider("codex", { model: "gpt-5.6-sol" });
+
+		expect(sm.getStatus().approvals_reviewer).toBe("user");
+		expect(dbMock.setSessionProviderSelection).toHaveBeenCalledWith(
+			"review-switch",
+			"codex",
+			{
+				model: "gpt-5.6-sol",
+				effort: undefined,
+				permissionMode: undefined,
+				approvalsReviewer: "user",
+			},
+		);
+	});
+});
+
 describe("SessionManager — summary passed to recap", () => {
 	it("passes summary to generateTurnRecap as sdkSummary", async () => {
 		const config = makeConfig();

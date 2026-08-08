@@ -238,6 +238,22 @@ describe("CodexProvider capability declarations", () => {
 		}
 	});
 
+	it("exposes only the supported approval reviewer options", () => {
+		expect(new CodexProvider().approvalReviewers).toEqual([
+			{
+				value: "user",
+				label: "User review",
+				desc: "approval requests wait for you",
+				isDefault: true,
+			},
+			{
+				value: "auto_review",
+				label: "Auto-review",
+				desc: "Codex reviews native interactive requests; bypass mode has none",
+			},
+		]);
+	});
+
 	it("declares exact whole-session and per-turn fork support", () => {
 		expect(new CodexProvider().forkCapability).toEqual({
 			kind: "exact",
@@ -1608,6 +1624,12 @@ function makeFakeSessionProc(
 		uniqueThreadIds?: boolean;
 		missingRolloutOnResume?: boolean;
 		threadModel?: string | null;
+		/** Override the authoritative reviewer returned by thread/start. */
+		threadStartApprovalsReviewer?: unknown;
+		/** Override the authoritative reviewer returned by thread/resume. */
+		threadResumeApprovalsReviewer?: unknown;
+		/** Hold thread/start or thread/resume until releaseThreadResponse(). */
+		deferThreadResponse?: boolean;
 		deferSkills?: boolean;
 		backgroundTerminals?: Array<Record<string, unknown>>;
 		backgroundItems?: Array<Record<string, unknown>>;
@@ -1638,6 +1660,7 @@ function makeFakeSessionProc(
 ): {
 	proc: FakeProc;
 	writes: string[];
+	releaseThreadResponse: () => void;
 } {
 	const stdout = new EventEmitter();
 	const stderr = new EventEmitter();
@@ -1647,6 +1670,7 @@ function makeFakeSessionProc(
 	let threadCounter = 0;
 	let steerCounter = 0;
 	let interruptCounter = 0;
+	const pendingThreadResponses: Array<() => void> = [];
 	proc.stdin = {
 		write: vi.fn((data: string) => {
 			writes.push(data);
@@ -1701,29 +1725,46 @@ function makeFakeSessionProc(
 					msg.method === "thread/resume"
 				) {
 					threadCounter++;
-					stdout.emit(
-						"data",
-						Buffer.from(
-							`${JSON.stringify({
-								id: msg.id,
-								result: {
-									thread: {
-										id: opts.threadId
-											? opts.threadId
-											: opts.uniqueThreadIds
-												? `thread-${threadCounter}`
-												: "thread-1",
-										...(opts.threadModel === null
-											? {}
-											: { model: opts.threadModel ?? "gpt-5.4" }),
-										...(msg.method === "thread/resume"
-											? { turns: opts.resumeTurns ?? [] }
-											: {}),
+					const reviewerOverrideKey =
+						msg.method === "thread/resume"
+							? "threadResumeApprovalsReviewer"
+							: "threadStartApprovalsReviewer";
+					const responseApprovalsReviewer = Object.hasOwn(
+						opts,
+						reviewerOverrideKey,
+					)
+						? opts[reviewerOverrideKey]
+						: (msg.params?.approvalsReviewer ?? "user");
+					const respond = () =>
+						stdout.emit(
+							"data",
+							Buffer.from(
+								`${JSON.stringify({
+									id: msg.id,
+									result: {
+										approvalsReviewer: responseApprovalsReviewer,
+										thread: {
+											id: opts.threadId
+												? opts.threadId
+												: opts.uniqueThreadIds
+													? `thread-${threadCounter}`
+													: "thread-1",
+											...(opts.threadModel === null
+												? {}
+												: { model: opts.threadModel ?? "gpt-5.4" }),
+											...(msg.method === "thread/resume"
+												? { turns: opts.resumeTurns ?? [] }
+												: {}),
+										},
 									},
-								},
-							})}\n`,
-						),
-					);
+								})}\n`,
+							),
+						);
+					if (opts.deferThreadResponse) {
+						pendingThreadResponses.push(respond);
+					} else {
+						respond();
+					}
 				} else if (msg.method === "thread/fork") {
 					stdout.emit(
 						"data",
@@ -2057,7 +2098,11 @@ function makeFakeSessionProc(
 	proc.stdout = stdout;
 	proc.stderr = stderr;
 	proc.kill = vi.fn();
-	return { proc, writes };
+	return {
+		proc,
+		writes,
+		releaseThreadResponse: () => pendingThreadResponses.shift()?.(),
+	};
 }
 
 /** Extract every `turn/start` call's params from the recorded writes. */
@@ -2072,6 +2117,13 @@ function threadStartParams(writes: string[]): Array<Record<string, unknown>> {
 	return writes
 		.map((w) => JSON.parse(w) as { method?: string; params?: unknown })
 		.filter((m) => m.method === "thread/start")
+		.map((m) => m.params as Record<string, unknown>);
+}
+
+function threadResumeParams(writes: string[]): Array<Record<string, unknown>> {
+	return writes
+		.map((w) => JSON.parse(w) as { method?: string; params?: unknown })
+		.filter((m) => m.method === "thread/resume")
 		.map((m) => m.params as Record<string, unknown>);
 }
 
@@ -3398,12 +3450,18 @@ describe("CodexAgentSession — commands", () => {
 				.mockReturnValueOnce(child.proc as never);
 			vi.mocked(resolveCodexExecutable).mockReturnValue("C:\\bin\\codex.exe");
 
-			const session = new CodexProvider().query(baseCodexParams());
+			const session = new CodexProvider().query(
+				baseCodexParams({ approvalsReviewer: "auto_review" }),
+			);
 			const events = session[Symbol.asyncIterator]();
 			await session.executeCommand?.("computer-use", "Open Calculator");
 			await vi.waitFor(() =>
 				expect(threadStartParams(child.writes)).toHaveLength(1),
 			);
+			expect(threadStartParams(child.writes)[0]?.approvalsReviewer).toBe(
+				"user",
+			);
+			expect(turnStartParams(child.writes)[0]?.approvalsReviewer).toBe("user");
 
 			emitSessionNotification(child.proc, "item/agentMessage/delta", {
 				threadId: "thread-1",
@@ -3515,6 +3573,7 @@ describe("CodexAgentSession — commands", () => {
 				baseCodexParams({
 					executable: "C:\\bin\\codex-wsl.cmd",
 					hostSessionId: "hlid-session-1",
+					approvalsReviewer: "auto_review",
 				}),
 			);
 			const events = session[Symbol.asyncIterator]();
@@ -3548,6 +3607,7 @@ describe("CodexAgentSession — commands", () => {
 				cwd: "/tmp/hlid-visualization-job",
 				ephemeral: true,
 				runtimeWorkspaceRoots: ["/tmp/hlid-visualization-job"],
+				approvalsReviewer: "user",
 				approvalPolicy: "never",
 				sandbox: "workspace-write",
 				dynamicTools: [],
@@ -3565,6 +3625,7 @@ describe("CodexAgentSession — commands", () => {
 					}),
 				],
 				runtimeWorkspaceRoots: ["/tmp/hlid-visualization-job"],
+				approvalsReviewer: "user",
 				approvalPolicy: "never",
 				sandboxPolicy: {
 					type: "workspaceWrite",
@@ -5297,6 +5358,401 @@ describe("CodexAgentSession — setPermissionMode", () => {
 				settings: { reasoning_effort: "xhigh" },
 			},
 		});
+	});
+});
+
+describe("CodexAgentSession — approval reviewer", () => {
+	beforeEach(() => {
+		__resetCodexAppServersForTesting();
+	});
+
+	it("adopts and reports a provider-coerced reviewer from thread/start", async () => {
+		const onApprovalsReviewerChange = vi.fn();
+		const { proc, writes } = makeFakeSessionProc({
+			threadStartApprovalsReviewer: "user",
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({
+				approvalsReviewer: "auto_review",
+				onApprovalsReviewerChange,
+			}),
+		);
+
+		await session.send("provider policy may override this");
+		await session.send("use the reconciled reviewer");
+
+		expect(onApprovalsReviewerChange).toHaveBeenCalledTimes(1);
+		expect(onApprovalsReviewerChange).toHaveBeenCalledWith({
+			reviewer: "user",
+			source: "thread_response",
+			persistPreference: true,
+		});
+		expect(
+			turnStartParams(writes).map((params) => params.approvalsReviewer),
+		).toEqual(["user", "user"]);
+	});
+
+	it("reports temporary Plan coercion without replacing the selected reviewer", async () => {
+		const onApprovalsReviewerChange = vi.fn();
+		const { proc, writes } = makeFakeSessionProc({
+			threadStartApprovalsReviewer: "user",
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({
+				approvalsReviewer: "auto_review",
+				permissionMode: "plan",
+				onApprovalsReviewerChange,
+			}),
+		);
+
+		await session.send("plan first");
+		await session.setPermissionMode?.("default");
+		await session.send("then implement");
+
+		expect(onApprovalsReviewerChange).toHaveBeenCalledWith({
+			reviewer: "user",
+			source: "thread_response",
+			persistPreference: false,
+		});
+		expect(
+			turnStartParams(writes).map((params) => params.approvalsReviewer),
+		).toEqual(["user", "auto_review"]);
+	});
+
+	it("classifies a delayed thread response against the request that was sent", async () => {
+		const onApprovalsReviewerChange = vi.fn();
+		const { proc, writes, releaseThreadResponse } = makeFakeSessionProc({
+			threadStartApprovalsReviewer: "user",
+			deferThreadResponse: true,
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({
+				approvalsReviewer: "auto_review",
+				permissionMode: "plan",
+				onApprovalsReviewerChange,
+			}),
+		);
+
+		const sending = session.send("plan first");
+		await vi.waitFor(() => expect(threadStartParams(writes)).toHaveLength(1));
+		await session.setPermissionMode?.("default");
+		releaseThreadResponse();
+		await sending;
+
+		expect(onApprovalsReviewerChange).toHaveBeenCalledWith({
+			reviewer: "user",
+			source: "thread_response",
+			persistPreference: false,
+		});
+		expect(turnStartParams(writes)[0]?.approvalsReviewer).toBe("auto_review");
+	});
+
+	it("does not let a delayed response overwrite a newer repeated selection", async () => {
+		const onApprovalsReviewerChange = vi.fn();
+		const { proc, writes, releaseThreadResponse } = makeFakeSessionProc({
+			threadStartApprovalsReviewer: "user",
+			deferThreadResponse: true,
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({
+				approvalsReviewer: "auto_review",
+				onApprovalsReviewerChange,
+			}),
+		);
+
+		const sending = session.send("start with auto-review");
+		await vi.waitFor(() => expect(threadStartParams(writes)).toHaveLength(1));
+		await session.setApprovalsReviewer?.("user");
+		await session.setApprovalsReviewer?.("auto_review");
+		releaseThreadResponse();
+		await sending;
+
+		expect(onApprovalsReviewerChange).toHaveBeenCalledWith({
+			reviewer: "user",
+			source: "thread_response",
+			persistPreference: false,
+		});
+		expect(turnStartParams(writes)[0]?.approvalsReviewer).toBe("auto_review");
+	});
+
+	it("keeps a stale forced settings acknowledgement out of the preference", async () => {
+		const onApprovalsReviewerChange = vi.fn();
+		const { proc, writes } = makeFakeSessionProc({
+			threadStartApprovalsReviewer: "user",
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({
+				approvalsReviewer: "auto_review",
+				permissionMode: "plan",
+				onApprovalsReviewerChange,
+			}),
+		);
+
+		await session.send("plan first");
+		await session.setPermissionMode?.("default");
+		emitSessionNotification(proc, "thread/settings/updated", {
+			threadId: "thread-1",
+			threadSettings: { approvalsReviewer: "user" },
+		});
+		await session.send("restore the selected reviewer");
+
+		expect(onApprovalsReviewerChange).toHaveBeenNthCalledWith(2, {
+			reviewer: "user",
+			source: "thread_settings",
+			persistPreference: false,
+		});
+		expect(turnStartParams(writes)[1]?.approvalsReviewer).toBe("auto_review");
+	});
+
+	it("adopts and reports the authoritative reviewer from thread/resume", async () => {
+		const onApprovalsReviewerChange = vi.fn();
+		const { proc, writes } = makeFakeSessionProc({
+			threadResumeApprovalsReviewer: "auto_review",
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({
+				sessionId: "existing-thread",
+				approvalsReviewer: "user",
+				onApprovalsReviewerChange,
+			}),
+		);
+
+		await session.send("continue here");
+
+		expect(threadResumeParams(writes)).toHaveLength(1);
+		expect(onApprovalsReviewerChange).toHaveBeenCalledWith({
+			reviewer: "auto_review",
+			source: "thread_response",
+			persistPreference: true,
+		});
+		expect(turnStartParams(writes)[0]?.approvalsReviewer).toBe("auto_review");
+	});
+
+	it("reconciles authoritative thread settings onto later turns", async () => {
+		const onApprovalsReviewerChange = vi.fn();
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({ onApprovalsReviewerChange }),
+		);
+
+		await session.send("start with user review");
+		emitSessionNotification(proc, "thread/settings/updated", {
+			threadId: "thread-1",
+			threadSettings: { approvalsReviewer: "auto_review" },
+		});
+		await session.send("use the provider setting");
+
+		expect(onApprovalsReviewerChange).toHaveBeenNthCalledWith(2, {
+			reviewer: "auto_review",
+			source: "thread_settings",
+			persistPreference: true,
+		});
+		expect(
+			turnStartParams(writes).map((params) => params.approvalsReviewer),
+		).toEqual(["user", "auto_review"]);
+	});
+
+	it("normalizes the legacy guardian reviewer without exposing it", async () => {
+		const onApprovalsReviewerChange = vi.fn();
+		const { proc, writes } = makeFakeSessionProc({
+			threadStartApprovalsReviewer: "guardian_subagent",
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({ onApprovalsReviewerChange }),
+		);
+
+		await session.send("normalize the reviewer");
+		await session.send("continue with the normalized reviewer");
+
+		expect(onApprovalsReviewerChange).toHaveBeenCalledWith({
+			reviewer: "auto_review",
+			source: "thread_response",
+			persistPreference: true,
+		});
+		expect(JSON.stringify(onApprovalsReviewerChange.mock.calls)).not.toContain(
+			"guardian_subagent",
+		);
+		expect(turnStartParams(writes)[1]?.approvalsReviewer).toBe("auto_review");
+	});
+
+	it("ignores reviewer settings for an unrelated thread", async () => {
+		const onApprovalsReviewerChange = vi.fn();
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({ onApprovalsReviewerChange }),
+		);
+
+		await session.send("start the owned thread");
+		emitSessionNotification(proc, "thread/settings/updated", {
+			threadId: "child-thread",
+			threadSettings: { approvalsReviewer: "auto_review" },
+		});
+
+		expect(onApprovalsReviewerChange).toHaveBeenCalledTimes(1);
+		expect(onApprovalsReviewerChange).toHaveBeenLastCalledWith({
+			reviewer: "user",
+			source: "thread_response",
+			persistPreference: false,
+		});
+	});
+
+	it("does not duplicate an unchanged authoritative reviewer", async () => {
+		const onApprovalsReviewerChange = vi.fn();
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({
+				approvalsReviewer: "auto_review",
+				onApprovalsReviewerChange,
+			}),
+		);
+
+		await session.send("start with auto-review");
+		for (let index = 0; index < 2; index++) {
+			emitSessionNotification(proc, "thread/settings/updated", {
+				threadId: "thread-1",
+				threadSettings: { approvalsReviewer: "auto_review" },
+			});
+		}
+
+		expect(onApprovalsReviewerChange).toHaveBeenCalledTimes(1);
+		expect(onApprovalsReviewerChange).toHaveBeenCalledWith({
+			reviewer: "auto_review",
+			source: "thread_response",
+			persistPreference: false,
+		});
+	});
+
+	it("passes auto-review to new threads and turns", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({ approvalsReviewer: "auto_review" }),
+		);
+
+		await session.send("review this approval");
+
+		expect(threadStartParams(writes)[0]?.approvalsReviewer).toBe("auto_review");
+		expect(turnStartParams(writes)[0]?.approvalsReviewer).toBe("auto_review");
+	});
+
+	it("passes auto-review when resuming a thread", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({
+				sessionId: "existing-thread",
+				approvalsReviewer: "auto_review",
+			}),
+		);
+
+		await session.send("continue here");
+
+		expect(threadResumeParams(writes)[0]?.approvalsReviewer).toBe(
+			"auto_review",
+		);
+		expect(turnStartParams(writes)[0]?.approvalsReviewer).toBe("auto_review");
+	});
+
+	it("changes the reviewer on the next turn", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(baseCodexParams());
+
+		await session.send("first turn");
+		await session.setApprovalsReviewer?.("auto_review");
+		await session.send("second turn");
+
+		expect(
+			turnStartParams(writes).map((params) => params.approvalsReviewer),
+		).toEqual(["user", "auto_review"]);
+	});
+
+	it("updates live Hlid enforcement without replacing the selected reviewer", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({ approvalsReviewer: "auto_review" }),
+		);
+
+		await session.send("ordinary review");
+		session.setApprovalReviewContext?.({
+			policyEnforced: true,
+			usageGateEnforced: false,
+		});
+		await session.send("Hlid owns this boundary");
+		session.setApprovalReviewContext?.({
+			policyEnforced: false,
+			usageGateEnforced: false,
+		});
+		await session.send("ordinary review again");
+
+		expect(
+			turnStartParams(writes).map((params) => params.approvalsReviewer),
+		).toEqual(["auto_review", "user", "auto_review"]);
+	});
+
+	it.each([
+		{
+			name: "Hlid policy enforcement",
+			overrides: { policyEnforced: true },
+		},
+		{
+			name: "bypass permission mode",
+			overrides: { permissionMode: "bypassPermissions" as const },
+		},
+		{
+			name: "Hlid auto-sleep usage gate",
+			overrides: { usageGateEnforced: true },
+		},
+		{
+			name: "ordinary plan mode",
+			overrides: { permissionMode: "plan" as const },
+		},
+		{
+			name: "plan implementation bypass",
+			overrides: {
+				permissionMode: "plan" as const,
+				implementationPermissionMode: "bypassPermissions" as const,
+			},
+		},
+	])("keeps user review when $name owns the boundary", async ({
+		overrides,
+	}) => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({ ...overrides, approvalsReviewer: "auto_review" }),
+		);
+
+		await session.send("keep the existing boundary");
+
+		expect(threadStartParams(writes)[0]?.approvalsReviewer).toBe("user");
+		expect(turnStartParams(writes)[0]?.approvalsReviewer).toBe("user");
 	});
 });
 

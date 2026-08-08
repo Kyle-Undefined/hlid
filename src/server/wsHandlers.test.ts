@@ -25,6 +25,7 @@ vi.mock("../db", () => ({
 	setSessionModel: vi.fn().mockResolvedValue(undefined),
 	setSessionEffort: vi.fn().mockResolvedValue(undefined),
 	setSessionPermissionMode: vi.fn().mockResolvedValue(undefined),
+	setSessionApprovalsReviewer: vi.fn().mockResolvedValue(undefined),
 	setSessionProviderSelection: vi.fn().mockResolvedValue(undefined),
 	getHlidDelegationByChildSession: vi.fn().mockResolvedValue(null),
 }));
@@ -170,6 +171,7 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		setProvider: vi.fn().mockResolvedValue(undefined),
 		setEffort: vi.fn().mockResolvedValue(undefined),
 		setPermissionMode: vi.fn().mockResolvedValue(undefined),
+		setApprovalsReviewer: vi.fn().mockResolvedValue(undefined),
 		stopProviderTask: vi.fn().mockResolvedValue(undefined),
 		controlProviderBackgroundActivity: vi.fn().mockResolvedValue(undefined),
 		getAccountInfo: vi.fn().mockResolvedValue(null),
@@ -2544,6 +2546,270 @@ describe("message — set_permission_mode", () => {
 	});
 });
 
+// ── message: set_approvals_reviewer ──────────────────────────────────────────
+
+describe("message — set_approvals_reviewer", () => {
+	it("routes a live change and broadcasts the updated reviewer", async () => {
+		const session = makeSession({
+			getStatus: vi.fn().mockReturnValue({
+				state: "idle",
+				model: "gpt-5.6-sol",
+				permission_mode: "default",
+				effort: "medium",
+				approvals_reviewer: "auto_review",
+			}),
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "set_approvals_reviewer",
+				reviewer: "auto_review",
+			}),
+		);
+
+		expect(session.setApprovalsReviewer).toHaveBeenCalledWith("auto_review");
+		expect(runState.broadcast).toHaveBeenCalledWith({
+			type: "status",
+			state: "idle",
+			model: "gpt-5.6-sol",
+			permission_mode: "default",
+			effort: "medium",
+			approvals_reviewer: "auto_review",
+		});
+	});
+
+	it("surfaces a live policy rejection without broadcasting", async () => {
+		const session = makeSession({
+			setApprovalsReviewer: vi
+				.fn()
+				.mockRejectedValue(
+					new Error(
+						"Auto-review is unavailable while Hlid policy enforcement is enabled.",
+					),
+				),
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "set_approvals_reviewer",
+				reviewer: "auto_review",
+			}),
+		);
+
+		expect(lastSentTo(ws)).toEqual({
+			type: "error",
+			message:
+				"Auto-review is unavailable while Hlid policy enforcement is enabled.",
+		});
+		expect(runState.broadcast).not.toHaveBeenCalled();
+	});
+
+	it("persists a detached chat change without reviving its provider", async () => {
+		vi.mocked(dbMock.getSessionSelection)
+			.mockResolvedValueOnce({
+				agentCwd: "/tmp/test",
+				providerId: "codex",
+				model: "gpt-5.6-sol",
+				effort: "medium",
+				permissionMode: "default",
+				approvalsReviewer: "user",
+			})
+			.mockResolvedValueOnce({
+				agentCwd: "/tmp/test",
+				providerId: "codex",
+				model: "gpt-5.6-sol",
+				effort: "medium",
+				permissionMode: "default",
+				approvalsReviewer: "auto_review",
+			});
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		pool.getProvider.mockReturnValue({
+			providerId: "codex",
+			label: "Codex",
+			approvalReviewers: [
+				{ value: "user", label: "User review", isDefault: true },
+				{ value: "auto_review", label: "Auto-review" },
+			],
+		} as never);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("detached-review");
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "set_approvals_reviewer",
+				session_id: "detached-review",
+				reviewer: "auto_review",
+			}),
+		);
+
+		expect(dbMock.setSessionApprovalsReviewer).toHaveBeenCalledWith(
+			"detached-review",
+			"auto_review",
+		);
+		expect(pool.create).not.toHaveBeenCalled();
+		expect(session.setApprovalsReviewer).not.toHaveBeenCalled();
+		expect(lastSentTo(ws)).toEqual(
+			expect.objectContaining({
+				type: "status",
+				session_id: "detached-review",
+				approvals_reviewer: "auto_review",
+			}),
+		);
+	});
+
+	it("rejects an unsupported detached reviewer before persisting", async () => {
+		vi.mocked(dbMock.getSessionSelection).mockResolvedValueOnce({
+			agentCwd: "/tmp/test",
+			providerId: "claude",
+			model: "claude-sonnet-4-6",
+			effort: "medium",
+			permissionMode: "default",
+			approvalsReviewer: null,
+		});
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		pool.getProvider.mockReturnValue({
+			providerId: "claude",
+			label: "Claude",
+		} as never);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("detached-claude");
+		vi.mocked(dbMock.setSessionApprovalsReviewer).mockClear();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "set_approvals_reviewer",
+				session_id: "detached-claude",
+				reviewer: "auto_review",
+			}),
+		);
+
+		expect(lastSentTo(ws)).toEqual({
+			type: "error",
+			message: "Claude does not support approval reviewer auto_review",
+		});
+		expect(dbMock.setSessionApprovalsReviewer).not.toHaveBeenCalled();
+	});
+
+	it("rejects detached auto-review while Hlid policy enforcement is enabled", async () => {
+		vi.mocked(dbMock.getSessionSelection).mockResolvedValueOnce({
+			agentCwd: "/tmp/test",
+			providerId: "codex",
+			model: "gpt-5.6-sol",
+			effort: "medium",
+			permissionMode: "default",
+			approvalsReviewer: "user",
+		});
+		mockLoadConfig.mockReturnValueOnce({
+			vault: { path: "/tmp/test", name: "Test Vault" },
+			claude: {
+				model: "test-model",
+				effort: "medium",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+			umbod: { enabled: true },
+			agents: [],
+		});
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		pool.getProvider.mockReturnValue({
+			providerId: "codex",
+			label: "Codex",
+			approvalReviewers: [
+				{ value: "user", label: "User review", isDefault: true },
+				{ value: "auto_review", label: "Auto-review" },
+			],
+		} as never);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("detached-policy");
+		vi.mocked(dbMock.setSessionApprovalsReviewer).mockClear();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "set_approvals_reviewer",
+				session_id: "detached-policy",
+				reviewer: "auto_review",
+			}),
+		);
+
+		expect(lastSentTo(ws)).toEqual({
+			type: "error",
+			message:
+				"Auto-review is unavailable while Hlid policy enforcement is enabled.",
+		});
+		expect(dbMock.setSessionApprovalsReviewer).not.toHaveBeenCalled();
+	});
+
+	it("rejects detached auto-review while Hlid's auto-sleep usage gate is enabled", async () => {
+		vi.mocked(dbMock.getSessionSelection).mockResolvedValueOnce({
+			agentCwd: "/tmp/test",
+			providerId: "codex",
+			model: "gpt-5.6-sol",
+			effort: "medium",
+			permissionMode: "default",
+			approvalsReviewer: "user",
+		});
+		mockLoadConfig.mockReturnValueOnce({
+			vault: { path: "/tmp/test", name: "Test Vault" },
+			claude: {
+				model: "test-model",
+				effort: "medium",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+			auto_sleep: {
+				enabled: true,
+				threshold: 0.95,
+				max_sleep_minutes: 360,
+				resume_buffer_seconds: 60,
+			},
+			agents: [],
+		});
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		pool.getProvider.mockReturnValue({
+			providerId: "codex",
+			label: "Codex",
+			approvalReviewers: [
+				{ value: "user", label: "User review", isDefault: true },
+				{ value: "auto_review", label: "Auto-review" },
+			],
+		} as never);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("detached-usage-gate");
+		vi.mocked(dbMock.setSessionApprovalsReviewer).mockClear();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "set_approvals_reviewer",
+				session_id: "detached-usage-gate",
+				reviewer: "auto_review",
+			}),
+		);
+
+		expect(lastSentTo(ws)).toEqual({
+			type: "error",
+			message:
+				"Auto-review is unavailable while Hlid's auto-sleep usage gate is enabled.",
+		});
+		expect(dbMock.setSessionApprovalsReviewer).not.toHaveBeenCalled();
+	});
+});
+
 // ── message: chat ─────────────────────────────────────────────────────────────
 
 describe("message — chat", () => {
@@ -2671,6 +2937,31 @@ describe("message — chat", () => {
 		expect(session.setModel).toHaveBeenCalledWith("gpt-5.6-sol");
 		expect(session.setEffort).toHaveBeenCalledWith("ultra");
 		expect(session.setPermissionMode).toHaveBeenCalledWith("bypassPermissions");
+		expect(session.runQuery).toHaveBeenCalled();
+	});
+
+	it("applies the approval reviewer carried by a first-chat payload", async () => {
+		const session = makeSession({
+			getProviderId: vi.fn().mockReturnValue("codex"),
+			getCurrentSessionId: vi.fn().mockReturnValue(null),
+		});
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "first turn",
+				session_id: "new-review-session",
+				provider: "codex",
+				approvals_reviewer: "auto_review",
+			}),
+		);
+
+		expect(session.setProvider).not.toHaveBeenCalled();
+		expect(session.setApprovalsReviewer).toHaveBeenCalledWith("auto_review");
 		expect(session.runQuery).toHaveBeenCalled();
 	});
 

@@ -174,6 +174,7 @@ export {
 	rollbackHlidDelegationSetup,
 	setSessionActualModelForProvider,
 	setSessionAgentCwd,
+	setSessionApprovalsReviewer,
 	setSessionArchived,
 	setSessionEffort,
 	setSessionModel,

@@ -42,6 +42,13 @@ export type ProviderInfo = {
 	effortLevels?: Array<{ value: string; label: string; desc?: string }>;
 	/** Permission gate modes the provider honours. */
 	permissionModes?: Array<{ value: string; label: string; desc?: string }>;
+	/** Provider-native reviewers available for interactive approval requests. */
+	approvalReviewers?: Array<{
+		value: "user" | "auto_review";
+		label: string;
+		desc?: string;
+		isDefault?: boolean;
+	}>;
 	/** Provider-native session forking exposed through Hlid. */
 	forkCapability?: {
 		kind: "exact";

@@ -9,6 +9,7 @@ export const MAX_WS_PAYLOAD_BYTES = 2 * 1024 * 1024;
 const id = z.string().min(1).max(256);
 const path = z.string().min(1).max(4096);
 const shortText = z.string().max(4096);
+const approvalsReviewer = z.enum(["user", "auto_review"]);
 const noFields = <T extends string>(type: T) =>
 	z.strictObject({ type: z.literal(type) });
 
@@ -61,6 +62,7 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 			model: shortText.optional(),
 			effort: shortText.optional(),
 			permission_mode: shortText.optional(),
+			approvals_reviewer: approvalsReviewer.optional(),
 			goal: goalStart.optional(),
 		})
 		.refine(
@@ -287,6 +289,7 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 		model: shortText.optional(),
 		effort: shortText.optional(),
 		permission_mode: shortText.optional(),
+		approvals_reviewer: approvalsReviewer.optional(),
 		session_id: id.optional(),
 	}),
 	z.strictObject({
@@ -297,6 +300,11 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 	z.strictObject({
 		type: z.literal("set_permission_mode"),
 		mode: shortText,
+		session_id: id.optional(),
+	}),
+	z.strictObject({
+		type: z.literal("set_approvals_reviewer"),
+		reviewer: approvalsReviewer,
 		session_id: id.optional(),
 	}),
 	z.strictObject({
