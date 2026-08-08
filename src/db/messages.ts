@@ -460,6 +460,822 @@ export async function insertForkedMessages(
 	})();
 }
 
+export type ProviderMessageFrameInput = {
+	sessionId: string;
+	assistantSeq: number;
+	providerId: string;
+	providerSessionId: string;
+	providerUuid: string;
+	frameOrder: number;
+	kind: "assistant" | "result_text" | "tool_result";
+	text?: string;
+	toolStartIds?: string[];
+	toolResultIds?: string[];
+};
+
+export type ProviderMessageRevision = {
+	assistantSeq: number;
+	text: string;
+	removedToolIds: string[];
+	clearedToolResultIds: string[];
+	remainingToolCount: number;
+	remainingToolErrorCount: number;
+	steerToolEventIndexes: Array<{ userSeq: number; toolEventIndex: number }>;
+	restoredToolMetadata?: Array<{
+		toolId: string;
+		subagent: SubagentSnapshot | null;
+		taskActivity: TaskActivity | null;
+	}>;
+};
+
+type ProviderToolMetadataFrame = {
+	providerSessionId: string;
+	providerUuid: string;
+};
+
+type ProviderToolStartFrame = ProviderToolMetadataFrame & {
+	lineageFrames?: ProviderToolMetadataFrame[];
+};
+
+type ProviderToolMetadataContribution = {
+	subagentJson?: string;
+	activityJson?: string;
+};
+
+function assertActiveProviderFrame(
+	db: Awaited<ReturnType<typeof getDb>>,
+	tool: { sessionId: string; providerId: string },
+	providerFrame: ProviderToolMetadataFrame,
+): void {
+	const activeFrame = db
+		.query<{ active: number }, [string, string, string, string]>(
+			`SELECT 1 AS active FROM provider_message_frames
+			 WHERE session_id = ? AND provider_id = ?
+			   AND provider_session_id = ? AND provider_uuid = ?
+			   AND retracted = 0`,
+		)
+		.get(
+			tool.sessionId,
+			tool.providerId,
+			providerFrame.providerSessionId,
+			providerFrame.providerUuid,
+		);
+	if (!activeFrame) {
+		throw new Error(
+			`provider frame is unavailable for session=${tool.sessionId}`,
+		);
+	}
+}
+
+function appendProviderToolStartLineage(
+	db: Awaited<ReturnType<typeof getDb>>,
+	tool: { id: number; sessionId: string; providerId: string },
+	providerStartFrame: ProviderToolStartFrame,
+): void {
+	const frames = [
+		providerStartFrame,
+		...(providerStartFrame.lineageFrames ?? []),
+	].filter(
+		(frame, index, all) =>
+			all.findIndex(
+				(candidate) =>
+					candidate.providerSessionId === frame.providerSessionId &&
+					candidate.providerUuid === frame.providerUuid,
+			) === index,
+	);
+	for (const frame of frames) {
+		assertActiveProviderFrame(db, tool, frame);
+		db.run(
+			`INSERT OR IGNORE INTO provider_tool_start_lineage
+			 (session_id, tool_event_id, provider_id, provider_session_id, provider_uuid)
+			 VALUES (?, ?, ?, ?, ?)`,
+			[
+				tool.sessionId,
+				tool.id,
+				tool.providerId,
+				frame.providerSessionId,
+				frame.providerUuid,
+			],
+		);
+	}
+}
+
+function appendProviderToolMetadataContribution(
+	db: Awaited<ReturnType<typeof getDb>>,
+	tool: { id: number; sessionId: string; providerId: string },
+	contribution: ProviderToolMetadataContribution,
+	providerFrame?: ProviderToolMetadataFrame,
+): void {
+	if (!contribution.subagentJson && !contribution.activityJson) return;
+	if (providerFrame) {
+		assertActiveProviderFrame(db, tool, providerFrame);
+	}
+	db.run(
+		`INSERT INTO provider_tool_metadata_contributions
+		 (session_id, tool_event_id, provider_id, provider_session_id,
+		  provider_uuid, subagent_json, activity_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		[
+			tool.sessionId,
+			tool.id,
+			tool.providerId,
+			providerFrame?.providerSessionId ?? null,
+			providerFrame?.providerUuid ?? null,
+			contribution.subagentJson ?? null,
+			contribution.activityJson ?? null,
+		],
+	);
+}
+
+function latestSurvivingToolMetadata(
+	db: Awaited<ReturnType<typeof getDb>>,
+	toolEventId: number,
+	column: "subagent_json" | "activity_json",
+): string | null {
+	return (
+		db
+			.query<{ value: string }, [number]>(
+				`SELECT contribution.${column} AS value
+				 FROM provider_tool_metadata_contributions contribution
+				 LEFT JOIN provider_message_frames frame
+				   ON frame.session_id = contribution.session_id
+				  AND frame.provider_id = contribution.provider_id
+				  AND frame.provider_session_id = contribution.provider_session_id
+				  AND frame.provider_uuid = contribution.provider_uuid
+				 WHERE contribution.tool_event_id = ?
+				   AND contribution.${column} IS NOT NULL
+				   AND (contribution.provider_uuid IS NULL OR frame.retracted = 0)
+				 ORDER BY contribution.id DESC LIMIT 1`,
+			)
+			.get(toolEventId)?.value ?? null
+	);
+}
+
+function joinProviderFrameText(previous: string, next: string): string {
+	if (!previous || !next) return previous || next;
+	const trailingNewlines = previous.match(/\n*$/)?.[0].length ?? 0;
+	const leadingNewlines = next.match(/^\n*/)?.[0].length ?? 0;
+	const missingNewlines = Math.max(0, 2 - trailingNewlines - leadingNewlines);
+	return [previous, "\n".repeat(missingNewlines), next].join("");
+}
+
+function reconcileProviderAssistantText(
+	db: Awaited<ReturnType<typeof getDb>>,
+	sessionId: string,
+	assistantSeq: number,
+	providerId: string,
+): string {
+	const text = db
+		.query<{ text_fragment: string | null }, [string, number, string]>(
+			`SELECT text_fragment FROM provider_message_frames
+			 WHERE session_id = ? AND assistant_seq = ? AND provider_id = ?
+			   AND kind IN ('assistant', 'result_text') AND retracted = 0
+			 ORDER BY frame_order ASC, id ASC`,
+		)
+		.all(sessionId, assistantSeq, providerId)
+		.reduce(
+			(canonical, frame) =>
+				frame.text_fragment
+					? joinProviderFrameText(canonical, frame.text_fragment)
+					: canonical,
+			"",
+		);
+	db.run(
+		`UPDATE messages SET text = ?
+		 WHERE session_id = ? AND seq = ? AND role = 'assistant'`,
+		[text, sessionId, assistantSeq],
+	);
+	return text;
+}
+
+function parseProviderFrameIds(raw: string | null): string[] {
+	if (!raw) return [];
+	try {
+		const value = JSON.parse(raw) as unknown;
+		return Array.isArray(value)
+			? value.filter(
+					(id): id is string => typeof id === "string" && id.length > 0,
+				)
+			: [];
+	} catch {
+		return [];
+	}
+}
+
+type StoredProviderMessageFrame = {
+	assistant_seq: number;
+	kind: string;
+	text_fragment: string | null;
+	raw_tool_start_ids_json: string | null;
+	tool_result_ids_json: string | null;
+};
+
+type ProviderMessageFrameIdentity = Pick<
+	ProviderMessageFrameInput,
+	"sessionId" | "providerId" | "providerSessionId" | "providerUuid"
+>;
+
+type ProviderMessageFrameContent = Omit<
+	ProviderMessageFrameInput,
+	"assistantSeq" | "frameOrder"
+>;
+
+function hasProviderMessageRetraction(
+	db: Awaited<ReturnType<typeof getDb>>,
+	input: ProviderMessageFrameIdentity,
+): boolean {
+	return Boolean(
+		db
+			.query<{ found: number }, [string, string, string, string]>(
+				`SELECT 1 AS found FROM provider_message_retractions
+				 WHERE session_id = ? AND provider_id = ?
+				   AND provider_session_id = ? AND provider_uuid = ?`,
+			)
+			.get(
+				input.sessionId,
+				input.providerId,
+				input.providerSessionId,
+				input.providerUuid,
+			),
+	);
+}
+
+function getStoredProviderMessageFrame(
+	db: Awaited<ReturnType<typeof getDb>>,
+	input: ProviderMessageFrameIdentity,
+): StoredProviderMessageFrame | null {
+	return (
+		db
+			.query<StoredProviderMessageFrame, [string, string, string, string]>(
+				`SELECT assistant_seq, kind, text_fragment, raw_tool_start_ids_json,
+				        tool_result_ids_json
+				 FROM provider_message_frames
+				 WHERE session_id = ? AND provider_id = ?
+				   AND provider_session_id = ? AND provider_uuid = ?`,
+			)
+			.get(
+				input.sessionId,
+				input.providerId,
+				input.providerSessionId,
+				input.providerUuid,
+			) ?? null
+	);
+}
+
+function assertProviderMessageFrameReplay(
+	existing: StoredProviderMessageFrame,
+	input: ProviderMessageFrameContent,
+	operation: string,
+): void {
+	const toolStartIdsJson = input.toolStartIds?.length
+		? JSON.stringify(input.toolStartIds)
+		: null;
+	const toolResultIdsJson = input.toolResultIds?.length
+		? JSON.stringify(input.toolResultIds)
+		: null;
+	if (
+		existing.kind === input.kind &&
+		existing.text_fragment === (input.text ?? null) &&
+		existing.raw_tool_start_ids_json === toolStartIdsJson &&
+		existing.tool_result_ids_json === toolResultIdsJson
+	) {
+		return;
+	}
+	throw new Error(
+		`${operation}: content collision for session=${input.sessionId} provider=${input.providerId} uuid=${input.providerUuid}`,
+	);
+}
+
+export async function getProviderMessageFrameDisposition(
+	input: Omit<ProviderMessageFrameInput, "assistantSeq" | "frameOrder">,
+): Promise<"new" | "duplicate" | "retracted"> {
+	const db = await getDb();
+	if (hasProviderMessageRetraction(db, input)) return "retracted";
+	const existing = getStoredProviderMessageFrame(db, input);
+	if (!existing) return "new";
+	assertProviderMessageFrameReplay(
+		existing,
+		input,
+		"getProviderMessageFrameDisposition",
+	);
+	reconcileProviderAssistantText(
+		db,
+		input.sessionId,
+		existing.assistant_seq,
+		input.providerId,
+	);
+	return "duplicate";
+}
+
+/** Resolve a normalized tool_result frame to the assistant row owning its tool. */
+export async function getProviderToolAssistantSeq(
+	sessionId: string,
+	providerId: string,
+	providerSessionId: string,
+	toolIds: string[],
+): Promise<number | null> {
+	const ids = [...new Set(toolIds.filter(Boolean))];
+	if (ids.length === 0) return null;
+	const db = await getDb();
+	const placeholders = ids.map(() => "?").join(",");
+	const rows = db
+		.query<{ assistant_seq: number }, string[]>(
+			`SELECT DISTINCT assistant_seq FROM tool_events
+			 WHERE session_id = ? AND provider_id = ?
+			   AND provider_start_session_id = ?
+			   AND tool_id IN (${placeholders})`,
+		)
+		.all(sessionId, providerId, providerSessionId, ...ids);
+	if (rows.length === 0) return null;
+	if (rows.length > 1) {
+		throw new Error(
+			`getProviderToolAssistantSeq: tool-result frame spans assistant rows for session=${sessionId}`,
+		);
+	}
+	return rows[0]?.assistant_seq ?? null;
+}
+
+/** Persist one normalized provider frame before exposing its contributions. */
+export async function recordProviderMessageFrame(
+	input: ProviderMessageFrameInput,
+): Promise<"recorded" | "duplicate" | "retracted"> {
+	const db = await getDb();
+	return db.transaction(() => {
+		if (hasProviderMessageRetraction(db, input)) return "retracted";
+		const existing = getStoredProviderMessageFrame(db, input);
+		const toolStartIdsJson = input.toolStartIds?.length
+			? JSON.stringify(input.toolStartIds)
+			: null;
+		const toolResultIdsJson = input.toolResultIds?.length
+			? JSON.stringify(input.toolResultIds)
+			: null;
+		if (existing) {
+			assertProviderMessageFrameReplay(
+				existing,
+				input,
+				"recordProviderMessageFrame",
+			);
+			reconcileProviderAssistantText(
+				db,
+				input.sessionId,
+				existing.assistant_seq,
+				input.providerId,
+			);
+			return "duplicate";
+		}
+		const { changes } = db.run(
+			`INSERT INTO provider_message_frames
+			 (session_id, assistant_seq, provider_id, provider_session_id,
+			  provider_uuid, frame_order,
+			  kind, text_fragment, raw_tool_start_ids_json, tool_start_ids_json,
+			  tool_result_ids_json)
+			 SELECT s.id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+			 FROM sessions s
+			 JOIN messages m ON m.session_id = s.id AND m.seq = ?
+			 WHERE s.id = ? AND m.role = 'assistant'`,
+			[
+				input.assistantSeq,
+				input.providerId,
+				input.providerSessionId,
+				input.providerUuid,
+				input.frameOrder,
+				input.kind,
+				input.text ?? null,
+				toolStartIdsJson,
+				toolStartIdsJson,
+				toolResultIdsJson,
+				input.assistantSeq,
+				input.sessionId,
+			],
+		);
+		if (changes === 0) {
+			throw new Error(
+				`recordProviderMessageFrame: no assistant row found for session=${input.sessionId} seq=${input.assistantSeq}`,
+			);
+		}
+		reconcileProviderAssistantText(
+			db,
+			input.sessionId,
+			input.assistantSeq,
+			input.providerId,
+		);
+		return "recorded";
+	})();
+}
+
+/** Durably attach a late/synthetic tool start to its originating provider frame. */
+export async function linkProviderFrameToolStart(
+	sessionId: string,
+	providerId: string,
+	providerSessionId: string,
+	providerUuid: string,
+	toolId: string,
+): Promise<boolean> {
+	const db = await getDb();
+	return db.transaction(() => {
+		const row = db
+			.query<
+				{ tool_start_ids_json: string | null },
+				[string, string, string, string]
+			>(
+				`SELECT tool_start_ids_json FROM provider_message_frames
+				 WHERE session_id = ? AND provider_id = ?
+				   AND provider_session_id = ? AND provider_uuid = ?
+				   AND retracted = 0`,
+			)
+			.get(sessionId, providerId, providerSessionId, providerUuid);
+		if (!row) return false;
+		const toolIds = parseProviderFrameIds(row.tool_start_ids_json);
+		if (toolIds.includes(toolId)) return true;
+		toolIds.push(toolId);
+		db.run(
+			`UPDATE provider_message_frames SET tool_start_ids_json = ?
+			 WHERE session_id = ? AND provider_id = ?
+			   AND provider_session_id = ? AND provider_uuid = ?
+			   AND retracted = 0`,
+			[
+				JSON.stringify(toolIds),
+				sessionId,
+				providerId,
+				providerSessionId,
+				providerUuid,
+			],
+		);
+		return true;
+	})();
+}
+
+/**
+ * Retract exactly the named provider frames wherever they belong in this
+ * session. Unknown and already-retracted UUIDs are no-ops. Every returned
+ * revision has already been committed, so Raven can safely replace prose and
+ * independently remove tool starts or clear tool results.
+ */
+export async function retractProviderMessageFrames(
+	sessionId: string,
+	providerId: string,
+	providerSessionId: string,
+	providerUuids: string[],
+	source: "assistant_supersedes" | "model_refusal_fallback",
+): Promise<ProviderMessageRevision[]> {
+	const ids = [...new Set(providerUuids.filter(Boolean))];
+	if (ids.length === 0) return [];
+	const db = await getDb();
+	return db.transaction(() => {
+		const placeholders = ids.map(() => "?").join(",");
+		for (const providerUuid of ids) {
+			db.run(
+				`INSERT OR IGNORE INTO provider_message_retractions
+				 (session_id, provider_id, provider_session_id, provider_uuid, source)
+				 SELECT id, ?, ?, ?, ? FROM sessions WHERE id = ?`,
+				[providerId, providerSessionId, providerUuid, source, sessionId],
+			);
+		}
+		const changedFrames = db
+			.query<
+				{
+					assistant_seq: number;
+					provider_uuid: string;
+					tool_start_ids_json: string | null;
+					tool_result_ids_json: string | null;
+				},
+				string[]
+			>(
+				`SELECT assistant_seq, provider_uuid, tool_start_ids_json,
+				        tool_result_ids_json
+				 FROM provider_message_frames
+				 WHERE session_id = ? AND provider_id = ?
+				   AND provider_session_id = ? AND retracted = 0
+				   AND provider_uuid IN (${placeholders})`,
+			)
+			.all(sessionId, providerId, providerSessionId, ...ids);
+		if (changedFrames.length === 0) return [];
+		const changedIds = [
+			...new Set(changedFrames.map((row) => row.provider_uuid)),
+		];
+		const changedPlaceholders = changedIds.map(() => "?").join(",");
+		db.run(
+			`UPDATE provider_message_frames SET retracted = 1
+			 WHERE session_id = ? AND provider_id = ?
+			   AND provider_session_id = ? AND retracted = 0
+			   AND provider_uuid IN (${changedPlaceholders})`,
+			[sessionId, providerId, providerSessionId, ...changedIds],
+		);
+
+		type RetractionToolRow = {
+			id: number;
+			assistant_seq: number;
+			tool_id: string;
+			provider_start_session_id: string | null;
+			provider_start_frame_uuid: string | null;
+			provider_result_session_id: string | null;
+			provider_result_frame_uuid: string | null;
+			subagent_json: string | null;
+			activity_json: string | null;
+			affects_subagent: number;
+			affects_activity: number;
+		};
+		const directToolRows = db
+			.query<RetractionToolRow, string[]>(
+				`SELECT id, assistant_seq, tool_id, provider_start_session_id,
+				        provider_start_frame_uuid, provider_result_session_id,
+				        provider_result_frame_uuid, subagent_json, activity_json,
+				        0 AS affects_subagent, 0 AS affects_activity
+				 FROM tool_events
+				 WHERE session_id = ? AND provider_id = ?
+				   AND ((provider_start_session_id = ?
+				         AND provider_start_frame_uuid IN (${changedPlaceholders}))
+				        OR (provider_result_session_id = ?
+				         AND provider_result_frame_uuid IN (${changedPlaceholders})))`,
+			)
+			.all(
+				sessionId,
+				providerId,
+				providerSessionId,
+				...changedIds,
+				providerSessionId,
+				...changedIds,
+			);
+		const lineageToolRows = db
+			.query<RetractionToolRow, string[]>(
+				`SELECT event.id, event.assistant_seq, event.tool_id,
+				        event.provider_start_session_id, event.provider_start_frame_uuid,
+				        event.provider_result_session_id, event.provider_result_frame_uuid,
+				        event.subagent_json, event.activity_json,
+				        0 AS affects_subagent, 0 AS affects_activity
+				 FROM provider_tool_start_lineage lineage
+				 JOIN tool_events event ON event.id = lineage.tool_event_id
+				 WHERE lineage.session_id = ? AND lineage.provider_id = ?
+				   AND lineage.provider_session_id = ?
+				   AND lineage.provider_uuid IN (${changedPlaceholders})`,
+			)
+			.all(sessionId, providerId, providerSessionId, ...changedIds);
+		const metadataToolRows = db
+			.query<RetractionToolRow, string[]>(
+				`SELECT event.id, event.assistant_seq, event.tool_id,
+				        event.provider_start_session_id, event.provider_start_frame_uuid,
+				        event.provider_result_session_id, event.provider_result_frame_uuid,
+				        event.subagent_json, event.activity_json,
+				        MAX(CASE WHEN contribution.subagent_json IS NOT NULL THEN 1 ELSE 0 END)
+				          AS affects_subagent,
+				        MAX(CASE WHEN contribution.activity_json IS NOT NULL THEN 1 ELSE 0 END)
+				          AS affects_activity
+				 FROM provider_tool_metadata_contributions contribution
+				 JOIN tool_events event ON event.id = contribution.tool_event_id
+				 WHERE contribution.session_id = ? AND contribution.provider_id = ?
+				   AND contribution.provider_session_id = ?
+				   AND contribution.provider_uuid IN (${changedPlaceholders})
+				 GROUP BY event.id`,
+			)
+			.all(sessionId, providerId, providerSessionId, ...changedIds);
+		const toolRowsById = new Map<number, RetractionToolRow>();
+		for (const row of [
+			...directToolRows,
+			...lineageToolRows,
+			...metadataToolRows,
+		]) {
+			const previous = toolRowsById.get(row.id);
+			toolRowsById.set(
+				row.id,
+				previous
+					? {
+							...previous,
+							affects_subagent: Math.max(
+								previous.affects_subagent,
+								row.affects_subagent,
+							),
+							affects_activity: Math.max(
+								previous.affects_activity,
+								row.affects_activity,
+							),
+						}
+					: row,
+			);
+		}
+		const toolRows = [...toolRowsById.values()];
+		const removedToolEventIds = new Set([
+			...directToolRows
+				.filter(
+					(row) =>
+						row.provider_start_session_id === providerSessionId &&
+						row.provider_start_frame_uuid !== null &&
+						changedIds.includes(row.provider_start_frame_uuid),
+				)
+				.map((row) => row.id),
+			...lineageToolRows.map((row) => row.id),
+		]);
+		const affectedSeqs = [
+			...new Set([
+				...changedFrames.map((row) => row.assistant_seq),
+				...toolRows.map((row) => row.assistant_seq),
+			]),
+		].sort((a, b) => a - b);
+		const removedToolPositions = new Map<number, number[]>();
+		for (const assistantSeq of affectedSeqs) {
+			const orderedToolRows = db
+				.query<{ id: number }, [string, number]>(
+					`SELECT id FROM tool_events
+					 WHERE session_id = ? AND assistant_seq = ? ORDER BY id ASC`,
+				)
+				.all(sessionId, assistantSeq);
+			const removedIds = new Set(
+				toolRows
+					.filter(
+						(row) =>
+							row.assistant_seq === assistantSeq &&
+							removedToolEventIds.has(row.id),
+					)
+					.map((row) => row.id),
+			);
+			removedToolPositions.set(
+				assistantSeq,
+				orderedToolRows.flatMap((row, index) =>
+					removedIds.has(row.id) ? [index] : [],
+				),
+			);
+		}
+		if (removedToolEventIds.size > 0) {
+			const removedPlaceholders = [...removedToolEventIds]
+				.map(() => "?")
+				.join(",");
+			db.run(
+				`DELETE FROM tool_events WHERE session_id = ? AND provider_id = ?
+				   AND id IN (${removedPlaceholders})`,
+				[sessionId, providerId, ...removedToolEventIds],
+			);
+		}
+		db.run(
+			`UPDATE tool_events
+			 SET result_text = NULL, result_length = NULL, result_preview = NULL,
+			     is_error = NULL, provider_result_frame_uuid = NULL,
+			     provider_result_session_id = NULL
+			 WHERE session_id = ? AND provider_id = ?
+			   AND provider_result_session_id = ?
+			   AND provider_result_frame_uuid IN (${changedPlaceholders})`,
+			[sessionId, providerId, providerSessionId, ...changedIds],
+		);
+		const restoredMetadataByToolEventId = new Map<
+			number,
+			{
+				assistantSeq: number;
+				toolId: string;
+				subagent: SubagentSnapshot | null;
+				taskActivity: TaskActivity | null;
+			}
+		>();
+		for (const row of toolRows) {
+			if (row.affects_subagent === 0 && row.affects_activity === 0) continue;
+			if (removedToolEventIds.has(row.id)) continue;
+			const subagentJson =
+				row.affects_subagent === 1
+					? latestSurvivingToolMetadata(db, row.id, "subagent_json")
+					: row.subagent_json;
+			const activityJson =
+				row.affects_activity === 1
+					? latestSurvivingToolMetadata(db, row.id, "activity_json")
+					: row.activity_json;
+			if (
+				subagentJson === row.subagent_json &&
+				activityJson === row.activity_json
+			) {
+				continue;
+			}
+			const { changes } = db.run(
+				`UPDATE tool_events SET subagent_json = ?, activity_json = ?
+				 WHERE id = ? AND session_id = ?`,
+				[subagentJson, activityJson, row.id, sessionId],
+			);
+			if (changes === 0) continue;
+			restoredMetadataByToolEventId.set(row.id, {
+				assistantSeq: row.assistant_seq,
+				toolId: row.tool_id,
+				subagent: subagentJson
+					? (JSON.parse(subagentJson) as SubagentSnapshot)
+					: null,
+				taskActivity: activityJson
+					? (JSON.parse(activityJson) as TaskActivity)
+					: null,
+			});
+		}
+
+		return affectedSeqs.map((assistantSeq) => {
+			const text = reconcileProviderAssistantText(
+				db,
+				sessionId,
+				assistantSeq,
+				providerId,
+			);
+			const latestSurvivingAssistantUuid = db
+				.query<{ provider_uuid: string }, [string, number, string, string]>(
+					`SELECT provider_uuid FROM provider_message_frames
+					 WHERE session_id = ? AND assistant_seq = ? AND provider_id = ?
+					   AND provider_session_id = ? AND kind = 'assistant'
+					   AND retracted = 0
+					 ORDER BY frame_order DESC, id DESC LIMIT 1`,
+				)
+				.get(
+					sessionId,
+					assistantSeq,
+					providerId,
+					providerSessionId,
+				)?.provider_uuid;
+			db.run(
+				`UPDATE messages SET sdk_uuid = ?
+				 WHERE session_id = ? AND seq = ? AND role = 'assistant'
+				   AND sdk_uuid IN (${changedPlaceholders})`,
+				[
+					latestSurvivingAssistantUuid ?? null,
+					sessionId,
+					assistantSeq,
+					...changedIds,
+				],
+			);
+			const rowTools = toolRows.filter(
+				(row) => row.assistant_seq === assistantSeq,
+			);
+			const changedRowFrames = changedFrames.filter(
+				(frame) => frame.assistant_seq === assistantSeq,
+			);
+			const restoredToolMetadata = [...restoredMetadataByToolEventId.values()]
+				.filter((metadata) => metadata.assistantSeq === assistantSeq)
+				.map(({ assistantSeq: _assistantSeq, ...metadata }) => metadata);
+			const removedPositions = removedToolPositions.get(assistantSeq) ?? [];
+			const steerRows = db
+				.query<
+					{ seq: number; steer_tool_event_index: number },
+					[string, number]
+				>(
+					`SELECT seq, steer_tool_event_index FROM messages
+					 WHERE session_id = ? AND role = 'user' AND steer_target_seq = ?
+					   AND steer_tool_event_index IS NOT NULL`,
+				)
+				.all(sessionId, assistantSeq)
+				.map((row) => ({
+					userSeq: row.seq,
+					toolEventIndex: Math.max(
+						0,
+						row.steer_tool_event_index -
+							removedPositions.filter(
+								(position) => position < row.steer_tool_event_index,
+							).length,
+					),
+				}));
+			for (const steer of steerRows) {
+				db.run(
+					`UPDATE messages SET steer_tool_event_index = ?
+					 WHERE session_id = ? AND seq = ? AND role = 'user'`,
+					[steer.toolEventIndex, sessionId, steer.userSeq],
+				);
+			}
+			return {
+				assistantSeq,
+				text,
+				removedToolIds: [
+					...new Set([
+						...changedRowFrames.flatMap((frame) =>
+							parseProviderFrameIds(frame.tool_start_ids_json),
+						),
+						...rowTools
+							.filter((row) => removedToolEventIds.has(row.id))
+							.map((row) => row.tool_id),
+					]),
+				],
+				clearedToolResultIds: [
+					...new Set([
+						...changedRowFrames.flatMap((frame) =>
+							parseProviderFrameIds(frame.tool_result_ids_json),
+						),
+						...rowTools
+							.filter(
+								(row) =>
+									row.provider_result_session_id === providerSessionId &&
+									row.provider_result_frame_uuid !== null &&
+									changedIds.includes(row.provider_result_frame_uuid),
+							)
+							.map((row) => row.tool_id),
+					]),
+				],
+				remainingToolCount:
+					db
+						.query<{ count: number }, [string, number]>(
+							`SELECT COUNT(*) AS count FROM tool_events
+							 WHERE session_id = ? AND assistant_seq = ?`,
+						)
+						.get(sessionId, assistantSeq)?.count ?? 0,
+				remainingToolErrorCount:
+					db
+						.query<{ count: number }, [string, number]>(
+							`SELECT COUNT(*) AS count FROM tool_events
+							 WHERE session_id = ? AND assistant_seq = ? AND is_error = 1`,
+						)
+						.get(sessionId, assistantSeq)?.count ?? 0,
+				steerToolEventIndexes: steerRows,
+				restoredToolMetadata,
+			};
+		});
+	})();
+}
+
 export async function appendToolEvent(
 	sessionId: string,
 	assistantSeq: number,
@@ -469,54 +1285,141 @@ export async function appendToolEvent(
 	subagent?: SubagentSnapshot,
 	dimensions?: ToolEventDimensions,
 	taskActivity?: TaskActivity,
+	providerStartFrame?: ProviderToolStartFrame,
 ): Promise<void> {
 	const db = await getDb();
 	const hasModelSnapshot = dimensions?.model !== undefined;
 	const hasAgentSnapshot = dimensions?.agentCwd !== undefined;
-	const { changes } = db.run(
-		`INSERT INTO tool_events
-			(session_id, assistant_seq, tool_id, name, input_json, subagent_json, activity_json,
-			 timestamp, provider_id, model, agent_cwd)
-		 SELECT s.id, ?, ?, ?, ?, ?, ?, unixepoch(),
-		        COALESCE(?, s.provider_id, 'claude'),
-		        CASE WHEN ? = 1 THEN ?
-		             ELSE COALESCE(NULLIF(s.selected_model, ''),
-		                           NULLIF(s.actual_model, ''), NULLIF(s.model, '')) END,
-		        CASE WHEN ? = 1 THEN ? ELSE s.agent_cwd END
-		 FROM sessions s WHERE s.id = ?`,
-		[
-			assistantSeq,
-			toolId,
-			name,
-			input !== undefined ? JSON.stringify(input) : null,
-			subagent ? JSON.stringify(subagent) : null,
-			taskActivity ? JSON.stringify(taskActivity) : null,
-			dimensions?.providerId ?? null,
-			hasModelSnapshot ? 1 : 0,
-			dimensions?.model ?? null,
-			hasAgentSnapshot ? 1 : 0,
-			dimensions?.agentCwd ?? null,
-			sessionId,
-		],
-	);
-	if (changes === 0) {
-		throw new Error(
-			`appendToolEvent: no session found for session=${sessionId}`,
+	db.transaction(() => {
+		const result = db.run(
+			`INSERT INTO tool_events
+				(session_id, assistant_seq, tool_id, name, input_json, subagent_json, activity_json,
+				 timestamp, provider_id, model, agent_cwd, provider_start_frame_uuid,
+				 provider_start_session_id)
+			 SELECT s.id, ?, ?, ?, ?, ?, ?, unixepoch(),
+			        COALESCE(?, s.provider_id, 'claude'),
+			        CASE WHEN ? = 1 THEN ?
+			             ELSE COALESCE(NULLIF(s.selected_model, ''),
+			                           NULLIF(s.actual_model, ''), NULLIF(s.model, '')) END,
+			        CASE WHEN ? = 1 THEN ? ELSE s.agent_cwd END,
+			        ?, ?
+			 FROM sessions s WHERE s.id = ?`,
+			[
+				assistantSeq,
+				toolId,
+				name,
+				input !== undefined ? JSON.stringify(input) : null,
+				subagent ? JSON.stringify(subagent) : null,
+				taskActivity ? JSON.stringify(taskActivity) : null,
+				dimensions?.providerId ?? null,
+				hasModelSnapshot ? 1 : 0,
+				dimensions?.model ?? null,
+				hasAgentSnapshot ? 1 : 0,
+				dimensions?.agentCwd ?? null,
+				providerStartFrame?.providerUuid ?? null,
+				providerStartFrame?.providerSessionId ?? null,
+				sessionId,
+			],
 		);
-	}
+		if (result.changes === 0) {
+			throw new Error(
+				`appendToolEvent: no session found for session=${sessionId}`,
+			);
+		}
+		if (!subagent && !taskActivity && !providerStartFrame) return;
+		const event = db
+			.query<{ id: number; provider_id: string }, [number]>(
+				`SELECT id, provider_id FROM tool_events WHERE id = ?`,
+			)
+			.get(Number(result.lastInsertRowid));
+		if (!event) {
+			throw new Error(
+				`appendToolEvent: inserted row unavailable for session=${sessionId}`,
+			);
+		}
+		if (providerStartFrame) {
+			appendProviderToolStartLineage(
+				db,
+				{ id: event.id, sessionId, providerId: event.provider_id },
+				providerStartFrame,
+			);
+		}
+		appendProviderToolMetadataContribution(
+			db,
+			{ id: event.id, sessionId, providerId: event.provider_id },
+			{
+				...(subagent ? { subagentJson: JSON.stringify(subagent) } : {}),
+				...(taskActivity ? { activityJson: JSON.stringify(taskActivity) } : {}),
+			},
+			providerStartFrame,
+		);
+	})();
 	markAnalyticsChanged(["activity"], "tool_event_recorded");
+}
+
+function setToolEventMetadata(
+	db: Awaited<ReturnType<typeof getDb>>,
+	sessionId: string,
+	toolId: string,
+	column: "subagent_json" | "activity_json",
+	json: string,
+	providerFrame?: ProviderToolMetadataFrame,
+): number {
+	const rows = db
+		.query<
+			{ id: number; provider_id: string },
+			[string | null, string | null, string, string, string | null]
+		>(
+			`SELECT event.id, event.provider_id
+			 FROM tool_events event
+			 LEFT JOIN provider_message_frames frame
+			   ON frame.session_id = event.session_id
+			  AND frame.provider_id = event.provider_id
+			  AND frame.provider_session_id = ?
+			  AND frame.provider_uuid = ?
+			  AND frame.assistant_seq = event.assistant_seq
+			  AND frame.retracted = 0
+			 WHERE event.session_id = ? AND event.tool_id = ?
+			   AND (? IS NULL OR frame.id IS NOT NULL)`,
+		)
+		.all(
+			providerFrame?.providerSessionId ?? null,
+			providerFrame?.providerUuid ?? null,
+			sessionId,
+			toolId,
+			providerFrame?.providerSessionId ?? null,
+		);
+	for (const row of rows) {
+		appendProviderToolMetadataContribution(
+			db,
+			{ id: row.id, sessionId, providerId: row.provider_id },
+			column === "subagent_json"
+				? { subagentJson: json }
+				: { activityJson: json },
+			providerFrame,
+		);
+		db.run(`UPDATE tool_events SET ${column} = ? WHERE id = ?`, [json, row.id]);
+	}
+	return rows.length;
 }
 
 export async function setToolEventSubagent(
 	sessionId: string,
 	toolId: string,
 	subagent: SubagentSnapshot,
+	providerFrame?: ProviderToolMetadataFrame,
 ): Promise<void> {
 	const db = await getDb();
-	const { changes } = db.run(
-		`UPDATE tool_events SET subagent_json = ? WHERE session_id = ? AND tool_id = ?`,
-		[JSON.stringify(subagent), sessionId, toolId],
-	);
+	const changes = db.transaction(() =>
+		setToolEventMetadata(
+			db,
+			sessionId,
+			toolId,
+			"subagent_json",
+			JSON.stringify(subagent),
+			providerFrame,
+		),
+	)();
 	if (changes === 0) {
 		throw new Error(
 			`setToolEventSubagent: no row found for session=${sessionId} tool_id=${toolId}`,
@@ -528,12 +1431,19 @@ export async function setToolEventActivity(
 	sessionId: string,
 	toolId: string,
 	taskActivity: TaskActivity,
+	providerFrame?: ProviderToolMetadataFrame,
 ): Promise<void> {
 	const db = await getDb();
-	const { changes } = db.run(
-		`UPDATE tool_events SET activity_json = ? WHERE session_id = ? AND tool_id = ?`,
-		[JSON.stringify(taskActivity), sessionId, toolId],
-	);
+	const changes = db.transaction(() =>
+		setToolEventMetadata(
+			db,
+			sessionId,
+			toolId,
+			"activity_json",
+			JSON.stringify(taskActivity),
+			providerFrame,
+		),
+	)();
 	if (changes === 0) {
 		throw new Error(
 			`setToolEventActivity: no row found for session=${sessionId} tool_id=${toolId}`,
@@ -546,19 +1456,27 @@ export async function setToolEventResult(
 	toolId: string,
 	resultText: string,
 	isError: boolean,
+	providerResultFrame?: { providerSessionId: string; providerUuid: string },
+	assistantSeq?: number,
 ): Promise<void> {
 	const db = await getDb();
 	const { changes } = db.run(
 		`UPDATE tool_events
-		 SET result_text = ?, result_length = ?, result_preview = ?, is_error = ?
-		 WHERE session_id = ? AND tool_id = ?`,
+		 SET result_text = ?, result_length = ?, result_preview = ?, is_error = ?,
+		     provider_result_frame_uuid = ?, provider_result_session_id = ?
+		 WHERE session_id = ? AND tool_id = ?
+		   AND (? IS NULL OR assistant_seq = ?)`,
 		[
 			resultText,
 			resultText.length,
 			resultText.slice(0, TOOL_RESULT_PREVIEW_CHARS),
 			isError ? 1 : 0,
+			providerResultFrame?.providerUuid ?? null,
+			providerResultFrame?.providerSessionId ?? null,
 			sessionId,
 			toolId,
+			assistantSeq ?? null,
+			assistantSeq ?? null,
 		],
 	);
 	if (changes === 0) {

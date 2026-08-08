@@ -93,6 +93,8 @@ export class ClaudeBackgroundActivityTracker {
 	private sessionId = "";
 	private tools = new Map<string, ClaudeToolMetadata>();
 	private tasks = new Map<string, ClaudeBackgroundTask>();
+	private observedMessages: SDKMessage[] = [];
+	private retractedProviderFrames = new Set<string>();
 
 	constructor(
 		private readonly providerId: string,
@@ -100,6 +102,12 @@ export class ClaudeBackgroundActivityTracker {
 	) {}
 
 	reset(): void {
+		this.observedMessages = [];
+		this.retractedProviderFrames.clear();
+		this.resetProjection();
+	}
+
+	private resetProjection(): void {
 		this.sessionId = "";
 		this.tools.clear();
 		this.tasks.clear();
@@ -109,6 +117,37 @@ export class ClaudeBackgroundActivityTracker {
 		if (message.type === "system" && message.subtype === "init") {
 			this.reset();
 		}
+		const frameKey = this.providerFrameKey(message);
+		if (frameKey && this.retractedProviderFrames.has(frameKey)) return;
+		this.observedMessages.push(message);
+		this.apply(message);
+	}
+
+	retractProviderFrame(providerSessionId: string, providerUuid: string): void {
+		if (!providerSessionId || !providerUuid) return;
+		const key = `${providerSessionId}\0${providerUuid}`;
+		if (this.retractedProviderFrames.has(key)) return;
+		this.retractedProviderFrames.add(key);
+		this.resetProjection();
+		for (const message of this.observedMessages) {
+			const frameKey = this.providerFrameKey(message);
+			if (frameKey && this.retractedProviderFrames.has(frameKey)) continue;
+			this.apply(message);
+		}
+	}
+
+	private providerFrameKey(message: SDKMessage): string | null {
+		if (message.type !== "assistant" && message.type !== "user") return null;
+		const providerSessionId = nonEmptyString(
+			(message as { session_id?: unknown }).session_id,
+		);
+		const providerUuid = nonEmptyString((message as { uuid?: unknown }).uuid);
+		return providerSessionId && providerUuid
+			? `${providerSessionId}\0${providerUuid}`
+			: null;
+	}
+
+	private apply(message: SDKMessage): void {
 		this.sessionId =
 			nonEmptyString((message as { session_id?: unknown }).session_id) ??
 			this.sessionId;

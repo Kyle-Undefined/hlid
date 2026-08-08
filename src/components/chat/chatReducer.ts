@@ -253,6 +253,25 @@ export type Action =
 	| { type: "RESUME_ASSISTANT"; id: string }
 	| { type: "APPEND_CHUNK"; id: string; text: string; offset?: number }
 	| { type: "REPLACE_TEXT"; id: string; text: string }
+	| {
+			type: "REVISE_ASSISTANT";
+			transcriptSeq: number;
+			currentAssistantId?: string;
+			text: string;
+			removedToolIds: string[];
+			clearedToolResultIds: string[];
+			remainingToolCount: number;
+			remainingToolErrorCount: number;
+			restoredToolMetadata?: Array<{
+				toolId: string;
+				subagent: ToolEventMessage["subagent"] | null;
+				taskActivity: ToolEventMessage["taskActivity"] | null;
+			}>;
+			steerToolEventIndexes: Array<{
+				userSeq: number;
+				toolEventIndex: number;
+			}>;
+	  }
 	| { type: "ADD_TOOL_EVENT"; id: string; event: ToolEventMessage }
 	| {
 			type: "UPDATE_TOOL_EVENT";
@@ -1121,12 +1140,109 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 			return patchMessage(state, action.id, "assistant", (m) =>
 				m.text === action.text ? m : { ...m, text: action.text },
 			);
-		case "ADD_TOOL_EVENT":
-			return patchMessage(state, action.id, "assistant", (m) =>
-				m.toolEvents.some((event) => event.id === action.event.id)
-					? m
-					: { ...m, toolEvents: [...m.toolEvents, action.event] },
+		case "REVISE_ASSISTANT": {
+			const transcriptTarget = state.find(
+				(message) =>
+					message.role === "assistant" &&
+					message.transcriptSeq === action.transcriptSeq,
 			);
+			const targetId = transcriptTarget?.id ?? action.currentAssistantId;
+			if (!targetId) return state;
+			const removed = new Set(action.removedToolIds);
+			const cleared = new Set(action.clearedToolResultIds);
+			const restoredMetadata = new Map(
+				(action.restoredToolMetadata ?? []).map((metadata) => [
+					metadata.toolId,
+					metadata,
+				]),
+			);
+			const revised = patchMessage(state, targetId, "assistant", (message) => {
+				const toolEvents = message.toolEvents
+					.filter((event) => !removed.has(event.id))
+					.map((event) => {
+						let next = event;
+						if (cleared.has(event.id)) {
+							const {
+								result: _result,
+								resultTruncated: _resultTruncated,
+								resultLength: _resultLength,
+								detailSessionId: _detailSessionId,
+								isError: _isError,
+								...withoutResult
+							} = next;
+							next = withoutResult;
+						}
+						const restored = restoredMetadata.get(event.id);
+						if (!restored) return next;
+						const {
+							subagent: _subagent,
+							taskActivity: _taskActivity,
+							...withoutMetadata
+						} = next;
+						return {
+							...withoutMetadata,
+							...(restored.subagent ? { subagent: restored.subagent } : {}),
+							...(restored.taskActivity
+								? { taskActivity: restored.taskActivity }
+								: {}),
+						};
+					});
+				const toolEventPage = message.toolEventPage
+					? {
+							...message.toolEventPage,
+							total: action.remainingToolCount,
+							errorCount: action.remainingToolErrorCount,
+							hasEarlier:
+								toolEvents.length < action.remainingToolCount &&
+								message.toolEventPage.hasEarlier,
+							nextBeforeId:
+								toolEvents.length < action.remainingToolCount
+									? message.toolEventPage.nextBeforeId
+									: null,
+						}
+					: undefined;
+				return {
+					...message,
+					text: action.text,
+					toolEvents,
+					...(toolEventPage ? { toolEventPage } : {}),
+				};
+			});
+			if (action.steerToolEventIndexes.length === 0) return revised;
+			const indexes = new Map(
+				action.steerToolEventIndexes.map((steer) => [
+					steer.userSeq,
+					steer.toolEventIndex,
+				]),
+			);
+			return revised.map((message) =>
+				message.role === "user" &&
+				message.transcriptSeq !== undefined &&
+				indexes.has(message.transcriptSeq)
+					? {
+							...message,
+							steerToolEventIndex: indexes.get(message.transcriptSeq),
+						}
+					: message,
+			);
+		}
+		case "ADD_TOOL_EVENT":
+			return patchMessage(state, action.id, "assistant", (m) => {
+				if (m.toolEvents.some((event) => event.id === action.event.id))
+					return m;
+				return {
+					...m,
+					toolEvents: [...m.toolEvents, action.event],
+					...(m.toolEventPage
+						? {
+								toolEventPage: {
+									...m.toolEventPage,
+									total: m.toolEventPage.total + 1,
+								},
+							}
+						: {}),
+				};
+			});
 		case "UPDATE_TOOL_EVENT":
 			return patchToolEvent(state, action.toolUseId, (te) => ({
 				...te,
@@ -1138,14 +1254,42 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				taskActivity: action.taskActivity,
 			}));
 		case "ADD_TOOL_RESULT":
-			return patchToolEvent(state, action.toolUseId, (te) => ({
-				...te,
-				result: action.content,
-				resultTruncated: action.resultTruncated,
-				resultLength: action.resultLength,
-				detailSessionId: action.detailSessionId,
-				...(action.isError !== undefined ? { isError: action.isError } : {}),
-			}));
+			return state.map((message) => {
+				if (message.role !== "assistant") return message;
+				const index = message.toolEvents.findIndex(
+					(event) => event.id === action.toolUseId,
+				);
+				if (index === -1) return message;
+				const previous = message.toolEvents[index];
+				if (!previous) return message;
+				const next = {
+					...previous,
+					result: action.content,
+					resultTruncated: action.resultTruncated,
+					resultLength: action.resultLength,
+					detailSessionId: action.detailSessionId,
+					...(action.isError !== undefined ? { isError: action.isError } : {}),
+				};
+				const toolEvents = [...message.toolEvents];
+				toolEvents[index] = next;
+				const wasError = previous.isError === true;
+				const isError = next.isError === true;
+				return {
+					...message,
+					toolEvents,
+					...(message.toolEventPage && wasError !== isError
+						? {
+								toolEventPage: {
+									...message.toolEventPage,
+									errorCount: Math.max(
+										0,
+										message.toolEventPage.errorCount + (isError ? 1 : -1),
+									),
+								},
+							}
+						: {}),
+				};
+			});
 		case "PREPEND_TOOL_EVENT_PAGE":
 			return patchMessage(state, action.id, "assistant", (message) => {
 				const currentPage = message.toolEventPage;

@@ -276,6 +276,8 @@ type TurnState = {
 	assistantMessageBoundaryPending: boolean;
 	lastBlockType: "text" | "tool_use" | null;
 	lastActualModel: string | null;
+	actualModelObservations: Array<{ model: string; local: boolean }>;
+	localFallbackModel: string | null;
 	lastTurnUsage: {
 		input_tokens: number;
 		cache_read_input_tokens?: number;
@@ -299,10 +301,30 @@ type TurnState = {
 		input: unknown;
 		subagent?: SubagentSnapshot;
 		taskActivity?: TaskActivity;
+		providerFrame?: { providerSessionId: string; providerUuid: string };
+		providerLineageFrames?: Array<{
+			providerSessionId: string;
+			providerUuid: string;
+		}>;
 	}[];
-	pendingToolResults: Map<string, { content: string; isError: boolean }>;
+	pendingToolResults: Map<
+		string,
+		{
+			content: string;
+			isError: boolean;
+			providerFrame?: { providerSessionId: string; providerUuid: string };
+		}
+	>;
 	pendingToolUpdates: Map<string, SubagentSnapshot>;
+	pendingToolUpdateFrames: Map<
+		string,
+		{ providerSessionId: string; providerUuid: string }
+	>;
 	pendingToolActivityUpdates: Map<string, TaskActivity>;
+	pendingToolActivityUpdateFrames: Map<
+		string,
+		{ providerSessionId: string; providerUuid: string }
+	>;
 	/** In-flight inserts that tool results await before exposing lazy detail. */
 	pendingToolEventWrites: Map<string, Promise<boolean>>;
 	/** In-flight subagent/task-activity snapshots that terminal history must await. */
@@ -332,6 +354,21 @@ type TurnState = {
 	 */
 	dbMessageId: number | null;
 	persistedToolIds: Set<string>;
+	/** Tool starts removed by a provider retraction; later updates stay hidden. */
+	retractedToolIds: Set<string>;
+	providerFrameOrder: number;
+	acceptedProviderFrames: Set<string>;
+	currentProviderFrame: {
+		providerSessionId: string;
+		providerUuid: string;
+		accepted: boolean;
+		assistantSeq?: number;
+		duplicateReplay?: {
+			textBlocksPending: number;
+			toolStartIds: Set<string>;
+			toolResultIds: Set<string>;
+		};
+	} | null;
 	/**
 	 * Throttled text-write state: a setTimeout handle that flushes the current
 	 * `assistantText` to the DB row. Many chunks arrive per second; rewriting
@@ -339,6 +376,7 @@ type TurnState = {
 	 * turn. Coalescing into ~150ms windows keeps liveness while bounding I/O.
 	 */
 	textWriteTimer: ReturnType<typeof setTimeout> | null;
+	textWritePromise: Promise<void> | null;
 	textWriteDirty: boolean;
 	lastTurnToolEvents: { toolId: string; name: string; input: unknown }[];
 	sdkSummary: string | null;
@@ -1066,6 +1104,8 @@ function createTurnState(
 		assistantMessageBoundaryPending: false,
 		lastBlockType: null,
 		lastActualModel: null,
+		actualModelObservations: [],
+		localFallbackModel: null,
 		lastTurnUsage: null,
 		liveQueryUsage: {
 			inputTokens: 0,
@@ -1081,7 +1121,9 @@ function createTurnState(
 		pendingToolEvents: [],
 		pendingToolResults: new Map(),
 		pendingToolUpdates: new Map(),
+		pendingToolUpdateFrames: new Map(),
 		pendingToolActivityUpdates: new Map(),
+		pendingToolActivityUpdateFrames: new Map(),
 		pendingToolEventWrites: new Map(),
 		pendingToolMetadataWrites: new Set(),
 		reservedAssistantSeq: null,
@@ -1090,7 +1132,12 @@ function createTurnState(
 		providerTurnId: null,
 		dbMessageId: null,
 		persistedToolIds: new Set(),
+		retractedToolIds: new Set(),
+		providerFrameOrder: 0,
+		acceptedProviderFrames: new Set(),
+		currentProviderFrame: null,
 		textWriteTimer: null,
+		textWritePromise: null,
 		textWriteDirty: false,
 		lastTurnToolEvents: [],
 		sdkSummary: null,
@@ -1103,6 +1150,13 @@ function joinAssistantMessageText(previous: string, next: string): string {
 	const leadingNewlines = next.match(/^\n*/)?.[0].length ?? 0;
 	const missingNewlines = Math.max(0, 2 - trailingNewlines - leadingNewlines);
 	return `${"\n".repeat(missingNewlines)}${next}`;
+}
+
+function providerFrameKey(
+	providerSessionId: string,
+	providerUuid: string,
+): string {
+	return `${providerSessionId}\0${providerUuid}`;
 }
 
 export class SessionManager {
@@ -3461,12 +3515,14 @@ export class SessionManager {
 				emitLiveActivityMessage(activity, message);
 			switch (event.type) {
 				case "tool_start":
-					this.handleToolStart(
-						event,
-						activity.turn,
-						options.sessionId,
-						emit,
-						options.provider,
+					queueLiveActivityWork(() =>
+						this.handleToolStart(
+							event,
+							activity.turn,
+							options.sessionId,
+							emit,
+							options.provider,
+						),
 					);
 					break;
 				case "tool_update":
@@ -4140,14 +4196,17 @@ export class SessionManager {
 			}
 		} finally {
 			let incompleteAssistantSeq: number | null = null;
-			if (job.peerOriginObserved && turn.assistantText) {
+			if (
+				job.peerOriginObserved &&
+				(turn.reservedAssistantSeq !== null || turn.assistantText)
+			) {
 				try {
 					const assistantSeq = await this.persistAssistantMessage(
 						job.sessionId,
 						turn,
 					);
 					incompleteAssistantSeq = assistantSeq;
-					this.persistPendingToolEvents(
+					await this.persistPendingToolEvents(
 						job.sessionId,
 						assistantSeq,
 						turn,
@@ -4255,13 +4314,13 @@ export class SessionManager {
 				this.agentSessionKey = null;
 				this.restartAgentSessionForEffort = false;
 			} finally {
-				if (turn.assistantText) {
+				if (turn.reservedAssistantSeq !== null || turn.assistantText) {
 					try {
 						const assistantSeq = await this.persistAssistantMessage(
 							sessionId,
 							turn,
 						);
-						this.persistPendingToolEvents(
+						await this.persistPendingToolEvents(
 							sessionId,
 							assistantSeq,
 							turn,
@@ -5025,6 +5084,7 @@ export class SessionManager {
 			clearTimeout(turn.textWriteTimer);
 			turn.textWriteTimer = null;
 		}
+		if (turn.textWritePromise) await turn.textWritePromise;
 		turn.textWriteDirty = false;
 		if (reused) {
 			await turn.assistantRowWrite;
@@ -5055,102 +5115,180 @@ export class SessionManager {
 		);
 	}
 
-	private persistPendingToolEvents(
+	private async persistPendingToolEvents(
 		sessionId: string,
 		assistantSeq: number,
 		turn: TurnState,
 		operationSuffix: string,
 		providerId: string,
-	): void {
+	): Promise<void> {
+		await Promise.all([
+			...turn.pendingToolEventWrites.values(),
+			...turn.pendingToolMetadataWrites,
+		]);
 		const dimensions = {
 			providerId,
 			...(turn.lastActualModel ? { model: turn.lastActualModel } : {}),
 			agentCwd: this.agentCwd ?? null,
 		};
-		for (const toolEvent of turn.pendingToolEvents) {
-			const result = turn.pendingToolResults.get(toolEvent.toolId);
-			const subagent =
-				turn.pendingToolUpdates.get(toolEvent.toolId) ?? toolEvent.subagent;
-			const taskActivity =
-				turn.pendingToolActivityUpdates.get(toolEvent.toolId) ??
-				toolEvent.taskActivity;
-			if (turn.persistedToolIds.has(toolEvent.toolId)) {
-				if (result) {
-					db.setToolEventResult(
-						sessionId,
+		await Promise.all(
+			turn.pendingToolEvents
+				.map(async (toolEvent) => {
+					const result = turn.pendingToolResults.get(toolEvent.toolId);
+					const subagent =
+						turn.pendingToolUpdates.get(toolEvent.toolId) ?? toolEvent.subagent;
+					const taskActivity =
+						turn.pendingToolActivityUpdates.get(toolEvent.toolId) ??
+						toolEvent.taskActivity;
+					const subagentFrame = turn.pendingToolUpdateFrames.get(
 						toolEvent.toolId,
-						result.content,
-						result.isError,
-					).catch((error) =>
-						logDbError(`setToolEventResult (${operationSuffix})`, error),
 					);
-				}
-				if (subagent) {
-					db.setToolEventSubagent(sessionId, toolEvent.toolId, subagent).catch(
-						(error) =>
-							logDbError(`setToolEventSubagent (${operationSuffix})`, error),
-					);
-				}
-				if (taskActivity) {
-					db.setToolEventActivity(
-						sessionId,
+					const activityFrame = turn.pendingToolActivityUpdateFrames.get(
 						toolEvent.toolId,
-						taskActivity,
-					).catch((error) =>
-						logDbError(`setToolEventActivity (${operationSuffix})`, error),
 					);
-				}
-				continue;
-			}
-			const append = taskActivity
-				? db.appendToolEvent(
-						sessionId,
-						assistantSeq,
-						toolEvent.toolId,
-						toolEvent.name,
-						toolEvent.input,
-						subagent,
-						dimensions,
-						taskActivity,
-					)
-				: db.appendToolEvent(
-						sessionId,
-						assistantSeq,
-						toolEvent.toolId,
-						toolEvent.name,
-						toolEvent.input,
-						subagent,
-						dimensions,
-					);
-			append
-				.then(async () => {
+					if (turn.persistedToolIds.has(toolEvent.toolId)) {
+						await Promise.all([
+							...(result
+								? [
+										result.providerFrame
+											? db.setToolEventResult(
+													sessionId,
+													toolEvent.toolId,
+													result.content,
+													result.isError,
+													result.providerFrame,
+												)
+											: db.setToolEventResult(
+													sessionId,
+													toolEvent.toolId,
+													result.content,
+													result.isError,
+												),
+									]
+								: []),
+							...(subagent
+								? [
+										this.persistToolSubagent(
+											sessionId,
+											toolEvent.toolId,
+											subagent,
+											subagentFrame,
+										),
+									]
+								: []),
+							...(taskActivity
+								? [
+										this.persistToolActivity(
+											sessionId,
+											toolEvent.toolId,
+											taskActivity,
+											activityFrame,
+										),
+									]
+								: []),
+						]);
+						return;
+					}
+
+					let append: Promise<void>;
+					if (taskActivity) {
+						append = toolEvent.providerFrame
+							? db.appendToolEvent(
+									sessionId,
+									assistantSeq,
+									toolEvent.toolId,
+									toolEvent.name,
+									toolEvent.input,
+									subagent,
+									dimensions,
+									taskActivity,
+									{
+										...toolEvent.providerFrame,
+										...(toolEvent.providerLineageFrames
+											? { lineageFrames: toolEvent.providerLineageFrames }
+											: {}),
+									},
+								)
+							: db.appendToolEvent(
+									sessionId,
+									assistantSeq,
+									toolEvent.toolId,
+									toolEvent.name,
+									toolEvent.input,
+									subagent,
+									dimensions,
+									taskActivity,
+								);
+					} else {
+						append = toolEvent.providerFrame
+							? db.appendToolEvent(
+									sessionId,
+									assistantSeq,
+									toolEvent.toolId,
+									toolEvent.name,
+									toolEvent.input,
+									subagent,
+									dimensions,
+									undefined,
+									{
+										...toolEvent.providerFrame,
+										...(toolEvent.providerLineageFrames
+											? { lineageFrames: toolEvent.providerLineageFrames }
+											: {}),
+									},
+								)
+							: db.appendToolEvent(
+									sessionId,
+									assistantSeq,
+									toolEvent.toolId,
+									toolEvent.name,
+									toolEvent.input,
+									subagent,
+									dimensions,
+								);
+					}
+					await append;
 					if (result) {
-						await db.setToolEventResult(
-							sessionId,
-							toolEvent.toolId,
-							result.content,
-							result.isError,
-						);
+						if (result.providerFrame) {
+							await db.setToolEventResult(
+								sessionId,
+								toolEvent.toolId,
+								result.content,
+								result.isError,
+								result.providerFrame,
+							);
+						} else {
+							await db.setToolEventResult(
+								sessionId,
+								toolEvent.toolId,
+								result.content,
+								result.isError,
+							);
+						}
 					}
 					if (subagent) {
-						await db.setToolEventSubagent(
+						await this.persistToolSubagent(
 							sessionId,
 							toolEvent.toolId,
 							subagent,
+							subagentFrame,
 						);
 					}
 					if (taskActivity) {
-						await db.setToolEventActivity(
+						await this.persistToolActivity(
 							sessionId,
 							toolEvent.toolId,
 							taskActivity,
+							activityFrame,
 						);
 					}
 				})
-				.catch((error) =>
-					logDbError(`appendToolEvent (${operationSuffix})`, error),
-				);
-		}
+				.map((write) =>
+					write.catch((error) =>
+						logDbError(`persist tool event (${operationSuffix})`, error),
+					),
+				),
+		);
 	}
 
 	/** Handle done event: persist query + assistant message to DB, emit done. */
@@ -5190,7 +5328,7 @@ export class SessionManager {
 						logDbError("setSessionActualModelForProvider", error),
 					);
 			}
-			if (turn.assistantText) {
+			if (turn.reservedAssistantSeq !== null || turn.assistantText) {
 				turn.lastAssistantText = turn.assistantText;
 				const assistantSeq = await this.persistAssistantMessage(
 					sessionId,
@@ -5200,7 +5338,7 @@ export class SessionManager {
 				if (recorded?.queryId != null) {
 					await db.setMessageQueryId(sessionId, assistantSeq, recorded.queryId);
 				}
-				this.persistPendingToolEvents(
+				await this.persistPendingToolEvents(
 					sessionId,
 					assistantSeq,
 					turn,
@@ -5322,9 +5460,15 @@ export class SessionManager {
 		turn.textWriteTimer = setTimeout(() => {
 			turn.textWriteTimer = null;
 			turn.textWriteDirty = false;
-			void db
-				.setMessageText(sessionId, seq, turn.assistantText)
+			const text = turn.assistantText;
+			const previousWrite = turn.textWritePromise ?? Promise.resolve();
+			const write = previousWrite
+				.then(() => db.setMessageText(sessionId, seq, text))
 				.catch((e) => logDbError("setMessageText (live)", e));
+			turn.textWritePromise = write;
+			void write.finally(() => {
+				if (turn.textWritePromise === write) turn.textWritePromise = null;
+			});
 		}, TEXT_WRITE_THROTTLE_MS);
 	}
 
@@ -5368,6 +5512,15 @@ export class SessionManager {
 		sessionId: string | undefined,
 		emit: (msg: ServerMessage) => void,
 	): void {
+		if (
+			!this.providerDirectContributionAccepted(
+				event.providerFrame,
+				turn,
+				"text",
+			)
+		) {
+			return;
+		}
 		const beginsNewAssistantMessage =
 			turn.assistantMessageBoundaryPending && Boolean(event.text);
 		if (event.text) turn.assistantMessageBoundaryPending = false;
@@ -5386,6 +5539,48 @@ export class SessionManager {
 			this.scheduleTextWrite(turn, sessionId);
 		}
 		turn.lastBlockType = "text";
+	}
+
+	private async handleResultTextFallback(
+		event: Extract<AgentEvent, { type: "result_text_fallback" }>,
+		turn: TurnState,
+		sessionId: string | undefined,
+		emit: (msg: ServerMessage) => void,
+		provider: AgentProvider,
+	): Promise<void> {
+		if (turn.assistantText) return;
+		const providerFrame =
+			event.providerSessionId && event.providerUuid
+				? {
+						providerSessionId: event.providerSessionId,
+						providerUuid: event.providerUuid,
+					}
+				: undefined;
+		if (providerFrame) {
+			await this.handleProviderMessageFrame(
+				{
+					type: "provider_message_frame",
+					id: providerFrame.providerUuid,
+					providerSessionId: providerFrame.providerSessionId,
+					kind: "result_text",
+					text: event.text,
+				},
+				turn,
+				sessionId,
+				provider,
+			);
+			if (!this.providerContributionAccepted(providerFrame, turn)) return;
+		}
+		this.handleTextDelta(
+			{
+				type: "text_delta",
+				text: event.text,
+				...(providerFrame ? { providerFrame } : {}),
+			},
+			turn,
+			sessionId,
+			emit,
+		);
 	}
 
 	private handleTextReplacement(
@@ -5440,16 +5635,326 @@ export class SessionManager {
 	 * uuid seen, i.e. the whole turn, which is what forkSession's
 	 * upToMessageId needs to branch "up to and including this displayed row".
 	 */
-	private handleAssistantMessageId(
+	private rejectProviderMessageFrame(
+		event: Extract<AgentEvent, { type: "provider_message_frame" }>,
+		turn: TurnState,
+		status: "duplicate" | "retracted",
+		assistantSeq?: number,
+	): void {
+		if (status === "retracted") {
+			turn.acceptedProviderFrames.delete(
+				providerFrameKey(event.providerSessionId, event.id),
+			);
+			for (const toolId of event.toolStartIds ?? []) {
+				turn.retractedToolIds.add(toolId);
+			}
+		}
+		turn.currentProviderFrame = {
+			providerSessionId: event.providerSessionId,
+			providerUuid: event.id,
+			accepted: false,
+			...(assistantSeq !== undefined ? { assistantSeq } : {}),
+			...(status === "duplicate"
+				? {
+						duplicateReplay: {
+							textBlocksPending: event.textBlockCount ?? (event.text ? 1 : 0),
+							toolStartIds: new Set(event.toolStartIds ?? []),
+							toolResultIds: new Set(event.toolResultIds ?? []),
+						},
+					}
+				: {}),
+		};
+	}
+
+	private async handleProviderMessageFrame(
+		event: Extract<AgentEvent, { type: "provider_message_frame" }>,
+		turn: TurnState,
+		sessionId: string | undefined,
+		provider: AgentProvider,
+	): Promise<void> {
+		if (!sessionId) {
+			turn.acceptedProviderFrames.add(
+				providerFrameKey(event.providerSessionId, event.id),
+			);
+			turn.currentProviderFrame = {
+				providerSessionId: event.providerSessionId,
+				providerUuid: event.id,
+				accepted: true,
+			};
+			return;
+		}
+		const frameInput = {
+			sessionId,
+			providerId: provider.providerId,
+			providerSessionId: event.providerSessionId,
+			providerUuid: event.id,
+			kind: event.kind,
+			...(event.text !== undefined ? { text: event.text } : {}),
+			...(event.toolStartIds ? { toolStartIds: event.toolStartIds } : {}),
+			...(event.toolResultIds ? { toolResultIds: event.toolResultIds } : {}),
+		};
+		const disposition = await db.getProviderMessageFrameDisposition(frameInput);
+		if (disposition !== "new") {
+			this.rejectProviderMessageFrame(event, turn, disposition);
+			return;
+		}
+		let seq: number;
+		if (event.kind === "tool_result") {
+			await Promise.all(
+				(event.toolResultIds ?? []).flatMap((toolId) => {
+					const pending = turn.pendingToolEventWrites.get(toolId);
+					return pending ? [pending] : [];
+				}),
+			);
+			const owningSeq = await db.getProviderToolAssistantSeq(
+				sessionId,
+				provider.providerId,
+				event.providerSessionId,
+				event.toolResultIds ?? [],
+			);
+			if (owningSeq === null) {
+				turn.currentProviderFrame = {
+					providerSessionId: event.providerSessionId,
+					providerUuid: event.id,
+					accepted: false,
+				};
+				return;
+			}
+			seq = owningSeq;
+		} else {
+			seq = this.ensureAssistantRow(turn, sessionId);
+			await turn.assistantRowWrite;
+		}
+		const status = await db.recordProviderMessageFrame({
+			assistantSeq: seq,
+			...frameInput,
+			frameOrder: turn.providerFrameOrder++,
+		});
+		if (status === "recorded") {
+			turn.currentProviderFrame = {
+				providerSessionId: event.providerSessionId,
+				providerUuid: event.id,
+				accepted: true,
+				assistantSeq: seq,
+			};
+			turn.acceptedProviderFrames.add(
+				providerFrameKey(event.providerSessionId, event.id),
+			);
+		} else {
+			this.rejectProviderMessageFrame(event, turn, status, seq);
+		}
+	}
+
+	private providerContributionAccepted(
+		providerFrame:
+			| { providerSessionId: string; providerUuid: string }
+			| undefined,
+		turn: TurnState,
+	): boolean {
+		if (!providerFrame) return true;
+		return turn.acceptedProviderFrames.has(
+			providerFrameKey(
+				providerFrame.providerSessionId,
+				providerFrame.providerUuid,
+			),
+		);
+	}
+
+	private providerDirectContributionAccepted(
+		providerFrame:
+			| { providerSessionId: string; providerUuid: string }
+			| undefined,
+		turn: TurnState,
+		kind: "boundary" | "text" | "tool_start" | "tool_result",
+		toolId?: string,
+	): boolean {
+		if (!providerFrame) return true;
+		const current = turn.currentProviderFrame;
+		const isCurrent =
+			current?.providerSessionId === providerFrame.providerSessionId &&
+			current.providerUuid === providerFrame.providerUuid;
+		const replay = isCurrent ? current.duplicateReplay : undefined;
+		if (replay) {
+			if (kind === "boundary") return false;
+			if (kind === "text" && replay.textBlocksPending > 0) {
+				replay.textBlocksPending--;
+				return false;
+			}
+			if (
+				kind === "tool_start" &&
+				toolId !== undefined &&
+				replay.toolStartIds.delete(toolId)
+			) {
+				return false;
+			}
+			if (
+				kind === "tool_result" &&
+				toolId !== undefined &&
+				replay.toolResultIds.delete(toolId)
+			) {
+				return false;
+			}
+		}
+		return this.providerContributionAccepted(providerFrame, turn);
+	}
+
+	private async handleProviderMessageRetraction(
+		event: Extract<AgentEvent, { type: "provider_message_retraction" }>,
+		turn: TurnState,
+		sessionId: string | undefined,
+		emit: (msg: ServerMessage) => void,
+		provider: AgentProvider,
+	): Promise<void> {
+		if (!sessionId) return;
+		// Serialize every writer that could otherwise recreate stale text/results
+		// after the retraction transaction commits.
+		if (turn.textWriteTimer) {
+			clearTimeout(turn.textWriteTimer);
+			turn.textWriteTimer = null;
+		}
+		if (turn.textWritePromise) await turn.textWritePromise;
+		if (turn.assistantRowWrite) await turn.assistantRowWrite;
+		if (turn.reservedAssistantSeq != null && turn.textWriteDirty) {
+			await db.setMessageText(
+				sessionId,
+				turn.reservedAssistantSeq,
+				turn.assistantText,
+			);
+		}
+		turn.textWriteDirty = false;
+		await Promise.all([
+			...turn.pendingToolEventWrites.values(),
+			...turn.pendingToolMetadataWrites,
+		]);
+		const revisions = await db.retractProviderMessageFrames(
+			sessionId,
+			provider.providerId,
+			event.providerSessionId,
+			event.ids,
+			event.source,
+		);
+		if (
+			turn.currentProviderFrame?.providerSessionId ===
+				event.providerSessionId &&
+			event.ids.includes(turn.currentProviderFrame.providerUuid)
+		) {
+			turn.currentProviderFrame.accepted = false;
+		}
+		for (const providerUuid of event.ids) {
+			turn.acceptedProviderFrames.delete(
+				providerFrameKey(event.providerSessionId, providerUuid),
+			);
+		}
+		for (const revision of revisions) {
+			const current = revision.assistantSeq === turn.reservedAssistantSeq;
+			if (current) {
+				turn.assistantText = revision.text;
+				const removed = new Set(revision.removedToolIds);
+				for (const toolId of removed) {
+					turn.retractedToolIds.add(toolId);
+					turn.pendingToolResults.delete(toolId);
+					turn.pendingToolUpdates.delete(toolId);
+					turn.pendingToolUpdateFrames.delete(toolId);
+					turn.pendingToolActivityUpdates.delete(toolId);
+					turn.pendingToolActivityUpdateFrames.delete(toolId);
+					turn.pendingToolEventWrites.delete(toolId);
+					turn.persistedToolIds.delete(toolId);
+				}
+				turn.pendingToolEvents = turn.pendingToolEvents.filter(
+					(toolEvent) => !removed.has(toolEvent.toolId),
+				);
+				for (const toolId of revision.clearedToolResultIds) {
+					turn.pendingToolResults.delete(toolId);
+				}
+				for (const metadata of revision.restoredToolMetadata ?? []) {
+					if (metadata.subagent) {
+						turn.pendingToolUpdates.set(metadata.toolId, metadata.subagent);
+					} else {
+						turn.pendingToolUpdates.delete(metadata.toolId);
+					}
+					turn.pendingToolUpdateFrames.delete(metadata.toolId);
+					if (metadata.taskActivity) {
+						turn.pendingToolActivityUpdates.set(
+							metadata.toolId,
+							metadata.taskActivity,
+						);
+					} else {
+						turn.pendingToolActivityUpdates.delete(metadata.toolId);
+					}
+					turn.pendingToolActivityUpdateFrames.delete(metadata.toolId);
+					const pending = turn.pendingToolEvents.find(
+						(toolEvent) => toolEvent.toolId === metadata.toolId,
+					);
+					if (pending) {
+						if (metadata.subagent) pending.subagent = metadata.subagent;
+						else delete pending.subagent;
+						if (metadata.taskActivity) {
+							pending.taskActivity = metadata.taskActivity;
+						} else {
+							delete pending.taskActivity;
+						}
+					}
+				}
+				turn.lastBlockType =
+					turn.pendingToolEvents.length > 0
+						? "tool_use"
+						: turn.assistantText
+							? "text"
+							: null;
+				turn.rawToolEventCount = Math.max(
+					0,
+					turn.rawToolEventCount - revision.removedToolIds.length,
+				);
+			}
+			emit({
+				type: "assistant_revision",
+				session_id: sessionId,
+				transcript_seq: revision.assistantSeq,
+				...(current ? { current: true } : {}),
+				text: revision.text,
+				removed_tool_ids: revision.removedToolIds,
+				cleared_tool_result_ids: revision.clearedToolResultIds,
+				remaining_tool_count: revision.remainingToolCount,
+				remaining_tool_error_count: revision.remainingToolErrorCount,
+				...(revision.restoredToolMetadata?.length
+					? {
+							restored_tool_metadata: revision.restoredToolMetadata.map(
+								(metadata) => ({
+									id: metadata.toolId,
+									subagent: metadata.subagent,
+									taskActivity: metadata.taskActivity,
+								}),
+							),
+						}
+					: {}),
+				steer_tool_event_indexes: revision.steerToolEventIndexes.map(
+					(steer) => ({
+						user_seq: steer.userSeq,
+						tool_event_index: steer.toolEventIndex,
+					}),
+				),
+			});
+		}
+	}
+
+	private async handleAssistantMessageId(
 		event: Extract<AgentEvent, { type: "assistant_message_id" }>,
 		turn: TurnState,
 		sessionId: string | undefined,
-	): void {
+	): Promise<void> {
 		if (!sessionId) return;
+		if (
+			turn.currentProviderFrame?.providerUuid === event.id &&
+			(event.providerSessionId === undefined ||
+				turn.currentProviderFrame.providerSessionId ===
+					event.providerSessionId) &&
+			!turn.currentProviderFrame.accepted
+		) {
+			return;
+		}
 		const seq = this.ensureAssistantRow(turn, sessionId);
-		void db
-			.setMessageSdkUuid(sessionId, seq, event.id)
-			.catch((e) => logDbError("setMessageSdkUuid", e));
+		await turn.assistantRowWrite;
+		await db.setMessageSdkUuid(sessionId, seq, event.id);
 	}
 
 	private handleProviderTurnId(
@@ -5474,13 +5979,74 @@ export class SessionManager {
 		void tracked.finally(() => turn.pendingToolMetadataWrites.delete(tracked));
 	}
 
-	private handleToolStart(
+	private persistToolSubagent(
+		sessionId: string,
+		toolId: string,
+		subagent: SubagentSnapshot,
+		providerFrame?: { providerSessionId: string; providerUuid: string },
+	): Promise<void> {
+		return providerFrame
+			? db.setToolEventSubagent(sessionId, toolId, subagent, providerFrame)
+			: db.setToolEventSubagent(sessionId, toolId, subagent);
+	}
+
+	private persistToolActivity(
+		sessionId: string,
+		toolId: string,
+		taskActivity: TaskActivity,
+		providerFrame?: { providerSessionId: string; providerUuid: string },
+	): Promise<void> {
+		return providerFrame
+			? db.setToolEventActivity(sessionId, toolId, taskActivity, providerFrame)
+			: db.setToolEventActivity(sessionId, toolId, taskActivity);
+	}
+
+	private async handleToolStart(
 		event: Extract<AgentEvent, { type: "tool_start" }>,
 		turn: TurnState,
 		sessionId: string | undefined,
 		emit: (msg: ServerMessage) => void,
 		provider: AgentProvider,
-	): void {
+	): Promise<void> {
+		if (
+			!this.providerDirectContributionAccepted(
+				event.providerFrame,
+				turn,
+				"tool_start",
+				event.toolId,
+			)
+		) {
+			return;
+		}
+		if (sessionId && event.providerFrame) {
+			const lineageFrames = [
+				event.providerFrame,
+				...(event.providerLineageFrames ?? []),
+			].filter(
+				(frame, index, frames) =>
+					frames.findIndex(
+						(candidate) =>
+							candidate.providerSessionId === frame.providerSessionId &&
+							candidate.providerUuid === frame.providerUuid,
+					) === index,
+			);
+			const linked = await Promise.all(
+				lineageFrames.map((frame) =>
+					db.linkProviderFrameToolStart(
+						sessionId,
+						provider.providerId,
+						frame.providerSessionId,
+						frame.providerUuid,
+						event.toolId,
+					),
+				),
+			);
+			if (linked.some((accepted) => !accepted)) {
+				turn.retractedToolIds.add(event.toolId);
+				return;
+			}
+		}
+		turn.retractedToolIds.delete(event.toolId);
 		turn.hadToolEvents = true;
 		if (event.name === "ExitPlanMode") {
 			turn.lastBlockType = "tool_use";
@@ -5493,6 +6059,10 @@ export class SessionManager {
 			input: event.input,
 			...(event.subagent ? { subagent: event.subagent } : {}),
 			...(event.taskActivity ? { taskActivity: event.taskActivity } : {}),
+			...(event.providerFrame ? { providerFrame: event.providerFrame } : {}),
+			...(event.providerLineageFrames
+				? { providerLineageFrames: event.providerLineageFrames }
+				: {}),
 		});
 		emit({
 			type: "tool_event",
@@ -5510,26 +6080,63 @@ export class SessionManager {
 				...(turn.lastActualModel ? { model: turn.lastActualModel } : {}),
 				agentCwd: this.agentCwd ?? null,
 			};
-			const append = event.taskActivity
-				? db.appendToolEvent(
-						sessionId,
-						seq,
-						toolId,
-						event.name,
-						event.input,
-						event.subagent,
-						dimensions,
-						event.taskActivity,
-					)
-				: db.appendToolEvent(
-						sessionId,
-						seq,
-						toolId,
-						event.name,
-						event.input,
-						event.subagent,
-						dimensions,
-					);
+			let append: Promise<void>;
+			if (event.taskActivity) {
+				append = event.providerFrame
+					? db.appendToolEvent(
+							sessionId,
+							seq,
+							toolId,
+							event.name,
+							event.input,
+							event.subagent,
+							dimensions,
+							event.taskActivity,
+							{
+								...event.providerFrame,
+								...(event.providerLineageFrames
+									? { lineageFrames: event.providerLineageFrames }
+									: {}),
+							},
+						)
+					: db.appendToolEvent(
+							sessionId,
+							seq,
+							toolId,
+							event.name,
+							event.input,
+							event.subagent,
+							dimensions,
+							event.taskActivity,
+						);
+			} else {
+				append = event.providerFrame
+					? db.appendToolEvent(
+							sessionId,
+							seq,
+							toolId,
+							event.name,
+							event.input,
+							event.subagent,
+							dimensions,
+							undefined,
+							{
+								...event.providerFrame,
+								...(event.providerLineageFrames
+									? { lineageFrames: event.providerLineageFrames }
+									: {}),
+							},
+						)
+					: db.appendToolEvent(
+							sessionId,
+							seq,
+							toolId,
+							event.name,
+							event.input,
+							event.subagent,
+							dimensions,
+						);
+			}
 			const persisted = append
 				.then(() => {
 					turn.persistedToolIds.add(toolId);
@@ -5537,7 +6144,12 @@ export class SessionManager {
 					if (latest) {
 						this.trackToolMetadataWrite(
 							turn,
-							db.setToolEventSubagent(sessionId, toolId, latest),
+							this.persistToolSubagent(
+								sessionId,
+								toolId,
+								latest,
+								turn.pendingToolUpdateFrames.get(toolId),
+							),
 							"setToolEventSubagent (live)",
 						);
 					}
@@ -5545,7 +6157,12 @@ export class SessionManager {
 					if (latestActivity) {
 						this.trackToolMetadataWrite(
 							turn,
-							db.setToolEventActivity(sessionId, toolId, latestActivity),
+							this.persistToolActivity(
+								sessionId,
+								toolId,
+								latestActivity,
+								turn.pendingToolActivityUpdateFrames.get(toolId),
+							),
 							"setToolEventActivity (live)",
 						);
 					}
@@ -5571,7 +6188,18 @@ export class SessionManager {
 		sessionId: string | undefined,
 		emit: (msg: ServerMessage) => void,
 	): void {
+		if (
+			turn.retractedToolIds.has(event.toolId) ||
+			!this.providerContributionAccepted(event.providerFrame, turn)
+		) {
+			return;
+		}
 		turn.pendingToolUpdates.set(event.toolId, event.subagent);
+		if (event.providerFrame) {
+			turn.pendingToolUpdateFrames.set(event.toolId, event.providerFrame);
+		} else {
+			turn.pendingToolUpdateFrames.delete(event.toolId);
+		}
 		const pending = turn.pendingToolEvents.find(
 			(toolEvent) => toolEvent.toolId === event.toolId,
 		);
@@ -5580,7 +6208,12 @@ export class SessionManager {
 		if (sessionId && turn.persistedToolIds.has(event.toolId)) {
 			this.trackToolMetadataWrite(
 				turn,
-				db.setToolEventSubagent(sessionId, event.toolId, event.subagent),
+				this.persistToolSubagent(
+					sessionId,
+					event.toolId,
+					event.subagent,
+					event.providerFrame,
+				),
 				"setToolEventSubagent (live)",
 			);
 		}
@@ -5592,7 +6225,21 @@ export class SessionManager {
 		sessionId: string | undefined,
 		emit: (msg: ServerMessage) => void,
 	): void {
+		if (
+			turn.retractedToolIds.has(event.toolId) ||
+			!this.providerContributionAccepted(event.providerFrame, turn)
+		) {
+			return;
+		}
 		turn.pendingToolActivityUpdates.set(event.toolId, event.taskActivity);
+		if (event.providerFrame) {
+			turn.pendingToolActivityUpdateFrames.set(
+				event.toolId,
+				event.providerFrame,
+			);
+		} else {
+			turn.pendingToolActivityUpdateFrames.delete(event.toolId);
+		}
 		const pending = turn.pendingToolEvents.find(
 			(toolEvent) => toolEvent.toolId === event.toolId,
 		);
@@ -5605,7 +6252,12 @@ export class SessionManager {
 		if (sessionId && turn.persistedToolIds.has(event.toolId)) {
 			this.trackToolMetadataWrite(
 				turn,
-				db.setToolEventActivity(sessionId, event.toolId, event.taskActivity),
+				this.persistToolActivity(
+					sessionId,
+					event.toolId,
+					event.taskActivity,
+					event.providerFrame,
+				),
 				"setToolEventActivity (live)",
 			);
 		}
@@ -5660,25 +6312,58 @@ export class SessionManager {
 		sessionId: string | undefined,
 		emit: (msg: ServerMessage) => void,
 	): Promise<void> {
+		if (
+			turn.retractedToolIds.has(event.toolId) ||
+			!this.providerDirectContributionAccepted(
+				event.providerFrame,
+				turn,
+				"tool_result",
+				event.toolId,
+			)
+		) {
+			return;
+		}
 		turn.pendingToolResults.set(event.toolId, {
 			content: event.content,
 			isError: event.isError === true,
+			...(event.providerFrame ? { providerFrame: event.providerFrame } : {}),
 		});
 
 		let persisted = false;
 		if (sessionId) {
+			const providerFrameSeq =
+				event.providerFrame &&
+				turn.currentProviderFrame?.accepted === true &&
+				turn.currentProviderFrame.providerSessionId ===
+					event.providerFrame.providerSessionId &&
+				turn.currentProviderFrame.providerUuid ===
+					event.providerFrame.providerUuid
+					? turn.currentProviderFrame.assistantSeq
+					: undefined;
 			const pendingInsert = turn.pendingToolEventWrites.get(event.toolId);
 			persisted = pendingInsert
 				? await pendingInsert
-				: turn.persistedToolIds.has(event.toolId);
+				: turn.persistedToolIds.has(event.toolId) ||
+					providerFrameSeq !== undefined;
 			if (persisted) {
 				try {
-					await db.setToolEventResult(
-						sessionId,
-						event.toolId,
-						event.content,
-						event.isError === true,
-					);
+					if (event.providerFrame || providerFrameSeq !== undefined) {
+						await db.setToolEventResult(
+							sessionId,
+							event.toolId,
+							event.content,
+							event.isError === true,
+							event.providerFrame,
+							providerFrameSeq,
+						);
+					} else {
+						await db.setToolEventResult(
+							sessionId,
+							event.toolId,
+							event.content,
+							event.isError === true,
+						);
+					}
 					// Once the database owns the complete result, the per-turn accumulator
 					// no longer needs another full-size reference.
 					turn.pendingToolResults.delete(event.toolId);
@@ -5827,7 +6512,16 @@ export class SessionManager {
 			cache_read_input_tokens: event.cacheReadTokens,
 			cache_creation_input_tokens: event.cacheCreationTokens,
 		};
-		turn.lastActualModel = event.model ?? null;
+		if (event.model) {
+			turn.actualModelObservations.push({
+				model: event.model,
+				local: turn.localFallbackModel === event.model,
+			});
+			turn.lastActualModel =
+				[...turn.actualModelObservations]
+					.reverse()
+					.find((observation) => !observation.local)?.model ?? null;
+		}
 		if (event.contextWindow) turn.lastKnownContextWindow = event.contextWindow;
 		if (event.contextTokens != null)
 			turn.lastContextTokens = event.contextTokens;
@@ -5998,22 +6692,94 @@ export class SessionManager {
 				break;
 			}
 			case "assistant_message_boundary":
+				if (
+					!this.providerDirectContributionAccepted(
+						event.providerFrame,
+						turn,
+						"boundary",
+					)
+				) {
+					break;
+				}
 				turn.assistantMessageBoundaryPending = true;
 				break;
 			case "text_delta":
 				this.handleTextDelta(event, turn, sessionId, emit);
 				break;
+			case "result_text_fallback":
+				await this.handleResultTextFallback(
+					event,
+					turn,
+					sessionId,
+					emit,
+					provider,
+				);
+				break;
 			case "text_replace":
 				this.handleTextReplacement(event, turn, sessionId, emit);
 				break;
 			case "assistant_message_id":
-				this.handleAssistantMessageId(event, turn, sessionId);
+				await this.handleAssistantMessageId(event, turn, sessionId);
+				break;
+			case "provider_message_frame":
+				await this.handleProviderMessageFrame(event, turn, sessionId, provider);
+				break;
+			case "provider_message_retraction":
+				await this.handleProviderMessageRetraction(
+					event,
+					turn,
+					sessionId,
+					emit,
+					provider,
+				);
+				break;
+			case "provider_refusal":
+				if (
+					event.outcome === "fallback" &&
+					event.scope === "local" &&
+					event.fallbackModel
+				) {
+					turn.localFallbackModel = event.fallbackModel;
+					for (
+						let index = turn.actualModelObservations.length - 1;
+						index >= 0;
+						index--
+					) {
+						const observation = turn.actualModelObservations[index];
+						if (observation?.model !== event.fallbackModel) break;
+						observation.local = true;
+					}
+					turn.lastActualModel =
+						[...turn.actualModelObservations]
+							.reverse()
+							.find((observation) => !observation.local)?.model ?? null;
+				}
+				void db.appendLog(
+					event.outcome === "no_fallback" ? "warn" : "info",
+					provider.providerId,
+					event.outcome === "no_fallback"
+						? "Claude model refusal had no fallback"
+						: "Claude model refusal fallback",
+					{
+						sessionId,
+						providerSessionId: event.providerSessionId,
+						originalModel: event.originalModel,
+						fallbackModel: event.fallbackModel,
+						direction: event.direction,
+						scope: event.scope,
+						requestId: event.requestId,
+						refusedUserMessageUuid: event.refusedUserMessageUuid,
+						category: event.category,
+						explanation: event.explanation,
+						content: event.content.slice(0, 2_000),
+					},
+				);
 				break;
 			case "provider_turn_id":
 				this.handleProviderTurnId(event, turn, sessionId);
 				break;
 			case "tool_start":
-				this.handleToolStart(event, turn, sessionId, emit, provider);
+				await this.handleToolStart(event, turn, sessionId, emit, provider);
 				break;
 			case "tool_update":
 				this.handleToolUpdate(event, turn, sessionId, emit);
@@ -8717,14 +9483,17 @@ export class SessionManager {
 		} finally {
 			// Persist any remaining assistant text (the success path clears it).
 			let incompleteAssistantSeq: number | null = null;
-			if (turn.assistantText && sessionId) {
+			if (
+				sessionId &&
+				(turn.reservedAssistantSeq !== null || turn.assistantText)
+			) {
 				try {
 					const assistantSeq = await this.persistAssistantMessage(
 						sessionId,
 						turn,
 					);
 					incompleteAssistantSeq = assistantSeq;
-					this.persistPendingToolEvents(
+					await this.persistPendingToolEvents(
 						sessionId,
 						assistantSeq,
 						turn,

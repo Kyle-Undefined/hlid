@@ -65,6 +65,33 @@ export type ChunkMessage = {
 	offset?: number;
 };
 
+/**
+ * Canonical post-persistence reconciliation for provider frame retractions.
+ * Text replacement and tool mutations are deliberately independent so Raven
+ * never guesses which visible tail belonged to a provider UUID.
+ */
+export type AssistantRevisionMessage = {
+	type: "assistant_revision";
+	session_id: string;
+	transcript_seq: number;
+	/** True when this row is the still-streaming assistant response. */
+	current?: boolean;
+	text: string;
+	removed_tool_ids: string[];
+	cleared_tool_result_ids: string[];
+	remaining_tool_count: number;
+	remaining_tool_error_count: number;
+	restored_tool_metadata?: Array<{
+		id: string;
+		subagent: SubagentSnapshot | null;
+		taskActivity: TaskActivity | null;
+	}>;
+	steer_tool_event_indexes: Array<{
+		user_seq: number;
+		tool_event_index: number;
+	}>;
+};
+
 export type ToolEventMessage = {
 	type: "tool_event";
 	name: string;
@@ -1013,6 +1040,7 @@ export type ProjectPreviewStatusMessage = {
  */
 export type ReplayBufferMessage =
 	| ChunkMessage
+	| AssistantRevisionMessage
 	| ToolEventMessage
 	| ToolUpdateMessage
 	| ToolActivityUpdateMessage
@@ -1031,6 +1059,7 @@ export type ServerMessage =
 	| StatusMessage
 	| ConnectionAckMessage
 	| ChunkMessage
+	| AssistantRevisionMessage
 	| ToolEventMessage
 	| ToolUpdateMessage
 	| ToolActivityUpdateMessage

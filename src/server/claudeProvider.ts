@@ -531,6 +531,33 @@ type ClaudeSubagentMetadata = Pick<
 	workflowJournalPath?: string;
 };
 
+type ClaudeProviderFrame = {
+	providerSessionId: string;
+	providerUuid: string;
+};
+
+type ClaudeToolResultTrackerState = {
+	metadata: ClaudeSubagentMetadata | undefined;
+	taskActivityTool: { name: string; input: unknown } | undefined;
+	taskIds: Set<string>;
+	snapshots: Map<string, SubagentSnapshot>;
+	workflowChildren: Map<
+		string,
+		{
+			snapshot: SubagentSnapshot;
+			toolId: string | undefined;
+			providerFrame: ClaudeProviderFrame | undefined;
+		}
+	>;
+};
+
+type ClaudeToolResultFrameContribution = {
+	order: number;
+	retracted: boolean;
+	toolIds: string[];
+	states: Map<string, ClaudeToolResultTrackerState>;
+};
+
 type ClaudeWorkflowProgressReader = (
 	runtimeCwd: string,
 	providerPath: string,
@@ -1015,23 +1042,269 @@ class ClaudeSubagentTracker {
 	private abandonedTaskIds = new Set<string>();
 	private queryOwnedParentIds = new Set<string>();
 	private ignoredParentIds = new Set<string>();
+	private retractedParentIds = new Set<string>();
 	private startedTaskVersion = 0;
 	private taskActivityTools = new Map<
 		string,
 		{ name: string; input: unknown }
 	>();
+	private suppressedToolIds = new Set<string>();
+	private toolProviderFrames = new Map<
+		string,
+		{ providerSessionId: string; providerUuid: string }
+	>();
+	private toolResultFrameOrder = 0;
+	private toolResultBaseStates = new Map<
+		string,
+		ClaudeToolResultTrackerState
+	>();
+	private toolResultFrameContributions = new Map<
+		string,
+		ClaudeToolResultFrameContribution
+	>();
+
+	private resultFrameKey(
+		providerSessionId: string,
+		providerUuid: string,
+	): string {
+		return `${providerSessionId}\0${providerUuid}`;
+	}
+
+	captureToolResultFrame(
+		providerSessionId: string,
+		providerUuid: string,
+		toolIds: readonly string[],
+	): void {
+		const key = this.resultFrameKey(providerSessionId, providerUuid);
+		if (this.toolResultFrameContributions.has(key)) return;
+		const uniqueToolIds = [...new Set(toolIds.filter(Boolean))];
+		for (const toolId of uniqueToolIds) {
+			if (!this.toolResultBaseStates.has(toolId)) {
+				this.toolResultBaseStates.set(
+					toolId,
+					this.captureToolResultState(toolId),
+				);
+			}
+		}
+		this.toolResultFrameContributions.set(key, {
+			order: this.toolResultFrameOrder++,
+			retracted: false,
+			toolIds: uniqueToolIds,
+			states: new Map(),
+		});
+	}
+
+	finalizeToolResultFrame(
+		providerSessionId: string,
+		providerUuid: string,
+	): void {
+		const contribution = this.toolResultFrameContributions.get(
+			this.resultFrameKey(providerSessionId, providerUuid),
+		);
+		if (!contribution || contribution.retracted) return;
+		for (const toolId of contribution.toolIds) {
+			contribution.states.set(toolId, this.captureToolResultState(toolId));
+		}
+	}
+
+	private captureToolResultState(toolId: string): ClaudeToolResultTrackerState {
+		const taskIds = new Set<string>();
+		const snapshots = new Map<string, SubagentSnapshot>();
+		for (const [taskId, mappedToolId] of this.toolIds) {
+			if (mappedToolId !== toolId) continue;
+			taskIds.add(taskId);
+			const snapshot = this.snapshots.get(taskId);
+			if (snapshot) snapshots.set(taskId, snapshot);
+		}
+		const workflowChildren = new Map<
+			string,
+			{
+				snapshot: SubagentSnapshot;
+				toolId: string | undefined;
+				providerFrame: ClaudeProviderFrame | undefined;
+			}
+		>();
+		for (const [childKey, snapshot] of this.workflowChildSnapshots) {
+			if (
+				!snapshot.parentActivityId ||
+				!taskIds.has(snapshot.parentActivityId)
+			) {
+				continue;
+			}
+			const childToolId = this.workflowChildToolIds.get(childKey);
+			workflowChildren.set(childKey, {
+				snapshot,
+				toolId: childToolId,
+				providerFrame: childToolId
+					? this.toolProviderFrames.get(childToolId)
+					: undefined,
+			});
+		}
+		return {
+			metadata: this.toolMetadata.get(toolId),
+			taskActivityTool: this.taskActivityTools.get(toolId),
+			snapshots,
+			workflowChildren,
+			taskIds,
+		};
+	}
+
+	retractToolResultFrame(
+		providerSessionId: string,
+		providerUuid: string,
+	): void {
+		const key = this.resultFrameKey(providerSessionId, providerUuid);
+		const contribution = this.toolResultFrameContributions.get(key);
+		if (!contribution || contribution.retracted) return;
+		contribution.retracted = true;
+		for (const toolId of contribution.toolIds) {
+			const surviving = [...this.toolResultFrameContributions.values()]
+				.filter(
+					(candidate) => !candidate.retracted && candidate.states.has(toolId),
+				)
+				.sort((left, right) => right.order - left.order)[0];
+			const state =
+				surviving?.states.get(toolId) ?? this.toolResultBaseStates.get(toolId);
+			if (state) this.restoreToolResultState(toolId, state);
+		}
+	}
+
+	private restoreToolResultState(
+		toolId: string,
+		state: ClaudeToolResultTrackerState,
+	): void {
+		if (state.metadata) this.toolMetadata.set(toolId, state.metadata);
+		else this.toolMetadata.delete(toolId);
+		if (state.taskActivityTool) {
+			this.taskActivityTools.set(toolId, state.taskActivityTool);
+		} else {
+			this.taskActivityTools.delete(toolId);
+		}
+		const taskIds = new Set(state.taskIds);
+		const base = this.toolResultBaseStates.get(toolId);
+		for (const taskId of base?.taskIds ?? []) taskIds.add(taskId);
+		for (const candidate of this.toolResultFrameContributions.values()) {
+			const candidateState = candidate.states.get(toolId);
+			for (const taskId of candidateState?.taskIds ?? []) taskIds.add(taskId);
+		}
+		for (const taskId of taskIds) {
+			const snapshot = state.snapshots.get(taskId);
+			if (snapshot && this.toolIds.get(taskId) === toolId) {
+				this.snapshots.set(taskId, snapshot);
+			} else if (this.toolIds.get(taskId) === toolId) {
+				this.snapshots.delete(taskId);
+			}
+		}
+		const childKeys = new Set(state.workflowChildren.keys());
+		for (const childKey of base?.workflowChildren.keys() ?? []) {
+			childKeys.add(childKey);
+		}
+		for (const candidate of this.toolResultFrameContributions.values()) {
+			const candidateState = candidate.states.get(toolId);
+			for (const childKey of candidateState?.workflowChildren.keys() ?? []) {
+				childKeys.add(childKey);
+			}
+		}
+		for (const childKey of childKeys) {
+			const child = state.workflowChildren.get(childKey);
+			const existingToolId = this.workflowChildToolIds.get(childKey);
+			if (!child) {
+				if (existingToolId) {
+					this.suppressedToolIds.add(existingToolId);
+					this.ignoredParentIds.add(existingToolId);
+					this.retractedParentIds.add(existingToolId);
+					this.toolProviderFrames.delete(existingToolId);
+				}
+				this.workflowChildSnapshots.delete(childKey);
+				this.workflowChildToolIds.delete(childKey);
+				continue;
+			}
+			this.workflowChildSnapshots.set(childKey, child.snapshot);
+			if (!child.toolId) continue;
+			this.acceptTool(child.toolId);
+			this.workflowChildToolIds.set(childKey, child.toolId);
+			if (child.providerFrame) {
+				this.linkToolProviderFrame(child.toolId, child.providerFrame);
+			}
+		}
+	}
+
+	acceptTool(toolId: string): void {
+		this.suppressedToolIds.delete(toolId);
+		this.ignoredParentIds.delete(toolId);
+		this.retractedParentIds.delete(toolId);
+	}
+
+	linkToolProviderFrame(
+		toolId: string,
+		providerFrame: { providerSessionId: string; providerUuid: string },
+	): void {
+		if (this.suppressedToolIds.has(toolId)) return;
+		this.toolProviderFrames.set(toolId, providerFrame);
+	}
+
+	private providerFrameForTool(
+		toolId: string,
+	): { providerSessionId: string; providerUuid: string } | undefined {
+		return this.toolProviderFrames.get(toolId);
+	}
+
+	suppressTool(toolId: string, accountLateUsage = true): void {
+		this.suppressedToolIds.add(toolId);
+		if (accountLateUsage) this.retractedParentIds.add(toolId);
+		else this.retractedParentIds.delete(toolId);
+		this.toolProviderFrames.delete(toolId);
+		this.taskActivityTools.delete(toolId);
+		this.toolMetadata.delete(toolId);
+		this.rootToolIds.delete(toolId);
+		this.queryOwnedParentIds.delete(toolId);
+		this.ignoredParentIds.add(toolId);
+		for (const [taskId, mappedToolId] of [...this.toolIds]) {
+			if (mappedToolId !== toolId) continue;
+			for (const [key, child] of [...this.workflowChildSnapshots]) {
+				if (child.parentActivityId !== taskId) continue;
+				const childToolId = this.workflowChildToolIds.get(key);
+				if (childToolId) {
+					this.suppressedToolIds.add(childToolId);
+					if (accountLateUsage) this.retractedParentIds.add(childToolId);
+					else this.retractedParentIds.delete(childToolId);
+					this.toolProviderFrames.delete(childToolId);
+				}
+				this.workflowChildSnapshots.delete(key);
+				this.workflowChildToolIds.delete(key);
+			}
+			this.toolIds.delete(taskId);
+			this.snapshots.delete(taskId);
+			this.unsettledTaskIds.delete(taskId);
+			this.queryWorkflowTaskIds.delete(taskId);
+			this.workflowContinuationCandidates.delete(taskId);
+			this.ignoredParentIds.add(taskId);
+			if (accountLateUsage) this.retractedParentIds.add(taskId);
+			else this.retractedParentIds.delete(taskId);
+		}
+	}
+
+	shouldAccountIgnoredChildUsage(
+		parentToolUseId: string | null | undefined,
+	): boolean {
+		return Boolean(
+			parentToolUseId && this.retractedParentIds.has(parentToolUseId),
+		);
+	}
 
 	recordTaskActivityTool(
 		toolId: string,
 		name: string,
 		input: unknown,
 	): TaskActivity | undefined {
+		if (this.suppressedToolIds.has(toolId)) return undefined;
 		const activity = claudeTaskActivityStart(name, input);
 		if (activity) this.taskActivityTools.set(toolId, { name, input });
 		return activity;
 	}
 
 	recordTaskActivityResult(toolId: string, result: unknown): AgentEvent[] {
+		if (this.suppressedToolIds.has(toolId)) return [];
 		const tool = this.taskActivityTools.get(toolId);
 		if (!tool) return [];
 		this.taskActivityTools.delete(toolId);
@@ -1052,6 +1325,7 @@ class ClaudeSubagentTracker {
 		toolName?: string,
 		parentToolUseId?: string | null,
 	): SubagentSnapshot | undefined {
+		if (this.suppressedToolIds.has(toolId)) return undefined;
 		const toolInput =
 			typeof input === "object" && input !== null
 				? (input as Record<string, unknown>)
@@ -1107,6 +1381,7 @@ class ClaudeSubagentTracker {
 
 	/** Capture native Workflow output fields such as runId and transcriptDir. */
 	recordToolResult(toolId: string, content: unknown): AgentEvent[] {
+		if (this.suppressedToolIds.has(toolId)) return [];
 		const previous = this.toolMetadata.get(toolId);
 		if (previous?.kind !== "workflow") return [];
 		const parsed = parseClaudeWorkflowOutput(content);
@@ -1245,8 +1520,31 @@ class ClaudeSubagentTracker {
 	private reconcileWorkflowProgress(
 		parentTaskId: string,
 		progress: ReadonlyArray<ClaudeWorkflowAgentProgress>,
+		triggerFrame?: { providerSessionId: string; providerUuid: string },
 	): AgentEvent[] {
 		const events: AgentEvent[] = [];
+		const parentToolId = this.toolIds.get(parentTaskId);
+		const parentFrame = parentToolId
+			? this.providerFrameForTool(parentToolId)
+			: undefined;
+		const providerFrame = triggerFrame ?? parentFrame;
+		const providerLineageFrames: Array<{
+			providerSessionId: string;
+			providerUuid: string;
+		}> = [];
+		for (const frame of [triggerFrame, parentFrame]) {
+			if (!frame) continue;
+			if (
+				providerLineageFrames.some(
+					(existing) =>
+						existing.providerSessionId === frame.providerSessionId &&
+						existing.providerUuid === frame.providerUuid,
+				)
+			) {
+				continue;
+			}
+			providerLineageFrames.push(frame);
+		}
 		for (const agent of progress) {
 			const key = `${parentTaskId}\0${agent.agentId}`;
 			const toolId =
@@ -1274,17 +1572,28 @@ class ClaudeSubagentTracker {
 			this.workflowChildSnapshots.set(key, subagent);
 			this.workflowChildToolIds.set(key, toolId);
 			if (!current) {
+				this.acceptTool(toolId);
+				if (providerFrame) this.linkToolProviderFrame(toolId, providerFrame);
 				events.push({
 					type: "tool_start",
 					toolId,
 					name: "Subagent",
 					input: subagent.prompt ? { prompt: subagent.prompt } : {},
 					subagent,
+					...(providerFrame ? { providerFrame } : {}),
+					...(providerLineageFrames.length > 1
+						? { providerLineageFrames }
+						: {}),
 				});
 				continue;
 			}
 			if (JSON.stringify(current) !== JSON.stringify(subagent)) {
-				events.push({ type: "tool_update", toolId, subagent });
+				events.push({
+					type: "tool_update",
+					toolId,
+					subagent,
+					...(providerFrame ? { providerFrame } : {}),
+				});
 			}
 		}
 		return events;
@@ -1296,6 +1605,18 @@ class ClaudeSubagentTracker {
 		message?: ClaudeTaskMessage,
 	): Promise<AgentEvent[]> {
 		if (this.queryWorkflowTaskIds.size === 0) return [];
+		const triggerFrame =
+			message &&
+			(message as { type?: unknown }).type === "user" &&
+			typeof (message as { session_id?: unknown }).session_id === "string" &&
+			typeof (message as { uuid?: unknown }).uuid === "string"
+				? {
+						providerSessionId: String(
+							(message as { session_id: string }).session_id,
+						),
+						providerUuid: String((message as { uuid: string }).uuid),
+					}
+				: undefined;
 		const hintedTaskId =
 			typeof message?.task_id === "string" &&
 			this.snapshots.get(message.task_id)?.kind === "workflow"
@@ -1331,7 +1652,9 @@ class ClaudeSubagentTracker {
 				}
 				const progress = parseClaudeWorkflowAgents(value, taskId);
 				if (progress.length === 0) continue;
-				events.push(...this.reconcileWorkflowProgress(taskId, progress));
+				events.push(
+					...this.reconcileWorkflowProgress(taskId, progress, triggerFrame),
+				);
 				break;
 			}
 		}
@@ -1411,7 +1734,13 @@ class ClaudeSubagentTracker {
 				endedAtMs: Date.now(),
 			};
 			this.snapshots.set(taskId, subagent);
-			events.push({ type: "tool_update", toolId, subagent });
+			const providerFrame = this.providerFrameForTool(toolId);
+			events.push({
+				type: "tool_update",
+				toolId,
+				subagent,
+				...(providerFrame ? { providerFrame } : {}),
+			});
 		}
 		this.unsettledTaskIds.clear();
 		this.finishQuery();
@@ -1448,7 +1777,15 @@ class ClaudeSubagentTracker {
 		const { current, toolId } = resolved;
 		const subagent = patch(current, toolId);
 		this.snapshots.set(taskId, subagent);
-		return [{ type: "tool_update", toolId, subagent }];
+		const providerFrame = this.providerFrameForTool(toolId);
+		return [
+			{
+				type: "tool_update",
+				toolId,
+				subagent,
+				...(providerFrame ? { providerFrame } : {}),
+			},
+		];
 	}
 
 	private interruptWorkflowChildren(
@@ -1474,7 +1811,13 @@ class ClaudeSubagentTracker {
 				endedAtMs,
 			};
 			this.workflowChildSnapshots.set(key, subagent);
-			events.push({ type: "tool_update", toolId, subagent });
+			const providerFrame = this.providerFrameForTool(toolId);
+			events.push({
+				type: "tool_update",
+				toolId,
+				subagent,
+				...(providerFrame ? { providerFrame } : {}),
+			});
 		}
 		return events;
 	}
@@ -1544,7 +1887,15 @@ class ClaudeSubagentTracker {
 			},
 		};
 		this.snapshots.set(message.task_id, subagent);
-		return [{ type: "tool_update", toolId, subagent }];
+		const providerFrame = this.providerFrameForTool(toolId);
+		return [
+			{
+				type: "tool_update",
+				toolId,
+				subagent,
+				...(providerFrame ? { providerFrame } : {}),
+			},
+		];
 	}
 
 	private handleStarted(message: ClaudeTaskMessage): AgentEvent[] {
@@ -1553,6 +1904,7 @@ class ClaudeSubagentTracker {
 			typeof message.tool_use_id === "string" && message.tool_use_id
 				? message.tool_use_id
 				: `claude-task-${taskId}`;
+		if (this.suppressedToolIds.has(originatingToolId)) return [];
 		const metadata = this.toolMetadata.get(originatingToolId);
 		const taskType =
 			typeof message.task_type === "string" ? message.task_type : undefined;
@@ -1617,8 +1969,17 @@ class ClaudeSubagentTracker {
 		this.queryOwnedParentIds.add(originatingToolId);
 		this.startedTaskVersion++;
 		if (typeof message.tool_use_id === "string" && message.tool_use_id) {
-			return [{ type: "tool_update", toolId: originatingToolId, subagent }];
+			const providerFrame = this.providerFrameForTool(originatingToolId);
+			return [
+				{
+					type: "tool_update",
+					toolId: originatingToolId,
+					subagent,
+					...(providerFrame ? { providerFrame } : {}),
+				},
+			];
 		}
+		const providerFrame = this.providerFrameForTool(originatingToolId);
 		return [
 			{
 				type: "tool_start",
@@ -1632,6 +1993,7 @@ class ClaudeSubagentTracker {
 						? { prompt }
 						: {},
 				subagent,
+				...(providerFrame ? { providerFrame } : {}),
 			},
 		];
 	}
@@ -1778,6 +2140,62 @@ function translateSystemMessage(
 			hadText,
 		};
 	}
+	if (message.subtype === "model_refusal_fallback") {
+		const retractedIds = [
+			...new Set(
+				(message.retracted_message_uuids ?? []).filter(
+					(id): id is string => typeof id === "string" && id.length > 0,
+				),
+			),
+		];
+		return {
+			events: [
+				...(retractedIds.length > 0
+					? [
+							{
+								type: "provider_message_retraction" as const,
+								ids: retractedIds,
+								providerSessionId: message.session_id,
+								source: "model_refusal_fallback" as const,
+							},
+						]
+					: []),
+				{
+					type: "provider_refusal",
+					providerSessionId: message.session_id,
+					outcome: "fallback",
+					originalModel: message.original_model,
+					fallbackModel: message.fallback_model,
+					direction: message.direction,
+					scope: message.scope ?? "session",
+					requestId: message.request_id,
+					refusedUserMessageUuid: message.refused_user_message_uuid,
+					category: message.api_refusal_category,
+					explanation: message.api_refusal_explanation,
+					content: message.content,
+				},
+			],
+			hadText,
+		};
+	}
+	if (message.subtype === "model_refusal_no_fallback") {
+		return {
+			events: [
+				{
+					type: "provider_refusal",
+					providerSessionId: message.session_id,
+					outcome: "no_fallback",
+					originalModel: message.original_model,
+					requestId: message.request_id,
+					refusedUserMessageUuid: message.refused_user_message_uuid,
+					category: message.api_refusal_category,
+					explanation: message.api_refusal_explanation,
+					content: message.content,
+				},
+			],
+			hadText,
+		};
+	}
 	const taskEvents = tracker.handleSystem(message as ClaudeTaskMessage);
 	if (taskEvents.length > 0) return { events: taskEvents, hadText };
 	return { events: [], hadText };
@@ -1857,25 +2275,88 @@ function translateUserMessage(
 				]
 			: [];
 	const events: AgentEvent[] = [...peerEvent, ...checkpointEvents];
+	const providerFrame =
+		typeof checkpointId === "string" &&
+		checkpointId.length > 0 &&
+		typeof checkpointSessionId === "string" &&
+		checkpointSessionId.length > 0
+			? {
+					providerUuid: checkpointId,
+					providerSessionId: checkpointSessionId,
+				}
+			: undefined;
+	if (toolResultBlocks.length > 0) {
+		const frameId = (message as { uuid?: unknown }).uuid;
+		const frameSessionId = (message as { session_id?: unknown }).session_id;
+		if (
+			typeof frameId === "string" &&
+			frameId.length > 0 &&
+			typeof frameSessionId === "string" &&
+			frameSessionId.length > 0
+		) {
+			events.push({
+				type: "provider_message_frame",
+				id: frameId,
+				providerSessionId: frameSessionId,
+				kind: "tool_result",
+				toolResultIds: toolResultBlocks
+					.map((block) => String(block.tool_use_id ?? ""))
+					.filter(Boolean),
+			});
+		}
+	}
 	events.push(
 		...content.flatMap((block: Record<string, unknown>) => {
 			if (block.type !== "tool_result") return [];
 			const text = normalizeToolResultContent(block.content);
 			const toolId = String(block.tool_use_id ?? "");
 			const result = structuredToolResult ?? block.content;
+			const activityEvents = tracker
+				.recordTaskActivityResult(toolId, result)
+				.map((event) => (providerFrame ? { ...event, providerFrame } : event));
+			const subagentEvents = tracker
+				.recordToolResult(toolId, result)
+				.map((event) => (providerFrame ? { ...event, providerFrame } : event));
 			return [
-				...tracker.recordTaskActivityResult(toolId, result),
-				...tracker.recordToolResult(toolId, result),
+				...activityEvents,
+				...subagentEvents,
 				{
 					type: "tool_result" as const,
 					toolId,
 					content: truncateToolResult(text),
+					...(providerFrame ? { providerFrame } : {}),
 					...(block.is_error === true ? { isError: true } : {}),
 				},
 			];
 		}),
 	);
 	return { events, hadText };
+}
+
+/**
+ * Stable frame-local prose used to rebuild an aggregated Hlid row after any
+ * non-tail provider frame is retracted. Inter-frame spacing is derived later;
+ * spacing after a tool within this same frame remains part of its contribution.
+ */
+function assistantFrameText(
+	message: Extract<SDKMessage, { type: "assistant" }>,
+): string {
+	let text = "";
+	let previousWasTool = false;
+	for (const block of message.message.content) {
+		if (block.type === "tool_use") {
+			previousWasTool = true;
+			continue;
+		}
+		if (block.type !== "text") continue;
+		const contribution =
+			previousWasTool && block.text && !block.text.startsWith("\n")
+				? `\n\n${block.text}`
+				: block.text;
+		text += contribution;
+		previousWasTool = false;
+	}
+	return text;
 }
 
 function translateAssistantMessage(
@@ -1887,8 +2368,59 @@ function translateAssistantMessage(
 	// Always first: session.ts uses this to stamp the current turn's row with
 	// the native transcript id of the SDK message contributing right now, so
 	// forkSession's upToMessageId can branch precisely at a displayed turn.
+	const supersededIds = [
+		...new Set(
+			(message.supersedes ?? []).filter(
+				(id) => id.length > 0 && id !== message.uuid,
+			),
+		),
+	];
+	const toolStartIds = message.message.content.flatMap((block) =>
+		block.type === "tool_use" ? [block.id] : [],
+	);
+	const textBlockCount = message.message.content.filter(
+		(block) => block.type === "text",
+	).length;
+	const hasFrameIdentity =
+		typeof message.uuid === "string" &&
+		message.uuid.length > 0 &&
+		typeof message.session_id === "string" &&
+		message.session_id.length > 0;
+	const providerFrame = hasFrameIdentity
+		? {
+				providerUuid: message.uuid,
+				providerSessionId: message.session_id,
+			}
+		: undefined;
 	const events: AgentEvent[] = [
-		{ type: "assistant_message_id", id: message.uuid },
+		...(supersededIds.length > 0
+			? [
+					{
+						type: "provider_message_retraction" as const,
+						ids: supersededIds,
+						providerSessionId: message.session_id,
+						source: "assistant_supersedes" as const,
+					},
+				]
+			: []),
+		...(hasFrameIdentity
+			? [
+					{
+						type: "provider_message_frame" as const,
+						id: message.uuid,
+						providerSessionId: message.session_id,
+						kind: "assistant" as const,
+						text: assistantFrameText(message),
+						...(textBlockCount > 1 ? { textBlockCount } : {}),
+						...(toolStartIds.length > 0 ? { toolStartIds } : {}),
+					},
+				]
+			: []),
+		{
+			type: "assistant_message_id",
+			id: message.uuid,
+			...(hasFrameIdentity ? { providerSessionId: message.session_id } : {}),
+		},
 	];
 	const usage = message.message.usage;
 	if (usage) {
@@ -1905,8 +2437,15 @@ function translateAssistantMessage(
 	for (const block of message.message.content) {
 		if (block.type === "text") {
 			nextHadText = true;
-			events.push({ type: "text_delta", text: block.text });
+			events.push({
+				type: "text_delta",
+				text: block.text,
+				...(providerFrame ? { providerFrame } : {}),
+			});
 		} else if (block.type === "tool_use") {
+			if (providerFrame) {
+				tracker.linkToolProviderFrame(block.id, providerFrame);
+			}
 			const taskActivity = tracker.recordTaskActivityTool(
 				block.id,
 				block.name,
@@ -1926,6 +2465,7 @@ function translateAssistantMessage(
 				input: block.input,
 				...(subagent ? { subagent } : {}),
 				...(taskActivity ? { taskActivity } : {}),
+				...(providerFrame ? { providerFrame } : {}),
 			});
 		}
 	}
@@ -2009,12 +2549,22 @@ function resultUsage(
 
 function translateResultMessage(
 	message: Extract<SDKMessage, { type: "result" }>,
-	hadText: boolean,
+	_hadText: boolean,
 	includeEstimatedCost: boolean,
 ): EventTranslation {
 	const events: AgentEvent[] = [];
-	if (!hadText && message.subtype === "success" && message.result) {
-		events.push({ type: "text_delta", text: message.result });
+	if (message.subtype === "success" && message.result) {
+		const hasFrameIdentity = Boolean(message.uuid && message.session_id);
+		events.push({
+			type: "result_text_fallback",
+			text: message.result,
+			...(hasFrameIdentity
+				? {
+						providerUuid: message.uuid,
+						providerSessionId: message.session_id,
+					}
+				: {}),
+		});
 	}
 	events.push({
 		type: "done",
@@ -2131,6 +2681,12 @@ class ClaudeAgentSession implements AgentSession {
 	private retriedWithoutResume = false;
 	private pendingSteerContinuation = false;
 	private hasEmittedAssistantTextMessage = false;
+	private readonly retractedProviderFrames = new Map<string, Set<string>>();
+	private readonly activeAssistantTextFrames = new Map<string, Set<string>>();
+	private readonly providerFrameToolIds = new Map<
+		string,
+		Map<string, string[]>
+	>();
 	private subagents = new ClaudeSubagentTracker();
 	private backgroundActivities: ClaudeBackgroundActivityTracker;
 	private turnUsage = new ClaudeTurnUsageAccumulator();
@@ -2567,6 +3123,7 @@ class ClaudeAgentSession implements AgentSession {
 		done: Extract<AgentEvent, { type: "done" }>,
 	): Extract<AgentEvent, { type: "done" }> {
 		this.hasEmittedAssistantTextMessage = false;
+		this.activeAssistantTextFrames.clear();
 		const reconciled = this.turnUsage.reconcileMany(messages);
 		this.turnUsage.reset();
 		this.subagents.finishQuery();
@@ -2611,6 +3168,75 @@ class ClaudeAgentSession implements AgentSession {
 				cacheCreationTokens: reconciled.cacheCreationTokens,
 			},
 		};
+	}
+
+	private rememberProviderRetractions(
+		providerSessionId: string,
+		providerUuids: readonly string[],
+	): void {
+		if (!providerSessionId || providerUuids.length === 0) return;
+		let tombstones = this.retractedProviderFrames.get(providerSessionId);
+		if (!tombstones) {
+			tombstones = new Set();
+			this.retractedProviderFrames.set(providerSessionId, tombstones);
+		}
+		const activeText = this.activeAssistantTextFrames.get(providerSessionId);
+		for (const providerUuid of providerUuids) {
+			if (!providerUuid) continue;
+			tombstones.add(providerUuid);
+			this.backgroundActivities.retractProviderFrame(
+				providerSessionId,
+				providerUuid,
+			);
+			activeText?.delete(providerUuid);
+			const toolIds = this.providerFrameToolIds
+				.get(providerSessionId)
+				?.get(providerUuid);
+			for (const toolId of toolIds ?? []) this.subagents.suppressTool(toolId);
+			this.providerFrameToolIds.get(providerSessionId)?.delete(providerUuid);
+			this.subagents.retractToolResultFrame(providerSessionId, providerUuid);
+		}
+		if (activeText?.size === 0) {
+			this.activeAssistantTextFrames.delete(providerSessionId);
+		}
+		this.hasEmittedAssistantTextMessage =
+			this.activeAssistantTextFrames.size > 0;
+	}
+
+	private isProviderFrameRetracted(
+		providerSessionId: string,
+		providerUuid: string,
+	): boolean {
+		return (
+			this.retractedProviderFrames.get(providerSessionId)?.has(providerUuid) ===
+			true
+		);
+	}
+
+	private rememberAssistantTextFrame(
+		providerSessionId: string,
+		providerUuid: string,
+	): void {
+		let frames = this.activeAssistantTextFrames.get(providerSessionId);
+		if (!frames) {
+			frames = new Set();
+			this.activeAssistantTextFrames.set(providerSessionId, frames);
+		}
+		frames.add(providerUuid);
+	}
+
+	private rememberAssistantToolFrame(
+		providerSessionId: string,
+		providerUuid: string,
+		toolIds: string[],
+	): void {
+		if (toolIds.length === 0) return;
+		let frames = this.providerFrameToolIds.get(providerSessionId);
+		if (!frames) {
+			frames = new Map();
+			this.providerFrameToolIds.set(providerSessionId, frames);
+		}
+		frames.set(providerUuid, toolIds);
 	}
 
 	private async *translateEvents(): AsyncGenerator<AgentEvent> {
@@ -2708,7 +3334,6 @@ class ClaudeAgentSession implements AgentSession {
 				if (message.type === "conversation_reset") {
 					this.resumeId = message.new_conversation_id;
 				}
-				this.backgroundActivities.observe(message);
 				if (message.type === "result" && isEmptyClaudeIdleBoundary(message)) {
 					// This belongs to the resumed stream's idle state, not the
 					// non-empty user message Hlid has just queued. Keep draining
@@ -2732,12 +3357,124 @@ class ClaudeAgentSession implements AgentSession {
 					// same visible Hlid turn. Reset only result-text fallback state.
 					hadText = false;
 				}
+				let suppressProviderFrame = false;
+				let retractionChangedText = false;
+				let tracksProviderText = false;
+				let acceptedToolResultFrame: ClaudeProviderFrame | null = null;
+				if (message.type === "assistant") {
+					const supersededIds = (message.supersedes ?? []).filter(
+						(id) => id && id !== message.uuid,
+					);
+					if (supersededIds.length > 0) {
+						this.rememberProviderRetractions(message.session_id, supersededIds);
+						retractionChangedText = true;
+					}
+					const parentToolUseId = message.parent_tool_use_id;
+					if (this.subagents.shouldIgnoreChildUsage(parentToolUseId)) {
+						const accountLateUsage =
+							this.subagents.shouldAccountIgnoredChildUsage(parentToolUseId);
+						if (accountLateUsage) this.turnUsage.record(message);
+						for (const block of message.message.content) {
+							if (block.type === "tool_use") {
+								this.subagents.suppressTool(block.id, accountLateUsage);
+							}
+						}
+						const ignoredSupersededIds = [...new Set(supersededIds)];
+						if (ignoredSupersededIds.length > 0) {
+							yield {
+								type: "provider_message_retraction",
+								ids: ignoredSupersededIds,
+								providerSessionId: message.session_id,
+								source: "assistant_supersedes",
+							};
+						}
+						continue;
+					}
+					if (message.session_id && message.uuid) {
+						tracksProviderText = true;
+						suppressProviderFrame = this.isProviderFrameRetracted(
+							message.session_id,
+							message.uuid,
+						);
+						if (!suppressProviderFrame && assistantFrameText(message)) {
+							this.rememberAssistantTextFrame(message.session_id, message.uuid);
+						}
+						if (!suppressProviderFrame) {
+							const toolIds = message.message.content.flatMap((block) =>
+								block.type === "tool_use" ? [block.id] : [],
+							);
+							for (const toolId of toolIds) this.subagents.acceptTool(toolId);
+							this.rememberAssistantToolFrame(
+								message.session_id,
+								message.uuid,
+								toolIds,
+							);
+						} else {
+							for (const block of message.message.content) {
+								if (block.type === "tool_use") {
+									this.subagents.suppressTool(block.id);
+								}
+							}
+						}
+					}
+				} else if (
+					message.type === "system" &&
+					message.subtype === "model_refusal_fallback"
+				) {
+					this.rememberProviderRetractions(
+						message.session_id,
+						message.retracted_message_uuids ?? [],
+					);
+					retractionChangedText = true;
+				} else if (message.type === "user") {
+					const content = (message as { message?: { content?: unknown } })
+						.message?.content;
+					const hasToolResult =
+						Array.isArray(content) &&
+						content.some(
+							(block) =>
+								typeof block === "object" &&
+								block !== null &&
+								(block as { type?: unknown }).type === "tool_result",
+						);
+					if (
+						hasToolResult &&
+						typeof message.session_id === "string" &&
+						typeof message.uuid === "string"
+					) {
+						suppressProviderFrame = this.isProviderFrameRetracted(
+							message.session_id,
+							message.uuid,
+						);
+						if (!suppressProviderFrame) {
+							const toolIds = content.flatMap((block) =>
+								typeof block === "object" &&
+								block !== null &&
+								(block as { type?: unknown }).type === "tool_result" &&
+								typeof (block as { tool_use_id?: unknown }).tool_use_id ===
+									"string"
+									? [String((block as { tool_use_id: string }).tool_use_id)]
+									: [],
+							);
+							this.subagents.captureToolResultFrame(
+								message.session_id,
+								message.uuid,
+								toolIds,
+							);
+							acceptedToolResultFrame = {
+								providerSessionId: message.session_id,
+								providerUuid: message.uuid,
+							};
+						}
+					}
+				}
 				if (message.type === "assistant") {
 					const parentToolUseId = message.parent_tool_use_id;
-					if (this.subagents.shouldIgnoreChildUsage(parentToolUseId)) continue;
 					this.subagents.trackChildParent(parentToolUseId);
 					this.turnUsage.record(message);
 				}
+				if (!suppressProviderFrame) this.backgroundActivities.observe(message);
+				if (suppressProviderFrame && message.type === "user") continue;
 				const translation = translateSdkMessage(
 					message,
 					hadText,
@@ -2745,6 +3482,14 @@ class ClaudeAgentSession implements AgentSession {
 					this.includeEstimatedCost,
 					this.normalizeModel,
 				);
+				if (suppressProviderFrame) {
+					translation.events = translation.events.filter(
+						(event) =>
+							event.type === "provider_message_retraction" ||
+							event.type === "usage",
+					);
+					translation.hadText = hadText;
+				}
 				if (message.type === "assistant") {
 					const firstTextIndex = translation.events.findIndex(
 						(event) => event.type === "text_delta",
@@ -2753,6 +3498,15 @@ class ClaudeAgentSession implements AgentSession {
 						if (this.hasEmittedAssistantTextMessage) {
 							translation.events.splice(firstTextIndex, 0, {
 								type: "assistant_message_boundary",
+								...(typeof message.uuid === "string" &&
+								typeof message.session_id === "string"
+									? {
+											providerFrame: {
+												providerUuid: message.uuid,
+												providerSessionId: message.session_id,
+											},
+										}
+									: {}),
 							});
 						}
 						this.hasEmittedAssistantTextMessage = true;
@@ -2763,7 +3517,10 @@ class ClaudeAgentSession implements AgentSession {
 						this.latestSkillCommands = event.commands;
 					}
 				}
-				hadText = translation.hadText;
+				hadText =
+					tracksProviderText || retractionChangedText
+						? this.activeAssistantTextFrames.size > 0
+						: translation.hadText;
 				if (message.type !== "result") {
 					yield* translation.events;
 					const shouldRefreshWorkflow =
@@ -2776,11 +3533,17 @@ class ClaudeAgentSession implements AgentSession {
 								"task_updated",
 								"task_notification",
 							].includes(String((message as { subtype?: unknown }).subtype)));
-					if (shouldRefreshWorkflow) {
+					if (!suppressProviderFrame && shouldRefreshWorkflow) {
 						yield* await this.subagents.refreshWorkflowProgress(
 							this.runtimeCwd,
 							this.workflowProgressReader,
 							message as ClaudeTaskMessage,
+						);
+					}
+					if (acceptedToolResultFrame) {
+						this.subagents.finalizeToolResultFrame(
+							acceptedToolResultFrame.providerSessionId,
+							acceptedToolResultFrame.providerUuid,
 						);
 					}
 					workflowProgressRefreshAtMs = this.subagents.hasActiveWorkflowTasks()

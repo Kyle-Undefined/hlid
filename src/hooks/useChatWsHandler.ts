@@ -39,7 +39,7 @@ function dispatchImmediateMessage(
 	msg: ServerMessage,
 	context: ChatWsHandlerContext,
 ): boolean {
-	const { dispatch, setRateLimit } = context;
+	const { dispatch, pendingIdRef, setRateLimit } = context;
 	switch (msg.type) {
 		case "rate_limit":
 			setRateLimit(msg);
@@ -55,6 +55,35 @@ function dispatchImmediateMessage(
 					msg.workspace_references ?? [],
 				),
 				...(msg.attachments ? { attachments: msg.attachments } : {}),
+			});
+			return true;
+		case "assistant_revision":
+			dispatch({
+				type: "REVISE_ASSISTANT",
+				transcriptSeq: msg.transcript_seq,
+				...(msg.current && pendingIdRef.current
+					? { currentAssistantId: pendingIdRef.current }
+					: {}),
+				text: msg.text,
+				removedToolIds: msg.removed_tool_ids,
+				clearedToolResultIds: msg.cleared_tool_result_ids,
+				remainingToolCount: msg.remaining_tool_count,
+				remainingToolErrorCount: msg.remaining_tool_error_count,
+				...(msg.restored_tool_metadata
+					? {
+							restoredToolMetadata: msg.restored_tool_metadata.map(
+								(metadata) => ({
+									toolId: metadata.id,
+									subagent: metadata.subagent,
+									taskActivity: metadata.taskActivity,
+								}),
+							),
+						}
+					: {}),
+				steerToolEventIndexes: msg.steer_tool_event_indexes.map((steer) => ({
+					userSeq: steer.user_seq,
+					toolEventIndex: steer.tool_event_index,
+				})),
 			});
 			return true;
 		case "file_checkpoint":

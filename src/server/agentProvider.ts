@@ -417,8 +417,22 @@ export type AgentEvent =
 	| { type: "commands_changed"; commands: SlashCommand[] }
 	| { type: "transport_error"; message: string }
 	/** A distinct root assistant message follows within the same visible turn. */
-	| { type: "assistant_message_boundary" }
-	| { type: "text_delta"; text: string }
+	| {
+			type: "assistant_message_boundary";
+			providerFrame?: { providerSessionId: string; providerUuid: string };
+	  }
+	| {
+			type: "text_delta";
+			text: string;
+			providerFrame?: { providerSessionId: string; providerUuid: string };
+	  }
+	/** Completed-result prose used only when no accepted assistant text is visible. */
+	| {
+			type: "result_text_fallback";
+			text: string;
+			providerSessionId?: string;
+			providerUuid?: string;
+	  }
 	| {
 			/**
 			 * Replace the most recently emitted assistant-message tail with the
@@ -434,7 +448,45 @@ export type AgentEvent =
 	 * persist a fork cutoff (forkSession's upToMessageId) per displayed
 	 * assistant row. Other providers simply never emit this.
 	 */
-	| { type: "assistant_message_id"; id: string }
+	| { type: "assistant_message_id"; id: string; providerSessionId?: string }
+	/**
+	 * One provider transcript frame contributing to Hlid's aggregated assistant
+	 * row. The UUID is provider-owned; order and visible linkage stay server-side.
+	 */
+	| {
+			type: "provider_message_frame";
+			id: string;
+			providerSessionId: string;
+			kind: "assistant" | "result_text" | "tool_result";
+			/** Frame-local prose, without separators between distinct frames. */
+			text?: string;
+			/** Number of framed text deltas that make up this prose contribution. */
+			textBlockCount?: number;
+			toolStartIds?: string[];
+			toolResultIds?: string[];
+	  }
+	/** Provider-authoritative, idempotent transcript-frame eviction. */
+	| {
+			type: "provider_message_retraction";
+			ids: string[];
+			providerSessionId: string;
+			source: "assistant_supersedes" | "model_refusal_fallback";
+	  }
+	/** Structured provider refusal lifecycle evidence; never invents retractions. */
+	| {
+			type: "provider_refusal";
+			providerSessionId: string;
+			outcome: "fallback" | "no_fallback";
+			originalModel: string;
+			fallbackModel?: string;
+			direction?: "retry" | "revert" | "sticky";
+			scope?: "session" | "local";
+			requestId?: string | null;
+			refusedUserMessageUuid?: string | null;
+			category?: string | null;
+			explanation?: string | null;
+			content: string;
+	  }
 	/** Native provider turn id used for exact turn-boundary forks (Codex). */
 	| { type: "provider_turn_id"; id: string }
 	| { type: "local_command_output"; content: string }
@@ -445,14 +497,31 @@ export type AgentEvent =
 			input: unknown;
 			subagent?: SubagentSnapshot;
 			taskActivity?: TaskActivity;
+			providerFrame?: { providerSessionId: string; providerUuid: string };
+			/** Additional provider frames whose surviving state this derived card depends on. */
+			providerLineageFrames?: Array<{
+				providerSessionId: string;
+				providerUuid: string;
+			}>;
 	  }
-	| { type: "tool_update"; toolId: string; subagent: SubagentSnapshot }
-	| { type: "tool_activity_update"; toolId: string; taskActivity: TaskActivity }
+	| {
+			type: "tool_update";
+			toolId: string;
+			subagent: SubagentSnapshot;
+			providerFrame?: { providerSessionId: string; providerUuid: string };
+	  }
+	| {
+			type: "tool_activity_update";
+			toolId: string;
+			taskActivity: TaskActivity;
+			providerFrame?: { providerSessionId: string; providerUuid: string };
+	  }
 	| {
 			type: "tool_result";
 			toolId: string;
 			content: string;
 			isError?: boolean;
+			providerFrame?: { providerSessionId: string; providerUuid: string };
 	  }
 	/** Provider-produced media that Hlid must retain before exposing to Raven. */
 	| {

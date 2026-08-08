@@ -3677,6 +3677,1220 @@ describe("SessionManager — live tool_event persistence", () => {
 	});
 });
 
+describe("SessionManager — Claude provider-frame reconciliation", () => {
+	beforeEach(() => {
+		vi.mocked(dbMock.appendMessage).mockClear();
+		vi.mocked(dbMock.appendToolEvent).mockReset().mockResolvedValue(undefined);
+		vi.mocked(dbMock.setToolEventResult)
+			.mockReset()
+			.mockResolvedValue(undefined);
+		vi.mocked(dbMock.setToolEventSubagent)
+			.mockReset()
+			.mockResolvedValue(undefined);
+		vi.mocked(dbMock.setToolEventActivity)
+			.mockReset()
+			.mockResolvedValue(undefined);
+		vi.mocked(dbMock.setMessageText).mockReset().mockResolvedValue(undefined);
+		vi.mocked(dbMock.setMessageSdkUuid).mockClear();
+		vi.mocked(dbMock.appendLog).mockClear();
+		vi.mocked(dbMock.setSessionModel).mockClear();
+		vi.mocked(dbMock.setSessionActualModelForProvider)
+			.mockReset()
+			.mockResolvedValue(true);
+		vi.mocked(dbMock.getProviderMessageFrameDisposition)
+			.mockReset()
+			.mockResolvedValue("new");
+		vi.mocked(dbMock.getProviderToolAssistantSeq)
+			.mockReset()
+			.mockResolvedValue(null);
+		vi.mocked(dbMock.linkProviderFrameToolStart)
+			.mockReset()
+			.mockResolvedValue(true);
+		vi.mocked(dbMock.recordProviderMessageFrame)
+			.mockReset()
+			.mockResolvedValue("recorded");
+		vi.mocked(dbMock.retractProviderMessageFrames)
+			.mockReset()
+			.mockResolvedValue([]);
+	});
+
+	it("persists a frame before streaming it and emits its canonical revision after retraction", async () => {
+		vi.mocked(dbMock.retractProviderMessageFrames).mockResolvedValueOnce([
+			{
+				assistantSeq: 1,
+				text: "",
+				removedToolIds: [],
+				clearedToolResultIds: [],
+				remainingToolCount: 0,
+				remainingToolErrorCount: 0,
+				steerToolEventIndexes: [],
+			},
+		]);
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const providerFrame = {
+			providerSessionId: "native-refusal",
+			providerUuid: "refused-frame",
+		};
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "native-refusal" },
+				{
+					type: "provider_message_frame",
+					id: "refused-frame",
+					providerSessionId: "native-refusal",
+					kind: "assistant",
+					text: "Refused partial",
+				},
+				{
+					type: "assistant_message_id",
+					id: "refused-frame",
+					providerSessionId: "native-refusal",
+				},
+				{
+					type: "text_delta",
+					text: "Refused partial",
+					providerFrame,
+				},
+				{
+					type: "provider_message_retraction",
+					ids: ["refused-frame"],
+					providerSessionId: "native-refusal",
+					source: "assistant_supersedes",
+				},
+			],
+			gate,
+		);
+		const emit = vi.fn<(message: ServerMessage) => void>();
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const run = sm.runQuery("answer", emit, {
+			sessionId: "sess-frame-retract",
+		});
+		try {
+			await gateReached;
+			expect(dbMock.recordProviderMessageFrame).toHaveBeenCalledWith({
+				sessionId: "sess-frame-retract",
+				assistantSeq: 1,
+				providerId: "claude",
+				providerSessionId: "native-refusal",
+				providerUuid: "refused-frame",
+				frameOrder: 0,
+				kind: "assistant",
+				text: "Refused partial",
+			});
+			expect(emit).toHaveBeenCalledWith({
+				type: "chunk",
+				text: "Refused partial",
+				offset: 0,
+			});
+			expect(emit).toHaveBeenCalledWith({
+				type: "assistant_revision",
+				session_id: "sess-frame-retract",
+				transcript_seq: 1,
+				current: true,
+				text: "",
+				removed_tool_ids: [],
+				cleared_tool_result_ids: [],
+				remaining_tool_count: 0,
+				remaining_tool_error_count: 0,
+				steer_tool_event_indexes: [],
+			});
+			const chunkIndex = emit.mock.calls.findIndex(
+				([message]) => message.type === "chunk",
+			);
+			const revisionIndex = emit.mock.calls.findIndex(
+				([message]) => message.type === "assistant_revision",
+			);
+			expect(
+				vi.mocked(dbMock.recordProviderMessageFrame).mock
+					.invocationCallOrder[0],
+			).toBeLessThan(emit.mock.invocationCallOrder[chunkIndex] ?? -1);
+			expect(
+				vi.mocked(dbMock.retractProviderMessageFrames).mock
+					.invocationCallOrder[0],
+			).toBeLessThan(emit.mock.invocationCallOrder[revisionIndex] ?? -1);
+		} finally {
+			release();
+			await run;
+		}
+	});
+
+	it.each([
+		"retracted",
+		"duplicate",
+	] as const)("drops a %s frame without reserving a phantom assistant row", async (disposition) => {
+		vi.mocked(dbMock.getProviderMessageFrameDisposition).mockResolvedValueOnce(
+			disposition,
+		);
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const providerFrame = {
+			providerSessionId: "native-replay",
+			providerUuid: "replayed-frame",
+		};
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "native-replay" },
+				{
+					type: "provider_message_frame",
+					id: "replayed-frame",
+					providerSessionId: "native-replay",
+					kind: "assistant",
+					text: "must stay hidden",
+				},
+				{
+					type: "assistant_message_id",
+					id: "replayed-frame",
+					providerSessionId: "native-replay",
+				},
+				{
+					type: "text_delta",
+					text: "must stay hidden",
+					providerFrame,
+				},
+			],
+			gate,
+		);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const run = sm.runQuery("replay", (message) => emitted.push(message), {
+			sessionId: `sess-frame-${disposition}`,
+		});
+		try {
+			await gateReached;
+			expect(dbMock.recordProviderMessageFrame).not.toHaveBeenCalled();
+			expect(dbMock.setMessageSdkUuid).not.toHaveBeenCalled();
+			expect(emitted.some((message) => message.type === "chunk")).toBe(false);
+			const assistantRows = vi
+				.mocked(dbMock.appendMessage)
+				.mock.calls.filter((call) => call[2] === "assistant");
+			expect(assistantRows).toEqual([]);
+		} finally {
+			release();
+			await run;
+		}
+	});
+
+	it("suppresses every text block from a duplicate multi-block frame", async () => {
+		vi.mocked(dbMock.getProviderMessageFrameDisposition)
+			.mockResolvedValueOnce("new")
+			.mockResolvedValueOnce("duplicate");
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const providerFrame = {
+			providerSessionId: "native-multi-text-replay",
+			providerUuid: "multi-text-frame",
+		};
+		const frame: AgentEvent = {
+			type: "provider_message_frame",
+			id: providerFrame.providerUuid,
+			providerSessionId: providerFrame.providerSessionId,
+			kind: "assistant",
+			text: "first blocksecond block",
+			textBlockCount: 2,
+		};
+		const blockEvents: AgentEvent[] = [
+			{ type: "text_delta", text: "first block", providerFrame },
+			{ type: "text_delta", text: "second block", providerFrame },
+		];
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: providerFrame.providerSessionId },
+				frame,
+				...blockEvents,
+				frame,
+				...blockEvents,
+			],
+			gate,
+		);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const run = sm.runQuery(
+			"multi-block replay",
+			(message) => emitted.push(message),
+			{
+				sessionId: "sess-multi-text-replay",
+			},
+		);
+		try {
+			await gateReached;
+			expect(
+				emitted
+					.filter((message) => message.type === "chunk")
+					.map((message) => message.text),
+			).toEqual(["first block", "second block"]);
+		} finally {
+			release();
+			await run;
+		}
+	});
+
+	it("lets an accepted tool result follow a duplicate replay without tombstoning the tool", async () => {
+		vi.mocked(dbMock.getProviderMessageFrameDisposition)
+			.mockResolvedValueOnce("new")
+			.mockResolvedValueOnce("duplicate")
+			.mockResolvedValueOnce("new");
+		vi.mocked(dbMock.getProviderToolAssistantSeq).mockResolvedValueOnce(1);
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const startFrame = {
+			providerSessionId: "native-duplicate-tool",
+			providerUuid: "tool-start-frame",
+		};
+		const resultFrame = {
+			providerSessionId: "native-duplicate-tool",
+			providerUuid: "tool-result-frame",
+		};
+		const startEvent: AgentEvent = {
+			type: "provider_message_frame",
+			id: "tool-start-frame",
+			providerSessionId: "native-duplicate-tool",
+			kind: "assistant",
+			text: "",
+			toolStartIds: ["replayed-tool"],
+		};
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "native-duplicate-tool" },
+				startEvent,
+				{
+					type: "tool_start",
+					toolId: "replayed-tool",
+					name: "Read",
+					input: {},
+					providerFrame: startFrame,
+				},
+				startEvent,
+				{
+					type: "tool_start",
+					toolId: "replayed-tool",
+					name: "Read",
+					input: {},
+					providerFrame: startFrame,
+				},
+				{
+					type: "tool_update",
+					toolId: "replayed-tool",
+					subagent: {
+						provider: "claude",
+						agentId: "replayed-task",
+						status: "running",
+						startedAtMs: 1,
+					},
+					providerFrame: startFrame,
+				},
+				{
+					type: "tool_start",
+					toolId: "derived-child-tool",
+					name: "Subagent",
+					input: {},
+					subagent: {
+						provider: "claude",
+						agentId: "derived-child",
+						parentActivityId: "replayed-task",
+						status: "running",
+						startedAtMs: 1,
+					},
+					providerFrame: startFrame,
+				},
+				{
+					type: "provider_message_frame",
+					id: "tool-result-frame",
+					providerSessionId: "native-duplicate-tool",
+					kind: "tool_result",
+					toolResultIds: ["replayed-tool"],
+				},
+				{
+					type: "tool_result",
+					toolId: "replayed-tool",
+					content: "accepted result",
+					providerFrame: resultFrame,
+				},
+			],
+			gate,
+		);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const run = sm.runQuery("replay tool", (message) => emitted.push(message), {
+			sessionId: "sess-duplicate-tool",
+		});
+		try {
+			await gateReached;
+			expect(
+				emitted.filter(
+					(message) =>
+						message.type === "tool_event" && message.id === "replayed-tool",
+				),
+			).toHaveLength(1);
+			expect(emitted).toContainEqual({
+				type: "tool_result",
+				id: "replayed-tool",
+				content: "accepted result",
+			});
+			expect(emitted).toContainEqual({
+				type: "tool_update",
+				id: "replayed-tool",
+				subagent: {
+					provider: "claude",
+					agentId: "replayed-task",
+					status: "running",
+					startedAtMs: 1,
+				},
+			});
+			expect(emitted).toContainEqual(
+				expect.objectContaining({
+					type: "tool_event",
+					id: "derived-child-tool",
+				}),
+			);
+			expect(dbMock.setToolEventResult).toHaveBeenCalledWith(
+				"sess-duplicate-tool",
+				"replayed-tool",
+				"accepted result",
+				false,
+				resultFrame,
+				1,
+			);
+		} finally {
+			release();
+			await run;
+		}
+	});
+
+	it("keeps a tombstoned tool suppressed when a later result frame arrives", async () => {
+		vi.mocked(dbMock.getProviderMessageFrameDisposition)
+			.mockResolvedValueOnce("retracted")
+			.mockResolvedValueOnce("new");
+		vi.mocked(dbMock.getProviderToolAssistantSeq).mockResolvedValueOnce(7);
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "native-tombstoned-tool" },
+				{
+					type: "provider_message_frame",
+					id: "tombstoned-start-frame",
+					providerSessionId: "native-tombstoned-tool",
+					kind: "assistant",
+					text: "",
+					toolStartIds: ["tombstoned-tool"],
+				},
+				{
+					type: "tool_start",
+					toolId: "tombstoned-tool",
+					name: "Read",
+					input: {},
+					providerFrame: {
+						providerSessionId: "native-tombstoned-tool",
+						providerUuid: "tombstoned-start-frame",
+					},
+				},
+				{
+					type: "provider_message_frame",
+					id: "new-result-frame",
+					providerSessionId: "native-tombstoned-tool",
+					kind: "tool_result",
+					toolResultIds: ["tombstoned-tool"],
+				},
+				{
+					type: "tool_result",
+					toolId: "tombstoned-tool",
+					content: "must stay hidden",
+					providerFrame: {
+						providerSessionId: "native-tombstoned-tool",
+						providerUuid: "new-result-frame",
+					},
+				},
+			],
+			gate,
+		);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const run = sm.runQuery(
+			"tombstoned tool",
+			(message) => emitted.push(message),
+			{
+				sessionId: "sess-tombstoned-tool",
+			},
+		);
+		try {
+			await gateReached;
+			expect(
+				emitted.some(
+					(message) =>
+						(message.type === "tool_event" || message.type === "tool_result") &&
+						message.id === "tombstoned-tool",
+				),
+			).toBe(false);
+			expect(dbMock.setToolEventResult).not.toHaveBeenCalled();
+		} finally {
+			release();
+			await run;
+		}
+	});
+
+	it("shows a framed result fallback after rejecting replayed assistant text", async () => {
+		vi.mocked(dbMock.getProviderMessageFrameDisposition)
+			.mockResolvedValueOnce("duplicate")
+			.mockResolvedValueOnce("new");
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const replayedFrame = {
+			providerSessionId: "native-replayed-text",
+			providerUuid: "replayed-text-frame",
+		};
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "native-replayed-text" },
+				{
+					type: "provider_message_frame",
+					id: "replayed-text-frame",
+					providerSessionId: "native-replayed-text",
+					kind: "assistant",
+					text: "old replay",
+				},
+				{
+					type: "assistant_message_boundary",
+					providerFrame: replayedFrame,
+				},
+				{
+					type: "text_delta",
+					text: "old replay",
+					providerFrame: replayedFrame,
+				},
+				{
+					type: "result_text_fallback",
+					text: "authoritative new result",
+					providerSessionId: "native-replayed-text",
+					providerUuid: "new-result-frame",
+				},
+			],
+			gate,
+		);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const run = sm.runQuery("result only", (message) => emitted.push(message), {
+			sessionId: "sess-result-after-replay",
+		});
+		try {
+			await gateReached;
+			expect(emitted.filter((message) => message.type === "chunk")).toEqual([
+				{
+					type: "chunk",
+					text: "authoritative new result",
+					offset: 0,
+				},
+			]);
+			expect(dbMock.recordProviderMessageFrame).toHaveBeenCalledWith({
+				sessionId: "sess-result-after-replay",
+				assistantSeq: 1,
+				providerId: "claude",
+				providerSessionId: "native-replayed-text",
+				providerUuid: "new-result-frame",
+				frameOrder: 0,
+				kind: "result_text",
+				text: "authoritative new result",
+			});
+			const assistantRows = vi
+				.mocked(dbMock.appendMessage)
+				.mock.calls.filter((call) => call[2] === "assistant");
+			expect(assistantRows).toHaveLength(1);
+		} finally {
+			release();
+			await run;
+		}
+	});
+
+	it("rejects a contribution whose native session does not match the accepted frame", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "native-a" },
+				{
+					type: "provider_message_frame",
+					id: "same-uuid",
+					providerSessionId: "native-a",
+					kind: "assistant",
+					text: "",
+				},
+				{
+					type: "text_delta",
+					text: "wrong context",
+					providerFrame: {
+						providerSessionId: "native-b",
+						providerUuid: "same-uuid",
+					},
+				},
+			],
+			gate,
+		);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const run = sm.runQuery(
+			"cross context",
+			(message) => emitted.push(message),
+			{
+				sessionId: "sess-frame-cross-native",
+			},
+		);
+		try {
+			await gateReached;
+			expect(emitted.some((message) => message.type === "chunk")).toBe(false);
+		} finally {
+			release();
+			await run;
+		}
+	});
+
+	it("persists a late tool result on the prior assistant row without creating a new row", async () => {
+		vi.mocked(dbMock.getProviderToolAssistantSeq).mockResolvedValueOnce(7);
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const providerFrame = {
+			providerSessionId: "native-prior-result",
+			providerUuid: "result-frame",
+		};
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "native-prior-result" },
+				{
+					type: "provider_message_frame",
+					id: "result-frame",
+					providerSessionId: "native-prior-result",
+					kind: "tool_result",
+					toolResultIds: ["prior-tool"],
+				},
+				{
+					type: "tool_result",
+					toolId: "prior-tool",
+					content: "late result",
+					providerFrame,
+				},
+			],
+			gate,
+		);
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const run = sm.runQuery("continue", () => {}, {
+			sessionId: "sess-frame-prior-row",
+		});
+		try {
+			await gateReached;
+			expect(dbMock.getProviderToolAssistantSeq).toHaveBeenCalledWith(
+				"sess-frame-prior-row",
+				"claude",
+				"native-prior-result",
+				["prior-tool"],
+			);
+			expect(dbMock.recordProviderMessageFrame).toHaveBeenCalledWith({
+				sessionId: "sess-frame-prior-row",
+				assistantSeq: 7,
+				providerId: "claude",
+				providerSessionId: "native-prior-result",
+				providerUuid: "result-frame",
+				frameOrder: 0,
+				kind: "tool_result",
+				toolResultIds: ["prior-tool"],
+			});
+			expect(dbMock.setToolEventResult).toHaveBeenCalledWith(
+				"sess-frame-prior-row",
+				"prior-tool",
+				"late result",
+				false,
+				providerFrame,
+				7,
+			);
+			const assistantRows = vi
+				.mocked(dbMock.appendMessage)
+				.mock.calls.filter((call) => call[2] === "assistant");
+			expect(assistantRows).toEqual([]);
+		} finally {
+			release();
+			await run;
+		}
+	});
+
+	it("links workflow descendants to their root frame and removes them together", async () => {
+		vi.mocked(dbMock.appendToolEvent)
+			.mockResolvedValueOnce(undefined)
+			.mockRejectedValueOnce(new Error("simulated child insert failure"));
+		vi.mocked(dbMock.retractProviderMessageFrames).mockResolvedValueOnce([
+			{
+				assistantSeq: 1,
+				text: "",
+				removedToolIds: [
+					"workflow-root-tool",
+					"claude-workflow-agent:workflow-task:workflow-child",
+				],
+				clearedToolResultIds: [],
+				remainingToolCount: 0,
+				remainingToolErrorCount: 0,
+				steerToolEventIndexes: [],
+			},
+		]);
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const providerFrame = {
+			providerSessionId: "native-workflow-retraction",
+			providerUuid: "workflow-root-frame",
+		};
+		const childToolId = "claude-workflow-agent:workflow-task:workflow-child";
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{
+					type: "session_start",
+					sessionId: "native-workflow-retraction",
+				},
+				{
+					type: "provider_message_frame",
+					id: "workflow-root-frame",
+					providerSessionId: "native-workflow-retraction",
+					kind: "assistant",
+					text: "",
+					toolStartIds: ["workflow-root-tool"],
+				},
+				{
+					type: "tool_start",
+					toolId: "workflow-root-tool",
+					name: "Workflow",
+					input: { name: "refused workflow" },
+					providerFrame,
+				},
+				{
+					type: "tool_start",
+					toolId: childToolId,
+					name: "Subagent",
+					input: { prompt: "child work" },
+					subagent: {
+						provider: "claude",
+						agentId: "workflow-child",
+						parentActivityId: "workflow-task",
+						status: "running",
+						startedAtMs: 1,
+					},
+					providerFrame,
+				},
+				{
+					type: "provider_message_retraction",
+					ids: ["workflow-root-frame"],
+					providerSessionId: "native-workflow-retraction",
+					source: "model_refusal_fallback",
+				},
+				{
+					type: "tool_update",
+					toolId: childToolId,
+					subagent: {
+						provider: "claude",
+						agentId: "workflow-child",
+						parentActivityId: "workflow-task",
+						status: "completed",
+						startedAtMs: 1,
+					},
+					providerFrame,
+				},
+			],
+			gate,
+		);
+		const emit = vi.fn<(message: ServerMessage) => void>();
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const run = sm.runQuery("workflow", emit, {
+			sessionId: "sess-workflow-retraction",
+		});
+		try {
+			await gateReached;
+			expect(dbMock.linkProviderFrameToolStart).toHaveBeenNthCalledWith(
+				1,
+				"sess-workflow-retraction",
+				"claude",
+				"native-workflow-retraction",
+				"workflow-root-frame",
+				"workflow-root-tool",
+			);
+			expect(dbMock.linkProviderFrameToolStart).toHaveBeenNthCalledWith(
+				2,
+				"sess-workflow-retraction",
+				"claude",
+				"native-workflow-retraction",
+				"workflow-root-frame",
+				childToolId,
+			);
+			expect(emit).toHaveBeenCalledWith({
+				type: "assistant_revision",
+				session_id: "sess-workflow-retraction",
+				transcript_seq: 1,
+				current: true,
+				text: "",
+				removed_tool_ids: ["workflow-root-tool", childToolId],
+				cleared_tool_result_ids: [],
+				remaining_tool_count: 0,
+				remaining_tool_error_count: 0,
+				steer_tool_event_indexes: [],
+			});
+			const childUpdateMessages = emit.mock.calls
+				.map(([message]) => message)
+				.filter(
+					(message) =>
+						message.type === "tool_update" && message.id === childToolId,
+				);
+			expect(childUpdateMessages).toEqual([]);
+			const childToolEventIndex = emit.mock.calls.findIndex(
+				([message]) =>
+					message.type === "tool_event" && message.id === childToolId,
+			);
+			expect(childToolEventIndex).toBeGreaterThan(-1);
+			expect(
+				vi.mocked(dbMock.linkProviderFrameToolStart).mock
+					.invocationCallOrder[1],
+			).toBeLessThan(emit.mock.invocationCallOrder[childToolEventIndex] ?? -1);
+		} finally {
+			release();
+			await run;
+		}
+	});
+
+	it("links a result-discovered workflow child to both result and root frames", async () => {
+		vi.mocked(dbMock.getProviderToolAssistantSeq).mockResolvedValueOnce(1);
+		vi.mocked(dbMock.retractProviderMessageFrames).mockResolvedValueOnce([
+			{
+				assistantSeq: 1,
+				text: "",
+				removedToolIds: ["claude-workflow-agent:result-task:result-child"],
+				clearedToolResultIds: ["result-root-tool"],
+				remainingToolCount: 1,
+				remainingToolErrorCount: 0,
+				steerToolEventIndexes: [],
+			},
+		]);
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const rootFrame = {
+			providerSessionId: "native-result-child",
+			providerUuid: "result-root-frame",
+		};
+		const resultFrame = {
+			providerSessionId: "native-result-child",
+			providerUuid: "result-frame",
+		};
+		const childToolId = "claude-workflow-agent:result-task:result-child";
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "native-result-child" },
+				{
+					type: "provider_message_frame",
+					id: rootFrame.providerUuid,
+					providerSessionId: rootFrame.providerSessionId,
+					kind: "assistant",
+					text: "",
+					toolStartIds: ["result-root-tool"],
+				},
+				{
+					type: "tool_start",
+					toolId: "result-root-tool",
+					name: "Workflow",
+					input: {},
+					providerFrame: rootFrame,
+				},
+				{
+					type: "provider_message_frame",
+					id: resultFrame.providerUuid,
+					providerSessionId: resultFrame.providerSessionId,
+					kind: "tool_result",
+					toolResultIds: ["result-root-tool"],
+				},
+				{
+					type: "tool_result",
+					toolId: "result-root-tool",
+					content: "launched",
+					providerFrame: resultFrame,
+				},
+				{
+					type: "tool_start",
+					toolId: childToolId,
+					name: "Subagent",
+					input: {},
+					subagent: {
+						provider: "claude",
+						agentId: "result-child",
+						parentActivityId: "result-task",
+						status: "running",
+						startedAtMs: 1,
+					},
+					providerFrame: resultFrame,
+					providerLineageFrames: [resultFrame, rootFrame],
+				},
+				{
+					type: "provider_message_retraction",
+					ids: [resultFrame.providerUuid],
+					providerSessionId: resultFrame.providerSessionId,
+					source: "model_refusal_fallback",
+				},
+			],
+			gate,
+		);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const run = sm.runQuery(
+			"result child",
+			(message) => emitted.push(message),
+			{
+				sessionId: "sess-result-child",
+			},
+		);
+		try {
+			await gateReached;
+			expect(dbMock.linkProviderFrameToolStart).toHaveBeenCalledWith(
+				"sess-result-child",
+				"claude",
+				resultFrame.providerSessionId,
+				resultFrame.providerUuid,
+				childToolId,
+			);
+			expect(dbMock.linkProviderFrameToolStart).toHaveBeenCalledWith(
+				"sess-result-child",
+				"claude",
+				rootFrame.providerSessionId,
+				rootFrame.providerUuid,
+				childToolId,
+			);
+			expect(emitted).toContainEqual(
+				expect.objectContaining({ type: "tool_event", id: childToolId }),
+			);
+			expect(emitted).toContainEqual(
+				expect.objectContaining({
+					type: "assistant_revision",
+					removed_tool_ids: [childToolId],
+					cleared_tool_result_ids: ["result-root-tool"],
+				}),
+			);
+		} finally {
+			release();
+			await run;
+		}
+	});
+
+	it("stores refusal evidence without treating local fallback scope as shared authority", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "native-refusal-audit" },
+				{
+					type: "provider_refusal",
+					providerSessionId: "native-refusal-audit",
+					outcome: "fallback",
+					originalModel: "claude-opus-4-6",
+					fallbackModel: "claude-sonnet-4-6",
+					direction: "retry",
+					scope: "local",
+					requestId: "request-audit",
+					refusedUserMessageUuid: "user-audit",
+					category: "policy",
+					explanation: "display only",
+					content: "notice",
+				},
+			],
+			gate,
+		);
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const run = sm.runQuery("audit", () => {}, {
+			sessionId: "sess-refusal-audit",
+		});
+		try {
+			await gateReached;
+			expect(dbMock.appendLog).toHaveBeenCalledWith(
+				"info",
+				"claude",
+				"Claude model refusal fallback",
+				expect.objectContaining({
+					sessionId: "sess-refusal-audit",
+					providerSessionId: "native-refusal-audit",
+					originalModel: "claude-opus-4-6",
+					fallbackModel: "claude-sonnet-4-6",
+					direction: "retry",
+					scope: "local",
+					requestId: "request-audit",
+					refusedUserMessageUuid: "user-audit",
+					category: "policy",
+					explanation: "display only",
+					content: "notice",
+				}),
+			);
+			expect(dbMock.setSessionModel).not.toHaveBeenCalled();
+			expect(dbMock.retractProviderMessageFrames).not.toHaveBeenCalled();
+		} finally {
+			release();
+			await run;
+		}
+	});
+
+	it("keeps local fallback usage from replacing shared actual-model authority", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "native-local-model" },
+				{
+					type: "usage",
+					inputTokens: 10,
+					outputTokens: 5,
+					model: "claude-opus-root",
+				},
+				{
+					type: "usage",
+					inputTokens: 2,
+					outputTokens: 2,
+					model: "claude-sonnet-local-fallback",
+				},
+				{
+					type: "usage",
+					inputTokens: 3,
+					outputTokens: 1,
+					model: "claude-sonnet-local-fallback",
+				},
+				{
+					type: "provider_refusal",
+					providerSessionId: "native-local-model",
+					outcome: "fallback",
+					originalModel: "claude-opus-subagent",
+					fallbackModel: "claude-sonnet-local-fallback",
+					direction: "retry",
+					scope: "local",
+					requestId: "request-local-model",
+					content: "",
+				},
+			],
+			gate,
+		);
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const run = sm.runQuery("local fallback", () => {}, {
+			sessionId: "sess-local-model",
+		});
+		await gateReached;
+		release();
+		await run;
+
+		expect(dbMock.setSessionActualModelForProvider).toHaveBeenCalledWith(
+			"sess-local-model",
+			"claude",
+			expect.any(String),
+			"claude-opus-root",
+		);
+		expect(
+			vi
+				.mocked(dbMock.setSessionActualModelForProvider)
+				.mock.calls.some((call) => call[3] === "claude-sonnet-local-fallback"),
+		).toBe(false);
+	});
+
+	it("serializes overlapping throttled text writes before retracting", async () => {
+		let resolveFirstWrite!: () => void;
+		let resolveSecondWrite!: () => void;
+		const firstWrite = new Promise<void>((resolve) => {
+			resolveFirstWrite = resolve;
+		});
+		const secondWrite = new Promise<void>((resolve) => {
+			resolveSecondWrite = resolve;
+		});
+		let textWriteCount = 0;
+		vi.mocked(dbMock.setMessageText).mockImplementation(() => {
+			textWriteCount++;
+			if (textWriteCount === 1) return firstWrite;
+			if (textWriteCount === 2) return secondWrite;
+			return Promise.resolve();
+		});
+		vi.mocked(dbMock.retractProviderMessageFrames).mockResolvedValueOnce([
+			{
+				assistantSeq: 1,
+				text: "",
+				removedToolIds: [],
+				clearedToolResultIds: [],
+				remainingToolCount: 0,
+				remainingToolErrorCount: 0,
+				steerToolEventIndexes: [],
+			},
+		]);
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+		const emitted: ServerMessage[] = [];
+		const run = sm.runQuery("race writes", (message) => emitted.push(message), {
+			sessionId: "sess-frame-text-race",
+		});
+		try {
+			await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+			const providerFrame = {
+				providerSessionId: "sdk-1",
+				providerUuid: "text-frame",
+			};
+			ctl.pushEvent({
+				type: "provider_message_frame",
+				id: "text-frame",
+				providerSessionId: "sdk-1",
+				kind: "assistant",
+				text: "First second",
+			});
+			ctl.pushEvent({
+				type: "text_delta",
+				text: "First",
+				providerFrame,
+			});
+			await waitFor(() =>
+				expect(
+					emitted.some(
+						(message) => message.type === "chunk" && message.text === "First",
+					),
+				).toBe(true),
+			);
+			await new Promise((resolve) => setTimeout(resolve, 850));
+			expect(dbMock.setMessageText).toHaveBeenCalledTimes(1);
+
+			ctl.pushEvent({
+				type: "text_delta",
+				text: " second",
+				providerFrame,
+			});
+			await new Promise((resolve) => setTimeout(resolve, 850));
+			// The second timer has fired, but its write is chained behind the first.
+			expect(dbMock.setMessageText).toHaveBeenCalledTimes(1);
+			resolveFirstWrite();
+			await waitFor(() =>
+				expect(dbMock.setMessageText).toHaveBeenCalledTimes(2),
+			);
+
+			ctl.pushEvent({
+				type: "provider_message_retraction",
+				ids: ["text-frame"],
+				providerSessionId: "sdk-1",
+				source: "model_refusal_fallback",
+			});
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			expect(dbMock.retractProviderMessageFrames).not.toHaveBeenCalled();
+			resolveSecondWrite();
+			await waitFor(() =>
+				expect(dbMock.retractProviderMessageFrames).toHaveBeenCalledWith(
+					"sess-frame-text-race",
+					"claude",
+					"sdk-1",
+					["text-frame"],
+					"model_refusal_fallback",
+				),
+			);
+			expect(emitted).toContainEqual(
+				expect.objectContaining({ type: "assistant_revision", text: "" }),
+			);
+		} finally {
+			resolveFirstWrite();
+			resolveSecondWrite();
+			ctl.turns[0]?.resolveDone();
+			await run;
+		}
+	});
+
+	it("finishes a deferred tool insert before a later-turn retraction can delete it", async () => {
+		let resolveInsert!: () => void;
+		const insert = new Promise<void>((resolve) => {
+			resolveInsert = resolve;
+		});
+		vi.mocked(dbMock.appendToolEvent).mockImplementationOnce(() => insert);
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+		const firstRun = sm.runQuery("start tool", () => {}, {
+			sessionId: "sess-frame-late-retraction",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const providerFrame = {
+			providerSessionId: "sdk-1",
+			providerUuid: "tool-frame",
+		};
+		ctl.pushEvent({
+			type: "provider_message_frame",
+			id: "tool-frame",
+			providerSessionId: "sdk-1",
+			kind: "assistant",
+			text: "",
+			toolStartIds: ["tool-late"],
+		});
+		ctl.pushEvent({
+			type: "tool_start",
+			toolId: "tool-late",
+			name: "Read",
+			input: {},
+			providerFrame,
+		});
+		await waitFor(() => expect(dbMock.appendToolEvent).toHaveBeenCalledOnce());
+		let firstDone = false;
+		void firstRun.then(() => {
+			firstDone = true;
+		});
+		ctl.turns[0]?.resolveDone();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(firstDone).toBe(false);
+		expect(dbMock.appendToolEvent).toHaveBeenCalledOnce();
+		resolveInsert();
+		await firstRun;
+		expect(dbMock.appendToolEvent).toHaveBeenCalledOnce();
+
+		vi.mocked(dbMock.retractProviderMessageFrames).mockResolvedValueOnce([
+			{
+				assistantSeq: 1,
+				text: "",
+				removedToolIds: ["tool-late"],
+				clearedToolResultIds: [],
+				remainingToolCount: 0,
+				remainingToolErrorCount: 0,
+				steerToolEventIndexes: [],
+			},
+		]);
+		const secondRun = sm.runQuery("finish cleanup", () => {}, {
+			sessionId: "sess-frame-late-retraction",
+		});
+		try {
+			await waitFor(() => expect(ctl.getSendCount()).toBe(2));
+			ctl.pushEvent({
+				type: "provider_message_retraction",
+				ids: ["tool-frame"],
+				providerSessionId: "sdk-1",
+				source: "model_refusal_fallback",
+			});
+			await waitFor(() =>
+				expect(dbMock.retractProviderMessageFrames).toHaveBeenCalledOnce(),
+			);
+			expect(
+				vi.mocked(dbMock.appendToolEvent).mock.invocationCallOrder[0],
+			).toBeLessThan(
+				vi.mocked(dbMock.retractProviderMessageFrames).mock
+					.invocationCallOrder[0] ?? -1,
+			);
+		} finally {
+			ctl.turns[1]?.resolveDone();
+			await secondRun;
+		}
+	});
+});
+
 // ── runQuery queueing (Slice A) ───────────────────────────────────────────────
 
 /**

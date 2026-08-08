@@ -43,6 +43,11 @@ export function mockDbModule() {
 		clearCurrentSessionId: vi.fn().mockResolvedValue(undefined),
 		setCurrentSessionId: vi.fn().mockResolvedValue(undefined),
 		appendMessage: vi.fn().mockResolvedValue(undefined),
+		getProviderMessageFrameDisposition: vi.fn().mockResolvedValue("new"),
+		getProviderToolAssistantSeq: vi.fn().mockResolvedValue(null),
+		linkProviderFrameToolStart: vi.fn().mockResolvedValue(true),
+		recordProviderMessageFrame: vi.fn().mockResolvedValue("recorded"),
+		retractProviderMessageFrames: vi.fn().mockResolvedValue([]),
 		appendRealtimeTranscriptMessage: vi.fn(async (input: { seq: number }) => ({
 			id: input.seq + 1_000,
 			seq: input.seq,

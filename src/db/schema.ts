@@ -1791,4 +1791,100 @@ function applyMigrations(db: Db): void {
 			 ON provider_background_activities(session_id, updated_at_ms DESC)`,
 		);
 	});
+
+	// Claude refusal fallback can retract any previously delivered normalized
+	// provider frame, including non-tail prose and user/tool_result tombstones.
+	// Keep the provider UUID ledger separate from messages.sdk_uuid: sdk_uuid is
+	// still the latest native fork cutoff, while this table owns exact content
+	// contribution identity and idempotent retraction state.
+	runMigration(db, "_migrated_provider_message_frames_v1", (db) => {
+		db.run(`
+			CREATE TABLE provider_message_frames (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+				assistant_seq INTEGER NOT NULL,
+				provider_id TEXT NOT NULL,
+				provider_session_id TEXT NOT NULL,
+				provider_uuid TEXT NOT NULL,
+				frame_order INTEGER NOT NULL,
+				kind TEXT NOT NULL CHECK(kind IN ('assistant', 'result_text', 'tool_result')),
+				text_fragment TEXT,
+				raw_tool_start_ids_json TEXT,
+				tool_start_ids_json TEXT,
+				tool_result_ids_json TEXT,
+				retracted INTEGER NOT NULL DEFAULT 0,
+				UNIQUE(session_id, provider_id, provider_session_id, provider_uuid)
+			)
+		`);
+		db.run(
+			`CREATE INDEX idx_provider_message_frames_row_order
+			 ON provider_message_frames(session_id, assistant_seq, frame_order, id)`,
+		);
+		db.run(`
+			CREATE TABLE provider_message_retractions (
+				session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+				provider_id TEXT NOT NULL,
+				provider_session_id TEXT NOT NULL,
+				provider_uuid TEXT NOT NULL,
+				source TEXT NOT NULL CHECK(source IN (
+					'assistant_supersedes', 'model_refusal_fallback'
+				)),
+				timestamp INTEGER NOT NULL DEFAULT (unixepoch()),
+				PRIMARY KEY (
+					session_id, provider_id, provider_session_id, provider_uuid
+				)
+			)
+		`);
+		db.run(`ALTER TABLE tool_events ADD COLUMN provider_start_frame_uuid TEXT`);
+		db.run(`ALTER TABLE tool_events ADD COLUMN provider_start_session_id TEXT`);
+		db.run(
+			`ALTER TABLE tool_events ADD COLUMN provider_result_frame_uuid TEXT`,
+		);
+		db.run(
+			`ALTER TABLE tool_events ADD COLUMN provider_result_session_id TEXT`,
+		);
+		db.run(`
+			CREATE TABLE provider_tool_metadata_contributions (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+				tool_event_id INTEGER NOT NULL REFERENCES tool_events(id) ON DELETE CASCADE,
+				provider_id TEXT NOT NULL,
+				provider_session_id TEXT,
+				provider_uuid TEXT,
+				subagent_json TEXT,
+				activity_json TEXT,
+				timestamp INTEGER NOT NULL DEFAULT (unixepoch()),
+				CHECK ((provider_session_id IS NULL) = (provider_uuid IS NULL)),
+				CHECK (subagent_json IS NOT NULL OR activity_json IS NOT NULL)
+			)
+		`);
+		db.run(
+			`CREATE INDEX idx_provider_tool_metadata_contributions_tool_order
+			 ON provider_tool_metadata_contributions(tool_event_id, id)`,
+		);
+		db.run(
+			`CREATE INDEX idx_provider_tool_metadata_contributions_frame
+			 ON provider_tool_metadata_contributions(
+				session_id, provider_id, provider_session_id, provider_uuid, tool_event_id
+			 )`,
+		);
+		db.run(`
+			CREATE TABLE provider_tool_start_lineage (
+				session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+				tool_event_id INTEGER NOT NULL REFERENCES tool_events(id) ON DELETE CASCADE,
+				provider_id TEXT NOT NULL,
+				provider_session_id TEXT NOT NULL,
+				provider_uuid TEXT NOT NULL,
+				PRIMARY KEY (
+					tool_event_id, provider_id, provider_session_id, provider_uuid
+				)
+			)
+		`);
+		db.run(
+			`CREATE INDEX idx_provider_tool_start_lineage_frame
+			 ON provider_tool_start_lineage(
+				session_id, provider_id, provider_session_id, provider_uuid, tool_event_id
+			 )`,
+		);
+	});
 }

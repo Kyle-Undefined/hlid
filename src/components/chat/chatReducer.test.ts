@@ -896,6 +896,333 @@ describe("ADD_TOOL_EVENT", () => {
 	});
 });
 
+describe("REVISE_ASSISTANT", () => {
+	const tool = (id: string, result?: string) => ({
+		type: "tool_event" as const,
+		id,
+		name: "Read",
+		input: {},
+		...(result !== undefined
+			? {
+					result,
+					resultTruncated: true,
+					resultLength: result.length + 100,
+					detailSessionId: "session-1",
+					isError: true,
+				}
+			: {}),
+	});
+
+	it("replaces exact non-tail text and independently removes starts and results", () => {
+		const initial = reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [
+				{
+					kind: "message",
+					id: "assistant-2",
+					role: "assistant",
+					text: "First\n\nRefused middle\n\nLast",
+					seq: 2,
+					toolEvents: [tool("remove-me", "gone"), tool("clear-me", "secret")],
+					toolEventPage: {
+						total: 2,
+						errorCount: 2,
+						hasEarlier: false,
+						nextBeforeId: null,
+					},
+				},
+				{
+					kind: "message",
+					id: "assistant-4",
+					role: "assistant",
+					text: "Later row",
+					seq: 4,
+					toolEvents: [],
+				},
+				{
+					kind: "message",
+					id: "steer-user",
+					role: "user",
+					text: "steer",
+					seq: 3,
+					steerTargetSeq: 2,
+					steerToolEventIndex: 1,
+				},
+			],
+		});
+		const action = {
+			type: "REVISE_ASSISTANT" as const,
+			transcriptSeq: 2,
+			text: "First\n\nLast",
+			removedToolIds: ["remove-me"],
+			clearedToolResultIds: ["clear-me"],
+			remainingToolCount: 1,
+			remainingToolErrorCount: 0,
+			steerToolEventIndexes: [{ userSeq: 3, toolEventIndex: 0 }],
+		};
+		const revised = reducer(initial, action);
+		const revisedAssistant = revised.find(
+			(message) => message.role === "assistant" && message.id === "assistant-2",
+		);
+		expect(revisedAssistant).toMatchObject({
+			id: "assistant-2",
+			text: "First\n\nLast",
+			toolEvents: [{ id: "clear-me" }],
+			toolEventPage: { total: 1, errorCount: 0 },
+		});
+		const remaining =
+			revisedAssistant?.role === "assistant"
+				? revisedAssistant.toolEvents[0]
+				: undefined;
+		expect(remaining).not.toHaveProperty("result");
+		expect(remaining).not.toHaveProperty("resultTruncated");
+		expect(remaining).not.toHaveProperty("resultLength");
+		expect(remaining).not.toHaveProperty("detailSessionId");
+		expect(remaining).not.toHaveProperty("isError");
+		expect(
+			revised.find(
+				(message) =>
+					message.role === "assistant" && message.id === "assistant-4",
+			),
+		).toEqual(
+			initial.find(
+				(message) =>
+					message.role === "assistant" && message.id === "assistant-4",
+			),
+		);
+		expect(
+			revised.find(
+				(message) => message.role === "user" && message.id === "steer-user",
+			),
+		).toMatchObject({ steerToolEventIndex: 0 });
+		expect(reducer(revised, action)).toEqual(revised);
+	});
+
+	it("sets the authoritative paged total when the removed tool is not loaded", () => {
+		const initial = reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [
+				{
+					kind: "message",
+					id: "assistant-page",
+					role: "assistant",
+					text: "before",
+					seq: 8,
+					toolEvents: [tool("loaded-3"), tool("loaded-4")],
+					toolEventPage: {
+						total: 4,
+						errorCount: 0,
+						hasEarlier: true,
+						nextBeforeId: 30,
+					},
+				},
+			],
+		});
+		const action = {
+			type: "REVISE_ASSISTANT" as const,
+			transcriptSeq: 8,
+			text: "after",
+			removedToolIds: ["unloaded-1"],
+			clearedToolResultIds: [],
+			remainingToolCount: 3,
+			remainingToolErrorCount: 0,
+			steerToolEventIndexes: [],
+		};
+		const revised = reducer(initial, action);
+		expect(revised[0]).toMatchObject({
+			text: "after",
+			toolEvents: [{ id: "loaded-3" }, { id: "loaded-4" }],
+			toolEventPage: {
+				total: 3,
+				hasEarlier: true,
+				nextBeforeId: 30,
+			},
+		});
+		expect(reducer(revised, action)).toEqual(revised);
+	});
+
+	it("restores start metadata when a result frame is retracted", () => {
+		const initial = reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [
+				{
+					kind: "message",
+					id: "assistant-metadata",
+					role: "assistant",
+					text: "",
+					seq: 10,
+					toolEvents: [
+						{
+							...tool("metadata-tool", "accepted result"),
+							subagent: {
+								provider: "claude",
+								agentId: "workflow-task",
+								kind: "workflow",
+								status: "completed",
+								startedAtMs: 1,
+								endedAtMs: 2,
+								workflowRunId: "refused-run",
+							},
+							taskActivity: {
+								kind: "tasks",
+								source: "claude-task-store",
+								operation: "update",
+								items: [{ subject: "Start work", status: "completed" }],
+							},
+						},
+					],
+					toolEventPage: {
+						total: 1,
+						errorCount: 1,
+						hasEarlier: false,
+						nextBeforeId: null,
+					},
+				},
+			],
+		});
+		const action = {
+			type: "REVISE_ASSISTANT" as const,
+			transcriptSeq: 10,
+			text: "",
+			removedToolIds: [],
+			clearedToolResultIds: ["metadata-tool"],
+			remainingToolCount: 1,
+			remainingToolErrorCount: 0,
+			restoredToolMetadata: [
+				{
+					toolId: "metadata-tool",
+					subagent: {
+						provider: "claude" as const,
+						agentId: "workflow-task",
+						kind: "workflow" as const,
+						status: "running" as const,
+						startedAtMs: 1,
+					},
+					taskActivity: {
+						kind: "tasks" as const,
+						source: "claude-task-store" as const,
+						operation: "create" as const,
+						items: [{ subject: "Start work", status: "pending" as const }],
+					},
+				},
+			],
+			steerToolEventIndexes: [],
+		};
+
+		const revised = reducer(initial, action);
+		expect(revised[0]).toMatchObject({
+			toolEvents: [
+				{
+					id: "metadata-tool",
+					subagent: {
+						status: "running",
+					},
+					taskActivity: {
+						operation: "create",
+						items: [{ status: "pending" }],
+					},
+				},
+			],
+			toolEventPage: { total: 1, errorCount: 0 },
+		});
+		const restored =
+			revised[0]?.role === "assistant" ? revised[0].toolEvents[0] : undefined;
+		expect(restored).not.toHaveProperty("result");
+		expect(restored).not.toHaveProperty("isError");
+		expect(reducer(revised, action)).toEqual(revised);
+	});
+
+	it("uses the explicit live assistant only when no persisted sequence is loaded", () => {
+		const revised = reducer(withAssistant("pending-assistant"), {
+			type: "REVISE_ASSISTANT",
+			transcriptSeq: 12,
+			currentAssistantId: "pending-assistant",
+			text: "canonical",
+			removedToolIds: [],
+			clearedToolResultIds: [],
+			remainingToolCount: 0,
+			remainingToolErrorCount: 0,
+			steerToolEventIndexes: [],
+		});
+		expect(revised[0]).toMatchObject({
+			id: "pending-assistant",
+			text: "canonical",
+		});
+	});
+
+	it("counts unique replacement tools and errors after an authoritative revision", () => {
+		let state = reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [
+				{
+					kind: "message",
+					id: "assistant-replacement-page",
+					role: "assistant",
+					text: "refused",
+					seq: 14,
+					toolEvents: [tool("refused-loaded", "failed")],
+					toolEventPage: {
+						total: 4,
+						errorCount: 1,
+						hasEarlier: true,
+						nextBeforeId: 30,
+					},
+				},
+			],
+		});
+		state = reducer(state, {
+			type: "REVISE_ASSISTANT",
+			transcriptSeq: 14,
+			text: "canonical",
+			removedToolIds: ["refused-loaded"],
+			clearedToolResultIds: [],
+			remainingToolCount: 3,
+			remainingToolErrorCount: 0,
+			steerToolEventIndexes: [],
+		});
+		const replacement = tool("replacement-tool");
+		state = reducer(state, {
+			type: "ADD_TOOL_EVENT",
+			id: "assistant-replacement-page",
+			event: replacement,
+		});
+		state = reducer(state, {
+			type: "ADD_TOOL_EVENT",
+			id: "assistant-replacement-page",
+			event: replacement,
+		});
+		state = reducer(state, {
+			type: "ADD_TOOL_RESULT",
+			toolUseId: "replacement-tool",
+			content: "replacement failed",
+			isError: true,
+		});
+		state = reducer(state, {
+			type: "ADD_TOOL_RESULT",
+			toolUseId: "replacement-tool",
+			content: "replacement failed",
+			isError: true,
+		});
+
+		expect(state[0]).toMatchObject({
+			text: "canonical",
+			toolEvents: [
+				{
+					id: "replacement-tool",
+					result: "replacement failed",
+					isError: true,
+				},
+			],
+			toolEventPage: {
+				total: 4,
+				errorCount: 1,
+				hasEarlier: true,
+				nextBeforeId: 30,
+			},
+		});
+	});
+});
+
 describe("historical tool-event pages", () => {
 	const tool = (id: string) => ({
 		type: "tool_event" as const,

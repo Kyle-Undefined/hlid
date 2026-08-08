@@ -389,6 +389,96 @@ describe("useLoadChatHistory — initial load", () => {
 		expect(handleWsMessage).toHaveBeenCalledWith(durableFinal);
 	});
 
+	it("refreshes and replays a buffered assistant revision while idle", async () => {
+		const staleAssistant = {
+			...makeRow("assistant", "refused partial", 1000),
+			toolEvents: [
+				{
+					id: 101,
+					session_id: "sess-1",
+					assistant_seq: 1,
+					tool_id: "refused-tool",
+					name: "Read",
+					input_json: "{}",
+					result_text: "stale result",
+					result_truncated: 0,
+					result_length: null,
+					is_error: 1,
+					subagent_json: null,
+					activity_json: null,
+				},
+			],
+			toolEventPage: {
+				total: 1,
+				errorCount: 1,
+				hasEarlier: false,
+				nextBeforeId: null,
+			},
+		};
+		const canonicalAssistant = {
+			...staleAssistant,
+			text: "canonical answer",
+			toolEvents: [],
+			toolEventPage: {
+				total: 0,
+				errorCount: 0,
+				hasEarlier: false,
+				nextBeforeId: null,
+			},
+		};
+		const revision: ServerMessage = {
+			type: "assistant_revision",
+			session_id: "sess-1",
+			transcript_seq: canonicalAssistant.seq,
+			text: "canonical answer",
+			removed_tool_ids: ["refused-tool"],
+			cleared_tool_result_ids: [],
+			remaining_tool_count: 0,
+			remaining_tool_error_count: 0,
+			steer_tool_event_indexes: [],
+		};
+		vi.mocked(getSessionDataFn)
+			.mockResolvedValueOnce([staleAssistant])
+			.mockResolvedValueOnce([canonicalAssistant]);
+		vi.mocked(wsStore.drainMessageBuffer)
+			.mockReturnValueOnce([revision])
+			.mockReturnValueOnce([])
+			.mockReturnValueOnce([]);
+		const dispatch = vi.fn();
+		const handleWsMessage = vi.fn();
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+
+		await vi.waitFor(() => expect(getSessionDataFn).toHaveBeenCalledTimes(2));
+		const load = dispatch.mock.calls.find(
+			([action]) => action.type === "LOAD_HISTORY",
+		)?.[0];
+		expect(load?.items).toEqual([
+			expect.objectContaining({
+				role: "assistant",
+				text: "canonical answer",
+				toolEvents: [],
+				toolEventPage: {
+					total: 0,
+					errorCount: 0,
+					hasEarlier: false,
+					nextBeforeId: null,
+				},
+			}),
+		]);
+		expect(handleWsMessage).toHaveBeenCalledTimes(1);
+		expect(handleWsMessage).toHaveBeenCalledWith(revision);
+	});
+
 	it("replays only Live frames for an idle session, including the final buffer tail", async () => {
 		vi.mocked(getSessionDataFn).mockResolvedValue([
 			makeRow("assistant", "Existing reply", 1000),

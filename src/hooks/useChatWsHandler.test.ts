@@ -557,6 +557,55 @@ describe("useChatWsHandler — immediate messages", () => {
 		],
 		[
 			{
+				type: "assistant_revision",
+				session_id: "session-1",
+				transcript_seq: 7,
+				current: true,
+				text: "canonical",
+				removed_tool_ids: ["removed-tool"],
+				cleared_tool_result_ids: ["cleared-result"],
+				remaining_tool_count: 3,
+				remaining_tool_error_count: 1,
+				restored_tool_metadata: [
+					{
+						id: "cleared-result",
+						subagent: null,
+						taskActivity: {
+							kind: "tasks",
+							source: "claude-task-store",
+							operation: "create",
+							items: [{ subject: "Start work", status: "pending" }],
+						},
+					},
+				],
+				steer_tool_event_indexes: [],
+			},
+			{
+				type: "REVISE_ASSISTANT",
+				transcriptSeq: 7,
+				currentAssistantId: "assistant-1",
+				text: "canonical",
+				removedToolIds: ["removed-tool"],
+				clearedToolResultIds: ["cleared-result"],
+				remainingToolCount: 3,
+				remainingToolErrorCount: 1,
+				restoredToolMetadata: [
+					{
+						toolId: "cleared-result",
+						subagent: null,
+						taskActivity: {
+							kind: "tasks",
+							source: "claude-task-store",
+							operation: "create",
+							items: [{ subject: "Start work", status: "pending" }],
+						},
+					},
+				],
+				steerToolEventIndexes: [],
+			},
+		],
+		[
+			{
 				type: "permission_resolved",
 				id: "permission-1",
 				toolName: "Bash",

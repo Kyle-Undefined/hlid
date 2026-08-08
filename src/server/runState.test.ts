@@ -96,6 +96,28 @@ describe("applyReplayTransition", () => {
 		expect(state.buffer).toEqual([start, result]);
 	});
 
+	it("retains canonical assistant revisions in replay order", () => {
+		const state = makeState();
+		const revision: ServerMessage = {
+			type: "assistant_revision",
+			session_id: "session-1",
+			transcript_seq: 3,
+			current: true,
+			text: "canonical",
+			removed_tool_ids: ["removed-tool"],
+			cleared_tool_result_ids: ["cleared-result"],
+			remaining_tool_count: 1,
+			remaining_tool_error_count: 0,
+			steer_tool_event_indexes: [],
+		};
+		applyReplayTransition(state, { type: "chunk", text: "superseded" });
+		applyReplayTransition(state, revision);
+		expect(state.buffer).toEqual([
+			{ type: "chunk", text: "superseded" },
+			revision,
+		]);
+	});
+
 	it("accumulates chunk, tool_event, permission_request, permission_resolved", () => {
 		const state = makeState();
 		applyReplayTransition(state, { type: "chunk", text: "hello" });

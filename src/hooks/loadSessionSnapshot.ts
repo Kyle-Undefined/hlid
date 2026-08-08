@@ -444,6 +444,7 @@ function isPersistedWriteMarker(message: ServerMessage): boolean {
 		message.type === "done" ||
 		message.type === "error" ||
 		message.type === "turn_steered" ||
+		message.type === "assistant_revision" ||
 		(message.type === "realtime_transcript" &&
 			message.mode === "live" &&
 			message.done &&
@@ -647,7 +648,10 @@ export async function loadSessionSnapshot({
 		const liveRealtimeFrames = [
 			...bufferedMessages,
 			...wsStore.drainMessageBuffer(),
-		].filter(isLiveRealtimeFrame);
+		].filter(
+			(message) =>
+				message.type === "assistant_revision" || isLiveRealtimeFrame(message),
+		);
 		wsStore.clearMessageBuffer();
 		for (const message of liveRealtimeFrames) handleWsMessage(message);
 	}

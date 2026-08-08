@@ -995,6 +995,10 @@ function cascadeDeleteSessionIds(db: Db, ids: string[]): string[] {
 	);
 	for (const table of [
 		"provider_background_activities",
+		"provider_tool_start_lineage",
+		"provider_tool_metadata_contributions",
+		"provider_message_retractions",
+		"provider_message_frames",
 		"tool_events",
 		"project_previews",
 		"plan_proposals",
@@ -1115,6 +1119,7 @@ function emptyCleanupPreview(
 		sessions: 0,
 		messages: 0,
 		toolEvents: 0,
+		providerMessageFrames: 0,
 		estimatedDatabaseBytes: 0,
 		usageQueriesPreserved: 0,
 		managedAttachments: 0,
@@ -1143,14 +1148,45 @@ function cleanupPreviewForIds(
 			 (SELECT COUNT(*) FROM sessions WHERE id IN (${ph})) AS sessions,
 			 (SELECT COUNT(*) FROM messages WHERE session_id IN (${ph})) AS messages,
 			 (SELECT COUNT(*) FROM tool_events WHERE session_id IN (${ph})) AS toolEvents,
+				 ((SELECT COUNT(*) FROM provider_message_frames
+				   WHERE session_id IN (${ph})) +
+				  (SELECT COUNT(*) FROM provider_message_retractions
+				   WHERE session_id IN (${ph})) +
+				  (SELECT COUNT(*) FROM provider_tool_metadata_contributions
+				   WHERE session_id IN (${ph})) +
+				  (SELECT COUNT(*) FROM provider_tool_start_lineage
+				   WHERE session_id IN (${ph}))) AS providerMessageFrames,
 			 (SELECT COALESCE(SUM(
 			    length(COALESCE(text, '')) + length(COALESCE(recap, '')) +
 			    length(COALESCE(context_manifest_json, ''))
 			  ), 0) FROM messages WHERE session_id IN (${ph})) +
+				 (SELECT COALESCE(SUM(
+				    length(COALESCE(input_json, '')) + length(COALESCE(result_text, '')) +
+				    length(COALESCE(subagent_json, '')) + length(COALESCE(activity_json, ''))
+				  ), 0) FROM tool_events WHERE session_id IN (${ph})) +
+				 (SELECT COALESCE(SUM(
+				    length(provider_id) + length(COALESCE(provider_session_id, '')) +
+				    length(COALESCE(provider_uuid, '')) +
+				    length(COALESCE(subagent_json, '')) +
+				    length(COALESCE(activity_json, ''))
+				  ), 0) FROM provider_tool_metadata_contributions
+				  WHERE session_id IN (${ph})) +
+				 (SELECT COALESCE(SUM(
+				    length(provider_id) + length(provider_session_id) + length(provider_uuid)
+				  ), 0) FROM provider_tool_start_lineage
+				  WHERE session_id IN (${ph})) +
 			 (SELECT COALESCE(SUM(
-			    length(COALESCE(input_json, '')) + length(COALESCE(result_text, '')) +
-			    length(COALESCE(subagent_json, '')) + length(COALESCE(activity_json, ''))
-			  ), 0) FROM tool_events WHERE session_id IN (${ph})) AS estimatedDatabaseBytes,
+			    length(provider_id) + length(provider_session_id) +
+			    length(provider_uuid) + length(COALESCE(text_fragment, '')) +
+			    length(COALESCE(raw_tool_start_ids_json, '')) +
+			    length(COALESCE(tool_start_ids_json, '')) +
+			    length(COALESCE(tool_result_ids_json, ''))
+			  ), 0) FROM provider_message_frames WHERE session_id IN (${ph})) +
+			 (SELECT COALESCE(SUM(
+			    length(provider_id) + length(provider_session_id) +
+			    length(provider_uuid) + length(source)
+			  ), 0) FROM provider_message_retractions
+			  WHERE session_id IN (${ph})) AS estimatedDatabaseBytes,
 			 (SELECT COUNT(*) FROM usage_queries WHERE session_id IN (${ph})) AS usageQueriesPreserved,
 			 (SELECT COUNT(*) FROM attachments
 			  WHERE kind = 'ephemeral' AND session_id IN (${ph})) AS managedAttachments,
@@ -1169,7 +1205,7 @@ function cleanupPreviewForIds(
 			 (SELECT COUNT(*) FROM project_preview_feedback
 			  WHERE session_id IN (${ph})) AS projectPreviewFeedback`,
 		)
-		.get(...Array.from({ length: 14 }, () => ids).flat());
+		.get(...Array.from({ length: 22 }, () => ids).flat());
 	return row ? { days, cutoff, ...row } : emptyCleanupPreview(days, cutoff);
 }
 

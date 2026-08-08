@@ -592,6 +592,7 @@ const BUFFERED_MESSAGE_TYPES: ReadonlySet<ServerMessage["type"]> = new Set([
 	"turn_steered",
 	"done",
 	"chunk",
+	"assistant_revision",
 	"tool_event",
 	"tool_update",
 	"tool_activity_update",
@@ -1281,4 +1282,9 @@ export function __resetForTesting(): void {
 	resetDataRevisionsForTesting();
 	statusSubs.clear();
 	messageSubs.clear();
+}
+
+/** @internal — routes an already-parsed server frame through production buffering. */
+export function __handleParsedMessageForTesting(msg: ServerMessage): void {
+	handleParsedSocketMessage(msg);
 }

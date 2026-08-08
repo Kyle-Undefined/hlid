@@ -424,6 +424,25 @@ describe("wsStore state management", () => {
 			store.setBufferingEnabled(true);
 			expect(store.drainMessageBuffer()).toEqual([]);
 		});
+
+		it("drains a buffered canonical assistant revision exactly once", () => {
+			store.subscribeToSession("session-1");
+			const revision = {
+				type: "assistant_revision" as const,
+				session_id: "session-1",
+				transcript_seq: 3,
+				current: true,
+				text: "canonical",
+				removed_tool_ids: ["removed-tool"],
+				cleared_tool_result_ids: ["cleared-result"],
+				remaining_tool_count: 1,
+				remaining_tool_error_count: 0,
+				steer_tool_event_indexes: [],
+			};
+			wsStore.__handleParsedMessageForTesting(revision);
+			expect(store.drainMessageBuffer()).toEqual([revision]);
+			expect(store.drainMessageBuffer()).toEqual([]);
+		});
 	});
 
 	// ── subscription edge cases ───────────────────────────────────────────────

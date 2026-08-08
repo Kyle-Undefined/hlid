@@ -2031,11 +2031,1571 @@ describe("ClaudeProvider — event mapping", () => {
 		const events = await collectEvents(baseParams());
 		const trs = events.filter((e) => e.type === "tool_result");
 		expect(trs).toEqual([
-			{ type: "tool_result", toolId: "t-1", content: "file1\nfile2" },
+			{
+				type: "tool_result",
+				toolId: "t-1",
+				content: "file1\nfile2",
+				providerFrame: {
+					providerSessionId: "native-claude-session",
+					providerUuid: "synthetic-tool-result-id",
+				},
+			},
 		]);
 		expect(events.some((event) => event.type === "file_checkpoint")).toBe(
 			false,
 		);
+	});
+
+	it("emits assistant supersedes before the canonical replacement frame", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					uuid: "replacement-frame",
+					session_id: "native-refusal",
+					parent_tool_use_id: null,
+					supersedes: ["refused-frame", "replacement-frame"],
+					message: {
+						model: "claude-sonnet-4-6",
+						usage: { input_tokens: 2, output_tokens: 2 },
+						content: [{ type: "text", text: "Canonical answer" }],
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					result: "Canonical answer",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 10,
+					usage: { input_tokens: 2, output_tokens: 2 },
+				},
+			]),
+		);
+		const events = await collectEvents(baseParams());
+		const retractionIndex = events.findIndex(
+			(event) => event.type === "provider_message_retraction",
+		);
+		const frameIndex = events.findIndex(
+			(event) =>
+				event.type === "provider_message_frame" &&
+				event.id === "replacement-frame",
+		);
+		const textIndex = events.findIndex((event) => event.type === "text_delta");
+		expect(events[retractionIndex]).toEqual({
+			type: "provider_message_retraction",
+			ids: ["refused-frame"],
+			providerSessionId: "native-refusal",
+			source: "assistant_supersedes",
+		});
+		expect(retractionIndex).toBeLessThan(frameIndex);
+		expect(frameIndex).toBeLessThan(textIndex);
+	});
+
+	it("uses the fallback notice as an idempotent final retraction backstop", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "system",
+					subtype: "model_refusal_fallback",
+					session_id: "native-refusal",
+					uuid: "fallback-notice",
+					trigger: "refusal",
+					direction: "retry",
+					scope: "local",
+					original_model: "claude-opus-4-6",
+					fallback_model: "claude-sonnet-4-6",
+					request_id: "request-1",
+					refused_user_message_uuid: "user-1",
+					api_refusal_category: "cyber",
+					api_refusal_explanation: "Display only",
+					retracted_message_uuids: ["refused-frame", "tool-result-frame"],
+					content: "",
+				},
+			]),
+		);
+		const events = await collectEvents(baseParams());
+		expect(events).toContainEqual({
+			type: "provider_message_retraction",
+			ids: ["refused-frame", "tool-result-frame"],
+			providerSessionId: "native-refusal",
+			source: "model_refusal_fallback",
+		});
+		expect(events).toContainEqual({
+			type: "provider_refusal",
+			providerSessionId: "native-refusal",
+			outcome: "fallback",
+			originalModel: "claude-opus-4-6",
+			fallbackModel: "claude-sonnet-4-6",
+			direction: "retry",
+			scope: "local",
+			requestId: "request-1",
+			refusedUserMessageUuid: "user-1",
+			category: "cyber",
+			explanation: "Display only",
+			content: "",
+		});
+	});
+
+	it("accepts fallback-first ordering before an overlapping replacement supersedes", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "system",
+					subtype: "model_refusal_fallback",
+					session_id: "native-fallback-first",
+					uuid: "fallback-notice",
+					trigger: "refusal",
+					direction: "retry",
+					original_model: "claude-opus-4-6",
+					fallback_model: "claude-sonnet-4-6",
+					request_id: "request-first",
+					retracted_message_uuids: ["refused-frame"],
+					content: "",
+				},
+				{
+					type: "assistant",
+					uuid: "replacement-frame",
+					session_id: "native-fallback-first",
+					parent_tool_use_id: null,
+					supersedes: ["refused-frame"],
+					message: {
+						model: "claude-sonnet-4-6",
+						usage: { input_tokens: 2, output_tokens: 2 },
+						content: [{ type: "text", text: "Replacement after notice" }],
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					result: "Replacement after notice",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 10,
+					usage: { input_tokens: 2, output_tokens: 2 },
+				},
+			]),
+		);
+		const events = await collectEvents(baseParams());
+		const retractions = events
+			.map((event, index) => ({ event, index }))
+			.filter(
+				(
+					item,
+				): item is {
+					event: Extract<AgentEvent, { type: "provider_message_retraction" }>;
+					index: number;
+				} => item.event.type === "provider_message_retraction",
+			);
+		const replacementFrameIndex = events.findIndex(
+			(event) =>
+				event.type === "provider_message_frame" &&
+				event.id === "replacement-frame",
+		);
+		expect(retractions.map(({ event }) => event.source)).toEqual([
+			"model_refusal_fallback",
+			"assistant_supersedes",
+		]);
+		expect(retractions[0]?.index).toBeLessThan(retractions[1]?.index ?? -1);
+		expect(retractions[1]?.index).toBeLessThan(replacementFrameIndex);
+		expect(events).toContainEqual({
+			type: "text_delta",
+			text: "Replacement after notice",
+			providerFrame: {
+				providerSessionId: "native-fallback-first",
+				providerUuid: "replacement-frame",
+			},
+		});
+	});
+
+	it("accepts replacement supersedes before the overlapping final fallback notice", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					uuid: "refused-frame",
+					session_id: "native-supersedes-first",
+					parent_tool_use_id: null,
+					message: {
+						model: "claude-opus-4-6",
+						usage: { input_tokens: 2, output_tokens: 2 },
+						content: [{ type: "text", text: "Refused text" }],
+					},
+				},
+				{
+					type: "assistant",
+					uuid: "replacement-frame",
+					session_id: "native-supersedes-first",
+					parent_tool_use_id: null,
+					supersedes: ["refused-frame"],
+					message: {
+						model: "claude-sonnet-4-6",
+						usage: { input_tokens: 2, output_tokens: 2 },
+						content: [{ type: "text", text: "Canonical text" }],
+					},
+				},
+				{
+					type: "system",
+					subtype: "model_refusal_fallback",
+					session_id: "native-supersedes-first",
+					uuid: "fallback-notice",
+					trigger: "refusal",
+					direction: "retry",
+					original_model: "claude-opus-4-6",
+					fallback_model: "claude-sonnet-4-6",
+					request_id: "request-last",
+					retracted_message_uuids: ["refused-frame"],
+					content: "",
+				},
+				{
+					type: "result",
+					subtype: "success",
+					result: "Canonical text",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 10,
+					usage: { input_tokens: 2, output_tokens: 2 },
+				},
+			]),
+		);
+		const events = await collectEvents(baseParams());
+		const retractions = events
+			.map((event, index) => ({ event, index }))
+			.filter(
+				(
+					item,
+				): item is {
+					event: Extract<AgentEvent, { type: "provider_message_retraction" }>;
+					index: number;
+				} => item.event.type === "provider_message_retraction",
+			);
+		const replacementFrameIndex = events.findIndex(
+			(event) =>
+				event.type === "provider_message_frame" &&
+				event.id === "replacement-frame",
+		);
+		expect(retractions.map(({ event }) => event.source)).toEqual([
+			"assistant_supersedes",
+			"model_refusal_fallback",
+		]);
+		expect(retractions[0]?.index).toBeLessThan(replacementFrameIndex);
+		expect(replacementFrameIndex).toBeLessThan(retractions[1]?.index ?? -1);
+		expect(events).toContainEqual({
+			type: "text_delta",
+			text: "Canonical text",
+			providerFrame: {
+				providerSessionId: "native-supersedes-first",
+				providerUuid: "replacement-frame",
+			},
+		});
+	});
+
+	it("preserves derived per-block UUID linkage from normalized multi-block messages", async () => {
+		const assistantPrefix = "01234567-89ab-cdef-0123-";
+		const resultPrefix = "fedcba98-7654-3210-fedc-";
+		const assistantFrame = (index: number) =>
+			`${assistantPrefix}${index.toString(16).padStart(12, "0")}`;
+		const resultFrame = (index: number) =>
+			`${resultPrefix}${index.toString(16).padStart(12, "0")}`;
+		const assistantMessage = (
+			index: number,
+			block: Record<string, unknown>,
+			extra: Record<string, unknown> = {},
+		) => ({
+			type: "assistant",
+			uuid: assistantFrame(index),
+			session_id: "native-normalized",
+			parent_tool_use_id: null,
+			...extra,
+			message: {
+				model: "claude-sonnet-4-6",
+				usage: { input_tokens: 1, output_tokens: 1 },
+				content: [block],
+			},
+		});
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				assistantMessage(
+					0,
+					{ type: "text", text: "Opening." },
+					{ supersedes: ["old-text-frame", "old-tool-frame"] },
+				),
+				assistantMessage(1, {
+					type: "tool_use",
+					id: "read-tool",
+					name: "Read",
+					input: { file_path: "/tmp/a" },
+				}),
+				assistantMessage(2, {
+					type: "tool_use",
+					id: "bash-tool",
+					name: "Bash",
+					input: { command: "pwd" },
+				}),
+				assistantMessage(3, { type: "text", text: "Closing." }),
+				{
+					type: "user",
+					uuid: resultFrame(0),
+					session_id: "native-normalized",
+					parent_tool_use_id: null,
+					message: {
+						content: [
+							{
+								type: "tool_result",
+								tool_use_id: "read-tool",
+								content: "read result",
+							},
+						],
+					},
+				},
+				{
+					type: "user",
+					uuid: resultFrame(1),
+					session_id: "native-normalized",
+					parent_tool_use_id: null,
+					message: {
+						content: [
+							{
+								type: "tool_result",
+								tool_use_id: "bash-tool",
+								content: "bash result",
+							},
+						],
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					result: "Closing.",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 10,
+					usage: { input_tokens: 4, output_tokens: 4 },
+				},
+			]),
+		);
+		const events = await collectEvents(baseParams());
+		expect(
+			events.filter((event) => event.type === "provider_message_retraction"),
+		).toEqual([
+			{
+				type: "provider_message_retraction",
+				ids: ["old-text-frame", "old-tool-frame"],
+				providerSessionId: "native-normalized",
+				source: "assistant_supersedes",
+			},
+		]);
+		expect(
+			events.filter((event) => event.type === "provider_message_frame"),
+		).toEqual([
+			{
+				type: "provider_message_frame",
+				id: assistantFrame(0),
+				providerSessionId: "native-normalized",
+				kind: "assistant",
+				text: "Opening.",
+			},
+			{
+				type: "provider_message_frame",
+				id: assistantFrame(1),
+				providerSessionId: "native-normalized",
+				kind: "assistant",
+				text: "",
+				toolStartIds: ["read-tool"],
+			},
+			{
+				type: "provider_message_frame",
+				id: assistantFrame(2),
+				providerSessionId: "native-normalized",
+				kind: "assistant",
+				text: "",
+				toolStartIds: ["bash-tool"],
+			},
+			{
+				type: "provider_message_frame",
+				id: assistantFrame(3),
+				providerSessionId: "native-normalized",
+				kind: "assistant",
+				text: "Closing.",
+			},
+			{
+				type: "provider_message_frame",
+				id: resultFrame(0),
+				providerSessionId: "native-normalized",
+				kind: "tool_result",
+				toolResultIds: ["read-tool"],
+			},
+			{
+				type: "provider_message_frame",
+				id: resultFrame(1),
+				providerSessionId: "native-normalized",
+				kind: "tool_result",
+				toolResultIds: ["bash-tool"],
+			},
+		]);
+		expect(
+			events
+				.filter(
+					(event) =>
+						event.type === "text_delta" ||
+						event.type === "tool_start" ||
+						event.type === "tool_result",
+				)
+				.map((event) => ({
+					type: event.type,
+					providerFrame: event.providerFrame,
+				})),
+		).toEqual([
+			{
+				type: "text_delta",
+				providerFrame: {
+					providerSessionId: "native-normalized",
+					providerUuid: assistantFrame(0),
+				},
+			},
+			{
+				type: "tool_start",
+				providerFrame: {
+					providerSessionId: "native-normalized",
+					providerUuid: assistantFrame(1),
+				},
+			},
+			{
+				type: "tool_start",
+				providerFrame: {
+					providerSessionId: "native-normalized",
+					providerUuid: assistantFrame(2),
+				},
+			},
+			{
+				type: "text_delta",
+				providerFrame: {
+					providerSessionId: "native-normalized",
+					providerUuid: assistantFrame(3),
+				},
+			},
+			{
+				type: "tool_result",
+				providerFrame: {
+					providerSessionId: "native-normalized",
+					providerUuid: resultFrame(0),
+				},
+			},
+			{
+				type: "tool_result",
+				providerFrame: {
+					providerSessionId: "native-normalized",
+					providerUuid: resultFrame(1),
+				},
+			},
+		]);
+	});
+
+	it("records no-fallback refusal evidence without inventing retractions", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "system",
+					subtype: "model_refusal_no_fallback",
+					session_id: "native-refusal",
+					uuid: "no-fallback-notice",
+					original_model: "claude-opus-4-6",
+					request_id: "request-2",
+					refused_user_message_uuid: null,
+					api_refusal_category: null,
+					api_refusal_explanation: null,
+					content: "",
+				},
+			]),
+		);
+		const events = await collectEvents(baseParams());
+		expect(
+			events.filter((event) => event.type === "provider_message_retraction"),
+		).toEqual([]);
+		expect(events).toContainEqual({
+			type: "provider_refusal",
+			providerSessionId: "native-refusal",
+			outcome: "no_fallback",
+			originalModel: "claude-opus-4-6",
+			requestId: "request-2",
+			refusedUserMessageUuid: null,
+			category: null,
+			explanation: null,
+			content: "",
+		});
+	});
+
+	it("restores result fallback text after retracting the only assistant text", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					uuid: "refused-text",
+					session_id: "native-refusal",
+					parent_tool_use_id: null,
+					message: {
+						model: "claude-opus-4-6",
+						usage: { input_tokens: 2, output_tokens: 2 },
+						content: [{ type: "text", text: "Refused partial" }],
+					},
+				},
+				{
+					type: "system",
+					subtype: "model_refusal_fallback",
+					session_id: "native-refusal",
+					uuid: "fallback-notice",
+					trigger: "refusal",
+					direction: "retry",
+					original_model: "claude-opus-4-6",
+					fallback_model: "claude-sonnet-4-6",
+					request_id: null,
+					retracted_message_uuids: ["refused-text"],
+					content: "",
+				},
+				{
+					type: "result",
+					subtype: "success",
+					result: "Authoritative fallback result",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 10,
+					usage: { input_tokens: 2, output_tokens: 4 },
+				},
+			]),
+		);
+		const events = await collectEvents(baseParams());
+		expect(events).toContainEqual({
+			type: "result_text_fallback",
+			text: "Authoritative fallback result",
+		});
+	});
+
+	it("frames result fallback text so a trailing final retraction cannot erase it", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "result",
+					subtype: "success",
+					uuid: "result-fallback-frame",
+					session_id: "native-result-fallback",
+					result: "Authoritative result fallback",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 10,
+					usage: { input_tokens: 2, output_tokens: 4 },
+				},
+				{
+					type: "system",
+					subtype: "model_refusal_fallback",
+					session_id: "native-result-fallback",
+					uuid: "fallback-notice",
+					trigger: "refusal",
+					direction: "retry",
+					original_model: "claude-opus-4-6",
+					fallback_model: "claude-sonnet-4-6",
+					request_id: "request-result-fallback",
+					retracted_message_uuids: ["refused-frame"],
+					content: "",
+				},
+				{
+					type: "result",
+					subtype: "success",
+					uuid: "continuation-result",
+					session_id: "native-result-fallback",
+					result: "",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 10,
+					usage: { input_tokens: 1, output_tokens: 1 },
+				},
+			]),
+		);
+		const provider = new ClaudeProvider();
+		const session = provider.query(baseParams());
+		if (!session.steer) throw new Error("Claude session must support steering");
+		await session.steer("keep the turn open");
+		const events: AgentEvent[] = [];
+		for await (const event of session) events.push(event);
+
+		const fallbackIndex = events.findIndex(
+			(event) =>
+				event.type === "result_text_fallback" &&
+				event.text === "Authoritative result fallback",
+		);
+		const retractionIndex = events.findIndex(
+			(event) => event.type === "provider_message_retraction",
+		);
+		const doneIndex = events.findIndex((event) => event.type === "done");
+		expect(events[fallbackIndex]).toEqual({
+			type: "result_text_fallback",
+			text: "Authoritative result fallback",
+			providerSessionId: "native-result-fallback",
+			providerUuid: "result-fallback-frame",
+		});
+		expect(fallbackIndex).toBeLessThan(retractionIndex);
+		expect(retractionIndex).toBeLessThan(doneIndex);
+	});
+
+	it("suppresses a late tombstoned tool result and tracker resurrection", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					uuid: "tool-frame",
+					session_id: "native-refusal",
+					parent_tool_use_id: null,
+					message: {
+						model: "claude-sonnet-4-6",
+						usage: { input_tokens: 1, output_tokens: 1 },
+						content: [
+							{
+								type: "tool_use",
+								id: "agent-tool",
+								name: "Agent",
+								input: { prompt: "work" },
+							},
+						],
+					},
+				},
+				{
+					type: "system",
+					subtype: "model_refusal_fallback",
+					session_id: "native-refusal",
+					uuid: "fallback-notice",
+					trigger: "refusal",
+					direction: "retry",
+					original_model: "claude-sonnet-4-6",
+					fallback_model: "claude-opus-4-6",
+					request_id: null,
+					retracted_message_uuids: ["tool-frame", "late-result"],
+					content: "",
+				},
+				{
+					type: "system",
+					subtype: "task_started",
+					session_id: "native-refusal",
+					uuid: "task-started",
+					task_id: "task-1",
+					tool_use_id: "agent-tool",
+					task_type: "subagent",
+				},
+				{
+					type: "user",
+					uuid: "late-result",
+					session_id: "native-refusal",
+					parent_tool_use_id: null,
+					message: {
+						content: [
+							{
+								type: "tool_result",
+								tool_use_id: "agent-tool",
+								content: "late",
+							},
+						],
+					},
+				},
+			]),
+		);
+		const events = await collectEvents(baseParams());
+		expect(
+			events.filter(
+				(event) =>
+					(event.type === "tool_update" || event.type === "tool_result") &&
+					("toolId" in event ? event.toolId === "agent-tool" : false),
+			),
+		).toEqual([]);
+	});
+
+	it("suppresses tracker state when a fallback tombstone precedes a late tool frame", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "system",
+					subtype: "model_refusal_fallback",
+					session_id: "native-fallback-first-tool",
+					uuid: "fallback-notice",
+					trigger: "refusal",
+					direction: "retry",
+					original_model: "claude-opus-4-6",
+					fallback_model: "claude-sonnet-4-6",
+					request_id: "request-fallback-first-tool",
+					retracted_message_uuids: [
+						"late-tool-frame",
+						"late-tool-result-frame",
+					],
+					content: "",
+				},
+				{
+					type: "assistant",
+					uuid: "late-tool-frame",
+					session_id: "native-fallback-first-tool",
+					parent_tool_use_id: null,
+					message: {
+						model: "claude-opus-4-6",
+						usage: { input_tokens: 1, output_tokens: 1 },
+						content: [
+							{
+								type: "tool_use",
+								id: "late-agent-tool",
+								name: "Agent",
+								input: { prompt: "must stay quarantined" },
+							},
+						],
+					},
+				},
+				{
+					type: "system",
+					subtype: "task_started",
+					session_id: "native-fallback-first-tool",
+					uuid: "task-started",
+					task_id: "late-task",
+					tool_use_id: "late-agent-tool",
+					task_type: "subagent",
+				},
+				{
+					type: "system",
+					subtype: "task_progress",
+					session_id: "native-fallback-first-tool",
+					uuid: "task-progress",
+					task_id: "late-task",
+					description: "must not resurrect",
+				},
+				{
+					type: "user",
+					uuid: "late-tool-result-frame",
+					session_id: "native-fallback-first-tool",
+					parent_tool_use_id: null,
+					message: {
+						content: [
+							{
+								type: "tool_result",
+								tool_use_id: "late-agent-tool",
+								content: "late result",
+							},
+						],
+					},
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events).toContainEqual({
+			type: "provider_message_retraction",
+			ids: ["late-tool-frame", "late-tool-result-frame"],
+			providerSessionId: "native-fallback-first-tool",
+			source: "model_refusal_fallback",
+		});
+		expect(
+			events.filter(
+				(event) =>
+					(event.type === "tool_start" ||
+						event.type === "tool_update" ||
+						event.type === "tool_result" ||
+						event.type === "tool_activity_update") &&
+					"toolId" in event &&
+					event.toolId === "late-agent-tool",
+			),
+		).toEqual([]);
+		expect(
+			events.some(
+				(event) =>
+					event.type === "provider_message_frame" &&
+					(event.id === "late-tool-frame" ||
+						event.id === "late-tool-result-frame"),
+			),
+		).toBe(false);
+	});
+
+	it("does not let a tombstoned workflow result seed progress children", async () => {
+		const workflowProgressReader = vi.fn(async () => ({
+			workflowProgress: [
+				{
+					type: "workflow_agent",
+					agentId: "must-not-exist",
+					state: "running",
+				},
+			],
+		}));
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					uuid: "workflow-start-frame",
+					session_id: "native-late-workflow-result",
+					parent_tool_use_id: null,
+					message: {
+						model: "claude-opus-4-6",
+						usage: { input_tokens: 1, output_tokens: 1 },
+						content: [
+							{
+								type: "tool_use",
+								id: "late-workflow-tool",
+								name: "Workflow",
+								input: { name: "late-workflow" },
+							},
+						],
+					},
+				},
+				{
+					type: "system",
+					subtype: "task_started",
+					task_id: "late-workflow-task",
+					tool_use_id: "late-workflow-tool",
+					task_type: "local_workflow",
+				},
+				{
+					type: "system",
+					subtype: "model_refusal_fallback",
+					session_id: "native-late-workflow-result",
+					uuid: "fallback-notice",
+					trigger: "refusal",
+					direction: "retry",
+					original_model: "claude-opus-4-6",
+					fallback_model: "claude-sonnet-4-6",
+					request_id: "request-late-workflow-result",
+					retracted_message_uuids: ["late-workflow-result-frame"],
+					content: "",
+				},
+				{
+					type: "user",
+					uuid: "late-workflow-result-frame",
+					session_id: "native-late-workflow-result",
+					parent_tool_use_id: null,
+					tool_use_result: {
+						status: "async_launched",
+						taskId: "late-workflow-task",
+						taskType: "local_workflow",
+						runId: "late-workflow-run",
+						scriptPath: "/tmp/workflows/scripts/late-workflow.js",
+					},
+					message: {
+						content: [
+							{
+								type: "tool_result",
+								tool_use_id: "late-workflow-tool",
+								content: "late workflow result",
+							},
+						],
+					},
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams(), {
+			workflowProgressReader,
+		});
+		expect(workflowProgressReader).not.toHaveBeenCalled();
+		expect(
+			events.some(
+				(event) =>
+					(event.type === "tool_start" || event.type === "tool_update") &&
+					event.subagent?.agentId === "must-not-exist",
+			),
+		).toBe(false);
+	});
+
+	it("links workflow descendants to their result trigger and root dependency", async () => {
+		const runId = "refused-workflow-run";
+		const statePath = `/tmp/workflows/${runId}.json`;
+		const workflowProgressReader = vi.fn(
+			async (_runtimeCwd: string, providerPath: string) =>
+				providerPath === statePath
+					? {
+							workflowProgress: [
+								{
+									type: "workflow_agent",
+									agentId: "refused-workflow-child",
+									state: "running",
+									lastToolName: "Read",
+								},
+							],
+						}
+					: null,
+		);
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					uuid: "refused-workflow-frame",
+					session_id: "native-refused-workflow",
+					parent_tool_use_id: null,
+					message: {
+						model: "claude-opus-4-6",
+						usage: { input_tokens: 1, output_tokens: 1 },
+						content: [
+							{
+								type: "tool_use",
+								id: "refused-workflow-tool",
+								name: "Workflow",
+								input: { name: "refused-workflow" },
+							},
+						],
+					},
+				},
+				{
+					type: "system",
+					subtype: "task_started",
+					task_id: "refused-workflow-task",
+					tool_use_id: "refused-workflow-tool",
+					task_type: "local_workflow",
+					description: "Running refused workflow",
+				},
+				{
+					type: "user",
+					uuid: "refused-workflow-result",
+					session_id: "native-refused-workflow",
+					parent_tool_use_id: null,
+					tool_use_result: {
+						status: "async_launched",
+						taskId: "refused-workflow-task",
+						taskType: "local_workflow",
+						runId,
+						scriptPath: `/tmp/workflows/scripts/${runId}.js`,
+					},
+					message: {
+						content: [
+							{
+								type: "tool_result",
+								tool_use_id: "refused-workflow-tool",
+								content: "Workflow launched in background.",
+							},
+						],
+					},
+				},
+				{
+					type: "system",
+					subtype: "model_refusal_fallback",
+					session_id: "native-refused-workflow",
+					uuid: "fallback-notice",
+					trigger: "refusal",
+					direction: "retry",
+					original_model: "claude-opus-4-6",
+					fallback_model: "claude-sonnet-4-6",
+					request_id: "request-refused-workflow",
+					retracted_message_uuids: ["refused-workflow-frame"],
+					content: "",
+				},
+				{
+					type: "system",
+					subtype: "task_progress",
+					task_id: "refused-workflow-task",
+					description: "must remain suppressed",
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams(), {
+			workflowProgressReader,
+		});
+		const resultFrame = {
+			providerSessionId: "native-refused-workflow",
+			providerUuid: "refused-workflow-result",
+		};
+		const rootFrame = {
+			providerSessionId: "native-refused-workflow",
+			providerUuid: "refused-workflow-frame",
+		};
+		expect(
+			events.find(
+				(event) =>
+					event.type === "tool_start" &&
+					event.subagent?.agentId === "refused-workflow-child",
+			),
+		).toMatchObject({
+			type: "tool_start",
+			toolId:
+				"claude-workflow-agent:refused-workflow-task:refused-workflow-child",
+			providerFrame: resultFrame,
+			providerLineageFrames: [resultFrame, rootFrame],
+		});
+		const retractionIndex = events.findIndex(
+			(event) => event.type === "provider_message_retraction",
+		);
+		expect(retractionIndex).toBeGreaterThan(-1);
+		expect(
+			events
+				.slice(retractionIndex + 1)
+				.some(
+					(event) =>
+						(event.type === "tool_start" || event.type === "tool_update") &&
+						(event.toolId === "refused-workflow-tool" ||
+							event.toolId ===
+								"claude-workflow-agent:refused-workflow-task:refused-workflow-child"),
+				),
+		).toBe(false);
+	});
+
+	it("removes a workflow child discovered only from a retracted result frame", async () => {
+		const statePath = "/tmp/workflows/result-only-run.json";
+		const workflowProgressReader = vi.fn(
+			async (_runtimeCwd: string, providerPath: string) =>
+				providerPath === statePath
+					? {
+							workflowProgress: [
+								{
+									type: "workflow_agent",
+									agentId: "result-only-child",
+									state: "running",
+								},
+							],
+						}
+					: null,
+		);
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					uuid: "result-only-start",
+					session_id: "native-result-only-child",
+					parent_tool_use_id: null,
+					message: {
+						model: "claude-opus-4-6",
+						usage: { input_tokens: 1, output_tokens: 1 },
+						content: [
+							{
+								type: "tool_use",
+								id: "result-only-workflow-tool",
+								name: "Workflow",
+								input: { name: "result-only" },
+							},
+						],
+					},
+				},
+				{
+					type: "system",
+					subtype: "task_started",
+					task_id: "result-only-workflow-task",
+					tool_use_id: "result-only-workflow-tool",
+					task_type: "local_workflow",
+				},
+				{
+					type: "user",
+					uuid: "result-only-frame",
+					session_id: "native-result-only-child",
+					parent_tool_use_id: null,
+					tool_use_result: {
+						status: "async_launched",
+						taskId: "result-only-workflow-task",
+						taskType: "local_workflow",
+						runId: "result-only-run",
+						scriptPath: "/tmp/workflows/scripts/result-only-run.js",
+					},
+					message: {
+						content: [
+							{
+								type: "tool_result",
+								tool_use_id: "result-only-workflow-tool",
+								content: "launched",
+							},
+						],
+					},
+				},
+				{
+					type: "system",
+					subtype: "model_refusal_fallback",
+					session_id: "native-result-only-child",
+					uuid: "result-only-fallback",
+					trigger: "refusal",
+					direction: "retry",
+					original_model: "claude-opus-4-6",
+					fallback_model: "claude-sonnet-4-6",
+					request_id: "result-only-request",
+					retracted_message_uuids: ["result-only-frame"],
+					content: "",
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams(), {
+			workflowProgressReader,
+		});
+		const childToolId =
+			"claude-workflow-agent:result-only-workflow-task:result-only-child";
+		const childStart = events.find(
+			(event) => event.type === "tool_start" && event.toolId === childToolId,
+		);
+		expect(childStart).toMatchObject({
+			type: "tool_start",
+			providerFrame: {
+				providerSessionId: "native-result-only-child",
+				providerUuid: "result-only-frame",
+			},
+		});
+		const retractionIndex = events.findIndex(
+			(event) =>
+				event.type === "provider_message_retraction" &&
+				event.ids.includes("result-only-frame"),
+		);
+		expect(retractionIndex).toBeGreaterThan(-1);
+		expect(
+			events
+				.slice(retractionIndex + 1)
+				.some(
+					(event) =>
+						(event.type === "tool_start" || event.type === "tool_update") &&
+						event.toolId === childToolId,
+				),
+		).toBe(false);
+	});
+
+	it.each([
+		{
+			name: "older result first",
+			retractionOrder: ["ordered-result-a", "ordered-result-b"],
+			survivingRun: "run-b",
+		},
+		{
+			name: "newer result first",
+			retractionOrder: ["ordered-result-b", "ordered-result-a"],
+			survivingRun: "run-a",
+		},
+	])("reconstructs tracker result state when retracting $name", async ({
+		retractionOrder,
+		survivingRun,
+	}) => {
+		const statePath = (runId: string) => `/tmp/workflows/${runId}.json`;
+		const workflowProgressReader = vi.fn(
+			async (_runtimeCwd: string, providerPath: string) => {
+				const runId = providerPath.includes("run-a") ? "run-a" : "run-b";
+				return {
+					workflowProgress: [
+						{
+							type: "workflow_agent",
+							agentId: "ordered-child",
+							state: "running",
+							phaseTitle: runId,
+							lastToolName: `${runId}-${workflowProgressReader.mock.calls.length}`,
+						},
+					],
+				};
+			},
+		);
+		const resultMessage = (uuid: string, runId: string) => ({
+			type: "user",
+			uuid,
+			session_id: "native-ordered-results",
+			parent_tool_use_id: null,
+			message: {
+				content: [
+					{
+						type: "tool_result",
+						tool_use_id: "ordered-workflow-tool",
+						content: {
+							status: "async_launched",
+							taskId: "ordered-workflow-task",
+							taskType: "local_workflow",
+							runId,
+							scriptPath: `/tmp/workflows/scripts/${runId}.js`,
+						},
+					},
+					{
+						type: "tool_result",
+						tool_use_id: "ordered-task-tool",
+						content: {
+							task: {
+								id: "ordered-task",
+								subject: `Task from ${runId}`,
+								status: "in_progress",
+							},
+						},
+					},
+				],
+			},
+		});
+		const retractionNotice = (providerUuid: string, index: number) => ({
+			type: "system",
+			subtype: "model_refusal_fallback",
+			session_id: "native-ordered-results",
+			uuid: `ordered-fallback-${index}`,
+			trigger: "refusal",
+			direction: "retry",
+			original_model: "claude-opus-4-6",
+			fallback_model: "claude-sonnet-4-6",
+			request_id: `ordered-request-${index}`,
+			retracted_message_uuids: [providerUuid],
+			content: "",
+		});
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					uuid: "ordered-start-frame",
+					session_id: "native-ordered-results",
+					parent_tool_use_id: null,
+					message: {
+						model: "claude-opus-4-6",
+						usage: { input_tokens: 1, output_tokens: 1 },
+						content: [
+							{
+								type: "tool_use",
+								id: "ordered-workflow-tool",
+								name: "Workflow",
+								input: { name: "ordered-workflow" },
+							},
+							{
+								type: "tool_use",
+								id: "ordered-task-tool",
+								name: "TaskCreate",
+								input: { subject: "Ordered task" },
+							},
+						],
+					},
+				},
+				{
+					type: "system",
+					subtype: "task_started",
+					session_id: "native-ordered-results",
+					uuid: "ordered-task-started",
+					task_id: "ordered-workflow-task",
+					tool_use_id: "ordered-workflow-tool",
+					task_type: "local_workflow",
+				},
+				resultMessage("ordered-result-a", "run-a"),
+				resultMessage("ordered-result-b", "run-b"),
+				retractionNotice(retractionOrder[0] ?? "", 1),
+				{
+					type: "system",
+					subtype: "task_progress",
+					session_id: "native-ordered-results",
+					uuid: "ordered-progress-1",
+					task_id: "ordered-workflow-task",
+					description: "After first retraction",
+				},
+				retractionNotice(retractionOrder[1] ?? "", 2),
+				{
+					type: "system",
+					subtype: "task_progress",
+					session_id: "native-ordered-results",
+					uuid: "ordered-progress-2",
+					task_id: "ordered-workflow-task",
+					description: "After both retractions",
+				},
+				{
+					type: "user",
+					uuid: "ordered-result-c",
+					session_id: "native-ordered-results",
+					parent_tool_use_id: null,
+					message: {
+						content: [
+							{
+								type: "tool_result",
+								tool_use_id: "ordered-task-tool",
+								content: {
+									task: {
+										id: "ordered-task",
+										subject: "Replacement task result",
+										status: "completed",
+									},
+								},
+							},
+						],
+					},
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams(), {
+			workflowProgressReader,
+		});
+		expect(
+			workflowProgressReader.mock.calls.map(([, providerPath]) => providerPath),
+		).toEqual([
+			statePath("run-a"),
+			statePath("run-b"),
+			statePath(survivingRun),
+		]);
+		const firstRetraction = events.findIndex(
+			(event) =>
+				event.type === "provider_message_retraction" &&
+				event.ids.includes(retractionOrder[0] ?? ""),
+		);
+		const secondRetraction = events.findIndex(
+			(event) =>
+				event.type === "provider_message_retraction" &&
+				event.ids.includes(retractionOrder[1] ?? ""),
+		);
+		const updateAfterFirst = events
+			.slice(firstRetraction + 1, secondRetraction)
+			.find(
+				(event) =>
+					event.type === "tool_update" &&
+					event.toolId === "ordered-workflow-tool",
+			);
+		expect(updateAfterFirst).toMatchObject({
+			type: "tool_update",
+			subagent: { workflowRunId: survivingRun },
+		});
+		const updateAfterBoth = events
+			.slice(secondRetraction + 1)
+			.find(
+				(event) =>
+					event.type === "tool_update" &&
+					event.toolId === "ordered-workflow-tool",
+			);
+		expect(updateAfterBoth).toBeDefined();
+		if (updateAfterBoth?.type === "tool_update") {
+			expect(updateAfterBoth.subagent.workflowRunId).toBeUndefined();
+		}
+		expect(
+			events
+				.slice(secondRetraction + 1)
+				.some(
+					(event) =>
+						event.type === "tool_activity_update" &&
+						event.toolId === "ordered-task-tool",
+				),
+		).toBe(true);
+	});
+
+	it("emits supersedes from an ignored late child without exposing its content", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					uuid: "root-tool-frame",
+					session_id: "native-ignored-child",
+					parent_tool_use_id: null,
+					message: {
+						model: "claude-sonnet-4-6",
+						usage: { input_tokens: 1, output_tokens: 1 },
+						content: [
+							{
+								type: "tool_use",
+								id: "finished-parent-tool",
+								name: "Agent",
+								input: { prompt: "finish before child replay" },
+							},
+						],
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 1,
+					usage: { input_tokens: 1, output_tokens: 1 },
+				},
+				{
+					type: "assistant",
+					uuid: "ignored-child-frame",
+					session_id: "native-ignored-child",
+					parent_tool_use_id: "finished-parent-tool",
+					supersedes: ["refused-child-frame"],
+					message: {
+						model: "claude-sonnet-4-6",
+						usage: { input_tokens: 20, output_tokens: 10 },
+						content: [
+							{ type: "text", text: "must stay hidden" },
+							{
+								type: "tool_use",
+								id: "ignored-nested-tool",
+								name: "Agent",
+								input: { prompt: "must not resurrect" },
+							},
+						],
+					},
+				},
+				{
+					type: "system",
+					subtype: "task_started",
+					task_id: "ignored-nested-task",
+					tool_use_id: "ignored-nested-tool",
+					task_type: "subagent",
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events).toContainEqual({
+			type: "provider_message_retraction",
+			ids: ["refused-child-frame"],
+			providerSessionId: "native-ignored-child",
+			source: "assistant_supersedes",
+		});
+		expect(
+			events.some(
+				(event) =>
+					(event.type === "provider_message_frame" &&
+						event.id === "ignored-child-frame") ||
+					(event.type === "text_delta" && event.text === "must stay hidden"),
+			),
+		).toBe(false);
+		expect(
+			events.some(
+				(event) =>
+					(event.type === "tool_start" || event.type === "tool_update") &&
+					event.toolId === "ignored-nested-tool",
+			),
+		).toBe(false);
+	});
+
+	it("accepts child lineage when a replacement reuses a retracted tool id", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					uuid: "old-reused-tool-frame",
+					session_id: "native-reused-tool",
+					parent_tool_use_id: null,
+					message: {
+						model: "claude-opus-4-6",
+						usage: { input_tokens: 1, output_tokens: 1 },
+						content: [
+							{
+								type: "tool_use",
+								id: "reused-agent-tool",
+								name: "Agent",
+								input: { prompt: "old refused work" },
+							},
+						],
+					},
+				},
+				{
+					type: "system",
+					subtype: "model_refusal_fallback",
+					session_id: "native-reused-tool",
+					uuid: "fallback-notice",
+					trigger: "refusal",
+					direction: "retry",
+					original_model: "claude-opus-4-6",
+					fallback_model: "claude-sonnet-4-6",
+					request_id: "request-reused-tool",
+					retracted_message_uuids: ["old-reused-tool-frame"],
+					content: "",
+				},
+				{
+					type: "assistant",
+					uuid: "replacement-reused-tool-frame",
+					session_id: "native-reused-tool",
+					parent_tool_use_id: null,
+					message: {
+						model: "claude-sonnet-4-6",
+						usage: { input_tokens: 2, output_tokens: 2 },
+						content: [
+							{
+								type: "tool_use",
+								id: "reused-agent-tool",
+								name: "Agent",
+								input: { prompt: "replacement work" },
+							},
+						],
+					},
+				},
+				{
+					type: "system",
+					subtype: "task_started",
+					task_id: "replacement-task",
+					tool_use_id: "reused-agent-tool",
+					task_type: "subagent",
+				},
+				{
+					type: "assistant",
+					uuid: "replacement-child-frame",
+					session_id: "native-reused-tool",
+					parent_tool_use_id: "reused-agent-tool",
+					message: {
+						model: "claude-sonnet-4-6",
+						usage: { input_tokens: 3, output_tokens: 2 },
+						content: [{ type: "text", text: "replacement child output" }],
+					},
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events).toContainEqual({
+			type: "text_delta",
+			text: "replacement child output",
+			providerFrame: {
+				providerSessionId: "native-reused-tool",
+				providerUuid: "replacement-child-frame",
+			},
+		});
+		expect(
+			events.find(
+				(event) =>
+					event.type === "tool_update" &&
+					event.subagent.agentId === "replacement-task",
+			),
+		).toMatchObject({
+			type: "tool_update",
+			toolId: "reused-agent-tool",
+			providerFrame: {
+				providerSessionId: "native-reused-tool",
+				providerUuid: "replacement-reused-tool-frame",
+			},
+		});
+	});
+
+	it("accounts late child usage from a retracted leg without exposing content", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					uuid: "accounted-parent-frame",
+					session_id: "native-accounted-refusal",
+					parent_tool_use_id: null,
+					message: {
+						id: "root-api-message",
+						model: "claude-opus-4-6",
+						usage: { input_tokens: 10, output_tokens: 5 },
+						content: [
+							{
+								type: "tool_use",
+								id: "accounted-parent-tool",
+								name: "Agent",
+								input: { prompt: "refused child work" },
+							},
+						],
+					},
+				},
+				{
+					type: "system",
+					subtype: "model_refusal_fallback",
+					session_id: "native-accounted-refusal",
+					uuid: "fallback-notice",
+					trigger: "refusal",
+					direction: "retry",
+					original_model: "claude-opus-4-6",
+					fallback_model: "claude-sonnet-4-6",
+					request_id: "request-accounted-refusal",
+					retracted_message_uuids: ["accounted-parent-frame"],
+					content: "",
+				},
+				{
+					type: "assistant",
+					uuid: "accounted-child-frame",
+					session_id: "native-accounted-refusal",
+					parent_tool_use_id: "accounted-parent-tool",
+					message: {
+						id: "child-api-message",
+						model: "claude-opus-4-6",
+						usage: { input_tokens: 2, output_tokens: 3 },
+						content: [{ type: "text", text: "refused child content" }],
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 10,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(
+			events.some(
+				(event) =>
+					event.type === "text_delta" && event.text === "refused child content",
+			),
+		).toBe(false);
+		expect(events.find((event) => event.type === "done")).toMatchObject({
+			usage: { inputTokens: 12, outputTokens: 8 },
+		});
 	});
 
 	it("keeps long Obsidian inputs separate from the returned path", async () => {
@@ -3345,7 +4905,7 @@ describe("ClaudeProvider — event mapping", () => {
 		});
 	});
 
-	it("yields text_delta from result.result when no prior text emitted (slash command fallback)", async () => {
+	it("yields a server-owned fallback from result.result", async () => {
 		vi.mocked(query).mockReturnValueOnce(
 			sdkGen([
 				{
@@ -3361,13 +4921,13 @@ describe("ClaudeProvider — event mapping", () => {
 		);
 
 		const events = await collectEvents(baseParams());
-		const textEvents = events.filter((e) => e.type === "text_delta");
+		const textEvents = events.filter((e) => e.type === "result_text_fallback");
 		expect(textEvents).toEqual([
-			{ type: "text_delta", text: "Slash command output" },
+			{ type: "result_text_fallback", text: "Slash command output" },
 		]);
 	});
 
-	it("does NOT yield text_delta from result.result when prior text was already emitted", async () => {
+	it("leaves result fallback visibility to the server when prior text was emitted", async () => {
 		vi.mocked(query).mockReturnValueOnce(
 			sdkGen([
 				{
@@ -3393,6 +4953,10 @@ describe("ClaudeProvider — event mapping", () => {
 		const textEvents = events.filter((e) => e.type === "text_delta");
 		expect(textEvents).toHaveLength(1);
 		expect(textEvents[0]).toEqual({ type: "text_delta", text: "regular text" });
+		expect(events).toContainEqual({
+			type: "result_text_fallback",
+			text: "should not appear",
+		});
 	});
 });
 
@@ -4827,6 +6391,7 @@ describe("ClaudeProvider — stopTask", () => {
 		await iter.next();
 		await iter.next();
 		await iter.next();
+		await iter.next();
 
 		await expect(session.listBackgroundActivities?.()).resolves.toEqual([
 			expect.objectContaining({
@@ -4845,6 +6410,85 @@ describe("ClaudeProvider — stopTask", () => {
 
 		expect(gen.stopTask).toHaveBeenCalledWith("task-1");
 		await expect(session.listBackgroundActivities?.()).resolves.toEqual([]);
+	});
+
+	it("rolls back background activity created only by a retracted result frame", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "system",
+					subtype: "background_tasks_changed",
+					tasks: [
+						{
+							task_id: "existing-background-task",
+							task_type: "remote_agent",
+							description: "Keep this activity",
+						},
+					],
+					uuid: "existing-background-level",
+					session_id: "sdk-background-retraction",
+				},
+				{
+					type: "assistant",
+					uuid: "background-tool-frame",
+					session_id: "sdk-background-retraction",
+					parent_tool_use_id: null,
+					message: {
+						model: "claude-sonnet-4-6",
+						usage: { input_tokens: 1, output_tokens: 1 },
+						content: [
+							{
+								type: "tool_use",
+								id: "background-tool",
+								name: "Bash",
+								input: { command: "sleep 30" },
+							},
+						],
+					},
+				},
+				{
+					type: "user",
+					uuid: "background-result-frame",
+					session_id: "sdk-background-retraction",
+					parent_tool_use_id: null,
+					message: {
+						content: [
+							{
+								type: "tool_result",
+								tool_use_id: "background-tool",
+								content: "Command running in background",
+							},
+						],
+					},
+					tool_use_result: { backgroundTaskId: "retracted-background-task" },
+				},
+				{
+					type: "system",
+					subtype: "model_refusal_fallback",
+					session_id: "sdk-background-retraction",
+					uuid: "background-fallback-notice",
+					trigger: "refusal",
+					direction: "retry",
+					original_model: "claude-opus-4-6",
+					fallback_model: "claude-sonnet-4-6",
+					request_id: "background-request",
+					retracted_message_uuids: ["background-result-frame"],
+					content: "",
+				},
+			]),
+		);
+
+		const session = new ClaudeProvider().query(baseParams());
+		for await (const _event of session) {
+			// Drain through the accepted result and its later retraction.
+		}
+
+		await expect(session.listBackgroundActivities?.()).resolves.toEqual([
+			expect.objectContaining({
+				activityId: "existing-background-task",
+				description: "Keep this activity",
+			}),
+		]);
 	});
 
 	it("lists a metadata-light task discovered from the authoritative level", async () => {

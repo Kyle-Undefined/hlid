@@ -73,6 +73,7 @@ export type SessionCleanupPreview = {
 	sessions: number;
 	messages: number;
 	toolEvents: number;
+	providerMessageFrames: number;
 	estimatedDatabaseBytes: number;
 	usageQueriesPreserved: number;
 	managedAttachments: number;
