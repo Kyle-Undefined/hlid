@@ -57,6 +57,7 @@ import {
 import {
 	getSessionPermissionEvents,
 	recordPermissionEvent,
+	recordProviderPermissionDenied,
 } from "./permissions";
 import { retainProjectPreviewFeedback } from "./projectPreviewFeedback";
 import { getDb, setDbForTest } from "./schema";
@@ -2311,6 +2312,220 @@ describe("permission events", () => {
 		).toEqual(["hlid-windows-computer-use-turn-1"]);
 		expect(await getSessionPermissionEvents("s1", 0, 11, 10)).toEqual([]);
 	});
+
+	it("stores provider-only denial evidence without claiming a human denial", async () => {
+		await createSession("s1", "L", "m");
+		expect(
+			await recordProviderPermissionDenied({
+				sessionId: "s1",
+				toolId: "provider-only",
+				toolName: "Bash",
+				displayName: "Shell command",
+				providerId: "claude",
+				providerSessionId: "native-1",
+				reasonType: "rule",
+				reason: "Workspace policy",
+				message: "Command blocked",
+			}),
+		).toBe(true);
+		expect((await getSessionPermissionEvents("s1"))[0]).toMatchObject({
+			tool_id: "provider-only",
+			decision: "provider_blocked",
+			human_decision: null,
+			provider_outcome: "blocked",
+			provider_id: "claude",
+			provider_reason_type: "rule",
+			provider_reason: "Workspace policy",
+			provider_message: "Command blocked",
+		});
+	});
+
+	it("preserves human approval when a provider block arrives afterward", async () => {
+		await createSession("s1", "L", "m");
+		await recordPermissionEvent(
+			"s1",
+			"approved-blocked",
+			"Bash",
+			"Shell command",
+			"approved_session",
+		);
+		await recordProviderPermissionDenied({
+			sessionId: "s1",
+			toolId: "approved-blocked",
+			toolName: "Bash",
+			providerId: "claude",
+			providerSessionId: "native-1",
+			message: "Provider veto",
+		});
+		expect((await getSessionPermissionEvents("s1"))[0]).toMatchObject({
+			decision: "approved_session",
+			human_decision: "approved_session",
+			provider_outcome: "blocked",
+			provider_message: "Provider veto",
+		});
+	});
+
+	it("adds a later human decision without erasing provider-first evidence", async () => {
+		await createSession("s1", "L", "m");
+		await recordProviderPermissionDenied({
+			sessionId: "s1",
+			toolId: "provider-first",
+			toolName: "Read",
+			providerId: "claude",
+			providerSessionId: "native-1",
+			reason: "Managed rule",
+		});
+		await recordPermissionEvent(
+			"s1",
+			"provider-first",
+			"Read",
+			"Read file",
+			"denied",
+		);
+		expect((await getSessionPermissionEvents("s1"))[0]).toMatchObject({
+			decision: "denied",
+			human_decision: "denied",
+			provider_outcome: "blocked",
+			provider_reason: "Managed rule",
+		});
+	});
+
+	it("atomically converges concurrent human and provider upserts", async () => {
+		await createSession("s1", "L", "m");
+		await Promise.all([
+			recordPermissionEvent(
+				"s1",
+				"concurrent",
+				"Bash",
+				"Shell command",
+				"approved",
+			),
+			recordProviderPermissionDenied({
+				sessionId: "s1",
+				toolId: "concurrent",
+				toolName: "Bash",
+				providerId: "claude",
+				providerSessionId: "native-concurrent",
+				message: "Provider blocked",
+			}),
+		]);
+		expect(await getSessionPermissionEvents("s1")).toEqual([
+			expect.objectContaining({
+				decision: "approved",
+				human_decision: "approved",
+				provider_outcome: "blocked",
+				provider_message: "Provider blocked",
+			}),
+		]);
+	});
+
+	it("deduplicates provider replay and quarantines native-session collisions", async () => {
+		await createSession("s1", "L", "m");
+		const initial = {
+			sessionId: "s1",
+			toolId: "shared-id",
+			toolName: "Bash",
+			providerId: "claude",
+			providerSessionId: "native-a",
+			reason: "First evidence",
+		};
+		expect(await recordProviderPermissionDenied(initial)).toBe(true);
+		expect(await recordProviderPermissionDenied(initial)).toBe(true);
+		expect(
+			await recordProviderPermissionDenied({
+				...initial,
+				providerSessionId: "native-b",
+				reason: "Wrong session",
+			}),
+		).toBe(false);
+		expect(
+			await recordProviderPermissionDenied({
+				...initial,
+				providerId: "acp:other",
+				reason: "Wrong provider",
+			}),
+		).toBe(false);
+		const events = await getSessionPermissionEvents("s1");
+		expect(events).toHaveLength(1);
+		expect(events[0]).toMatchObject({
+			provider_reason: "First evidence",
+		});
+	});
+
+	it("migrates legacy duplicate rows into one independent human record", async () => {
+		const database = freshDb();
+		await createSession("legacy-permissions", "Legacy", "m");
+		database.run(`DROP TABLE permission_events`);
+		database.run(
+			`DELETE FROM settings WHERE key = '_migrated_permission_provider_outcomes_v1'`,
+		);
+		database.run(`
+			CREATE TABLE permission_events (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				session_id TEXT NOT NULL REFERENCES sessions(id),
+				tool_id TEXT NOT NULL,
+				tool_name TEXT NOT NULL,
+				display_name TEXT,
+				decision TEXT NOT NULL,
+				timestamp INTEGER NOT NULL
+			)
+		`);
+		database.run(
+			`INSERT INTO permission_events
+			 (session_id, tool_id, tool_name, display_name, decision, timestamp)
+			 VALUES ('legacy-permissions', 'legacy-tool', 'Read', NULL, 'approved', 10),
+			        ('legacy-permissions', 'legacy-unknown', 'Read', NULL, 'retired_custom', 15),
+			        ('legacy-permissions', 'legacy-tool', 'Read', 'Read file', 'denied', 20)`,
+		);
+		setDbForTest(database);
+
+		const migrated = await getSessionPermissionEvents("legacy-permissions");
+		expect(migrated).toHaveLength(2);
+		expect(migrated).toContainEqual(
+			expect.objectContaining({
+				tool_id: "legacy-tool",
+				display_name: "Read file",
+				decision: "denied",
+				human_decision: "denied",
+				provider_outcome: null,
+				timestamp: 20,
+			}),
+		);
+		expect(migrated).toContainEqual(
+			expect.objectContaining({
+				tool_id: "legacy-unknown",
+				decision: "retired_custom",
+				human_decision: null,
+				timestamp: 15,
+			}),
+		);
+		expect(
+			database
+				.query<{ count: number }, []>(
+					`SELECT COUNT(*) AS count FROM permission_events`,
+				)
+				.get()?.count,
+		).toBe(2);
+
+		// Normal repeated initialization observes the migration flag and leaves
+		// both the rebuilt shape and its consolidated evidence unchanged.
+		setDbForTest(database);
+		expect(await getSessionPermissionEvents("legacy-permissions")).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					tool_id: "legacy-tool",
+					decision: "denied",
+					human_decision: "denied",
+					provider_outcome: null,
+				}),
+				expect.objectContaining({
+					tool_id: "legacy-unknown",
+					decision: "retired_custom",
+					human_decision: null,
+				}),
+			]),
+		);
+	});
 });
 
 // ── event log ────────────────────────────────────────────────────────────────
@@ -2887,6 +3102,46 @@ describe("sessions — deleteSessionsOlderThan", () => {
 			askUserQuestions: 1,
 		});
 		expect(preview.estimatedDatabaseBytes).toBeGreaterThan(0);
+	});
+
+	it("includes bounded provider permission evidence in cleanup byte estimates", async () => {
+		const oldTs = Math.floor(Date.now() / 1000) - 10 * 86_400;
+		db.run(
+			`INSERT INTO sessions (id, label, model, started_at, ended_at)
+			 VALUES ('permission-old', 'Old', 'm', ?, ?)`,
+			[oldTs, oldTs],
+		);
+		await recordProviderPermissionDenied({
+			sessionId: "permission-old",
+			toolId: "tool",
+			toolName: "Bash",
+			displayName: "Shell",
+			providerId: "claude",
+			providerSessionId: "native",
+			reasonType: "rule",
+			reason: "policy",
+			message: "blocked",
+		});
+		db.run(
+			`UPDATE permission_events SET timestamp = ?
+			 WHERE session_id = 'permission-old'`,
+			[oldTs],
+		);
+
+		const preview = await getSessionCleanupPreview(5);
+		const expectedPermissionBytes = [
+			"tool",
+			"Bash",
+			"Shell",
+			"provider_blocked",
+			"blocked",
+			"claude",
+			"native",
+			"rule",
+			"policy",
+			"blocked",
+		].reduce((total, value) => total + value.length, 0);
+		expect(preview.estimatedDatabaseBytes).toBe(expectedPermissionBytes);
 	});
 
 	it("returns ephemeral attachment paths for deleted sessions", async () => {

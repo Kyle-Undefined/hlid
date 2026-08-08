@@ -286,7 +286,14 @@ export type PermissionEventRow = {
 	tool_id: string;
 	tool_name: string;
 	display_name: string | null;
+	/** Compatibility projection: the human decision, or provider_blocked. */
 	decision: string;
+	human_decision: string | null;
+	provider_outcome: string | null;
+	provider_id: string | null;
+	provider_reason_type: string | null;
+	provider_reason: string | null;
+	provider_message: string | null;
 	timestamp: number;
 };
 

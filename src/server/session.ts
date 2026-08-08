@@ -196,6 +196,13 @@ function logDbError(operation: string, err: unknown): void {
 	});
 }
 
+function providerPermissionOutcomeKey(
+	providerSessionId: string,
+	toolId: string,
+): string {
+	return JSON.stringify([providerSessionId, toolId]);
+}
+
 async function obsidianCommandApprovalInput(
 	toolName: string,
 	input: Record<string, unknown>,
@@ -356,6 +363,8 @@ type TurnState = {
 	persistedToolIds: Set<string>;
 	/** Tool starts removed by a provider retraction; later updates stay hidden. */
 	retractedToolIds: Set<string>;
+	/** Synthetic results paired with quarantined provider-outcome collisions. */
+	quarantinedProviderPermissionResults: Set<string>;
 	providerFrameOrder: number;
 	acceptedProviderFrames: Set<string>;
 	currentProviderFrame: {
@@ -1135,6 +1144,7 @@ function createTurnState(
 		dbMessageId: null,
 		persistedToolIds: new Set(),
 		retractedToolIds: new Set(),
+		quarantinedProviderPermissionResults: new Set(),
 		providerFrameOrder: 0,
 		acceptedProviderFrames: new Set(),
 		currentProviderFrame: null,
@@ -3548,6 +3558,7 @@ export class SessionManager {
 							activity.turn,
 							options.sessionId,
 							emit,
+							options.provider,
 						);
 						activity.completedToolIds.add(event.toolId);
 					});
@@ -3585,6 +3596,7 @@ export class SessionManager {
 							activity.turn,
 							options.sessionId,
 							emit,
+							options.provider,
 						);
 						activity.completedToolIds.add(tool.toolId);
 					});
@@ -6026,6 +6038,51 @@ export class SessionManager {
 		await db.setMessageSdkUuid(sessionId, seq, event.id);
 	}
 
+	private async handleProviderPermissionDenied(
+		event: Extract<AgentEvent, { type: "provider_permission_denied" }>,
+		turn: TurnState,
+		sessionId: string | undefined,
+		emit: (msg: ServerMessage) => void,
+		provider: AgentProvider,
+	): Promise<void> {
+		const displayName = permissionToolDisplayName(event.toolName);
+		if (sessionId) {
+			try {
+				const accepted = await db.recordProviderPermissionDenied({
+					sessionId,
+					toolId: event.toolId,
+					toolName: event.toolName,
+					displayName,
+					providerId: provider.providerId,
+					providerSessionId: event.providerSessionId,
+					...(event.reasonType ? { reasonType: event.reasonType } : {}),
+					...(event.reason ? { reason: event.reason } : {}),
+					...(event.message ? { message: event.message } : {}),
+				});
+				if (!accepted) {
+					turn.quarantinedProviderPermissionResults.add(
+						providerPermissionOutcomeKey(event.providerSessionId, event.toolId),
+					);
+					return;
+				}
+			} catch (error) {
+				// Provider outcome persistence is evidence/accounting, not authority
+				// over the provider lifecycle. Keep the live turn moving.
+				logDbError("recordProviderPermissionDenied", error);
+			}
+		}
+		emit({
+			type: "provider_permission_denied",
+			id: event.toolId,
+			toolName: event.toolName,
+			displayName,
+			providerId: provider.providerId,
+			...(event.reasonType ? { reasonType: event.reasonType } : {}),
+			...(event.reason ? { reason: event.reason } : {}),
+			...(event.message ? { providerMessage: event.message } : {}),
+		});
+	}
+
 	private handleProviderTurnId(
 		event: Extract<AgentEvent, { type: "provider_turn_id" }>,
 		turn: TurnState,
@@ -6380,7 +6437,18 @@ export class SessionManager {
 		turn: TurnState,
 		sessionId: string | undefined,
 		emit: (msg: ServerMessage) => void,
+		provider: AgentProvider,
 	): Promise<void> {
+		if (event.providerSessionId) {
+			const permissionOutcomeKey = providerPermissionOutcomeKey(
+				event.providerSessionId,
+				event.toolId,
+			);
+			if (turn.quarantinedProviderPermissionResults.has(permissionOutcomeKey)) {
+				turn.quarantinedProviderPermissionResults.delete(permissionOutcomeKey);
+				return;
+			}
+		}
 		if (
 			turn.retractedToolIds.has(event.toolId) ||
 			!this.providerDirectContributionAccepted(
@@ -6399,17 +6467,37 @@ export class SessionManager {
 		});
 
 		let persisted = false;
+		let providerFrameSeq =
+			event.providerFrame &&
+			turn.currentProviderFrame?.accepted === true &&
+			turn.currentProviderFrame.providerSessionId ===
+				event.providerFrame.providerSessionId &&
+			turn.currentProviderFrame.providerUuid ===
+				event.providerFrame.providerUuid
+				? turn.currentProviderFrame.assistantSeq
+				: undefined;
 		if (sessionId) {
-			const providerFrameSeq =
-				event.providerFrame &&
-				turn.currentProviderFrame?.accepted === true &&
-				turn.currentProviderFrame.providerSessionId ===
-					event.providerFrame.providerSessionId &&
-				turn.currentProviderFrame.providerUuid ===
-					event.providerFrame.providerUuid
-					? turn.currentProviderFrame.assistantSeq
-					: undefined;
 			const pendingInsert = turn.pendingToolEventWrites.get(event.toolId);
+			if (event.providerSessionId && !event.providerFrame) {
+				if (pendingInsert) await pendingInsert;
+				try {
+					providerFrameSeq =
+						(await db.getProviderToolAssistantSeq(
+							sessionId,
+							provider.providerId,
+							event.providerSessionId,
+							[event.toolId],
+						)) ?? undefined;
+				} catch (error) {
+					turn.pendingToolResults.delete(event.toolId);
+					logDbError("getProviderToolAssistantSeq (synthetic result)", error);
+					return;
+				}
+				if (providerFrameSeq === undefined) {
+					turn.pendingToolResults.delete(event.toolId);
+					return;
+				}
+			}
 			persisted = pendingInsert
 				? await pendingInsert
 				: turn.persistedToolIds.has(event.toolId) ||
@@ -6493,6 +6581,7 @@ export class SessionManager {
 				turn,
 				sessionId,
 				emit,
+				provider,
 			);
 		};
 
@@ -6549,6 +6638,7 @@ export class SessionManager {
 				turn,
 				sessionId,
 				emit,
+				provider,
 			);
 		} catch (error) {
 			await failure(
@@ -6810,6 +6900,15 @@ export class SessionManager {
 					provider,
 				);
 				break;
+			case "provider_permission_denied":
+				await this.handleProviderPermissionDenied(
+					event,
+					turn,
+					sessionId,
+					emit,
+					provider,
+				);
+				break;
 			case "provider_refusal":
 				if (
 					event.outcome === "fallback" &&
@@ -6865,7 +6964,7 @@ export class SessionManager {
 				this.handleToolActivityUpdate(event, turn, sessionId, emit);
 				break;
 			case "tool_result":
-				await this.handleToolResult(event, turn, sessionId, emit);
+				await this.handleToolResult(event, turn, sessionId, emit, provider);
 				break;
 			case "generated_media":
 				await this.handleGeneratedMedia(event, turn, sessionId, emit, provider);

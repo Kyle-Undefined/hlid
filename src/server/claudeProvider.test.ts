@@ -7869,6 +7869,538 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 		session.cancel();
 	});
 
+	describe("permission denial reconciliation", () => {
+		const toolStart = (sessionId: string, toolId: string, name = "Bash") => ({
+			type: "assistant",
+			parent_tool_use_id: null,
+			uuid: `assistant-${sessionId}-${toolId}`,
+			session_id: sessionId,
+			message: {
+				model: "claude-opus-4-6",
+				content: [
+					{ type: "tool_use", id: toolId, name, input: { command: "pwd" } },
+				],
+				usage: { input_tokens: 2, output_tokens: 1 },
+			},
+		});
+		const result = (
+			sessionId: string,
+			permissionDenials: Array<{
+				tool_name: string;
+				tool_use_id: string;
+				tool_input: Record<string, unknown>;
+			}>,
+			subtype:
+				| "success"
+				| "error_during_execution"
+				| "error_max_turns"
+				| "error_max_budget_usd"
+				| "error_max_structured_output_retries" = "success",
+		) => ({
+			type: "result",
+			subtype,
+			...(subtype === "success" ? { result: "" } : { errors: ["blocked"] }),
+			is_error: subtype !== "success",
+			uuid: `result-${sessionId}-${crypto.randomUUID()}`,
+			session_id: sessionId,
+			total_cost_usd: 0,
+			num_turns: 1,
+			duration_ms: 10,
+			stop_reason: "end_turn",
+			usage: { input_tokens: 2, output_tokens: 1 },
+			modelUsage: {},
+			permission_denials: permissionDenials,
+		});
+
+		it("ignores an advisory that is absent from the authoritative result", async () => {
+			vi.mocked(query).mockReturnValueOnce(
+				sdkGen([
+					toolStart("native-advisory", "tool-advisory"),
+					{
+						type: "system",
+						subtype: "permission_denied",
+						session_id: "native-advisory",
+						uuid: "advisory-1",
+						tool_name: "Bash",
+						tool_use_id: "tool-advisory",
+						message: "Advisory only",
+					},
+					result("native-advisory", []),
+				]),
+			);
+			const events = await collectEvents(baseParams());
+			expect(
+				events.some((event) => event.type === "provider_permission_denied"),
+			).toBe(false);
+		});
+
+		it("surfaces authoritative-only denial and synthesizes one missing result", async () => {
+			vi.mocked(query).mockReturnValueOnce(
+				sdkGen([
+					toolStart("native-authoritative", "tool-blocked"),
+					result("native-authoritative", [
+						{
+							tool_name: "Bash",
+							tool_use_id: "tool-blocked",
+							tool_input: { command: "pwd" },
+						},
+					]),
+				]),
+			);
+			const events = await collectEvents(baseParams());
+			const denialIndex = events.findIndex(
+				(event) => event.type === "provider_permission_denied",
+			);
+			const syntheticIndex = events.findIndex(
+				(event) => event.type === "tool_result",
+			);
+			const doneIndex = events.findIndex((event) => event.type === "done");
+			expect(events[denialIndex]).toMatchObject({
+				type: "provider_permission_denied",
+				providerSessionId: "native-authoritative",
+				toolId: "tool-blocked",
+				toolName: "Bash",
+			});
+			expect(events[syntheticIndex]).toMatchObject({
+				type: "tool_result",
+				toolId: "tool-blocked",
+				isError: true,
+			});
+			expect(denialIndex).toBeLessThan(syntheticIndex);
+			expect(syntheticIndex).toBeLessThan(doneIndex);
+		});
+
+		it.each([
+			"error_during_execution",
+			"error_max_turns",
+			"error_max_budget_usd",
+			"error_max_structured_output_retries",
+		] as const)("reconciles authoritative denial on %s", async (subtype) => {
+			vi.mocked(query).mockReturnValueOnce(
+				sdkGen([
+					result(
+						`native-${subtype}`,
+						[
+							{
+								tool_name: "Read",
+								tool_use_id: `tool-${subtype}`,
+								tool_input: {},
+							},
+						],
+						subtype,
+					),
+				]),
+			);
+			expect(await collectEvents(baseParams())).toContainEqual(
+				expect.objectContaining({
+					type: "provider_permission_denied",
+					toolId: `tool-${subtype}`,
+				}),
+			);
+		});
+
+		it("merges exact advisory metadata only after result confirmation", async () => {
+			vi.mocked(query).mockReturnValueOnce(
+				sdkGen([
+					toolStart("native-merged", "tool-merged"),
+					{
+						type: "system",
+						subtype: "permission_denied",
+						session_id: "native-merged",
+						uuid: "advisory-merged",
+						tool_name: "Bash",
+						tool_use_id: "tool-merged",
+						agent_id: "agent-1",
+						decision_reason_type: "rule",
+						decision_reason: "Workspace policy",
+						message: "Command blocked by rule",
+					},
+					result("native-merged", [
+						{
+							tool_name: "Bash",
+							tool_use_id: "tool-merged",
+							tool_input: {},
+						},
+					]),
+				]),
+			);
+			expect(await collectEvents(baseParams())).toContainEqual({
+				type: "provider_permission_denied",
+				providerSessionId: "native-merged",
+				toolId: "tool-merged",
+				toolName: "Bash",
+				agentId: "agent-1",
+				reasonType: "rule",
+				reason: "Workspace policy",
+				message: "Command blocked by rule",
+			});
+		});
+
+		it("retains a richer real result even when its provider frame is absent", async () => {
+			vi.mocked(query).mockReturnValueOnce(
+				sdkGen([
+					toolStart("native-real-result", "tool-real"),
+					{
+						type: "user",
+						session_id: "native-real-result",
+						parent_tool_use_id: null,
+						message: {
+							content: [
+								{
+									type: "tool_result",
+									tool_use_id: "tool-real",
+									content: "Detailed provider result",
+									is_error: true,
+								},
+							],
+						},
+					},
+					result("native-real-result", [
+						{
+							tool_name: "Bash",
+							tool_use_id: "tool-real",
+							tool_input: {},
+						},
+					]),
+				]),
+			);
+			const toolResults = (await collectEvents(baseParams())).filter(
+				(event) => event.type === "tool_result",
+			);
+			expect(toolResults).toHaveLength(1);
+			expect(toolResults[0]).toMatchObject({
+				content: "Detailed provider result",
+				isError: true,
+			});
+		});
+
+		it("synthesizes after the only real result frame is retracted", async () => {
+			vi.mocked(query).mockReturnValueOnce(
+				sdkGen([
+					toolStart("native-retracted-result", "tool-retracted-result"),
+					{
+						type: "user",
+						uuid: "real-result-frame",
+						session_id: "native-retracted-result",
+						parent_tool_use_id: null,
+						message: {
+							content: [
+								{
+									type: "tool_result",
+									tool_use_id: "tool-retracted-result",
+									content: "Retracted provider result",
+									is_error: true,
+								},
+							],
+						},
+					},
+					{
+						type: "system",
+						subtype: "model_refusal_fallback",
+						session_id: "native-retracted-result",
+						uuid: "fallback-notice",
+						trigger: "refusal",
+						direction: "retry",
+						original_model: "claude-opus-4-6",
+						fallback_model: "claude-sonnet-4-6",
+						request_id: "request-retracted-result",
+						retracted_message_uuids: ["real-result-frame"],
+						content: "",
+					},
+					result("native-retracted-result", [
+						{
+							tool_name: "Bash",
+							tool_use_id: "tool-retracted-result",
+							tool_input: {},
+						},
+					]),
+				]),
+			);
+			const targetResults = (await collectEvents(baseParams())).filter(
+				(event) =>
+					event.type === "tool_result" &&
+					event.toolId === "tool-retracted-result",
+			);
+			expect(targetResults).toHaveLength(2);
+			expect(targetResults.at(-1)).toMatchObject({
+				type: "tool_result",
+				toolId: "tool-retracted-result",
+				isError: true,
+				providerSessionId: "native-retracted-result",
+			});
+		});
+
+		it("does not lose real-result settlement at the bounded-state edge", async () => {
+			const sessionId = "native-settlement-bound";
+			const fillerIds = Array.from(
+				{ length: 2_047 },
+				(_, index) => `filler-${index}`,
+			);
+			vi.mocked(query).mockReturnValueOnce(
+				sdkGen([
+					{
+						type: "assistant",
+						parent_tool_use_id: null,
+						uuid: "bulk-tool-starts",
+						session_id: sessionId,
+						message: {
+							model: "claude-opus-4-6",
+							content: ["target", ...fillerIds].map((toolId) => ({
+								type: "tool_use",
+								id: toolId,
+								name: "Bash",
+								input: {},
+							})),
+							usage: { input_tokens: 2, output_tokens: 1 },
+						},
+					},
+					{
+						type: "user",
+						uuid: "bulk-tool-results",
+						session_id: sessionId,
+						parent_tool_use_id: null,
+						message: {
+							content: ["target", ...fillerIds, "unknown-result"].map(
+								(toolId) => ({
+									type: "tool_result",
+									tool_use_id: toolId,
+									content: `real:${toolId}`,
+								}),
+							),
+						},
+					},
+					result(sessionId, [
+						{
+							tool_name: "Bash",
+							tool_use_id: "target",
+							tool_input: {},
+						},
+					]),
+				]),
+			);
+			const targetResults = (await collectEvents(baseParams())).filter(
+				(event) => event.type === "tool_result" && event.toolId === "target",
+			);
+			expect(targetResults).toHaveLength(1);
+			expect(targetResults[0]).toMatchObject({ content: "real:target" });
+		});
+
+		it("surfaces unknown authoritative evidence without inventing a tool result", async () => {
+			vi.mocked(query).mockReturnValueOnce(
+				sdkGen([
+					result(
+						"native-unknown",
+						[
+							{
+								tool_name: "Read",
+								tool_use_id: "unknown-tool",
+								tool_input: { file_path: "/tmp/a" },
+							},
+						],
+						"error_during_execution",
+					),
+				]),
+			);
+			const events = await collectEvents(baseParams());
+			expect(events).toContainEqual(
+				expect.objectContaining({
+					type: "provider_permission_denied",
+					toolId: "unknown-tool",
+				}),
+			);
+			expect(events.some((event) => event.type === "tool_result")).toBe(false);
+		});
+
+		it("does not synthesize against an old-turn start or a mismatched tool name", async () => {
+			vi.mocked(query).mockReturnValueOnce(
+				sdkGen([
+					toolStart("native-turn-scope", "old-tool", "Read"),
+					result("native-turn-scope", []),
+					toolStart("native-turn-scope", "renamed-tool", "Read"),
+					result("native-turn-scope", [
+						{
+							tool_name: "Bash",
+							tool_use_id: "old-tool",
+							tool_input: {},
+						},
+						{
+							tool_name: "Bash",
+							tool_use_id: "renamed-tool",
+							tool_input: {},
+						},
+					]),
+				]),
+			);
+			const events = await collectEvents(baseParams());
+			expect(
+				events.filter((event) => event.type === "provider_permission_denied"),
+			).toHaveLength(2);
+			expect(events.some((event) => event.type === "tool_result")).toBe(false);
+		});
+
+		it("does not synthesize when distinct oversized names share a bounded prefix", async () => {
+			const sharedPrefix = "n".repeat(512);
+			vi.mocked(query).mockReturnValueOnce(
+				sdkGen([
+					toolStart(
+						"native-name-prefix",
+						"prefix-collision",
+						`${sharedPrefix}-start`,
+					),
+					result("native-name-prefix", [
+						{
+							tool_name: `${sharedPrefix}-denial`,
+							tool_use_id: "prefix-collision",
+							tool_input: {},
+						},
+					]),
+				]),
+			);
+			const events = await collectEvents(baseParams());
+			expect(
+				events.filter((event) => event.type === "provider_permission_denied"),
+			).toHaveLength(1);
+			expect(events.some((event) => event.type === "tool_result")).toBe(false);
+		});
+
+		it("deduplicates replayed authoritative denial evidence", async () => {
+			const denial = {
+				tool_name: "Bash",
+				tool_use_id: "tool-replayed",
+				tool_input: {},
+			};
+			vi.mocked(query).mockReturnValueOnce(
+				sdkGen([
+					toolStart("native-replayed", "tool-replayed"),
+					result("native-replayed", [denial]),
+					result("native-replayed", [denial]),
+				]),
+			);
+			const events = await collectEvents(baseParams());
+			expect(
+				events.filter((event) => event.type === "provider_permission_denied"),
+			).toHaveLength(1);
+			expect(
+				events.filter((event) => event.type === "tool_result"),
+			).toHaveLength(1);
+		});
+
+		it("caps one authoritative denial list without replay thrash", async () => {
+			const denials = Array.from({ length: 2_050 }, (_, index) => ({
+				tool_name: "Read",
+				tool_use_id: `bounded-denial-${index}`,
+				tool_input: {},
+			}));
+			vi.mocked(query).mockReturnValueOnce(
+				sdkGen([
+					result("native-denial-bound", denials),
+					result("native-denial-bound", denials),
+				]),
+			);
+			const providerDenials = (await collectEvents(baseParams())).filter(
+				(event) => event.type === "provider_permission_denied",
+			);
+			expect(providerDenials).toHaveLength(2_048);
+			expect(providerDenials.at(-1)).toMatchObject({
+				toolId: "bounded-denial-2047",
+			});
+			expect(
+				providerDenials.some((event) => event.toolId === "bounded-denial-2048"),
+			).toBe(false);
+		});
+
+		it("isolates advisory metadata by native session and exact untruncated id", async () => {
+			const validToolId = "x".repeat(1_024);
+			vi.mocked(query).mockReturnValueOnce(
+				sdkGen([
+					toolStart("native-a", validToolId),
+					{
+						type: "system",
+						subtype: "permission_denied",
+						session_id: "native-b",
+						uuid: "wrong-session",
+						tool_name: "Bash",
+						tool_use_id: validToolId,
+						message: "Wrong native session",
+					},
+					{
+						type: "system",
+						subtype: "permission_denied",
+						session_id: "native-a",
+						uuid: "oversized-id",
+						tool_name: "Bash",
+						tool_use_id: `${validToolId}suffix`,
+						message: "Truncated collision",
+					},
+					result("native-a", [
+						{
+							tool_name: "Bash",
+							tool_use_id: validToolId,
+							tool_input: {},
+						},
+					]),
+				]),
+			);
+			const denial = (await collectEvents(baseParams())).find(
+				(event) => event.type === "provider_permission_denied",
+			);
+			expect(denial).toMatchObject({
+				type: "provider_permission_denied",
+				providerSessionId: "native-a",
+				toolId: validToolId,
+			});
+			expect(
+				denial?.type === "provider_permission_denied" ? denial.message : "",
+			).not.toContain("Wrong native session");
+			expect(
+				denial?.type === "provider_permission_denied" ? denial.message : "",
+			).not.toContain("Truncated collision");
+		});
+
+		it("rejects control-character identities while bounding display metadata", async () => {
+			const longReason = `reason-\u0000${"r".repeat(3_000)}`;
+			vi.mocked(query).mockReturnValueOnce(
+				sdkGen([
+					toolStart("native-bounds", "tool-bounds"),
+					{
+						type: "system",
+						subtype: "permission_denied",
+						session_id: "native-bounds",
+						uuid: "advisory-bounds",
+						tool_name: "Bash",
+						tool_use_id: "tool-bounds",
+						decision_reason: longReason,
+						message: `blocked-${"m".repeat(5_000)}`,
+					},
+					result("native-bounds", [
+						{
+							tool_name: "Bash",
+							tool_use_id: "tool-bounds",
+							tool_input: {},
+						},
+					]),
+					result("native-bounds", [
+						{
+							tool_name: "Read",
+							tool_use_id: "bad\u0000identity",
+							tool_input: {},
+						},
+					]),
+				]),
+			);
+			const denials = (await collectEvents(baseParams())).filter(
+				(event) => event.type === "provider_permission_denied",
+			);
+			expect(denials).toHaveLength(1);
+			expect(denials[0]?.type === "provider_permission_denied").toBe(true);
+			if (denials[0]?.type === "provider_permission_denied") {
+				expect(denials[0].reason?.length).toBe(2_000);
+				expect(denials[0].reason).not.toContain("\u0000");
+				expect(denials[0].message?.length).toBe(4_000);
+			}
+		});
+	});
+
 	it("send() defaults priority to 'next' when no opts given", async () => {
 		let capturedPrompt: AsyncIterable<unknown> | undefined;
 		vi.mocked(query).mockImplementationOnce(

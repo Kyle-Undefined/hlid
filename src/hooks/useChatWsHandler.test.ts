@@ -622,6 +622,28 @@ describe("useChatWsHandler — immediate messages", () => {
 		],
 		[
 			{
+				type: "provider_permission_denied",
+				id: "permission-1",
+				toolName: "Bash",
+				displayName: "Run command",
+				providerId: "claude",
+				reasonType: "rule",
+				reason: "Managed policy",
+				providerMessage: "Command blocked",
+			},
+			{
+				type: "REPORT_PROVIDER_PERMISSION_DENIAL",
+				id: "permission-1",
+				toolName: "Bash",
+				displayName: "Run command",
+				providerId: "claude",
+				reasonType: "rule",
+				reason: "Managed policy",
+				providerMessage: "Command blocked",
+			},
+		],
+		[
+			{
 				type: "ask_user_question_resolved",
 				id: "question-1",
 				answers: { choice: ["yes"] },

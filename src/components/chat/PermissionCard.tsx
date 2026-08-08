@@ -18,22 +18,43 @@ function CompletedPermissionCard({
 	message: PermissionMessage;
 	actionName: string;
 }) {
-	const approvedText = approvedLabel(message.decision);
+	const humanDecision =
+		message.decision === "provider_blocked" ? null : message.decision;
+	const approvedText =
+		humanDecision === null || humanDecision === "pending"
+			? null
+			: approvedLabel(humanDecision);
 	const approved = approvedText !== null;
+	const providerBlocked = message.providerOutcome === "blocked";
 	return (
 		<div className="flex gap-0">
 			<div className="w-12 shrink-0 pt-0.5 text-[9px] tracking-widest text-muted-foreground/50 uppercase">
 				Perm
 			</div>
-			<div className="flex items-center gap-2 text-xs text-muted-foreground/65">
-				{approved ? (
-					<Check className="h-3 w-3 text-status-success/60" />
-				) : (
-					<X className="h-3 w-3 text-destructive/60" />
+			<div
+				className="flex flex-col gap-1 text-xs text-muted-foreground/65"
+				title={message.providerMessage ?? message.providerReason}
+			>
+				{humanDecision !== null && humanDecision !== "pending" && (
+					<div className="flex items-center gap-2">
+						{approved ? (
+							<Check className="h-3 w-3 text-status-success/60" />
+						) : (
+							<X className="h-3 w-3 text-destructive/60" />
+						)}
+						<span className="text-[10px] tracking-wider">
+							{actionName.toUpperCase()} {approvedText ?? "DENIED"}
+						</span>
+					</div>
 				)}
-				<span className="text-[10px] tracking-wider">
-					{actionName.toUpperCase()} {approvedText ?? "DENIED"}
-				</span>
+				{providerBlocked && (
+					<div className="flex items-center gap-2">
+						<X className="h-3 w-3 text-destructive/60" />
+						<span className="text-[10px] tracking-wider">
+							{actionName.toUpperCase()} BLOCKED/PROVIDER-REPORTED
+						</span>
+					</div>
+				)}
 			</div>
 		</div>
 	);
@@ -52,7 +73,7 @@ export function PermissionCard({
 }) {
 	const actionName =
 		message.displayName ?? permissionToolDisplayName(message.toolName);
-	if (message.decision !== "pending") {
+	if (message.decision !== "pending" || message.providerOutcome === "blocked") {
 		return (
 			<CompletedPermissionCard message={message} actionName={actionName} />
 		);

@@ -500,6 +500,17 @@ export type AgentEvent =
 			explanation?: string | null;
 			content: string;
 	  }
+	/** Provider-authoritative block evidence; the referenced start may be absent. */
+	| {
+			type: "provider_permission_denied";
+			providerSessionId: string;
+			toolId: string;
+			toolName: string;
+			agentId?: string;
+			reasonType?: string;
+			reason?: string;
+			message?: string;
+	  }
 	/** Native provider turn id used for exact turn-boundary forks (Codex). */
 	| { type: "provider_turn_id"; id: string }
 	| { type: "local_command_output"; content: string }
@@ -534,6 +545,8 @@ export type AgentEvent =
 			toolId: string;
 			content: string;
 			isError?: boolean;
+			/** Exact native-session owner when no provider result frame exists. */
+			providerSessionId?: string;
 			providerFrame?: { providerSessionId: string; providerUuid: string };
 	  }
 	/** Provider-produced media that Hlid must retain before exposing to Raven. */

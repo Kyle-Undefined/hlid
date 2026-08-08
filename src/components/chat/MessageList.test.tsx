@@ -642,6 +642,19 @@ describe("MessageList — workflow approval placement", () => {
 					},
 					decision: "pending",
 				},
+				{
+					id: "provider-blocked",
+					role: "permission",
+					toolName: "Read",
+					title: "",
+					requester: {
+						providerId: "claude",
+						agentId: "child-1",
+					},
+					decision: "pending",
+					providerOutcome: "blocked",
+					providerId: "claude",
+				},
 			],
 		});
 
@@ -654,6 +667,9 @@ describe("MessageList — workflow approval placement", () => {
 		expect(
 			screen.getByTestId("message-approval-1").dataset.requesterCount,
 		).toBe("2");
+		expect(
+			screen.getByTestId("message-provider-blocked").dataset.embeddedPermission,
+		).toBe("false");
 	});
 });
 
@@ -1172,5 +1188,28 @@ describe("MessageList — bounded tool rendering", () => {
 		});
 
 		expect(result.current.permissionLabels).toBe(firstLookup);
+	});
+
+	it("does not fold a human approval that also has a provider block", () => {
+		const permission = {
+			id: "tool-blocked",
+			role: "permission" as const,
+			toolName: "Bash",
+			title: "",
+			decision: "approved_session" as const,
+			providerOutcome: "blocked" as const,
+			providerId: "claude",
+		};
+		const { result } = renderHook(() =>
+			useMessageListView({
+				messages: [permission],
+				chatQueue: [],
+				sessionId: "s1",
+				sessionState: "idle",
+				runningTurnId: null,
+			}),
+		);
+
+		expect(result.current.permissionLabels.has(permission.id)).toBe(false);
 	});
 });

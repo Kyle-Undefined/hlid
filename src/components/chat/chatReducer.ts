@@ -84,7 +84,12 @@ export type PermissionMessage = {
 	policy?: PermissionRequestMessage["policy"];
 	allowOnce?: boolean;
 	allowAlways?: boolean;
-	decision: "pending" | PermissionDecision;
+	decision: "pending" | PermissionDecision | "provider_blocked";
+	providerOutcome?: "blocked";
+	providerId?: string;
+	providerReasonType?: string;
+	providerReason?: string;
+	providerMessage?: string;
 };
 
 export type AskUserQuestionChatMessage = {
@@ -164,6 +169,11 @@ export type HistoryItem =
 			tool_name: string;
 			display_name: string | null;
 			decision: string;
+			provider_outcome?: string | null;
+			provider_id?: string | null;
+			provider_reason_type?: string | null;
+			provider_reason?: string | null;
+			provider_message?: string | null;
 	  }
 	| {
 			kind: "plan_proposal";
@@ -339,6 +349,16 @@ export type Action =
 			decision: PermissionDecision;
 	  }
 	| {
+			type: "REPORT_PROVIDER_PERMISSION_DENIAL";
+			id: string;
+			toolName: string;
+			displayName?: string;
+			providerId: string;
+			reasonType?: string;
+			reason?: string;
+			providerMessage?: string;
+	  }
+	| {
 			type: "LOAD_HISTORY";
 			items: HistoryItem[];
 			/** Reconnect snapshots retain already-revealed immutable tool prefixes. */
@@ -378,6 +398,7 @@ const VALID_PERMISSION_DECISIONS = new Set<PermissionMessage["decision"]>([
 	"approved_session",
 	"approved_always",
 	"denied",
+	"provider_blocked",
 ]);
 const VALID_PLAN_DECISIONS = new Set<PlanProposalDecision>([
 	"pending",
@@ -647,6 +668,17 @@ function historyItemToMessage(item: HistoryItem): ChatMessage {
 			)
 				? (item.decision as PermissionMessage["decision"])
 				: "pending",
+			...(item.provider_outcome === "blocked"
+				? { providerOutcome: "blocked" as const }
+				: {}),
+			...(item.provider_id ? { providerId: item.provider_id } : {}),
+			...(item.provider_reason_type
+				? { providerReasonType: item.provider_reason_type }
+				: {}),
+			...(item.provider_reason ? { providerReason: item.provider_reason } : {}),
+			...(item.provider_message
+				? { providerMessage: item.provider_message }
+				: {}),
 		};
 	}
 	if (item.role === "user") {
@@ -1426,6 +1458,39 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 					title: "",
 					displayName: action.displayName,
 					decision: action.decision,
+				},
+			];
+		}
+		case "REPORT_PROVIDER_PERMISSION_DENIAL": {
+			const providerFacts = {
+				providerOutcome: "blocked" as const,
+				providerId: action.providerId,
+				...(action.reasonType ? { providerReasonType: action.reasonType } : {}),
+				...(action.reason ? { providerReason: action.reason } : {}),
+				...(action.providerMessage
+					? { providerMessage: action.providerMessage }
+					: {}),
+			};
+			const patched = patchMessage(
+				state,
+				action.id,
+				"permission",
+				(message) => ({
+					...message,
+					...providerFacts,
+				}),
+			);
+			if (patched !== state) return patched;
+			return [
+				...state,
+				{
+					id: action.id,
+					role: "permission" as const,
+					toolName: action.toolName,
+					title: "",
+					displayName: action.displayName,
+					decision: "provider_blocked" as const,
+					...providerFacts,
 				},
 			];
 		}

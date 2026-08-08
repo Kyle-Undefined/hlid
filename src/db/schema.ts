@@ -103,6 +103,9 @@ function ensureTranscriptPagingIndexes(db: Db): void {
 		`CREATE INDEX IF NOT EXISTS idx_permission_events_session_ts_id ON permission_events(session_id, timestamp, id)`,
 	);
 	db.run(
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_permission_events_session_tool ON permission_events(session_id, tool_id)`,
+	);
+	db.run(
 		`CREATE INDEX IF NOT EXISTS idx_plan_proposals_session_seq_id ON plan_proposals(session_id, seq, id)`,
 	);
 	db.run(
@@ -1885,6 +1888,98 @@ function applyMigrations(db: Db): void {
 			 ON provider_tool_start_lineage(
 				session_id, provider_id, provider_session_id, provider_uuid, tool_event_id
 			 )`,
+		);
+	});
+
+	// A provider may report that it blocked a tool after Hlid already recorded a
+	// human approval decision. Keep those facts independent: provider evidence
+	// must never rewrite what the person chose, and repeated SDK result frames
+	// must converge on one row for the same session-scoped tool call.
+	runMigration(db, "_migrated_permission_provider_outcomes_v1", (db) => {
+		db.run(`
+			CREATE TABLE permission_events_v2 (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				session_id TEXT NOT NULL REFERENCES sessions(id),
+				tool_id TEXT NOT NULL,
+				tool_name TEXT NOT NULL,
+				display_name TEXT,
+				decision TEXT NOT NULL,
+				human_decision TEXT,
+				human_timestamp INTEGER,
+				provider_outcome TEXT,
+				provider_id TEXT,
+				provider_session_id TEXT,
+				provider_reason_type TEXT,
+				provider_reason TEXT,
+				provider_message TEXT,
+				provider_timestamp INTEGER,
+				timestamp INTEGER NOT NULL,
+				-- Legacy databases did not constrain decision. Preserve an unknown
+				-- historical value instead of making startup fail during migration.
+				CHECK(human_decision IS NULL OR human_decision IN (
+					'approved', 'approved_session', 'approved_always', 'denied'
+				)),
+				CHECK(human_decision IS NULL OR human_timestamp IS NOT NULL),
+				CHECK(provider_outcome IS NULL OR provider_outcome = 'blocked'),
+				CHECK(provider_outcome IS NULL OR (
+					provider_id IS NOT NULL AND provider_session_id IS NOT NULL
+					AND provider_timestamp IS NOT NULL
+				)),
+				UNIQUE(session_id, tool_id)
+			)
+		`);
+		db.run(`
+			INSERT INTO permission_events_v2
+				(session_id, tool_id, tool_name, display_name, decision,
+				 human_decision, human_timestamp, timestamp)
+			SELECT legacy.session_id,
+			       legacy.tool_id,
+			       COALESCE((
+			         SELECT latest.tool_name FROM permission_events latest
+			         WHERE latest.session_id = legacy.session_id
+			           AND latest.tool_id = legacy.tool_id
+			         ORDER BY latest.id DESC LIMIT 1
+			       ), ''),
+			       (
+			         SELECT latest.display_name FROM permission_events latest
+			         WHERE latest.session_id = legacy.session_id
+			           AND latest.tool_id = legacy.tool_id
+			           AND latest.display_name IS NOT NULL
+			         ORDER BY latest.id DESC LIMIT 1
+			       ),
+			       (
+			         SELECT latest.decision FROM permission_events latest
+			         WHERE latest.session_id = legacy.session_id
+			           AND latest.tool_id = legacy.tool_id
+			         ORDER BY latest.id DESC LIMIT 1
+			       ),
+			       CASE WHEN (
+			         SELECT latest.decision FROM permission_events latest
+			         WHERE latest.session_id = legacy.session_id
+			           AND latest.tool_id = legacy.tool_id
+			         ORDER BY latest.id DESC LIMIT 1
+			       ) IN ('approved', 'approved_session', 'approved_always', 'denied')
+			       THEN (
+			         SELECT latest.decision FROM permission_events latest
+			         WHERE latest.session_id = legacy.session_id
+			           AND latest.tool_id = legacy.tool_id
+			         ORDER BY latest.id DESC LIMIT 1
+			       ) ELSE NULL END,
+			       CASE WHEN (
+			         SELECT latest.decision FROM permission_events latest
+			         WHERE latest.session_id = legacy.session_id
+			           AND latest.tool_id = legacy.tool_id
+			         ORDER BY latest.id DESC LIMIT 1
+			       ) IN ('approved', 'approved_session', 'approved_always', 'denied')
+			       THEN MAX(legacy.timestamp) ELSE NULL END,
+			       MAX(legacy.timestamp)
+			FROM permission_events legacy
+			GROUP BY legacy.session_id, legacy.tool_id
+		`);
+		db.run(`DROP TABLE permission_events`);
+		db.run(`ALTER TABLE permission_events_v2 RENAME TO permission_events`);
+		db.run(
+			`CREATE INDEX idx_permission_events_session ON permission_events(session_id)`,
 		);
 	});
 }

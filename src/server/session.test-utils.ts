@@ -103,6 +103,7 @@ export function mockDbModule() {
 		saveSetting: vi.fn().mockResolvedValue(undefined),
 		linkAttachmentToMessage: vi.fn().mockResolvedValue(undefined),
 		recordPermissionEvent: vi.fn().mockResolvedValue(undefined),
+		recordProviderPermissionDenied: vi.fn().mockResolvedValue(true),
 	};
 }
 

@@ -409,6 +409,97 @@ const CLAUDE_WORKFLOW_PROGRESS_READ_TIMEOUT_MS = 1_500;
 const CLAUDE_WORKFLOW_PROGRESS_MAX_BYTES = 8 * 1024 * 1024;
 const CLAUDE_HISTORY_WARNING_ID_MAX_CHARS = 1_024;
 const CLAUDE_HISTORY_WARNING_ERROR_CLASSIFY_MAX_CHARS = 2_000;
+const CLAUDE_PERMISSION_ID_MAX_CHARS = 1_024;
+const CLAUDE_PERMISSION_NAME_MAX_CHARS = 512;
+const CLAUDE_PERMISSION_REASON_TYPE_MAX_CHARS = 256;
+const CLAUDE_PERMISSION_REASON_MAX_CHARS = 2_000;
+const CLAUDE_PERMISSION_MESSAGE_MAX_CHARS = 4_000;
+const CLAUDE_PERMISSION_STATE_LIMIT = 2_048;
+
+type ClaudePermissionAdvisory = {
+	agentId?: string;
+	reasonType?: string;
+	reason?: string;
+	message?: string;
+};
+
+type ClaudeKnownPermissionTool = {
+	/** Bounded name used only for display and durable evidence. */
+	toolName: string;
+	/** Exact safe name required before synthesizing a missing result. */
+	synthesisToolName?: string;
+	/** A frameless result cannot later be retracted, so it settles permanently. */
+	settledWithoutFrame: boolean;
+	/** Active provider-result frames that currently settle this tool. */
+	settledFrameCount: number;
+};
+
+function boundedClaudePermissionText(
+	value: unknown,
+	maxChars: number,
+): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const safe = value.replace(/\p{Cc}/gu, " ").trim();
+	return safe ? safe.slice(0, maxChars) : undefined;
+}
+
+function exactClaudePermissionId(value: unknown): string | undefined {
+	if (
+		typeof value !== "string" ||
+		value.length === 0 ||
+		value.length > CLAUDE_PERMISSION_ID_MAX_CHARS ||
+		/\p{Cc}/u.test(value)
+	) {
+		return undefined;
+	}
+	return value;
+}
+
+function exactClaudePermissionToolName(value: unknown): string | undefined {
+	if (
+		typeof value !== "string" ||
+		value.length === 0 ||
+		value.length > CLAUDE_PERMISSION_NAME_MAX_CHARS ||
+		/\p{Cc}/u.test(value)
+	) {
+		return undefined;
+	}
+	return value;
+}
+
+function claudePermissionKey(
+	providerSessionId: string,
+	toolId: string,
+): string {
+	return JSON.stringify([providerSessionId, toolId]);
+}
+
+function claudePermissionFrameKey(
+	providerSessionId: string,
+	providerUuid: string,
+): string {
+	return JSON.stringify([providerSessionId, providerUuid]);
+}
+
+function retainBoundedMapEntry<K, V>(map: Map<K, V>, key: K, value: V): void {
+	map.delete(key);
+	map.set(key, value);
+	while (map.size > CLAUDE_PERMISSION_STATE_LIMIT) {
+		const oldest = map.keys().next().value;
+		if (oldest === undefined) break;
+		map.delete(oldest);
+	}
+}
+
+function retainBoundedSetEntry<T>(set: Set<T>, value: T): void {
+	set.delete(value);
+	set.add(value);
+	while (set.size > CLAUDE_PERMISSION_STATE_LIMIT) {
+		const oldest = set.values().next().value;
+		if (oldest === undefined) break;
+		set.delete(oldest);
+	}
+}
 
 function claudeUsageBuckets(
 	usage:
@@ -2768,6 +2859,18 @@ class ClaudeAgentSession implements AgentSession {
 		string,
 		Map<string, string[]>
 	>();
+	private readonly permissionAdvisories = new Map<
+		string,
+		ClaudePermissionAdvisory
+	>();
+	private readonly knownPermissionTools = new Map<
+		string,
+		ClaudeKnownPermissionTool
+	>();
+	private readonly permissionToolResultFrames = new Map<string, Set<string>>();
+	private permissionToolResultFrameLinkCount = 0;
+	private readonly reportedPermissionDenials = new Set<string>();
+	private currentNativeSessionId: string | undefined;
 	private subagents = new ClaudeSubagentTracker();
 	private backgroundActivities: ClaudeBackgroundActivityTracker;
 	private turnUsage = new ClaudeTurnUsageAccumulator();
@@ -3208,6 +3311,10 @@ class ClaudeAgentSession implements AgentSession {
 		const reconciled = this.turnUsage.reconcileMany(messages);
 		this.turnUsage.reset();
 		this.subagents.finishQuery();
+		this.knownPermissionTools.clear();
+		this.permissionToolResultFrames.clear();
+		this.permissionToolResultFrameLinkCount = 0;
+		this.permissionAdvisories.clear();
 		const modelUsage = Object.assign(
 			{},
 			...messages.map((message) => message.modelUsage ?? {}),
@@ -3273,9 +3380,31 @@ class ClaudeAgentSession implements AgentSession {
 			const toolIds = this.providerFrameToolIds
 				.get(providerSessionId)
 				?.get(providerUuid);
-			for (const toolId of toolIds ?? []) this.subagents.suppressTool(toolId);
+			for (const toolId of toolIds ?? []) {
+				this.subagents.suppressTool(toolId);
+				this.knownPermissionTools.delete(
+					claudePermissionKey(providerSessionId, toolId),
+				);
+			}
 			this.providerFrameToolIds.get(providerSessionId)?.delete(providerUuid);
 			this.subagents.retractToolResultFrame(providerSessionId, providerUuid);
+			const permissionResultFrameKey = claudePermissionFrameKey(
+				providerSessionId,
+				providerUuid,
+			);
+			const settledToolKeys = this.permissionToolResultFrames.get(
+				permissionResultFrameKey,
+			);
+			for (const key of settledToolKeys ?? []) {
+				const known = this.knownPermissionTools.get(key);
+				if (!known) continue;
+				known.settledFrameCount = Math.max(0, known.settledFrameCount - 1);
+			}
+			this.permissionToolResultFrameLinkCount = Math.max(
+				0,
+				this.permissionToolResultFrameLinkCount - (settledToolKeys?.size ?? 0),
+			);
+			this.permissionToolResultFrames.delete(permissionResultFrameKey);
 		}
 		if (activeText?.size === 0) {
 			this.activeAssistantTextFrames.delete(providerSessionId);
@@ -3318,6 +3447,175 @@ class ClaudeAgentSession implements AgentSession {
 			this.providerFrameToolIds.set(providerSessionId, frames);
 		}
 		frames.set(providerUuid, toolIds);
+	}
+
+	private rememberPermissionAdvisory(
+		message: Extract<SDKMessage, { type: "system" }>,
+	): void {
+		const raw = message as unknown as Record<string, unknown>;
+		const providerSessionId = exactClaudePermissionId(raw.session_id);
+		const toolId = exactClaudePermissionId(raw.tool_use_id);
+		if (!providerSessionId || !toolId) return;
+		const agentId = exactClaudePermissionId(raw.agent_id);
+		const reasonType = boundedClaudePermissionText(
+			raw.decision_reason_type,
+			CLAUDE_PERMISSION_REASON_TYPE_MAX_CHARS,
+		);
+		const reason = boundedClaudePermissionText(
+			raw.decision_reason,
+			CLAUDE_PERMISSION_REASON_MAX_CHARS,
+		);
+		const providerMessage = boundedClaudePermissionText(
+			raw.message,
+			CLAUDE_PERMISSION_MESSAGE_MAX_CHARS,
+		);
+		retainBoundedMapEntry(
+			this.permissionAdvisories,
+			claudePermissionKey(providerSessionId, toolId),
+			{
+				...(agentId ? { agentId } : {}),
+				...(reasonType ? { reasonType } : {}),
+				...(reason ? { reason } : {}),
+				...(providerMessage ? { message: providerMessage } : {}),
+			},
+		);
+	}
+
+	private observePermissionToolEvents(
+		events: readonly AgentEvent[],
+		fallbackProviderSessionId?: string,
+	): void {
+		for (const event of events) {
+			if (event.type === "tool_start") {
+				const providerSessionId =
+					event.providerFrame?.providerSessionId ?? fallbackProviderSessionId;
+				if (!providerSessionId) continue;
+				const toolName = boundedClaudePermissionText(
+					event.name,
+					CLAUDE_PERMISSION_NAME_MAX_CHARS,
+				);
+				if (!toolName) continue;
+				const key = claudePermissionKey(providerSessionId, event.toolId);
+				const previous = this.knownPermissionTools.get(key);
+				retainBoundedMapEntry(this.knownPermissionTools, key, {
+					toolName,
+					...(exactClaudePermissionToolName(event.name)
+						? { synthesisToolName: event.name }
+						: {}),
+					settledWithoutFrame: previous?.settledWithoutFrame ?? false,
+					settledFrameCount: previous?.settledFrameCount ?? 0,
+				});
+			} else if (event.type === "tool_result") {
+				const providerSessionId =
+					event.providerFrame?.providerSessionId ?? fallbackProviderSessionId;
+				if (!providerSessionId) continue;
+				const key = claudePermissionKey(providerSessionId, event.toolId);
+				const known = this.knownPermissionTools.get(key);
+				if (!known) continue;
+				if (!event.providerFrame) {
+					known.settledWithoutFrame = true;
+					continue;
+				}
+				const frameKey = claudePermissionFrameKey(
+					event.providerFrame.providerSessionId,
+					event.providerFrame.providerUuid,
+				);
+				let toolKeys = this.permissionToolResultFrames.get(frameKey);
+				if (toolKeys?.has(key)) continue;
+				if (
+					this.permissionToolResultFrameLinkCount >=
+					CLAUDE_PERMISSION_STATE_LIMIT
+				) {
+					// Dropping correlation must never make a real result look unresolved.
+					known.settledWithoutFrame = true;
+					continue;
+				}
+				if (!toolKeys) {
+					toolKeys = new Set();
+					this.permissionToolResultFrames.set(frameKey, toolKeys);
+				}
+				if (toolKeys.has(key)) continue;
+				toolKeys.add(key);
+				this.permissionToolResultFrameLinkCount += 1;
+				known.settledFrameCount += 1;
+			}
+		}
+	}
+
+	private reconcilePermissionDenials(
+		message: Extract<SDKMessage, { type: "result" }>,
+	): AgentEvent[] {
+		const providerSessionId = exactClaudePermissionId(message.session_id);
+		if (!providerSessionId) return [];
+		const events: AgentEvent[] = [];
+		const seen = new Set<string>();
+		const permissionDenials = message.permission_denials ?? [];
+		for (
+			let index = 0;
+			index < Math.min(permissionDenials.length, CLAUDE_PERMISSION_STATE_LIMIT);
+			index++
+		) {
+			const denial = permissionDenials[index];
+			if (!denial) continue;
+			const toolId = exactClaudePermissionId(denial.tool_use_id);
+			if (!toolId) continue;
+			const key = claudePermissionKey(providerSessionId, toolId);
+			if (seen.has(key) || this.reportedPermissionDenials.has(key)) continue;
+			seen.add(key);
+			const known = this.knownPermissionTools.get(key);
+			const advisory = this.permissionAdvisories.get(key);
+			const toolName =
+				boundedClaudePermissionText(
+					denial.tool_name,
+					CLAUDE_PERMISSION_NAME_MAX_CHARS,
+				) ?? known?.toolName;
+			if (!toolName) continue;
+			const providerMessage =
+				advisory?.message ?? `${toolName} was blocked by Claude.`;
+			events.push({
+				type: "provider_permission_denied",
+				providerSessionId,
+				toolId,
+				toolName,
+				...(advisory?.agentId ? { agentId: advisory.agentId } : {}),
+				...(advisory?.reasonType ? { reasonType: advisory.reasonType } : {}),
+				...(advisory?.reason ? { reason: advisory.reason } : {}),
+				message: providerMessage,
+			});
+			const exactDeniedToolName = exactClaudePermissionToolName(
+				denial.tool_name,
+			);
+			if (
+				known?.synthesisToolName !== undefined &&
+				exactDeniedToolName === known.synthesisToolName &&
+				!known.settledWithoutFrame &&
+				known.settledFrameCount === 0
+			) {
+				events.push({
+					type: "tool_result",
+					toolId,
+					content: providerMessage,
+					isError: true,
+					providerSessionId,
+				});
+				known.settledWithoutFrame = true;
+			}
+			retainBoundedSetEntry(this.reportedPermissionDenials, key);
+			this.permissionAdvisories.delete(key);
+		}
+		// A system/permission_denied frame is advisory only. Once the matching
+		// result boundary arrives, discard every unconfirmed advisory for that
+		// native session instead of leaking it into a later turn.
+		for (const key of this.permissionAdvisories.keys()) {
+			try {
+				const [session] = JSON.parse(key) as [string, string];
+				if (session === providerSessionId)
+					this.permissionAdvisories.delete(key);
+			} catch {
+				this.permissionAdvisories.delete(key);
+			}
+		}
+		return events;
 	}
 
 	private async *translateEvents(): AsyncGenerator<AgentEvent> {
@@ -3412,8 +3710,21 @@ class ClaudeAgentSession implements AgentSession {
 				}
 				const message = next.value;
 				this.receivedAnyEvent = true;
+				const rawProviderSessionId = exactClaudePermissionId(
+					(message as { session_id?: unknown }).session_id,
+				);
+				if (rawProviderSessionId) {
+					this.currentNativeSessionId = rawProviderSessionId;
+				}
+				if (
+					message.type === "system" &&
+					(message as { subtype?: unknown }).subtype === "permission_denied"
+				) {
+					this.rememberPermissionAdvisory(message);
+				}
 				if (message.type === "conversation_reset") {
 					this.resumeId = message.new_conversation_id;
+					this.currentNativeSessionId = message.new_conversation_id;
 				}
 				if (message.type === "result" && isEmptyClaudeIdleBoundary(message)) {
 					// This belongs to the resumed stream's idle state, not the
@@ -3593,6 +3904,21 @@ class ClaudeAgentSession implements AgentSession {
 						this.hasEmittedAssistantTextMessage = true;
 					}
 				}
+				if (message.type === "result") {
+					const denied = this.reconcilePermissionDenials(message);
+					const doneIndex = translation.events.findIndex(
+						(event) => event.type === "done",
+					);
+					translation.events.splice(
+						doneIndex < 0 ? translation.events.length : doneIndex,
+						0,
+						...denied,
+					);
+				}
+				this.observePermissionToolEvents(
+					translation.events,
+					rawProviderSessionId ?? this.currentNativeSessionId,
+				);
 				for (const event of translation.events) {
 					if (event.type === "commands_changed") {
 						this.latestSkillCommands = event.commands;

@@ -42,7 +42,8 @@ export function applyReplayTransition(
 		msg.type === "tool_update" ||
 		msg.type === "tool_activity_update" ||
 		msg.type === "permission_request" ||
-		msg.type === "permission_resolved"
+		msg.type === "permission_resolved" ||
+		msg.type === "provider_permission_denied"
 	) {
 		state.buffer.push(msg);
 		if (state.buffer.length > REPLAY_BUFFER_MAX) state.buffer.shift();

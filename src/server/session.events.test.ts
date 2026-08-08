@@ -3712,6 +3712,244 @@ describe("SessionManager — Claude provider-frame reconciliation", () => {
 		vi.mocked(dbMock.retractProviderMessageFrames)
 			.mockReset()
 			.mockResolvedValue([]);
+		vi.mocked(dbMock.recordProviderPermissionDenied)
+			.mockReset()
+			.mockResolvedValue(true);
+	});
+
+	it("persists and surfaces provider denial evidence without changing attention", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "native-provider-denial" },
+				{
+					type: "provider_permission_denied",
+					providerSessionId: "native-provider-denial",
+					toolId: "denied-tool",
+					toolName: "Bash",
+					reasonType: "rule",
+					reason: "Managed policy",
+					message: "Command blocked",
+				},
+			],
+			gate,
+		);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const run = sm.runQuery(
+			"attempt command",
+			(message) => emitted.push(message),
+			{ sessionId: "sess-provider-denial" },
+		);
+		try {
+			await gateReached;
+			expect(dbMock.recordProviderPermissionDenied).toHaveBeenCalledWith({
+				sessionId: "sess-provider-denial",
+				toolId: "denied-tool",
+				toolName: "Bash",
+				displayName: "Shell command",
+				providerId: "claude",
+				providerSessionId: "native-provider-denial",
+				reasonType: "rule",
+				reason: "Managed policy",
+				message: "Command blocked",
+			});
+			expect(emitted).toContainEqual({
+				type: "provider_permission_denied",
+				id: "denied-tool",
+				toolName: "Bash",
+				displayName: "Shell command",
+				providerId: "claude",
+				reasonType: "rule",
+				reason: "Managed policy",
+				providerMessage: "Command blocked",
+			});
+			expect(emitted.some((message) => message.type === "done")).toBe(false);
+		} finally {
+			release();
+			await run;
+		}
+	});
+
+	it("keeps provider denial evidence live when persistence fails", async () => {
+		vi.mocked(dbMock.recordProviderPermissionDenied).mockRejectedValueOnce(
+			new Error("permission evidence database unavailable"),
+		);
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{
+					type: "provider_permission_denied",
+					providerSessionId: "native-provider-failure",
+					toolId: "denied-tool",
+					toolName: "Bash",
+				},
+			],
+			gate,
+		);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const run = sm.runQuery(
+			"attempt command",
+			(message) => emitted.push(message),
+			{ sessionId: "sess-provider-failure" },
+		);
+		await gateReached;
+		expect(emitted).toContainEqual(
+			expect.objectContaining({
+				type: "provider_permission_denied",
+				id: "denied-tool",
+			}),
+		);
+		release();
+		await expect(run).resolves.toBeUndefined();
+		expect(emitted.some((message) => message.type === "done")).toBe(true);
+	});
+
+	it("persists a synthetic denial result only against its native start row", async () => {
+		vi.mocked(dbMock.getProviderToolAssistantSeq).mockResolvedValueOnce(4);
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "native-synthetic" },
+				{
+					type: "tool_result",
+					toolId: "synthetic-tool",
+					content: "Blocked by Claude",
+					isError: true,
+					providerSessionId: "native-synthetic",
+				},
+			],
+			gate,
+		);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const run = sm.runQuery("blocked", (message) => emitted.push(message), {
+			sessionId: "sess-synthetic",
+		});
+		try {
+			await gateReached;
+			expect(dbMock.getProviderToolAssistantSeq).toHaveBeenCalledWith(
+				"sess-synthetic",
+				"claude",
+				"native-synthetic",
+				["synthetic-tool"],
+			);
+			expect(dbMock.setToolEventResult).toHaveBeenCalledWith(
+				"sess-synthetic",
+				"synthetic-tool",
+				"Blocked by Claude",
+				true,
+				undefined,
+				4,
+			);
+			expect(emitted).toContainEqual({
+				type: "tool_result",
+				id: "synthetic-tool",
+				content: "Blocked by Claude",
+				isError: true,
+			});
+		} finally {
+			release();
+			await run;
+		}
+	});
+
+	it("fails synthetic native-row lookup closed without aborting the turn", async () => {
+		vi.mocked(dbMock.getProviderToolAssistantSeq).mockRejectedValueOnce(
+			new Error("native row lookup unavailable"),
+		);
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{
+					type: "tool_result",
+					toolId: "synthetic-tool",
+					content: "Blocked by Claude",
+					isError: true,
+					providerSessionId: "native-synthetic",
+				},
+			],
+			gate,
+		);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const run = sm.runQuery("blocked", (message) => emitted.push(message), {
+			sessionId: "sess-synthetic-lookup-failure",
+		});
+		await gateReached;
+		expect(
+			emitted.some(
+				(message) =>
+					message.type === "tool_result" && message.id === "synthetic-tool",
+			),
+		).toBe(false);
+		release();
+		await expect(run).resolves.toBeUndefined();
+		expect(emitted.some((message) => message.type === "done")).toBe(true);
+	});
+
+	it("quarantines a provider denial whose durable native-session key collides", async () => {
+		vi.mocked(dbMock.recordProviderPermissionDenied).mockResolvedValueOnce(
+			false,
+		);
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{
+					type: "provider_permission_denied",
+					providerSessionId: "native-new",
+					toolId: "colliding-tool",
+					toolName: "Read",
+				},
+				{
+					type: "tool_result",
+					toolId: "colliding-tool",
+					content: "Synthetic provider denial",
+					isError: true,
+					providerSessionId: "native-new",
+				},
+			],
+			gate,
+		);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const run = sm.runQuery("collision", (message) => emitted.push(message), {
+			sessionId: "sess-collision",
+		});
+		try {
+			await gateReached;
+			expect(
+				emitted.some(
+					(message) => message.type === "provider_permission_denied",
+				),
+			).toBe(false);
+			expect(
+				emitted.some(
+					(message) =>
+						message.type === "tool_result" && message.id === "colliding-tool",
+				),
+			).toBe(false);
+			expect(dbMock.getProviderToolAssistantSeq).not.toHaveBeenCalled();
+		} finally {
+			release();
+			await run;
+		}
 	});
 
 	it("persists a frame before streaming it and emits its canonical revision after retraction", async () => {

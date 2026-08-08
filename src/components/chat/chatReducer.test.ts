@@ -2332,6 +2332,71 @@ describe("LOAD_HISTORY", () => {
 		});
 	});
 
+	it("merges provider denial evidence idempotently without replacing approval", () => {
+		let state = reducer(empty(), {
+			type: "RESOLVE_OR_ADD_PERMISSION",
+			id: "p-blocked",
+			toolName: "Bash",
+			decision: "approved_session",
+		});
+		const report = {
+			type: "REPORT_PROVIDER_PERMISSION_DENIAL" as const,
+			id: "p-blocked",
+			toolName: "Bash",
+			providerId: "claude",
+			reasonType: "rule",
+			reason: "Managed policy",
+			providerMessage: "Command blocked",
+		};
+		state = reducer(state, report);
+		state = reducer(state, report);
+		expect(state).toHaveLength(1);
+		expect(state[0]).toMatchObject({
+			role: "permission",
+			decision: "approved_session",
+			providerOutcome: "blocked",
+			providerId: "claude",
+			providerReasonType: "rule",
+			providerReason: "Managed policy",
+			providerMessage: "Command blocked",
+		});
+	});
+
+	it("adds and reloads provider-only blocked permission evidence", () => {
+		const live = reducer(empty(), {
+			type: "REPORT_PROVIDER_PERMISSION_DENIAL",
+			id: "provider-only",
+			toolName: "Read",
+			providerId: "claude",
+		});
+		expect(live[0]).toMatchObject({
+			decision: "provider_blocked",
+			providerOutcome: "blocked",
+		});
+
+		const loaded = reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [
+				{
+					kind: "permission",
+					tool_id: "provider-only",
+					tool_name: "Read",
+					display_name: "Read file",
+					decision: "provider_blocked",
+					provider_outcome: "blocked",
+					provider_id: "claude",
+					provider_reason: "Policy",
+				},
+			],
+		});
+		expect(loaded[0]).toMatchObject({
+			decision: "provider_blocked",
+			providerOutcome: "blocked",
+			providerId: "claude",
+			providerReason: "Policy",
+		});
+	});
+
 	it("preserves real permission decisions loaded from history", () => {
 		const state = reducer(empty(), {
 			type: "LOAD_HISTORY",

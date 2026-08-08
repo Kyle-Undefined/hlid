@@ -66,6 +66,24 @@ describe("ChatMessageRow permission placement", () => {
 		expect(screen.getByText("Reader")).toBeTruthy();
 		expect(screen.getByText("Inspecting the vault")).toBeTruthy();
 	});
+
+	it("keeps human approval and a provider block visible despite fold metadata", () => {
+		renderRow({
+			message: {
+				...permission,
+				decision: "approved_session",
+				providerOutcome: "blocked",
+				providerId: "claude",
+			},
+			permissionLabels: new Map([[permission.id, "APPROVED FOR SESSION"]]),
+			embeddedPermissionIds: new Set([permission.id]),
+		});
+
+		expect(screen.getByText(/SHELL COMMAND APPROVED FOR SESSION/)).toBeTruthy();
+		expect(
+			screen.getByText(/SHELL COMMAND BLOCKED\/PROVIDER-REPORTED/),
+		).toBeTruthy();
+	});
 });
 
 describe("ChatMessageRow steering placement", () => {

@@ -195,12 +195,14 @@ export function useMessageListView({
 
 	// Approved permissions render as a chip under the matching tool block
 	// (matched by toolUseID === ToolEvent.id) instead of a separate row, so a
-	// long run of approvals doesn't stack up above each tool call.
+	// long run of approvals doesn't stack up above each tool call. A provider
+	// block remains a standalone row because it is a second, independent fact.
 	const permissionLabelsRef = useRef(new Map<string, string>());
 	const nextPermissionLabels = useMemo(() => {
 		const labels = new Map<string, string>();
 		for (const message of messages) {
 			if (message.role !== "permission") continue;
+			if (message.providerOutcome === "blocked") continue;
 			const label = approvedLabel(message.decision);
 			if (label) labels.set(message.id, label);
 		}

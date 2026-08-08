@@ -118,7 +118,7 @@ describe("applyReplayTransition", () => {
 		]);
 	});
 
-	it("accumulates chunk, tool_event, permission_request, permission_resolved", () => {
+	it("accumulates transcript and human/provider permission evidence", () => {
 		const state = makeState();
 		applyReplayTransition(state, { type: "chunk", text: "hello" });
 		applyReplayTransition(state, {
@@ -139,11 +139,18 @@ describe("applyReplayTransition", () => {
 			toolName: "Bash",
 			decision: "approved",
 		});
+		applyReplayTransition(state, {
+			type: "provider_permission_denied",
+			id: "p1",
+			toolName: "Bash",
+			providerId: "claude",
+		});
 		expect(state.buffer.map((m) => m.type)).toEqual([
 			"chunk",
 			"tool_event",
 			"permission_request",
 			"permission_resolved",
+			"provider_permission_denied",
 		]);
 	});
 

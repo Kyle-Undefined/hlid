@@ -104,6 +104,18 @@ function dispatchImmediateMessage(
 				decision: msg.decision,
 			});
 			return true;
+		case "provider_permission_denied":
+			dispatch({
+				type: "REPORT_PROVIDER_PERMISSION_DENIAL",
+				id: msg.id,
+				toolName: msg.toolName,
+				displayName: msg.displayName,
+				providerId: msg.providerId,
+				reasonType: msg.reasonType,
+				reason: msg.reason,
+				providerMessage: msg.providerMessage,
+			});
+			return true;
 		case "ask_user_question":
 			dispatch({
 				type: "ADD_ASK_USER_QUESTION",

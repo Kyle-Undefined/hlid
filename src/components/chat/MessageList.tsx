@@ -484,6 +484,7 @@ export const MessageList = memo(function MessageList({
 			if (
 				message.role !== "permission" ||
 				message.decision !== "pending" ||
+				message.providerOutcome === "blocked" ||
 				!message.requester
 			) {
 				continue;

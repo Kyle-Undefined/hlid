@@ -151,6 +151,11 @@ function mapSessionRows(
 		tool_name: p.tool_name,
 		display_name: p.display_name,
 		decision: p.decision,
+		provider_outcome: p.provider_outcome,
+		provider_id: p.provider_id,
+		provider_reason_type: p.provider_reason_type,
+		provider_reason: p.provider_reason,
+		provider_message: p.provider_message,
 	}));
 	const planItems = planRows.map((p) => ({
 		kind: "plan_proposal" as const,

@@ -657,6 +657,18 @@ export type PermissionResolvedMessage = {
 	decision: PermissionDecision;
 };
 
+/** Provider-reported block evidence, independent of any human decision. */
+export type ProviderPermissionDeniedMessage = {
+	type: "provider_permission_denied";
+	id: string;
+	toolName: string;
+	displayName?: string;
+	providerId: string;
+	reasonType?: string;
+	reason?: string;
+	providerMessage?: string;
+};
+
 /** Narrow an MCP server object to the wire shape used in mcp_status messages. */
 export function mapMcpServer(s: {
 	name: string;
@@ -1046,7 +1058,8 @@ export type ReplayBufferMessage =
 	| ToolActivityUpdateMessage
 	| ToolResultMessage
 	| PermissionRequestMessage
-	| PermissionResolvedMessage;
+	| PermissionResolvedMessage
+	| ProviderPermissionDeniedMessage;
 
 /** Bounded reconnect catch-up batch for one focused live session. */
 export type SessionReplayMessage = {
@@ -1072,6 +1085,7 @@ export type ServerMessage =
 	| ErrorMessage
 	| PermissionRequestMessage
 	| PermissionResolvedMessage
+	| ProviderPermissionDeniedMessage
 	| UserMessageEvent
 	| QueueStateMessage
 	| TurnSteeredMessage

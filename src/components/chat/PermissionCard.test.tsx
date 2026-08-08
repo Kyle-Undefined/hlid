@@ -40,6 +40,54 @@ describe("PermissionCard", () => {
 		expect(screen.getByText(/SHELL DENIED/)).not.toBeNull();
 	});
 
+	it("distinguishes provider blocks from human decisions", () => {
+		const { rerender } = render(
+			<PermissionCard
+				message={permission({
+					decision: "provider_blocked",
+					providerOutcome: "blocked",
+					providerId: "claude",
+					providerMessage: "Blocked by managed policy",
+				})}
+				onDecide={vi.fn()}
+			/>,
+		);
+		expect(
+			screen.getByText(/SHELL COMMAND BLOCKED\/PROVIDER-REPORTED/),
+		).not.toBeNull();
+		expect(screen.queryByText(/SHELL COMMAND DENIED/)).toBeNull();
+
+		rerender(
+			<PermissionCard
+				message={permission({
+					decision: "approved_session",
+					providerOutcome: "blocked",
+				})}
+				onDecide={vi.fn()}
+			/>,
+		);
+		expect(
+			screen.getByText(/SHELL COMMAND APPROVED FOR SESSION/),
+		).not.toBeNull();
+		expect(
+			screen.getByText(/SHELL COMMAND BLOCKED\/PROVIDER-REPORTED/),
+		).not.toBeNull();
+
+		rerender(
+			<PermissionCard
+				message={permission({
+					decision: "denied",
+					providerOutcome: "blocked",
+				})}
+				onDecide={vi.fn()}
+			/>,
+		);
+		expect(screen.getByText(/SHELL COMMAND DENIED/)).not.toBeNull();
+		expect(
+			screen.getByText(/SHELL COMMAND BLOCKED\/PROVIDER-REPORTED/),
+		).not.toBeNull();
+	});
+
 	it("emits every pending decision and redirects with an instruction", () => {
 		const onDecide = vi.fn();
 		render(

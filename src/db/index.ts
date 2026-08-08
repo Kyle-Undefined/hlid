@@ -128,6 +128,7 @@ export {
 export {
 	getSessionPermissionEvents,
 	recordPermissionEvent,
+	recordProviderPermissionDenied,
 } from "./permissions";
 export { retainProjectPreviewFeedback } from "./projectPreviewFeedback";
 export {

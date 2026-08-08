@@ -1165,6 +1165,17 @@ function cleanupPreviewForIds(
 				    length(COALESCE(subagent_json, '')) + length(COALESCE(activity_json, ''))
 				  ), 0) FROM tool_events WHERE session_id IN (${ph})) +
 				 (SELECT COALESCE(SUM(
+				    length(tool_id) + length(tool_name) +
+				    length(COALESCE(display_name, '')) + length(decision) +
+				    length(COALESCE(human_decision, '')) +
+				    length(COALESCE(provider_outcome, '')) +
+				    length(COALESCE(provider_id, '')) +
+				    length(COALESCE(provider_session_id, '')) +
+				    length(COALESCE(provider_reason_type, '')) +
+				    length(COALESCE(provider_reason, '')) +
+				    length(COALESCE(provider_message, ''))
+				  ), 0) FROM permission_events WHERE session_id IN (${ph})) +
+				 (SELECT COALESCE(SUM(
 				    length(provider_id) + length(COALESCE(provider_session_id, '')) +
 				    length(COALESCE(provider_uuid, '')) +
 				    length(COALESCE(subagent_json, '')) +
@@ -1205,7 +1216,7 @@ function cleanupPreviewForIds(
 			 (SELECT COUNT(*) FROM project_preview_feedback
 			  WHERE session_id IN (${ph})) AS projectPreviewFeedback`,
 		)
-		.get(...Array.from({ length: 22 }, () => ids).flat());
+		.get(...Array.from({ length: 23 }, () => ids).flat());
 	return row ? { days, cutoff, ...row } : emptyCleanupPreview(days, cutoff);
 }
 

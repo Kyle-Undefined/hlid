@@ -116,11 +116,17 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 		);
 	}
 	if (message.role === "permission") {
-		// Approved variants are folded into the tool block.
-		// Pending and denied still render standalone.
-		if (permissionLabels.has(message.id)) return null;
+		// Ordinary approved variants are folded into the tool block. Provider
+		// outcomes remain standalone so the human and provider facts stay visible.
+		if (
+			message.providerOutcome !== "blocked" &&
+			permissionLabels.has(message.id)
+		) {
+			return null;
+		}
 		if (
 			message.decision === "pending" &&
+			message.providerOutcome !== "blocked" &&
 			embeddedPermissionIds?.has(message.id)
 		) {
 			return null;
