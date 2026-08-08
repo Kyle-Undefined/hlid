@@ -2479,9 +2479,14 @@ class ClaudeAgentSession implements AgentSession {
 
 	private ensureSdkQuery(): void {
 		if (this.sdkQuery) return;
-		this.sdkQuery = this.makeQuery(
+		this.sdkQuery = this.createSdkQuery(this.resumeId);
+	}
+
+	private createSdkQuery(resumeId: string | undefined): SdkQuery {
+		this.backgroundActivities.reset();
+		return this.makeQuery(
 			this.inputStream.iterate(),
-			this.resumeId,
+			resumeId,
 			this.dynamicMcpServers(),
 			this.configuredMcpServers.managedNames,
 		);
@@ -2526,12 +2531,7 @@ class ClaudeAgentSession implements AgentSession {
 					// Fresh input stream so the SDK consumes the replayed msg.
 					self.inputStream.close();
 					self.inputStream = new InputStream();
-					self.sdkQuery = self.makeQuery(
-						self.inputStream.iterate(),
-						undefined,
-						self.dynamicMcpServers(),
-						self.configuredMcpServers.managedNames,
-					);
+					self.sdkQuery = self.createSdkQuery(undefined);
 					if (self.firstSend) self.inputStream.push(self.firstSend);
 					yield* self.translateEvents();
 					return;

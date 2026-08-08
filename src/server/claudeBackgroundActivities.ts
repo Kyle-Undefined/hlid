@@ -72,19 +72,22 @@ function taskKind(
 	}
 	if (
 		task.taskType === "subagent" ||
+		task.taskType === "local_agent" ||
+		task.taskType === "in_process_teammate" ||
 		tool?.name === "Agent" ||
 		tool?.name === "Task"
 	) {
 		return "agent";
 	}
-	if (tool?.name === "Bash") return "shell";
+	if (task.taskType === "local_bash" || tool?.name === "Bash") return "shell";
 	return "task";
 }
 
 /**
  * Event-backed projection of Claude's native background task registry.
- * `backgroundTasks()` changes provider state, while task lifecycle messages
- * remain the authority for what Raven can safely present and stop.
+ * `background_tasks_changed` replaces background membership, while task
+ * lifecycle messages and structured results enrich entries with tool metadata
+ * and output.
  */
 export class ClaudeBackgroundActivityTracker {
 	private sessionId = "";
@@ -96,7 +99,16 @@ export class ClaudeBackgroundActivityTracker {
 		private readonly cwd: string,
 	) {}
 
+	reset(): void {
+		this.sessionId = "";
+		this.tools.clear();
+		this.tasks.clear();
+	}
+
 	observe(message: SDKMessage): void {
+		if (message.type === "system" && message.subtype === "init") {
+			this.reset();
+		}
 		this.sessionId =
 			nonEmptyString((message as { session_id?: unknown }).session_id) ??
 			this.sessionId;
@@ -215,6 +227,10 @@ export class ClaudeBackgroundActivityTracker {
 	private observeSystem(
 		message: Extract<SDKMessage, { type: "system" }>,
 	): void {
+		if (message.subtype === "background_tasks_changed") {
+			this.replaceBackgroundTasks(message);
+			return;
+		}
 		const taskMessage = message as Extract<SDKMessage, { type: "system" }> &
 			Record<string, unknown>;
 		const subtype = nonEmptyString(taskMessage.subtype);
@@ -282,6 +298,61 @@ export class ClaudeBackgroundActivityTracker {
 				: {}),
 			updatedAtMs: now,
 		});
+	}
+
+	private replaceBackgroundTasks(
+		message: Extract<
+			SDKMessage,
+			{ type: "system"; subtype: "background_tasks_changed" }
+		>,
+	): void {
+		const now = Date.now();
+		const nextTasks = new Map<string, ClaudeBackgroundTask>();
+		for (const [taskId, task] of this.tasks) {
+			if (!task.backgrounded) nextTasks.set(taskId, task);
+		}
+		for (const task of message.tasks) {
+			const taskId = nonEmptyString(task.task_id);
+			if (!taskId) continue;
+			const current = this.tasks.get(taskId);
+			const description =
+				nonEmptyString(task.description) ?? current?.description;
+			const taskType = nonEmptyString(task.task_type) ?? current?.taskType;
+			const sessionId =
+				message.session_id || current?.sessionId || this.sessionId;
+			const changed =
+				!current ||
+				!current.backgrounded ||
+				current.sessionId !== sessionId ||
+				current.description !== description ||
+				current.taskType !== taskType;
+			nextTasks.set(taskId, {
+				taskId,
+				...(current?.toolUseId ? { toolUseId: current.toolUseId } : {}),
+				sessionId,
+				...(description ? { description } : {}),
+				...(taskType ? { taskType } : {}),
+				backgrounded: true,
+				startedAtMs: current?.startedAtMs ?? now,
+				updatedAtMs: changed ? now : (current?.updatedAtMs ?? now),
+				...(current?.recentOutput
+					? { recentOutput: current.recentOutput }
+					: {}),
+			});
+		}
+
+		const retainedToolUseIds = new Set(
+			[...nextTasks.values()]
+				.map((task) => task.toolUseId)
+				.filter((toolUseId): toolUseId is string => Boolean(toolUseId)),
+		);
+		for (const [taskId, task] of this.tasks) {
+			if (nextTasks.has(taskId)) continue;
+			if (task.toolUseId && !retainedToolUseIds.has(task.toolUseId)) {
+				this.tools.delete(task.toolUseId);
+			}
+		}
+		this.tasks = nextTasks;
 	}
 
 	private removeTask(taskId: string): void {

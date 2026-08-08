@@ -73,6 +73,7 @@ import type {
 	CanUseTool,
 	SubagentSnapshot,
 } from "./agentProvider";
+import { ClaudeBackgroundActivityTracker } from "./claudeBackgroundActivities";
 import { createClaudeHistorySessionStore } from "./claudeHistorySessionStore";
 import {
 	ClaudeProvider,
@@ -4729,6 +4730,50 @@ describe("ClaudeProvider — stopTask", () => {
 		expect(gen.stopTask).toHaveBeenCalledWith("task-1");
 		await expect(session.listBackgroundActivities?.()).resolves.toEqual([]);
 	});
+
+	it("lists a metadata-light task discovered from the authoritative level", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "system",
+					subtype: "background_tasks_changed",
+					tasks: [
+						{
+							task_id: "task-level-only",
+							task_type: "remote_agent",
+							description: "Remote research",
+						},
+					],
+					uuid: "level-1",
+					session_id: "sdk-session-level",
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 1, output_tokens: 1 },
+				},
+			]),
+		);
+
+		const session = new ClaudeProvider().query(baseParams());
+		for await (const _event of session) {
+			// Drain the level message through the provider session.
+		}
+
+		await expect(session.listBackgroundActivities?.()).resolves.toEqual([
+			expect.objectContaining({
+				providerId: "claude",
+				providerSessionId: "sdk-session-level",
+				activityId: "task-level-only",
+				kind: "workflow",
+				description: "Remote research",
+				capabilities: { stop: true },
+			}),
+		]);
+	});
 });
 
 // ── cancel ────────────────────────────────────────────────────────────────────
@@ -4974,6 +5019,43 @@ describe("ClaudeProvider — session resume", () => {
 		});
 		expect(replayed?.value).toEqual(original?.value);
 		session.cancel();
+	});
+
+	it("resets background state before recreating a cold-resume SDK process", async () => {
+		const reset = vi.spyOn(ClaudeBackgroundActivityTracker.prototype, "reset");
+		const resetCountsAtQuery: number[] = [];
+		try {
+			vi.mocked(query).mockImplementation(() => {
+				resetCountsAtQuery.push(reset.mock.calls.length);
+				if (resetCountsAtQuery.length === 1) {
+					return sdkStream(async function* () {
+						throw new Error("session not found");
+						// biome-ignore lint/correctness/noUnreachable: satisfies AsyncGenerator contract
+						yield;
+					});
+				}
+				return sdkGen([
+					{
+						type: "result",
+						subtype: "success",
+						total_cost_usd: 0,
+						num_turns: 1,
+						duration_ms: 100,
+						usage: { input_tokens: 1, output_tokens: 1 },
+					},
+				]);
+			});
+
+			for await (const _event of new ClaudeProvider().query(
+				baseParams({ sessionId: "stale-id" }),
+			)) {
+				// Drain both the failed resume and its fresh replacement.
+			}
+
+			expect(resetCountsAtQuery).toEqual([1, 2]);
+		} finally {
+			reset.mockRestore();
+		}
 	});
 
 	it("does not retry when events were already received before error", async () => {
