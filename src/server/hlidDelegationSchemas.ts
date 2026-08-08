@@ -20,7 +20,14 @@ export const delegateHlidAgentSchema = z.object({
 	service_tier: z.string().trim().min(1).max(120).optional(),
 	cwd: z.string().trim().min(1).max(4_096).optional(),
 	permission_mode: z
-		.enum(["default", "acceptEdits", "bypassPermissions", "plan"])
+		.enum([
+			"default",
+			"acceptEdits",
+			"bypassPermissions",
+			"plan",
+			"dontAsk",
+			"auto",
+		])
 		.optional(),
 	handoff: hlidDelegationHandoffSchema.optional(),
 });
@@ -51,7 +58,14 @@ export const resumeHlidAgentSchema = z.object({
 	id: z.string().uuid(),
 	instruction: z.string().trim().min(1).max(HLID_DELEGATION_MAX_TASK_CHARS),
 	permission_mode: z
-		.enum(["default", "acceptEdits", "bypassPermissions", "plan"])
+		.enum([
+			"default",
+			"acceptEdits",
+			"bypassPermissions",
+			"plan",
+			"dontAsk",
+			"auto",
+		])
 		.optional(),
 });
 

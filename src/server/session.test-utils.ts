@@ -87,14 +87,65 @@ export function mockDbModule() {
 		getSessionClaudeId: vi.fn().mockResolvedValue(null),
 		getAttachment: vi.fn().mockResolvedValue(null),
 		setSessionProviderId: vi.fn().mockResolvedValue(undefined),
-		setSessionProviderSelection: vi.fn().mockResolvedValue(undefined),
+		setSessionProviderSelection: vi.fn(
+			async (
+				_sessionId: string,
+				_providerId: string,
+				_selection: unknown,
+				control?: { guard?: () => boolean; onCommitted?: () => void },
+			) => {
+				if (control?.guard && !control.guard()) return false;
+				control?.onCommitted?.();
+				return true;
+			},
+		),
 		setSessionProviderSession: vi.fn().mockResolvedValue(true),
 		setSessionActualModelForProvider: vi.fn().mockResolvedValue(undefined),
 		setSessionAgentCwd: vi.fn().mockResolvedValue(undefined),
-		setSessionModel: vi.fn().mockResolvedValue(undefined),
-		setSessionEffort: vi.fn().mockResolvedValue(undefined),
-		setSessionPermissionMode: vi.fn().mockResolvedValue(undefined),
-		setSessionApprovalsReviewer: vi.fn().mockResolvedValue(undefined),
+		setSessionModel: vi.fn(
+			async (
+				_sessionId: string,
+				_model: string,
+				control?: { guard?: () => boolean; onCommitted?: () => void },
+			) => {
+				if (control?.guard && !control.guard()) return false;
+				control?.onCommitted?.();
+				return true;
+			},
+		),
+		setSessionModelAndPermissionMode: vi.fn(
+			async (
+				_sessionId: string,
+				_model: string,
+				_permissionMode: string,
+				control?: { guard?: () => boolean; onCommitted?: () => void },
+			) => {
+				if (control?.guard && !control.guard()) return false;
+				control?.onCommitted?.();
+				return true;
+			},
+		),
+		setSessionEffort: vi.fn(
+			async (
+				_sessionId: string,
+				_effort: string | null,
+				control?: { guard?: () => boolean },
+			) => !control?.guard || control.guard(),
+		),
+		setSessionPermissionMode: vi.fn(
+			async (
+				_sessionId: string,
+				_permissionMode: string | null,
+				control?: { guard?: () => boolean },
+			) => !control?.guard || control.guard(),
+		),
+		setSessionApprovalsReviewer: vi.fn(
+			async (
+				_sessionId: string,
+				_reviewer: string,
+				control?: { guard?: () => boolean },
+			) => !control?.guard || control.guard(),
+		),
 		enqueuePendingSessionTurn: vi.fn().mockResolvedValue(true),
 		markPendingSessionTurnSleeping: vi.fn().mockResolvedValue(undefined),
 		markPendingSessionTurnDispatching: vi.fn().mockResolvedValue(undefined),

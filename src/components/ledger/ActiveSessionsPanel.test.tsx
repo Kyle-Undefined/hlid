@@ -270,6 +270,38 @@ describe("ActiveSessionsPanel", () => {
 		).toBeDefined();
 	});
 
+	it("keeps Claude Auto, pre-approved only, bypass, and Codex auto-review distinct", () => {
+		render(
+			<ActiveSessionsPanel
+				sessions={[
+					{ ...idle, session_id: "auto", permission_mode: "auto" },
+					{ ...idle, session_id: "dont-ask", permission_mode: "dontAsk" },
+					{
+						...running,
+						session_id: "review",
+						permission_mode: "bypassPermissions",
+						approvals_reviewer: "auto_review",
+					},
+				]}
+				onStop={vi.fn()}
+				onClose={vi.fn()}
+			/>,
+		);
+		expect(
+			screen.getByText("claude · claude-sonnet · medium effort · Claude Auto"),
+		).toBeDefined();
+		expect(
+			screen.getByText(
+				"claude · claude-sonnet · medium effort · pre-approved only",
+			),
+		).toBeDefined();
+		expect(
+			screen.getByText(
+				"codex · claude-sonnet · high effort · bypass approvals · Codex auto-review",
+			),
+		).toBeDefined();
+	});
+
 	it("shows error state", () => {
 		render(
 			<ActiveSessionsPanel

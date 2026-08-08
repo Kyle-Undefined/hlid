@@ -265,17 +265,47 @@ describe("Hlid agent tools", () => {
 			service_tier: { type: "string" },
 			cwd: { type: "string" },
 		});
-		const delegationPermissionDescription = (
-			HLID_AGENT_TOOL_SPECS.find((spec) => spec.name === "delegate_hlid_agent")
-				?.inputSchema.properties.permission_mode as
-				| { description?: string }
-				| undefined
-		)?.description;
+		const delegateSpec = HLID_AGENT_TOOL_SPECS.find(
+			(spec) => spec.name === "delegate_hlid_agent",
+		);
+		const resumeSpec = HLID_AGENT_TOOL_SPECS.find(
+			(spec) => spec.name === "resume_hlid_agent",
+		);
+		const delegationPermission = delegateSpec?.inputSchema.properties
+			.permission_mode as { description?: string; enum?: string[] } | undefined;
+		const resumePermission = resumeSpec?.inputSchema.properties
+			.permission_mode as { description?: string; enum?: string[] } | undefined;
+		const delegationPermissionDescription = delegationPermission?.description;
+		expect(delegationPermission?.enum).toEqual([
+			"default",
+			"acceptEdits",
+			"bypassPermissions",
+			"plan",
+			"dontAsk",
+			"auto",
+		]);
+		expect(resumePermission?.enum).toEqual(delegationPermission?.enum);
 		expect(delegationPermissionDescription).toContain(
 			"Set plan explicitly when a Codex child must use native request_user_input",
 		);
 		expect(delegationPermissionDescription).toContain(
 			"does not enter plan review unless Codex emits a real plan",
+		);
+		expect(delegationPermissionDescription).toContain(
+			"Auto is allowed only when the parent is Auto or bypass",
+		);
+		expect(delegationPermissionDescription).toContain(
+			"Cross-provider children inheriting Auto must explicitly narrow",
+		);
+		expect(delegationPermissionDescription).toContain(
+			"exact selected or inherited child model passes live readiness validation",
+		);
+		expect(delegateSpec?.description).toContain("direct native Claude child");
+		expect(resumePermission?.description).toContain(
+			"before consuming the continuation attempt",
+		);
+		expect(resumeSpec?.description).toContain(
+			"revalidates the recorded exact model against live readiness",
 		);
 		for (const name of ["delegate_hlid_agent", "resume_hlid_agent"]) {
 			const properties = HLID_AGENT_TOOL_SPECS.find(

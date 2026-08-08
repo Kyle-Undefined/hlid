@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServerMessage } from "./protocol";
-import type { SessionManager } from "./session";
+import { type SessionManager, UnsupportedProviderEffortError } from "./session";
 import type { PoolEntry } from "./sessionPool";
 
 // ── mocks ─────────────────────────────────────────────────────────────────────
@@ -22,11 +22,12 @@ vi.mock("../db", () => ({
 	saveSetting: vi.fn().mockResolvedValue(undefined),
 	setAskUserQuestionResolution: vi.fn().mockResolvedValue(undefined),
 	getSessionSelection: vi.fn().mockResolvedValue(null),
-	setSessionModel: vi.fn().mockResolvedValue(undefined),
-	setSessionEffort: vi.fn().mockResolvedValue(undefined),
-	setSessionPermissionMode: vi.fn().mockResolvedValue(undefined),
-	setSessionApprovalsReviewer: vi.fn().mockResolvedValue(undefined),
-	setSessionProviderSelection: vi.fn().mockResolvedValue(undefined),
+	setSessionModel: vi.fn().mockResolvedValue(true),
+	setSessionModelAndPermissionMode: vi.fn().mockResolvedValue(true),
+	setSessionEffort: vi.fn().mockResolvedValue(true),
+	setSessionPermissionMode: vi.fn().mockResolvedValue(true),
+	setSessionApprovalsReviewer: vi.fn().mockResolvedValue(true),
+	setSessionProviderSelection: vi.fn().mockResolvedValue(true),
 	getHlidDelegationByChildSession: vi.fn().mockResolvedValue(null),
 }));
 
@@ -169,9 +170,15 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		restoreMcpStatus: vi.fn(),
 		setModel: vi.fn().mockResolvedValue(undefined),
 		setProvider: vi.fn().mockResolvedValue(undefined),
+		setInitialChatSelection: vi.fn().mockResolvedValue(undefined),
+		prepareSessionControlsForChat: vi
+			.fn()
+			.mockResolvedValue({ restored: false }),
 		setEffort: vi.fn().mockResolvedValue(undefined),
 		validateEffort: vi.fn(),
+		validatePermissionMode: vi.fn().mockResolvedValue(undefined),
 		setPermissionMode: vi.fn().mockResolvedValue(undefined),
+		acknowledgeSessionControlRejection: vi.fn(),
 		setApprovalsReviewer: vi.fn().mockResolvedValue(undefined),
 		stopProviderTask: vi.fn().mockResolvedValue(undefined),
 		controlProviderBackgroundActivity: vi.fn().mockResolvedValue(undefined),
@@ -197,6 +204,9 @@ function wrapSession(session: SessionManager) {
 		vaultEntry: vi.fn().mockReturnValue(entry),
 		vaultSessionId: vi.fn().mockReturnValue("vault-id"),
 		getProvider: vi.fn((id: string) => ({ providerId: id })),
+		validateDetachedPermissionMode: vi.fn().mockResolvedValue(0),
+		isDetachedPermissionValidationCurrent: vi.fn().mockReturnValue(true),
+		getDetachedPermissionValidationGeneration: vi.fn().mockReturnValue(0),
 		get: vi.fn((id: string) => (id === "vault-id" ? entry : undefined)),
 		create: vi.fn().mockReturnValue(entry),
 		close: vi.fn(),
@@ -204,7 +214,9 @@ function wrapSession(session: SessionManager) {
 		getAllEntries: vi.fn().mockReturnValue([][Symbol.iterator]()),
 		syncConfig: vi.fn(),
 		getSize: vi.fn().mockReturnValue(1),
-		findByDbSessionId: vi.fn().mockReturnValue(undefined),
+		findByDbSessionId: vi.fn((id: string) =>
+			id === session.getCurrentSessionId() ? entry : undefined,
+		),
 		claimDbSessionId: vi.fn(
 			(candidate: PoolEntry, _dbSessionId: string) => candidate,
 		),
@@ -913,8 +925,8 @@ describe("message — realtime control", () => {
 			return entry;
 		});
 		pool.get.mockImplementation((id: string) => poolEntries.get(id) as never);
-		pool.findByDbSessionId.mockImplementation((id: string) =>
-			claimedEntries.get(id),
+		pool.findByDbSessionId.mockImplementation(
+			(id: string) => claimedEntries.get(id) as never,
 		);
 		pool.claimDbSessionId.mockImplementation(
 			(candidate: PoolEntry, dbSessionId: string) => {
@@ -1843,6 +1855,187 @@ describe("message — set_model", () => {
 		expect(session.setModel).toHaveBeenCalledWith(undefined);
 	});
 
+	it("republishes the rolled-back model when native or database application rejects", async () => {
+		const operation = Promise.reject(
+			new Error("Native model changed, but the database rollback completed"),
+		);
+		const session = makeSession({
+			getCurrentSessionId: vi.fn().mockReturnValue("live-model-session"),
+			getStatus: vi.fn().mockReturnValue({
+				state: "idle",
+				model: "claude-sonnet-4-6",
+				effort: "high",
+				permission_mode: "default",
+			}),
+			setModel: vi.fn().mockReturnValue(operation),
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "set_model",
+				model: "claude-opus-4-8",
+			}),
+		);
+
+		expect(session.acknowledgeSessionControlRejection).toHaveBeenCalledWith(
+			operation,
+		);
+		expect(
+			mockSend.mock.calls
+				.filter((call) => call[0] === ws)
+				.map((call) => call[1]),
+		).toEqual([
+			{
+				type: "error",
+				message: "Native model changed, but the database rollback completed",
+			},
+			{
+				type: "session_control_rejected",
+				control: "model",
+				attempted_value: "claude-opus-4-8",
+				authoritative_value: "claude-sonnet-4-6",
+				session_id: "live-model-session",
+			},
+		]);
+		expect(runState.broadcast).toHaveBeenCalledWith({
+			type: "status",
+			state: "idle",
+			model: "claude-sonnet-4-6",
+			effort: "high",
+			permission_mode: "default",
+		});
+	});
+
+	it("uses a newer live model as authoritative when an older control rejects late", async () => {
+		const older = deferred();
+		let model = "claude-sonnet-4-6";
+		const setModel = vi.fn((requested: string | undefined) => {
+			if (requested === "claude-opus-4-8") return older.promise;
+			model = requested ?? "claude-default";
+			return Promise.resolve();
+		});
+		const session = makeSession({
+			getCurrentSessionId: vi.fn().mockReturnValue("live-model-session"),
+			getStatus: vi.fn(() => ({
+				state: "idle" as const,
+				model,
+				effort: "high",
+				permission_mode: "default" as const,
+			})),
+			setModel,
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		const stale = message(
+			ws as never,
+			JSON.stringify({ type: "set_model", model: "claude-opus-4-8" }),
+		);
+		await vi.waitFor(() =>
+			expect(setModel).toHaveBeenCalledWith("claude-opus-4-8"),
+		);
+		await message(
+			ws as never,
+			JSON.stringify({ type: "set_model", model: "claude-sonnet-5" }),
+		);
+		older.reject(new Error("stale native rejection"));
+		await stale;
+
+		expect(session.acknowledgeSessionControlRejection).toHaveBeenCalledWith(
+			older.promise,
+		);
+		expect(lastSentTo(ws)).toEqual({
+			type: "session_control_rejected",
+			control: "model",
+			attempted_value: "claude-opus-4-8",
+			authoritative_value: "claude-sonnet-5",
+			session_id: "live-model-session",
+		});
+		expect(runState.broadcast).toHaveBeenLastCalledWith({
+			type: "status",
+			state: "idle",
+			model: "claude-sonnet-5",
+			effort: "high",
+			permission_mode: "default",
+		});
+	});
+
+	it("routes a database alias to its live entry and suppresses rejection after that entry closes", async () => {
+		const late = deferred();
+		const aliasedRejection = Promise.reject(
+			new Error("aliased model rejected"),
+		);
+		const setModel = vi
+			.fn()
+			.mockReturnValueOnce(aliasedRejection)
+			.mockReturnValueOnce(late.promise);
+		const session = makeSession({
+			getCurrentSessionId: vi.fn().mockReturnValue("database-session-alias"),
+			getStatus: vi.fn().mockReturnValue({
+				state: "idle",
+				model: "claude-sonnet-4-6",
+				effort: "high",
+				permission_mode: "default",
+			}),
+			setModel,
+		});
+		const { pool, entry, runState } = wrapSession(session);
+		entry.sessionId = "runtime-session-id";
+		let closed = false;
+		pool.get.mockImplementation((sessionId: string) =>
+			!closed && sessionId === "runtime-session-id" ? entry : undefined,
+		);
+		pool.findByDbSessionId.mockImplementation((sessionId: string) =>
+			!closed && sessionId === "database-session-alias" ? entry : undefined,
+		);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("runtime-session-id");
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "set_model",
+				session_id: "database-session-alias",
+				model: "claude-opus-4-8",
+			}),
+		);
+
+		expect(setModel).toHaveBeenCalledWith("claude-opus-4-8");
+		expect(lastSentTo(ws)).toEqual({
+			type: "session_control_rejected",
+			control: "model",
+			attempted_value: "claude-opus-4-8",
+			authoritative_value: "claude-sonnet-4-6",
+			session_id: "database-session-alias",
+		});
+
+		mockSend.mockClear();
+		runState.broadcast.mockClear();
+		const pending = message(
+			ws as never,
+			JSON.stringify({
+				type: "set_model",
+				session_id: "database-session-alias",
+				model: "claude-sonnet-5",
+			}),
+		);
+		await vi.waitFor(() => expect(setModel).toHaveBeenCalledTimes(2));
+		closed = true;
+		late.reject(new Error("entry closed during native control"));
+		await pending;
+
+		expect(session.acknowledgeSessionControlRejection).toHaveBeenCalledWith(
+			late.promise,
+		);
+		expect(mockSend).not.toHaveBeenCalled();
+		expect(runState.broadcast).not.toHaveBeenCalled();
+	});
+
 	it("persists a model change for a detached chat without reviving it", async () => {
 		vi.mocked(dbMock.getSessionSelection)
 			.mockResolvedValueOnce({
@@ -1876,6 +2069,7 @@ describe("message — set_model", () => {
 		expect(dbMock.setSessionModel).toHaveBeenCalledWith(
 			"detached-session",
 			"gpt-5.6-sol",
+			expect.objectContaining({ guard: expect.any(Function) }),
 		);
 		expect(pool.create).not.toHaveBeenCalled();
 		expect(session.setModel).not.toHaveBeenCalled();
@@ -1886,6 +2080,138 @@ describe("message — set_model", () => {
 				model: "gpt-5.6-sol",
 			}),
 		);
+	});
+
+	it("atomically downgrades detached Auto when the requested model is unsupported", async () => {
+		vi.mocked(dbMock.setSessionModel).mockClear();
+		vi.mocked(dbMock.setSessionModelAndPermissionMode).mockClear();
+		vi.mocked(dbMock.getSessionSelection)
+			.mockResolvedValueOnce({
+				agentCwd: "/tmp/test",
+				providerId: "claude",
+				model: "claude-opus-4-8",
+				effort: "max",
+				permissionMode: "auto",
+			})
+			.mockResolvedValueOnce({
+				agentCwd: "/tmp/test",
+				providerId: "claude",
+				model: "claude-haiku-4-5",
+				effort: "max",
+				permissionMode: "default",
+			});
+		let atomicWriteApplied = false;
+		vi.mocked(dbMock.setSessionModelAndPermissionMode).mockImplementationOnce(
+			async (_sessionId, _model, _mode, options) => {
+				if (!options?.guard?.()) return false;
+				atomicWriteApplied = true;
+				return true;
+			},
+		);
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		pool.getDetachedPermissionValidationGeneration.mockReturnValue(44);
+		pool.isDetachedPermissionValidationCurrent.mockImplementation(
+			(generation: number) => generation === 44,
+		);
+		pool.validateDetachedPermissionMode.mockRejectedValueOnce(
+			new Error("Auto is unsupported by claude-haiku-4-5"),
+		);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("detached-model-auto");
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "set_model",
+				session_id: "detached-model-auto",
+				model: "claude-haiku-4-5",
+			}),
+		);
+
+		expect(atomicWriteApplied).toBe(true);
+		expect(dbMock.setSessionModelAndPermissionMode).toHaveBeenCalledWith(
+			"detached-model-auto",
+			"claude-haiku-4-5",
+			"default",
+			expect.objectContaining({ guard: expect.any(Function) }),
+		);
+		expect(dbMock.setSessionModel).not.toHaveBeenCalled();
+		expect(
+			mockSend.mock.calls
+				.filter((call) => call[0] === ws)
+				.map((call) => call[1]),
+		).toEqual([
+			{
+				type: "session_control_rejected",
+				control: "permission_mode",
+				attempted_value: "auto",
+				authoritative_value: "default",
+				session_id: "detached-model-auto",
+			},
+			{
+				type: "status",
+				session_id: "detached-model-auto",
+				state: "idle",
+				model: "claude-haiku-4-5",
+				effort: "max",
+				permission_mode: "default",
+			},
+		]);
+	});
+
+	it("fails the detached write guard when the archived session revives", async () => {
+		vi.mocked(dbMock.getSessionSelection)
+			.mockResolvedValueOnce({
+				agentCwd: "/tmp/test",
+				providerId: "claude",
+				model: "claude-sonnet-4-6",
+				effort: "high",
+				permissionMode: "default",
+			})
+			.mockResolvedValueOnce({
+				agentCwd: "/tmp/test",
+				providerId: "claude",
+				model: "claude-sonnet-4-6",
+				effort: "high",
+				permissionMode: "default",
+			});
+		const session = makeSession();
+		const { pool, entry } = wrapSession(session);
+		let revived = false;
+		let modelWritten = false;
+		pool.get.mockImplementation((sessionId: string) => {
+			if (sessionId === "vault-id") return entry;
+			return revived && sessionId === "reviving-detached" ? entry : undefined;
+		});
+		pool.findByDbSessionId.mockImplementation(() => undefined);
+		vi.mocked(dbMock.setSessionModel).mockImplementationOnce(
+			async (_sessionId, _model, options) => {
+				revived = true;
+				if (!options?.guard?.()) return false;
+				modelWritten = true;
+				return true;
+			},
+		);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("reviving-detached");
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "set_model",
+				session_id: "reviving-detached",
+				model: "claude-opus-4-8",
+			}),
+		);
+
+		expect(modelWritten).toBe(false);
+		expect(dbMock.setSessionModel).toHaveBeenCalledWith(
+			"reviving-detached",
+			"claude-opus-4-8",
+			expect.objectContaining({ guard: expect.any(Function) }),
+		);
+		expect(session.setModel).not.toHaveBeenCalled();
 	});
 });
 
@@ -2075,6 +2401,70 @@ describe("message — set_provider", () => {
 		});
 	});
 
+	it.each([
+		["Auto validation", "Auto is unavailable for claude-opus-4-8"],
+		["database commit", "Could not persist provider selection"],
+	])("rolls back provider and Auto after a live %s rejection", async (_failureKind, messageText) => {
+		const operation = Promise.reject(new Error(messageText));
+		const session = makeSession({
+			getCurrentSessionId: vi.fn().mockReturnValue("live-provider-session"),
+			getProviderId: vi.fn().mockReturnValue("codex"),
+			getStatus: vi.fn().mockReturnValue({
+				state: "idle",
+				model: "gpt-5.6-sol",
+				effort: "high",
+				permission_mode: "default",
+			}),
+			setProvider: vi.fn().mockReturnValue(operation),
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "set_provider",
+				provider: "claude",
+				model: "claude-opus-4-8",
+				effort: "max",
+				permission_mode: "auto",
+			}),
+		);
+
+		expect(session.acknowledgeSessionControlRejection).toHaveBeenCalledWith(
+			operation,
+		);
+		expect(
+			mockSend.mock.calls
+				.filter((call) => call[0] === ws)
+				.map((call) => call[1]),
+		).toEqual([
+			{ type: "error", message: messageText },
+			{
+				type: "session_control_rejected",
+				control: "provider",
+				attempted_value: "claude",
+				authoritative_value: "codex",
+				session_id: "live-provider-session",
+			},
+			{
+				type: "session_control_rejected",
+				control: "permission_mode",
+				attempted_value: "auto",
+				authoritative_value: "default",
+				session_id: "live-provider-session",
+			},
+		]);
+		expect(runState.broadcast).toHaveBeenCalledWith({
+			type: "status",
+			state: "idle",
+			model: "gpt-5.6-sol",
+			effort: "high",
+			permission_mode: "default",
+		});
+	});
+
 	it("does not apply archived-session settings to the vault manager", async () => {
 		const session = makeSession();
 		const { pool, runState } = wrapSession(session);
@@ -2135,6 +2525,13 @@ describe("message — set_provider", () => {
 			{
 				type: "error",
 				message: "Claude Code · CLIProxy does not support effort max",
+			},
+			{
+				type: "session_control_rejected",
+				control: "provider",
+				attempted_value: "cliproxy-codex",
+				authoritative_value: "claude",
+				session_id: "detached-provider-effort",
 			},
 			{
 				type: "session_control_rejected",
@@ -2817,8 +3214,14 @@ describe("message — set_permission_mode", () => {
 		});
 	});
 
-	it("sends an error and does not broadcast when the mode is rejected", async () => {
+	it("sends a correlated rejection and authoritative status when the mode is rejected", async () => {
 		const session = makeSession({
+			getStatus: vi.fn().mockReturnValue({
+				state: "idle",
+				model: "test-model",
+				permission_mode: "default",
+				effort: "medium",
+			}),
 			setPermissionMode: vi
 				.fn()
 				.mockRejectedValue(new Error("Unknown permission mode: bogus")),
@@ -2830,11 +3233,396 @@ describe("message — set_permission_mode", () => {
 			ws as never,
 			JSON.stringify({ type: "set_permission_mode", mode: "bogus" }),
 		);
-		expect(lastSentTo(ws)).toEqual({
+		expect(mockSend).toHaveBeenCalledWith(ws, {
 			type: "error",
 			message: "Unknown permission mode: bogus",
 		});
-		expect(runState.broadcast).not.toHaveBeenCalled();
+		expect(lastSentTo(ws)).toEqual({
+			type: "session_control_rejected",
+			control: "permission_mode",
+			attempted_value: "bogus",
+			authoritative_value: "default",
+			session_id: "mock-db-session",
+		});
+		expect(runState.broadcast).toHaveBeenCalledWith({
+			type: "status",
+			state: "idle",
+			model: "test-model",
+			permission_mode: "default",
+			effort: "medium",
+		});
+	});
+
+	it("acknowledges a live rejection so only an already-captured adjacent chat fails", async () => {
+		const permissionControl = deferred();
+		let acknowledged = false;
+		let chatCalls = 0;
+		const acknowledgeSessionControlRejection = vi.fn(
+			(operation: Promise<void> | undefined) => {
+				if (operation === permissionControl.promise) acknowledged = true;
+			},
+		);
+		const runQuery = vi.fn(() => {
+			chatCalls++;
+			if (chatCalls === 1) return permissionControl.promise;
+			return acknowledged
+				? Promise.resolve()
+				: Promise.reject(new Error("rejected control remained sticky"));
+		});
+		const session = makeSession({
+			getCurrentSessionId: vi.fn().mockReturnValue("live-permission-session"),
+			getStatus: vi.fn().mockReturnValue({
+				state: "idle",
+				model: "claude-opus-4-8",
+				effort: "max",
+				permission_mode: "default",
+			}),
+			setPermissionMode: vi.fn().mockReturnValue(permissionControl.promise),
+			acknowledgeSessionControlRejection,
+			runQuery,
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		const rejectedControl = message(
+			ws as never,
+			JSON.stringify({ type: "set_permission_mode", mode: "auto" }),
+		);
+		await vi.waitFor(() =>
+			expect(session.setPermissionMode).toHaveBeenCalledWith("auto"),
+		);
+		const adjacentChat = message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "captured next to rejected control",
+				turn_id: "adjacent-turn",
+			}),
+		);
+		await vi.waitFor(() => expect(runQuery).toHaveBeenCalledOnce());
+
+		permissionControl.reject(new Error("native Auto rejection"));
+		await Promise.all([rejectedControl, adjacentChat]);
+
+		expect(acknowledgeSessionControlRejection).toHaveBeenCalledWith(
+			permissionControl.promise,
+		);
+		expect(
+			mockSend.mock.calls
+				.filter((call) => call[0] === ws)
+				.map((call) => call[1]),
+		).toEqual(
+			expect.arrayContaining([
+				{ type: "error", message: "native Auto rejection" },
+				{
+					type: "session_control_rejected",
+					control: "permission_mode",
+					attempted_value: "auto",
+					authoritative_value: "default",
+					session_id: "live-permission-session",
+				},
+				{
+					type: "error",
+					message: "native Auto rejection",
+					turn_scoped: true,
+					turn_id: "adjacent-turn",
+				},
+			]),
+		);
+		expect(runState.broadcast).toHaveBeenCalledWith({
+			type: "status",
+			state: "idle",
+			model: "claude-opus-4-8",
+			effort: "max",
+			permission_mode: "default",
+		});
+
+		mockSend.mockClear();
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "later unrelated turn",
+				turn_id: "later-turn",
+			}),
+		);
+		expect(runQuery).toHaveBeenCalledTimes(2);
+		expect(mockSend).not.toHaveBeenCalled();
+	});
+
+	it("serializes detached controls per session across deferred validation and persistence", async () => {
+		const probeA = deferred();
+		const writeA = deferred();
+		const order: string[] = [];
+		vi.mocked(dbMock.getSessionSelection)
+			.mockResolvedValueOnce({
+				agentCwd: "/tmp/test",
+				providerId: "claude",
+				model: "claude-opus-4-8",
+				effort: "max",
+				permissionMode: "default",
+			})
+			.mockResolvedValueOnce({
+				agentCwd: "/tmp/test",
+				providerId: "claude",
+				model: "claude-opus-4-8",
+				effort: "max",
+				permissionMode: "auto",
+			})
+			.mockResolvedValueOnce({
+				agentCwd: "/tmp/test",
+				providerId: "claude",
+				model: "claude-opus-4-8",
+				effort: "max",
+				permissionMode: "auto",
+			})
+			.mockResolvedValueOnce({
+				agentCwd: "/tmp/test",
+				providerId: "claude",
+				model: "claude-opus-4-8",
+				effort: "max",
+				permissionMode: "dontAsk",
+			});
+		vi.mocked(dbMock.setSessionPermissionMode)
+			.mockImplementationOnce(async (_sessionId, _mode, options) => {
+				order.push("write-A:start");
+				expect(options?.guard?.()).toBe(true);
+				await writeA.promise;
+				order.push("write-A:end");
+				return true;
+			})
+			.mockImplementationOnce(async (_sessionId, _mode, options) => {
+				order.push("write-B");
+				expect(options?.guard?.()).toBe(true);
+				return true;
+			});
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		pool.validateDetachedPermissionMode
+			.mockImplementationOnce(async () => {
+				order.push("probe-A:start");
+				await probeA.promise;
+				order.push("probe-A:end");
+				return 12;
+			})
+			.mockImplementationOnce(async () => {
+				order.push("probe-B");
+				return 12;
+			});
+		pool.getDetachedPermissionValidationGeneration.mockReturnValue(12);
+		pool.isDetachedPermissionValidationCurrent.mockImplementation(
+			(generation: number) => generation === 12,
+		);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("detached-fifo");
+
+		const first = message(
+			ws as never,
+			JSON.stringify({
+				type: "set_permission_mode",
+				session_id: "detached-fifo",
+				mode: "auto",
+			}),
+		);
+		await vi.waitFor(() =>
+			expect(pool.validateDetachedPermissionMode).toHaveBeenCalledTimes(1),
+		);
+		const second = message(
+			ws as never,
+			JSON.stringify({
+				type: "set_permission_mode",
+				session_id: "detached-fifo",
+				mode: "dontAsk",
+			}),
+		);
+		await Promise.resolve();
+		expect(pool.validateDetachedPermissionMode).toHaveBeenCalledTimes(1);
+		expect(dbMock.setSessionPermissionMode).not.toHaveBeenCalled();
+
+		probeA.resolve();
+		await vi.waitFor(() =>
+			expect(dbMock.setSessionPermissionMode).toHaveBeenCalledTimes(1),
+		);
+		expect(pool.validateDetachedPermissionMode).toHaveBeenCalledTimes(1);
+		writeA.resolve();
+		await first;
+		await vi.waitFor(() =>
+			expect(pool.validateDetachedPermissionMode).toHaveBeenCalledTimes(2),
+		);
+		await second;
+
+		expect(order).toEqual([
+			"probe-A:start",
+			"probe-A:end",
+			"write-A:start",
+			"write-A:end",
+			"probe-B",
+			"write-B",
+		]);
+		expect(
+			vi.mocked(dbMock.setSessionPermissionMode).mock.calls.slice(-2),
+		).toEqual([
+			["detached-fifo", "auto", expect.any(Object)],
+			["detached-fifo", "dontAsk", expect.any(Object)],
+		]);
+		expect(pool.create).not.toHaveBeenCalled();
+	});
+
+	it("narrows a saved invalid detached Auto mode with a guarded compare-and-set", async () => {
+		vi.mocked(dbMock.getSessionSelection)
+			.mockResolvedValueOnce({
+				agentCwd: "/tmp/test",
+				providerId: "claude",
+				model: "claude-opus-4-8",
+				effort: "max",
+				permissionMode: "auto",
+			})
+			.mockResolvedValueOnce({
+				agentCwd: "/tmp/test",
+				providerId: "claude",
+				model: "claude-opus-4-8",
+				effort: "max",
+				permissionMode: "default",
+			});
+		let narrowed = false;
+		vi.mocked(dbMock.setSessionPermissionMode).mockImplementationOnce(
+			async (_sessionId, _mode, options) => {
+				if (!options?.guard?.()) return false;
+				narrowed = true;
+				return true;
+			},
+		);
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		pool.getDetachedPermissionValidationGeneration.mockReturnValue(21);
+		pool.isDetachedPermissionValidationCurrent.mockImplementation(
+			(generation: number) => generation === 21,
+		);
+		pool.validateDetachedPermissionMode.mockRejectedValueOnce(
+			new Error("Auto was disabled by effective Claude settings"),
+		);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("detached-invalid-auto");
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "set_permission_mode",
+				session_id: "detached-invalid-auto",
+				mode: "auto",
+			}),
+		);
+
+		expect(narrowed).toBe(true);
+		expect(dbMock.setSessionPermissionMode).toHaveBeenCalledWith(
+			"detached-invalid-auto",
+			"default",
+			expect.objectContaining({ guard: expect.any(Function) }),
+		);
+		expect(pool.isDetachedPermissionValidationCurrent).toHaveBeenCalledWith(21);
+		expect(
+			mockSend.mock.calls
+				.filter((call) => call[0] === ws)
+				.map((call) => call[1]),
+		).toEqual([
+			{
+				type: "error",
+				message: "Auto was disabled by effective Claude settings",
+			},
+			{
+				type: "session_control_rejected",
+				control: "permission_mode",
+				attempted_value: "auto",
+				authoritative_value: "default",
+				session_id: "detached-invalid-auto",
+			},
+			{
+				type: "status",
+				session_id: "detached-invalid-auto",
+				state: "idle",
+				model: "claude-opus-4-8",
+				effort: "max",
+				permission_mode: "default",
+			},
+		]);
+	});
+
+	it("prevents detached Auto and auto-review writes after config generation drift", async () => {
+		vi.mocked(dbMock.getSessionSelection)
+			.mockResolvedValueOnce({
+				agentCwd: "/tmp/test",
+				providerId: "claude",
+				model: "claude-opus-4-8",
+				effort: "max",
+				permissionMode: "default",
+			})
+			.mockResolvedValueOnce({
+				agentCwd: "/tmp/test",
+				providerId: "codex",
+				model: "gpt-5.6-sol",
+				effort: "high",
+				permissionMode: "default",
+				approvalsReviewer: "user",
+			});
+		let autoWritten = false;
+		let reviewerWritten = false;
+		vi.mocked(dbMock.setSessionPermissionMode).mockImplementationOnce(
+			async (_sessionId, _mode, options) => {
+				if (!options?.guard?.()) return false;
+				autoWritten = true;
+				return true;
+			},
+		);
+		vi.mocked(dbMock.setSessionApprovalsReviewer).mockImplementationOnce(
+			async (_sessionId, _reviewer, options) => {
+				if (!options?.guard?.()) return false;
+				reviewerWritten = true;
+				return true;
+			},
+		);
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		pool.getDetachedPermissionValidationGeneration
+			.mockReturnValueOnce(31)
+			.mockReturnValueOnce(32);
+		pool.validateDetachedPermissionMode.mockResolvedValueOnce(31);
+		pool.isDetachedPermissionValidationCurrent.mockReturnValue(false);
+		pool.getProvider.mockImplementation((providerId: string) =>
+			providerId === "codex"
+				? {
+						providerId: "codex",
+						label: "Codex",
+						approvalReviewers: [
+							{ value: "user", label: "User", isDefault: true },
+							{ value: "auto_review", label: "Auto-review" },
+						],
+					}
+				: { providerId },
+		);
+		const { message } = createWsHandlers(pool as never);
+
+		await message(
+			makeWs("detached-auto-drift") as never,
+			JSON.stringify({
+				type: "set_permission_mode",
+				session_id: "detached-auto-drift",
+				mode: "auto",
+			}),
+		).catch(() => undefined);
+		await message(
+			makeWs("detached-review-drift") as never,
+			JSON.stringify({
+				type: "set_approvals_reviewer",
+				session_id: "detached-review-drift",
+				reviewer: "auto_review",
+			}),
+		);
+
+		expect(autoWritten).toBe(false);
+		expect(reviewerWritten).toBe(false);
+		expect(pool.isDetachedPermissionValidationCurrent).toHaveBeenCalledWith(31);
+		expect(pool.isDetachedPermissionValidationCurrent).toHaveBeenCalledWith(32);
 	});
 });
 
@@ -2947,6 +3735,7 @@ describe("message — set_approvals_reviewer", () => {
 		expect(dbMock.setSessionApprovalsReviewer).toHaveBeenCalledWith(
 			"detached-review",
 			"auto_review",
+			expect.objectContaining({ guard: expect.any(Function) }),
 		);
 		expect(pool.create).not.toHaveBeenCalled();
 		expect(session.setApprovalsReviewer).not.toHaveBeenCalled();
@@ -3203,6 +3992,141 @@ describe("message — chat", () => {
 		expect(session.runQuery).toHaveBeenCalled();
 	});
 
+	it("waits for a pending detached Auto control before claiming and restoring the first chat", async () => {
+		const sessionId = "detached-control-then-chat";
+		const probe = deferred();
+		const order: string[] = [];
+		let claimed = false;
+		let currentSessionId: string | null = null;
+		let livePermissionMode: "default" | "auto" = "default";
+		const saved = {
+			agentCwd: "/tmp/test",
+			providerId: "claude",
+			model: "claude-opus-4-8",
+			effort: "max",
+			permissionMode: "default" as "default" | "auto",
+		};
+		vi.mocked(dbMock.setSessionPermissionMode).mockClear();
+		vi.mocked(dbMock.getSessionSelection)
+			.mockImplementationOnce(async () => ({ ...saved }))
+			.mockImplementationOnce(async () => ({ ...saved }));
+		let writeApplied = false;
+		vi.mocked(dbMock.setSessionPermissionMode).mockImplementationOnce(
+			async (_targetSessionId, mode, options) => {
+				order.push(`write:${mode}`);
+				if (!options?.guard?.()) return false;
+				saved.permissionMode = mode as "default" | "auto";
+				writeApplied = true;
+				return true;
+			},
+		);
+		const prepareSessionControlsForChat = vi.fn(
+			async (targetSessionId: string) => {
+				order.push(`prepare:${saved.permissionMode}`);
+				currentSessionId = targetSessionId;
+				livePermissionMode = saved.permissionMode;
+				return { restored: true };
+			},
+		);
+		const runQuery = vi.fn(async () => {
+			order.push(`run:${livePermissionMode}`);
+		});
+		const session = makeSession({
+			getCurrentSessionId: vi.fn(() => currentSessionId),
+			getProviderId: vi.fn().mockReturnValue("claude"),
+			getStatus: vi.fn(() => ({
+				state: "idle" as const,
+				model: saved.model,
+				effort: saved.effort,
+				permission_mode: livePermissionMode,
+			})),
+			prepareSessionControlsForChat,
+			runQuery,
+		});
+		const { pool, entry } = wrapSession(session);
+		pool.get.mockImplementation((targetSessionId: string) => {
+			if (targetSessionId === "vault-id") return entry;
+			return claimed && targetSessionId === sessionId ? entry : undefined;
+		});
+		pool.findByDbSessionId.mockImplementation((targetSessionId: string) =>
+			claimed && targetSessionId === sessionId ? entry : undefined,
+		);
+		pool.claimDbSessionId.mockImplementation(
+			(candidate: PoolEntry, targetSessionId: string) => {
+				order.push(`claim:${saved.permissionMode}`);
+				expect(targetSessionId).toBe(sessionId);
+				claimed = true;
+				return candidate;
+			},
+		);
+		pool.getDetachedPermissionValidationGeneration.mockReturnValue(61);
+		pool.isDetachedPermissionValidationCurrent.mockImplementation(
+			(generation: number) => generation === 61,
+		);
+		pool.validateDetachedPermissionMode.mockImplementationOnce(async () => {
+			order.push("probe:start");
+			await probe.promise;
+			order.push("probe:end");
+			return 61;
+		});
+		const { message } = createWsHandlers(pool as never);
+		const controlWs = makeWs(sessionId);
+		const chatWs = makeWs();
+
+		const control = message(
+			controlWs as never,
+			JSON.stringify({
+				type: "set_permission_mode",
+				session_id: sessionId,
+				mode: "auto",
+			}),
+		);
+		await vi.waitFor(() =>
+			expect(pool.validateDetachedPermissionMode).toHaveBeenCalledOnce(),
+		);
+		const chat = message(
+			chatWs as never,
+			JSON.stringify({
+				type: "chat",
+				text: "use the newly committed Auto selection",
+				turn_id: "first-after-detached-control",
+				session_id: sessionId,
+			}),
+		);
+		await Promise.resolve();
+
+		expect(pool.claimDbSessionId).not.toHaveBeenCalled();
+		expect(prepareSessionControlsForChat).not.toHaveBeenCalled();
+		expect(runQuery).not.toHaveBeenCalled();
+
+		probe.resolve();
+		await Promise.all([control, chat]);
+
+		expect(writeApplied).toBe(true);
+		expect(saved.permissionMode).toBe("auto");
+		expect(dbMock.setSessionPermissionMode).toHaveBeenCalledWith(
+			sessionId,
+			"auto",
+			expect.objectContaining({ guard: expect.any(Function) }),
+		);
+		expect(prepareSessionControlsForChat).toHaveBeenCalledWith(sessionId);
+		expect(session.setInitialChatSelection).not.toHaveBeenCalled();
+		expect(runQuery).toHaveBeenCalledOnce();
+		expect(order).toEqual([
+			"probe:start",
+			"probe:end",
+			"write:auto",
+			"claim:auto",
+			"prepare:auto",
+			"run:auto",
+		]);
+		expect(
+			mockSend.mock.calls.some(
+				([ws, event]) => ws === chatWs && event.type === "error",
+			),
+		).toBe(false);
+	});
+
 	it("applies repeated controls without resetting the configured provider", async () => {
 		const session = makeSession({
 			getProviderId: vi.fn().mockReturnValue("codex"),
@@ -3226,19 +4150,22 @@ describe("message — chat", () => {
 		);
 
 		expect(session.setProvider).not.toHaveBeenCalled();
-		expect(session.setModel).toHaveBeenCalledWith("gpt-5.6-sol");
-		expect(session.setEffort).toHaveBeenCalledWith("ultra");
-		expect(session.setPermissionMode).toHaveBeenCalledWith("bypassPermissions");
+		expect(session.setInitialChatSelection).toHaveBeenCalledWith({
+			model: "gpt-5.6-sol",
+			effort: "ultra",
+			permissionMode: "bypassPermissions",
+		});
 		expect(session.runQuery).toHaveBeenCalled();
 	});
 
 	it("settles an invalid first-chat effort without claiming a pending turn", async () => {
+		const unsupportedEffort = new UnsupportedProviderEffortError(
+			"Claude Code · CLIProxy does not support effort max",
+		);
 		const session = makeSession({
 			getProviderId: vi.fn().mockReturnValue("cliproxy-codex"),
 			getCurrentSessionId: vi.fn().mockReturnValue(null),
-			validateEffort: vi.fn(() => {
-				throw new Error("Claude Code · CLIProxy does not support effort max");
-			}),
+			setInitialChatSelection: vi.fn().mockRejectedValue(unsupportedEffort),
 			getStatus: vi.fn().mockReturnValue({
 				state: "idle",
 				model: "gpt-5.6-sol",
@@ -3272,7 +4199,6 @@ describe("message — chat", () => {
 				text: "first turn",
 				turn_id: "invalid-effort-turn",
 				session_id: "vault-id",
-				provider: "cliproxy-codex",
 				model: "gpt-5.6-sol",
 				effort: "max",
 			}),
@@ -3323,6 +4249,246 @@ describe("message — chat", () => {
 		expect(runState.ownerWs).toBeNull();
 	});
 
+	it("rejects one atomic full first-chat selection without partial controls or turn ownership", async () => {
+		const initialSelection = Promise.reject(
+			new Error("Auto selection could not be committed"),
+		);
+		const status = {
+			state: "idle" as const,
+			model: "claude-sonnet-4-6",
+			effort: "medium",
+			permission_mode: "default" as const,
+			approvals_reviewer: "user" as const,
+		};
+		const session = makeSession({
+			getProviderId: vi.fn().mockReturnValue("claude"),
+			getCurrentSessionId: vi.fn().mockReturnValue(null),
+			getStatus: vi.fn(() => ({ ...status })),
+			setInitialChatSelection: vi.fn().mockReturnValue(initialSelection),
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "first turn with every control",
+				turn_id: "atomic-first-turn",
+				session_id: "atomic-first-session",
+				provider: "claude",
+				model: "claude-opus-4-8",
+				effort: "max",
+				permission_mode: "auto",
+				approvals_reviewer: "auto_review",
+			}),
+		);
+
+		expect(session.setInitialChatSelection).toHaveBeenCalledWith({
+			model: "claude-opus-4-8",
+			effort: "max",
+			permissionMode: "auto",
+			approvalsReviewer: "auto_review",
+		});
+		expect(session.acknowledgeSessionControlRejection).toHaveBeenCalledWith(
+			initialSelection,
+		);
+		expect(session.setProvider).not.toHaveBeenCalled();
+		expect(session.setModel).not.toHaveBeenCalled();
+		expect(session.setEffort).not.toHaveBeenCalled();
+		expect(session.setPermissionMode).not.toHaveBeenCalled();
+		expect(session.setApprovalsReviewer).not.toHaveBeenCalled();
+		expect(session.runQuery).not.toHaveBeenCalled();
+		expect(runState.ownerWs).toBeNull();
+		expect(runState.inFlightChatCount.size).toBe(0);
+		expect(runState.broadcast).toHaveBeenCalledWith({
+			type: "status",
+			...status,
+		});
+		expect(
+			mockSend.mock.calls
+				.filter((call) => call[0] === ws)
+				.map((call) => call[1]),
+		).toEqual(
+			expect.arrayContaining([
+				{
+					type: "error",
+					message: "Auto selection could not be committed",
+					turn_scoped: true,
+					turn_id: "atomic-first-turn",
+				},
+				{
+					type: "session_control_rejected",
+					control: "permission_mode",
+					attempted_value: "auto",
+					authoritative_value: "default",
+					session_id: "atomic-first-session",
+				},
+			]),
+		);
+	});
+
+	it("continues the first resumed turn after exact saved Auto narrowing without retrying the stale payload", async () => {
+		let currentSessionId: string | null = null;
+		const status = {
+			state: "idle" as const,
+			model: "claude-opus-4-8",
+			effort: "max",
+			permission_mode: "default" as const,
+		};
+		const prepareSessionControlsForChat = vi.fn(async (sessionId: string) => {
+			currentSessionId = sessionId;
+			return {
+				restored: true,
+				permissionModeNarrowing: {
+					attempted: "auto" as const,
+					authoritative: "default" as const,
+					providerId: "claude",
+					model: "claude-opus-4-8",
+				},
+			};
+		});
+		const session = makeSession({
+			getCurrentSessionId: vi.fn(() => currentSessionId),
+			getProviderId: vi.fn().mockReturnValue("claude"),
+			getStatus: vi.fn(() => ({ ...status })),
+			prepareSessionControlsForChat,
+			validatePermissionMode: vi
+				.fn()
+				.mockRejectedValue(new Error("stale Auto payload was retried")),
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "resume under the narrowed mode",
+				turn_id: "resume-narrowed-turn",
+				session_id: "archived-auto-session",
+				provider: "claude",
+				model: "claude-opus-4-8",
+				effort: "max",
+				permission_mode: "auto",
+			}),
+		);
+
+		expect(prepareSessionControlsForChat).toHaveBeenCalledWith(
+			"archived-auto-session",
+		);
+		expect(session.validatePermissionMode).not.toHaveBeenCalled();
+		expect(session.setInitialChatSelection).not.toHaveBeenCalled();
+		expect(session.setProvider).not.toHaveBeenCalled();
+		expect(session.runQuery).toHaveBeenCalledOnce();
+		const directMessages = mockSend.mock.calls
+			.filter((call) => call[0] === ws)
+			.map((call) => call[1]);
+		expect(
+			directMessages.filter(
+				(event) => event.type === "session_control_rejected",
+			),
+		).toEqual([
+			{
+				type: "session_control_rejected",
+				control: "permission_mode",
+				attempted_value: "auto",
+				authoritative_value: "default",
+				session_id: "archived-auto-session",
+			},
+		]);
+		expect(directMessages.some((event) => event.type === "error")).toBe(false);
+		const statuses = [
+			...runState.send.mock.calls.map((call) => call[1]),
+			...runState.broadcast.mock.calls.map((call) => call[0]),
+		].filter((event) => event.type === "status");
+		expect(statuses).toEqual([{ type: "status", ...status }]);
+	});
+
+	it.each([
+		{
+			label: "provider",
+			provider: "cliproxy-codex",
+			model: "claude-opus-4-8",
+		},
+		{
+			label: "model",
+			provider: "claude",
+			model: "claude-sonnet-5",
+		},
+	])("still validates and rejects changed $label Auto on first resume", async ({
+		provider,
+		model,
+	}) => {
+		let currentSessionId: string | null = null;
+		const validatePermissionMode = vi
+			.fn()
+			.mockRejectedValue(new Error("changed Auto tuple is unavailable"));
+		const session = makeSession({
+			getCurrentSessionId: vi.fn(() => currentSessionId),
+			getProviderId: vi.fn().mockReturnValue("claude"),
+			getStatus: vi.fn().mockReturnValue({
+				state: "idle",
+				model: "claude-opus-4-8",
+				effort: "max",
+				permission_mode: "default",
+			}),
+			prepareSessionControlsForChat: vi.fn(async (sessionId: string) => {
+				currentSessionId = sessionId;
+				return {
+					restored: true,
+					permissionModeNarrowing: {
+						attempted: "auto" as const,
+						authoritative: "default" as const,
+						providerId: "claude",
+						model: "claude-opus-4-8",
+					},
+				};
+			}),
+			validatePermissionMode,
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "resume with changed controls",
+				turn_id: `changed-${provider}-${model}`,
+				session_id: "archived-auto-session",
+				provider,
+				model,
+				permission_mode: "auto",
+			}),
+		);
+
+		expect(validatePermissionMode).toHaveBeenCalledWith(
+			"auto",
+			provider,
+			model,
+			true,
+		);
+		expect(session.runQuery).not.toHaveBeenCalled();
+		expect(lastSentTo(ws)).toEqual({
+			type: "session_control_rejected",
+			control: "permission_mode",
+			attempted_value: "auto",
+			authoritative_value: "default",
+			session_id: "archived-auto-session",
+		});
+		expect(runState.broadcast).toHaveBeenCalledWith({
+			type: "status",
+			state: "idle",
+			model: "claude-opus-4-8",
+			effort: "max",
+			permission_mode: "default",
+		});
+	});
+
 	it("applies the approval reviewer carried by a first-chat payload", async () => {
 		const session = makeSession({
 			getProviderId: vi.fn().mockReturnValue("codex"),
@@ -3344,7 +4510,9 @@ describe("message — chat", () => {
 		);
 
 		expect(session.setProvider).not.toHaveBeenCalled();
-		expect(session.setApprovalsReviewer).toHaveBeenCalledWith("auto_review");
+		expect(session.setInitialChatSelection).toHaveBeenCalledWith({
+			approvalsReviewer: "auto_review",
+		});
 		expect(session.runQuery).toHaveBeenCalled();
 	});
 
@@ -3374,9 +4542,7 @@ describe("message — chat", () => {
 		);
 
 		expect(session.setProvider).not.toHaveBeenCalled();
-		expect(session.setModel).not.toHaveBeenCalled();
-		expect(session.setEffort).not.toHaveBeenCalled();
-		expect(session.setPermissionMode).not.toHaveBeenCalled();
+		expect(session.setInitialChatSelection).toHaveBeenCalledWith({});
 		expect(session.runQuery).toHaveBeenCalled();
 	});
 
@@ -3391,15 +4557,18 @@ describe("message — chat", () => {
 			getProviderId: vi.fn().mockReturnValue("codex"),
 			getCurrentSessionId: vi.fn().mockReturnValue(null),
 			getStatus: vi.fn(() => ({ ...status })),
-			setModel: vi.fn(async (model?: string) => {
-				status.model = model ?? "";
-			}),
-			setEffort: vi.fn(async (effort: string) => {
-				status.effort = effort;
-			}),
-			setPermissionMode: vi.fn(async (mode: string) => {
-				status.permission_mode = mode as "default";
-			}),
+			setInitialChatSelection: vi.fn(
+				async (selection: {
+					model?: string;
+					effort?: string;
+					permissionMode?: string;
+				}) => {
+					status.model = selection.model ?? status.model;
+					status.effort = selection.effort ?? status.effort;
+					status.permission_mode =
+						(selection.permissionMode as "default") ?? status.permission_mode;
+				},
+			),
 		});
 		const { pool, runState } = wrapSession(session);
 		const { message } = createWsHandlers(pool as never);
@@ -3418,9 +4587,11 @@ describe("message — chat", () => {
 		);
 
 		expect(session.setProvider).not.toHaveBeenCalled();
-		expect(session.setModel).toHaveBeenCalledWith("gpt-5.6-sol");
-		expect(session.setEffort).toHaveBeenCalledWith("ultra");
-		expect(session.setPermissionMode).toHaveBeenCalledWith("bypassPermissions");
+		expect(session.setInitialChatSelection).toHaveBeenCalledWith({
+			model: "gpt-5.6-sol",
+			effort: "ultra",
+			permissionMode: "bypassPermissions",
+		});
 		expect(runState.send).toHaveBeenCalledWith(
 			ws,
 			expect.objectContaining({

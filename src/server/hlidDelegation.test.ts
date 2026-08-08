@@ -35,7 +35,11 @@ import {
 	childPermissionModeAllowed,
 	HlidDelegationManager,
 } from "./hlidDelegation";
-import type { HlidDelegationSnapshot } from "./hlidDelegationSchemas";
+import {
+	delegateHlidAgentSchema,
+	type HlidDelegationSnapshot,
+	resumeHlidAgentSchema,
+} from "./hlidDelegationSchemas";
 import type { ServerMessage } from "./protocol";
 import type { SessionPool } from "./sessionPool";
 
@@ -153,6 +157,7 @@ describe("Hlid delegation manager", () => {
 		close: ReturnType<typeof vi.fn>;
 	};
 	let childManager: {
+		validatePermissionMode: ReturnType<typeof vi.fn>;
 		setProvider: ReturnType<typeof vi.fn>;
 		runQuery: ReturnType<typeof vi.fn>;
 		getStatus: ReturnType<typeof vi.fn>;
@@ -202,6 +207,7 @@ describe("Hlid delegation manager", () => {
 		childSubscriberCount = 0;
 		statusChangedCalls = 0;
 		childManager = {
+			validatePermissionMode: vi.fn().mockResolvedValue(undefined),
 			setProvider: vi.fn().mockResolvedValue(undefined),
 			runQuery: vi.fn().mockResolvedValue(undefined),
 			getStatus: vi.fn().mockReturnValue({
@@ -261,14 +267,17 @@ describe("Hlid delegation manager", () => {
 				label: "Claude",
 				check: vi.fn().mockResolvedValue({ available: true }),
 			},
+			"cliproxy-claude": {
+				providerId: "cliproxy-claude",
+				label: "Claude via CLIProxy",
+				check: vi.fn().mockResolvedValue({ available: true }),
+			},
 		};
 		pool = {
 			findByDbSessionId: vi.fn((id: string) =>
 				id === "parent-1" ? parent : id === "child-1" ? child : undefined,
 			),
-			getProvider: vi.fn(
-				(id: "codex" | "claude") => providers[id] ?? undefined,
-			),
+			getProvider: vi.fn((id: keyof typeof providers) => providers[id]),
 			resolveDelegationWorkspace: vi.fn((cwd: string) => cwd),
 			create: vi.fn().mockReturnValue(child),
 			claimDbSessionId: vi.fn().mockReturnValue(child),
@@ -310,7 +319,28 @@ describe("Hlid delegation manager", () => {
 				permissionModes: [
 					{ value: "default", label: "Default" },
 					{ value: "acceptEdits", label: "Accept edits" },
+					{ value: "bypassPermissions", label: "Bypass" },
 					{ value: "plan", label: "Plan" },
+				],
+				sessionPermissionModes: [
+					{ value: "default", label: "Default" },
+					{ value: "acceptEdits", label: "Accept edits" },
+					{ value: "bypassPermissions", label: "Bypass" },
+					{ value: "plan", label: "Plan" },
+					{ value: "dontAsk", label: "Pre-approved only" },
+					{ value: "auto", label: "Auto" },
+				],
+			},
+			{
+				id: "cliproxy-claude",
+				label: "Claude via CLIProxy",
+				available: true,
+				models: [{ value: "claude-sonnet", label: "Claude Sonnet" }],
+				// A defensive fixture: even a bad catalog advertisement must not make
+				// Claude Auto available through CLIProxy.
+				sessionPermissionModes: [
+					{ value: "default", label: "Default" },
+					{ value: "auto", label: "Auto" },
 				],
 			},
 		] as ProviderInfo[];
@@ -2997,18 +3027,445 @@ describe("Hlid delegation manager", () => {
 			vi.useRealTimers();
 		}
 	});
+
+	it("applies inherited Claude Auto through one provider transaction before durable setup", async () => {
+		parentProviderId = "claude";
+		parentStatus = {
+			state: "running",
+			permission_mode: "auto",
+			model: "claude-sonnet",
+			effort: "medium",
+		};
+		const manager = new HlidDelegationManager(
+			pool as unknown as SessionPool,
+			async () => catalog,
+			() => {
+				statusChangedCalls++;
+			},
+		);
+
+		await expect(
+			manager.delegate("parent-1", {
+				task: "Use Claude Auto in the child workspace",
+				provider: "claude",
+			}),
+		).resolves.toMatchObject({
+			provider_id: "claude",
+			model: "claude-sonnet",
+			permission_mode: "auto",
+		});
+		expect(childManager.setProvider).toHaveBeenCalledWith("claude", {
+			model: "claude-sonnet",
+			effort: "medium",
+			serviceTier: undefined,
+			permissionMode: "auto",
+		});
+		expect(childManager.setProvider).toHaveBeenCalledTimes(1);
+		expect(childManager.setProvider.mock.invocationCallOrder[0]).toBeLessThan(
+			db.createHlidDelegation.mock.invocationCallOrder[0] ?? 0,
+		);
+		expect(childManager.validatePermissionMode).not.toHaveBeenCalled();
+	});
+
+	it("applies explicitly selected cross-provider Claude Auto once", async () => {
+		parentStatus.permission_mode = "bypassPermissions";
+		const manager = new HlidDelegationManager(
+			pool as unknown as SessionPool,
+			async () => catalog,
+			() => {
+				statusChangedCalls++;
+			},
+		);
+
+		await manager.delegate("parent-1", {
+			task: "Use the selected Claude model",
+			provider: "claude",
+			model: "claude-sonnet",
+			effort: "medium",
+			permission_mode: "auto",
+		});
+
+		expect(childManager.setProvider).toHaveBeenCalledWith("claude", {
+			model: "claude-sonnet",
+			effort: "medium",
+			serviceTier: undefined,
+			permissionMode: "auto",
+		});
+		expect(childManager.setProvider).toHaveBeenCalledTimes(1);
+		expect(childManager.validatePermissionMode).not.toHaveBeenCalled();
+	});
+
+	it("rolls back all child setup when exact Claude Auto readiness rejects", async () => {
+		parentStatus.permission_mode = "bypassPermissions";
+		childManager.setProvider.mockRejectedValueOnce(
+			new Error("Claude Auto is not ready for this model"),
+		);
+		const manager = new HlidDelegationManager(
+			pool as unknown as SessionPool,
+			async () => catalog,
+			() => {
+				statusChangedCalls++;
+			},
+		);
+
+		await expect(
+			manager.delegate("parent-1", {
+				task: "Do not leave a partial Auto child",
+				provider: "claude",
+				model: "claude-sonnet",
+				permission_mode: "auto",
+			}),
+		).rejects.toThrow("Claude Auto is not ready for this model");
+		expect(pool.close).toHaveBeenCalledWith("child-1");
+		expect(db.rollbackHlidDelegationSetup).toHaveBeenCalledOnce();
+		expect(db.createHlidDelegation).not.toHaveBeenCalled();
+		expect(db.createSession).not.toHaveBeenCalled();
+		expect(persisted).toBeNull();
+	});
+
+	it.each([
+		{ provider: "codex", model: "gpt-5.6-sol" },
+		{ provider: "cliproxy-claude", model: "claude-sonnet" },
+	])("rejects Auto for non-native provider $provider", async ({
+		provider,
+		model,
+	}) => {
+		parentStatus.permission_mode = "bypassPermissions";
+		const manager = new HlidDelegationManager(
+			pool as unknown as SessionPool,
+			async () => catalog,
+			() => {
+				statusChangedCalls++;
+			},
+		);
+
+		await expect(
+			manager.delegate("parent-1", {
+				task: "Reject non-native Auto",
+				provider,
+				model,
+				permission_mode: "auto",
+			}),
+		).rejects.toThrow("only for direct native Claude sessions");
+		expect(childManager.validatePermissionMode).not.toHaveBeenCalled();
+		expect(pool.create).not.toHaveBeenCalled();
+	});
+
+	it("requires a cross-provider child of an Auto parent to narrow explicitly", async () => {
+		parentProviderId = "claude";
+		parentStatus = {
+			state: "running",
+			permission_mode: "auto",
+			model: "claude-sonnet",
+			effort: "medium",
+		};
+		const manager = new HlidDelegationManager(
+			pool as unknown as SessionPool,
+			async () => catalog,
+			() => {
+				statusChangedCalls++;
+			},
+		);
+
+		await expect(
+			manager.delegate("parent-1", {
+				task: "Inherited Auto cannot cross providers",
+				provider: "codex",
+			}),
+		).rejects.toThrow("only for direct native Claude sessions");
+		await expect(
+			manager.delegate("parent-1", {
+				task: "Explicitly narrow the Codex child",
+				provider: "codex",
+				permission_mode: "default",
+			}),
+		).resolves.toMatchObject({
+			provider_id: "codex",
+			permission_mode: "default",
+		});
+		expect(childManager.validatePermissionMode).not.toHaveBeenCalled();
+	});
+
+	it("allows nested Auto only within the recorded running lineage", async () => {
+		parentProviderId = "claude";
+		parentStatus = {
+			state: "running",
+			permission_mode: "auto",
+			model: "claude-sonnet",
+			effort: "medium",
+		};
+		delegatedParent = snapshot({
+			id: "parent-delegation",
+			child_session_id: "parent-1",
+			status: "running",
+			depth: 1,
+			permission_mode: "auto",
+		});
+		const manager = new HlidDelegationManager(
+			pool as unknown as SessionPool,
+			async () => catalog,
+			() => {
+				statusChangedCalls++;
+			},
+		);
+
+		await expect(
+			manager.delegate("parent-1", {
+				task: "Create a nested native Claude Auto child",
+				provider: "claude",
+			}),
+		).resolves.toMatchObject({
+			parent_delegation_id: "parent-delegation",
+			depth: 2,
+			permission_mode: "auto",
+		});
+		expect(childManager.setProvider).toHaveBeenCalledWith("claude", {
+			model: "claude-sonnet",
+			effort: "medium",
+			serviceTier: undefined,
+			permissionMode: "auto",
+		});
+		expect(childManager.setProvider).toHaveBeenCalledTimes(1);
+	});
+
+	it("lets a full-access Routine explicitly choose ready Claude Auto", async () => {
+		parentRoutine = true;
+		parentRoutineContext = {
+			...parentRoutineContext,
+			mode: "full_access",
+		};
+		parentStatus.permission_mode = "bypassPermissions";
+		const manager = new HlidDelegationManager(
+			pool as unknown as SessionPool,
+			async () => catalog,
+			() => {
+				statusChangedCalls++;
+			},
+		);
+
+		await expect(
+			manager.delegate("parent-1", {
+				task: "Use ready Auto inside the Routine envelope",
+				provider: "claude",
+				model: "claude-sonnet",
+				permission_mode: "auto",
+			}),
+		).resolves.toMatchObject({
+			routine_run_id: "routine-run-1",
+			permission_mode: "auto",
+		});
+		expect(childManager.setProvider).toHaveBeenCalledWith("claude", {
+			model: "claude-sonnet",
+			effort: undefined,
+			serviceTier: undefined,
+			permissionMode: "auto",
+		});
+		expect(childManager.setProvider).toHaveBeenCalledTimes(1);
+	});
+
+	it("revalidates the recorded exact model before consuming an Auto continuation", async () => {
+		parentStatus.permission_mode = "bypassPermissions";
+		persisted = snapshot({
+			status: "interrupted",
+			complete: true,
+			resumable: true,
+			provider_id: "claude",
+			model: "claude-sonnet",
+			effort: "medium",
+			permission_mode: "auto",
+		});
+		childManager.getProviderId.mockReturnValue("claude");
+		childManager.getStatus.mockReturnValue({
+			state: "idle",
+			model: "claude-sonnet",
+			effort: "medium",
+		});
+		const manager = new HlidDelegationManager(
+			pool as unknown as SessionPool,
+			async () => catalog,
+			() => {
+				statusChangedCalls++;
+			},
+		);
+
+		await expect(
+			manager.resume("parent-1", persisted.id, {
+				id: persisted.id,
+				instruction: "Continue with exact Auto readiness",
+			}),
+		).resolves.toMatchObject({
+			attempt_count: 2,
+			permission_mode: "auto",
+		});
+		expect(childManager.setProvider).toHaveBeenCalledWith("claude", {
+			model: "claude-sonnet",
+			effort: "medium",
+			serviceTier: undefined,
+			permissionMode: "auto",
+			persistSessionSelection: false,
+		});
+		expect(childManager.setProvider).toHaveBeenCalledTimes(1);
+		expect(childManager.setProvider.mock.invocationCallOrder[0]).toBeLessThan(
+			db.resumeHlidDelegation.mock.invocationCallOrder[0] ?? 0,
+		);
+		expect(childManager.validatePermissionMode).not.toHaveBeenCalled();
+	});
+
+	it("keeps an interrupted Auto child retryable when readiness rejects", async () => {
+		parentStatus.permission_mode = "bypassPermissions";
+		persisted = snapshot({
+			status: "interrupted",
+			complete: true,
+			resumable: true,
+			provider_id: "claude",
+			model: "claude-sonnet",
+			effort: "medium",
+			permission_mode: "auto",
+		});
+		childManager.getProviderId.mockReturnValue("claude");
+		childManager.getStatus.mockReturnValue({
+			state: "idle",
+			model: "claude-sonnet",
+			effort: "medium",
+		});
+		childManager.setProvider.mockRejectedValueOnce(
+			new Error("Auto readiness changed"),
+		);
+		const manager = new HlidDelegationManager(
+			pool as unknown as SessionPool,
+			async () => catalog,
+			() => {
+				statusChangedCalls++;
+			},
+		);
+
+		await expect(
+			manager.resume("parent-1", persisted.id, {
+				id: persisted.id,
+				instruction: "Do not consume this attempt",
+			}),
+		).rejects.toThrow("Auto readiness changed");
+		expect(db.resumeHlidDelegation).not.toHaveBeenCalled();
+		expect(persisted).toMatchObject({
+			status: "interrupted",
+			attempt_count: 1,
+			resumable: true,
+		});
+	});
+
+	it("requires an inherited non-Claude Auto continuation to narrow explicitly", async () => {
+		parentStatus.permission_mode = "auto";
+		persisted = snapshot({
+			status: "interrupted",
+			complete: true,
+			resumable: true,
+			provider_id: "codex",
+			permission_mode: "auto",
+		});
+		const manager = new HlidDelegationManager(
+			pool as unknown as SessionPool,
+			async () => catalog,
+			() => {
+				statusChangedCalls++;
+			},
+		);
+
+		await expect(
+			manager.resume("parent-1", persisted.id, {
+				id: persisted.id,
+				instruction: "Inherited Auto must not cross providers",
+			}),
+		).rejects.toThrow("only for direct native Claude sessions");
+		await expect(
+			manager.resume("parent-1", persisted.id, {
+				id: persisted.id,
+				instruction: "Explicitly narrow this continuation",
+				permission_mode: "default",
+			}),
+		).resolves.toMatchObject({
+			attempt_count: 2,
+			permission_mode: "default",
+		});
+		expect(childManager.validatePermissionMode).not.toHaveBeenCalled();
+	});
 });
 
 describe("delegation permission narrowing", () => {
-	it.each([
-		["plan", "plan", true],
-		["plan", "default", false],
-		["default", "plan", true],
-		["default", "acceptEdits", false],
-		["acceptEdits", "default", true],
-		["acceptEdits", "bypassPermissions", false],
-		["bypassPermissions", "bypassPermissions", true],
-	])("%s parent to %s child is %s", (parent, child, allowed) => {
+	const modes = [
+		"plan",
+		"dontAsk",
+		"default",
+		"acceptEdits",
+		"auto",
+		"bypassPermissions",
+	] as const;
+	const allowedChildren: Record<(typeof modes)[number], ReadonlySet<string>> = {
+		plan: new Set(["plan"]),
+		dontAsk: new Set(["dontAsk", "plan"]),
+		default: new Set(["default", "dontAsk", "plan"]),
+		acceptEdits: new Set(["acceptEdits", "default", "dontAsk", "plan"]),
+		auto: new Set(["auto", "default", "dontAsk", "plan"]),
+		bypassPermissions: new Set(modes),
+	};
+	const pairs = modes.flatMap((parent) =>
+		modes.map(
+			(child) => [parent, child, allowedChildren[parent].has(child)] as const,
+		),
+	);
+
+	it.each(pairs)("%s parent to %s child is %s", (parent, child, allowed) => {
 		expect(childPermissionModeAllowed(parent, child)).toBe(allowed);
+	});
+
+	it("fails closed for unknown modes", () => {
+		expect(childPermissionModeAllowed("unknown", "plan")).toBe(false);
+		expect(childPermissionModeAllowed("bypassPermissions", "unknown")).toBe(
+			false,
+		);
+	});
+});
+
+describe("delegation permission schemas", () => {
+	const modes = [
+		"default",
+		"acceptEdits",
+		"bypassPermissions",
+		"plan",
+		"dontAsk",
+		"auto",
+	] as const;
+
+	it.each(modes)("accepts %s for create and resume", (permission_mode) => {
+		expect(
+			delegateHlidAgentSchema.safeParse({
+				task: "Delegate",
+				provider: "claude",
+				permission_mode,
+			}).success,
+		).toBe(true);
+		expect(
+			resumeHlidAgentSchema.safeParse({
+				id: "7c0eea4d-f74e-45c8-8674-a535fbb4412b",
+				instruction: "Continue",
+				permission_mode,
+			}).success,
+		).toBe(true);
+	});
+
+	it("rejects permission modes outside the six-mode session union", () => {
+		expect(
+			delegateHlidAgentSchema.safeParse({
+				task: "Delegate",
+				provider: "claude",
+				permission_mode: "full_access",
+			}).success,
+		).toBe(false);
+		expect(
+			resumeHlidAgentSchema.safeParse({
+				id: "7c0eea4d-f74e-45c8-8674-a535fbb4412b",
+				instruction: "Continue",
+				permission_mode: "read_only",
+			}).success,
+		).toBe(false);
 	});
 });

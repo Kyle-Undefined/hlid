@@ -21,11 +21,7 @@ import {
 	buildHlidToolLoadingSummary,
 	describeHlidToolLoading,
 } from "../lib/hlidContext";
-import {
-	parseWslUnc,
-	toHostRuntimePath,
-	toProviderRuntimePath,
-} from "../lib/paths";
+import { toHostRuntimePath, toProviderRuntimePath } from "../lib/paths";
 import { readProjectMcpFile } from "../lib/projectMcp";
 import type {
 	AgentEvent,
@@ -60,9 +56,12 @@ import type {
 	SubagentSnapshot,
 	TaskActivity,
 } from "./agentProvider";
+import { ProviderPermissionModeRejectedError } from "./agentProvider";
 import { toAgentToolCallResult } from "./agentToolResult";
+import { probeClaudeAutoModeModel } from "./claudeAutoMode";
 import { ClaudeBackgroundActivityTracker } from "./claudeBackgroundActivities";
 import { discoverClaudeProviderCapabilities } from "./claudeCapabilityDiscovery";
+import { claudeLiveQueryEnv, claudeSdkEnv } from "./claudeEnvironment";
 import { createClaudeHistorySessionStore } from "./claudeHistorySessionStore";
 import { createClaudeHostInteractionHandlers } from "./claudeHostInteractions";
 import {
@@ -97,17 +96,13 @@ import {
 	claudeTaskActivityStart,
 } from "./taskActivity";
 
-/**
- * Permission modes hlid's AgentQueryParams/agent-agnostic layer knows about.
- * The SDK's PermissionMode also includes 'dontAsk' | 'auto', which hlid never
- * sends — setPermissionMode() rejects anything outside this set with a clear
- * error rather than silently forwarding an unsupported mode to the SDK.
- */
 const KNOWN_PERMISSION_MODES = new Set<string>([
 	"default",
 	"acceptEdits",
 	"bypassPermissions",
 	"plan",
+	"dontAsk",
+	"auto",
 ]);
 
 const CLAUDE_SDK_EFFORT_LEVELS = new Set<string>([
@@ -117,6 +112,10 @@ const CLAUDE_SDK_EFFORT_LEVELS = new Set<string>([
 	"xhigh",
 	"max",
 ]);
+const CLAUDE_AUTO_MODE_PROBE_CACHE_LIMIT = 128;
+const CLAUDE_AUTO_MODE_INFLIGHT_LIMIT = 16;
+const CLAUDE_AUTO_MODE_MODEL_MAX_CHARS = 512;
+const CLAUDE_AUTO_MODE_CWD_MAX_CHARS = 4_096;
 
 function claudeSdkEffortLevel(effort: string): SdkEffortLevel {
 	if (!CLAUDE_SDK_EFFORT_LEVELS.has(effort)) {
@@ -181,7 +180,7 @@ function createHlidSdkServer(params: AgentQueryParams) {
 }
 
 function createObsidianSdkServer(
-	forceRunCommandApproval?: CanUseTool,
+	forceRunCommandApproval?: () => CanUseTool | undefined,
 	signal?: AbortSignal,
 ) {
 	return createSdkMcpServer({
@@ -196,8 +195,9 @@ function createObsidianSdkServer(
 				obsidianAgentSchemas[spec.name].shape as any,
 				(input) =>
 					toAgentToolCallResult(async () => {
-						if (spec.name === "run_command" && forceRunCommandApproval) {
-							const decision = await forceRunCommandApproval(
+						const runCommandApproval = forceRunCommandApproval?.();
+						if (spec.name === "run_command" && runCommandApproval) {
+							const decision = await runCommandApproval(
 								`mcp__${OBSIDIAN_AGENT_NAMESPACE}__run_command`,
 								input,
 								{
@@ -2865,6 +2865,10 @@ class ClaudeAgentSession implements AgentSession {
 	private resumeId: string | undefined;
 	private inputStream: InputStream = new InputStream();
 	private sdkQuery: SdkQuery | null = null;
+	private sdkQueryReady: Promise<void> | null = null;
+	private nativePermissionMode: SdkPermissionMode | null = null;
+	private nativePermissionStatusArmed = false;
+	private permissionControlTail: Promise<void> = Promise.resolve();
 	private cachedIter: AsyncIterator<AgentEvent> | null = null;
 	// The SDK's supportedCommands() snapshot is captured at Query initialization.
 	// Retain later full replacements so probes after route navigation do not
@@ -2928,6 +2932,7 @@ class ClaudeAgentSession implements AgentSession {
 		private readonly requestModel: (model: string) => string,
 		private readonly normalizeModel: (model: string) => string,
 		enableLiveEffort: boolean,
+		private readonly enableAdvancedPermissionModes: boolean,
 		private readonly exposeUsageWindows: boolean,
 		private readonly exposeAccountInfo: boolean,
 		private readonly hostMcpServers: Record<string, SdkMcpServerConfig>,
@@ -3024,7 +3029,7 @@ class ClaudeAgentSession implements AgentSession {
 		if (this.firstSend === null) this.firstSend = sdkMsg;
 		// Lazily open the SDK query on first send so an empty session that's
 		// never sent doesn't spawn the CLI.
-		this.ensureSdkQuery();
+		await this.ensureSdkQueryReady();
 		this.inputStream.push(sdkMsg);
 	}
 
@@ -3033,7 +3038,7 @@ class ClaudeAgentSession implements AgentSession {
 		// folded into the active run instead of waiting for the next turn. Claude
 		// still emits the interrupted run's result boundary before it starts the
 		// steered continuation, so translateEvents must keep that boundary open.
-		this.ensureSdkQuery();
+		await this.ensureSdkQueryReady();
 		this.inputStream.push(
 			buildSdkUserMessage(message, "now", opts?.inputOrigin),
 		);
@@ -3105,7 +3110,8 @@ class ClaudeAgentSession implements AgentSession {
 		return Boolean(
 			this.sdkQuery &&
 				!this.policyEnforced &&
-				this.hostParams.permissionMode === "bypassPermissions",
+				(this.hostParams.permissionMode === "bypassPermissions" ||
+					this.hostParams.permissionMode === "auto"),
 		);
 	}
 
@@ -3121,9 +3127,12 @@ class ClaudeAgentSession implements AgentSession {
 				"Hlid policy enforcement owns MCP approvals for this session.",
 			);
 		}
-		if (this.hostParams.permissionMode !== "bypassPermissions") {
+		if (
+			this.hostParams.permissionMode !== "bypassPermissions" &&
+			this.hostParams.permissionMode !== "auto"
+		) {
 			throw new Error(
-				"Claude MCP permission overrides require Auto-approve all for the live session.",
+				"Claude MCP permission overrides require Auto or Auto-approve all for the live session.",
 			);
 		}
 		const result = await this.sdkQuery.setMcpPermissionModeOverride(
@@ -3221,9 +3230,10 @@ class ClaudeAgentSession implements AgentSession {
 	 * mcpServerStatus()/supportedCommands() null-guard pattern.
 	 */
 	async setModel(model?: string): Promise<void> {
+		if (this.sdkQuery) {
+			await this.sdkQuery.setModel(model ? this.requestModel(model) : model);
+		}
 		this.hostParams.model = model;
-		if (!this.sdkQuery) return;
-		await this.sdkQuery.setModel(model ? this.requestModel(model) : model);
 	}
 
 	private async applyEffort(effort: string): Promise<void> {
@@ -3235,24 +3245,81 @@ class ClaudeAgentSession implements AgentSession {
 	}
 
 	/**
-	 * Mid-session permission-mode switch. Validates against the modes hlid's
-	 * AgentQueryParams supports before forwarding to the SDK — the SDK's
-	 * PermissionMode is a superset ('dontAsk' | 'auto' besides ours) that
-	 * hlid has no UI/config path for, so an unknown value is rejected here
-	 * rather than passed through.
+	 * Mid-session permission-mode switch. Direct Claude sessions may use the
+	 * SDK's Auto and dontAsk controls after Hlid validates the workspace/model
+	 * boundary; persistent agent and provider config intentionally remains on
+	 * the standard modes. Unknown values are never forwarded to the SDK.
 	 */
 	async setPermissionMode(mode: string): Promise<void> {
 		if (!KNOWN_PERMISSION_MODES.has(mode)) {
 			throw new Error(`Unknown permission mode: ${mode}`);
 		}
-		this.hostParams.permissionMode = mode as AgentQueryParams["permissionMode"];
-		if (!this.sdkQuery) return;
-		await this.sdkQuery.setPermissionMode(
-			effectiveSdkPermissionMode(
-				mode as AgentQueryParams["permissionMode"],
+		if (
+			(mode === "auto" || mode === "dontAsk") &&
+			!this.enableAdvancedPermissionModes
+		) {
+			throw new Error(
+				"This Claude runtime does not support that permission mode",
+			);
+		}
+		if (this.policyEnforced && (mode === "auto" || mode === "dontAsk")) {
+			throw new Error(
+				`${mode === "auto" ? "Auto" : "Pre-approved only"} is unavailable while Hlid policy enforcement owns approvals.`,
+			);
+		}
+		if (mode === "auto" && this.hostParams.usageGateEnforced) {
+			throw new Error("Auto is unavailable while Hlid auto-sleep is enabled.");
+		}
+		const permissionMode = mode as AgentQueryParams["permissionMode"];
+		if (this.sdkQuery) {
+			const sdkQuery = this.sdkQuery;
+			const requested = effectiveSdkPermissionMode(
+				permissionMode,
 				this.policyEnforced,
-			),
+			);
+			await this.enqueuePermissionControl(() =>
+				this.applyNativePermissionMode(
+					sdkQuery,
+					requested,
+					"Claude query changed during permission update",
+				),
+			);
+		}
+		this.hostParams.permissionMode = permissionMode;
+	}
+
+	private async applyNativePermissionMode(
+		sdkQuery: SdkQuery,
+		requested: SdkPermissionMode,
+		ownershipError: string,
+	): Promise<void> {
+		await sdkQuery.initializationResult();
+		if (this.sdkQuery !== sdkQuery) throw new Error(ownershipError);
+		try {
+			await sdkQuery.setPermissionMode(requested);
+		} catch (error) {
+			if (requested === "auto" || requested === "dontAsk") {
+				throw new ProviderPermissionModeRejectedError(
+					requested,
+					"default",
+					error instanceof Error ? error.message : String(error),
+				);
+			}
+			throw error;
+		}
+		this.nativePermissionMode = requested;
+		this.nativePermissionStatusArmed = false;
+	}
+
+	private enqueuePermissionControl(
+		operation: () => Promise<void>,
+	): Promise<void> {
+		const pending = this.permissionControlTail.then(operation, operation);
+		this.permissionControlTail = pending.then(
+			() => undefined,
+			() => undefined,
 		);
+		return pending;
 	}
 
 	/**
@@ -3275,9 +3342,62 @@ class ClaudeAgentSession implements AgentSession {
 		}
 	}
 
-	private ensureSdkQuery(): void {
-		if (this.sdkQuery) return;
-		this.sdkQuery = this.createSdkQuery(this.resumeId);
+	private ensureSdkQuery(): SdkQuery {
+		if (this.sdkQuery) return this.sdkQuery;
+		return this.installSdkQuery(this.resumeId);
+	}
+
+	private installSdkQuery(resumeId: string | undefined): SdkQuery {
+		const sdkQuery = this.createSdkQuery(resumeId);
+		this.sdkQuery = sdkQuery;
+		this.nativePermissionMode = null;
+		this.nativePermissionStatusArmed = false;
+		const requested = effectiveSdkPermissionMode(
+			this.hostParams.permissionMode,
+			this.policyEnforced,
+		);
+		if (!this.enableAdvancedPermissionModes) {
+			// CLIProxy retains its established construction-time standard-mode
+			// contract. The initialize/control handshake is required only for direct
+			// Claude, where Auto/dontAsk acceptance must be proven before input.
+			this.nativePermissionMode = requested;
+			this.sdkQueryReady = Promise.resolve();
+			return sdkQuery;
+		}
+		// Query construction can silently initialize in default when Auto is
+		// disabled. A successful control acknowledgment before input is the
+		// authoritative boundary that prevents a user turn from escaping under a
+		// different permission mode.
+		this.sdkQueryReady = this.enqueuePermissionControl(() =>
+			this.applyNativePermissionMode(
+				sdkQuery,
+				requested,
+				"Claude query was replaced during initialization",
+			),
+		);
+		return sdkQuery;
+	}
+
+	private async ensureSdkQueryReady(): Promise<void> {
+		this.ensureSdkQuery();
+		try {
+			await this.sdkQueryReady;
+		} catch (error) {
+			if (error instanceof ProviderPermissionModeRejectedError) throw error;
+			if (
+				this.resumeId === undefined ||
+				this.receivedAnyEvent ||
+				this.retriedWithoutResume
+			) {
+				throw error;
+			}
+			this.retriedWithoutResume = true;
+			this.resumeId = undefined;
+			this.inputStream.close();
+			this.inputStream = new InputStream();
+			this.installSdkQuery(undefined);
+			await this.sdkQueryReady;
+		}
 	}
 
 	private createSdkQuery(resumeId: string | undefined): SdkQuery {
@@ -3329,7 +3449,8 @@ class ClaudeAgentSession implements AgentSession {
 					// Fresh input stream so the SDK consumes the replayed msg.
 					self.inputStream.close();
 					self.inputStream = new InputStream();
-					self.sdkQuery = self.createSdkQuery(undefined);
+					self.installSdkQuery(undefined);
+					await self.sdkQueryReady;
 					if (self.firstSend) self.inputStream.push(self.firstSend);
 					yield* self.translateEvents();
 					return;
@@ -3778,6 +3899,18 @@ class ClaudeAgentSession implements AgentSession {
 						this.setLifecycleNativeSessionId(rawProviderSessionId);
 					}
 				}
+				if (
+					rawProviderSessionId &&
+					rawProviderSessionId === this.currentNativeSessionId &&
+					rawProviderSessionId === this.lifecycleNativeSessionId &&
+					(message.type === "user" || message.type === "assistant")
+				) {
+					// A successful native control disarms status evidence until the stream
+					// reaches activity from the following turn. This prevents init/status
+					// frames queued before the control acknowledgement from narrowing the
+					// newly accepted mode when the iterator is consumed later.
+					this.nativePermissionStatusArmed = true;
+				}
 				if (sessionStateChanged) {
 					const state = (message as { state?: unknown }).state;
 					const providerUuid = exactClaudePermissionId(
@@ -3828,6 +3961,31 @@ class ClaudeAgentSession implements AgentSession {
 					}
 					// Native session state is supporting lifecycle evidence only. It is
 					// never translated, persisted, or allowed to open/close Hlid state.
+					continue;
+				}
+				if (
+					message.type === "system" &&
+					(message as { subtype?: unknown }).subtype === "status"
+				) {
+					const permissionMode = (message as { permissionMode?: unknown })
+						.permissionMode;
+					if (
+						rawProviderSessionId &&
+						rawProviderSessionId === this.currentNativeSessionId &&
+						rawProviderSessionId === this.lifecycleNativeSessionId &&
+						this.nativePermissionStatusArmed &&
+						this.nativePermissionMode === "auto" &&
+						permissionMode === "default"
+					) {
+						this.nativePermissionMode = "default";
+						this.nativePermissionStatusArmed = false;
+						this.hostParams.permissionMode = "default";
+						yield {
+							type: "provider_permission_mode_changed",
+							permissionMode: "default",
+							providerSessionId: rawProviderSessionId,
+						};
+					}
 					continue;
 				}
 				if (
@@ -4243,22 +4401,36 @@ export function mapClaudeModels(models: SdkModelInfo[]): ProviderModelInfo[] {
 		return {
 			value: m.value,
 			label: m.displayName || m.value,
+			...(m.resolvedModel ? { resolvedModel: m.resolvedModel } : {}),
 			description: m.description,
+			...(m.supportsAutoMode === true ? { supportsAutoMode: true } : {}),
 			efforts,
 		};
 	});
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-	return Promise.race([
-		promise,
-		new Promise<T>((_, reject) => {
-			setTimeout(
-				() => reject(new Error("Claude supportedModels() timed out")),
-				timeoutMs,
-			);
-		}),
-	]);
+function withTimeout<T>(
+	promise: Promise<T>,
+	timeoutMs: number,
+	context: string,
+): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(
+			() => reject(new Error(`${context} timed out`)),
+			timeoutMs,
+		);
+		timer.unref?.();
+		promise.then(
+			(value) => {
+				clearTimeout(timer);
+				resolve(value);
+			},
+			(error) => {
+				clearTimeout(timer);
+				reject(error);
+			},
+		);
+	});
 }
 
 /** Parse Anthropic rate-limit utilization headers from an API response. */
@@ -4325,6 +4497,8 @@ export type ClaudeProviderOptions = {
 	requestModel?: (model: string, effort: string | undefined) => string;
 	normalizeModel?: (model: string) => string;
 	passSdkEffort?: boolean;
+	/** Expose direct-Claude SDK Auto/dontAsk modes; false for routed CLIProxy. */
+	passSdkAdvancedPermissionModes?: boolean;
 	exposeUsageWindows?: boolean;
 	exposeAccountInfo?: boolean;
 	proxyConfig?: AgentProvider["proxyConfig"] | null;
@@ -4361,49 +4535,6 @@ const CLAUDE_PROXY_CONFIG = {
 	windowIds: ["five_hour", "weekly", "weekly_sonnet"],
 	parseHeaders: parseAnthropicHeaders,
 };
-
-function isLoopbackHttpUrl(value: string | undefined): boolean {
-	if (!value) return false;
-	try {
-		const hostname = new URL(value).hostname.toLowerCase();
-		return (
-			hostname === "127.0.0.1" ||
-			hostname === "localhost" ||
-			hostname === "[::1]"
-		);
-	} catch {
-		return false;
-	}
-}
-
-/**
- * Direct WSL Claude sessions cannot reach a proxy bound to the Windows host's
- * loopback interface. Hlid's transparent Anthropic usage proxy is published
- * through ANTHROPIC_BASE_URL, so remove only that unreachable loopback value
- * for direct WSL launches. Routed providers supply an explicit SDK environment
- * and keep their WSL-local CLIProxy endpoint.
- */
-function claudeSdkEnv(
-	cwd: string,
-	explicit: Record<string, string | undefined> | undefined,
-): Record<string, string | undefined> | undefined {
-	if (explicit) return explicit;
-	if (!parseWslUnc(cwd) || !isLoopbackHttpUrl(process.env.ANTHROPIC_BASE_URL)) {
-		return undefined;
-	}
-	const env: Record<string, string | undefined> = { ...process.env };
-	delete env.ANTHROPIC_BASE_URL;
-	return env;
-}
-
-function claudeLiveQueryEnv(
-	base: Record<string, string | undefined> | undefined,
-): Record<string, string | undefined> {
-	return {
-		...(base ?? process.env),
-		CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
-	};
-}
 
 // Serializes CLAUDE_CONFIG_DIR mutation windows across concurrent
 // forkSession() calls so two overlapping forks (e.g. different WSL distros)
@@ -4522,7 +4653,7 @@ export class ClaudeProvider implements AgentProvider {
 	readonly models: ReadonlyArray<{ value: string; label: string }>;
 	readonly effortLevels: AgentProvider["effortLevels"];
 
-	readonly permissionModes = [
+	private static readonly standardPermissionModes = [
 		{
 			value: "default",
 			label: "Ask for approval",
@@ -4539,6 +4670,21 @@ export class ClaudeProvider implements AgentProvider {
 			desc: "everything goes through, no interruptions",
 		},
 	] as const;
+	private static readonly advancedPermissionModes = [
+		...ClaudeProvider.standardPermissionModes,
+		{
+			value: "auto",
+			label: "Auto",
+			desc: "Claude decides when to ask. Classifier usage and cost are not exposed to Hlid.",
+		},
+		{
+			value: "dontAsk",
+			label: "Pre-approved only",
+			desc: "Pre-approved rules run; everything else is denied without asking.",
+		},
+	] as const;
+	readonly permissionModes = ClaudeProvider.standardPermissionModes;
+	readonly sessionPermissionModes: AgentProvider["sessionPermissionModes"];
 
 	// Anthropic retired the Sonnet-only weekly limit — no weekly_sonnet window.
 	readonly usageWindows?: AgentProvider["usageWindows"];
@@ -4551,6 +4697,13 @@ export class ClaudeProvider implements AgentProvider {
 	) => string;
 	private readonly normalizeModel: (model: string) => string;
 	private readonly passSdkEffort: boolean;
+	private readonly passSdkAdvancedPermissionModes: boolean;
+	private readonly autoModeProbeCache = new Map<
+		string,
+		{ available: boolean; expiresAt: number }
+	>();
+	private readonly autoModeProbes = new Map<string, Promise<boolean>>();
+	private autoModeForcedProbeSequence = 0;
 	private readonly exposeUsageWindows: boolean;
 	private readonly exposeAccountInfo: boolean;
 	private readonly workflowProgressReader: ClaudeWorkflowProgressReader;
@@ -4566,6 +4719,11 @@ export class ClaudeProvider implements AgentProvider {
 		this.requestModel = options.requestModel ?? ((model) => model);
 		this.normalizeModel = options.normalizeModel ?? ((model) => model);
 		this.passSdkEffort = options.passSdkEffort ?? true;
+		this.passSdkAdvancedPermissionModes =
+			options.passSdkAdvancedPermissionModes ?? this.providerId === "claude";
+		this.sessionPermissionModes = this.passSdkAdvancedPermissionModes
+			? ClaudeProvider.advancedPermissionModes
+			: ClaudeProvider.standardPermissionModes;
 		this.exposeUsageWindows = options.exposeUsageWindows ?? true;
 		this.exposeAccountInfo = options.exposeAccountInfo ?? true;
 		this.workflowProgressReader =
@@ -4593,6 +4751,187 @@ export class ClaudeProvider implements AgentProvider {
 		});
 	}
 
+	private assertPermissionModePolicy(
+		mode: string,
+		context: {
+			cwd: string;
+			capabilityCwd?: string;
+			executable?: string;
+			additionalDirectories?: string[];
+			model?: string;
+			policyEnforced: boolean;
+			usageGateEnforced: boolean;
+			forceExact?: boolean;
+		},
+	): void {
+		if (mode === "plan") return;
+		if (
+			!this.sessionPermissionModes?.some(
+				(candidate) => candidate.value === mode,
+			)
+		) {
+			throw new Error(`${this.label} does not support permission mode ${mode}`);
+		}
+		if (mode !== "auto" && mode !== "dontAsk") return;
+		if (context.policyEnforced) {
+			throw new Error(
+				`${mode === "auto" ? "Auto" : "Pre-approved only"} is unavailable while Hlid policy enforcement owns approvals.`,
+			);
+		}
+		if (mode === "dontAsk") return;
+		if (context.usageGateEnforced) {
+			throw new Error("Auto is unavailable while Hlid auto-sleep is enabled.");
+		}
+		if (!context.model) {
+			throw new Error("Auto requires a selected Claude model.");
+		}
+	}
+
+	async validatePermissionMode(
+		mode: string,
+		context: {
+			cwd: string;
+			capabilityCwd?: string;
+			executable?: string;
+			additionalDirectories?: string[];
+			model?: string;
+			policyEnforced: boolean;
+			usageGateEnforced: boolean;
+			forceExact?: boolean;
+		},
+	): Promise<void> {
+		this.assertPermissionModePolicy(mode, context);
+		if (mode !== "auto" || !context.model) return;
+		const snapshot = getClaudeWarmupSnapshot(
+			context.capabilityCwd ?? context.cwd,
+		);
+		if (
+			!context.forceExact &&
+			snapshot?.autoModeModels?.includes(context.model)
+		)
+			return;
+		if (!(await this.probeExactAutoMode(context.model, context))) {
+			throw new Error(
+				`Auto is unavailable for ${context.model} under the current Claude settings.`,
+			);
+		}
+	}
+
+	private createWorkspaceMetadataQuery(context: {
+		cwd: string;
+		executable?: string;
+		additionalDirectories?: string[];
+		denialMessage: string;
+	}): { sdkQuery: SdkQuery; abortController: AbortController } {
+		const abortController = new AbortController();
+		const sdkEnv = claudeSdkEnv(context.cwd, this.sdkEnv);
+		// biome-ignore lint/suspicious/noExplicitAny: SDK canUseTool type changed between versions
+		const denyAllCanUseTool: any = async () => ({
+			behavior: "deny",
+			message: context.denialMessage,
+		});
+		const sdkQuery = query({
+			prompt: (async function* (): AsyncGenerator<SdkUserMessage> {
+				await new Promise<never>(() => {});
+			})(),
+			options: {
+				cwd: context.cwd,
+				abortController,
+				persistSession: false,
+				settingSources: ["user", "project", "local"],
+				settings: buildHlidClaudeSettings(),
+				maxTurns: 1,
+				...(context.additionalDirectories?.length
+					? { additionalDirectories: context.additionalDirectories }
+					: {}),
+				...(context.executable
+					? { pathToClaudeCodeExecutable: context.executable }
+					: {}),
+				...(sdkEnv ? { env: sdkEnv } : {}),
+				canUseTool: denyAllCanUseTool,
+			},
+		});
+		return { sdkQuery, abortController };
+	}
+
+	private async probeExactAutoMode(
+		model: string,
+		context: {
+			cwd: string;
+			capabilityCwd?: string;
+			executable?: string;
+			additionalDirectories?: string[];
+			forceExact?: boolean;
+		},
+	): Promise<boolean> {
+		if (
+			model.length === 0 ||
+			model.length > CLAUDE_AUTO_MODE_MODEL_MAX_CHARS ||
+			context.cwd.length === 0 ||
+			context.cwd.length > CLAUDE_AUTO_MODE_CWD_MAX_CHARS ||
+			(context.capabilityCwd?.length ?? 0) > CLAUDE_AUTO_MODE_CWD_MAX_CHARS
+		) {
+			return false;
+		}
+		const identityKey = `${context.executable ?? ""}\0${context.capabilityCwd ?? context.cwd}\0${context.cwd}\0${JSON.stringify(context.additionalDirectories ?? [])}\0${model}`;
+		const key = context.forceExact
+			? `${identityKey}\0force:${++this.autoModeForcedProbeSequence}`
+			: identityKey;
+		const cached = context.forceExact
+			? undefined
+			: this.autoModeProbeCache.get(key);
+		if (cached && cached.expiresAt > Date.now()) return cached.available;
+		const existing = this.autoModeProbes.get(key);
+		if (existing) return existing;
+		if (this.autoModeProbes.size >= CLAUDE_AUTO_MODE_INFLIGHT_LIMIT)
+			return false;
+		const probe = (async () => {
+			const { sdkQuery, abortController } = this.createWorkspaceMetadataQuery({
+				cwd: context.cwd,
+				executable: context.executable,
+				additionalDirectories: context.additionalDirectories,
+				denialMessage: "Auto readiness probe",
+			});
+			try {
+				return await withTimeout(
+					(async () => {
+						await sdkQuery.initializationResult();
+						return probeClaudeAutoModeModel(sdkQuery, model);
+					})(),
+					10_000,
+					"Claude Auto readiness probe",
+				);
+			} catch {
+				return false;
+			} finally {
+				abortController.abort();
+			}
+		})();
+		this.autoModeProbes.set(key, probe);
+		try {
+			const available = await probe;
+			if (
+				!context.forceExact &&
+				!this.autoModeProbeCache.has(key) &&
+				this.autoModeProbeCache.size >= CLAUDE_AUTO_MODE_PROBE_CACHE_LIMIT
+			) {
+				const oldest = this.autoModeProbeCache.keys().next().value;
+				if (oldest !== undefined) this.autoModeProbeCache.delete(oldest);
+			}
+			if (!context.forceExact) {
+				this.autoModeProbeCache.set(key, {
+					available,
+					expiresAt: Date.now() + (available ? 5 * 60_000 : 60_000),
+				});
+			}
+			return available;
+		} finally {
+			if (this.autoModeProbes.get(key) === probe) {
+				this.autoModeProbes.delete(key);
+			}
+		}
+	}
+
 	/**
 	 * Live-fetch the model catalog via a throwaway SDK query — no real prompt
 	 * is ever sent; the stream stays open until abort() and canUseTool denies
@@ -4601,6 +4940,7 @@ export class ClaudeProvider implements AgentProvider {
 	 */
 	async listModels(): Promise<ProviderModelInfo[]> {
 		const exe = resolveClaudeExecutable();
+		const sdkEnv = claudeSdkEnv(process.cwd(), this.sdkEnv);
 		const ac = new AbortController();
 		// biome-ignore lint/suspicious/noExplicitAny: SDK canUseTool type changed between versions
 		const denyAllCanUseTool: any = async () => ({
@@ -4621,11 +4961,16 @@ export class ClaudeProvider implements AgentProvider {
 				maxTurns: 1,
 				...(exe ? { pathToClaudeCodeExecutable: exe } : {}),
 				canUseTool: denyAllCanUseTool,
-				...(this.sdkEnv ? { env: this.sdkEnv } : {}),
+				...(sdkEnv ? { env: sdkEnv } : {}),
 			},
 		});
 		try {
-			return mapClaudeModels(await withTimeout(q.supportedModels(), 10_000));
+			const models = await withTimeout(
+				q.supportedModels(),
+				10_000,
+				"Claude supportedModels()",
+			);
+			return mapClaudeModels(models);
 		} finally {
 			ac.abort();
 		}
@@ -4637,37 +4982,23 @@ export class ClaudeProvider implements AgentProvider {
 		executable?: string;
 	}): Promise<ProviderSkillInfo[]> {
 		const executable = context.executable ?? resolveClaudeExecutable();
-		const sdkEnv = claudeSdkEnv(context.cwd, this.sdkEnv);
-		const ac = new AbortController();
-		// biome-ignore lint/suspicious/noExplicitAny: SDK canUseTool type changed between versions
-		const denyAllCanUseTool: any = async () => ({
-			behavior: "deny",
-			message: "skill catalog probe",
-		});
-		const q = query({
-			prompt: (async function* (): AsyncGenerator<SdkUserMessage> {
-				await new Promise<never>(() => {});
-			})(),
-			options: {
-				cwd: context.cwd,
-				abortController: ac,
-				persistSession: false,
-				settingSources: ["user", "project", "local"],
-				settings: buildHlidClaudeSettings(),
-				maxTurns: 1,
-				...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
-				canUseTool: denyAllCanUseTool,
-				...(sdkEnv ? { env: sdkEnv } : {}),
-			},
+		const { sdkQuery, abortController } = this.createWorkspaceMetadataQuery({
+			cwd: context.cwd,
+			executable,
+			denialMessage: "skill catalog probe",
 		});
 		try {
-			const commands = await withTimeout(q.supportedCommands(), 10_000);
+			const commands = await withTimeout(
+				sdkQuery.supportedCommands(),
+				10_000,
+				"Claude supportedCommands()",
+			);
 			return commands.map((command) => ({
 				name: command.name,
 				description: command.description,
 			}));
 		} finally {
-			ac.abort();
+			abortController.abort();
 		}
 	}
 
@@ -4694,6 +5025,12 @@ export class ClaudeProvider implements AgentProvider {
 	}
 
 	query(params: AgentQueryParams): AgentSession {
+		this.assertPermissionModePolicy(params.permissionMode ?? "default", {
+			cwd: params.cwd,
+			model: params.model,
+			policyEnforced: params.policyEnforced ?? false,
+			usageGateEnforced: params.usageGateEnforced ?? false,
+		});
 		const abortController = new AbortController();
 		const sdkEnv = claudeLiveQueryEnv(claudeSdkEnv(params.cwd, this.sdkEnv));
 		const hostInteractions = createClaudeHostInteractionHandlers(params);
@@ -4718,9 +5055,12 @@ export class ClaudeProvider implements AgentProvider {
 		const hostMcpServers: Record<string, SdkMcpServerConfig> = {
 			[HLID_AGENT_NAMESPACE]: createHlidSdkServer(params),
 			[OBSIDIAN_AGENT_NAMESPACE]: createObsidianSdkServer(
-				params.permissionMode === "bypassPermissions" && !params.policyEnforced
-					? params.canUseTool
-					: undefined,
+				() =>
+					(params.permissionMode === "bypassPermissions" ||
+						params.permissionMode === "auto") &&
+					!params.policyEnforced
+						? params.canUseTool
+						: undefined,
 				abortController.signal,
 			),
 		};
@@ -4838,6 +5178,7 @@ export class ClaudeProvider implements AgentProvider {
 			(model) => this.requestModel(model, params.effort),
 			this.normalizeModel,
 			this.passSdkEffort,
+			this.passSdkAdvancedPermissionModes,
 			this.exposeUsageWindows,
 			this.exposeAccountInfo,
 			hostMcpServers,

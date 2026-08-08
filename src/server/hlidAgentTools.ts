@@ -349,7 +349,7 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 	{
 		name: "delegate_hlid_agent",
 		description:
-			"Create a durable Raven child session in the current workspace or an exact configured workspace using an explicitly selected provider, model, effort, and optional model service tier. Delegation is bounded to three levels, four active direct children per parent, and twelve active delegated children across Hlid. The child uses inherited or narrower permissions, appears independently in Raven and Ledger, and keeps its own provider-native transcript and passively recorded usage. Hlid imposes no elapsed-time or inactivity cap because cross-provider silence is not proof of failure. New runs do not accept a timeout input or transition automatically to timed_out. Provider availability is checked before launch, and native launch, transport, or process failures settle the child naturally. Use cancel_hlid_agent when the work should stop. Token and cost usage are observations rather than lifecycle caps. This returns immediately with a delegation ID and child-session link; call wait_hlid_agent or inspect_hlid_agent for its bounded result. Context, exact references, and Relics remain empty unless their handoff switches are explicitly selected. Scheduled Routines may delegate only in their approved workspace when the call is allowed by the Routine grant envelope and Umbod; every descendant shares the same per-run grant-use limits.",
+			"Create a durable Raven child session in the current workspace or an exact configured workspace using an explicitly selected provider, model, effort, and optional model service tier. Delegation is bounded to three levels, four active direct children per parent, and twelve active delegated children across Hlid. The child uses inherited or narrower permissions, appears independently in Raven and Ledger, and keeps its own provider-native transcript and passively recorded usage. Claude Auto is available only to a direct native Claude child whose exact selected or inherited model passes live readiness validation in the child workspace. Cross-provider delegation from an Auto parent must explicitly narrow the child permission mode. Hlid imposes no elapsed-time or inactivity cap because cross-provider silence is not proof of failure. New runs do not accept a timeout input or transition automatically to timed_out. Provider availability is checked before launch, and native launch, transport, or process failures settle the child naturally. Use cancel_hlid_agent when the work should stop. Token and cost usage are observations rather than lifecycle caps. This returns immediately with a delegation ID and child-session link; call wait_hlid_agent or inspect_hlid_agent for its bounded result. Context, exact references, and Relics remain empty unless their handoff switches are explicitly selected. Scheduled Routines may delegate only in their approved workspace when the call is allowed by the Routine grant envelope and Umbod; every descendant shares the same per-run grant-use limits.",
 		readOnly: false,
 		deferLoading: true,
 		searchHint:
@@ -390,9 +390,16 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 				},
 				permission_mode: {
 					type: "string",
-					enum: ["default", "acceptEdits", "bypassPermissions", "plan"],
+					enum: [
+						"default",
+						"acceptEdits",
+						"bypassPermissions",
+						"plan",
+						"dontAsk",
+						"auto",
+					],
 					description:
-						"Optional child permission mode. It must be equal to or narrower than the parent mode. Set plan explicitly when a Codex child must use native request_user_input; default mode does not expose that mechanism. A question-only plan turn does not enter plan review unless Codex emits a real plan.",
+						"Optional child permission mode under the six-mode delegation lattice: it must be equal to or narrower than the current parent turn. Auto is allowed only when the parent is Auto or bypass, the child is direct native Claude, and the exact selected or inherited child model passes live readiness validation in the child workspace. Cross-provider children inheriting Auto must explicitly narrow this field. Set plan explicitly when a Codex child must use native request_user_input; default mode does not expose that mechanism. A question-only plan turn does not enter plan review unless Codex emits a real plan.",
 				},
 				handoff: {
 					type: "object",
@@ -540,7 +547,7 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 	{
 		name: "resume_hlid_agent",
 		description:
-			"Start an explicit new continuation turn in a restart-interrupted durable child with a remaining attempt. This requires a live running parent turn, revalidates the recorded configured workspace plus provider, model, effort, and service tier, and enforces inherited or narrower permissions plus the four-per-parent and twelve-global active limits. Hlid imposes no elapsed-time or inactivity cap because cross-provider silence is not proof of failure. Native launch, transport, or process failures settle the child naturally; use cancel_hlid_agent when the work should stop. Token and cost usage remain passive observations. The instruction remains the visible child message; Hlid also supplies bounded visible child transcript context. This never claims to resume the interrupted in-flight turn, inherits no references or Relics, and cannot continue a Routine-owned child outside its ended authorization envelope.",
+			"Start an explicit new continuation turn in a restart-interrupted durable child with a remaining attempt. This requires a live running parent turn, revalidates the recorded configured workspace plus provider, model, effort, service tier, and permission mode, and enforces inherited or narrower permissions plus the four-per-parent and twelve-global active limits. Claude Auto continuation is available only to direct native Claude and revalidates the recorded exact model against live readiness in the child workspace. Hlid imposes no elapsed-time or inactivity cap because cross-provider silence is not proof of failure. Native launch, transport, or process failures settle the child naturally; use cancel_hlid_agent when the work should stop. Token and cost usage remain passive observations. The instruction remains the visible child message; Hlid also supplies bounded visible child transcript context. This never claims to resume the interrupted in-flight turn, inherits no references or Relics, and cannot continue a Routine-owned child outside its ended authorization envelope.",
 		readOnly: false,
 		deferLoading: true,
 		searchHint:
@@ -560,9 +567,16 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 				},
 				permission_mode: {
 					type: "string",
-					enum: ["default", "acceptEdits", "bypassPermissions", "plan"],
+					enum: [
+						"default",
+						"acceptEdits",
+						"bypassPermissions",
+						"plan",
+						"dontAsk",
+						"auto",
+					],
 					description:
-						"Optional continuation permission mode, equal to or narrower than the current parent turn.",
+						"Optional continuation permission mode under the six-mode delegation lattice, equal to or narrower than the current parent turn. Auto requires a direct native Claude child and revalidates the recorded exact model against live readiness before consuming the continuation attempt.",
 				},
 			},
 			required: ["id", "instruction"],

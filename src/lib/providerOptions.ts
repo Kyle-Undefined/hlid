@@ -18,6 +18,18 @@ type EffortOption = {
 	isDefault?: boolean;
 };
 
+type PermissionOption = {
+	value: string;
+	label: string;
+	desc?: string;
+};
+
+export type SessionPermissionOptionContext = {
+	model: string | null | undefined;
+	policyEnforced: boolean;
+	usageGateEnforced: boolean;
+};
+
 export type ModelInputAvailability = {
 	available: boolean;
 	modelLabel?: string;
@@ -199,6 +211,57 @@ export function defaultEffortFor(
 ): string | undefined {
 	const model = p?.models?.find((m) => m.value === modelValue);
 	return model?.efforts?.find((e) => e.isDefault)?.value;
+}
+
+/**
+ * Permission modes available to one Raven session. Claude's Auto mode is
+ * deliberately fail-closed: the selected catalog row must carry affirmative
+ * raw model capability for either its selectable alias or resolved model.
+ * Effective settings and policy readiness remain a live mutation concern.
+ *
+ * Providers that do not distinguish persistent and session catalogs retain
+ * their existing permission list through the compatibility fallback.
+ */
+export function sessionPermissionOptionsFor(
+	p: ProviderInfo | undefined,
+	context: SessionPermissionOptionContext,
+): PermissionOption[] {
+	const modes = p?.sessionPermissionModes ?? p?.permissionModes ?? [];
+	return modes.filter((mode) => {
+		if (mode.value === "dontAsk") {
+			return p?.id === "claude" && !context.policyEnforced;
+		}
+		if (mode.value !== "auto") return true;
+		if (
+			p?.id !== "claude" ||
+			context.policyEnforced ||
+			context.usageGateEnforced ||
+			!context.model
+		) {
+			return false;
+		}
+		return (
+			p.models?.some(
+				(model) =>
+					(model.value === context.model ||
+						model.resolvedModel === context.model) &&
+					model.supportsAutoMode === true,
+			) === true
+		);
+	});
+}
+
+/** Short, unambiguous permission labels used in compact live-session UI. */
+export function permissionModeBadgeLabel(
+	mode: string | null | undefined,
+): string | null {
+	if (!mode) return null;
+	if (mode === "bypassPermissions") return "bypass";
+	if (mode === "acceptEdits") return "edits";
+	if (mode === "default") return "ask";
+	if (mode === "dontAsk") return "pre-approved";
+	if (mode === "auto") return "auto";
+	return mode;
 }
 
 /**

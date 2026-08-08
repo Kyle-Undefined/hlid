@@ -21,9 +21,11 @@ export type ProviderInfo = {
 	models?: Array<{
 		value: string;
 		label: string;
+		resolvedModel?: string;
 		description?: string;
 		isDefault?: boolean;
 		hidden?: boolean;
+		supportsAutoMode?: boolean;
 		inputModalities?: Array<"text" | "image" | "audio">;
 		efforts?: Array<{
 			value: string;
@@ -42,6 +44,12 @@ export type ProviderInfo = {
 	effortLevels?: Array<{ value: string; label: string; desc?: string }>;
 	/** Permission gate modes the provider honours. */
 	permissionModes?: Array<{ value: string; label: string; desc?: string }>;
+	/** Raven/delegation-only modes that must not leak into persistent config. */
+	sessionPermissionModes?: Array<{
+		value: string;
+		label: string;
+		desc?: string;
+	}>;
 	/** Provider-native reviewers available for interactive approval requests. */
 	approvalReviewers?: Array<{
 		value: "user" | "auto_review";

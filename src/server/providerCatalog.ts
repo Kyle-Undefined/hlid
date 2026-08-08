@@ -494,6 +494,9 @@ export async function loadProviderCatalog(
 				permissionModes: provider.permissionModes
 					? [...provider.permissionModes]
 					: undefined,
+				sessionPermissionModes: provider.sessionPermissionModes
+					? [...provider.sessionPermissionModes]
+					: undefined,
 				approvalReviewers: provider.approvalReviewers
 					? [...provider.approvalReviewers]
 					: undefined,

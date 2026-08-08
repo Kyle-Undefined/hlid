@@ -139,6 +139,7 @@ export class CliProxyCodexProvider extends ClaudeProvider {
 			requestModel: cliProxyModelWithEffort,
 			normalizeModel: stripCliProxyThinkingSuffix,
 			passSdkEffort: false,
+			passSdkAdvancedPermissionModes: false,
 			exposeUsageWindows: false,
 			exposeAccountInfo: false,
 			proxyConfig: null,

@@ -80,6 +80,7 @@ import {
 	mapClaudeModels,
 	mapClaudeUsageWindows,
 } from "./claudeProvider";
+import { CliProxyCodexProvider } from "./cliproxyProvider";
 import { executeHlidAgentToolRich } from "./hlidAgentTools";
 import { executeObsidianAgentTool } from "./obsidianAgentTools";
 
@@ -91,6 +92,9 @@ function sdkGen(events: unknown[], mcpStatuses: unknown[] = []) {
 		for (const e of events) yield e;
 	})();
 	Object.assign(gen, {
+		initializationResult: vi.fn().mockResolvedValue({ models: [] }),
+		setPermissionMode: vi.fn().mockResolvedValue(undefined),
+		setModel: vi.fn().mockResolvedValue(undefined),
 		mcpServerStatus: vi.fn().mockResolvedValue(mcpStatuses),
 		reconnectMcpServer: vi.fn().mockResolvedValue(undefined),
 		toggleMcpServer: vi.fn().mockResolvedValue(undefined),
@@ -118,6 +122,9 @@ function sdkGen(events: unknown[], mcpStatuses: unknown[] = []) {
 function sdkStream(factory: () => AsyncGenerator<unknown>) {
 	const gen = factory();
 	Object.assign(gen, {
+		initializationResult: vi.fn().mockResolvedValue({ models: [] }),
+		setPermissionMode: vi.fn().mockResolvedValue(undefined),
+		setModel: vi.fn().mockResolvedValue(undefined),
 		mcpServerStatus: vi.fn().mockResolvedValue([]),
 	});
 	// biome-ignore lint/suspicious/noExplicitAny: test mock
@@ -132,6 +139,16 @@ function baseParams(
 		canUseTool: vi.fn().mockResolvedValue({ behavior: "allow" }),
 		...overrides,
 	};
+}
+
+function deferred<T>() {
+	let resolve!: (value: T | PromiseLike<T>) => void;
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+		resolve = resolvePromise;
+		reject = rejectPromise;
+	});
+	return { promise, resolve, reject };
 }
 
 async function collectEvents(
@@ -6086,7 +6103,7 @@ describe("ClaudeProvider — MCP controls", () => {
 		expect(promptSession.mcpPermissionModeOverrideAvailable).toBe(false);
 		await expect(
 			promptSession.setMcpPermissionModeOverride?.("github", "auto"),
-		).rejects.toThrow("require Auto-approve all");
+		).rejects.toThrow("require Auto or Auto-approve all");
 	});
 });
 
@@ -6291,6 +6308,7 @@ describe("ClaudeProvider — setPermissionMode", () => {
 		const session = provider.query(baseParams());
 		const iter = session[Symbol.asyncIterator]();
 		await iter.next();
+		gen.setPermissionMode.mockClear();
 
 		await expect(session.setPermissionMode?.("bogus")).rejects.toThrow(
 			"Unknown permission mode: bogus",
@@ -6324,12 +6342,277 @@ describe("ClaudeProvider — setPermissionMode", () => {
 		expect(gen.setPermissionMode).toHaveBeenCalledWith("default");
 	});
 
+	it("orders a cold initialization control before a concurrent external setter", async () => {
+		const initialized = deferred<{ models: never[] }>();
+		const controls: string[] = [];
+		const gen = sdkGen([]);
+		gen.initializationResult = vi.fn(() => initialized.promise);
+		gen.setPermissionMode = vi.fn(async (mode: string) => {
+			controls.push(mode);
+		});
+		vi.mocked(query).mockReturnValueOnce(gen);
+		const session = new ClaudeProvider().query(
+			baseParams({ permissionMode: "default" }),
+		);
+
+		const sending = session.send("hello");
+		const setting = session.setPermissionMode?.("auto");
+		expect(controls).toEqual([]);
+		initialized.resolve({ models: [] });
+
+		await expect(sending).resolves.toBeUndefined();
+		await expect(setting).resolves.toBeUndefined();
+		expect(controls).toEqual(["default", "auto"]);
+		session.cancel();
+	});
+
+	it("keeps the cold initialization mode when the queued external setter rejects", async () => {
+		const initialized = deferred<{ models: never[] }>();
+		const controls: string[] = [];
+		const gen = sdkGen([]);
+		gen.initializationResult = vi.fn(() => initialized.promise);
+		gen.setPermissionMode = vi.fn(async (mode: string) => {
+			controls.push(mode);
+			if (mode === "auto") throw new Error("Auto rejected by active settings");
+		});
+		vi.mocked(query).mockReturnValueOnce(gen);
+		const session = new ClaudeProvider().query(
+			baseParams({ permissionMode: "default" }),
+		);
+
+		const sending = session.send("hello");
+		const setting = session.setPermissionMode?.("auto");
+		const rejected = expect(setting).rejects.toMatchObject({
+			name: "ProviderPermissionModeRejectedError",
+			message: "Auto rejected by active settings",
+			attempted: "auto",
+			authoritative: "default",
+		});
+		initialized.resolve({ models: [] });
+
+		await expect(sending).resolves.toBeUndefined();
+		await rejected;
+		expect(controls).toEqual(["default", "auto"]);
+		expect(session.mcpPermissionModeOverrideAvailable).toBe(false);
+		session.cancel();
+	});
+
+	it("ignores queued pre-ACK status and emits one matching post-activity native fallback", async () => {
+		const gen = sdkGen([
+			{ type: "system", subtype: "init", session_id: "native-auto", tools: [] },
+			{
+				type: "system",
+				subtype: "status",
+				session_id: "native-auto",
+				permissionMode: "default",
+			},
+			{
+				type: "assistant",
+				session_id: "native-auto",
+				message: {
+					id: "assistant-after-ack",
+					content: [{ type: "text", text: "working" }],
+					usage: { input_tokens: 2, output_tokens: 1 },
+				},
+			},
+			{
+				type: "system",
+				subtype: "status",
+				session_id: "stale-native",
+				permissionMode: "default",
+			},
+			{
+				type: "system",
+				subtype: "status",
+				session_id: "native-auto",
+				permissionMode: "default",
+			},
+			{
+				type: "system",
+				subtype: "status",
+				session_id: "native-auto",
+				permissionMode: "default",
+			},
+			{
+				type: "result",
+				subtype: "success",
+				session_id: "native-auto",
+				total_cost_usd: 0,
+				num_turns: 1,
+				duration_ms: 100,
+				usage: { input_tokens: 2, output_tokens: 1 },
+			},
+		]);
+		vi.mocked(query).mockReturnValueOnce(gen);
+		const session = new ClaudeProvider().query(
+			baseParams({ permissionMode: "auto", model: "claude-sonnet-5" }),
+		);
+
+		await session.send("hello");
+		expect(session.mcpPermissionModeOverrideAvailable).toBe(true);
+		const events: AgentEvent[] = [];
+		for await (const event of session) events.push(event);
+
+		expect(
+			events.filter(
+				(event) => event.type === "provider_permission_mode_changed",
+			),
+		).toEqual([
+			{
+				type: "provider_permission_mode_changed",
+				permissionMode: "default",
+				providerSessionId: "native-auto",
+			},
+		]);
+		// Native fallback must also update the host-side mode used by later tool guards.
+		expect(session.mcpPermissionModeOverrideAvailable).toBe(false);
+	});
+
 	it("is a no-op when the SDK query hasn't been created yet", async () => {
 		const provider = new ClaudeProvider();
 		const session = provider.query(baseParams());
 		await expect(
 			session.setPermissionMode?.("acceptEdits"),
 		).resolves.toBeUndefined();
+	});
+});
+
+describe("ClaudeProvider — exact Auto validation", () => {
+	beforeEach(() => {
+		vi.mocked(query).mockClear();
+	});
+
+	function validationContext(
+		cwd: string,
+		overrides: Partial<{
+			model: string;
+			forceExact: boolean;
+		}> = {},
+	) {
+		return {
+			cwd,
+			capabilityCwd: cwd,
+			model: "claude-sonnet-5",
+			policyEnforced: false,
+			usageGateEnforced: false,
+			...overrides,
+		};
+	}
+
+	it("accepts an exact model only after Auto succeeds and default is restored", async () => {
+		const controls: string[] = [];
+		const models: Array<string | undefined> = [];
+		const gen = sdkGen([]);
+		gen.setModel = vi.fn(async (model?: string) => {
+			models.push(model);
+		});
+		gen.setPermissionMode = vi.fn(async (mode: string) => {
+			controls.push(mode);
+		});
+		vi.mocked(query).mockReturnValueOnce(gen);
+
+		await new ClaudeProvider().validatePermissionMode(
+			"auto",
+			validationContext("/tmp/auto-probe-success"),
+		);
+
+		expect(gen.initializationResult).toHaveBeenCalledOnce();
+		expect(models).toEqual(["claude-sonnet-5"]);
+		expect(controls).toEqual(["auto", "default"]);
+	});
+
+	it("fails closed and negative-caches an exact Auto rejection", async () => {
+		const controls: string[] = [];
+		const gen = sdkGen([]);
+		gen.setPermissionMode = vi.fn(async (mode: string) => {
+			controls.push(mode);
+			if (mode === "auto") throw new Error("Auto disabled by settings");
+		});
+		vi.mocked(query).mockReturnValueOnce(gen);
+		const provider = new ClaudeProvider();
+		const context = validationContext("/tmp/auto-probe-negative-cache");
+
+		await expect(
+			provider.validatePermissionMode("auto", context),
+		).rejects.toThrow("Auto is unavailable for claude-sonnet-5");
+		await expect(
+			provider.validatePermissionMode("auto", context),
+		).rejects.toThrow("Auto is unavailable for claude-sonnet-5");
+
+		expect(query).toHaveBeenCalledTimes(1);
+		expect(controls).toEqual(["auto", "default"]);
+	});
+
+	it("positive-caches the exact executable/cwd/model probe identity", async () => {
+		const gen = sdkGen([]);
+		vi.mocked(query).mockReturnValueOnce(gen);
+		const provider = new ClaudeProvider();
+		const context = validationContext("/tmp/auto-probe-positive-cache");
+
+		await provider.validatePermissionMode("auto", context);
+		await provider.validatePermissionMode("auto", context);
+
+		expect(query).toHaveBeenCalledTimes(1);
+		expect(gen.setModel).toHaveBeenCalledTimes(1);
+		expect(gen.setPermissionMode).toHaveBeenCalledTimes(2);
+	});
+
+	it("forceExact bypasses a warm positive result", async () => {
+		const cachedProbe = sdkGen([]);
+		const forcedProbe = sdkGen([]);
+		vi.mocked(query)
+			.mockReturnValueOnce(cachedProbe)
+			.mockReturnValueOnce(forcedProbe);
+		const provider = new ClaudeProvider();
+		const cwd = "/tmp/auto-probe-force-exact";
+
+		await provider.validatePermissionMode("auto", validationContext(cwd));
+		await provider.validatePermissionMode(
+			"auto",
+			validationContext(cwd, { forceExact: true }),
+		);
+
+		expect(query).toHaveBeenCalledTimes(2);
+		expect(cachedProbe.setModel).toHaveBeenCalledWith("claude-sonnet-5");
+		expect(forcedProbe.setModel).toHaveBeenCalledWith("claude-sonnet-5");
+	});
+
+	it("uses one overall probe deadline and aborts after initialization consumes part of it", async () => {
+		vi.useFakeTimers();
+		try {
+			let capturedAbortController: AbortController | undefined;
+			const gen = sdkGen([]);
+			gen.initializationResult = vi.fn(
+				() =>
+					new Promise<{ models: never[] }>((resolve) => {
+						setTimeout(() => resolve({ models: [] }), 6_000);
+					}),
+			);
+			gen.setModel = vi.fn(() => new Promise<void>(() => {}));
+			vi.mocked(query).mockImplementationOnce(({ options }) => {
+				capturedAbortController = options?.abortController;
+				return gen;
+			});
+			const provider = new ClaudeProvider();
+			const promise = provider.validatePermissionMode(
+				"auto",
+				validationContext("/tmp/auto-probe-overall-timeout"),
+			);
+			const rejected = expect(promise).rejects.toThrow(
+				"Auto is unavailable for claude-sonnet-5",
+			);
+
+			await vi.advanceTimersByTimeAsync(5_999);
+			expect(gen.setModel).not.toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(4_001);
+			await rejected;
+
+			expect(gen.initializationResult).toHaveBeenCalledOnce();
+			expect(gen.setModel).toHaveBeenCalledOnce();
+			expect(capturedAbortController?.signal.aborted).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 
@@ -7572,6 +7855,60 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			content: [{ type: "text", text: "Command needs approval" }],
 		});
 		expect(executeObsidianAgentTool).not.toHaveBeenCalled();
+		session.cancel();
+	});
+
+	it("updates the Obsidian run_command guard across default to Auto and back", async () => {
+		const gen = sdkGen([]);
+		vi.mocked(query).mockReturnValueOnce(gen);
+		const canUseTool = vi.fn().mockResolvedValue({
+			behavior: "deny",
+			message: "Exact command approval required",
+		});
+		vi.mocked(executeObsidianAgentTool).mockResolvedValue('{"executed":true}');
+		const session = new ClaudeProvider().query(
+			baseParams({ permissionMode: "default", canUseTool }),
+		);
+		await session.send("manage Obsidian");
+		const options = vi.mocked(query).mock.calls.at(-1)?.[0].options;
+		const server = options?.mcpServers?.hlid_obsidian as unknown as {
+			instance: {
+				options: {
+					tools: Array<{
+						name: string;
+						handler: (input: unknown) => Promise<{
+							isError?: boolean;
+							content: Array<{ type: string; text: string }>;
+						}>;
+					}>;
+				};
+			};
+		};
+		const runCommand = server.instance.options.tools.find(
+			(item) => item.name === "run_command",
+		);
+		const input = { id: "app:toggle-left-sidebar" };
+
+		await expect(runCommand?.handler(input)).resolves.toEqual({
+			content: [{ type: "text", text: '{"executed":true}' }],
+		});
+		expect(canUseTool).not.toHaveBeenCalled();
+		expect(executeObsidianAgentTool).toHaveBeenCalledTimes(1);
+
+		await session.setPermissionMode?.("auto");
+		await expect(runCommand?.handler(input)).resolves.toEqual({
+			isError: true,
+			content: [{ type: "text", text: "Exact command approval required" }],
+		});
+		expect(canUseTool).toHaveBeenCalledOnce();
+		expect(executeObsidianAgentTool).toHaveBeenCalledTimes(1);
+
+		await session.setPermissionMode?.("default");
+		await expect(runCommand?.handler(input)).resolves.toEqual({
+			content: [{ type: "text", text: '{"executed":true}' }],
+		});
+		expect(canUseTool).toHaveBeenCalledOnce();
+		expect(executeObsidianAgentTool).toHaveBeenCalledTimes(2);
 		session.cancel();
 	});
 
@@ -9634,6 +9971,55 @@ describe("ClaudeProvider capability declarations", () => {
 		expect(values).toContain("default");
 		expect(values).toContain("acceptEdits");
 		expect(values).toContain("bypassPermissions");
+	});
+
+	it("scopes Auto and dontAsk to direct Claude session catalogs and validation", async () => {
+		const direct = new ClaudeProvider();
+		const cliProxy = new CliProxyCodexProvider({
+			base_url: "http://127.0.0.1:8317",
+			api_key: "test-key",
+		});
+		const advancedModes = ["auto", "dontAsk"] as const;
+		const directConfigModes = new Set<string>(
+			(direct.permissionModes ?? []).map((mode) => mode.value),
+		);
+		const directSessionModes = new Set<string>(
+			(direct.sessionPermissionModes ?? []).map((mode) => mode.value),
+		);
+		const cliProxySessionModes = new Set<string>(
+			(cliProxy.sessionPermissionModes ?? []).map((mode) => mode.value),
+		);
+
+		for (const mode of advancedModes) {
+			expect(directConfigModes.has(mode)).toBe(false);
+			expect(directSessionModes.has(mode)).toBe(true);
+			expect(cliProxySessionModes.has(mode)).toBe(false);
+			const session = direct.query(
+				baseParams({ permissionMode: mode, model: "claude-sonnet-5" }),
+			);
+			session.cancel();
+			expect(() =>
+				cliProxy.query(
+					baseParams({ permissionMode: mode, model: "claude-sonnet-5" }),
+				),
+			).toThrow(`does not support permission mode ${mode}`);
+			await expect(
+				cliProxy.validatePermissionMode(mode, {
+					cwd: "/tmp/cliproxy-advanced-mode",
+					model: "claude-sonnet-5",
+					policyEnforced: false,
+					usageGateEnforced: false,
+				}),
+			).rejects.toThrow(`does not support permission mode ${mode}`);
+		}
+		await expect(
+			direct.validatePermissionMode("dontAsk", {
+				cwd: "/tmp/direct-dont-ask",
+				model: "claude-sonnet-5",
+				policyEnforced: false,
+				usageGateEnforced: false,
+			}),
+		).resolves.toBeUndefined();
 	});
 
 	it("includes desc on effortLevels entries", () => {

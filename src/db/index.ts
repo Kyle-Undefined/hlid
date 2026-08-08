@@ -185,6 +185,7 @@ export {
 	setSessionArchived,
 	setSessionEffort,
 	setSessionModel,
+	setSessionModelAndPermissionMode,
 	setSessionPermissionMode,
 	setSessionPinned,
 	setSessionProviderId,

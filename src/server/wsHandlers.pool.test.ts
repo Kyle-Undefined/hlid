@@ -136,6 +136,9 @@ function makeManager(
 			steerToolEventIndex: 2,
 		}),
 		restoreMcpStatus: vi.fn(),
+		prepareSessionControlsForChat: vi
+			.fn()
+			.mockResolvedValue({ restored: false }),
 		...overrides,
 	} as unknown as ReturnType<typeof makeManager>;
 }

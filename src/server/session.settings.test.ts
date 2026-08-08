@@ -63,6 +63,7 @@ import {
 	makeProviders,
 	makeRecapTriggerProvider,
 	makeSwitchableProvider,
+	routinePermissionContext,
 } from "./session.test-utils";
 
 function deferred() {
@@ -73,6 +74,32 @@ function deferred() {
 		reject = rejectPromise;
 	});
 	return { promise, resolve, reject };
+}
+
+const ADVANCED_CLAUDE_PERMISSION_MODES = [
+	{ value: "default", label: "Ask" },
+	{ value: "acceptEdits", label: "Edits" },
+	{ value: "bypassPermissions", label: "Bypass" },
+	{ value: "auto", label: "Auto" },
+	{ value: "dontAsk", label: "Pre-approved only" },
+] as const;
+
+type PermissionValidationContext = Parameters<
+	NonNullable<AgentProvider["validatePermissionMode"]>
+>[1];
+
+function advancedClaudeProvider(
+	provider: AgentProvider,
+	validatePermissionMode: NonNullable<
+		AgentProvider["validatePermissionMode"]
+	> = vi.fn().mockResolvedValue(undefined),
+): AgentProvider {
+	return {
+		...provider,
+		providerId: "claude",
+		sessionPermissionModes: ADVANCED_CLAUDE_PERMISSION_MODES,
+		validatePermissionMode,
+	};
 }
 
 describe("SessionManager — setModel", () => {
@@ -108,7 +135,14 @@ describe("SessionManager — setModel", () => {
 		await sm.setModel("model-b");
 		expect(getSession()?.setModel).toHaveBeenCalledWith("model-b");
 		expect(sm.getStatus().model).toBe("model-b");
-		expect(dbMock.setSessionModel).toHaveBeenCalledWith("sess-1", "model-b");
+		expect(dbMock.setSessionModel).toHaveBeenCalledWith(
+			"sess-1",
+			"model-b",
+			expect.objectContaining({
+				guard: expect.any(Function),
+				onCommitted: expect.any(Function),
+			}),
+		);
 	});
 
 	it("persists a provider-default reset as an empty selected model", async () => {
@@ -122,7 +156,14 @@ describe("SessionManager — setModel", () => {
 
 		await sm.setModel(undefined);
 
-		expect(dbMock.setSessionModel).toHaveBeenCalledWith("sess-reset", "");
+		expect(dbMock.setSessionModel).toHaveBeenCalledWith(
+			"sess-reset",
+			"",
+			expect.objectContaining({
+				guard: expect.any(Function),
+				onCommitted: expect.any(Function),
+			}),
+		);
 	});
 
 	it("reloads the empty selected-model sentinel as the provider default", async () => {
@@ -593,7 +634,12 @@ describe("SessionManager — setProvider", () => {
 				model: "gpt-5.5",
 				effort: undefined,
 				permissionMode: undefined,
+				approvalsReviewer: undefined,
 			},
+			expect.objectContaining({
+				guard: expect.any(Function),
+				onCommitted: expect.any(Function),
+			}),
 		);
 	});
 
@@ -645,7 +691,12 @@ describe("SessionManager — setProvider", () => {
 				model: "gpt-5.5",
 				effort: "medium",
 				permissionMode: "bypassPermissions",
+				approvalsReviewer: undefined,
 			},
+			expect.objectContaining({
+				guard: expect.any(Function),
+				onCommitted: expect.any(Function),
+			}),
 		);
 		expect(dbMock.setSessionModel).not.toHaveBeenCalled();
 		expect(dbMock.setSessionEffort).not.toHaveBeenCalled();
@@ -773,7 +824,12 @@ describe("SessionManager — setProvider", () => {
 				model: "pi-pro",
 				effort: "medium",
 				permissionMode: "default",
+				approvalsReviewer: undefined,
 			},
+			expect.objectContaining({
+				guard: expect.any(Function),
+				onCommitted: expect.any(Function),
+			}),
 		);
 		expect(dbMock.setSessionModel).not.toHaveBeenCalled();
 		expect(dbMock.setSessionEffort).not.toHaveBeenCalled();
@@ -1019,7 +1075,7 @@ describe("SessionManager — setEffort", () => {
 		expect(sm.getStatus().effort).toBe("xhigh");
 	});
 
-	it("rejects a stale live apply after a same-provider selection replacement", async () => {
+	it("orders a same-provider selection after an in-flight effort change", async () => {
 		const applyGate = deferred();
 		const setEffort = vi.fn().mockReturnValue(applyGate.promise);
 		const { provider, getSession } = makeSwitchableProvider({ setEffort });
@@ -1032,20 +1088,28 @@ describe("SessionManager — setEffort", () => {
 
 		const pending = sm.setEffort("max");
 		await vi.waitFor(() => expect(setEffort).toHaveBeenCalledWith("max"));
-		await sm.setProvider("claude", { effort: "low" });
+		const replacement = sm.setProvider("claude", { effort: "low" });
+		await Promise.resolve();
+		expect(setEffort).toHaveBeenCalledTimes(1);
 		applyGate.resolve();
 
-		await expect(pending).rejects.toThrow(
-			"Effort change was superseded by a session or provider change.",
+		await expect(pending).resolves.toBeUndefined();
+		await expect(replacement).resolves.toBeUndefined();
+		expect(setEffort.mock.calls).toEqual([["max"], ["low"]]);
+		expect(dbMock.setSessionEffort).toHaveBeenCalledWith(
+			"superseded-provider-effort",
+			"max",
 		);
-		expect(dbMock.setSessionEffort).not.toHaveBeenCalled();
 		expect(sm.getStatus().effort).toBe("low");
-		expect(firstSession?.cancel).toHaveBeenCalledOnce();
+		expect(firstSession?.cancel).not.toHaveBeenCalled();
 	});
 
-	it("retires a same-provider target when its gated setter rejects after replacement", async () => {
+	it("continues a queued same-provider selection after effort rejection", async () => {
 		const applyGate = deferred();
-		const setEffort = vi.fn().mockReturnValue(applyGate.promise);
+		const setEffort = vi
+			.fn()
+			.mockReturnValueOnce(applyGate.promise)
+			.mockResolvedValueOnce(undefined);
 		const { provider, getSession } = makeSwitchableProvider({ setEffort });
 		const sm = new SessionManager(makeConfig(), makeProviders(provider));
 		await sm.runQuery("first", () => {}, {
@@ -1056,19 +1120,21 @@ describe("SessionManager — setEffort", () => {
 
 		const pending = sm.setEffort("max");
 		await vi.waitFor(() => expect(setEffort).toHaveBeenCalledWith("max"));
-		await sm.setProvider("claude", { effort: "low" });
+		const replacement = sm.setProvider("claude", { effort: "low" });
 		const rejection = expect(pending).rejects.toThrow("native setter failed");
 		applyGate.reject(new Error("native setter failed"));
 		await rejection;
+		await expect(replacement).resolves.toBeUndefined();
 
 		expect(dbMock.setSessionEffort).not.toHaveBeenCalled();
 		expect(sm.getStatus().effort).toBe("low");
-		expect(firstSession?.cancel).toHaveBeenCalledOnce();
+		expect(setEffort.mock.calls).toEqual([["max"], ["low"]]);
+		expect(firstSession?.cancel).not.toHaveBeenCalled();
 
 		await sm.runQuery("second", () => {}, {
 			sessionId: "rejected-superseded-provider-effort",
 		});
-		expect(getSession()).not.toBe(firstSession);
+		expect(getSession()).toBe(firstSession);
 	});
 
 	it("rejects a stale live apply after session state is reinitialized", async () => {
@@ -1117,8 +1183,8 @@ describe("SessionManager — setEffort", () => {
 			approvalsReviewer: null,
 		});
 		setEffort.mockClear();
-		vi.mocked(dbMock.setSessionEffort).mockImplementationOnce(
-			() => persistenceGate.promise,
+		vi.mocked(dbMock.setSessionEffort).mockImplementationOnce(() =>
+			persistenceGate.promise.then(() => true),
 		);
 
 		const pending = sm.setEffort("max");
@@ -1308,8 +1374,8 @@ describe("SessionManager — setEffort", () => {
 		await sm.runQuery("first", () => {}, {
 			sessionId: "cliproxy-effort-barrier",
 		});
-		vi.mocked(dbMock.setSessionEffort).mockImplementationOnce(
-			() => persistenceGate.promise,
+		vi.mocked(dbMock.setSessionEffort).mockImplementationOnce(() =>
+			persistenceGate.promise.then(() => true),
 		);
 
 		const effortChange = sm.setEffort("xhigh");
@@ -1397,6 +1463,771 @@ describe("SessionManager — setPermissionMode", () => {
 		expect(dbMock.setSessionPermissionMode).toHaveBeenCalledWith(
 			"sess-1",
 			"acceptEdits",
+			expect.objectContaining({ guard: expect.any(Function) }),
+		);
+	});
+
+	it("validates, applies, and persists direct Claude Auto transactionally", async () => {
+		const nativeSetPermissionMode = vi.fn().mockResolvedValue(undefined);
+		const validation = vi.fn().mockResolvedValue(undefined);
+		const switchable = makeSwitchableProvider({
+			setPermissionMode: nativeSetPermissionMode,
+		});
+		const sm = new SessionManager(
+			makeConfig("claude-sonnet-4-6"),
+			makeProviders(advancedClaudeProvider(switchable.provider, validation)),
+		);
+		await sm.runQuery("first", () => {}, { sessionId: "permission-auto-live" });
+		nativeSetPermissionMode.mockClear();
+		vi.mocked(dbMock.setSessionPermissionMode).mockClear();
+
+		await sm.setPermissionMode("auto");
+
+		expect(validation).toHaveBeenLastCalledWith(
+			"auto",
+			expect.objectContaining({
+				model: "claude-sonnet-4-6",
+				policyEnforced: false,
+				usageGateEnforced: false,
+			}),
+		);
+		expect(nativeSetPermissionMode).toHaveBeenCalledWith("auto");
+		expect(dbMock.setSessionPermissionMode).toHaveBeenCalledWith(
+			"permission-auto-live",
+			"auto",
+			expect.objectContaining({ guard: expect.any(Function) }),
+		);
+		expect(sm.getStatus().permission_mode).toBe("auto");
+	});
+
+	it("keeps authoritative state unchanged when native Auto rejects", async () => {
+		const nativeSetPermissionMode = vi.fn().mockResolvedValue(undefined);
+		const switchable = makeSwitchableProvider({
+			setPermissionMode: nativeSetPermissionMode,
+		});
+		const sm = new SessionManager(
+			makeConfig("claude-sonnet-4-6"),
+			makeProviders(advancedClaudeProvider(switchable.provider)),
+		);
+		await sm.runQuery("first", () => {}, {
+			sessionId: "permission-auto-reject",
+		});
+		nativeSetPermissionMode.mockRejectedValueOnce(
+			new Error("Auto disabled by workspace settings"),
+		);
+		vi.mocked(dbMock.setSessionPermissionMode).mockClear();
+
+		await expect(sm.setPermissionMode("auto")).rejects.toThrow(
+			"Auto disabled by workspace settings",
+		);
+
+		expect(sm.getStatus().permission_mode).toBe("default");
+		expect(dbMock.setSessionPermissionMode).not.toHaveBeenCalled();
+		expect(switchable.getSession()?.cancel).not.toHaveBeenCalled();
+	});
+
+	it("rolls native Auto back when persistence rejects", async () => {
+		const nativeSetPermissionMode = vi.fn().mockResolvedValue(undefined);
+		const switchable = makeSwitchableProvider({
+			setPermissionMode: nativeSetPermissionMode,
+		});
+		const sm = new SessionManager(
+			makeConfig("claude-sonnet-4-6"),
+			makeProviders(advancedClaudeProvider(switchable.provider)),
+		);
+		await sm.runQuery("first", () => {}, { sessionId: "permission-auto-db" });
+		nativeSetPermissionMode.mockClear();
+		vi.mocked(dbMock.setSessionPermissionMode).mockRejectedValueOnce(
+			new Error("database busy"),
+		);
+
+		await expect(sm.setPermissionMode("auto")).rejects.toThrow("database busy");
+
+		expect(nativeSetPermissionMode.mock.calls.map(([mode]) => mode)).toEqual([
+			"auto",
+			"default",
+		]);
+		expect(sm.getStatus().permission_mode).toBe("default");
+		expect(switchable.getSession()?.cancel).not.toHaveBeenCalled();
+	});
+
+	it("retires the exact native owner when DB failure rollback also rejects", async () => {
+		const nativeSetPermissionMode = vi.fn().mockResolvedValue(undefined);
+		const switchable = makeSwitchableProvider({
+			setPermissionMode: nativeSetPermissionMode,
+		});
+		const sm = new SessionManager(
+			makeConfig("claude-sonnet-4-6"),
+			makeProviders(advancedClaudeProvider(switchable.provider)),
+		);
+		await sm.runQuery("first", () => {}, {
+			sessionId: "permission-auto-retire",
+		});
+		nativeSetPermissionMode.mockImplementation(async (mode) => {
+			if (mode === "default") throw new Error("rollback failed");
+		});
+		vi.mocked(dbMock.setSessionPermissionMode).mockRejectedValueOnce(
+			new Error("database busy"),
+		);
+
+		await expect(sm.setPermissionMode("auto")).rejects.toThrow("database busy");
+
+		expect(sm.getStatus().permission_mode).toBe("default");
+		expect(switchable.getSession()?.cancel).toHaveBeenCalledOnce();
+	});
+
+	it("serializes concurrent mode changes in invocation order after rejection", async () => {
+		const autoGate = deferred();
+		const nativeSetPermissionMode = vi.fn().mockResolvedValue(undefined);
+		const switchable = makeSwitchableProvider({
+			setPermissionMode: nativeSetPermissionMode,
+		});
+		const sm = new SessionManager(
+			makeConfig("claude-sonnet-4-6"),
+			makeProviders(advancedClaudeProvider(switchable.provider)),
+		);
+		await sm.runQuery("first", () => {}, { sessionId: "permission-order" });
+		nativeSetPermissionMode.mockClear();
+		nativeSetPermissionMode.mockImplementation(async (mode) => {
+			if (mode === "auto") {
+				await autoGate.promise;
+				throw new Error("Auto changed while applying");
+			}
+		});
+		vi.mocked(dbMock.setSessionPermissionMode).mockClear();
+
+		const first = sm.setPermissionMode("auto");
+		const second = sm.setPermissionMode("dontAsk");
+		await vi.waitFor(() =>
+			expect(nativeSetPermissionMode).toHaveBeenCalledWith("auto"),
+		);
+		expect(nativeSetPermissionMode).not.toHaveBeenCalledWith("dontAsk");
+		autoGate.resolve();
+
+		await expect(first).rejects.toThrow("Auto changed while applying");
+		await expect(second).resolves.toBeUndefined();
+		expect(nativeSetPermissionMode.mock.calls.map(([mode]) => mode)).toEqual([
+			"auto",
+			"dontAsk",
+		]);
+		expect(sm.getStatus().permission_mode).toBe("dontAsk");
+		expect(
+			vi
+				.mocked(dbMock.setSessionPermissionMode)
+				.mock.calls.map(([, mode]) => mode),
+		).toEqual(["dontAsk"]);
+	});
+
+	it("downgrades Auto atomically when the selected model is unsupported", async () => {
+		const nativeSetPermissionMode = vi.fn().mockResolvedValue(undefined);
+		const nativeSetModel = vi.fn().mockResolvedValue(undefined);
+		const validation = vi.fn(
+			async (mode: string, context: PermissionValidationContext) => {
+				if (mode === "auto" && context.model === "claude-haiku-4-5") {
+					throw new Error("Auto unavailable for Haiku");
+				}
+			},
+		);
+		const switchable = makeSwitchableProvider({
+			setPermissionMode: nativeSetPermissionMode,
+			setModel: nativeSetModel,
+		});
+		const sm = new SessionManager(
+			makeConfig("claude-sonnet-4-6"),
+			makeProviders(advancedClaudeProvider(switchable.provider, validation)),
+		);
+		await sm.runQuery("first", () => {}, { sessionId: "auto-model-downgrade" });
+		await sm.setPermissionMode("auto");
+		vi.mocked(dbMock.setSessionModelAndPermissionMode).mockClear();
+
+		await sm.setModel("claude-haiku-4-5");
+
+		expect(nativeSetPermissionMode).toHaveBeenLastCalledWith("default");
+		expect(nativeSetModel).toHaveBeenLastCalledWith("claude-haiku-4-5");
+		expect(dbMock.setSessionModelAndPermissionMode).toHaveBeenCalledWith(
+			"auto-model-downgrade",
+			"claude-haiku-4-5",
+			"default",
+			expect.objectContaining({
+				guard: expect.any(Function),
+				onCommitted: expect.any(Function),
+			}),
+		);
+		expect(sm.getStatus()).toMatchObject({
+			model: "claude-haiku-4-5",
+			permission_mode: "default",
+		});
+	});
+
+	it.each([
+		["Umbod", { umbod: { enabled: true } }],
+		[
+			"auto-sleep",
+			{
+				auto_sleep: {
+					enabled: true,
+					threshold: 0.95,
+					max_sleep_minutes: 360,
+					resume_buffer_seconds: 60,
+				},
+			},
+		],
+	] as const)("retires live Auto and durably narrows it when %s turns on", async (_label, policyConfig) => {
+		const nativeSetPermissionMode = vi.fn().mockResolvedValue(undefined);
+		const switchable = makeSwitchableProvider({
+			setPermissionMode: nativeSetPermissionMode,
+		});
+		const config = makeConfig("claude-sonnet-4-6");
+		const sm = new SessionManager(
+			config,
+			makeProviders(advancedClaudeProvider(switchable.provider)),
+		);
+		await sm.runQuery("first", () => {}, {
+			sessionId: `auto-policy-${_label}`,
+		});
+		await sm.setPermissionMode("auto");
+		vi.mocked(dbMock.setSessionPermissionMode).mockClear();
+
+		sm.syncConfig({ ...config, ...policyConfig } as HlidConfig);
+
+		expect(sm.getStatus().permission_mode).toBe("default");
+		expect(switchable.getSession()?.cancel).toHaveBeenCalledOnce();
+		await vi.waitFor(() =>
+			expect(dbMock.setSessionPermissionMode).toHaveBeenCalledWith(
+				`auto-policy-${_label}`,
+				"default",
+				expect.objectContaining({ guard: expect.any(Function) }),
+			),
+		);
+	});
+
+	it("keeps dontAsk selected under auto-sleep while retiring its stale runtime", async () => {
+		const switchable = makeSwitchableProvider({
+			setPermissionMode: vi.fn().mockResolvedValue(undefined),
+		});
+		const config = makeConfig("claude-sonnet-4-6");
+		const sm = new SessionManager(
+			config,
+			makeProviders(advancedClaudeProvider(switchable.provider)),
+		);
+		await sm.runQuery("first", () => {}, { sessionId: "dontask-auto-sleep" });
+		await sm.setPermissionMode("dontAsk");
+		vi.mocked(dbMock.setSessionPermissionMode).mockClear();
+
+		sm.syncConfig({
+			...config,
+			auto_sleep: {
+				enabled: true,
+				threshold: 0.95,
+				max_sleep_minutes: 360,
+				resume_buffer_seconds: 60,
+			},
+		} as HlidConfig);
+
+		expect(sm.getStatus().permission_mode).toBe("dontAsk");
+		expect(switchable.getSession()?.cancel).toHaveBeenCalledOnce();
+		expect(dbMock.setSessionPermissionMode).not.toHaveBeenCalled();
+	});
+
+	it("retires live bypass ownership when Umbod turns on without rewriting the selection", async () => {
+		const switchable = makeSwitchableProvider({
+			setPermissionMode: vi.fn().mockResolvedValue(undefined),
+		});
+		const config = makeConfig("claude-sonnet-4-6");
+		const sm = new SessionManager(
+			config,
+			makeProviders(advancedClaudeProvider(switchable.provider)),
+		);
+		await sm.runQuery("first", () => {}, { sessionId: "bypass-umbod" });
+		await sm.setPermissionMode("bypassPermissions");
+		vi.mocked(dbMock.setSessionPermissionMode).mockClear();
+
+		sm.syncConfig({ ...config, umbod: { enabled: true } } as HlidConfig);
+
+		expect(sm.getStatus().permission_mode).toBe("bypassPermissions");
+		expect(switchable.getSession()?.cancel).toHaveBeenCalledOnce();
+		expect(dbMock.setSessionPermissionMode).not.toHaveBeenCalled();
+	});
+
+	it("does not supersede an in-flight Auto selection on a no-op config sync", async () => {
+		const validationGate = deferred();
+		const validation = vi.fn(
+			async (mode: string, _context: PermissionValidationContext) => {
+				if (mode === "auto") await validationGate.promise;
+			},
+		);
+		const switchable = makeSwitchableProvider({
+			setPermissionMode: vi.fn().mockResolvedValue(undefined),
+		});
+		const config = makeConfig("claude-sonnet-4-6");
+		const sm = new SessionManager(
+			config,
+			makeProviders(advancedClaudeProvider(switchable.provider, validation)),
+		);
+		await sm.runQuery("first", () => {}, { sessionId: "auto-noop-sync" });
+
+		const pending = sm.setPermissionMode("auto");
+		await vi.waitFor(() =>
+			expect(validation).toHaveBeenCalledWith("auto", expect.anything()),
+		);
+		sm.syncConfig(structuredClone(config));
+		validationGate.resolve();
+
+		await expect(pending).resolves.toBeUndefined();
+		expect(sm.getStatus().permission_mode).toBe("auto");
+		expect(switchable.getSession()?.cancel).not.toHaveBeenCalled();
+	});
+
+	it("supersedes an in-flight Auto selection when its policy identity changes", async () => {
+		const validationGate = deferred();
+		const validation = vi.fn(
+			async (mode: string, _context: PermissionValidationContext) => {
+				if (mode === "auto") await validationGate.promise;
+			},
+		);
+		const switchable = makeSwitchableProvider({
+			setPermissionMode: vi.fn().mockResolvedValue(undefined),
+		});
+		const config = makeConfig("claude-sonnet-4-6");
+		const sm = new SessionManager(
+			config,
+			makeProviders(advancedClaudeProvider(switchable.provider, validation)),
+		);
+		await sm.runQuery("first", () => {}, { sessionId: "auto-policy-race" });
+
+		const pending = sm.setPermissionMode("auto");
+		await vi.waitFor(() =>
+			expect(validation).toHaveBeenCalledWith("auto", expect.anything()),
+		);
+		sm.syncConfig({ ...config, umbod: { enabled: true } } as HlidConfig);
+		validationGate.resolve();
+
+		await expect(pending).rejects.toThrow(
+			"Permission-mode change was superseded",
+		);
+		expect(sm.getStatus().permission_mode).toBe("default");
+		expect(switchable.getSession()?.cancel).toHaveBeenCalledOnce();
+	});
+
+	it("blocks the adjacent chat on a rejected permission control but recovers after correlation", async () => {
+		const validationGate = deferred();
+		const validation = vi.fn(
+			async (mode: string, _context: PermissionValidationContext) => {
+				if (mode === "auto") {
+					await validationGate.promise;
+					throw new Error("Auto unavailable now");
+				}
+			},
+		);
+		const switchable = makeSwitchableProvider({
+			setPermissionMode: vi.fn().mockResolvedValue(undefined),
+		});
+		const sm = new SessionManager(
+			makeConfig("claude-sonnet-4-6"),
+			makeProviders(advancedClaudeProvider(switchable.provider, validation)),
+		);
+		await sm.runQuery("first", () => {}, {
+			sessionId: "permission-chat-barrier",
+		});
+		const send = switchable.getSession()?.send as ReturnType<typeof vi.fn>;
+		send.mockClear();
+
+		const control = sm.setPermissionMode("auto");
+		const adjacentChat = sm.runQuery("must not send", () => {}, {
+			sessionId: "permission-chat-barrier",
+		});
+		await vi.waitFor(() =>
+			expect(validation).toHaveBeenCalledWith("auto", expect.anything()),
+		);
+		expect(send).not.toHaveBeenCalled();
+		validationGate.resolve();
+
+		await expect(control).rejects.toThrow("Auto unavailable now");
+		await expect(adjacentChat).rejects.toThrow("Auto unavailable now");
+		expect(send).not.toHaveBeenCalled();
+		sm.acknowledgeSessionControlRejection(control);
+
+		await sm.runQuery("later", () => {}, {
+			sessionId: "permission-chat-barrier",
+		});
+		expect(send).toHaveBeenCalled();
+	});
+
+	it("resolves model then permission controls in one invocation-ordered lane", async () => {
+		const modelGate = deferred();
+		const nativeSetModel = vi.fn(async () => modelGate.promise);
+		const nativeSetPermissionMode = vi.fn().mockResolvedValue(undefined);
+		const validation = vi.fn().mockResolvedValue(undefined);
+		const switchable = makeSwitchableProvider({
+			setModel: nativeSetModel,
+			setPermissionMode: nativeSetPermissionMode,
+		});
+		const sm = new SessionManager(
+			makeConfig("claude-sonnet-old"),
+			makeProviders(advancedClaudeProvider(switchable.provider, validation)),
+		);
+		await sm.runQuery("first", () => {}, { sessionId: "model-mode-lane" });
+		nativeSetModel.mockClear();
+		validation.mockClear();
+
+		const modelChange = sm.setModel("claude-sonnet-new");
+		const modeChange = sm.setPermissionMode("auto");
+		await vi.waitFor(() =>
+			expect(nativeSetModel).toHaveBeenCalledWith("claude-sonnet-new"),
+		);
+		expect(validation).not.toHaveBeenCalled();
+		modelGate.resolve();
+
+		await Promise.all([modelChange, modeChange]);
+		expect(validation).toHaveBeenCalledWith(
+			"auto",
+			expect.objectContaining({ model: "claude-sonnet-new" }),
+		);
+		expect(sm.getStatus()).toMatchObject({
+			model: "claude-sonnet-new",
+			permission_mode: "auto",
+		});
+	});
+
+	it("applies an immediate mode selection to the provider committed just before it", async () => {
+		const codex = makeSwitchableProvider({}, "codex");
+		const claude = makeCaptureProvider("claude");
+		const validation = vi.fn().mockResolvedValue(undefined);
+		const config = {
+			...makeConfig("claude-sonnet-4-6"),
+			vault_provider: "codex",
+			codex: {
+				model: "gpt-5.6-sol",
+				effort: "high",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+		} as HlidConfig;
+		const providers = new Map<string, AgentProvider>([
+			["codex", codex.provider],
+			["claude", advancedClaudeProvider(claude.provider, validation)],
+		]);
+		const sm = new SessionManager(config, providers);
+		await sm.runQuery("first", () => {}, { sessionId: "provider-mode-lane" });
+
+		const providerChange = sm.setProvider("claude", {
+			model: "claude-sonnet-4-6",
+			permissionMode: "default",
+		});
+		const modeChange = sm.setPermissionMode("auto");
+
+		await Promise.all([providerChange, modeChange]);
+		expect(validation).toHaveBeenLastCalledWith(
+			"auto",
+			expect.objectContaining({ model: "claude-sonnet-4-6" }),
+		);
+		expect(sm.getProviderId()).toBe("claude");
+		expect(sm.getStatus()).toMatchObject({
+			model: "claude-sonnet-4-6",
+			permission_mode: "auto",
+		});
+	});
+
+	it("narrows a restored Auto selection before creating a provider when exact validation fails", async () => {
+		const capture = makeCaptureProvider("claude");
+		const validation = vi
+			.fn()
+			.mockRejectedValue(new Error("Auto disabled now"));
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "restore-invalid-auto",
+			label: "Saved Auto",
+			selected_permission_mode: "auto",
+		} as never);
+		vi.mocked(dbMock.getSessionModel).mockResolvedValueOnce(
+			"claude-sonnet-4-6",
+		);
+		vi.mocked(dbMock.getSessionProviderId).mockResolvedValueOnce("claude");
+
+		const sm = new SessionManager(
+			makeConfig("claude-sonnet-4-6"),
+			makeProviders(advancedClaudeProvider(capture.provider, validation)),
+		);
+		await sm.runQuery("continue", () => {}, {
+			sessionId: "restore-invalid-auto",
+		});
+
+		expect(validation).toHaveBeenCalledWith(
+			"auto",
+			expect.objectContaining({ forceExact: true, model: "claude-sonnet-4-6" }),
+		);
+		expect(capture.captured.params?.permissionMode).toBe("default");
+		expect(sm.getStatus().permission_mode).toBe("default");
+		expect(dbMock.setSessionPermissionMode).toHaveBeenCalledWith(
+			"restore-invalid-auto",
+			"default",
+			expect.objectContaining({ guard: expect.any(Function) }),
+		);
+	});
+
+	it("preserves restored pre-approved-only mode for direct native Claude", async () => {
+		const capture = makeCaptureProvider("claude");
+		const validation = vi.fn().mockResolvedValue(undefined);
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "restore-direct-dont-ask",
+			selected_permission_mode: "dontAsk",
+		} as never);
+		vi.mocked(dbMock.getSessionModel).mockResolvedValueOnce(
+			"claude-sonnet-4-6",
+		);
+		vi.mocked(dbMock.getSessionProviderId).mockResolvedValueOnce("claude");
+
+		const sm = new SessionManager(
+			makeConfig("claude-sonnet-4-6"),
+			makeProviders(advancedClaudeProvider(capture.provider, validation)),
+		);
+		await sm.runQuery("continue", () => {}, {
+			sessionId: "restore-direct-dont-ask",
+		});
+
+		expect(validation).toHaveBeenCalledWith(
+			"dontAsk",
+			expect.objectContaining({ model: "claude-sonnet-4-6" }),
+		);
+		expect(validation.mock.calls[0]?.[1].forceExact).toBeFalsy();
+		expect(capture.captured.params?.permissionMode).toBe("dontAsk");
+		expect(sm.getStatus().permission_mode).toBe("dontAsk");
+		expect(dbMock.setSessionPermissionMode).not.toHaveBeenCalledWith(
+			"restore-direct-dont-ask",
+			"default",
+			expect.anything(),
+		);
+	});
+
+	it.each([
+		["Codex", "codex"],
+		["Claude Code CLIProxy", "cliproxy-codex"],
+		["a removed provider", "removed-claude"],
+		["a missing provider selection", null],
+	])("narrows restored pre-approved-only mode for %s", async (_label, savedProviderId) => {
+		const directClaude = advancedClaudeProvider(
+			makeCaptureProvider("claude").provider,
+		);
+		const selectedProvider = savedProviderId
+			? makeCaptureProvider(savedProviderId).provider
+			: undefined;
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: `restore-dont-ask-${savedProviderId ?? "missing"}`,
+			selected_permission_mode: "dontAsk",
+		} as never);
+		vi.mocked(dbMock.getSessionModel).mockResolvedValueOnce("provider-model");
+		vi.mocked(dbMock.getSessionProviderId).mockResolvedValueOnce(
+			savedProviderId,
+		);
+		const providers = new Map<string, AgentProvider>([
+			["claude", directClaude],
+		]);
+		if (selectedProvider && savedProviderId !== "removed-claude") {
+			providers.set(savedProviderId as string, selectedProvider);
+		}
+		const sessionId = `restore-dont-ask-${savedProviderId ?? "missing"}`;
+		const sm = new SessionManager(makeConfig("claude-sonnet-4-6"), providers);
+
+		await sm.runQuery("continue", () => {}, { sessionId });
+
+		expect(sm.getStatus().permission_mode).toBe("default");
+		expect(dbMock.setSessionPermissionMode).toHaveBeenCalledWith(
+			sessionId,
+			"default",
+			expect.objectContaining({ guard: expect.any(Function) }),
+		);
+	});
+
+	it("does not restore stale Auto after a concurrent explicit default selection", async () => {
+		const validationGate = deferred();
+		const capture = makeCaptureProvider("claude");
+		const validation = vi.fn(
+			async (mode: string, _context: PermissionValidationContext) => {
+				if (mode === "auto") await validationGate.promise;
+			},
+		);
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "restore-mode-race",
+			selected_permission_mode: "auto",
+		} as never);
+		vi.mocked(dbMock.getSessionModel).mockResolvedValueOnce(
+			"claude-sonnet-4-6",
+		);
+		vi.mocked(dbMock.getSessionProviderId).mockResolvedValueOnce("claude");
+		const sm = new SessionManager(
+			makeConfig("claude-sonnet-4-6"),
+			makeProviders(advancedClaudeProvider(capture.provider, validation)),
+		);
+
+		const turn = sm.runQuery("continue", () => {}, {
+			sessionId: "restore-mode-race",
+		});
+		await vi.waitFor(() =>
+			expect(validation).toHaveBeenCalledWith("auto", expect.anything()),
+		);
+		await sm.setPermissionMode("default");
+		validationGate.resolve();
+		await turn;
+
+		expect(sm.getStatus().permission_mode).toBe("default");
+		expect(capture.captured.params?.permissionMode).toBe("default");
+	});
+
+	it("does not apply Auto validated for a stale restored model", async () => {
+		const validationGate = deferred();
+		const capture = makeCaptureProvider("claude");
+		const validation = vi.fn(
+			async (mode: string, context: PermissionValidationContext) => {
+				if (mode === "auto" && context.model === "claude-sonnet-old") {
+					await validationGate.promise;
+				}
+			},
+		);
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "restore-model-race",
+			selected_permission_mode: "auto",
+		} as never);
+		vi.mocked(dbMock.getSessionModel).mockResolvedValueOnce(
+			"claude-sonnet-old",
+		);
+		vi.mocked(dbMock.getSessionProviderId).mockResolvedValueOnce("claude");
+		const sm = new SessionManager(
+			makeConfig("claude-sonnet-old"),
+			makeProviders(advancedClaudeProvider(capture.provider, validation)),
+		);
+
+		const turn = sm.runQuery("continue", () => {}, {
+			sessionId: "restore-model-race",
+		});
+		await vi.waitFor(() =>
+			expect(validation).toHaveBeenCalledWith("auto", expect.anything()),
+		);
+		await sm.setModel("claude-sonnet-new");
+		validationGate.resolve();
+		await turn;
+
+		expect(sm.getStatus()).toMatchObject({
+			model: "claude-sonnet-new",
+			permission_mode: "default",
+		});
+		expect(capture.captured.params).toMatchObject({
+			model: "claude-sonnet-new",
+			permissionMode: "default",
+		});
+	});
+
+	it("reconciles a current native Auto fallback once and ignores mismatched evidence", async () => {
+		const provider: AgentProvider = advancedClaudeProvider({
+			providerId: "claude",
+			query(): AgentSession {
+				const events = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "native-current" };
+					yield {
+						type: "provider_permission_mode_changed",
+						permissionMode: "default",
+						providerSessionId: "native-old",
+					};
+					yield {
+						type: "provider_permission_mode_changed",
+						permissionMode: "default",
+						providerSessionId: "native-current",
+					};
+					yield {
+						type: "provider_permission_mode_changed",
+						permissionMode: "default",
+						providerSessionId: "native-current",
+					};
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => events[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		});
+		const sm = new SessionManager(
+			makeConfig("claude-sonnet-4-6"),
+			makeProviders(provider),
+		);
+		await sm.setPermissionMode("auto");
+		vi.mocked(dbMock.setSessionPermissionMode).mockClear();
+		const emitted: Array<{ type: string; [key: string]: unknown }> = [];
+
+		await sm.runQuery("run", (event) => emitted.push(event), {
+			sessionId: "native-fallback",
+		});
+
+		expect(sm.getStatus().permission_mode).toBe("default");
+		expect(dbMock.setSessionPermissionMode).toHaveBeenCalledTimes(1);
+		expect(
+			emitted.filter(
+				(event) =>
+					event.type === "session_control_rejected" &&
+					event.control === "permission_mode",
+			),
+		).toHaveLength(1);
+	});
+
+	it("preserves an admitted full-access Routine child's explicit Auto selection", async () => {
+		const capture = makeCaptureProvider("claude");
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "routine-auto-child",
+			selected_permission_mode: "auto",
+			delegation_parent_session_id: "routine-root",
+			delegation_parent_label: "Routine root",
+			delegation_parent_turn_id: "routine-turn",
+			delegation_depth: 1,
+		} as never);
+		vi.mocked(dbMock.getSessionModel).mockResolvedValueOnce(
+			"claude-sonnet-4-6",
+		);
+		vi.mocked(dbMock.getSessionProviderId).mockResolvedValueOnce("claude");
+		const sm = new SessionManager(
+			makeConfig("claude-sonnet-4-6"),
+			makeProviders(advancedClaudeProvider(capture.provider)),
+		);
+		const routine = {
+			...routinePermissionContext("claude"),
+			mode: "full_access" as const,
+		};
+
+		await sm.runQuery("delegated task", () => {}, {
+			sessionId: "routine-auto-child",
+			routineContext: routine,
+			delegationContext: "Delegated by the full-access Routine root",
+		});
+
+		expect(capture.captured.params?.permissionMode).toBe("auto");
+	});
+
+	it.each([
+		["full_access", "bypassPermissions"],
+		["preapproved", "default"],
+	] as const)("keeps a %s Routine root on its fixed %s permission envelope", async (routineMode, expectedPermissionMode) => {
+		const capture = makeCaptureProvider("claude");
+		const sm = new SessionManager(
+			makeConfig("claude-sonnet-4-6"),
+			makeProviders(advancedClaudeProvider(capture.provider)),
+		);
+		await sm.setPermissionMode("auto");
+		const routine = {
+			...routinePermissionContext("claude"),
+			mode: routineMode,
+		};
+
+		await sm.runQuery("root task", () => {}, {
+			sessionId: `routine-root-${routineMode}`,
+			routineContext: routine,
+		});
+
+		expect(capture.captured.params?.permissionMode).toBe(
+			expectedPermissionMode,
 		);
 	});
 });
@@ -1539,6 +2370,7 @@ describe("SessionManager — approval reviewer", () => {
 			async (_sessionId, reviewer) => {
 				if (reviewer === "auto_review") await olderWriteGate;
 				durableReviewer = reviewer;
+				return true;
 			},
 		);
 
@@ -1564,7 +2396,7 @@ describe("SessionManager — approval reviewer", () => {
 				.mock.calls.map(([, reviewer]) => reviewer),
 		).toEqual(["auto_review", "user"]);
 		expect(durableReviewer).toBe("user");
-		vi.mocked(dbMock.setSessionApprovalsReviewer).mockResolvedValue(undefined);
+		vi.mocked(dbMock.setSessionApprovalsReviewer).mockResolvedValue(true);
 	});
 
 	it("keeps a temporary provider override out of the stored preference", async () => {
@@ -1823,6 +2655,10 @@ describe("SessionManager — approval reviewer", () => {
 				permissionMode: undefined,
 				approvalsReviewer: "user",
 			},
+			expect.objectContaining({
+				guard: expect.any(Function),
+				onCommitted: expect.any(Function),
+			}),
 		);
 	});
 });

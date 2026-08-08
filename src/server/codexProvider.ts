@@ -2956,11 +2956,16 @@ class CodexAgentSession implements AgentSession {
 	 */
 	async setPermissionMode(mode: string): Promise<void> {
 		const permissionMode = mode as AgentQueryParams["permissionMode"];
+		const implementationPermissionMode =
+			this.params.permissionMode === "acceptEdits" ||
+			this.params.permissionMode === "bypassPermissions"
+				? this.params.permissionMode
+				: "default";
 		this.params = {
 			...this.params,
 			permissionMode,
 			...(permissionMode === "plan" && this.params.permissionMode !== "plan"
-				? { implementationPermissionMode: this.params.permissionMode }
+				? { implementationPermissionMode }
 				: {}),
 		};
 		this.lastReportedApprovalsReviewer = null;

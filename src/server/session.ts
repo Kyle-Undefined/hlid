@@ -83,6 +83,7 @@ import type {
 	SubagentSnapshot,
 	TaskActivity,
 } from "./agentProvider";
+import { ProviderPermissionModeRejectedError } from "./agentProvider";
 import { ingestGeneratedImage, ingestPlanHtml } from "./attachments";
 import { prewarmClaudeCli, waitForClaudeWarmupSnapshot } from "./claudeWarmup";
 import { loadConfig } from "./config";
@@ -418,6 +419,7 @@ const PEER_ORIGIN_PREFLIGHT_EVENT_TYPES: ReadonlySet<AgentEvent["type"]> =
 	new Set([
 		"session_start",
 		"provider_context_reset",
+		"provider_permission_mode_changed",
 		"provider_history_warning",
 		"provider_peer_message",
 		"commands_changed",
@@ -474,6 +476,8 @@ type RunQueryArgs = {
 	readonly inputOrigin: AgentInputOrigin;
 	/** Settings work already accepted when this turn entered the queue. */
 	readonly effortReady?: Promise<void>;
+	/** Permission work already accepted when this turn entered the queue. */
+	readonly permissionModeReady?: Promise<void>;
 	durableReady?: Promise<boolean>;
 };
 
@@ -486,10 +490,29 @@ type EffortChangeTarget = {
 	agentSessionKey: string | null;
 };
 
+type PermissionModeChangeTarget = {
+	sessionId: string | null;
+	providerId: string;
+	providerOwnershipGeneration: number;
+	permissionModeControlGeneration: number;
+	agentSession: AgentSession | null;
+	agentSessionKey: string | null;
+	skipLiveSetter: boolean;
+};
+
 class EffortChangeSupersededError extends Error {
 	constructor() {
 		super("Effort change was superseded by a session or provider change.");
 		this.name = "EffortChangeSupersededError";
+	}
+}
+
+class PermissionModeChangeSupersededError extends Error {
+	constructor() {
+		super(
+			"Permission-mode change was superseded by a session or provider change.",
+		);
+		this.name = "PermissionModeChangeSupersededError";
 	}
 }
 
@@ -627,13 +650,21 @@ export type ProviderMcpConfigApplyResult =
 	  }
 	| { providerId: string; status: "not-live"; reason: string };
 
-type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan";
+type PermissionMode =
+	| "default"
+	| "acceptEdits"
+	| "bypassPermissions"
+	| "plan"
+	| "dontAsk"
+	| "auto";
 
 const KNOWN_PERMISSION_MODES: ReadonlySet<string> = new Set([
 	"default",
 	"acceptEdits",
 	"bypassPermissions",
 	"plan",
+	"dontAsk",
+	"auto",
 ]);
 
 function buildProviderHandoff(
@@ -869,10 +900,14 @@ function buildAgentQueryParams(options: {
 	sandboxModeOverride?: AgentQueryParams["sandboxModeOverride"];
 	codexRealtimeEnabled: boolean;
 }): AgentQueryParams {
-	const implementationPermissionMode =
-		options.configuredPermissionMode === "plan"
-			? "default"
-			: options.configuredPermissionMode;
+	const implementationPermissionMode:
+		| "default"
+		| "acceptEdits"
+		| "bypassPermissions" =
+		options.configuredPermissionMode === "acceptEdits" ||
+		options.configuredPermissionMode === "bypassPermissions"
+			? options.configuredPermissionMode
+			: "default";
 	return {
 		cwd: options.activeCwd,
 		providerId: options.providerId,
@@ -1219,6 +1254,54 @@ export class UnsupportedProviderEffortError extends Error {
 	}
 }
 
+export class UnsupportedProviderPermissionModeError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "UnsupportedProviderPermissionModeError";
+	}
+}
+
+export async function validateProviderPermissionMode(
+	provider: AgentProvider,
+	mode: string,
+	context: {
+		cwd: string;
+		capabilityCwd?: string;
+		executable?: string;
+		additionalDirectories?: string[];
+		model?: string;
+		policyEnforced: boolean;
+		usageGateEnforced: boolean;
+		forceExact?: boolean;
+	},
+): Promise<void> {
+	if (!KNOWN_PERMISSION_MODES.has(mode)) {
+		throw new UnsupportedProviderPermissionModeError(
+			`Unknown permission mode: ${mode}`,
+		);
+	}
+	if (
+		mode !== "plan" &&
+		(provider.sessionPermissionModes ?? provider.permissionModes)?.length &&
+		!(provider.sessionPermissionModes ?? provider.permissionModes)?.some(
+			(candidate) => candidate.value === mode,
+		)
+	) {
+		throw new UnsupportedProviderPermissionModeError(
+			`${provider.label ?? provider.providerId} does not support permission mode ${mode}`,
+		);
+	}
+	if (
+		(mode === "auto" || mode === "dontAsk") &&
+		provider.providerId !== "claude"
+	) {
+		throw new UnsupportedProviderPermissionModeError(
+			`${provider.label ?? provider.providerId} does not support permission mode ${mode}`,
+		);
+	}
+	await provider.validatePermissionMode?.(mode, context);
+}
+
 export class SessionManager {
 	private providers: Map<string, AgentProvider>;
 	private vaultProviderId!: string;
@@ -1229,6 +1312,8 @@ export class SessionManager {
 	private state: SessionState = "idle";
 	private abortController: AbortController | null = null;
 	private model!: string;
+	/** Invalidates saved-model capability evidence after an explicit model/provider change. */
+	private modelGeneration = 0;
 	private effort!: string;
 	/** Explicit Raven picker values, which outrank refreshed config and agent defaults. */
 	private modelOverride: { value: string | undefined } | null = null;
@@ -1238,6 +1323,16 @@ export class SessionManager {
 	private approvalsReviewerOverride: ProviderApprovalsReviewer | null = null;
 	/** Serializes effective permission changes across isolated provider turns. */
 	private permissionModeGeneration = 0;
+	/** Ordered settings barrier installed synchronously by every permission request. */
+	private permissionModeChangeTail: Promise<void> = Promise.resolve();
+	/** Latest permission/model/provider control whose rejection must fail queued chat. */
+	private permissionModeAcceptanceBarrier: Promise<void> = Promise.resolve();
+	private permissionModeAcceptanceControl: {
+		operation: Promise<void>;
+		capturedByTurn: boolean;
+	} | null = null;
+	/** Invalidates pending permission requests on provider/session replacement. */
+	private permissionModeControlGeneration = 0;
 	/** The next provider thread needs the persisted Hlid transcript as context. */
 	private providerHandoffPending = false;
 	/** Provider conversation that has accepted the compact Hlid operating brief. */
@@ -1256,6 +1351,8 @@ export class SessionManager {
 	private vaultPath!: string;
 	private vaultName!: string;
 	private permissionMode!: PermissionMode;
+	/** Provider-observed live mode; configured selection remains separate. */
+	private effectivePermissionMode: PermissionMode | null = null;
 	/** User-selected reviewer persisted with the Hlid session. */
 	private approvalsReviewer: ProviderApprovalsReviewer | null = null;
 	/** Provider-authoritative reviewer currently in effect for truthful status. */
@@ -1295,6 +1392,8 @@ export class SessionManager {
 	/** Present only while a server-owned scheduled Routine turn is executing. */
 	private activeRoutineContext: RoutinePermissionContext | null = null;
 	private currentSessionId: string | null = null;
+	/** Distinguishes provider switches from actual Raven session ownership changes. */
+	private sessionControlGeneration = 0;
 	private currentSessionLabel: string | null = null;
 	private currentSessionPinned = false;
 	private currentForkParentSessionId: string | null = null;
@@ -1485,6 +1584,35 @@ export class SessionManager {
 			: reviewer;
 	}
 
+	private permissionControlRuntimeIdentity(): string {
+		const activeAgentCwd = this.agentCwd ?? this.configuredAgentCwd;
+		const agentSettings = activeAgentCwd
+			? this.agentSettingsMap.get(agentMapKey(activeAgentCwd))
+			: undefined;
+		return JSON.stringify({
+			providerId:
+				this.providerOverride ??
+				(activeAgentCwd
+					? this.agentProviderMap.get(agentMapKey(activeAgentCwd))
+					: undefined) ??
+				this.vaultProviderId,
+			model:
+				this.modelOverride !== null
+					? this.modelOverride.value
+					: (agentSettings?.model ?? this.model),
+			permissionMode:
+				this.permissionModeOverride ??
+				agentSettings?.permissionMode ??
+				this.permissionMode,
+			cwd: activeAgentCwd ?? this.vaultPath,
+			vaultPath: this.vaultPath,
+			claudeExecutable: this.claudeExecutable,
+			additionalDirectories: this.allowedAgentRealPaths,
+			policyEnforced: this.policyEnforced,
+			usageGateEnforced: this.usageGateEnforced,
+		});
+	}
+
 	private resetEffectiveApprovalsReviewer(): void {
 		this.effectiveApprovalsReviewer = this.effectiveReviewerForSelection(
 			this.approvalsReviewer,
@@ -1559,6 +1687,8 @@ export class SessionManager {
 		config: HlidConfig,
 		preserveSessionOverrides = false,
 	): void {
+		const previousPermissionControlIdentity =
+			this.permissionControlRuntimeIdentity();
 		this.vaultPath = config.vault.path || process.env.HOME || "/";
 		this.vaultName = config.vault.name;
 		this.rememberedObsidianCommands = new Set(
@@ -1595,7 +1725,6 @@ export class SessionManager {
 		this.claudePeerInbox = config.claude.peer_inbox ?? false;
 		if (!preserveSessionOverrides || this.permissionModeOverride === null)
 			this.permissionMode = configuredDefaults.permissionMode;
-		this.permissionModeGeneration += 1;
 		this.turnRecaps = configuredDefaults.turnRecaps;
 		this.recapModel = configuredDefaults.recapModel;
 		this.claudeExecutable = resolveClaudeExecutable();
@@ -1607,6 +1736,14 @@ export class SessionManager {
 		this.allowedAgentRealPaths = computeAllowedAgentRealPaths(config);
 		this.policyEnforced = config.umbod?.enabled ?? false;
 		this.usageGateEnforced = config.auto_sleep?.enabled ?? false;
+		if (
+			this.permissionControlRuntimeIdentity() !==
+			previousPermissionControlIdentity
+		) {
+			this.effectivePermissionMode = null;
+			this.permissionModeGeneration += 1;
+			this.permissionModeControlGeneration += 1;
+		}
 		this.codexRealtimeEnabled = config.voice?.codex_live_mode ?? false;
 		if (!preserveSessionOverrides || this.approvalsReviewerOverride === null) {
 			this.approvalsReviewer = this.defaultApprovalsReviewer();
@@ -1615,6 +1752,7 @@ export class SessionManager {
 	}
 
 	reinitialize(config: HlidConfig): void {
+		this.sessionControlGeneration += 1;
 		this.abort();
 		this.replaceBackgroundActivities([], false);
 		this.providerOverride = null;
@@ -1774,6 +1912,29 @@ export class SessionManager {
 			this.approvalsReviewerOverride = null;
 		}
 		this.applyConfig(config, !providerChanged);
+		this.enforcePermissionPolicyTransition();
+		if (
+			(previousApprovalReviewContext.policyEnforced !== this.policyEnforced ||
+				previousApprovalReviewContext.usageGateEnforced !==
+					this.usageGateEnforced) &&
+			this.agentSessionKey?.startsWith("claude|") &&
+			this.agentSession
+		) {
+			const retiredSession = this.agentSession;
+			this.agentSession = null;
+			this.agentSessionKey = null;
+			this.effectivePermissionMode = null;
+			try {
+				this.stopBackgroundActivityObserver();
+			} catch {
+				// Runtime ownership is already retired; observer cleanup is best effort.
+			}
+			try {
+				retiredSession.cancel();
+			} catch {
+				// A throwing transport cannot restore the stale construction-time policy.
+			}
+		}
 		this.reconcileCodexRuntimeIdentity(
 			previousCodexRealtimeEnabled,
 			previousCodexExecutable,
@@ -1808,6 +1969,53 @@ export class SessionManager {
 		);
 	}
 
+	private enforcePermissionPolicyTransition(): void {
+		const desired = this.desiredPermissionMode();
+		const forbidden =
+			(this.policyEnforced && (desired === "auto" || desired === "dontAsk")) ||
+			(this.usageGateEnforced && desired === "auto");
+		if (!forbidden) return;
+		this.commitAuthoritativePermissionMode("default", this.agentSession);
+		const sessionId = this.currentSessionId;
+		if (!sessionId) return;
+		const providerId = this.getProviderId();
+		const providerOwnershipGeneration = this.providerOwnershipGeneration;
+		const sessionControlGeneration = this.sessionControlGeneration;
+		const permissionModeControlGeneration =
+			this.permissionModeControlGeneration;
+		const ownsNarrowing = () =>
+			this.currentSessionId === sessionId &&
+			this.getProviderId() === providerId &&
+			this.providerOwnershipGeneration === providerOwnershipGeneration &&
+			this.sessionControlGeneration === sessionControlGeneration &&
+			this.permissionModeControlGeneration ===
+				permissionModeControlGeneration &&
+			this.desiredPermissionMode() === "default";
+		const persistence = this.permissionModeChangeTail.then(() =>
+			this.enqueueProviderOwnershipWrite(() =>
+				db.setSessionPermissionMode(sessionId, "default", {
+					guard: ownsNarrowing,
+				}),
+			),
+		);
+		void persistence.catch((error) => {
+			logDbError("force safe permission mode after policy change", error);
+			if (!ownsNarrowing()) return;
+			this.schedulePermissionModePersistenceRepair({
+				sessionId,
+				providerId,
+				providerOwnershipGeneration,
+				sessionControlGeneration,
+				permissionModeControlGeneration,
+				mode: "default",
+			});
+		});
+		this.permissionModeChangeTail = persistence.then(
+			() => undefined,
+			() => undefined,
+		);
+	}
+
 	getStatus(): {
 		state: SessionState;
 		model: string;
@@ -1819,13 +2027,120 @@ export class SessionManager {
 		return {
 			state: this.state,
 			model: this.model,
-			permission_mode: this.permissionMode,
+			permission_mode: this.statusPermissionMode(),
 			...this.approvalsReviewerStatusField(),
 			effort: this.effort,
 			...(this.state === "running" && this.currentTurnId !== undefined
 				? { turn_id: this.currentTurnId }
 				: {}),
 		};
+	}
+
+	private statusPermissionMode(): PermissionMode {
+		return this.effectivePermissionMode ?? this.permissionMode;
+	}
+
+	private configuredPermissionModeForTurn(
+		agentSettings: AgentSettings | undefined,
+	): PermissionMode {
+		// Routine roots retain their fixed read-only/full-access envelope. A child
+		// admitted through Hlid delegation has its own validated session selection;
+		// applying the root mapping again would silently widen an explicit Auto child
+		// to bypassPermissions.
+		if (this.activeRoutineContext && !this.currentDelegationParentSessionId) {
+			return this.activeRoutineContext.mode === "full_access"
+				? "bypassPermissions"
+				: "default";
+		}
+		return (
+			this.permissionModeOverride ??
+			agentSettings?.permissionMode ??
+			this.permissionMode
+		);
+	}
+
+	private commitAuthoritativePermissionMode(
+		mode: PermissionMode,
+		retireSession: AgentSession | null,
+	): void {
+		if (retireSession && this.agentSession === retireSession) {
+			this.agentSession = null;
+			this.agentSessionKey = null;
+		}
+		this.permissionModeControlGeneration += 1;
+		this.permissionModeGeneration += 1;
+		this.permissionModeOverride = mode;
+		this.permissionMode = mode;
+		this.effectivePermissionMode = mode;
+		if (!retireSession) return;
+		try {
+			this.stopBackgroundActivityObserver();
+		} catch {
+			// Authoritative ownership was already retired; cleanup is best effort.
+		}
+		try {
+			retireSession.cancel();
+		} catch {
+			// Transport cleanup cannot reopen a retired permission owner.
+		}
+	}
+
+	private installPermissionAcceptanceBarrier(operation: Promise<void>): void {
+		const control = { operation, capturedByTurn: false };
+		this.permissionModeAcceptanceControl = control;
+		this.permissionModeAcceptanceBarrier = operation;
+		void operation.then(
+			() => {
+				if (this.permissionModeAcceptanceControl === control) {
+					this.permissionModeAcceptanceControl = null;
+					this.permissionModeAcceptanceBarrier = Promise.resolve();
+				}
+			},
+			() => {
+				// Keep an already-rejected control visible until the next ordered turn
+				// captures it. Otherwise a fast validation failure can settle between two
+				// adjacent WebSocket frames and let the chat run under the old mode.
+				if (
+					this.permissionModeAcceptanceControl === control &&
+					control.capturedByTurn
+				) {
+					this.permissionModeAcceptanceControl = null;
+					this.permissionModeAcceptanceBarrier = Promise.resolve();
+				}
+			},
+		);
+	}
+
+	/**
+	 * Clear only the exact rejected control Raven has already reconciled. A chat
+	 * that captured the promise before this acknowledgement still observes its
+	 * rejection, while later unrelated turns can proceed under authoritative state.
+	 */
+	// fallow-ignore-next-line unused-class-member -- Called by WebSocket control rejection correlation in wsHandlers.
+	acknowledgeSessionControlRejection(
+		operation: Promise<void> | undefined,
+	): void {
+		if (
+			!operation ||
+			this.permissionModeAcceptanceControl?.operation !== operation
+		) {
+			return;
+		}
+		this.permissionModeAcceptanceControl = null;
+		this.permissionModeAcceptanceBarrier = Promise.resolve();
+	}
+
+	private capturePermissionAcceptanceBarrier(): Promise<void> {
+		const control = this.permissionModeAcceptanceControl;
+		if (!control) return this.permissionModeAcceptanceBarrier;
+		control.capturedByTurn = true;
+		void control.operation.catch(() => {
+			if (this.permissionModeAcceptanceControl === control) {
+				this.permissionModeAcceptanceControl = null;
+				this.permissionModeAcceptanceBarrier = Promise.resolve();
+			}
+		});
+		return control.operation;
 	}
 
 	getCurrentGoal(): ProviderThreadGoal | null {
@@ -2074,6 +2389,57 @@ export class SessionManager {
 			: null;
 	}
 
+	private providerForOwnedSessionControl(
+		sessionId: string | null,
+		sessionGeneration: number,
+	): AgentProvider {
+		if (
+			this.currentSessionId !== sessionId ||
+			this.sessionControlGeneration !== sessionGeneration
+		) {
+			throw new PermissionModeChangeSupersededError();
+		}
+		return (
+			this.providers.get(this.getProviderId()) ??
+			this.resolveProvider(this.agentCwd)
+		);
+	}
+
+	private enqueuePermissionSelectionChange(
+		operation: () => Promise<void>,
+	): Promise<void> {
+		const pending = this.permissionModeChangeTail.then(operation);
+		this.installPermissionAcceptanceBarrier(pending);
+		this.permissionModeChangeTail = pending.then(
+			() => undefined,
+			() => undefined,
+		);
+		return pending;
+	}
+
+	private enqueueOwnedPermissionSelectionChange(
+		sessionId: string | null,
+		sessionGeneration: number,
+		skipLiveSetter: boolean,
+		operation: (target: PermissionModeChangeTarget) => Promise<void>,
+	): Promise<void> {
+		return this.enqueuePermissionSelectionChange(() => {
+			const provider = this.providerForOwnedSessionControl(
+				sessionId,
+				sessionGeneration,
+			);
+			return operation({
+				sessionId,
+				providerId: provider.providerId,
+				providerOwnershipGeneration: this.providerOwnershipGeneration,
+				permissionModeControlGeneration: this.permissionModeControlGeneration,
+				agentSession: this.agentSession,
+				agentSessionKey: this.agentSessionKey,
+				skipLiveSetter,
+			});
+		});
+	}
+
 	/**
 	 * Mid-session model switch (Chunk 6). Session-scoped: updates the field
 	 * `runOneTurn` reads for vault chats and delegates to the live
@@ -2084,16 +2450,132 @@ export class SessionManager {
 	 * `undefined` resets to the provider default (mirrors the SDK's own
 	 * setModel(model?: string) semantics).
 	 */
-	async setModel(model?: string): Promise<void> {
-		this.assertRealtimeIdle("changing the model");
-		this.modelOverride = { value: model };
-		this.model = model ?? "";
-		await Promise.all([
-			this.agentSession?.setModel?.(model),
-			this.currentSessionId
-				? db.setSessionModel(this.currentSessionId, model ?? "")
-				: Promise.resolve(),
-		]);
+	setModel(model?: string): Promise<void> {
+		try {
+			this.assertRealtimeIdle("changing the model");
+		} catch (error) {
+			return Promise.reject(error);
+		}
+		const sessionId = this.currentSessionId;
+		const sessionGeneration = this.sessionControlGeneration;
+		return this.enqueueOwnedPermissionSelectionChange(
+			sessionId,
+			sessionGeneration,
+			false,
+			(target) => this.applyModelChange(target, model),
+		);
+	}
+
+	private async applyModelChange(
+		target: PermissionModeChangeTarget,
+		model: string | undefined,
+	): Promise<void> {
+		if (!this.ownsPermissionModeChangeTarget(target)) {
+			this.retirePermissionModeTarget(target);
+			throw new PermissionModeChangeSupersededError();
+		}
+		let downgradeAuto = false;
+		if (this.desiredPermissionMode() === "auto") {
+			try {
+				await this.validatePermissionMode(
+					"auto",
+					target.providerId,
+					model ?? "",
+					true,
+				);
+			} catch {
+				downgradeAuto = true;
+			}
+		}
+		if (!this.ownsPermissionModeChangeTarget(target)) {
+			this.retirePermissionModeTarget(target);
+			throw new PermissionModeChangeSupersededError();
+		}
+		const previousModel = this.selectedModelFor(
+			this.agentCwd
+				? this.agentSettingsMap.get(agentMapKey(this.agentCwd))
+				: undefined,
+		);
+		let liveApplied = false;
+		let livePermissionDowngraded = false;
+		const commitModelSelection = () => {
+			this.modelOverride = { value: model };
+			this.model = model ?? "";
+			this.modelGeneration += 1;
+			if (downgradeAuto) {
+				this.permissionModeControlGeneration += 1;
+				this.permissionModeGeneration += 1;
+				this.permissionModeOverride = "default";
+				this.permissionMode = "default";
+				this.effectivePermissionMode = "default";
+			}
+		};
+		try {
+			if (downgradeAuto && target.agentSession?.setPermissionMode) {
+				await target.agentSession.setPermissionMode("default");
+				livePermissionDowngraded = true;
+				if (!this.ownsPermissionModeChangeTarget(target)) {
+					throw new PermissionModeChangeSupersededError();
+				}
+			}
+			if (target.agentSession?.setModel) {
+				await target.agentSession.setModel(model);
+				liveApplied = true;
+				if (!this.ownsPermissionModeChangeTarget(target)) {
+					throw new PermissionModeChangeSupersededError();
+				}
+			}
+			if (target.sessionId) {
+				const committed = await this.enqueueProviderOwnershipWrite(() =>
+					downgradeAuto
+						? db.setSessionModelAndPermissionMode(
+								target.sessionId as string,
+								model ?? "",
+								"default",
+								{
+									guard: () => this.ownsPermissionModeChangeTarget(target),
+									onCommitted: commitModelSelection,
+								},
+							)
+						: db.setSessionModel(target.sessionId as string, model ?? "", {
+								guard: () => this.ownsPermissionModeChangeTarget(target),
+								onCommitted: commitModelSelection,
+							}),
+				);
+				if (!committed) throw new PermissionModeChangeSupersededError();
+			} else {
+				if (!this.ownsPermissionModeChangeTarget(target)) {
+					throw new PermissionModeChangeSupersededError();
+				}
+				commitModelSelection();
+			}
+		} catch (error) {
+			let rollbackFailed = false;
+			if (liveApplied && target.agentSession?.setModel) {
+				if (this.ownsPermissionModeChangeTarget(target)) {
+					try {
+						await target.agentSession.setModel(previousModel || undefined);
+					} catch {
+						rollbackFailed = true;
+					}
+				} else {
+					rollbackFailed = true;
+				}
+			}
+			if (livePermissionDowngraded && target.agentSession?.setPermissionMode) {
+				if (this.ownsPermissionModeChangeTarget(target)) {
+					try {
+						await target.agentSession.setPermissionMode("auto");
+					} catch {
+						rollbackFailed = true;
+					}
+				} else {
+					rollbackFailed = true;
+				}
+			}
+			if (rollbackFailed) this.retirePermissionModeTarget(target);
+			throw error;
+		}
 	}
 
 	/**
@@ -2102,8 +2584,68 @@ export class SessionManager {
 	 * providers starts a fresh provider-native thread and hands it the persisted
 	 * Hlid transcript on the next turn so conversation context is retained.
 	 */
-	// fallow-ignore-next-line unused-class-member -- Called by WebSocket settings/chat dispatch in wsHandlers.
-	async setProvider(
+	setProvider(
+		providerId: string,
+		selection: {
+			model?: string;
+			effort?: string;
+			serviceTier?: string;
+			permissionMode?: string;
+			approvalsReviewer?: string;
+			persistSessionSelection?: boolean;
+		} = {},
+	): Promise<void> {
+		try {
+			this.assertRealtimeIdle("switching CLI");
+		} catch (error) {
+			return Promise.reject(error);
+		}
+		const sessionId = this.currentSessionId;
+		const sessionGeneration = this.sessionControlGeneration;
+		const operation = this.permissionModeChangeTail.then(() => {
+			const permissionControlGeneration = this.permissionModeControlGeneration;
+			return this.applyProviderSelection(providerId, selection, {
+				sessionId,
+				sessionGeneration,
+				permissionControlGeneration,
+			});
+		});
+		this.installPermissionAcceptanceBarrier(operation);
+		this.permissionModeChangeTail = operation.then(
+			() => undefined,
+			() => undefined,
+		);
+		return operation;
+	}
+
+	/** Apply the controls repeated by the first chat as one provider transaction. */
+	// fallow-ignore-next-line unused-class-member -- Called by first-chat WebSocket dispatch in wsHandlers.
+	setInitialChatSelection(selection: {
+		model?: string;
+		effort?: string;
+		permissionMode?: string;
+		approvalsReviewer?: string;
+	}): Promise<void> {
+		const agentSettings = this.agentCwd
+			? this.agentSettingsMap.get(agentMapKey(this.agentCwd))
+			: undefined;
+		const selectedModel = this.selectedModelFor(agentSettings);
+		const selectedEffort =
+			this.effortOverride ?? agentSettings?.effort ?? this.effort;
+		return this.setProvider(this.getProviderId(), {
+			model: selection.model ?? (selectedModel || undefined),
+			effort: selection.effort ?? (selectedEffort || undefined),
+			serviceTier: this.serviceTierOverride ?? undefined,
+			permissionMode: selection.permissionMode ?? this.desiredPermissionMode(),
+			approvalsReviewer:
+				selection.approvalsReviewer ??
+				this.approvalsReviewerOverride ??
+				this.approvalsReviewer ??
+				undefined,
+		});
+	}
+
+	private async applyProviderSelection(
 		providerId: string,
 		selection: {
 			model?: string;
@@ -2113,9 +2655,20 @@ export class SessionManager {
 			approvalsReviewer?: string;
 			/** Internal orchestration can persist selection in its own DB CAS. */
 			persistSessionSelection?: boolean;
-		} = {},
+		},
+		guard: {
+			sessionId: string | null;
+			sessionGeneration: number;
+			permissionControlGeneration: number;
+		},
 	): Promise<void> {
+		const ownsInvocation = () =>
+			this.currentSessionId === guard.sessionId &&
+			this.sessionControlGeneration === guard.sessionGeneration &&
+			this.permissionModeControlGeneration ===
+				guard.permissionControlGeneration;
 		this.assertRealtimeIdle("switching CLI");
+		if (!ownsInvocation()) throw new PermissionModeChangeSupersededError();
 		if (!this.providers.has(providerId)) {
 			throw new Error(`Unknown or unavailable provider: ${providerId}`);
 		}
@@ -2132,9 +2685,31 @@ export class SessionManager {
 		if (!nextProvider) {
 			throw new Error(`Unknown or unavailable provider: ${providerId}`);
 		}
+		const currentProviderId =
+			this.providerSessionProviderId ??
+			this.resolveProvider(this.agentCwd).providerId;
+		const providerChanged = currentProviderId !== providerId;
 		if (selection.effort !== undefined) {
 			assertSupportedProviderEffort(nextProvider, selection.effort);
 		}
+		if (selection.permissionMode !== undefined) {
+			await validateProviderPermissionMode(
+				nextProvider,
+				selection.permissionMode,
+				this.permissionModeValidationContext(
+					selection.model ??
+						(providerChanged
+							? ""
+							: this.selectedModelFor(
+									this.agentCwd
+										? this.agentSettingsMap.get(agentMapKey(this.agentCwd))
+										: undefined,
+								)),
+					selection.permissionMode === "auto",
+				),
+			);
+		}
+		if (!ownsInvocation()) throw new PermissionModeChangeSupersededError();
 		if (
 			selection.approvalsReviewer !== undefined &&
 			!this.supportedApprovalsReviewer(
@@ -2150,55 +2725,187 @@ export class SessionManager {
 		if (selection.approvalsReviewer === "auto_review" && unavailableReason) {
 			throw new Error(unavailableReason);
 		}
-		this.effortControlGeneration += 1;
-
-		const currentProviderId =
-			this.providerSessionProviderId ??
-			this.resolveProvider(this.agentCwd).providerId;
-		const providerChanged = currentProviderId !== providerId;
-		if (providerChanged) {
-			this.providerOwnershipGeneration += 1;
-			this.stopBackgroundActivityObserver();
-			this.agentSession?.cancel();
-			this.agentSession = null;
-			this.agentSessionKey = null;
-			this.restartAgentSessionForEffort = false;
-			this.currentGoal = null;
-			this.providerSessionId = null;
-			this.providerSessionProviderId = providerId;
-			this.providerHandoffPending =
-				this.currentSessionId !== null && this.messageSeq > 0;
-			this.operatingBriefProviderKey = null;
-		}
-
-		this.providerOverride = providerId;
-		this.modelOverride = { value: selection.model };
-		this.model = selection.model ?? "";
-		this.effortOverride = selection.effort ?? null;
-		this.effort = selection.effort ?? "";
-		this.serviceTierOverride = selection.serviceTier ?? null;
-		this.permissionModeOverride = selection.permissionMode
-			? (selection.permissionMode as PermissionMode)
-			: null;
-		this.permissionMode =
-			(selection.permissionMode as PermissionMode | undefined) ?? "default";
+		if (!ownsInvocation()) throw new PermissionModeChangeSupersededError();
+		const previousPermissionMode = this.desiredPermissionMode();
+		const previousModel = this.selectedModelFor(
+			this.agentCwd
+				? this.agentSettingsMap.get(agentMapKey(this.agentCwd))
+				: undefined,
+		);
+		const previousEffort =
+			this.effortOverride ??
+			(this.agentCwd
+				? this.agentSettingsMap.get(agentMapKey(this.agentCwd))?.effort
+				: undefined) ??
+			this.effort;
+		const previousApprovalsReviewer = this.approvalsReviewer;
+		const liveSession = providerChanged ? null : this.agentSession;
 		const nextApprovalsReviewer = selection.approvalsReviewer
 			? (selection.approvalsReviewer as ProviderApprovalsReviewer)
 			: this.defaultApprovalsReviewer(nextProvider);
-		this.approvalsReviewerOverride = nextApprovalsReviewer;
-		this.approvalsReviewer = nextApprovalsReviewer;
-		this.resetEffectiveApprovalsReviewer();
+		let liveModelApplied = false;
+		let liveEffortApplied = false;
+		let livePermissionApplied = false;
+		let liveReviewerApplied = false;
+		const commitSelection = () => {
+			const retiredSession = providerChanged ? this.agentSession : null;
+			this.effortControlGeneration += 1;
+			this.permissionModeControlGeneration += 1;
+			if (providerChanged) {
+				this.providerOwnershipGeneration += 1;
+				this.agentSession = null;
+				this.agentSessionKey = null;
+				this.restartAgentSessionForEffort = false;
+				this.currentGoal = null;
+				this.providerSessionId = null;
+				this.providerSessionProviderId = providerId;
+				this.providerHandoffPending =
+					this.currentSessionId !== null && this.messageSeq > 0;
+				this.operatingBriefProviderKey = null;
+			}
 
-		const currentSessionId = this.currentSessionId;
-		if (currentSessionId && selection.persistSessionSelection !== false) {
-			await this.enqueueProviderOwnershipWrite(() =>
-				db.setSessionProviderSelection(currentSessionId, providerId, {
-					model: selection.model,
-					effort: selection.effort,
-					permissionMode: selection.permissionMode,
-					approvalsReviewer: nextApprovalsReviewer ?? undefined,
-				}),
-			);
+			this.providerOverride = providerId;
+			this.modelOverride = { value: selection.model };
+			this.model = selection.model ?? "";
+			this.modelGeneration += 1;
+			this.effortOverride = selection.effort ?? null;
+			this.effort = selection.effort ?? "";
+			if (
+				!providerChanged &&
+				selection.effort !== undefined &&
+				liveSession &&
+				!liveSession.setEffort
+			) {
+				this.restartAgentSessionForEffort = true;
+			}
+			this.serviceTierOverride = selection.serviceTier ?? null;
+			this.permissionModeOverride = selection.permissionMode
+				? (selection.permissionMode as PermissionMode)
+				: null;
+			this.permissionMode =
+				(selection.permissionMode as PermissionMode | undefined) ?? "default";
+			this.effectivePermissionMode = livePermissionApplied
+				? this.permissionMode
+				: null;
+			this.permissionModeGeneration += 1;
+			this.approvalsReviewerOverride = nextApprovalsReviewer;
+			this.approvalsReviewer = nextApprovalsReviewer;
+			this.resetEffectiveApprovalsReviewer();
+			if (providerChanged) {
+				try {
+					this.stopBackgroundActivityObserver();
+				} catch {
+					// Runtime retirement is best effort after the owner tuple commits.
+				}
+				try {
+					retiredSession?.cancel();
+				} catch {
+					// The committed owner tuple must not be rolled back by transport cleanup.
+				}
+			}
+		};
+		try {
+			if (
+				selection.model !== undefined &&
+				liveSession?.setModel &&
+				!this.currentProviderContinuation
+			) {
+				await liveSession.setModel(selection.model);
+				liveModelApplied = true;
+			}
+			if (
+				selection.effort !== undefined &&
+				liveSession?.setEffort &&
+				!this.currentProviderContinuation
+			) {
+				await liveSession.setEffort(selection.effort);
+				liveEffortApplied = true;
+			}
+			if (
+				selection.permissionMode !== undefined &&
+				liveSession?.setPermissionMode &&
+				!this.currentProviderContinuation
+			) {
+				await liveSession.setPermissionMode(selection.permissionMode);
+				livePermissionApplied = true;
+			}
+			if (
+				selection.approvalsReviewer !== undefined &&
+				liveSession?.setApprovalsReviewer &&
+				!this.currentProviderContinuation
+			) {
+				await liveSession.setApprovalsReviewer(nextApprovalsReviewer ?? "user");
+				liveReviewerApplied = true;
+			}
+			if (!ownsInvocation()) throw new PermissionModeChangeSupersededError();
+			if (guard.sessionId && selection.persistSessionSelection !== false) {
+				const committed = await this.enqueueProviderOwnershipWrite(() =>
+					db.setSessionProviderSelection(
+						guard.sessionId as string,
+						providerId,
+						{
+							model: selection.model,
+							effort: selection.effort,
+							permissionMode: selection.permissionMode,
+							approvalsReviewer: nextApprovalsReviewer ?? undefined,
+						},
+						{ guard: ownsInvocation, onCommitted: commitSelection },
+					),
+				);
+				if (!committed) throw new PermissionModeChangeSupersededError();
+			} else {
+				if (!ownsInvocation()) throw new PermissionModeChangeSupersededError();
+				commitSelection();
+			}
+		} catch (error) {
+			let rollbackFailed = false;
+			if (liveReviewerApplied && liveSession?.setApprovalsReviewer) {
+				try {
+					await liveSession.setApprovalsReviewer(
+						previousApprovalsReviewer ?? "user",
+					);
+				} catch {
+					rollbackFailed = true;
+				}
+			}
+			if (livePermissionApplied && liveSession?.setPermissionMode) {
+				try {
+					await liveSession.setPermissionMode(previousPermissionMode);
+				} catch {
+					rollbackFailed = true;
+				}
+			}
+			if (liveEffortApplied && liveSession?.setEffort) {
+				try {
+					await liveSession.setEffort(previousEffort);
+				} catch {
+					rollbackFailed = true;
+				}
+			}
+			if (liveModelApplied && liveSession?.setModel) {
+				try {
+					await liveSession.setModel(previousModel || undefined);
+				} catch {
+					rollbackFailed = true;
+				}
+			}
+			if (rollbackFailed && liveSession && this.agentSession === liveSession) {
+				this.agentSession = null;
+				this.agentSessionKey = null;
+				this.effectivePermissionMode = null;
+				this.resetEffectiveApprovalsReviewer();
+				try {
+					this.stopBackgroundActivityObserver();
+				} catch {
+					// Ownership is already retired; observer cleanup is best effort.
+				}
+				try {
+					liveSession.cancel();
+				} catch {
+					// A throwing transport cannot restore the rejected provider owner.
+				}
+			}
+			throw error;
 		}
 	}
 
@@ -2206,56 +2913,465 @@ export class SessionManager {
 	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket set_approvals_reviewer dispatch in wsHandlers.
 	async setApprovalsReviewer(reviewer: string): Promise<void> {
 		this.assertRealtimeIdle("changing the approval reviewer");
-		const provider =
-			this.providers.get(this.getProviderId()) ??
-			this.resolveProvider(this.agentCwd);
-		if (!this.supportedApprovalsReviewer(provider, reviewer)) {
-			throw new Error(
-				`${provider.label ?? provider.providerId} does not support approval reviewer ${reviewer}`,
-			);
-		}
-		const unavailableReason = this.autoReviewUnavailableReason();
-		if (reviewer === "auto_review" && unavailableReason) {
-			throw new Error(unavailableReason);
-		}
-		this.approvalsReviewerOverride = reviewer;
-		this.approvalsReviewer = reviewer;
-		this.resetEffectiveApprovalsReviewer();
 		const sessionId = this.currentSessionId;
-		await Promise.all([
-			this.agentSession?.setApprovalsReviewer?.(reviewer),
-			sessionId
-				? this.enqueueProviderOwnershipWrite(() =>
-						db.setSessionApprovalsReviewer(sessionId, reviewer),
-					)
-				: Promise.resolve(),
-		]);
+		const sessionGeneration = this.sessionControlGeneration;
+		const effortReady = this.effortChangeTail;
+		const permissionReady = this.permissionModeChangeTail;
+		const operation = Promise.all([effortReady, permissionReady]).then(
+			async () => {
+				const provider = this.providerForOwnedSessionControl(
+					sessionId,
+					sessionGeneration,
+				);
+				if (!this.supportedApprovalsReviewer(provider, reviewer)) {
+					throw new Error(
+						`${provider.label ?? provider.providerId} does not support approval reviewer ${reviewer}`,
+					);
+				}
+				const unavailableReason = this.autoReviewUnavailableReason();
+				if (reviewer === "auto_review" && unavailableReason) {
+					throw new Error(unavailableReason);
+				}
+				const liveSession = this.agentSession;
+				const previousReviewer = this.approvalsReviewer;
+				let liveApplied = false;
+				try {
+					if (liveSession?.setApprovalsReviewer) {
+						await liveSession.setApprovalsReviewer(reviewer);
+						liveApplied = true;
+					}
+					if (sessionId) {
+						await this.enqueueProviderOwnershipWrite(() =>
+							db.setSessionApprovalsReviewer(sessionId, reviewer),
+						);
+					}
+					if (
+						this.currentSessionId !== sessionId ||
+						this.sessionControlGeneration !== sessionGeneration ||
+						this.agentSession !== liveSession
+					) {
+						throw new PermissionModeChangeSupersededError();
+					}
+					this.approvalsReviewerOverride = reviewer;
+					this.approvalsReviewer = reviewer;
+					this.resetEffectiveApprovalsReviewer();
+				} catch (error) {
+					if (
+						liveApplied &&
+						previousReviewer &&
+						liveSession?.setApprovalsReviewer
+					) {
+						try {
+							await liveSession.setApprovalsReviewer(previousReviewer);
+						} catch {
+							if (this.agentSession === liveSession) {
+								liveSession.cancel();
+								this.agentSession = null;
+								this.agentSessionKey = null;
+							}
+						}
+					}
+					throw error;
+				}
+			},
+		);
+		const settled = operation.then(
+			() => undefined,
+			() => undefined,
+		);
+		this.permissionModeChangeTail = settled;
+		this.effortChangeTail = settled;
+		return operation;
+	}
+
+	async validatePermissionMode(
+		mode: string,
+		providerId = this.getProviderId(),
+		model = this.selectedModelFor(
+			this.agentCwd
+				? this.agentSettingsMap.get(agentMapKey(this.agentCwd))
+				: undefined,
+		),
+		forceExact = false,
+	): Promise<void> {
+		const provider =
+			this.providers.get(providerId) ?? this.resolveProvider(this.agentCwd);
+		await validateProviderPermissionMode(
+			provider,
+			mode,
+			this.permissionModeValidationContext(model, forceExact),
+		);
+	}
+
+	private permissionModeValidationContext(
+		model: string,
+		forceExact = false,
+	): {
+		cwd: string;
+		capabilityCwd: string;
+		executable?: string;
+		additionalDirectories: string[];
+		model?: string;
+		policyEnforced: boolean;
+		usageGateEnforced: boolean;
+		forceExact?: boolean;
+	} {
+		const capabilityCwd = this.agentCwd ?? this.vaultPath;
+		const execution = resolveExecutionContext({
+			agentMode: this.agentMode,
+			agentCwd: this.agentCwd,
+			vaultPath: this.vaultPath,
+			allowedAgentRealPaths: this.allowedAgentRealPaths,
+			claudeExecutable: this.claudeExecutable,
+			wrapperCommand: "claude",
+			safeAttachments: [],
+		});
+		return {
+			cwd: execution.activeCwd,
+			capabilityCwd,
+			executable: execution.executable,
+			additionalDirectories: [...execution.extraDirs],
+			...(model ? { model } : {}),
+			policyEnforced: this.policyEnforced,
+			usageGateEnforced: this.usageGateEnforced,
+			...(forceExact ? { forceExact: true } : {}),
+		};
 	}
 
 	/**
-	 * Mid-session permission-mode switch (Chunk 6). Validates against the
-	 * known modes before mutating any state — an invalid mode throws rather
-	 * than silently no-op'ing so the caller (wsHandlers) can surface a clear
-	 * error to the client. Session-scoped like setModel: updates the field
-	 * `runOneTurn` reads and delegates to the live AgentSession so the
-	 * change applies starting with the next turn.
+	 * Apply a session-scoped permission change transactionally. The native
+	 * control accepts first, durable state commits second, and Raven-visible
+	 * memory changes last. A synchronously installed tail also prevents an
+	 * immediately following chat frame from starting with the old mode.
 	 */
-	async setPermissionMode(mode: string): Promise<void> {
-		this.assertRealtimeIdle("changing permissions");
-		if (!KNOWN_PERMISSION_MODES.has(mode)) {
-			throw new Error(`Unknown permission mode: ${mode}`);
+	setPermissionMode(mode: string): Promise<void> {
+		try {
+			this.assertRealtimeIdle("changing permissions");
+			if (!KNOWN_PERMISSION_MODES.has(mode)) {
+				throw new Error(`Unknown permission mode: ${mode}`);
+			}
+		} catch (error) {
+			return Promise.reject(error);
 		}
-		this.permissionModeOverride = mode as PermissionMode;
-		this.permissionMode = mode as PermissionMode;
-		this.permissionModeGeneration += 1;
-		await Promise.all([
-			this.currentProviderContinuation
-				? Promise.resolve()
-				: this.agentSession?.setPermissionMode?.(mode),
-			this.currentSessionId
-				? db.setSessionPermissionMode(this.currentSessionId, mode)
-				: Promise.resolve(),
-		]);
+		const sessionId = this.currentSessionId;
+		const sessionGeneration = this.sessionControlGeneration;
+		return this.enqueueOwnedPermissionSelectionChange(
+			sessionId,
+			sessionGeneration,
+			this.currentProviderContinuation !== null,
+			(target) =>
+				this.applyPermissionModeChange(target, mode as PermissionMode),
+		);
+	}
+
+	private ownsPermissionModeChangeTarget(
+		target: PermissionModeChangeTarget,
+	): boolean {
+		return (
+			this.currentSessionId === target.sessionId &&
+			this.getProviderId() === target.providerId &&
+			this.providerOwnershipGeneration === target.providerOwnershipGeneration &&
+			this.permissionModeControlGeneration ===
+				target.permissionModeControlGeneration &&
+			this.agentSession === target.agentSession &&
+			this.agentSessionKey === target.agentSessionKey
+		);
+	}
+
+	private retirePermissionModeTarget(target: PermissionModeChangeTarget): void {
+		if (
+			!target.agentSession ||
+			this.agentSession !== target.agentSession ||
+			this.agentSessionKey !== target.agentSessionKey
+		) {
+			return;
+		}
+		this.agentSession = null;
+		this.agentSessionKey = null;
+		this.effectivePermissionMode = null;
+		this.resetEffectiveApprovalsReviewer();
+		try {
+			this.stopBackgroundActivityObserver();
+		} catch {
+			// Ownership is already retired; observer cleanup is best effort.
+		}
+		try {
+			target.agentSession.cancel();
+		} catch {
+			// A throwing transport cannot restore the superseded owner.
+		}
+	}
+
+	private async persistPermissionModeChange(
+		target: PermissionModeChangeTarget,
+		mode: PermissionMode,
+	): Promise<void> {
+		if (!target.sessionId) {
+			if (!this.ownsPermissionModeChangeTarget(target)) {
+				throw new PermissionModeChangeSupersededError();
+			}
+			return;
+		}
+		await this.enqueueProviderOwnershipWrite(async () => {
+			if (!this.ownsPermissionModeChangeTarget(target)) {
+				throw new PermissionModeChangeSupersededError();
+			}
+			const prior =
+				(await db.getSessionSelection(target.sessionId as string))
+					?.permissionMode ?? null;
+			if (!this.ownsPermissionModeChangeTarget(target)) {
+				throw new PermissionModeChangeSupersededError();
+			}
+			const committed = await db.setSessionPermissionMode(
+				target.sessionId as string,
+				mode,
+				{ guard: () => this.ownsPermissionModeChangeTarget(target) },
+			);
+			if (!committed) throw new PermissionModeChangeSupersededError();
+			if (!this.ownsPermissionModeChangeTarget(target)) {
+				await db.setSessionPermissionMode(target.sessionId as string, prior);
+				throw new PermissionModeChangeSupersededError();
+			}
+		});
+	}
+
+	private schedulePermissionModePersistenceRepair(options: {
+		sessionId: string;
+		providerId: string;
+		providerOwnershipGeneration: number;
+		sessionControlGeneration: number;
+		permissionModeControlGeneration: number;
+		mode: PermissionMode;
+	}): void {
+		const repair = this.enqueueProviderOwnershipWrite(async () => {
+			if (
+				this.currentSessionId !== options.sessionId ||
+				this.getProviderId() !== options.providerId ||
+				this.providerOwnershipGeneration !==
+					options.providerOwnershipGeneration ||
+				this.sessionControlGeneration !== options.sessionControlGeneration ||
+				this.permissionModeControlGeneration !==
+					options.permissionModeControlGeneration ||
+				this.desiredPermissionMode() !== options.mode
+			) {
+				return;
+			}
+			await db.setSessionPermissionMode(options.sessionId, options.mode, {
+				guard: () =>
+					this.currentSessionId === options.sessionId &&
+					this.getProviderId() === options.providerId &&
+					this.providerOwnershipGeneration ===
+						options.providerOwnershipGeneration &&
+					this.sessionControlGeneration === options.sessionControlGeneration &&
+					this.permissionModeControlGeneration ===
+						options.permissionModeControlGeneration &&
+					this.desiredPermissionMode() === options.mode,
+			});
+		});
+		void repair.catch((error) =>
+			logDbError("repair provider permission mode rejection", error),
+		);
+	}
+
+	private async restorePermissionModeAfterFailure(
+		target: PermissionModeChangeTarget,
+		previousMode: PermissionMode,
+	): Promise<void> {
+		if (!target.agentSession?.setPermissionMode) return;
+		if (!this.ownsPermissionModeChangeTarget(target)) {
+			this.retirePermissionModeTarget(target);
+			return;
+		}
+		try {
+			await target.agentSession.setPermissionMode(previousMode);
+		} catch {
+			this.retirePermissionModeTarget(target);
+			return;
+		}
+		if (!this.ownsPermissionModeChangeTarget(target)) {
+			this.retirePermissionModeTarget(target);
+		}
+	}
+
+	private async applyPermissionModeChange(
+		target: PermissionModeChangeTarget,
+		mode: PermissionMode,
+	): Promise<void> {
+		if (!this.ownsPermissionModeChangeTarget(target)) {
+			this.retirePermissionModeTarget(target);
+			throw new PermissionModeChangeSupersededError();
+		}
+		const provider = this.providers.get(target.providerId);
+		if (!provider) throw new PermissionModeChangeSupersededError();
+		const model = this.selectedModelFor(
+			this.agentCwd
+				? this.agentSettingsMap.get(agentMapKey(this.agentCwd))
+				: undefined,
+		);
+		await validateProviderPermissionMode(
+			provider,
+			mode,
+			this.permissionModeValidationContext(model, mode === "auto"),
+		);
+		if (!this.ownsPermissionModeChangeTarget(target)) {
+			this.retirePermissionModeTarget(target);
+			throw new PermissionModeChangeSupersededError();
+		}
+		const previousMode = this.desiredPermissionMode();
+		let liveApplied = false;
+		try {
+			if (!target.skipLiveSetter && target.agentSession?.setPermissionMode) {
+				await target.agentSession.setPermissionMode(mode);
+				liveApplied = true;
+				if (!this.ownsPermissionModeChangeTarget(target)) {
+					throw new PermissionModeChangeSupersededError();
+				}
+			}
+			await this.persistPermissionModeChange(target, mode);
+			if (!this.ownsPermissionModeChangeTarget(target)) {
+				throw new PermissionModeChangeSupersededError();
+			}
+			this.permissionModeOverride = mode;
+			this.permissionMode = mode;
+			this.effectivePermissionMode = mode;
+			this.permissionModeGeneration += 1;
+		} catch (error) {
+			if (liveApplied) {
+				await this.restorePermissionModeAfterFailure(target, previousMode);
+			} else if (
+				error instanceof PermissionModeChangeSupersededError ||
+				!this.ownsPermissionModeChangeTarget(target)
+			) {
+				this.retirePermissionModeTarget(target);
+			}
+			throw error;
+		}
+	}
+
+	private async reconcileNativePermissionFallback(
+		sourceSession: AgentSession,
+		providerSessionId: string,
+	): Promise<boolean> {
+		const provider =
+			this.providers.get(this.getProviderId()) ??
+			this.resolveProvider(this.agentCwd);
+		const target: PermissionModeChangeTarget = {
+			sessionId: this.currentSessionId,
+			providerId: provider.providerId,
+			providerOwnershipGeneration: this.providerOwnershipGeneration,
+			permissionModeControlGeneration: this.permissionModeControlGeneration,
+			agentSession: sourceSession,
+			agentSessionKey: this.agentSessionKey,
+			skipLiveSetter: true,
+		};
+		const operation = this.permissionModeChangeTail.then(async () => {
+			if (
+				!this.ownsPermissionModeChangeTarget(target) ||
+				this.providerSessionId !== providerSessionId ||
+				this.desiredPermissionMode() !== "auto"
+			) {
+				return false;
+			}
+			let persistenceFailed = false;
+			try {
+				await this.persistPermissionModeChange(target, "default");
+			} catch (error) {
+				if (!this.ownsPermissionModeChangeTarget(target)) return false;
+				persistenceFailed = true;
+				logDbError("persist native permission mode fallback", error);
+			}
+			if (!this.ownsPermissionModeChangeTarget(target)) return false;
+			this.commitAuthoritativePermissionMode("default", null);
+			if (persistenceFailed && target.sessionId) {
+				this.schedulePermissionModePersistenceRepair({
+					sessionId: target.sessionId,
+					providerId: target.providerId,
+					providerOwnershipGeneration: target.providerOwnershipGeneration,
+					sessionControlGeneration: this.sessionControlGeneration,
+					permissionModeControlGeneration: this.permissionModeControlGeneration,
+					mode: "default",
+				});
+			}
+			return true;
+		});
+		this.permissionModeChangeTail = operation.then(
+			() => undefined,
+			() => undefined,
+		);
+		return operation;
+	}
+
+	private async reconcilePreInputPermissionRejection(options: {
+		sourceSession: AgentSession;
+		sessionId: string | undefined;
+		provider: AgentProvider;
+		ownershipGeneration: number;
+		rejection: ProviderPermissionModeRejectedError;
+		emit: (message: ServerMessage) => void;
+	}): Promise<void> {
+		const {
+			sourceSession,
+			sessionId,
+			provider,
+			ownershipGeneration,
+			rejection,
+		} = options;
+		if (
+			this.agentSession !== sourceSession ||
+			this.providerOwnershipGeneration !== ownershipGeneration ||
+			this.getProviderId() !== provider.providerId ||
+			this.currentSessionId !== (sessionId ?? null) ||
+			this.desiredPermissionMode() !== rejection.attempted ||
+			!KNOWN_PERMISSION_MODES.has(rejection.authoritative)
+		) {
+			return;
+		}
+		const authoritative = rejection.authoritative as PermissionMode;
+		const target: PermissionModeChangeTarget = {
+			sessionId: sessionId ?? null,
+			providerId: provider.providerId,
+			providerOwnershipGeneration: ownershipGeneration,
+			permissionModeControlGeneration: this.permissionModeControlGeneration,
+			agentSession: sourceSession,
+			agentSessionKey: this.agentSessionKey,
+			skipLiveSetter: true,
+		};
+		let persistenceFailed = false;
+		try {
+			await this.persistPermissionModeChange(target, authoritative);
+		} catch (error) {
+			if (!this.ownsPermissionModeChangeTarget(target)) return;
+			persistenceFailed = true;
+			logDbError("persist provider permission mode rejection", error);
+		}
+		if (!this.ownsPermissionModeChangeTarget(target)) return;
+		this.commitAuthoritativePermissionMode(authoritative, sourceSession);
+		if (persistenceFailed && sessionId) {
+			this.schedulePermissionModePersistenceRepair({
+				sessionId,
+				providerId: provider.providerId,
+				providerOwnershipGeneration: ownershipGeneration,
+				sessionControlGeneration: this.sessionControlGeneration,
+				permissionModeControlGeneration: this.permissionModeControlGeneration,
+				mode: authoritative,
+			});
+		}
+		options.emit({
+			type: "session_control_rejected",
+			control: "permission_mode",
+			attempted_value: rejection.attempted,
+			authoritative_value: authoritative,
+			...(sessionId ? { session_id: sessionId } : {}),
+		});
+		options.emit({
+			type: "status",
+			state: this.state,
+			model: this.model,
+			permission_mode: authoritative,
+			...this.approvalsReviewerStatusField(),
+			effort: this.effort,
+			...(this.currentTurnId ? { turn_id: this.currentTurnId } : {}),
+		});
 	}
 
 	/**
@@ -2273,27 +3389,40 @@ export class SessionManager {
 	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket set_effort dispatch in wsHandlers.
 	async setEffort(effort: string): Promise<void> {
 		this.assertRealtimeIdle("changing effort");
-		const provider =
-			this.providers.get(this.getProviderId()) ??
-			this.resolveProvider(this.agentCwd);
-		this.validateEffort(effort, provider.providerId);
-		const target: EffortChangeTarget = {
-			sessionId: this.currentSessionId,
-			providerId: provider.providerId,
-			providerOwnershipGeneration: this.providerOwnershipGeneration,
-			effortControlGeneration: this.effortControlGeneration,
-			agentSession: this.agentSession,
-			agentSessionKey: this.agentSessionKey,
-		};
-		const operation = this.effortChangeTail.then(() =>
-			this.applyEffortChange(target, effort),
-		);
+		const sessionId = this.currentSessionId;
+		const sessionGeneration = this.sessionControlGeneration;
+		const effortReady = this.effortChangeTail;
+		const permissionReady = this.permissionModeChangeTail;
+		const operation = Promise.all([effortReady, permissionReady]).then(() => {
+			if (
+				this.currentSessionId !== sessionId ||
+				this.sessionControlGeneration !== sessionGeneration
+			) {
+				throw new EffortChangeSupersededError();
+			}
+			const provider =
+				this.providers.get(this.getProviderId()) ??
+				this.resolveProvider(this.agentCwd);
+			this.validateEffort(effort, provider.providerId);
+			return this.applyEffortChange(
+				{
+					sessionId,
+					providerId: provider.providerId,
+					providerOwnershipGeneration: this.providerOwnershipGeneration,
+					effortControlGeneration: this.effortControlGeneration,
+					agentSession: this.agentSession,
+					agentSessionKey: this.agentSessionKey,
+				},
+				effort,
+			);
+		});
 		// Install a settled barrier before the first provider/DB await so a chat
 		// frame received immediately afterward cannot race the old selection.
 		this.effortChangeTail = operation.then(
 			() => undefined,
 			() => undefined,
 		);
+		this.permissionModeChangeTail = this.effortChangeTail;
 		return operation;
 	}
 
@@ -4444,7 +5573,44 @@ export class SessionManager {
 					try {
 						await agentSession.setPermissionMode?.(restorePermissionMode);
 					} catch (error) {
-						logDbError("restore permission mode after peer", error);
+						if (
+							this.agentSession === agentSession &&
+							(permissionModeGeneration !== this.permissionModeGeneration ||
+								restorePermissionMode !== this.desiredPermissionMode())
+						) {
+							// A newer picker change won while the older native restore was in
+							// flight. Apply that latest desired value before deciding whether the
+							// native default is an authoritative rejection.
+							continue;
+						}
+						if (restorePermissionMode !== "default") {
+							if (this.currentTurnState === turn) {
+								this.currentTurnState = null;
+								this.currentTurnPermissionMode = null;
+								this.currentDelegationHandoff = null;
+							}
+							if (this.currentProviderContinuation === job) {
+								this.currentProviderContinuation = null;
+							}
+							const rejection =
+								error instanceof ProviderPermissionModeRejectedError
+									? error
+									: new ProviderPermissionModeRejectedError(
+											restorePermissionMode,
+											"default",
+											error instanceof Error ? error.message : String(error),
+										);
+							await this.reconcilePreInputPermissionRejection({
+								sourceSession: agentSession,
+								sessionId: job.sessionId,
+								provider: job.provider,
+								ownershipGeneration: job.ownershipGeneration,
+								rejection,
+								emit: job.emit,
+							});
+						} else {
+							logDbError("restore permission mode after peer", error);
+						}
 						break;
 					}
 					if (
@@ -4561,7 +5727,7 @@ export class SessionManager {
 			type: "status",
 			state: this.state,
 			model: this.model,
-			permission_mode: this.permissionMode,
+			permission_mode: this.statusPermissionMode(),
 			...this.approvalsReviewerStatusField(),
 			effort: this.effort,
 		});
@@ -4840,10 +6006,17 @@ export class SessionManager {
 		sessionId: string,
 		updateGlobalFocus = true,
 	): Promise<boolean> {
+		const restoreGeneration = ++this.sessionControlGeneration;
 		if (this.currentSessionId !== sessionId) {
 			this.providerHistoryWarningIds.clear();
+			this.effectivePermissionMode = null;
 		}
 		this.providerOwnershipGeneration += 1;
+		const restoreProviderOwnershipGeneration = this.providerOwnershipGeneration;
+		const restorePermissionModeGeneration = this.permissionModeGeneration;
+		const restorePermissionModeControlGeneration =
+			this.permissionModeControlGeneration;
+		const restoreModelGeneration = this.modelGeneration;
 		this.resetEffectiveApprovalsReviewer();
 		this.clearSessionProvenance();
 		const [
@@ -4868,6 +6041,16 @@ export class SessionManager {
 			db.getSessionProviderSession(sessionId),
 			db.listProviderBackgroundActivities(sessionId),
 		]);
+		if (
+			this.sessionControlGeneration !== restoreGeneration ||
+			this.providerOwnershipGeneration !== restoreProviderOwnershipGeneration ||
+			this.permissionModeGeneration !== restorePermissionModeGeneration ||
+			this.modelGeneration !== restoreModelGeneration ||
+			this.permissionModeControlGeneration !==
+				restorePermissionModeControlGeneration
+		) {
+			throw new PermissionModeChangeSupersededError();
+		}
 		if (
 			savedSession?.history_imported &&
 			(savedSession.history_resume_mode ?? "none") === "none"
@@ -4932,10 +6115,99 @@ export class SessionManager {
 			KNOWN_PERMISSION_MODES.has(savedSession.selected_permission_mode) &&
 			this.permissionModeOverride === null
 		) {
-			this.permissionMode =
+			const savedPermissionMode =
 				savedSession.selected_permission_mode as PermissionMode;
-			this.permissionModeOverride =
-				savedSession.selected_permission_mode as PermissionMode;
+			let mustNarrowPermissionMode =
+				(this.policyEnforced &&
+					(savedPermissionMode === "auto" ||
+						savedPermissionMode === "dontAsk")) ||
+				(this.usageGateEnforced && savedPermissionMode === "auto");
+			if (
+				(savedPermissionMode === "auto" || savedPermissionMode === "dontAsk") &&
+				!mustNarrowPermissionMode
+			) {
+				// Advanced modes are direct-Claude session state. Fail closed when the
+				// persisted provider is absent or no longer exposes that exact mode;
+				// falling back to today's vault provider could widen an archived session.
+				const restoredProvider = savedProviderId
+					? this.providers.get(savedProviderId)
+					: undefined;
+				if (!restoredProvider) {
+					mustNarrowPermissionMode = true;
+				} else {
+					try {
+						await validateProviderPermissionMode(
+							restoredProvider,
+							savedPermissionMode,
+							this.permissionModeValidationContext(
+								savedModel ?? "",
+								savedPermissionMode === "auto",
+							),
+						);
+					} catch {
+						mustNarrowPermissionMode = true;
+					}
+				}
+				if (
+					this.sessionControlGeneration !== restoreGeneration ||
+					this.currentSessionId !== sessionId
+				) {
+					throw new PermissionModeChangeSupersededError();
+				}
+			}
+			const stillOwnsPermissionRestore =
+				this.providerOwnershipGeneration ===
+					restoreProviderOwnershipGeneration &&
+				this.permissionModeGeneration === restorePermissionModeGeneration &&
+				this.modelGeneration === restoreModelGeneration &&
+				this.permissionModeControlGeneration ===
+					restorePermissionModeControlGeneration &&
+				this.permissionModeOverride === null;
+			if (stillOwnsPermissionRestore) {
+				const restoredPermissionMode = mustNarrowPermissionMode
+					? "default"
+					: savedPermissionMode;
+				this.permissionMode = restoredPermissionMode;
+				this.permissionModeOverride = restoredPermissionMode;
+			}
+			if (mustNarrowPermissionMode && stillOwnsPermissionRestore) {
+				const restoreSessionControlGeneration = this.sessionControlGeneration;
+				const restoreProviderOwnershipGeneration =
+					this.providerOwnershipGeneration;
+				const ownsRestore = () =>
+					this.currentSessionId === sessionId &&
+					this.sessionControlGeneration === restoreSessionControlGeneration &&
+					this.providerOwnershipGeneration ===
+						restoreProviderOwnershipGeneration &&
+					this.desiredPermissionMode() === "default";
+				let persistenceFailed = false;
+				try {
+					const committed = await this.enqueueProviderOwnershipWrite(() =>
+						db.setSessionPermissionMode(sessionId, "default", {
+							guard: ownsRestore,
+						}),
+					);
+					if (!committed && ownsRestore()) persistenceFailed = true;
+				} catch (error) {
+					persistenceFailed = ownsRestore();
+					logDbError("narrow restored provider permission mode", error);
+				}
+				if (persistenceFailed) {
+					const restoredProvider =
+						(savedProviderId
+							? this.providers.get(savedProviderId)
+							: undefined) ?? this.resolveProvider(this.agentCwd);
+					this.schedulePermissionModePersistenceRepair({
+						sessionId,
+						providerId: restoredProvider.providerId,
+						providerOwnershipGeneration: restoreProviderOwnershipGeneration,
+						sessionControlGeneration: restoreSessionControlGeneration,
+						permissionModeControlGeneration:
+							this.permissionModeControlGeneration,
+						mode: "default",
+					});
+				}
+			}
 		}
 		if (this.approvalsReviewerOverride === null) {
 			const restoredProvider =
@@ -4958,6 +6230,47 @@ export class SessionManager {
 			);
 		}
 		return Boolean(savedSession);
+	}
+
+	/**
+	 * Restore a claimed archived chat before WebSocket first-chat controls are
+	 * validated. This lets policy and exact Claude Auto checks narrow stale saved
+	 * selections before Raven receives an authoritative rejection/status.
+	 */
+	// fallow-ignore-next-line unused-class-member -- Called by first-chat WebSocket dispatch in wsHandlers.
+	async prepareSessionControlsForChat(sessionId: string): Promise<{
+		restored: boolean;
+		permissionModeNarrowing?: {
+			attempted: PermissionMode;
+			authoritative: PermissionMode;
+			providerId: string;
+			model: string;
+		};
+	}> {
+		if (this.currentSessionId === sessionId) return { restored: true };
+		const savedSession = await db.getSessionById(sessionId);
+		if (!savedSession) return { restored: false };
+		const priorSelection = await db.getSessionSelection(sessionId);
+		this.stopBackgroundActivityObserver();
+		await this.backgroundActivityWriteTail;
+		const restored = await this.restoreSessionContext(sessionId, false);
+		const attempted = priorSelection?.permissionMode;
+		const authoritative = this.statusPermissionMode();
+		return {
+			restored,
+			...(attempted &&
+			KNOWN_PERMISSION_MODES.has(attempted) &&
+			attempted !== authoritative
+				? {
+						permissionModeNarrowing: {
+							attempted: attempted as PermissionMode,
+							authoritative,
+							providerId: priorSelection.providerId ?? this.getProviderId(),
+							model: priorSelection.model ?? "",
+						},
+					}
+				: {}),
+		};
 	}
 
 	/**
@@ -6906,6 +8219,7 @@ export class SessionManager {
 		emit: (msg: ServerMessage) => void,
 		turn: TurnState,
 		provider: AgentProvider,
+		sourceSession: AgentSession,
 	): Promise<boolean> {
 		const providerContinuation = this.currentProviderContinuation;
 		if (
@@ -6918,6 +8232,42 @@ export class SessionManager {
 			);
 		}
 		switch (event.type) {
+			case "provider_permission_mode_changed":
+				if (
+					provider.providerId === "claude" &&
+					this.agentSession === sourceSession &&
+					this.currentSessionId === (sessionId ?? null) &&
+					this.providerOwnershipGeneration ===
+						turn.providerOwnershipGeneration &&
+					this.providerSessionId === event.providerSessionId &&
+					this.currentTurnPermissionMode === "auto" &&
+					event.permissionMode === "default"
+				) {
+					const reconciled = await this.reconcileNativePermissionFallback(
+						sourceSession,
+						event.providerSessionId,
+					);
+					if (reconciled) {
+						this.currentTurnPermissionMode = "default";
+						emit({
+							type: "session_control_rejected",
+							control: "permission_mode",
+							attempted_value: "auto",
+							authoritative_value: "default",
+							...(sessionId ? { session_id: sessionId } : {}),
+						});
+						emit({
+							type: "status",
+							state: this.state,
+							model: this.model,
+							permission_mode: this.statusPermissionMode(),
+							...this.approvalsReviewerStatusField(),
+							effort: this.effort,
+							...(this.currentTurnId ? { turn_id: this.currentTurnId } : {}),
+						});
+					}
+				}
+				break;
 			case "session_start":
 				await this.handleSessionStart(
 					event,
@@ -7331,6 +8681,7 @@ export class SessionManager {
 						emit,
 						turn,
 						provider,
+						session,
 					)
 				)
 					return;
@@ -7363,6 +8714,7 @@ export class SessionManager {
 			options,
 			inputOrigin,
 			effortReady: this.effortChangeTail,
+			permissionModeReady: this.capturePermissionAcceptanceBarrier(),
 		};
 		if (isDurableInteractiveTurn(args)) {
 			args.durableReady = this.persistDurableTurn(args);
@@ -7464,6 +8816,7 @@ export class SessionManager {
 				emit,
 				inputOrigin: normalizeAgentInputOrigin(payload.inputOrigin),
 				effortReady: this.effortChangeTail,
+				permissionModeReady: this.capturePermissionAcceptanceBarrier(),
 				options: {
 					...payload.options,
 					sessionId: row.session_id,
@@ -8019,7 +9372,7 @@ export class SessionManager {
 				type: "status",
 				state: this.state,
 				model: this.model,
-				permission_mode: this.permissionMode,
+				permission_mode: this.statusPermissionMode(),
 				...this.approvalsReviewerStatusField(),
 				effort: this.effort,
 			});
@@ -8912,7 +10265,7 @@ export class SessionManager {
 			type: "status",
 			state: "running",
 			model: this.model,
-			permission_mode: this.permissionMode,
+			permission_mode: this.statusPermissionMode(),
 			...this.approvalsReviewerStatusField(),
 			effort: this.effort,
 			...(this.currentTurnId !== undefined
@@ -9137,6 +10490,7 @@ export class SessionManager {
 			this.agentSession.cancel();
 			this.agentSession = null;
 			this.agentSessionKey = null;
+			this.effectivePermissionMode = null;
 			this.restartAgentSessionForEffort = false;
 			this.restartProviderRuntimeAfterTurn = false;
 			this.resetEffectiveApprovalsReviewer();
@@ -9154,13 +10508,8 @@ export class SessionManager {
 			return this.agentSession;
 		}
 		this.restartProviderRuntimeAfterTurn = false;
-		const configuredPermissionMode = this.activeRoutineContext
-			? this.activeRoutineContext.mode === "full_access"
-				? "bypassPermissions"
-				: "default"
-			: (this.permissionModeOverride ??
-				agentSettings?.permissionMode ??
-				this.permissionMode);
+		const configuredPermissionMode =
+			this.configuredPermissionModeForTurn(agentSettings);
 		const autoApproveTools =
 			configuredPermissionMode === "bypassPermissions" &&
 			!this.policyEnforced &&
@@ -9429,6 +10778,7 @@ export class SessionManager {
 
 	private async runOneTurn(args: RunQueryArgs): Promise<void> {
 		await (args.effortReady ?? this.effortChangeTail);
+		await (args.permissionModeReady ?? this.permissionModeAcceptanceBarrier);
 		const { userMessage, emit } = args;
 		const {
 			sessionId,
@@ -9468,13 +10818,8 @@ export class SessionManager {
 			resumeProviderSessionId,
 			ownershipGeneration,
 		} = await this.prepareProviderForTurn(sessionId);
-		const configuredPermissionMode = this.activeRoutineContext
-			? this.activeRoutineContext.mode === "full_access"
-				? "bypassPermissions"
-				: "default"
-			: (this.permissionModeOverride ??
-				agentSettings?.permissionMode ??
-				this.permissionMode);
+		const configuredPermissionMode =
+			this.configuredPermissionModeForTurn(agentSettings);
 
 		// Turn-boundary usage gate: hold the turn before any provider spend.
 		// State stays "running" while sleeping; agent_sleep carries the nuance.
@@ -9494,6 +10839,7 @@ export class SessionManager {
 		this.currentTurnPermissionMode = planMode
 			? "plan"
 			: configuredPermissionMode;
+		let turnAgentSession: AgentSession | null = null;
 
 		try {
 			const runtimeCwd =
@@ -9732,6 +11078,7 @@ export class SessionManager {
 						}
 					: undefined,
 			});
+			turnAgentSession = agentSession;
 			if (goalStart) {
 				await this.markDurableTurnDispatching(turnId);
 				if (!isCodexRuntimeProvider(currentProvider.providerId)) {
@@ -9827,6 +11174,26 @@ export class SessionManager {
 				agentSettings,
 			});
 		} catch (err) {
+			if (
+				err instanceof ProviderPermissionModeRejectedError &&
+				turnAgentSession
+			) {
+				try {
+					await this.reconcilePreInputPermissionRejection({
+						sourceSession: turnAgentSession,
+						sessionId,
+						provider: currentProvider,
+						ownershipGeneration,
+						rejection: err,
+						emit,
+					});
+				} catch (reconciliationError) {
+					logDbError(
+						"reconcile provider permission mode rejection",
+						reconciliationError,
+					);
+				}
+			}
 			const expectedAbort = this.abortController?.signal.aborted === true;
 			if (!expectedAbort) this.state = "error";
 			const msg = err instanceof Error ? err.message : "Unknown error";

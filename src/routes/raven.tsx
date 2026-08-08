@@ -131,7 +131,9 @@ import {
 	modelInputAvailability,
 	modelOptions,
 	normalizeEffortForPlanMode,
+	permissionModeBadgeLabel,
 	resolveActiveProviderId,
+	sessionPermissionOptionsFor,
 } from "#/lib/providerOptions";
 import {
 	isClaudeRuntimeProvider,
@@ -227,6 +229,10 @@ const RAVEN_PREVIEW_WIDTH_KEY = "hlid:raven-preview-width";
 type RavenConfig = Awaited<ReturnType<typeof getConfig>>;
 type RavenLiveSessions = Awaited<ReturnType<typeof getLiveSessionsFn>>;
 const RAVEN_OPTIONAL_LOADER_WAIT_MS = 500;
+const CLAUDE_AUTO_ACCOUNTING_DISCLOSURE =
+	"Claude does not expose Auto classifier usage or cost, so Hlid Ledger totals exclude that overhead.";
+const CLAUDE_SAVED_AUTO_RECHECK_NOTICE =
+	"Auto is saved for this chat but is not currently available. Hlid will recheck it when the chat resumes and use Ask if Claude still rejects it.";
 
 /** Optional inventory must never hold the route pending behind an API timeout. */
 function optionalRavenLoaderValue<T>(
@@ -511,6 +517,23 @@ function restoredRavenSessionSelection(
 			? { permissionMode: initialSessionPermissionMode }
 			: {}),
 		...(approvalsReviewer ? { approvalsReviewer } : {}),
+	};
+}
+
+function liveRavenSessionSelection(
+	status: RavenLiveSessions[number] | null | undefined,
+): RavenSessionSelection | null {
+	if (!status || status.mode === "terminal" || !status.provider_id) return null;
+	return {
+		providerId: status.provider_id,
+		model: status.model,
+		...(status.effort ? { effort: status.effort } : {}),
+		...(status.permission_mode
+			? { permissionMode: status.permission_mode }
+			: {}),
+		...(status.approvals_reviewer
+			? { approvalsReviewer: status.approvals_reviewer }
+			: {}),
 	};
 }
 
@@ -2189,6 +2212,7 @@ function configuredVaultSelection(
 function defaultSelectionForProvider(
 	provider: RavenProviders[number],
 	configured: RavenSessionSelection,
+	config: RavenConfig,
 ): RavenSessionSelection {
 	const useConfigured = configured.providerId === provider.id;
 	const models = modelOptions(provider);
@@ -2204,7 +2228,11 @@ function defaultSelectionForProvider(
 		efforts.find((candidate) => candidate.isDefault)?.value ??
 		efforts.find((candidate) => candidate.value === "medium")?.value ??
 		efforts[0]?.value;
-	const permissions = provider.permissionModes ?? [];
+	const permissions = sessionPermissionOptionsFor(provider, {
+		model,
+		policyEnforced: config.umbod?.enabled === true,
+		usageGateEnforced: config.auto_sleep?.enabled === true,
+	});
 	const configuredPermission = useConfigured
 		? configured.permissionMode
 		: undefined;
@@ -2361,6 +2389,11 @@ function deriveRavenComposerState({
 	const provider = providers.find(
 		(candidate) => candidate.id === activeProviderId,
 	);
+	const permissionOptions = sessionPermissionOptionsFor(provider, {
+		model: selectedModel,
+		policyEnforced: config.umbod?.enabled === true,
+		usageGateEnforced: config.auto_sleep?.enabled === true,
+	});
 	const reviewerOptions = provider?.approvalReviewers ?? [];
 	const supportsAutoReview = reviewerOptions.some(
 		(candidate) => candidate.value === "auto_review",
@@ -2407,7 +2440,7 @@ function deriveRavenComposerState({
 			: null,
 		configuredSelection,
 		modelPickerOptions: modelOptions(provider),
-		permissionOptions: provider?.permissionModes ?? [],
+		permissionOptions,
 		approvalsReviewerOptions: approvalsReviewerUnavailableReason
 			? reviewerOptions.filter((candidate) => candidate.value === "user")
 			: reviewerOptions,
@@ -2572,24 +2605,9 @@ export function ChatPage() {
 		initialSessionApprovalsReviewer,
 	]);
 	const liveSessionStatus = session.liveSessionStatus;
-	const liveSessionSelection: RavenSessionSelection | null =
-		liveSessionStatus &&
-		liveSessionStatus.mode !== "terminal" &&
-		liveSessionStatus.provider_id
-			? {
-					providerId: liveSessionStatus.provider_id,
-					model: liveSessionStatus.model,
-					...(liveSessionStatus.effort
-						? { effort: liveSessionStatus.effort }
-						: {}),
-					...(liveSessionStatus.permission_mode
-						? { permissionMode: liveSessionStatus.permission_mode }
-						: {}),
-					...(liveSessionStatus.approvals_reviewer
-						? { approvalsReviewer: liveSessionStatus.approvals_reviewer }
-						: {}),
-				}
-			: null;
+	const liveSessionSelection = liveRavenSessionSelection(liveSessionStatus);
+	const liveSessionSelectionRef = useRef(liveSessionSelection);
+	liveSessionSelectionRef.current = liveSessionSelection;
 	useEffect(() => {
 		if (!liveSessionStatus || liveSessionStatus.mode === "terminal") return;
 		const liveProviderId = liveSessionStatus.provider_id ?? null;
@@ -2723,18 +2741,77 @@ export function ChatPage() {
 				return;
 			}
 			const pending = pendingSessionControlsRef.current;
-			if (
-				message.control !== "effort" ||
-				pending.effort !== message.attempted_value
-			) {
+			if (message.control === "provider") {
+				if (pendingProviderIdRef.current !== message.attempted_value) return;
+				pendingProviderIdRef.current = null;
+				pendingSessionControlsRef.current = {};
+				setPendingProviderId(null);
+				const liveSelection = liveSessionSelectionRef.current;
+				setSessionSelection(
+					liveSelection?.providerId === message.authoritative_value
+						? liveSelection
+						: { providerId: message.authoritative_value },
+				);
 				return;
 			}
-			const { effort: _rejectedEffort, ...remaining } = pending;
-			pendingSessionControlsRef.current = remaining;
-			setSessionSelection((current) => ({
-				...current,
-				effort: message.authoritative_value,
-			}));
+			if (message.control === "effort") {
+				if (pending.effort !== message.attempted_value) return;
+				const { effort: _rejectedEffort, ...remaining } = pending;
+				pendingSessionControlsRef.current = remaining;
+				setSessionSelection((current) => ({
+					...current,
+					effort: message.authoritative_value,
+				}));
+				return;
+			}
+			if (message.control === "model") {
+				if (pending.model !== undefined) {
+					if (pending.model !== message.attempted_value) return;
+					const { model: _rejectedModel, ...remaining } = pending;
+					pendingSessionControlsRef.current = remaining;
+					setSessionSelection((current) => ({
+						...current,
+						model: message.authoritative_value,
+					}));
+					return;
+				}
+
+				// A live status can acknowledge the optimistic model before the native
+				// or durable transaction later rolls back. Apply that correlated late
+				// rejection only while the attempted model is still selected.
+				setSessionSelection((current) =>
+					current.model === message.attempted_value
+						? { ...current, model: message.authoritative_value }
+						: current,
+				);
+				return;
+			}
+			if (message.control !== "permission_mode") return;
+
+			if (pending.permissionMode !== undefined) {
+				if (pending.permissionMode !== message.attempted_value) return;
+				const { permissionMode: _rejectedPermissionMode, ...remaining } =
+					pending;
+				pendingSessionControlsRef.current = remaining;
+				setSessionSelection((current) => ({
+					...current,
+					permissionMode: message.authoritative_value,
+				}));
+				return;
+			}
+
+			// Native Claude can reject after its accepted status already cleared the
+			// optimistic marker, including a model change that makes Auto invalid.
+			// Apply only when the current selection is still the attempted mode so a
+			// late rejection cannot overwrite a newer choice.
+			setSessionSelection((current) =>
+				current.permissionMode === message.attempted_value
+					? {
+							...current,
+							permissionMode: message.authoritative_value,
+						}
+					: current,
+			);
 		},
 		[sessionIdRef],
 	);
@@ -2768,26 +2845,8 @@ export function ChatPage() {
 		pendingSessionControlsRef.current = {};
 		setPendingProviderId(null);
 
-		let rollbackSelection: RavenSessionSelection | null = null;
-		if (
-			liveSessionStatus &&
-			liveSessionStatus.mode !== "terminal" &&
-			liveSessionStatus.provider_id
-		) {
-			rollbackSelection = {
-				providerId: liveSessionStatus.provider_id,
-				model: liveSessionStatus.model,
-				...(liveSessionStatus.effort
-					? { effort: liveSessionStatus.effort }
-					: {}),
-				...(liveSessionStatus.permission_mode
-					? { permissionMode: liveSessionStatus.permission_mode }
-					: {}),
-				...(liveSessionStatus.approvals_reviewer
-					? { approvalsReviewer: liveSessionStatus.approvals_reviewer }
-					: {}),
-			};
-		} else if (existingSessionId) {
+		let rollbackSelection = liveRavenSessionSelection(liveSessionStatus);
+		if (!rollbackSelection && existingSessionId) {
 			rollbackSelection = restoredRavenSessionSelection(
 				existingSessionId,
 				agentSkillContext,
@@ -3087,6 +3146,7 @@ export function ChatPage() {
 	]);
 	const composerProps: ChatComposerProps = {
 		interactiveMode,
+		savedSession: restoredSession,
 		config,
 		agentList,
 		session,
@@ -4111,6 +4171,7 @@ function OptionGroup({
 }
 
 function ChatModelBadge({
+	config,
 	session,
 	runtime,
 	voice,
@@ -4157,14 +4218,7 @@ function ChatModelBadge({
 		approvalsReviewerOptions.length > 0
 			? (activeApprovalsReviewer ?? approvalsReviewer)
 			: null;
-	const permissionBadge =
-		displayedPermissionMode === "bypassPermissions"
-			? "auto"
-			: displayedPermissionMode === "acceptEdits"
-				? "edits"
-				: displayedPermissionMode === "default"
-					? "ask"
-					: displayedPermissionMode;
+	const permissionBadge = permissionModeBadgeLabel(displayedPermissionMode);
 	const approvalsReviewerBadge =
 		displayedApprovalsReviewer === "auto_review" ? "auto-review" : null;
 	// The primary badge is a control: it must show what the next turn will use.
@@ -4307,6 +4361,7 @@ function ChatModelBadge({
 									const next = defaultSelectionForProvider(
 										provider,
 										configuredSelection,
+										config,
 									);
 									const delivered = send({
 										type: "set_provider",
@@ -4508,6 +4563,7 @@ function ChatInputArea(props: ChatComposerProps) {
 }
 
 function ChatInputNotices({
+	savedSession,
 	config,
 	agentList,
 	providers,
@@ -4523,6 +4579,7 @@ function ChatInputNotices({
 	onToggleTerminal,
 	activeProviderId,
 	activePermissionMode,
+	permissionOptions,
 	activeEffort,
 	selectSessionControls,
 	activeSkills,
@@ -4543,6 +4600,12 @@ function ChatInputNotices({
 	const activeProvider = providers.find(
 		(provider) => provider.id === activeProviderId,
 	);
+	const savedAutoNeedsRecheck =
+		savedSession &&
+		!session.liveSessionStatus &&
+		activeProviderId === "claude" &&
+		(activePermissionMode ?? permissionMode) === "auto" &&
+		!permissionOptions.some((option) => option.value === "auto");
 	return (
 		<>
 			<ActiveCommandBadges commands={activeSkills} onClear={clearActiveSkill} />
@@ -4648,6 +4711,26 @@ function ChatInputNotices({
 					)}
 				</div>
 			)}
+			{savedAutoNeedsRecheck ? (
+				<div
+					role="note"
+					aria-label={CLAUDE_SAVED_AUTO_RECHECK_NOTICE}
+					className="px-4 py-1.5 border-b border-status-info/20 bg-status-info/5 text-[10px] text-foreground/65 leading-relaxed"
+				>
+					{CLAUDE_SAVED_AUTO_RECHECK_NOTICE}
+				</div>
+			) : (
+				activeProviderId === "claude" &&
+				(activePermissionMode ?? permissionMode) === "auto" && (
+					<div
+						role="note"
+						aria-label={CLAUDE_AUTO_ACCOUNTING_DISCLOSURE}
+						className="px-4 py-1.5 border-b border-status-info/20 bg-status-info/5 text-[10px] text-foreground/65 leading-relaxed"
+					>
+						{CLAUDE_AUTO_ACCOUNTING_DISCLOSURE}
+					</div>
+				)
+			)}
 			<div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-1.5 border-b border-border/40">
 				{messages.length === 0 && agentList.length > 0 && (
 					<div className="flex min-w-0 w-full items-center gap-3 md:w-auto md:flex-1">
@@ -4679,9 +4762,10 @@ function ChatInputNotices({
 							isClaudeRuntimeProvider(activeProviderId)
 								? config.umbod?.enabled
 									? "Hlid policy enforcement owns MCP approvals for this session, so Claude's native per-server override is inactive."
-									: (activePermissionMode ?? permissionMode) !==
-											"bypassPermissions"
-										? "Per-server Claude approval becomes available when this live session uses Auto-approve all."
+									: !["auto", "bypassPermissions"].includes(
+												activePermissionMode ?? permissionMode ?? "",
+											)
+										? "Per-server Claude approval becomes available when this live session uses Auto or bypass."
 										: undefined
 								: undefined
 						}
@@ -5325,6 +5409,7 @@ type RavenVoice = ReturnType<typeof useRavenVoice>;
 
 interface ChatComposerProps {
 	interactiveMode: boolean;
+	savedSession: boolean;
 	config: RavenConfig;
 	agentList: RavenAgentList;
 	session: RavenSessionIdentity;
@@ -5368,7 +5453,7 @@ interface ChatComposerProps {
 	configuredSelection: RavenSessionSelection;
 	providers: RavenProviders;
 	modelPickerOptions: ReturnType<typeof modelOptions>;
-	permissionOptions: NonNullable<RavenProviders[number]["permissionModes"]>;
+	permissionOptions: ReturnType<typeof sessionPermissionOptionsFor>;
 	approvalsReviewerOptions: NonNullable<
 		RavenProviders[number]["approvalReviewers"]
 	>;

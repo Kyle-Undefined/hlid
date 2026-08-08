@@ -257,7 +257,7 @@ export type ErrorMessage = {
 /** Correlated rejection for one optimistically applied Raven session control. */
 export type SessionControlRejectedMessage = {
 	type: "session_control_rejected";
-	control: "effort";
+	control: "effort" | "model" | "permission_mode" | "provider";
 	/** Exact optimistic value sent by this client. */
 	attempted_value: string;
 	/** Server-authoritative value retained after the rejection. */

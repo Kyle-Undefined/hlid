@@ -7,8 +7,10 @@ import {
 	modelInputAvailability,
 	modelOptions,
 	normalizeEffortForPlanMode,
+	permissionModeBadgeLabel,
 	providerAdvertisesInput,
 	resolveActiveProviderId,
+	sessionPermissionOptionsFor,
 } from "./providerOptions";
 import type { ProviderInfo } from "./providerTypes";
 
@@ -283,6 +285,121 @@ describe("defaultEffortFor", () => {
 
 	it("returns undefined for undefined provider", () => {
 		expect(defaultEffortFor(undefined, "anything")).toBeUndefined();
+	});
+});
+
+describe("sessionPermissionOptionsFor", () => {
+	const advancedClaude: ProviderInfo = {
+		...provider,
+		models: [
+			{
+				value: "sonnet",
+				resolvedModel: "claude-sonnet-4-6",
+				label: "Sonnet",
+				supportsAutoMode: true,
+			},
+			{ value: "haiku", label: "Haiku" },
+		],
+		permissionModes: [{ value: "default", label: "Persistent ask" }],
+		sessionPermissionModes: [
+			{ value: "default", label: "Ask" },
+			{ value: "auto", label: "Auto" },
+			{ value: "dontAsk", label: "Pre-approved only" },
+		],
+	};
+	const available = (model: string) =>
+		sessionPermissionOptionsFor(advancedClaude, {
+			model,
+			policyEnforced: false,
+			usageGateEnforced: false,
+		});
+
+	it("uses the session catalog and accepts affirmative raw capability by alias or resolved model", () => {
+		expect(available("sonnet").map((mode) => mode.value)).toEqual([
+			"default",
+			"auto",
+			"dontAsk",
+		]);
+		expect(available("claude-sonnet-4-6").map((mode) => mode.value)).toEqual([
+			"default",
+			"auto",
+			"dontAsk",
+		]);
+		expect(available("sonnet")[0]?.label).toBe("Ask");
+	});
+
+	it("fails Auto closed when raw model capability is missing", () => {
+		expect(available("haiku").map((mode) => mode.value)).toEqual([
+			"default",
+			"dontAsk",
+		]);
+		expect(available("unknown").map((mode) => mode.value)).toEqual([
+			"default",
+			"dontAsk",
+		]);
+		expect(
+			sessionPermissionOptionsFor(advancedClaude, {
+				model: undefined,
+				policyEnforced: false,
+				usageGateEnforced: false,
+			}).map((mode) => mode.value),
+		).toEqual(["default", "dontAsk"]);
+	});
+
+	it("hides advanced modes under policy and Auto under the usage gate", () => {
+		expect(
+			sessionPermissionOptionsFor(advancedClaude, {
+				model: "sonnet",
+				policyEnforced: true,
+				usageGateEnforced: false,
+			}).map((mode) => mode.value),
+		).toEqual(["default"]);
+		expect(
+			sessionPermissionOptionsFor(advancedClaude, {
+				model: "sonnet",
+				policyEnforced: false,
+				usageGateEnforced: true,
+			}).map((mode) => mode.value),
+		).toEqual(["default", "dontAsk"]);
+	});
+
+	it("never trusts a routed provider that advertises Claude-only modes", () => {
+		expect(
+			sessionPermissionOptionsFor(
+				{ ...advancedClaude, id: "cliproxy-claude" },
+				{
+					model: "sonnet",
+					policyEnforced: false,
+					usageGateEnforced: false,
+				},
+			).map((mode) => mode.value),
+		).toEqual(["default"]);
+	});
+
+	it("keeps the legacy list for providers without a separate session catalog", () => {
+		expect(
+			sessionPermissionOptionsFor(
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					permissionModes: [{ value: "default", label: "Ask" }],
+				},
+				{
+					model: "gpt-5.6-sol",
+					policyEnforced: false,
+					usageGateEnforced: false,
+				},
+			),
+		).toEqual([{ value: "default", label: "Ask" }]);
+	});
+});
+
+describe("permissionModeBadgeLabel", () => {
+	it("keeps bypass, Claude Auto, and pre-approved mode distinct", () => {
+		expect(permissionModeBadgeLabel("bypassPermissions")).toBe("bypass");
+		expect(permissionModeBadgeLabel("auto")).toBe("auto");
+		expect(permissionModeBadgeLabel("dontAsk")).toBe("pre-approved");
 	});
 });
 

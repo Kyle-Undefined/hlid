@@ -87,6 +87,7 @@ import {
 	setSessionArchived,
 	setSessionEffort,
 	setSessionModel,
+	setSessionModelAndPermissionMode,
 	setSessionPermissionMode,
 	setSessionPinned,
 	setSessionProviderId,
@@ -154,6 +155,34 @@ async function setActualModelForTest(
 		actualModel,
 		sessionId,
 	]);
+}
+
+function providerSelectionStorageSnapshot(
+	db: Database,
+	sessionId: string,
+): string {
+	return JSON.stringify({
+		session: db
+			.query(
+				`SELECT provider_id, model, selected_model, selected_effort,
+				        selected_permission_mode, selected_approvals_reviewer,
+				        actual_model, provider_session_id, claude_session_id
+				 FROM sessions WHERE id = ?`,
+			)
+			.get(sessionId),
+		transcripts: db
+			.query(
+				`SELECT * FROM provider_history_transcripts
+				 ORDER BY provider_id, native_session_id, subpath`,
+			)
+			.all(),
+		deltas: db
+			.query(
+				`SELECT * FROM provider_history_transcript_deltas
+				 ORDER BY provider_id, native_session_id, subpath, id`,
+			)
+			.all(),
+	});
 }
 
 describe("session creation", () => {
@@ -765,6 +794,383 @@ describe("sessions — provider sessions", () => {
 		expect(await getSessionProviderSession("s1", "claude")).toBe(
 			"claude-native",
 		);
+	});
+});
+
+describe("sessions — guarded selection transactions", () => {
+	beforeEach(() => freshDb());
+
+	it("leaves the complete provider selection and transcript storage unchanged when its guard rejects", async () => {
+		const db = await getDb();
+		await createSession("guarded", "Guarded", "claude-sonnet-5", {
+			providerId: "claude",
+			effort: "high",
+			permissionMode: "auto",
+			approvalsReviewer: "auto_review",
+		});
+		await setSessionProviderSession("guarded", "claude", "claude-guarded");
+		await setActualModelForTest("guarded", "claude-sonnet-5-20260801");
+		insertProviderTranscriptForTest(db, "claude", "claude-guarded");
+		const before = providerSelectionStorageSnapshot(db, "guarded");
+		let callbackCalls = 0;
+
+		expect(
+			await setSessionProviderSelection(
+				"guarded",
+				"codex",
+				{
+					model: "gpt-5.6-sol",
+					effort: "low",
+					permissionMode: "default",
+					approvalsReviewer: "user",
+				},
+				{
+					guard: () => false,
+					onCommitted: () => {
+						callbackCalls += 1;
+					},
+				},
+			),
+		).toBe(false);
+		expect(callbackCalls).toBe(0);
+		expect(providerSelectionStorageSnapshot(db, "guarded")).toBe(before);
+	});
+
+	it("returns false and skips the provider callback for a missing session", async () => {
+		let callbackCalls = 0;
+
+		expect(
+			await setSessionProviderSelection(
+				"missing",
+				"claude",
+				{
+					model: "claude-sonnet-5",
+					effort: "high",
+					permissionMode: "auto",
+					approvalsReviewer: "user",
+				},
+				{
+					onCommitted: () => {
+						callbackCalls += 1;
+					},
+				},
+			),
+		).toBe(false);
+		expect(callbackCalls).toBe(0);
+		expect(await getSessionById("missing")).toBeNull();
+	});
+
+	it("atomically replaces the provider tuple and removes only the retired unowned transcript", async () => {
+		const db = await getDb();
+		await createSession("switching", "Switching", "claude-sonnet-5", {
+			providerId: "claude",
+			effort: "high",
+			permissionMode: "auto",
+			approvalsReviewer: "user",
+		});
+		await setSessionProviderSession("switching", "claude", "retired-native");
+		await setActualModelForTest("switching", "claude-sonnet-5-20260801");
+		insertProviderTranscriptForTest(db, "claude", "retired-native");
+
+		await createSession("survivor", "Survivor", "claude-sonnet-5", {
+			providerId: "claude",
+		});
+		await setSessionProviderSession("survivor", "claude", "shared-native");
+		insertProviderTranscriptForTest(db, "claude", "shared-native");
+
+		expect(
+			await setSessionProviderSelection("switching", "codex", {
+				model: "gpt-5.6-sol",
+				effort: "xhigh",
+				permissionMode: "bypassPermissions",
+				approvalsReviewer: "auto_review",
+			}),
+		).toBe(true);
+		expect(
+			db
+				.query(
+					`SELECT provider_id, model, selected_model, selected_effort,
+					        selected_permission_mode, selected_approvals_reviewer,
+					        actual_model, provider_session_id, claude_session_id
+					 FROM sessions WHERE id = ?`,
+				)
+				.get("switching"),
+		).toEqual({
+			provider_id: "codex",
+			model: "gpt-5.6-sol",
+			selected_model: "gpt-5.6-sol",
+			selected_effort: "xhigh",
+			selected_permission_mode: "bypassPermissions",
+			selected_approvals_reviewer: "auto_review",
+			actual_model: null,
+			provider_session_id: null,
+			claude_session_id: null,
+		});
+		expect(
+			db
+				.query(
+					`SELECT provider_id, native_session_id
+					 FROM provider_history_transcripts
+					 ORDER BY provider_id, native_session_id`,
+				)
+				.all(),
+		).toEqual([{ provider_id: "claude", native_session_id: "shared-native" }]);
+		expect(
+			db
+				.query(
+					`SELECT provider_id, native_session_id
+					 FROM provider_history_transcript_deltas
+					 ORDER BY provider_id, native_session_id`,
+				)
+				.all(),
+		).toEqual([{ provider_id: "claude", native_session_id: "shared-native" }]);
+	});
+
+	it("rolls back the provider tuple when transcript retirement fails", async () => {
+		const db = await getDb();
+		await createSession("rollback", "Rollback", "claude-sonnet-5", {
+			providerId: "claude",
+			effort: "high",
+			permissionMode: "auto",
+			approvalsReviewer: "user",
+		});
+		await setSessionProviderSession("rollback", "claude", "rollback-native");
+		await setActualModelForTest("rollback", "claude-sonnet-5-20260801");
+		insertProviderTranscriptForTest(db, "claude", "rollback-native");
+		const before = providerSelectionStorageSnapshot(db, "rollback");
+		let callbackCalls = 0;
+		db.run(`
+			CREATE TRIGGER block_provider_transcript_retirement
+			BEFORE DELETE ON provider_history_transcripts
+			BEGIN
+				SELECT RAISE(ABORT, 'blocked provider transcript retirement');
+			END
+		`);
+
+		await expect(
+			setSessionProviderSelection(
+				"rollback",
+				"codex",
+				{
+					model: "gpt-5.6-sol",
+					effort: "medium",
+					permissionMode: "default",
+					approvalsReviewer: "auto_review",
+				},
+				{
+					onCommitted: () => {
+						callbackCalls += 1;
+					},
+				},
+			),
+		).rejects.toThrow("blocked provider transcript retirement");
+		expect(callbackCalls).toBe(0);
+		expect(providerSelectionStorageSnapshot(db, "rollback")).toBe(before);
+	});
+
+	it("preserves same-provider runtime evidence and calls onCommitted after commit", async () => {
+		const db = await getDb();
+		await createSession("same-owner", "Same owner", "claude-sonnet-5", {
+			providerId: "claude",
+			effort: "high",
+			permissionMode: "default",
+			approvalsReviewer: "user",
+		});
+		await setSessionProviderSession("same-owner", "claude", "same-native");
+		await setActualModelForTest("same-owner", "claude-sonnet-5-20260801");
+		insertProviderTranscriptForTest(db, "claude", "same-native");
+		let callbackInTransaction: boolean | undefined;
+		let callbackSelection: unknown;
+
+		expect(
+			await setSessionProviderSelection(
+				"same-owner",
+				"claude",
+				{
+					model: "claude-sonnet-5",
+					effort: "medium",
+					permissionMode: "auto",
+					approvalsReviewer: "auto_review",
+				},
+				{
+					onCommitted: () => {
+						callbackInTransaction = db.inTransaction;
+						callbackSelection = db
+							.query(
+								`SELECT selected_effort, selected_permission_mode,
+								        selected_approvals_reviewer
+								 FROM sessions WHERE id = ?`,
+							)
+							.get("same-owner");
+					},
+				},
+			),
+		).toBe(true);
+		expect(callbackInTransaction).toBe(false);
+		expect(callbackSelection).toEqual({
+			selected_effort: "medium",
+			selected_permission_mode: "auto",
+			selected_approvals_reviewer: "auto_review",
+		});
+		expect(
+			db
+				.query(
+					`SELECT actual_model, provider_session_id, claude_session_id
+					 FROM sessions WHERE id = ?`,
+				)
+				.get("same-owner"),
+		).toEqual({
+			actual_model: "claude-sonnet-5-20260801",
+			provider_session_id: "same-native",
+			claude_session_id: "same-native",
+		});
+		expect(
+			db
+				.query<{ count: number }, []>(
+					`SELECT COUNT(*) AS count FROM provider_history_transcripts`,
+				)
+				.get()?.count,
+		).toBe(1);
+	});
+
+	it("keeps a committed provider selection when onCommitted throws", async () => {
+		await createSession("callback-error", "Callback error", "gpt-5.5", {
+			providerId: "codex",
+		});
+
+		expect(
+			await setSessionProviderSelection(
+				"callback-error",
+				"claude",
+				{
+					model: "claude-sonnet-5",
+					effort: "high",
+					permissionMode: "auto",
+					approvalsReviewer: "user",
+				},
+				{
+					onCommitted: () => {
+						throw new Error("owner callback failed");
+					},
+				},
+			),
+		).toBe(true);
+		expect(await getSessionSelection("callback-error")).toEqual({
+			agentCwd: null,
+			providerId: "claude",
+			model: "claude-sonnet-5",
+			effort: "high",
+			permissionMode: "auto",
+			approvalsReviewer: "user",
+		});
+	});
+
+	it("writes model and permission together or neither under guard and missing-row rejection", async () => {
+		const db = await getDb();
+		await createSession("model-guard", "Model guard", "gpt-5.5", {
+			providerId: "codex",
+			permissionMode: "bypassPermissions",
+		});
+		await setActualModelForTest("model-guard", "gpt-5.5-20260801");
+		const before = db
+			.query(
+				`SELECT model, selected_model, selected_permission_mode, actual_model
+				 FROM sessions WHERE id = ?`,
+			)
+			.get("model-guard");
+		let callbackCalls = 0;
+
+		expect(
+			await setSessionModelAndPermissionMode(
+				"model-guard",
+				"gpt-5.6-sol",
+				"default",
+				{
+					guard: () => false,
+					onCommitted: () => {
+						callbackCalls += 1;
+					},
+				},
+			),
+		).toBe(false);
+		expect(
+			db
+				.query(
+					`SELECT model, selected_model, selected_permission_mode, actual_model
+					 FROM sessions WHERE id = ?`,
+				)
+				.get("model-guard"),
+		).toEqual(before);
+		expect(
+			await setSessionModelAndPermissionMode(
+				"missing",
+				"gpt-5.6-sol",
+				"default",
+				{
+					onCommitted: () => {
+						callbackCalls += 1;
+					},
+				},
+			),
+		).toBe(false);
+		expect(callbackCalls).toBe(0);
+		expect(await getSessionById("missing")).toBeNull();
+	});
+
+	it("preserves or clears actual_model with the exact model-and-permission tuple", async () => {
+		const db = await getDb();
+		await createSession("model-mode", "Model mode", "gpt-5.5", {
+			providerId: "codex",
+			permissionMode: "bypassPermissions",
+		});
+		await setActualModelForTest("model-mode", "gpt-5.5-20260801");
+
+		expect(
+			await setSessionModelAndPermissionMode(
+				"model-mode",
+				"gpt-5.5",
+				"default",
+			),
+		).toBe(true);
+		expect(
+			db
+				.query(
+					`SELECT model, selected_model, selected_permission_mode, actual_model
+					 FROM sessions WHERE id = ?`,
+				)
+				.get("model-mode"),
+		).toEqual({
+			model: "gpt-5.5",
+			selected_model: "gpt-5.5",
+			selected_permission_mode: "default",
+			actual_model: "gpt-5.5-20260801",
+		});
+
+		expect(
+			await setSessionModelAndPermissionMode(
+				"model-mode",
+				"gpt-5.6-sol",
+				"bypassPermissions",
+				{
+					onCommitted: () => {
+						throw new Error("owner callback failed");
+					},
+				},
+			),
+		).toBe(true);
+		expect(
+			db
+				.query(
+					`SELECT model, selected_model, selected_permission_mode, actual_model
+					 FROM sessions WHERE id = ?`,
+				)
+				.get("model-mode"),
+		).toEqual({
+			model: "gpt-5.6-sol",
+			selected_model: "gpt-5.6-sol",
+			selected_permission_mode: "bypassPermissions",
+			actual_model: null,
+		});
 	});
 });
 

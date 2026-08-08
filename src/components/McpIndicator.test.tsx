@@ -174,7 +174,7 @@ describe("McpIndicator", () => {
 		expect(onControl).toHaveBeenNthCalledWith(1, "github", "permission-auto");
 		expect(onControl).toHaveBeenNthCalledWith(2, "github", "permission-clear");
 		expect(
-			screen.getByText(/only tightens Claude's native auto-approval/i),
+			screen.getByText(/only tightens Claude Auto or bypass/i),
 		).toBeTruthy();
 	});
 

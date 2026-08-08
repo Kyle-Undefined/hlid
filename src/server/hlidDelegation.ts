@@ -26,7 +26,13 @@ const LEGACY_DELEGATION_TIMEOUT_SECONDS = 600;
 const VISIBLE_HANDOFF_MESSAGE_LIMIT = 100;
 const LIST_TASK_PREVIEW_CHARS = 240;
 
-type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan";
+type PermissionMode =
+	| "default"
+	| "acceptEdits"
+	| "bypassPermissions"
+	| "plan"
+	| "dontAsk"
+	| "auto";
 
 type RunPayload = {
 	instruction: string;
@@ -49,13 +55,17 @@ const CHILD_PERMISSION_MODES: Record<
 	PermissionMode,
 	ReadonlySet<PermissionMode>
 > = {
-	default: new Set(["default", "plan"]),
-	acceptEdits: new Set(["default", "acceptEdits", "plan"]),
+	default: new Set(["default", "dontAsk", "plan"]),
+	dontAsk: new Set(["dontAsk", "plan"]),
+	acceptEdits: new Set(["acceptEdits", "default", "dontAsk", "plan"]),
+	auto: new Set(["auto", "default", "dontAsk", "plan"]),
 	bypassPermissions: new Set([
 		"default",
 		"acceptEdits",
 		"bypassPermissions",
 		"plan",
+		"dontAsk",
+		"auto",
 	]),
 	plan: new Set(["plan"]),
 };
@@ -255,7 +265,7 @@ export function childPermissionModeAllowed(
 }
 
 function validateProviderSelection(
-	provider: ProviderInfo | undefined,
+	provider: ProviderInfo,
 	input: DelegateHlidAgentInput,
 	permissionMode: PermissionMode,
 ): void {
@@ -310,11 +320,18 @@ function validateProviderSelection(
 			);
 		}
 	}
+	if (permissionMode === "auto" && provider?.id !== "claude") {
+		throw new Error(
+			`Permission mode auto is available only for direct native Claude sessions.`,
+		);
+	}
+	const sessionPermissionModes =
+		provider?.sessionPermissionModes ?? provider?.permissionModes;
 	if (
 		permissionMode !== "plan" &&
-		provider?.permissionModes &&
-		provider.permissionModes.length > 0 &&
-		!provider.permissionModes.some((mode) => mode.value === permissionMode)
+		sessionPermissionModes &&
+		sessionPermissionModes.length > 0 &&
+		!sessionPermissionModes.some((mode) => mode.value === permissionMode)
 	) {
 		throw new Error(
 			`Permission mode ${permissionMode} is not available for ${provider.label}.`,
@@ -655,6 +672,15 @@ export class HlidDelegationManager {
 				true,
 			);
 			try {
+				// This child has no durable session yet, so the provider transaction can
+				// perform the one exact Auto readiness check and commit only in memory.
+				// Durable delegation/session rows are created only after it accepts.
+				await child.manager.setProvider(input.provider, {
+					model,
+					effort,
+					serviceTier: input.service_tier,
+					permissionMode,
+				});
 				const delegation = await db.createHlidDelegation({
 					id: delegationId,
 					parentSessionId,
@@ -686,12 +712,6 @@ export class HlidDelegationManager {
 					},
 				);
 				this.pool.claimDbSessionId(child, child.sessionId);
-				await child.manager.setProvider(input.provider, {
-					model,
-					effort,
-					serviceTier: input.service_tier,
-					permissionMode,
-				});
 				this.assertSameRunningParentTurn(
 					parent,
 					parentSessionId,

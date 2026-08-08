@@ -494,6 +494,164 @@ function configureEffortRejectionSession(): void {
 	];
 }
 
+function configureModelRejectionSession(
+	model:
+		| "claude-sonnet-4-6"
+		| "claude-opus-4-6"
+		| "claude-haiku-4-5" = "claude-sonnet-4-6",
+): void {
+	configureEffortRejectionSession();
+	state.model = model;
+	state.loaderData = {
+		...state.loaderData,
+		sessionModel: model,
+		providers: [
+			{
+				...((state.loaderData.providers as Array<Record<string, unknown>>)[0] ??
+					{}),
+				models: [
+					{
+						value: "claude-sonnet-4-6",
+						label: "Sonnet 4.6",
+						isDefault: true,
+					},
+					{ value: "claude-opus-4-6", label: "Opus 4.6" },
+					{ value: "claude-haiku-4-5", label: "Haiku 4.5" },
+				],
+			},
+		],
+	};
+	state.sessions = [
+		{
+			session_id: "live-session",
+			db_session_id: "saved-session",
+			mode: "sdk",
+			state: "idle",
+			provider_id: "claude",
+			model,
+			effort: "high",
+			permission_mode: "default",
+		},
+	];
+}
+
+function configureClaudeSessionPermissions(options?: {
+	providerId?: string;
+	supportsAutoMode?: boolean;
+	umbod?: boolean;
+	autoSleep?: boolean;
+}): void {
+	const providerId = options?.providerId ?? "claude";
+	state.model = "claude-sonnet-4-6";
+	state.permissionMode = "default";
+	state.loaderData = {
+		...state.loaderData,
+		config: {
+			...(state.loaderData.config as object),
+			vault_provider: providerId,
+			claude: {
+				interactive_mode: false,
+				model: "claude-sonnet-4-6",
+				permission_mode: "default",
+			},
+			cliproxy: {
+				model: "claude-sonnet-4-6",
+				permission_mode: "default",
+			},
+			umbod: { enabled: options?.umbod === true },
+			auto_sleep: { enabled: options?.autoSleep === true },
+		},
+		providers: [
+			{
+				id: providerId,
+				label: providerId === "claude" ? "Claude" : "Claude Code · CLIProxy",
+				available: true,
+				models: [
+					{
+						value: "sonnet",
+						resolvedModel: "claude-sonnet-4-6",
+						label: "Sonnet 4.6",
+						...(options?.supportsAutoMode === false
+							? {}
+							: { supportsAutoMode: true }),
+					},
+				],
+				permissionModes: [{ value: "default", label: "Persistent ask only" }],
+				sessionPermissionModes: [
+					{ value: "default", label: "Ask" },
+					{ value: "bypassPermissions", label: "Auto-approve all" },
+					{ value: "auto", label: "Auto" },
+					{ value: "dontAsk", label: "Pre-approved only" },
+				],
+			},
+		],
+	};
+}
+
+function configurePermissionRejectionSession(
+	permissionMode: "default" | "auto" = "default",
+): void {
+	configureClaudeSessionPermissions();
+	state.permissionMode = permissionMode;
+	state.loaderData = {
+		...state.loaderData,
+		existingSessionId: "saved-session",
+		isExplicitSession: true,
+		sessionModel: "claude-sonnet-4-6",
+		sessionProviderId: "claude",
+		sessionEffort: "high",
+		sessionPermissionMode: permissionMode,
+	};
+	state.sessions = [
+		{
+			session_id: "live-session",
+			db_session_id: "saved-session",
+			mode: "sdk",
+			state: "idle",
+			provider_id: "claude",
+			model: "claude-sonnet-4-6",
+			effort: "high",
+			permission_mode: permissionMode,
+		},
+	];
+}
+
+function configureProviderRejectionSession(): void {
+	configurePermissionRejectionSession("auto");
+	state.loaderData = {
+		...state.loaderData,
+		providers: [
+			...((state.loaderData.providers as unknown[]) ?? []),
+			{
+				id: "codex",
+				label: "Codex",
+				available: true,
+				models: [
+					{
+						value: "gpt-5.6-sol",
+						label: "GPT-5.6 Sol",
+						isDefault: true,
+					},
+				],
+				effortLevels: [{ value: "medium", label: "Medium", isDefault: true }],
+				permissionModes: [{ value: "default", label: "Ask", isDefault: true }],
+				approvalReviewers: [
+					{ value: "user", label: "User review", isDefault: true },
+					{ value: "auto_review", label: "Auto-review" },
+				],
+			},
+			{
+				id: "pi",
+				label: "Pi",
+				available: true,
+				models: [{ value: "pi-pro", label: "Pi Pro", isDefault: true }],
+				effortLevels: [{ value: "low", label: "Low", isDefault: true }],
+				permissionModes: [{ value: "default", label: "Ask", isDefault: true }],
+			},
+		],
+	};
+}
+
 describe("Raven hydration", () => {
 	it("hydrates cached live-session snapshots without entering a render loop", async () => {
 		state.loaderData = {
@@ -2028,7 +2186,7 @@ describe("Raven composed submission behavior", () => {
 		render(<ChatPage />);
 
 		const badge = screen.getByRole("button", {
-			name: /gpt-5\.4.*low.*auto/i,
+			name: /gpt-5\.4.*low.*bypass/i,
 		});
 		expect(badge).toBeTruthy();
 		expect(badge.textContent).not.toMatch(/claude|medium/i);
@@ -2176,14 +2334,14 @@ describe("Raven composed submission behavior", () => {
 		render(<ChatPage />);
 
 		const badge = screen.getByRole("button", {
-			name: /Claude Code.*CLIProxy.*gpt-5\.6-sol.*high.*auto/i,
+			name: /Claude Code.*CLIProxy.*gpt-5\.6-sol.*high.*bypass/i,
 		});
 		expect(badge.className).toContain("max-w-full");
 		expect(badge.parentElement?.className).toContain(
 			"max-w-[calc(100vw-1.5rem)]",
 		);
 		expect(
-			screen.getByText("CLIProxy · gpt-5.6-sol · high · auto"),
+			screen.getByText("CLIProxy · gpt-5.6-sol · high · bypass"),
 		).toBeTruthy();
 		expect(badge.className).not.toContain("text-amber");
 	});
@@ -2324,6 +2482,593 @@ describe("Raven composed submission behavior", () => {
 			screen.getByRole("button", {
 				name: /claude.*sonnet 4\.6.*high.*ask/i,
 			}),
+		).toBeTruthy();
+	});
+
+	it("rolls an optimistic model picker back on its correlated rejection", () => {
+		configureModelRejectionSession();
+		render(<ChatPage />);
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*high.*ask/i,
+			}),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Opus 4.6" }));
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*opus-4-6.*high.*ask/i,
+			}),
+		).toBeTruthy();
+		expect(state.send).toHaveBeenCalledWith({
+			type: "set_model",
+			model: "claude-opus-4-6",
+			session_id: "saved-session",
+		});
+
+		act(() => {
+			state.onMessage?.({
+				type: "session_control_rejected",
+				control: "model",
+				attempted_value: "claude-opus-4-6",
+				authoritative_value: "claude-sonnet-4-6",
+				session_id: "saved-session",
+			});
+		});
+
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*high.*ask/i,
+			}),
+		).toBeTruthy();
+	});
+
+	it("applies a late native or durable model rollback after pending clears", () => {
+		configureModelRejectionSession("claude-opus-4-6");
+		render(<ChatPage />);
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*opus-4-6.*high.*ask/i,
+			}),
+		).toBeTruthy();
+
+		act(() => {
+			state.onMessage?.({
+				type: "session_control_rejected",
+				control: "model",
+				attempted_value: "claude-opus-4-6",
+				authoritative_value: "claude-sonnet-4-6",
+				session_id: "saved-session",
+			});
+		});
+
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*high.*ask/i,
+			}),
+		).toBeTruthy();
+	});
+
+	it("ignores stale and cross-session model rejections", () => {
+		configureModelRejectionSession();
+		render(<ChatPage />);
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*high.*ask/i,
+			}),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Opus 4.6" }));
+		fireEvent.click(screen.getByRole("button", { name: "Haiku 4.5" }));
+
+		act(() => {
+			state.onMessage?.({
+				type: "session_control_rejected",
+				control: "model",
+				attempted_value: "claude-opus-4-6",
+				authoritative_value: "claude-sonnet-4-6",
+				session_id: "saved-session",
+			});
+			state.onMessage?.({
+				type: "session_control_rejected",
+				control: "model",
+				attempted_value: "claude-haiku-4-5",
+				authoritative_value: "claude-sonnet-4-6",
+				session_id: "another-session",
+			});
+		});
+
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*haiku-4-5.*high.*ask/i,
+			}),
+		).toBeTruthy();
+
+		act(() => {
+			state.onMessage?.({
+				type: "session_control_rejected",
+				control: "model",
+				attempted_value: "claude-haiku-4-5",
+				authoritative_value: "claude-sonnet-4-6",
+				session_id: "saved-session",
+			});
+		});
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*high.*ask/i,
+			}),
+		).toBeTruthy();
+	});
+
+	it("rolls an optimistic permission picker back on its correlated rejection", () => {
+		configurePermissionRejectionSession();
+		render(<ChatPage />);
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*ask/i,
+			}),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Auto" }));
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*auto/i,
+			}),
+		).toBeTruthy();
+
+		act(() => {
+			state.onMessage?.({
+				type: "session_control_rejected",
+				control: "permission_mode",
+				attempted_value: "auto",
+				authoritative_value: "default",
+				session_id: "saved-session",
+			});
+		});
+
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*ask/i,
+			}),
+		).toBeTruthy();
+		expect(screen.queryByRole("note")).toBeNull();
+	});
+
+	it("applies a native permission rejection after the pending marker has cleared", () => {
+		configurePermissionRejectionSession("auto");
+		render(<ChatPage />);
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*auto/i,
+			}),
+		).toBeTruthy();
+
+		act(() => {
+			state.onMessage?.({
+				type: "session_control_rejected",
+				control: "permission_mode",
+				attempted_value: "auto",
+				authoritative_value: "default",
+				session_id: "saved-session",
+			});
+		});
+
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*ask/i,
+			}),
+		).toBeTruthy();
+	});
+
+	it("applies an Auto downgrade without discarding a newer model selection", () => {
+		configurePermissionRejectionSession("auto");
+		const provider = (
+			state.loaderData.providers as Array<{
+				models: Array<Record<string, unknown>>;
+			}>
+		)[0];
+		provider?.models.push({
+			value: "haiku",
+			resolvedModel: "claude-haiku-4-5",
+			label: "Haiku 4.5",
+		});
+		render(<ChatPage />);
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*auto/i,
+			}),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Haiku 4.5" }));
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*haiku.*auto/i,
+			}),
+		).toBeTruthy();
+
+		act(() => {
+			state.onMessage?.({
+				type: "session_control_rejected",
+				control: "permission_mode",
+				attempted_value: "auto",
+				authoritative_value: "default",
+				session_id: "saved-session",
+			});
+		});
+
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*haiku.*ask/i,
+			}),
+		).toBeTruthy();
+	});
+
+	it("ignores an older permission rejection while a newer mode is pending", () => {
+		configurePermissionRejectionSession();
+		render(<ChatPage />);
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*ask/i,
+			}),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Auto" }));
+		fireEvent.click(screen.getByRole("button", { name: "Pre-approved only" }));
+
+		act(() => {
+			state.onMessage?.({
+				type: "session_control_rejected",
+				control: "permission_mode",
+				attempted_value: "auto",
+				authoritative_value: "default",
+				session_id: "saved-session",
+			});
+		});
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*pre-approved/i,
+			}),
+		).toBeTruthy();
+
+		act(() => {
+			state.onMessage?.({
+				type: "session_control_rejected",
+				control: "permission_mode",
+				attempted_value: "dontAsk",
+				authoritative_value: "default",
+				session_id: "saved-session",
+			});
+		});
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*ask/i,
+			}),
+		).toBeTruthy();
+	});
+
+	it("ignores a permission rejection addressed to another session", () => {
+		configurePermissionRejectionSession();
+		render(<ChatPage />);
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*ask/i,
+			}),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Auto" }));
+		act(() => {
+			state.onMessage?.({
+				type: "session_control_rejected",
+				control: "permission_mode",
+				attempted_value: "auto",
+				authoritative_value: "default",
+				session_id: "another-session",
+			});
+		});
+
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*auto/i,
+			}),
+		).toBeTruthy();
+	});
+
+	it.each([
+		"provider-first",
+		"permission-first",
+	] as const)("rolls back an atomic provider selection with duplicate rejection order %s", (order) => {
+		configureProviderRejectionSession();
+		render(<ChatPage />);
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*high.*auto/i,
+			}),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Codex" }));
+		expect(state.send).toHaveBeenCalledWith({
+			type: "set_provider",
+			provider: "codex",
+			model: "gpt-5.6-sol",
+			effort: "medium",
+			permission_mode: "default",
+			approvals_reviewer: "user",
+			session_id: "saved-session",
+		});
+		expect(
+			screen.getByRole("button", {
+				name: /codex.*gpt-5\.6-sol.*medium.*ask/i,
+			}),
+		).toBeTruthy();
+
+		const providerRejection = {
+			type: "session_control_rejected",
+			control: "provider",
+			attempted_value: "codex",
+			authoritative_value: "claude",
+			session_id: "saved-session",
+		} satisfies ServerMessage;
+		const permissionRejection = {
+			type: "session_control_rejected",
+			control: "permission_mode",
+			attempted_value: "default",
+			authoritative_value: "auto",
+			session_id: "saved-session",
+		} satisfies ServerMessage;
+		act(() => {
+			if (order === "provider-first") {
+				state.onMessage?.(providerRejection);
+				state.onMessage?.(permissionRejection);
+			} else {
+				state.onMessage?.(permissionRejection);
+				state.onMessage?.(providerRejection);
+			}
+		});
+
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*high.*auto/i,
+			}),
+		).toBeTruthy();
+		expect(screen.getByRole("note")).toBeTruthy();
+	});
+
+	it("ignores mismatched and stale provider rejections until the latest selection rejects", () => {
+		configureProviderRejectionSession();
+		render(<ChatPage />);
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*high.*auto/i,
+			}),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Codex" }));
+		act(() => {
+			state.onMessage?.({
+				type: "session_control_rejected",
+				control: "provider",
+				attempted_value: "codex",
+				authoritative_value: "claude",
+				session_id: "another-session",
+			});
+		});
+		expect(
+			screen.getByRole("button", {
+				name: /codex.*gpt-5\.6-sol.*medium.*ask/i,
+			}),
+		).toBeTruthy();
+
+		fireEvent.click(screen.getByRole("button", { name: "Pi" }));
+		act(() => {
+			state.onMessage?.({
+				type: "session_control_rejected",
+				control: "provider",
+				attempted_value: "codex",
+				authoritative_value: "claude",
+				session_id: "saved-session",
+			});
+		});
+		expect(
+			screen.getByRole("button", { name: /pi.*pi-pro.*low.*ask/i }),
+		).toBeTruthy();
+
+		act(() => {
+			state.onMessage?.({
+				type: "session_control_rejected",
+				control: "provider",
+				attempted_value: "pi",
+				authoritative_value: "claude",
+				session_id: "saved-session",
+			});
+		});
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*high.*auto/i,
+			}),
+		).toBeTruthy();
+	});
+
+	it("uses Claude's session catalog and exposes Auto on affirmative raw resolved-model capability", () => {
+		configureClaudeSessionPermissions();
+		render(<ChatPage />);
+
+		const badge = screen.getByRole("button", {
+			name: /claude.*sonnet 4\.6.*ask/i,
+		});
+		fireEvent.click(badge);
+		expect(screen.getByRole("button", { name: "Ask" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Auto" })).toBeTruthy();
+		expect(
+			screen.getByRole("button", { name: "Pre-approved only" }),
+		).toBeTruthy();
+		expect(screen.queryByText("Persistent ask only")).toBeNull();
+
+		state.send.mockClear();
+		fireEvent.click(screen.getByRole("button", { name: "Auto" }));
+		expect(state.send).toHaveBeenCalledWith({
+			type: "set_permission_mode",
+			mode: "auto",
+			session_id: expect.any(String),
+		});
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*auto/i,
+			}),
+		).toBeTruthy();
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*auto/i,
+			}),
+		);
+		expect(screen.queryByRole("dialog", { name: "Model settings" })).toBeNull();
+		expect(
+			screen.getByRole("note", {
+				name: "Claude does not expose Auto classifier usage or cost, so Hlid Ledger totals exclude that overhead.",
+			}),
+		).toBeTruthy();
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*auto/i,
+			}),
+		);
+
+		state.send.mockClear();
+		fireEvent.click(screen.getByRole("button", { name: "Pre-approved only" }));
+		expect(state.send).toHaveBeenCalledWith({
+			type: "set_permission_mode",
+			mode: "dontAsk",
+			session_id: expect.any(String),
+		});
+		expect(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*pre-approved/i,
+			}),
+		).toBeTruthy();
+		expect(
+			screen.queryByText(
+				"Claude does not expose Auto classifier usage or cost, so Hlid Ledger totals exclude that overhead.",
+			),
+		).toBeNull();
+	});
+
+	it("fails Auto closed when raw model capability is unknown", () => {
+		configureClaudeSessionPermissions({ supportsAutoMode: false });
+		render(<ChatPage />);
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*ask/i,
+			}),
+		);
+
+		expect(screen.queryByRole("button", { name: "Auto" })).toBeNull();
+		expect(
+			screen.getByRole("button", { name: "Pre-approved only" }),
+		).toBeTruthy();
+	});
+
+	it("explains that an unavailable saved Auto selection is rechecked on resume", () => {
+		configurePermissionRejectionSession("auto");
+		const provider = (
+			state.loaderData.providers as Array<{
+				models: Array<{ supportsAutoMode?: boolean }>;
+			}>
+		)[0];
+		delete provider?.models[0]?.supportsAutoMode;
+		state.sessions = [];
+
+		render(<ChatPage />);
+
+		expect(
+			screen.getByRole("note", {
+				name: "Auto is saved for this chat but is not currently available. Hlid will recheck it when the chat resumes and use Ask if Claude still rejects it.",
+			}),
+		).toBeTruthy();
+		expect(
+			screen.queryByText(
+				"Claude does not expose Auto classifier usage or cost, so Hlid Ledger totals exclude that overhead.",
+			),
+		).toBeNull();
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*auto/i,
+			}),
+		);
+		expect(screen.queryByRole("button", { name: "Auto" })).toBeNull();
+	});
+
+	it("does not call a live accepted Auto session an unverified saved selection", () => {
+		configurePermissionRejectionSession("auto");
+		const provider = (
+			state.loaderData.providers as Array<{
+				models: Array<{ supportsAutoMode?: boolean }>;
+			}>
+		)[0];
+		delete provider?.models[0]?.supportsAutoMode;
+
+		render(<ChatPage />);
+
+		expect(
+			screen.queryByText(
+				"Auto is saved for this chat but is not currently available. Hlid will recheck it when the chat resumes and use Ask if Claude still rejects it.",
+			),
+		).toBeNull();
+		expect(
+			screen.getByRole("note", {
+				name: "Claude does not expose Auto classifier usage or cost, so Hlid Ledger totals exclude that overhead.",
+			}),
+		).toBeTruthy();
+	});
+
+	it("hides Claude advanced modes under Umbod and Auto under auto-sleep", () => {
+		configureClaudeSessionPermissions({ umbod: true });
+		const view = render(<ChatPage />);
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*ask/i,
+			}),
+		);
+		expect(screen.queryByRole("button", { name: "Auto" })).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: "Pre-approved only" }),
+		).toBeNull();
+
+		view.unmount();
+		configureClaudeSessionPermissions({ autoSleep: true });
+		render(<ChatPage />);
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: /claude.*sonnet 4\.6.*ask/i,
+			}),
+		);
+		expect(screen.queryByRole("button", { name: "Auto" })).toBeNull();
+		expect(
+			screen.getByRole("button", { name: "Pre-approved only" }),
+		).toBeTruthy();
+	});
+
+	it("does not expose Claude-only session modes through CLIProxy", () => {
+		configureClaudeSessionPermissions({ providerId: "cliproxy-claude" });
+		render(<ChatPage />);
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: /claude code.*cliproxy.*sonnet 4\.6.*ask/i,
+			}),
+		);
+		expect(screen.queryByRole("button", { name: "Auto" })).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: "Pre-approved only" }),
+		).toBeNull();
+	});
+
+	it("describes Claude MCP overrides as available under Auto or bypass", () => {
+		configureClaudeSessionPermissions();
+		render(<ChatPage />);
+		fireEvent.click(screen.getByRole("button", { name: "MCP server status" }));
+		expect(
+			screen.getByText(
+				"Per-server Claude approval becomes available when this live session uses Auto or bypass.",
+			),
 		).toBeTruthy();
 	});
 
@@ -3162,7 +3907,7 @@ describe("Raven composed submission behavior", () => {
 
 		expect(
 			screen.getByRole("button", {
-				name: /codex.*gpt-5\.6-sol.*xhigh.*auto/i,
+				name: /codex.*gpt-5\.6-sol.*xhigh.*bypass/i,
 			}),
 		).toBeTruthy();
 		state.send.mockClear();
@@ -3182,7 +3927,7 @@ describe("Raven composed submission behavior", () => {
 
 		fireEvent.click(
 			screen.getByRole("button", {
-				name: /codex.*gpt-5\.6-sol.*xhigh.*auto/i,
+				name: /codex.*gpt-5\.6-sol.*xhigh.*bypass/i,
 			}),
 		);
 		fireEvent.click(screen.getByRole("button", { name: "Claude" }));
@@ -3243,7 +3988,7 @@ describe("Raven composed submission behavior", () => {
 		view.rerender(<ChatPage />);
 		expect(
 			screen.getByRole("button", {
-				name: /codex.*gpt-5\.6-sol.*xhigh.*auto/i,
+				name: /codex.*gpt-5\.6-sol.*xhigh.*bypass/i,
 			}),
 		).toBeTruthy();
 
@@ -3318,7 +4063,7 @@ describe("Raven composed submission behavior", () => {
 
 		expect(
 			screen.getByRole("button", {
-				name: /codex.*gpt-5\.5.*xhigh.*auto/i,
+				name: /codex.*gpt-5\.5.*xhigh.*bypass/i,
 			}),
 		).toBeTruthy();
 	});

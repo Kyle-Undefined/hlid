@@ -329,8 +329,8 @@ export function McpIndicator({
 						)}
 						{canPermissionOverride && (
 							<div className="px-3 py-2 border-t border-border/40 text-[8px] leading-relaxed text-muted-foreground/40">
-								Per-server approval only tightens Claude's native auto-approval.
-								It never bypasses Hlid policy.
+								Per-server approval only tightens Claude Auto or bypass. It
+								never bypasses Hlid policy.
 							</div>
 						)}
 						{permissionOverrideHint && !canPermissionOverride && (

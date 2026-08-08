@@ -2252,6 +2252,112 @@ describe("SessionManager — Claude peer inbox", () => {
 		sm.abort();
 	});
 
+	it("reconciles a rejected current permission restore after a peer continuation", async () => {
+		const ctl = makePeerInboxHarness();
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(
+			peerInboxConfig("bypassPermissions"),
+			makeProviders(ctl.provider),
+		);
+		await establishIdlePeerSession(sm, ctl, (message) => emitted.push(message));
+		ctl.setPermissionMode.mockClear();
+		ctl.setPermissionMode.mockImplementation(async (mode) => {
+			if (mode === "bypassPermissions") {
+				throw new Error("native restore rejected");
+			}
+		});
+
+		const acquire = ctl.getParams().onProviderInitiatedTurn;
+		if (!acquire) throw new Error("peer continuation callback was missing");
+		const ready = acquire({
+			kind: "claude_peer_message",
+			interactionId: "peer-current-restore",
+			sourceName: "Claude peer",
+			preview: "current restore rejection",
+		});
+		await expect(ready).resolves.toBe(true);
+		ctl.pushEvent({
+			type: "provider_peer_message",
+			body: "current restore rejection",
+			fromAddress: "peer-current",
+		});
+		ctl.pushEvent(peerDoneEvent());
+		await waitFor(() => expect(sm.getStatus().state).toBe("idle"));
+
+		expect(sm.getStatus().permission_mode).toBe("default");
+		expect(dbMock.setSessionPermissionMode).toHaveBeenCalledWith(
+			"peer-session",
+			"default",
+			expect.objectContaining({ guard: expect.any(Function) }),
+		);
+		expect(emitted).toContainEqual(
+			expect.objectContaining({
+				type: "session_control_rejected",
+				control: "permission_mode",
+				attempted_value: "bypassPermissions",
+				authoritative_value: "default",
+			}),
+		);
+		sm.abort();
+	});
+
+	it("retries the latest permission when an older peer restore rejects", async () => {
+		const ctl = makePeerInboxHarness();
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(
+			peerInboxConfig("bypassPermissions"),
+			makeProviders(ctl.provider),
+		);
+		await establishIdlePeerSession(sm, ctl, (message) => emitted.push(message));
+		ctl.setPermissionMode.mockClear();
+		let rejectOldRestore!: (error: Error) => void;
+		ctl.setPermissionMode.mockImplementation((mode) => {
+			if (mode !== "bypassPermissions") return Promise.resolve();
+			return new Promise<void>((_resolve, reject) => {
+				rejectOldRestore = reject;
+			});
+		});
+
+		const acquire = ctl.getParams().onProviderInitiatedTurn;
+		if (!acquire) throw new Error("peer continuation callback was missing");
+		await expect(
+			acquire({
+				kind: "claude_peer_message",
+				interactionId: "peer-stale-restore",
+				sourceName: "Claude peer",
+				preview: "stale restore rejection",
+			}),
+		).resolves.toBe(true);
+		ctl.pushEvent({
+			type: "provider_peer_message",
+			body: "stale restore rejection",
+			fromAddress: "peer-stale",
+		});
+		ctl.pushEvent(peerDoneEvent());
+		await waitFor(() =>
+			expect(ctl.setPermissionMode).toHaveBeenCalledWith("bypassPermissions"),
+		);
+
+		await sm.setPermissionMode("acceptEdits");
+		rejectOldRestore(new Error("old restore rejected"));
+		await waitFor(() => expect(sm.getStatus().state).toBe("idle"));
+
+		expect(ctl.setPermissionMode.mock.calls.map(([mode]) => mode)).toEqual([
+			"default",
+			"bypassPermissions",
+			"acceptEdits",
+		]);
+		expect(sm.getStatus().permission_mode).toBe("acceptEdits");
+		expect(
+			emitted.some(
+				(message) =>
+					message.type === "session_control_rejected" &&
+					message.control === "permission_mode",
+			),
+		).toBe(false);
+		sm.abort();
+	});
+
 	it("retires the attached consumer when the provider cancels before release", async () => {
 		vi.mocked(dbMock.appendAskUserQuestion).mockResolvedValue(undefined);
 		vi.mocked(dbMock.setAskUserQuestionResolution).mockResolvedValue(undefined);

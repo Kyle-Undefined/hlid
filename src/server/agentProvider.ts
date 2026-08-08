@@ -250,9 +250,13 @@ export type ProviderEffortInfo = {
 export type ProviderModelInfo = {
 	value: string;
 	label: string;
+	/** Canonical model id this selectable alias resolves to. */
+	resolvedModel?: string;
 	description?: string;
 	isDefault?: boolean;
 	hidden?: boolean;
+	/** Provider metadata says this exact model supports native Auto mode. */
+	supportsAutoMode?: boolean;
 	/** Input kinds the provider says this model accepts. */
 	inputModalities?: Array<"text" | "image" | "audio">;
 	efforts?: ProviderEffortInfo[];
@@ -399,8 +403,25 @@ export type ProviderBackgroundActivityControl =
 	| { action: "terminate"; activityId: string }
 	| { action: "clean" };
 
+export class ProviderPermissionModeRejectedError extends Error {
+	constructor(
+		readonly attempted: string,
+		readonly authoritative: string,
+		message: string,
+	) {
+		super(message);
+		this.name = "ProviderPermissionModeRejectedError";
+	}
+}
+
 export type AgentEvent =
 	| { type: "session_start"; sessionId: string }
+	/** Native provider narrowed the live session's effective permission mode. */
+	| {
+			type: "provider_permission_mode_changed";
+			permissionMode: "default" | "acceptEdits" | "dontAsk" | "plan";
+			providerSessionId: string;
+	  }
 	/** The provider rotated its native conversation inside the same Hlid session. */
 	| { type: "provider_context_reset"; sessionId: string }
 	/**
@@ -725,7 +746,13 @@ export type AgentQueryParams = {
 	/** Provider-native service tier selected from the live model catalog. */
 	serviceTier?: string;
 	maxTurns?: number;
-	permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
+	permissionMode?:
+		| "default"
+		| "acceptEdits"
+		| "bypassPermissions"
+		| "plan"
+		| "dontAsk"
+		| "auto";
 	/** Provider-native reviewer for interactive approval requests. */
 	approvalsReviewer?: ProviderApprovalsReviewer;
 	/** Narrow a provider sandbox independently of its conversational mode. */
@@ -1024,7 +1051,7 @@ export interface AgentProvider {
 	 * Models this provider supports. UI uses this to populate the model picker.
 	 * Omit for providers with fully dynamic or unconstrained model lists.
 	 */
-	readonly models?: ReadonlyArray<{ value: string; label: string }>;
+	readonly models?: ReadonlyArray<ProviderModelInfo>;
 	/**
 	 * Effort / thinking levels this provider supports.
 	 * Omit if the provider has no such concept (e.g. OpenAI doesn't expose it).
@@ -1043,6 +1070,29 @@ export interface AgentProvider {
 		label: string;
 		desc?: string;
 	}>;
+	/** Session-only modes exposed in Raven/delegation, never persistent config. */
+	readonly sessionPermissionModes?: ReadonlyArray<{
+		value: string;
+		label: string;
+		desc?: string;
+	}>;
+	/** Validate a session-scoped mode against live provider/model capabilities. */
+	validatePermissionMode?(
+		mode: string,
+		context: {
+			/** Actual cwd passed to the provider subprocess. */
+			cwd: string;
+			/** Hlid cache scope when it differs from the runtime cwd. */
+			capabilityCwd?: string;
+			executable?: string;
+			additionalDirectories?: string[];
+			model?: string;
+			policyEnforced: boolean;
+			usageGateEnforced: boolean;
+			/** Ignore readiness snapshots/caches and probe the current runtime. */
+			forceExact?: boolean;
+		},
+	): void | Promise<void>;
 	/** Provider-native reviewers available for interactive approval requests. */
 	readonly approvalReviewers?: ReadonlyArray<{
 		value: ProviderApprovalsReviewer;

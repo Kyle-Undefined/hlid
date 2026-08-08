@@ -20,6 +20,8 @@ import { resolve } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { declaredPathKey, expandTilde, parseWslUncSyntax } from "../lib/paths";
 import type { McpServerStatus, SlashCommand } from "./agentProvider";
+import { probeClaudeAutoModeModels } from "./claudeAutoMode";
+import { claudeSdkEnv } from "./claudeEnvironment";
 import { buildHlidClaudeSettings } from "./claudeSettings";
 
 export type ClaudeWarmupSnapshot = {
@@ -31,6 +33,8 @@ export type ClaudeWarmupSnapshot = {
 	mcpServers: McpServerStatus[];
 	/** Models the CLI reports as available. */
 	modelCount: number;
+	/** Models whose metadata and effective settings both accept Auto. */
+	autoModeModels?: string[];
 	/** Runtime methods advertised by this installed Agent SDK Query object. */
 	controlMethods?: string[];
 	/** Provider scope this metadata belongs to. */
@@ -46,13 +50,17 @@ export type ClaudeWarmupOptions = {
 	/** Provider scope used for cache lookup; defaults to cwd. */
 	cacheCwd?: string;
 	additionalDirectories?: string[];
+	env?: Record<string, string | undefined>;
 	waitTimeoutMs?: number;
 };
 
 const snapshots = new Map<string, ClaudeWarmupSnapshot>();
 const inFlight = new Map<string, Promise<void>>();
 let latestKey: string | null = null;
+const WARMUP_SCOPE_LIMIT = 64;
+const WARMUP_SCOPE_KEY_MAX_CHARS = 4_096;
 const DISCOVERY_TIMEOUT_MS = 30_000;
+const AUTO_MODE_PROBE_TIMEOUT_MS = 10_000;
 const MCP_SETTLE_TIMEOUT_MS = 10_000;
 const MCP_POLL_INTERVAL_MS = 500;
 const PROVIDER_WIDE_MCP_SCOPES = new Set(["claudeai", "user", "managed"]);
@@ -62,6 +70,7 @@ const CLAUDE_CONTROL_METHODS = [
 	"setMcpPermissionModeOverride",
 	"setModel",
 	"applyFlagSettings",
+	"getSettings",
 	"supportedCommands",
 	"supportedModels",
 	"supportedAgents",
@@ -86,6 +95,18 @@ function cacheKey(cwd: string): string {
 	} catch {
 		return resolve(expanded);
 	}
+}
+
+function retainSnapshot(key: string, snapshot: ClaudeWarmupSnapshot): void {
+	if (!snapshots.has(key) && snapshots.size >= WARMUP_SCOPE_LIMIT) {
+		const oldest = snapshots.keys().next().value;
+		if (oldest !== undefined) {
+			snapshots.delete(oldest);
+			if (latestKey === oldest) latestKey = null;
+		}
+	}
+	snapshots.set(key, snapshot);
+	latestKey = key;
 }
 
 function mapMcpStatus(status: string): McpServerStatus["status"] {
@@ -123,6 +144,43 @@ async function readSettledMcpStatus(
 		latest = await q.mcpServerStatus().catch(() => latest);
 	}
 	return latest;
+}
+
+async function readAutoModeModels(
+	q: Parameters<typeof probeClaudeAutoModeModels>[0] & {
+		getSettings?: () => Promise<{
+			disableAutoMode?: "disable";
+			effective?: { disableAutoMode?: "disable" };
+		}>;
+	},
+	models: Parameters<typeof probeClaudeAutoModeModels>[1],
+	abortController: AbortController,
+): Promise<Set<string>> {
+	let timeout: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			(async () => {
+				if (typeof q.getSettings !== "function") return new Set<string>();
+				const settings = await q.getSettings();
+				const effective = settings.effective ?? settings;
+				if (effective.disableAutoMode === "disable") {
+					return new Set<string>();
+				}
+				return probeClaudeAutoModeModels(q, models);
+			})(),
+			new Promise<never>((_, reject) => {
+				timeout = setTimeout(() => {
+					abortController.abort();
+					reject(new Error("Claude Auto readiness probe timed out"));
+				}, AUTO_MODE_PROBE_TIMEOUT_MS);
+				timeout.unref?.();
+			}),
+		]);
+	} catch {
+		return new Set();
+	} finally {
+		if (timeout !== undefined) clearTimeout(timeout);
+	}
 }
 
 /** Cached provider metadata for a cwd, or the latest startup snapshot. */
@@ -169,6 +227,7 @@ export async function waitForClaudeWarmupSnapshot(
 		agents: [],
 		mcpServers: [...providerWide.values()],
 		modelCount: 0,
+		autoModeModels: [],
 		cwd,
 		warmedAt: latest?.warmedAt ?? Date.now(),
 		durationMs: 0,
@@ -189,6 +248,7 @@ export async function waitForAllClaudeWarmupSnapshots(): Promise<
 
 async function runWarmup(options: ClaudeWarmupOptions): Promise<void> {
 	const { executable, cwd, additionalDirectories } = options;
+	const env = claudeSdkEnv(cwd, options.env);
 	const scopedCwd = options.cacheCwd ?? cwd;
 	const started = Date.now();
 	const ac = new AbortController();
@@ -211,6 +271,7 @@ async function runWarmup(options: ClaudeWarmupOptions): Promise<void> {
 			maxTurns: 1,
 			...(additionalDirectories?.length ? { additionalDirectories } : {}),
 			...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
+			...(env ? { env } : {}),
 			canUseTool: denyAllCanUseTool,
 		},
 	});
@@ -229,6 +290,13 @@ async function runWarmup(options: ClaudeWarmupOptions): Promise<void> {
 			if (timeout !== undefined) clearTimeout(timeout);
 		});
 		const mcp = await readSettledMcpStatus(q);
+		const autoModeModels = await readAutoModeModels(q, init.models ?? [], ac);
+		const autoModeModelIds = new Set(autoModeModels);
+		for (const model of init.models ?? []) {
+			if (autoModeModels.has(model.value) && model.resolvedModel) {
+				autoModeModelIds.add(model.resolvedModel);
+			}
+		}
 		const key = cacheKey(scopedCwd);
 		const snapshot: ClaudeWarmupSnapshot = {
 			commands: (init.commands ?? []).map((c) => ({
@@ -252,6 +320,7 @@ async function runWarmup(options: ClaudeWarmupOptions): Promise<void> {
 				};
 			}),
 			modelCount: (init.models ?? []).length,
+			autoModeModels: [...autoModeModelIds],
 			controlMethods: CLAUDE_CONTROL_METHODS.filter(
 				(method) =>
 					typeof (q as unknown as Record<string, unknown>)[method] ===
@@ -261,8 +330,7 @@ async function runWarmup(options: ClaudeWarmupOptions): Promise<void> {
 			warmedAt: Date.now(),
 			durationMs: Date.now() - started,
 		};
-		snapshots.set(key, snapshot);
-		latestKey = key;
+		retainSnapshot(key, snapshot);
 	} finally {
 		ac.abort();
 	}
@@ -277,8 +345,10 @@ export async function prewarmClaudeCli(
 	options: ClaudeWarmupOptions,
 ): Promise<boolean> {
 	const key = cacheKey(options.cacheCwd ?? options.cwd);
+	if (key.length > WARMUP_SCOPE_KEY_MAX_CHARS) return false;
 	let warm = inFlight.get(key);
 	if (!warm) {
+		if (inFlight.size >= WARMUP_SCOPE_LIMIT) return false;
 		const started = runWarmup(options)
 			.catch(() => {
 				// Discovery is opportunistic; a failed spawn must never affect startup.

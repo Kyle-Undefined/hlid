@@ -90,6 +90,8 @@ const KNOWN_RAVEN_PERMISSION_MODES = new Set([
 	"acceptEdits",
 	"bypassPermissions",
 	"plan",
+	"auto",
+	"dontAsk",
 ]);
 
 function delegationMutationTarget(
@@ -665,18 +667,75 @@ async function restoreDetachedStatus(
 			(config.umbod?.enabled || config.auto_sleep?.enabled) && userReviewer
 				? userReviewer
 				: (savedSelection?.approvalsReviewer ?? defaultReviewer);
+		const savedPermissionMode =
+			savedSelection?.permissionMode ?? configured.permissionMode;
+		const selectedModel = savedSelection?.model ?? configured.model;
+		const permissionModeSupported = (
+			provider?.sessionPermissionModes ?? provider?.permissionModes
+		)?.some((candidate) => candidate.value === savedPermissionMode);
+		const selectedModelInfo = provider?.models?.find(
+			(candidate) =>
+				candidate.value === selectedModel ||
+				candidate.resolvedModel === selectedModel,
+		);
+		const rawModelExplicitlyUnsupported = Boolean(
+			savedPermissionMode === "auto" &&
+				selectedModelInfo &&
+				Object.hasOwn(selectedModelInfo, "supportsAutoMode") &&
+				selectedModelInfo.supportsAutoMode !== true,
+		);
+		const permissionModeForbidden =
+			((savedPermissionMode === "auto" || savedPermissionMode === "dontAsk") &&
+				(permissionModeSupported === false ||
+					provider?.providerId !== "claude")) ||
+			(savedPermissionMode === "auto" && !selectedModel?.trim()) ||
+			rawModelExplicitlyUnsupported ||
+			(config.umbod?.enabled &&
+				(savedPermissionMode === "auto" ||
+					savedPermissionMode === "dontAsk")) ||
+			(config.auto_sleep?.enabled && savedPermissionMode === "auto");
+		const permissionMode = permissionModeForbidden
+			? "default"
+			: savedPermissionMode;
 		return {
 			state: "idle",
 			model: savedSelection?.model ?? configured.model,
 			effort: savedSelection?.effort ?? configured.effort,
-			permission_mode:
-				savedSelection?.permissionMode ?? configured.permissionMode,
+			permission_mode: permissionMode,
 			...(approvalsReviewer ? { approvals_reviewer: approvalsReviewer } : {}),
 		};
 	} catch {
 		// A missing/corrupt archived row still gets a safe idle vault snapshot.
 		return fallback;
 	}
+}
+
+const detachedSessionControlTails = new Map<string, Promise<void>>();
+
+/** Preserve WebSocket receive order for async probes and DB writes on one archive. */
+async function acquireDetachedSessionControl(
+	sessionId: string,
+): Promise<() => void> {
+	const previous =
+		detachedSessionControlTails.get(sessionId) ?? Promise.resolve();
+	let releaseGate!: () => void;
+	const gate = new Promise<void>((resolve) => {
+		releaseGate = resolve;
+	});
+	const tail = previous.catch(() => undefined).then(() => gate);
+	detachedSessionControlTails.set(sessionId, tail);
+	await previous.catch(() => undefined);
+	let released = false;
+	return () => {
+		if (released) return;
+		released = true;
+		releaseGate();
+		void tail.finally(() => {
+			if (detachedSessionControlTails.get(sessionId) === tail) {
+				detachedSessionControlTails.delete(sessionId);
+			}
+		});
+	};
 }
 
 function sendRestoredPreview(
@@ -925,22 +984,90 @@ function handleReloadSession(
 	});
 }
 
+async function attemptSessionControl(
+	entry: PoolEntry,
+	operation: () => Promise<void>,
+	acknowledgeRejection = true,
+): Promise<unknown | undefined> {
+	let controlOperation: Promise<void> | undefined;
+	try {
+		controlOperation = operation();
+		await controlOperation;
+		return undefined;
+	} catch (error) {
+		if (acknowledgeRejection) {
+			entry.manager.acknowledgeSessionControlRejection(controlOperation);
+		}
+		return error;
+	}
+}
+
+function ownsSessionControl(
+	context: MessageContext,
+	entry: PoolEntry,
+	targetSessionId: string,
+): boolean {
+	const ownedEntry =
+		context.pool.get(targetSessionId) ??
+		context.pool.findByDbSessionId(targetSessionId);
+	const subscribedEntry =
+		context.pool.get(context.ws.data.subscribedSessionId) ??
+		context.pool.findByDbSessionId(context.ws.data.subscribedSessionId);
+	return ownedEntry === entry && subscribedEntry === entry;
+}
+
+async function settleSessionControl(
+	context: MessageContext,
+	entry: PoolEntry,
+	targetSessionId: string,
+	operation: () => Promise<void>,
+	fallbackError: string,
+	acknowledgeRejection = true,
+) {
+	const rejection = await attemptSessionControl(
+		entry,
+		operation,
+		acknowledgeRejection,
+	);
+	if (!ownsSessionControl(context, entry, targetSessionId)) return null;
+	const status = entry.manager.getStatus();
+	if (rejection !== undefined) {
+		send(context.ws, {
+			type: "error",
+			message: rejection instanceof Error ? rejection.message : fallbackError,
+		});
+	}
+	return { rejection, status };
+}
+
 async function handlePermissionMode(
-	ws: ServerWebSocket<WsData>,
+	context: MessageContext,
 	entry: PoolEntry,
 	msg: MessageOf<"set_permission_mode">,
 ): Promise<void> {
-	try {
-		await entry.manager.setPermissionMode(msg.mode);
-	} catch (error) {
-		send(ws, {
-			type: "error",
-			message:
-				error instanceof Error ? error.message : "Invalid permission mode",
+	const targetSessionId =
+		msg.session_id ??
+		entry.manager.getCurrentSessionId() ??
+		context.ws.data.subscribedSessionId;
+	const settled = await settleSessionControl(
+		context,
+		entry,
+		targetSessionId,
+		() => entry.manager.setPermissionMode(msg.mode),
+		"Invalid permission mode",
+	);
+	if (!settled) return;
+	const { rejection, status } = settled;
+	if (rejection !== undefined) {
+		sendSessionControlRejected(context.ws, {
+			control: "permission_mode",
+			attempted: msg.mode,
+			authoritative: status.permission_mode,
+			sessionId: targetSessionId,
 		});
-		return;
 	}
-	entry.runState.broadcast({ type: "status", ...entry.manager.getStatus() });
+	entry.runState.broadcast({ type: "status", ...status });
+	if (rejection !== undefined) return;
 	const cachedMcp = entry.manager.getLastMcpStatus();
 	if (cachedMcp) {
 		const providerId = entry.manager.getProviderId();
@@ -952,6 +1079,44 @@ async function handlePermissionMode(
 			servers: cachedMcp.map(mapMcpServer),
 		});
 	}
+}
+
+async function handleModel(
+	context: MessageContext,
+	entry: PoolEntry,
+	msg: MessageOf<"set_model">,
+): Promise<void> {
+	const targetSessionId =
+		msg.session_id ??
+		entry.manager.getCurrentSessionId() ??
+		context.ws.data.subscribedSessionId;
+	const previousMode = entry.manager.getStatus().permission_mode;
+	const settled = await settleSessionControl(
+		context,
+		entry,
+		targetSessionId,
+		() => entry.manager.setModel(msg.model),
+		"Invalid model",
+	);
+	if (!settled) return;
+	const { rejection, status } = settled;
+	if (rejection !== undefined) {
+		sendSessionControlRejected(context.ws, {
+			control: "model",
+			attempted: msg.model ?? "",
+			authoritative: status.model,
+			sessionId: targetSessionId,
+		});
+	} else if (previousMode === "auto" && status.permission_mode === "default") {
+		sendSessionControlRejected(context.ws, {
+			control: "permission_mode",
+			attempted: "auto",
+			authoritative: "default",
+			sessionId: targetSessionId,
+		});
+	}
+	entry.runState.broadcast({ type: "status", ...status });
+	broadcastSessionsStatus(context);
 }
 
 async function handleApprovalsReviewer(
@@ -972,6 +1137,24 @@ async function handleApprovalsReviewer(
 	entry.runState.broadcast({ type: "status", ...entry.manager.getStatus() });
 }
 
+function sendSessionControlRejected(
+	ws: ServerWebSocket<WsData>,
+	options: {
+		control: "effort" | "model" | "permission_mode" | "provider";
+		attempted: string;
+		authoritative: string;
+		sessionId?: string;
+	},
+): void {
+	send(ws, {
+		type: "session_control_rejected",
+		control: options.control,
+		attempted_value: options.attempted,
+		authoritative_value: options.authoritative,
+		...(options.sessionId ? { session_id: options.sessionId } : {}),
+	});
+}
+
 function sendEffortRejected(
 	ws: ServerWebSocket<WsData>,
 	options: {
@@ -980,13 +1163,7 @@ function sendEffortRejected(
 		sessionId?: string;
 	},
 ): void {
-	send(ws, {
-		type: "session_control_rejected",
-		control: "effort",
-		attempted_value: options.attempted,
-		authoritative_value: options.authoritative,
-		...(options.sessionId ? { session_id: options.sessionId } : {}),
-	});
+	sendSessionControlRejected(ws, { control: "effort", ...options });
 }
 
 async function handleEffort(
@@ -998,26 +1175,17 @@ async function handleEffort(
 		msg.session_id ??
 		entry.manager.getCurrentSessionId() ??
 		context.ws.data.subscribedSessionId;
-	let rejection: unknown;
-	try {
-		await entry.manager.setEffort(msg.effort);
-	} catch (error) {
-		rejection = error;
-	}
-	const ownedEntry =
-		context.pool.get(targetSessionId) ??
-		context.pool.findByDbSessionId(targetSessionId);
-	const subscribedEntry =
-		context.pool.get(context.ws.data.subscribedSessionId) ??
-		context.pool.findByDbSessionId(context.ws.data.subscribedSessionId);
-	if (ownedEntry !== entry || subscribedEntry !== entry) return;
-	const status = entry.manager.getStatus();
+	const settled = await settleSessionControl(
+		context,
+		entry,
+		targetSessionId,
+		() => entry.manager.setEffort(msg.effort),
+		"Invalid effort level",
+		false,
+	);
+	if (!settled) return;
+	const { rejection, status } = settled;
 	if (rejection !== undefined) {
-		send(context.ws, {
-			type: "error",
-			message:
-				rejection instanceof Error ? rejection.message : "Invalid effort level",
-		});
 		sendEffortRejected(context.ws, {
 			attempted: msg.effort,
 			authoritative: status.effort,
@@ -1303,37 +1471,106 @@ async function handleChat(
 		send(context.ws, { type: "error", message: "Invalid message" });
 		return;
 	}
-	const resolved = resolveChatEntry(context, entry, msg);
-	if (!resolved) return;
-	const { entry: chatEntry, created } = resolved;
+	let chatEntry!: PoolEntry;
+	let created = false;
+	let permissionModeNarrowing:
+		| {
+				attempted: string;
+				authoritative: string;
+				providerId: string;
+				model: string;
+		  }
+		| undefined;
+	const releaseDetachedChatControl = msg.session_id
+		? await acquireDetachedSessionControl(msg.session_id)
+		: undefined;
+	try {
+		const resolved = resolveChatEntry(context, entry, msg);
+		if (!resolved) return;
+		({ entry: chatEntry, created } = resolved);
+		if (created && msg.session_id) {
+			try {
+				const prepared = await chatEntry.manager.prepareSessionControlsForChat(
+					msg.session_id,
+				);
+				permissionModeNarrowing = prepared.permissionModeNarrowing;
+			} catch (error) {
+				send(context.ws, {
+					type: "error",
+					message:
+						error instanceof Error
+							? error.message
+							: "Could not restore chat settings",
+					turn_scoped: true,
+					...(msg.turn_id !== undefined ? { turn_id: msg.turn_id } : {}),
+				});
+				broadcastSessionsStatus(context);
+				return;
+			}
+		}
+	} finally {
+		releaseDetachedChatControl?.();
+	}
 	const currentSessionId = chatEntry.manager.getCurrentSessionId();
 	const providerChanged =
 		msg.provider !== undefined &&
 		msg.provider !== chatEntry.manager.getProviderId();
-	if (msg.effort !== undefined) {
+	const repeatsNarrowedPermissionTuple = Boolean(
+		permissionModeNarrowing &&
+			msg.permission_mode === permissionModeNarrowing.attempted &&
+			(msg.provider ?? permissionModeNarrowing.providerId) ===
+				permissionModeNarrowing.providerId &&
+			(msg.model ?? permissionModeNarrowing.model) ===
+				permissionModeNarrowing.model,
+	);
+	if (repeatsNarrowedPermissionTuple && permissionModeNarrowing) {
+		// Raven repeats the archived composer's controls on submit. The exact saved
+		// value was already narrowed during restore, so correlate that one rollback
+		// and continue the user's turn under the authoritative safe mode.
+		broadcastSessionsStatus(context);
+		sendSessionControlRejected(context.ws, {
+			control: "permission_mode",
+			attempted: permissionModeNarrowing.attempted,
+			authoritative: permissionModeNarrowing.authoritative,
+			sessionId: msg.session_id,
+		});
+	}
+	if (
+		msg.permission_mode !== undefined &&
+		permissionModeNarrowing &&
+		!repeatsNarrowedPermissionTuple
+	) {
 		try {
-			chatEntry.manager.validateEffort(
-				msg.effort,
+			await chatEntry.manager.validatePermissionMode(
+				msg.permission_mode,
 				providerChanged && msg.provider
 					? msg.provider
 					: chatEntry.manager.getProviderId(),
+				msg.model,
+				true,
 			);
 		} catch (error) {
 			const status = chatEntry.manager.getStatus();
 			send(context.ws, {
 				type: "error",
 				message:
-					error instanceof Error ? error.message : "Invalid effort level",
+					error instanceof Error ? error.message : "Invalid permission mode",
 				turn_scoped: true,
 				...(msg.turn_id !== undefined ? { turn_id: msg.turn_id } : {}),
 			});
-			// A newly created pool entry is focused by its transient UUID. Publish
-			// the durable alias before the scoped rejection so wsStore can route it
-			// exactly and still discard it after a later focus change.
 			broadcastSessionsStatus(context);
-			sendEffortRejected(context.ws, {
-				attempted: msg.effort,
-				authoritative: status.effort,
+			if (providerChanged && msg.provider) {
+				sendSessionControlRejected(context.ws, {
+					control: "provider",
+					attempted: msg.provider,
+					authoritative: chatEntry.manager.getProviderId(),
+					sessionId: msg.session_id,
+				});
+			}
+			sendSessionControlRejected(context.ws, {
+				control: "permission_mode",
+				attempted: msg.permission_mode,
+				authoritative: status.permission_mode,
 				sessionId: msg.session_id,
 			});
 			chatEntry.runState.broadcast({ type: "status", ...status });
@@ -1345,34 +1582,32 @@ async function handleChat(
 	// Once a chat is already live, the dedicated set_* messages are authoritative.
 	// Reapplying an older render's payload here can race a just-clicked effort/model
 	// change and visibly snap the control back as the turn starts.
+	let initialControlOperation: Promise<void> | undefined;
 	try {
 		if (msg.provider && !chatEntry.manager.isRunning() && providerChanged) {
-			await chatEntry.manager.setProvider(msg.provider, {
+			initialControlOperation = chatEntry.manager.setProvider(msg.provider, {
 				model: msg.model,
 				effort: msg.effort,
 				permissionMode: msg.permission_mode,
 				approvalsReviewer: msg.approvals_reviewer,
 			});
+			await initialControlOperation;
 		} else if (currentSessionId === null && !chatEntry.manager.isRunning()) {
 			// Picker changes made before the first submission are addressed to the
-			// not-yet-created DB chat. Apply every repeated control carried by the chat
-			// payload even when the provider itself was left at its configured default.
-			await Promise.all([
-				msg.model !== undefined
-					? chatEntry.manager.setModel(msg.model)
-					: Promise.resolve(),
-				msg.effort !== undefined
-					? chatEntry.manager.setEffort(msg.effort)
-					: Promise.resolve(),
-				msg.permission_mode !== undefined
-					? chatEntry.manager.setPermissionMode(msg.permission_mode)
-					: Promise.resolve(),
-				msg.approvals_reviewer !== undefined
-					? chatEntry.manager.setApprovalsReviewer(msg.approvals_reviewer)
-					: Promise.resolve(),
-			]);
+			// not-yet-created DB chat. Use one provider transaction so a rejected Auto
+			// selection cannot leave an earlier model or reviewer mutation behind.
+			initialControlOperation = chatEntry.manager.setInitialChatSelection({
+				model: msg.model,
+				effort: msg.effort,
+				permissionMode: msg.permission_mode,
+				approvalsReviewer: msg.approvals_reviewer,
+			});
+			await initialControlOperation;
 		}
 	} catch (error) {
+		chatEntry.manager.acknowledgeSessionControlRejection(
+			initialControlOperation,
+		);
 		send(context.ws, {
 			type: "error",
 			message: error instanceof Error ? error.message : "Invalid chat settings",
@@ -1380,6 +1615,14 @@ async function handleChat(
 			...(msg.turn_id !== undefined ? { turn_id: msg.turn_id } : {}),
 		});
 		broadcastSessionsStatus(context);
+		if (msg.provider !== undefined) {
+			sendSessionControlRejected(context.ws, {
+				control: "provider",
+				attempted: msg.provider,
+				authoritative: chatEntry.manager.getProviderId(),
+				sessionId: msg.session_id,
+			});
+		}
 		if (
 			msg.effort !== undefined &&
 			error instanceof UnsupportedProviderEffortError
@@ -1388,6 +1631,17 @@ async function handleChat(
 			sendEffortRejected(context.ws, {
 				attempted: msg.effort,
 				authoritative: status.effort,
+				sessionId: msg.session_id,
+			});
+		}
+		if (
+			msg.permission_mode !== undefined &&
+			chatEntry.manager.getStatus().permission_mode !== msg.permission_mode
+		) {
+			sendSessionControlRejected(context.ws, {
+				control: "permission_mode",
+				attempted: msg.permission_mode,
+				authoritative: chatEntry.manager.getStatus().permission_mode,
 				sessionId: msg.session_id,
 			});
 		}
@@ -1639,17 +1893,51 @@ async function handleSetProvider(
 	entry: PoolEntry,
 	msg: MessageOf<"set_provider">,
 ): Promise<void> {
-	await entry.manager.setProvider(msg.provider, {
-		model: msg.model,
-		effort: msg.effort,
-		permissionMode: msg.permission_mode,
-		approvalsReviewer: msg.approvals_reviewer,
-	});
+	const targetSessionId =
+		msg.session_id ??
+		entry.manager.getCurrentSessionId() ??
+		context.ws.data.subscribedSessionId;
+	const settled = await settleSessionControl(
+		context,
+		entry,
+		targetSessionId,
+		() =>
+			entry.manager.setProvider(msg.provider, {
+				model: msg.model,
+				effort: msg.effort,
+				permissionMode: msg.permission_mode,
+				approvalsReviewer: msg.approvals_reviewer,
+			}),
+		"Invalid provider",
+	);
+	if (!settled) return;
+	const { rejection, status } = settled;
+	const providerId = entry.manager.getProviderId();
+	if (rejection !== undefined) {
+		sendSessionControlRejected(context.ws, {
+			control: "provider",
+			attempted: msg.provider,
+			authoritative: providerId,
+			sessionId: targetSessionId,
+		});
+		if (
+			msg.permission_mode !== undefined &&
+			msg.permission_mode !== status.permission_mode
+		) {
+			sendSessionControlRejected(context.ws, {
+				control: "permission_mode",
+				attempted: msg.permission_mode,
+				authoritative: status.permission_mode,
+				sessionId: targetSessionId,
+			});
+		}
+	}
 	entry.runState.broadcast({
 		type: "status",
-		...entry.manager.getStatus(),
+		...status,
 	});
-	const providerId = entry.manager.getProviderId();
+	broadcastSessionsStatus(context);
+	if (rejection !== undefined) return;
 	const agentCwd = entry.manager.getAgentCwd();
 	const cachedMcp = entry.manager.getLastMcpStatus(providerId) ?? [];
 	const mcpOperations = entry.manager.getMcpControlOperations();
@@ -1666,7 +1954,6 @@ async function handleSetProvider(
 	void entry.manager.probeSlashCommands?.((event) =>
 		entry.runState.broadcast(event),
 	);
-	broadcastSessionsStatus(context);
 }
 
 async function handleSessionMessage(
@@ -1808,15 +2095,10 @@ async function handleSessionMessage(
 			await handleSetProvider(context, entry, msg);
 			return;
 		case "set_model":
-			await entry.manager.setModel(msg.model);
-			entry.runState.broadcast({
-				type: "status",
-				...entry.manager.getStatus(),
-			});
-			broadcastSessionsStatus(context);
+			await handleModel(context, entry, msg);
 			return;
 		case "set_permission_mode":
-			await handlePermissionMode(context.ws, entry, msg);
+			await handlePermissionMode(context, entry, msg);
 			broadcastSessionsStatus(context);
 			return;
 		case "set_approvals_reviewer":
@@ -1934,79 +2216,82 @@ async function handleMessage(
 				msg.type === "set_permission_mode" ||
 				msg.type === "set_approvals_reviewer"
 			) {
-				const saved = await db
-					.getSessionSelection(requestedTargetSession)
-					.catch(() => null);
-				if (!saved) return;
-				const permissionMode =
-					msg.type === "set_permission_mode"
-						? msg.mode
-						: msg.type === "set_provider"
-							? msg.permission_mode
-							: undefined;
-				if (
-					permissionMode &&
-					!KNOWN_RAVEN_PERMISSION_MODES.has(permissionMode)
-				) {
-					send(context.ws, {
-						type: "error",
-						message: `Unknown permission mode: ${permissionMode}`,
-					});
-					return;
-				}
-				const approvalsReviewer =
-					msg.type === "set_approvals_reviewer"
-						? msg.reviewer
-						: msg.type === "set_provider"
-							? msg.approvals_reviewer
-							: undefined;
-				if (approvalsReviewer !== undefined) {
-					const reviewerProviderId =
-						msg.type === "set_provider" ? msg.provider : saved.providerId;
-					const reviewerProvider = reviewerProviderId
-						? context.pool.getProvider(reviewerProviderId)
-						: undefined;
+				const releaseDetachedControl = await acquireDetachedSessionControl(
+					requestedTargetSession,
+				);
+				try {
+					const saved = await db
+						.getSessionSelection(requestedTargetSession)
+						.catch(() => null);
+					if (!saved) return;
+					const ownsDetachedControl = () =>
+						!context.pool.get(requestedTargetSession) &&
+						!context.pool.findByDbSessionId(requestedTargetSession);
+					if (!ownsDetachedControl()) return;
+					const authoritativeProviderId =
+						saved.providerId ??
+						context.pool
+							.vaultEntry()
+							.manager.getProviderId(saved.agentCwd ?? undefined);
+					const rejectDetachedProvider = () => {
+						if (msg.type !== "set_provider") return;
+						sendSessionControlRejected(context.ws, {
+							control: "provider",
+							attempted: msg.provider,
+							authoritative: authoritativeProviderId,
+							sessionId: requestedTargetSession,
+						});
+					};
+					let permissionValidationGeneration: number | undefined;
+					const permissionValidationStartGeneration =
+						context.pool.getDetachedPermissionValidationGeneration();
+					const permissionMode =
+						msg.type === "set_permission_mode"
+							? msg.mode
+							: msg.type === "set_provider"
+								? msg.permission_mode
+								: undefined;
 					if (
-						!reviewerProvider?.approvalReviewers?.some(
-							(candidate) => candidate.value === approvalsReviewer,
-						)
+						permissionMode &&
+						!KNOWN_RAVEN_PERMISSION_MODES.has(permissionMode)
 					) {
 						send(context.ws, {
 							type: "error",
-							message: `${reviewerProvider?.label ?? reviewerProviderId ?? "This provider"} does not support approval reviewer ${approvalsReviewer}`,
+							message: `Unknown permission mode: ${permissionMode}`,
 						});
+						rejectDetachedProvider();
 						return;
 					}
-					const config = loadConfig();
-					const unavailableReason = config.umbod?.enabled
-						? "Auto-review is unavailable while Hlid policy enforcement is enabled."
-						: config.auto_sleep?.enabled
-							? "Auto-review is unavailable while Hlid's auto-sleep usage gate is enabled."
-							: null;
-					if (approvalsReviewer === "auto_review" && unavailableReason) {
-						send(context.ws, {
-							type: "error",
-							message: unavailableReason,
-						});
-						return;
-					}
-				}
-				const effort =
-					msg.type === "set_effort"
-						? msg.effort
-						: msg.type === "set_provider"
-							? msg.effort
-							: undefined;
-				if (effort !== undefined) {
-					const effortProviderId =
-						msg.type === "set_provider" ? msg.provider : saved.providerId;
-					const effortProvider = effortProviderId
-						? context.pool.getProvider(effortProviderId)
-						: undefined;
-					if (effortProvider) {
+					if (permissionMode) {
 						try {
-							assertSupportedProviderEffort(effortProvider, effort);
+							permissionValidationGeneration =
+								await context.pool.validateDetachedPermissionMode({
+									agentCwd: saved.agentCwd,
+									providerId:
+										msg.type === "set_provider"
+											? msg.provider
+											: saved.providerId,
+									model: msg.type === "set_provider" ? msg.model : saved.model,
+									mode: permissionMode,
+								});
 						} catch (error) {
+							const selectionWasAlreadyInvalid =
+								saved.permissionMode === permissionMode &&
+								(permissionMode === "auto" || permissionMode === "dontAsk");
+							if (selectionWasAlreadyInvalid) {
+								const narrowed = await db.setSessionPermissionMode(
+									requestedTargetSession,
+									"default",
+									{
+										guard: () =>
+											ownsDetachedControl() &&
+											context.pool.isDetachedPermissionValidationCurrent(
+												permissionValidationStartGeneration,
+											),
+									},
+								);
+								if (!narrowed) return;
+							}
 							const status = await restoreDetachedStatus(
 								context.pool,
 								requestedTargetSession,
@@ -2016,11 +2301,17 @@ async function handleMessage(
 								message:
 									error instanceof Error
 										? error.message
-										: "Invalid effort level",
+										: "Invalid permission mode",
 							});
-							sendEffortRejected(context.ws, {
-								attempted: effort,
-								authoritative: status.effort ?? "",
+							rejectDetachedProvider();
+							sendSessionControlRejected(context.ws, {
+								control: "permission_mode",
+								attempted: permissionMode,
+								authoritative: selectionWasAlreadyInvalid
+									? "default"
+									: (status.permission_mode ??
+										saved.permissionMode ??
+										"default"),
 								sessionId: requestedTargetSession,
 							});
 							send(context.ws, {
@@ -2031,46 +2322,282 @@ async function handleMessage(
 							return;
 						}
 					}
-				}
-				if (msg.type === "set_provider") {
-					if (!context.pool.getProvider(msg.provider)) {
-						send(context.ws, {
-							type: "error",
-							message: `Unknown or unavailable provider: ${msg.provider}`,
-						});
-						return;
+					const approvalsReviewer =
+						msg.type === "set_approvals_reviewer"
+							? msg.reviewer
+							: msg.type === "set_provider"
+								? msg.approvals_reviewer
+								: undefined;
+					if (approvalsReviewer !== undefined) {
+						const reviewerProviderId =
+							msg.type === "set_provider" ? msg.provider : saved.providerId;
+						const reviewerProvider = reviewerProviderId
+							? context.pool.getProvider(reviewerProviderId)
+							: undefined;
+						if (
+							!reviewerProvider?.approvalReviewers?.some(
+								(candidate) => candidate.value === approvalsReviewer,
+							)
+						) {
+							send(context.ws, {
+								type: "error",
+								message: `${reviewerProvider?.label ?? reviewerProviderId ?? "This provider"} does not support approval reviewer ${approvalsReviewer}`,
+							});
+							rejectDetachedProvider();
+							return;
+						}
+						const config = loadConfig();
+						const unavailableReason = config.umbod?.enabled
+							? "Auto-review is unavailable while Hlid policy enforcement is enabled."
+							: config.auto_sleep?.enabled
+								? "Auto-review is unavailable while Hlid's auto-sleep usage gate is enabled."
+								: null;
+						if (approvalsReviewer === "auto_review" && unavailableReason) {
+							send(context.ws, {
+								type: "error",
+								message: unavailableReason,
+							});
+							rejectDetachedProvider();
+							return;
+						}
 					}
-					await db.setSessionProviderSelection(
-						requestedTargetSession,
-						msg.provider,
-						{
-							model: msg.model,
-							effort: msg.effort,
-							permissionMode: msg.permission_mode,
-							approvalsReviewer: msg.approvals_reviewer,
-						},
-					);
-				} else if (msg.type === "set_model") {
-					await db.setSessionModel(requestedTargetSession, msg.model ?? "");
-				} else if (msg.type === "set_effort") {
-					await db.setSessionEffort(requestedTargetSession, msg.effort);
-				} else if (msg.type === "set_approvals_reviewer") {
-					await db.setSessionApprovalsReviewer(
-						requestedTargetSession,
-						msg.reviewer,
-					);
-				} else {
-					await db.setSessionPermissionMode(requestedTargetSession, msg.mode);
+					const effort =
+						msg.type === "set_effort"
+							? msg.effort
+							: msg.type === "set_provider"
+								? msg.effort
+								: undefined;
+					if (effort !== undefined) {
+						const effortProviderId =
+							msg.type === "set_provider" ? msg.provider : saved.providerId;
+						const effortProvider = effortProviderId
+							? context.pool.getProvider(effortProviderId)
+							: undefined;
+						if (effortProvider) {
+							try {
+								assertSupportedProviderEffort(effortProvider, effort);
+							} catch (error) {
+								const status = await restoreDetachedStatus(
+									context.pool,
+									requestedTargetSession,
+								);
+								send(context.ws, {
+									type: "error",
+									message:
+										error instanceof Error
+											? error.message
+											: "Invalid effort level",
+								});
+								rejectDetachedProvider();
+								sendEffortRejected(context.ws, {
+									attempted: effort,
+									authoritative: status.effort ?? "",
+									sessionId: requestedTargetSession,
+								});
+								send(context.ws, {
+									type: "status",
+									session_id: requestedTargetSession,
+									...status,
+								});
+								return;
+							}
+						}
+					}
+					if (msg.type === "set_provider") {
+						if (!context.pool.getProvider(msg.provider)) {
+							send(context.ws, {
+								type: "error",
+								message: `Unknown or unavailable provider: ${msg.provider}`,
+							});
+							rejectDetachedProvider();
+							return;
+						}
+						try {
+							const detachedSelection = {
+								model: msg.model,
+								effort: msg.effort,
+								permissionMode: msg.permission_mode,
+								approvalsReviewer: msg.approvals_reviewer,
+							};
+							const committed = await db.setSessionProviderSelection(
+								requestedTargetSession,
+								msg.provider,
+								detachedSelection,
+								{
+									guard: () =>
+										ownsDetachedControl() &&
+										context.pool.isDetachedPermissionValidationCurrent(
+											permissionValidationGeneration ??
+												permissionValidationStartGeneration,
+										),
+								},
+							);
+							if (!committed) {
+								throw new Error(
+									"Permission settings changed before the selection was saved",
+								);
+							}
+						} catch (error) {
+							send(context.ws, {
+								type: "error",
+								message:
+									error instanceof Error
+										? error.message
+										: "Failed to persist provider selection",
+							});
+							rejectDetachedProvider();
+							if (msg.permission_mode !== undefined) {
+								sendSessionControlRejected(context.ws, {
+									control: "permission_mode",
+									attempted: msg.permission_mode,
+									authoritative: saved.permissionMode ?? "default",
+									sessionId: requestedTargetSession,
+								});
+							}
+							if (msg.effort !== undefined) {
+								sendEffortRejected(context.ws, {
+									attempted: msg.effort,
+									authoritative: saved.effort ?? "",
+									sessionId: requestedTargetSession,
+								});
+							}
+							send(context.ws, {
+								type: "status",
+								session_id: requestedTargetSession,
+								...(await restoreDetachedStatus(
+									context.pool,
+									requestedTargetSession,
+								)),
+							});
+							return;
+						}
+					} else if (msg.type === "set_model") {
+						try {
+							let downgradeAuto = false;
+							let modelValidationGeneration: number | undefined;
+							if (saved.permissionMode === "auto") {
+								modelValidationGeneration =
+									context.pool.getDetachedPermissionValidationGeneration();
+								try {
+									await context.pool.validateDetachedPermissionMode({
+										agentCwd: saved.agentCwd,
+										providerId: saved.providerId,
+										model: msg.model,
+										mode: "auto",
+									});
+								} catch {
+									downgradeAuto = true;
+								}
+							}
+							const committed = downgradeAuto
+								? await db.setSessionModelAndPermissionMode(
+										requestedTargetSession,
+										msg.model ?? "",
+										"default",
+										{
+											guard: () =>
+												ownsDetachedControl() &&
+												context.pool.isDetachedPermissionValidationCurrent(
+													modelValidationGeneration as number,
+												),
+										},
+									)
+								: await db.setSessionModel(
+										requestedTargetSession,
+										msg.model ?? "",
+										{
+											guard: () =>
+												ownsDetachedControl() &&
+												context.pool.isDetachedPermissionValidationCurrent(
+													modelValidationGeneration ??
+														permissionValidationStartGeneration,
+												),
+										},
+									);
+							if (!committed)
+								throw new Error("The archived chat no longer exists.");
+							if (downgradeAuto) {
+								sendSessionControlRejected(context.ws, {
+									control: "permission_mode",
+									attempted: "auto",
+									authoritative: "default",
+									sessionId: requestedTargetSession,
+								});
+							}
+						} catch (error) {
+							const status = await restoreDetachedStatus(
+								context.pool,
+								requestedTargetSession,
+							);
+							send(context.ws, {
+								type: "error",
+								message:
+									error instanceof Error ? error.message : "Invalid model",
+							});
+							sendSessionControlRejected(context.ws, {
+								control: "model",
+								attempted: msg.model ?? "",
+								authoritative: status.model,
+								sessionId: requestedTargetSession,
+							});
+							send(context.ws, {
+								type: "status",
+								session_id: requestedTargetSession,
+								...status,
+							});
+							return;
+						}
+					} else if (msg.type === "set_effort") {
+						const committed = await db.setSessionEffort(
+							requestedTargetSession,
+							msg.effort,
+							{ guard: ownsDetachedControl },
+						);
+						if (!committed) return;
+					} else if (msg.type === "set_approvals_reviewer") {
+						const committed = await db.setSessionApprovalsReviewer(
+							requestedTargetSession,
+							msg.reviewer,
+							{
+								guard: () =>
+									ownsDetachedControl() &&
+									context.pool.isDetachedPermissionValidationCurrent(
+										permissionValidationStartGeneration,
+									),
+							},
+						);
+						if (!committed) return;
+					} else {
+						const committed = await db.setSessionPermissionMode(
+							requestedTargetSession,
+							msg.mode,
+							{
+								guard: () =>
+									ownsDetachedControl() &&
+									(permissionValidationGeneration === undefined ||
+										context.pool.isDetachedPermissionValidationCurrent(
+											permissionValidationGeneration,
+										)),
+							},
+						);
+						if (!committed) {
+							throw new Error(
+								"Permission settings changed before the selection was saved",
+							);
+						}
+					}
+					bumpDataRevision("sessions");
+					send(context.ws, {
+						type: "status",
+						session_id: requestedTargetSession,
+						...(await restoreDetachedStatus(
+							context.pool,
+							requestedTargetSession,
+						)),
+					});
+				} finally {
+					releaseDetachedControl();
 				}
-				bumpDataRevision("sessions");
-				send(context.ws, {
-					type: "status",
-					session_id: requestedTargetSession,
-					...(await restoreDetachedStatus(
-						context.pool,
-						requestedTargetSession,
-					)),
-				});
 			} else if (msg.type === "workflow_control") {
 				send(context.ws, {
 					type: "error",

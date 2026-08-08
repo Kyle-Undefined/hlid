@@ -37,6 +37,8 @@ function shortId(sessionId: string): string {
 function permissionLabel(mode: string): string {
 	if (mode === "acceptEdits") return "accept edits";
 	if (mode === "bypassPermissions") return "bypass approvals";
+	if (mode === "auto") return "Claude Auto";
+	if (mode === "dontAsk") return "pre-approved only";
 	if (mode === "plan") return "plan mode";
 	return mode === "default" ? "default approvals" : mode;
 }
@@ -48,6 +50,9 @@ function sessionConfigLabel(session: SessionStatusEntry): string {
 		session.effort ? `${session.effort} effort` : undefined,
 		session.permission_mode
 			? permissionLabel(session.permission_mode)
+			: undefined,
+		session.approvals_reviewer === "auto_review"
+			? "Codex auto-review"
 			: undefined,
 		session.mode === "terminal" ? "terminal" : undefined,
 	]

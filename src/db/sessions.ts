@@ -84,20 +84,83 @@ export async function getSessionAgentCwd(
 export async function setSessionModel(
 	sessionId: string,
 	model: string,
-): Promise<void> {
+	control?: {
+		guard?: () => boolean;
+		onCommitted?: () => void;
+	},
+): Promise<boolean> {
 	const db = await getDb();
-	db.run(
-		`UPDATE sessions
-		 SET actual_model = CASE
-		       WHEN COALESCE(selected_model, model, '') = ? THEN actual_model
-		       ELSE NULL
-		     END,
-		     model = ?,
-		     selected_model = ?
-		 WHERE id = ?`,
-		[model, model, model, sessionId],
-	);
-	markAnalyticsChanged(["stats", "activity"], "session_model");
+	let committed = false;
+	db.transaction(() => {
+		if (control?.guard && !control.guard()) return;
+		const result = db.run(
+			`UPDATE sessions
+			 SET actual_model = CASE
+			       WHEN COALESCE(selected_model, model, '') = ? THEN actual_model
+			       ELSE NULL
+			     END,
+			     model = ?,
+			     selected_model = ?
+			 WHERE id = ?`,
+			[model, model, model, sessionId],
+		);
+		committed = result.changes === 1;
+	}).immediate();
+	if (committed) {
+		try {
+			control?.onCommitted?.();
+		} catch {
+			// The SQLite commit is authoritative; owner callbacks are noexcept hints.
+		}
+		try {
+			markAnalyticsChanged(["stats", "activity"], "session_model");
+		} catch {
+			// Analytics invalidation must not reject a committed control change.
+		}
+	}
+	return committed;
+}
+
+export async function setSessionModelAndPermissionMode(
+	sessionId: string,
+	model: string,
+	permissionMode: string,
+	control?: {
+		guard?: () => boolean;
+		onCommitted?: () => void;
+	},
+): Promise<boolean> {
+	const db = await getDb();
+	let committed = false;
+	db.transaction(() => {
+		if (control?.guard && !control.guard()) return;
+		const result = db.run(
+			`UPDATE sessions
+			 SET actual_model = CASE
+			       WHEN COALESCE(selected_model, model, '') = ? THEN actual_model
+			       ELSE NULL
+			     END,
+			     model = ?,
+			     selected_model = ?,
+			     selected_permission_mode = ?
+			 WHERE id = ?`,
+			[model, model, model, permissionMode, sessionId],
+		);
+		committed = result.changes === 1;
+	}).immediate();
+	if (committed) {
+		try {
+			control?.onCommitted?.();
+		} catch {
+			// The SQLite commit is authoritative; owner callbacks are noexcept hints.
+		}
+		try {
+			markAnalyticsChanged(["stats", "activity"], "session_model");
+		} catch {
+			// Analytics invalidation must not reject a committed control change.
+		}
+	}
+	return committed;
 }
 
 export async function getSessionModel(
@@ -157,34 +220,46 @@ export async function getSessionSelection(
 export async function setSessionEffort(
 	sessionId: string,
 	effort: string | null,
-): Promise<void> {
+	control?: { guard?: () => boolean },
+): Promise<boolean> {
 	const db = await getDb();
-	db.run(`UPDATE sessions SET selected_effort = ? WHERE id = ?`, [
-		effort,
-		sessionId,
-	]);
+	if (control?.guard && !control.guard()) return false;
+	return (
+		db.run(`UPDATE sessions SET selected_effort = ? WHERE id = ?`, [
+			effort,
+			sessionId,
+		]).changes === 1
+	);
 }
 
 export async function setSessionPermissionMode(
 	sessionId: string,
-	permissionMode: string,
-): Promise<void> {
+	permissionMode: string | null,
+	control?: { guard?: () => boolean },
+): Promise<boolean> {
 	const db = await getDb();
-	db.run(`UPDATE sessions SET selected_permission_mode = ? WHERE id = ?`, [
-		permissionMode,
-		sessionId,
-	]);
+	if (control?.guard && !control.guard()) return false;
+	return (
+		db.run(`UPDATE sessions SET selected_permission_mode = ? WHERE id = ?`, [
+			permissionMode,
+			sessionId,
+		]).changes === 1
+	);
 }
 
 export async function setSessionApprovalsReviewer(
 	sessionId: string,
 	approvalsReviewer: ProviderApprovalsReviewer,
-): Promise<void> {
+	control?: { guard?: () => boolean },
+): Promise<boolean> {
 	const db = await getDb();
-	db.run(`UPDATE sessions SET selected_approvals_reviewer = ? WHERE id = ?`, [
-		approvalsReviewer,
-		sessionId,
-	]);
+	if (control?.guard && !control.guard()) return false;
+	return (
+		db.run(`UPDATE sessions SET selected_approvals_reviewer = ? WHERE id = ?`, [
+			approvalsReviewer,
+			sessionId,
+		]).changes === 1
+	);
 }
 
 export async function getSessionClaudeId(
@@ -315,20 +390,28 @@ export async function setSessionProviderSelection(
 		permissionMode?: string;
 		approvalsReviewer?: ProviderApprovalsReviewer;
 	},
-): Promise<void> {
+	control?: {
+		/** Checked after DB acquisition and immediately before the transaction mutates. */
+		guard?: () => boolean;
+		/** Synchronous owner commit kept in the same event-loop critical section. */
+		onCommitted?: () => void;
+	},
+): Promise<boolean> {
 	const db = await getDb();
 	const selectedModel = selection.model ?? "";
 	// Provider plus controls form one current-session ownership tuple. Native
 	// thread continuity survives a same-provider model change, but the observed
 	// runtime model belongs to the exact provider/model selection that produced it.
+	let committed = false;
 	db.transaction(() => {
+		if (control?.guard && !control.guard()) return;
 		const previous = db
 			.query<ProviderSessionOwner, [string]>(`
 				SELECT provider_id, provider_session_id
 				FROM sessions WHERE id = ?
 			`)
 			.get(sessionId);
-		db.run(
+		const result = db.run(
 			`UPDATE sessions
 			 SET actual_model = CASE
 			       WHEN provider_id = ?
@@ -365,11 +448,25 @@ export async function setSessionProviderSelection(
 				sessionId,
 			],
 		);
+		if (result.changes !== 1) return;
 		if (previous?.provider_id !== providerId) {
 			deleteProviderTranscriptIfUnowned(db, previous);
 		}
+		committed = true;
 	}).immediate();
-	markAnalyticsChanged(["stats", "activity"], "session_provider_selection");
+	if (committed) {
+		try {
+			control?.onCommitted?.();
+		} catch {
+			// The SQLite commit is authoritative; owner callbacks are noexcept hints.
+		}
+		try {
+			markAnalyticsChanged(["stats", "activity"], "session_provider_selection");
+		} catch {
+			// Analytics invalidation must not reject a committed control change.
+		}
+	}
+	return committed;
 }
 
 export async function getSessionProviderId(

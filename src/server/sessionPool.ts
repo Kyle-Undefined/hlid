@@ -50,6 +50,8 @@ export class SessionPool {
 		DelegatedLifecycleCounts
 	>();
 	private durableDelegationRefreshGeneration = 0;
+	private detachedPermissionConfigGeneration = 0;
+	private detachedPermissionConfigFingerprint: string;
 	private statusChangeHandler: (() => void) | null = null;
 	/** Session ID of the vault's lazy singleton entry, or null if not yet created. */
 	private _vaultSessionId: string | null = null;
@@ -60,6 +62,7 @@ export class SessionPool {
 		maxSize = DEFAULT_MAX_SIZE,
 	) {
 		this.config = config;
+		this.detachedPermissionConfigFingerprint = JSON.stringify(config);
 		this.providers = providers;
 		this.maxSize = maxSize;
 	}
@@ -117,6 +120,45 @@ export class SessionPool {
 	/** Look up a registered provider by id (e.g. "claude"). Returns undefined if not registered. */
 	getProvider(providerId: string): AgentProvider | undefined {
 		return this.providers.get(providerId);
+	}
+
+	/** Validate an archived Raven selection without reviving a provider session. */
+	// fallow-ignore-next-line unused-class-member -- Called by detached WebSocket controls in wsHandlers.
+	async validateDetachedPermissionMode(options: {
+		agentCwd: string | null;
+		providerId?: string | null;
+		model?: string | null;
+		mode: string;
+	}): Promise<number> {
+		const configGeneration = this.detachedPermissionConfigGeneration;
+		const manager = new SessionManager(
+			this.config,
+			this.providers,
+			options.agentCwd ?? undefined,
+		);
+		await manager.validatePermissionMode(
+			options.mode,
+			options.providerId ?? manager.getProviderId(),
+			options.model ?? undefined,
+			options.mode === "auto",
+		);
+		if (configGeneration !== this.detachedPermissionConfigGeneration) {
+			throw new Error(
+				"Permission settings changed while the selection was checked",
+			);
+		}
+		return configGeneration;
+	}
+
+	/** Guard an archived-chat write against policy/config drift after validation. */
+	// fallow-ignore-next-line unused-class-member -- Called by detached WebSocket persistence guards in wsHandlers.
+	isDetachedPermissionValidationCurrent(generation: number): boolean {
+		return generation === this.detachedPermissionConfigGeneration;
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Captured by detached WebSocket controls before validation.
+	getDetachedPermissionValidationGeneration(): number {
+		return this.detachedPermissionConfigGeneration;
 	}
 
 	/**
@@ -465,6 +507,11 @@ export class SessionPool {
 
 	/** Update future and already-open sessions during hot reload. */
 	syncConfig(config: HlidConfig): void {
+		const nextFingerprint = JSON.stringify(config);
+		if (nextFingerprint !== this.detachedPermissionConfigFingerprint) {
+			this.detachedPermissionConfigGeneration += 1;
+			this.detachedPermissionConfigFingerprint = nextFingerprint;
+		}
 		this.config = config;
 		for (const entry of this.entries.values()) {
 			entry.manager.syncConfig(config);
