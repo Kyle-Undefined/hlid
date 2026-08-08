@@ -48,7 +48,13 @@ import {
 // so tests running in Node.js (where WebSocket may be undefined) don't throw.
 const WS_CONNECTING = 0;
 const WS_OPEN = 1;
-const CONNECT_TIMEOUT_MS = 3_000;
+// A cold Tailscale route can take several seconds to establish, and the
+// same-origin UI bridge intentionally allows its backend socket up to 10s.
+// Give both the browser transport and the end-to-end readiness probe their
+// own budget so a slow but healthy resume is not aborted at the old 3s limit.
+const TRANSPORT_CONNECT_TIMEOUT_MS = 12_000;
+const HANDSHAKE_TIMEOUT_MS = 12_000;
+const LIVENESS_TIMEOUT_MS = 3_000;
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 const LIFECYCLE_RECOVERY_DEBOUNCE_MS = 250;
@@ -110,6 +116,13 @@ type Snapshot = {
 	sleepState: SleepBanner | null;
 };
 
+type PendingConnectionProbe = {
+	socket: WebSocket;
+	generation: number;
+	requestId: string;
+	kind: "handshake" | "liveness";
+};
+
 // ─── Module state ────────────────────────────────────────────────────────────
 // All mutable state lives here as module-level variables. These are private;
 // consumers interact through the exported functions below.
@@ -137,8 +150,13 @@ let _connectDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
 let _reconnectAttempts = 0;
 let _socketGeneration = 0;
 let _connectStartedAt: number | null = null;
+let _readySocketGeneration: number | null = null;
+let _connectionProbeSequence = 0;
+let _pendingConnectionProbe: PendingConnectionProbe | null = null;
+let _deferredClientMessages: ClientMessage[] = [];
 let _foregroundRecoveryPending = false;
 let _lastForcedRecoveryAt: number | null = null;
+let _lastLivenessProbeAt: number | null = null;
 // Buffers in-flight chunks/tool_events for the current run so they survive SPA navigation.
 // Always written (even when subscribers exist), cleared on run end or new run start.
 let _messageBuffer: ServerMessage[] = [];
@@ -149,17 +167,28 @@ const _pendingInteractionKeys = new Set<string>();
 const statusSubs = new Set<() => void>();
 const messageSubs = new Set<(msg: ServerMessage) => void>();
 
+function getReadySocket(): WebSocket | null {
+	if (
+		_ws?.readyState !== WS_OPEN ||
+		_readySocketGeneration !== _socketGeneration
+	) {
+		return null;
+	}
+	return _ws;
+}
+
 /**
  * Slice A: server-side queueing. Enqueued messages are sent to the server
  * IMMEDIATELY (not batched on idle). The server accepts mid-run and queues
  * FIFO at the SessionManager level. The client queue mirrors work that has not
  * started yet: items remain visible until the server reports them as running.
  *
- * Items added while the WS is closed remain in the queue and drain on the
- * next ws.onopen.
+ * Items added while the WS is closed remain in the queue and drain after the
+ * next end-to-end readiness acknowledgement.
  */
 function sendChatToServer(msg: QueuedChatMessage): boolean {
-	if (_ws?.readyState !== WS_OPEN) return false;
+	const socket = getReadySocket();
+	if (!socket) return false;
 	const userEvent: ServerMessage = {
 		type: "user_message",
 		text: msg.text,
@@ -206,7 +235,7 @@ function sendChatToServer(msg: QueuedChatMessage): boolean {
 	}
 	if (msg.goal) payload.goal = msg.goal;
 	try {
-		_ws.send(JSON.stringify(payload));
+		socket.send(JSON.stringify(payload));
 		return true;
 	} catch {
 		return false;
@@ -215,12 +244,12 @@ function sendChatToServer(msg: QueuedChatMessage): boolean {
 
 /**
  * Send any queued items that haven't yet been delivered to the server. Used
- * by ws.onopen to flush the backlog accumulated while the connection was
+ * after readiness to flush the backlog accumulated while the connection was
  * down. Items are tagged with `_sent` once delivered so we don't re-send them
  * on subsequent reconnects (the server won't have erased them).
  */
 function drainPendingToServer(): void {
-	if (_ws?.readyState !== WS_OPEN) return;
+	if (!getReadySocket()) return;
 	for (const item of getQueue()) {
 		if (item._sent) continue;
 		if (sendChatToServer(item)) markQueuedChatSent(item.id);
@@ -613,11 +642,22 @@ function handleParsedSocketMessage(msg: ServerMessage): void {
 	for (const subscriber of messageSubs) subscriber(msg);
 }
 
-function handleSocketMessage(event: MessageEvent): void {
+function handleSocketMessage(
+	event: MessageEvent,
+	socket: WebSocket,
+	generation: number,
+): void {
+	if (!isCurrentSocket(socket, generation)) return;
 	let msg: ServerMessage;
 	try {
 		msg = JSON.parse(event.data as string) as ServerMessage;
 	} catch {
+		return;
+	}
+	// Readiness acknowledgements are transport control frames. Consume them
+	// before normal routing so they never enter transcript buffers/subscribers.
+	if (msg.type === "connection_ack") {
+		completeConnectionProbe(socket, generation, msg.request_id);
 		return;
 	}
 	if (msg.type !== "session_replay") {
@@ -653,13 +693,19 @@ function clearConnectDeadline(): void {
 	_connectDeadlineTimer = null;
 }
 
-function armConnectDeadline(socket: WebSocket, generation: number): void {
+function armTransportConnectDeadline(
+	socket: WebSocket,
+	generation: number,
+): void {
 	clearConnectDeadline();
 	const elapsed =
 		_connectStartedAt === null ? 0 : Date.now() - _connectStartedAt;
 	_connectDeadlineTimer = setTimeout(
-		() => failCurrentSocket(socket, generation),
-		Math.max(0, CONNECT_TIMEOUT_MS - elapsed),
+		() => {
+			_connectDeadlineTimer = null;
+			failCurrentSocket(socket, generation);
+		},
+		Math.max(0, TRANSPORT_CONNECT_TIMEOUT_MS - elapsed),
 	);
 }
 
@@ -670,6 +716,15 @@ function isCurrentSocket(socket: WebSocket, generation: number): boolean {
 function retireCurrentSocket(socket: WebSocket, generation: number): boolean {
 	if (!isCurrentSocket(socket, generation)) return false;
 	clearConnectDeadline();
+	if (_pendingConnectionProbe?.generation === generation) {
+		if (_pendingConnectionProbe.kind === "liveness") {
+			retainReconnectSafeDeferredMessages();
+		}
+		_pendingConnectionProbe = null;
+	}
+	if (_readySocketGeneration === generation) {
+		_readySocketGeneration = null;
+	}
 	_ws = null;
 	_connectStartedAt = null;
 	_socketGeneration++;
@@ -711,6 +766,197 @@ function failCurrentSocket(socket: WebSocket, generation: number): void {
 	scheduleReconnect();
 }
 
+function nextConnectionProbeId(): string {
+	_connectionProbeSequence++;
+	if (
+		typeof crypto !== "undefined" &&
+		typeof crypto.randomUUID === "function"
+	) {
+		return crypto.randomUUID();
+	}
+	return `${Date.now()}-${_socketGeneration}-${_connectionProbeSequence}`;
+}
+
+function sendClientMessageNow(msg: ClientMessage): boolean {
+	const socket = getReadySocket();
+	if (!socket) return false;
+	try {
+		socket.send(JSON.stringify(msg));
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * A missed mobile background signal leaves the UI briefly showing connected
+ * while its existing socket is validated. Preserve an explicitly scoped chat,
+ * focused-session changes, and same-socket sync, but reject transient controls
+ * whose meaning can expire or move before a replacement connection is ready.
+ */
+function sendClientMessageOrDefer(msg: ClientMessage): boolean {
+	if (sendClientMessageNow(msg)) return true;
+	const probe = _pendingConnectionProbe;
+	if (
+		probe?.kind === "liveness" &&
+		isCurrentSocket(probe.socket, probe.generation)
+	) {
+		if (
+			msg.type === "subscribe_session" ||
+			msg.type === "sync" ||
+			(msg.type === "chat" && Boolean(msg.session_id))
+		) {
+			_deferredClientMessages.push(msg);
+			return true;
+		}
+	}
+	return false;
+}
+
+function retainReconnectSafeDeferredMessages(): void {
+	_deferredClientMessages = _deferredClientMessages.filter(
+		(message) => message.type === "chat" && Boolean(message.session_id),
+	);
+}
+
+function flushDeferredClientMessages(): boolean {
+	while (_deferredClientMessages.length > 0) {
+		const message = _deferredClientMessages[0];
+		if (!sendClientMessageNow(message)) return false;
+		_deferredClientMessages.shift();
+	}
+	return true;
+}
+
+function takeMatchingConnectionProbe(
+	socket: WebSocket,
+	generation: number,
+	requestId: string,
+): PendingConnectionProbe | null {
+	const probe = _pendingConnectionProbe;
+	if (
+		!probe ||
+		probe.socket !== socket ||
+		probe.generation !== generation ||
+		probe.requestId !== requestId
+	) {
+		return null;
+	}
+	_pendingConnectionProbe = null;
+	clearConnectDeadline();
+	return probe;
+}
+
+function failConnectionProbe(
+	socket: WebSocket,
+	generation: number,
+	requestId: string,
+): void {
+	const probe = takeMatchingConnectionProbe(socket, generation, requestId);
+	if (!probe) return;
+	if (probe.kind === "handshake") {
+		failCurrentSocket(socket, generation);
+		return;
+	}
+	retainReconnectSafeDeferredMessages();
+	if (!retireCurrentSocket(socket, generation)) return;
+	setSnap({ wsStatus: "disconnected" });
+	clearReconnectTimer();
+	_reconnectAttempts = 0;
+	connect();
+}
+
+function startConnectionProbe(
+	socket: WebSocket,
+	generation: number,
+	kind: "handshake" | "liveness",
+): void {
+	if (!isCurrentSocket(socket, generation) || socket.readyState !== WS_OPEN) {
+		return;
+	}
+	const existing = _pendingConnectionProbe;
+	if (existing?.socket === socket && existing.generation === generation) {
+		return;
+	}
+	if (kind === "liveness") {
+		if (_readySocketGeneration !== generation) return;
+		const now = Date.now();
+		if (
+			_lastLivenessProbeAt !== null &&
+			now - _lastLivenessProbeAt < LIFECYCLE_RECOVERY_DEBOUNCE_MS
+		) {
+			return;
+		}
+		_lastLivenessProbeAt = now;
+	}
+
+	const requestId = nextConnectionProbeId();
+	_pendingConnectionProbe = { socket, generation, requestId, kind };
+	_readySocketGeneration = null;
+	clearConnectDeadline();
+	try {
+		socket.send(
+			JSON.stringify({ type: "connection_probe", request_id: requestId }),
+		);
+	} catch {
+		failConnectionProbe(socket, generation, requestId);
+		return;
+	}
+	_connectDeadlineTimer = setTimeout(
+		() => {
+			_connectDeadlineTimer = null;
+			failConnectionProbe(socket, generation, requestId);
+		},
+		kind === "handshake" ? HANDSHAKE_TIMEOUT_MS : LIVENESS_TIMEOUT_MS,
+	);
+}
+
+function completeConnectionProbe(
+	socket: WebSocket,
+	generation: number,
+	requestId: string,
+): void {
+	const probe = takeMatchingConnectionProbe(socket, generation, requestId);
+	if (!probe) return;
+	_readySocketGeneration = generation;
+
+	if (probe.kind === "handshake") {
+		_connectStartedAt = null;
+		clearReconnectTimer();
+		_reconnectAttempts = 0;
+		// The focused subscription reconstructs every interaction still pending.
+		// Drop keys from the previous connection so a resolution missed while the
+		// app was suspended cannot leave the local attention state stuck.
+		_pendingInteractionKeys.clear();
+		setSnap({ wsStatus: "connected", hasPendingPermissions: false });
+		const subscribedSessionId = getSubscribedSessionId();
+		if (
+			subscribedSessionId &&
+			!sendClientMessageNow({
+				type: "subscribe_session",
+				session_id: subscribedSessionId,
+			})
+		) {
+			failCurrentSocket(socket, generation);
+			return;
+		}
+		// The latest focused session was restored above. Drop any subscription
+		// deferred during a failed liveness check so it is not replayed twice.
+		_deferredClientMessages = _deferredClientMessages.filter(
+			(message) => message.type !== "subscribe_session",
+		);
+	}
+
+	if (!flushDeferredClientMessages()) {
+		retainReconnectSafeDeferredMessages();
+		failCurrentSocket(socket, generation);
+		return;
+	}
+	// Flush items enqueued while the connection was down or under validation.
+	// Already-sent items are skipped via the _sent flag.
+	drainPendingToServer();
+}
+
 function connect() {
 	if (typeof window === "undefined") return;
 	if (
@@ -743,35 +989,12 @@ function connect() {
 		if (!isCurrentSocket(socket, generation)) return;
 		clearConnectDeadline();
 		_connectStartedAt = null;
-		clearReconnectTimer();
-		_reconnectAttempts = 0;
-		// The focused subscription reconstructs every interaction still pending.
-		// Drop keys from the previous connection so a resolution missed while the
-		// app was suspended cannot leave the local attention state stuck.
-		_pendingInteractionKeys.clear();
-		setSnap({ wsStatus: "connected", hasPendingPermissions: false });
-		const subscribedSessionId = getSubscribedSessionId();
-		if (subscribedSessionId) {
-			try {
-				socket.send(
-					JSON.stringify({
-						type: "subscribe_session",
-						session_id: subscribedSessionId,
-					}),
-				);
-			} catch {
-				failCurrentSocket(socket, generation);
-				return;
-			}
-		}
-		// Flush any items enqueued while the connection was down. Already-sent
-		// items are skipped via the _sent flag.
-		drainPendingToServer();
+		startConnectionProbe(socket, generation, "handshake");
 	};
 	socket.onerror = () => failCurrentSocket(socket, generation);
 	socket.onclose = () => failCurrentSocket(socket, generation);
-	socket.onmessage = handleSocketMessage;
-	armConnectDeadline(socket, generation);
+	socket.onmessage = (event) => handleSocketMessage(event, socket, generation);
+	armTransportConnectDeadline(socket, generation);
 }
 
 /**
@@ -798,17 +1021,30 @@ function recoverConnection(
 		(bypassForceDebounce ||
 			_lastForcedRecoveryAt === null ||
 			now - _lastForcedRecoveryAt >= LIFECYCLE_RECOVERY_DEBOUNCE_MS);
+	const socketBeforeRecovery = _ws;
 	const connectingTooLong =
 		_ws?.readyState === WS_CONNECTING &&
 		(_connectStartedAt === null ||
-			now - _connectStartedAt >= CONNECT_TIMEOUT_MS);
+			now - _connectStartedAt >= TRANSPORT_CONNECT_TIMEOUT_MS);
 	if (_ws && (forceCurrentSocket || connectingTooLong)) {
 		retireCurrentSocket(_ws, _socketGeneration);
 	}
 	if (forceCurrentSocket) _lastForcedRecoveryAt = now;
 	connect();
 	if (_ws?.readyState === WS_CONNECTING && _connectDeadlineTimer === null) {
-		armConnectDeadline(_ws, _socketGeneration);
+		armTransportConnectDeadline(_ws, _socketGeneration);
+		return;
+	}
+	if (
+		!forceReplace &&
+		_ws === socketBeforeRecovery &&
+		_ws?.readyState === WS_OPEN
+	) {
+		startConnectionProbe(
+			_ws,
+			_socketGeneration,
+			_readySocketGeneration === _socketGeneration ? "liveness" : "handshake",
+		);
 	}
 }
 
@@ -829,6 +1065,22 @@ function handlePageHide(): void {
 	_foregroundRecoveryPending = true;
 	clearReconnectTimer();
 	clearConnectDeadline();
+}
+
+function handleFreeze(): void {
+	_foregroundRecoveryPending = true;
+	clearReconnectTimer();
+	clearConnectDeadline();
+	if (_ws && retireCurrentSocket(_ws, _socketGeneration)) {
+		setSnap({ wsStatus: "disconnected" });
+	}
+}
+
+function handleResume(): void {
+	if (document.visibilityState !== "visible") return;
+	const wasBackgrounded = _foregroundRecoveryPending;
+	_foregroundRecoveryPending = false;
+	recoverConnection(true, wasBackgrounded);
 }
 
 function handleOnline(): void {
@@ -856,6 +1108,8 @@ function handleFocus(): void {
 if (typeof window !== "undefined") {
 	connect();
 	document.addEventListener("visibilitychange", handleVisibilityChange);
+	document.addEventListener("freeze", handleFreeze);
+	document.addEventListener("resume", handleResume);
 	window.addEventListener("pagehide", handlePageHide);
 	window.addEventListener("online", handleOnline);
 	window.addEventListener("pageshow", handlePageShow);
@@ -878,7 +1132,7 @@ export function subscribeMessage(fn: (msg: ServerMessage) => void): () => void {
 	return () => messageSubs.delete(fn);
 }
 
-/** Send immediately, returning whether the socket accepted the message. */
+/** Send immediately, or defer briefly while a foreground liveness check runs. */
 export function send(msg: ClientMessage): boolean {
 	if (msg.type === "chat") setPendingSessionToday(true);
 	if (msg.type === "chat" || msg.type === "clear") _messageBuffer = [];
@@ -896,11 +1150,7 @@ export function send(msg: ClientMessage): boolean {
 	// Do not pre-resolve pending interactions here. The server broadcasts
 	// `permission_resolved` back to all clients (including the sender), and
 	// onPermissionResolved() removes the matching interaction id then.
-	if (_ws?.readyState === WS_OPEN) {
-		_ws.send(JSON.stringify(msg));
-		return true;
-	}
-	return false;
+	return sendClientMessageOrDefer(msg);
 }
 
 // ─── Public API — Message buffer ─────────────────────────────────────────────
@@ -941,22 +1191,14 @@ export function enqueueChat(msg: QueuedChatMessage): void {
  * non-running queue items.
  */
 export function promoteQueued(id: string): void {
-	if (_ws?.readyState !== WS_OPEN) return;
-	try {
-		_ws.send(JSON.stringify({ type: "promote_queued", turn_id: id }));
+	if (sendClientMessageOrDefer({ type: "promote_queued", turn_id: id })) {
 		markQueuedChatPromoting(id);
-	} catch {
-		// Connection lost — best-effort; UI stays consistent next refresh.
 	}
 }
 
 export function steerQueued(id: string): void {
-	if (_ws?.readyState !== WS_OPEN) return;
-	try {
-		_ws.send(JSON.stringify({ type: "steer_queued", turn_id: id }));
+	if (sendClientMessageOrDefer({ type: "steer_queued", turn_id: id })) {
 		markQueuedChatSteering(id);
-	} catch {
-		// Connection lost — the server queue remains authoritative.
 	}
 }
 
@@ -967,12 +1209,8 @@ export function removeFromQueue(id: string): QueuedChatMessage | undefined {
 	// to cancel it. The server only cancels pending (not-yet-running) turns;
 	// the running turn is unaffected and produces its done as usual. Local
 	// removal happens regardless so the UI updates instantly.
-	if (item._sent && _ws?.readyState === WS_OPEN) {
-		try {
-			_ws.send(JSON.stringify({ type: "cancel_queued", turn_id: id }));
-		} catch {
-			// Connection lost — local removal still proceeds.
-		}
+	if (item._sent) {
+		sendClientMessageOrDefer({ type: "cancel_queued", turn_id: id });
 	}
 	return removeLocalChat(id);
 }
@@ -1008,15 +1246,10 @@ export function subscribeToSession(sessionId: string): void {
 		sleepState: null,
 	};
 	_pendingInteractionKeys.clear();
-	if (_ws?.readyState === WS_OPEN) {
-		try {
-			_ws.send(
-				JSON.stringify({ type: "subscribe_session", session_id: sessionId }),
-			);
-		} catch {
-			// Best-effort; reconnect logic will re-subscribe.
-		}
-	}
+	sendClientMessageOrDefer({
+		type: "subscribe_session",
+		session_id: sessionId,
+	});
 	// Notify so snapshot consumers know the active session changed.
 	for (const fn of statusSubs) fn();
 }
@@ -1032,8 +1265,13 @@ export function __resetForTesting(): void {
 	}
 	_foregroundRecoveryPending = false;
 	_lastForcedRecoveryAt = null;
+	_lastLivenessProbeAt = null;
 	_snap = { ...INITIAL_SNAPSHOT };
 	_reconnectAttempts = 0;
+	_readySocketGeneration = null;
+	_connectionProbeSequence = 0;
+	_pendingConnectionProbe = null;
+	_deferredClientMessages = [];
 	_messageBuffer = [];
 	_bufferingEnabled = true;
 	_pendingInteractionKeys.clear();

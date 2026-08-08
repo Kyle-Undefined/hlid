@@ -6,10 +6,9 @@ import { SectionRail } from "#/components/shell/SectionRail";
 import { FolderGroupsTab, NotesTab } from "#/components/vault/NotesTab";
 import { ProjectsTab } from "#/components/vault/ProjectsTab";
 import { SkillsTab } from "#/components/vault/SkillsTab";
-import { useWs } from "#/hooks/useWs";
-import { setPendingPrompt } from "#/hooks/wsChatQueueStore";
+import * as wsStore from "#/hooks/wsStore";
 import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
-import type { ClientMessage } from "#/server/protocol";
+import { uid } from "#/lib/utils";
 
 // ─── server fns ────────────────────────────────────────────────────────────
 
@@ -85,7 +84,6 @@ function VaultPage() {
 	} = Route.useLoaderData();
 	const { tab: rawTab } = Route.useSearch();
 	const navigate = useNavigate({ from: "/vault" });
-	const { send } = useWs();
 
 	const [query, setQuery] = useState("");
 
@@ -125,11 +123,15 @@ function VaultPage() {
 	}
 
 	function runSkill(content: string) {
-		setPendingPrompt(content);
-		send({ type: "chat", text: content } satisfies ClientMessage);
+		const sessionId = uid();
+		wsStore.enqueueChat({
+			id: uid(),
+			text: content,
+			session_id: sessionId,
+		});
 		navigate({
 			to: "/raven",
-			search: { session: undefined, agent: undefined },
+			search: { session: sessionId, agent: undefined },
 		});
 	}
 

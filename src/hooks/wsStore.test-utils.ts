@@ -32,3 +32,39 @@ export function makeMockWs(readyState: number = WS_STATES.OPEN): MockWs {
 		close: vi.fn(),
 	};
 }
+
+export function receiveWsMessage(
+	socket: MockWs,
+	message: Record<string, unknown>,
+): void {
+	socket.onmessage?.({ data: JSON.stringify(message) });
+}
+
+export function sentWsMessages(socket: MockWs): Record<string, unknown>[] {
+	return socket.send.mock.calls.map(([payload]) =>
+		JSON.parse(payload as string),
+	) as Record<string, unknown>[];
+}
+
+export function latestConnectionProbeId(socket: MockWs): string {
+	const probe = sentWsMessages(socket)
+		.toReversed()
+		.find((message) => message.type === "connection_probe");
+	if (typeof probe?.request_id !== "string") {
+		throw new Error("Expected a connection_probe message");
+	}
+	return probe.request_id;
+}
+
+export function acknowledgeLatestConnectionProbe(socket: MockWs): void {
+	receiveWsMessage(socket, {
+		type: "connection_ack",
+		request_id: latestConnectionProbeId(socket),
+	});
+}
+
+export function openReadySocket(socket: MockWs): void {
+	socket.readyState = WS_STATES.OPEN;
+	socket.onopen?.();
+	acknowledgeLatestConnectionProbe(socket);
+}

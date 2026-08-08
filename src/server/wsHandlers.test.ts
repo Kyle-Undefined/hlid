@@ -224,6 +224,28 @@ beforeEach(() => {
 	mockBroadcast.mockClear();
 });
 
+describe("message — connection_probe", () => {
+	it("acknowledges the exact request before session routing", async () => {
+		const { pool } = wrapSession(makeSession());
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({ type: "connection_probe", request_id: "resume-1" }),
+		);
+
+		expect(mockSend).toHaveBeenCalledOnce();
+		expect(mockSend).toHaveBeenCalledWith(ws, {
+			type: "connection_ack",
+			request_id: "resume-1",
+		});
+		expect(pool.get).not.toHaveBeenCalled();
+		expect(pool.findByDbSessionId).not.toHaveBeenCalled();
+		expect(pool.vaultEntry).not.toHaveBeenCalled();
+	});
+});
+
 describe("message — goal_control", () => {
 	it("routes a native goal update and broadcasts the resulting state", async () => {
 		const goal = {

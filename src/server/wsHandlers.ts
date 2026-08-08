@@ -1744,6 +1744,13 @@ async function handleMessage(
 		send(context.ws, { type: "error", message: "Invalid JSON" });
 		return;
 	}
+	if (msg.type === "connection_probe") {
+		send(context.ws, {
+			type: "connection_ack",
+			request_id: msg.request_id,
+		});
+		return;
+	}
 	if (msg.type === "subscribe_session") {
 		await handleSubscribeSession(context, msg);
 		return;

@@ -10,7 +10,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as chatQueueStore from "./wsChatQueueStore";
 import * as wsTransport from "./wsStore";
-import { type MockWs, makeMockWs, WS_STATES } from "./wsStore.test-utils";
+import {
+	acknowledgeLatestConnectionProbe,
+	type MockWs,
+	makeMockWs,
+	openReadySocket,
+	WS_STATES,
+} from "./wsStore.test-utils";
 
 const wsStore = { ...wsTransport, ...chatQueueStore };
 
@@ -34,7 +40,7 @@ beforeEach(() => {
 	});
 	document.dispatchEvent(new Event("visibilitychange"));
 	// Module-load-time connect() may have run too; the latest ws is currentWs.
-	currentWs.onopen?.();
+	openReadySocket(currentWs);
 });
 
 afterEach(() => {
@@ -42,6 +48,32 @@ afterEach(() => {
 });
 
 describe("wsStore — Slice A: immediate-send drain", () => {
+	it("waits for end-to-end readiness before draining queued chat", () => {
+		wsStore.__resetForTesting();
+		currentWs = makeMockWs(WS_STATES.CONNECTING);
+		document.dispatchEvent(new Event("visibilitychange"));
+
+		wsStore.enqueueChat({ id: "m1", text: "deferred", session_id: "s1" });
+		expect(currentWs.send).not.toHaveBeenCalled();
+
+		currentWs.readyState = WS_STATES.OPEN;
+		currentWs.onopen?.();
+		expect(wsStore.getSnapshot().wsStatus).toBe("connecting");
+		expect(
+			currentWs.send.mock.calls
+				.map(([payload]) => JSON.parse(payload as string))
+				.filter((message) => message.type === "chat"),
+		).toEqual([]);
+
+		acknowledgeLatestConnectionProbe(currentWs);
+		expect(wsStore.getSnapshot().wsStatus).toBe("connected");
+		expect(
+			currentWs.send.mock.calls
+				.map(([payload]) => JSON.parse(payload as string))
+				.filter((message) => message.type === "chat"),
+		).toHaveLength(1);
+	});
+
 	it("enqueueChat sends a chat message to the server immediately when ws is open", () => {
 		wsStore.enqueueChat({ id: "m1", text: "hello", session_id: "s1" });
 

@@ -43,6 +43,12 @@ export type StatusMessage = {
 	turn_id?: string;
 };
 
+/** Correlated acknowledgement for a transport-only WebSocket liveness probe. */
+export type ConnectionAckMessage = {
+	type: "connection_ack";
+	request_id: string;
+};
+
 export type ChunkMessage = {
 	type: "chunk";
 	text: string;
@@ -1023,6 +1029,7 @@ export type SessionReplayMessage = {
 
 export type ServerMessage =
 	| StatusMessage
+	| ConnectionAckMessage
 	| ChunkMessage
 	| ToolEventMessage
 	| ToolUpdateMessage
@@ -1171,6 +1178,12 @@ export type ClientPermissionResponseMessage = {
 
 export type ClientSyncMessage = {
 	type: "sync";
+};
+
+/** Transport-only round-trip probe; it must not trigger session restoration. */
+export type ClientConnectionProbeMessage = {
+	type: "connection_probe";
+	request_id: string;
 };
 
 export type ClientProbeMcpMessage = {
@@ -1400,6 +1413,7 @@ export type ClientMessage =
 	| ClientReloadMessage
 	| ClientPermissionResponseMessage
 	| ClientSyncMessage
+	| ClientConnectionProbeMessage
 	| ClientProbeMcpMessage
 	| ClientMcpControlMessage
 	| ClientFileRewindMessage

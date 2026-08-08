@@ -25,6 +25,33 @@ describe("chat WebSocket runtime schema", () => {
 		).toBeNull();
 	});
 
+	it("accepts only bounded connection probe request ids", () => {
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "connection_probe",
+					request_id: "resume-1",
+				}),
+			),
+		).toEqual({ type: "connection_probe", request_id: "resume-1" });
+		for (const request_id of ["", "x".repeat(257)]) {
+			expect(
+				parseClientMessage(
+					JSON.stringify({ type: "connection_probe", request_id }),
+				),
+			).toBeNull();
+		}
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "connection_probe",
+					request_id: "resume-1",
+					extra: true,
+				}),
+			),
+		).toBeNull();
+	});
+
 	it("bounds chat text and attachment arrays", () => {
 		expect(
 			parseClientMessage(

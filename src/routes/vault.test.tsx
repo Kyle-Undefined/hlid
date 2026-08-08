@@ -7,8 +7,8 @@ const testState = vi.hoisted(() => ({
 	loaderData: {} as Record<string, unknown>,
 	search: {} as { tab?: string },
 	navigate: vi.fn(),
-	send: vi.fn(),
-	setPendingPrompt: vi.fn(),
+	enqueueChat: vi.fn(),
+	uid: vi.fn(),
 }));
 
 vi.mock("@tanstack/react-router", () => ({
@@ -75,11 +75,11 @@ vi.mock("#/components/vault/SkillsTab", () => ({
 		</div>
 	),
 }));
-vi.mock("#/hooks/useWs", () => ({
-	useWs: () => ({ send: testState.send }),
+vi.mock("#/hooks/wsStore", () => ({
+	enqueueChat: testState.enqueueChat,
 }));
-vi.mock("#/hooks/wsChatQueueStore", () => ({
-	setPendingPrompt: testState.setPendingPrompt,
+vi.mock("#/lib/utils", () => ({
+	uid: testState.uid,
 }));
 
 import { Route } from "./vault";
@@ -123,8 +123,11 @@ function renderVault(): ReturnType<typeof render> {
 beforeEach(() => {
 	testState.search = {};
 	testState.navigate.mockReset();
-	testState.send.mockReset();
-	testState.setPendingPrompt.mockReset();
+	testState.enqueueChat.mockReset();
+	testState.uid
+		.mockReset()
+		.mockReturnValueOnce("new-session")
+		.mockReturnValueOnce("new-turn");
 	setLoaderData();
 });
 
@@ -219,21 +222,19 @@ describe("vault route", () => {
 		).toBeTruthy();
 	});
 
-	it("starts a selected skill in Raven with the same queued and sent prompt", () => {
+	it("queues a selected skill in an explicit Raven session", () => {
 		testState.search = { tab: "skills" };
 		renderVault();
 		fireEvent.click(screen.getByRole("button", { name: "Run skill" }));
 
-		expect(testState.setPendingPrompt).toHaveBeenCalledWith(
-			"Run the release skill",
-		);
-		expect(testState.send).toHaveBeenCalledWith({
-			type: "chat",
+		expect(testState.enqueueChat).toHaveBeenCalledWith({
+			id: "new-turn",
 			text: "Run the release skill",
+			session_id: "new-session",
 		});
 		expect(testState.navigate).toHaveBeenCalledWith({
 			to: "/raven",
-			search: { session: undefined, agent: undefined },
+			search: { session: "new-session", agent: undefined },
 		});
 	});
 });

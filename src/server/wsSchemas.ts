@@ -108,6 +108,7 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 		denyMessage: shortText.optional(),
 	}),
 	noFields("sync"),
+	z.strictObject({ type: z.literal("connection_probe"), request_id: id }),
 	z.strictObject({
 		type: z.literal("probe_mcp"),
 		agent_cwd: path.optional(),

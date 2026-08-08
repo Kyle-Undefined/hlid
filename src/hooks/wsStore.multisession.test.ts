@@ -24,7 +24,12 @@ import * as wsDataRevisionStore from "./wsDataRevisionStore";
 import * as wsLiveStatsStore from "./wsLiveStatsStore";
 import * as wsSessionStatusStore from "./wsSessionStatusStore";
 import * as wsTransport from "./wsStore";
-import { type MockWs, makeMockWs, WS_STATES } from "./wsStore.test-utils";
+import {
+	type MockWs,
+	makeMockWs,
+	openReadySocket,
+	WS_STATES,
+} from "./wsStore.test-utils";
 
 const wsStore = {
 	...wsTransport,
@@ -56,7 +61,7 @@ beforeEach(() => {
 		configurable: true,
 	});
 	document.dispatchEvent(new Event("visibilitychange"));
-	currentWs.onopen?.();
+	openReadySocket(currentWs);
 });
 
 afterEach(() => {
@@ -298,7 +303,7 @@ describe("pending interaction status", () => {
 		});
 		expect(wsStore.getSnapshot().hasPendingPermissions).toBe(true);
 
-		currentWs.onopen?.();
+		openReadySocket(currentWs);
 		expect(wsStore.getSnapshot().hasPendingPermissions).toBe(false);
 
 		receive({
@@ -514,7 +519,7 @@ describe("subscribeToSession / getSubscribedSessionId", () => {
 	it("restores the focused session when a socket reconnects", () => {
 		wsStore.subscribeToSession("session-a");
 		currentWs.send.mockClear();
-		currentWs.onopen?.();
+		openReadySocket(currentWs);
 
 		expect(currentWs.send).toHaveBeenCalledWith(
 			JSON.stringify({

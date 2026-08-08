@@ -3,7 +3,7 @@
  *
  * Suspended browsers can retain an OPEN or CONNECTING readyState without ever
  * delivering close. Explicit foreground/network recovery must retire that
- * attempt, while ordinary focus events remain idempotent.
+ * attempt, while ordinary focus events coalesce around a liveness check.
  */
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -52,9 +52,40 @@ function setVisibility(state: "visible" | "hidden") {
 	document.dispatchEvent(new Event("visibilitychange"));
 }
 
-function openSocket(socket: MockWs): void {
+function sentMessages(socket: MockWs): Array<Record<string, unknown>> {
+	return socket.send.mock.calls.map(([raw]) =>
+		JSON.parse(raw as string),
+	) as Array<Record<string, unknown>>;
+}
+
+function latestProbeId(socket: MockWs): string {
+	const probe = [...sentMessages(socket)]
+		.reverse()
+		.find((message) => message.type === "connection_probe");
+	if (typeof probe?.request_id !== "string") {
+		throw new Error("Expected the socket to send a connection_probe");
+	}
+	return probe.request_id;
+}
+
+function receiveConnectionAck(socket: MockWs, requestId: string): void {
+	socket.onmessage?.({
+		data: JSON.stringify({ type: "connection_ack", request_id: requestId }),
+	});
+}
+
+function acknowledgeLatestProbe(socket: MockWs): void {
+	receiveConnectionAck(socket, latestProbeId(socket));
+}
+
+function openTransport(socket: MockWs): void {
 	socket.readyState = WS_STATES.OPEN;
 	socket.onopen?.();
+}
+
+function openSocket(socket: MockWs): void {
+	openTransport(socket);
+	acknowledgeLatestProbe(socket);
 }
 
 function failSocket(socket: MockWs): void {
@@ -68,6 +99,14 @@ function dispatchPageShow(persisted: boolean): void {
 	window.dispatchEvent(event);
 }
 
+function dispatchFreeze(): void {
+	document.dispatchEvent(new Event("freeze"));
+}
+
+function dispatchResume(): void {
+	document.dispatchEvent(new Event("resume"));
+}
+
 describe("wsStore — lifecycle reconnect", () => {
 	it("creates a replay-capable WebSocket when the page becomes visible", () => {
 		setVisibility("visible");
@@ -75,6 +114,73 @@ describe("wsStore — lifecycle reconnect", () => {
 		expect(wsCtorSpy).toHaveBeenCalledOnce();
 		expect(wsCtorSpy.mock.calls[0]?.[0]).toContain("/ws?replay_batch=1");
 		expect(wsStore.getSnapshot().wsStatus).toBe("connecting");
+	});
+
+	it("waits for a matching readiness acknowledgement before connecting", () => {
+		setVisibility("visible");
+		const socket = sockets[0];
+		const received = vi.fn();
+		const unsubscribe = wsStore.subscribeMessage(received);
+
+		openTransport(socket);
+		const probeId = latestProbeId(socket);
+		expect(sentMessages(socket)).toEqual([
+			{ type: "connection_probe", request_id: probeId },
+		]);
+		expect(wsStore.getSnapshot().wsStatus).toBe("connecting");
+
+		receiveConnectionAck(socket, "wrong-request-id");
+		expect(wsStore.getSnapshot().wsStatus).toBe("connecting");
+
+		receiveConnectionAck(socket, probeId);
+		expect(wsStore.getSnapshot().wsStatus).toBe("connected");
+		expect(received).not.toHaveBeenCalled();
+		vi.advanceTimersByTime(60_000);
+		expect(socket.close).not.toHaveBeenCalled();
+		unsubscribe();
+	});
+
+	it("ignores a stale acknowledgement from a retired socket generation", () => {
+		setVisibility("visible");
+		const firstSocket = sockets[0];
+		openTransport(firstSocket);
+		const staleProbeId = latestProbeId(firstSocket);
+		const staleMessage = firstSocket.onmessage;
+
+		setVisibility("hidden");
+		setVisibility("visible");
+		const replacement = sockets[1];
+		staleMessage?.({
+			data: JSON.stringify({
+				type: "connection_ack",
+				request_id: staleProbeId,
+			}),
+		});
+
+		expect(firstSocket.close).toHaveBeenCalledOnce();
+		expect(replacement.send).not.toHaveBeenCalled();
+		expect(wsStore.getSnapshot().wsStatus).toBe("connecting");
+		expect(wsCtorSpy).toHaveBeenCalledTimes(2);
+	});
+
+	it("allows a slow transport past three seconds and starts a fresh handshake deadline", () => {
+		setVisibility("visible");
+		const socket = sockets[0];
+
+		vi.advanceTimersByTime(3_001);
+		expect(socket.close).not.toHaveBeenCalled();
+		vi.advanceTimersByTime(8_998);
+		expect(socket.close).not.toHaveBeenCalled();
+
+		openTransport(socket);
+		vi.advanceTimersByTime(11_999);
+		expect(socket.close).not.toHaveBeenCalled();
+		expect(wsStore.getSnapshot().wsStatus).toBe("connecting");
+
+		acknowledgeLatestProbe(socket);
+		expect(wsStore.getSnapshot().wsStatus).toBe("connected");
+		vi.advanceTimersByTime(1);
+		expect(socket.close).not.toHaveBeenCalled();
 	});
 
 	it("recreates an apparently open WebSocket when the page resumes", () => {
@@ -88,6 +194,43 @@ describe("wsStore — lifecycle reconnect", () => {
 		expect(firstSocket.close).toHaveBeenCalledOnce();
 		expect(wsCtorSpy).toHaveBeenCalledTimes(2);
 		expect(wsStore.getSnapshot().wsStatus).toBe("connecting");
+	});
+
+	it("retires a frozen socket and reconnects once the visible page resumes", () => {
+		setVisibility("visible");
+		const firstSocket = sockets[0];
+		openSocket(firstSocket);
+
+		dispatchFreeze();
+		expect(firstSocket.close).toHaveBeenCalledOnce();
+		expect(wsStore.getSnapshot().wsStatus).toBe("disconnected");
+		vi.advanceTimersByTime(60_000);
+		expect(wsCtorSpy).toHaveBeenCalledOnce();
+
+		dispatchResume();
+		expect(wsCtorSpy).toHaveBeenCalledTimes(2);
+		expect(wsStore.getSnapshot().wsStatus).toBe("connecting");
+	});
+
+	it("defers a frozen page resume until the document is visible", () => {
+		setVisibility("visible");
+		const firstSocket = sockets[0];
+		openSocket(firstSocket);
+		setVisibility("hidden");
+		dispatchFreeze();
+
+		dispatchResume();
+		vi.advanceTimersByTime(60_000);
+		expect(firstSocket.close).toHaveBeenCalledOnce();
+		expect(wsCtorSpy).toHaveBeenCalledOnce();
+
+		Object.defineProperty(document, "visibilityState", {
+			value: "visible",
+			writable: true,
+			configurable: true,
+		});
+		dispatchResume();
+		expect(wsCtorSpy).toHaveBeenCalledTimes(2);
 	});
 
 	it("immediately replaces a stale CONNECTING socket on resume", () => {
@@ -131,12 +274,12 @@ describe("wsStore — lifecycle reconnect", () => {
 		expect(wsCtorSpy).toHaveBeenCalledTimes(2);
 	});
 
-	it("retires a silent CONNECTING attempt at the deadline and retries once", () => {
+	it("retires a silent CONNECTING attempt at the twelve-second deadline", () => {
 		setVisibility("visible");
 		const socket = sockets[0];
 		const staleClose = socket.onclose;
 
-		vi.advanceTimersByTime(2_999);
+		vi.advanceTimersByTime(11_999);
 		expect(socket.close).not.toHaveBeenCalled();
 		vi.advanceTimersByTime(1);
 		expect(socket.close).toHaveBeenCalledOnce();
@@ -146,6 +289,21 @@ describe("wsStore — lifecycle reconnect", () => {
 		vi.advanceTimersByTime(999);
 		expect(wsCtorSpy).toHaveBeenCalledTimes(1);
 		vi.advanceTimersByTime(1);
+		expect(wsCtorSpy).toHaveBeenCalledTimes(2);
+	});
+
+	it("retires an open transport that never acknowledges its handshake", () => {
+		setVisibility("visible");
+		const socket = sockets[0];
+		openTransport(socket);
+
+		vi.advanceTimersByTime(11_999);
+		expect(socket.close).not.toHaveBeenCalled();
+		vi.advanceTimersByTime(1);
+
+		expect(socket.close).toHaveBeenCalledOnce();
+		expect(wsStore.getSnapshot().wsStatus).toBe("disconnected");
+		vi.advanceTimersByTime(1_000);
 		expect(wsCtorSpy).toHaveBeenCalledTimes(2);
 	});
 
@@ -215,17 +373,25 @@ describe("wsStore — lifecycle reconnect", () => {
 		expect(wsCtorSpy).toHaveBeenCalledTimes(2);
 	});
 
-	it("coalesces duplicate lifecycle recovery signals", () => {
+	it("coalesces duplicate foreground signals after freeze and resume", () => {
 		setVisibility("visible");
-		openSocket(sockets[0]);
-		setVisibility("hidden");
-		setVisibility("visible");
+		const firstSocket = sockets[0];
+		openSocket(firstSocket);
 
+		dispatchFreeze();
+		dispatchResume();
+		const resumedSocket = sockets[1];
+
+		dispatchResume();
 		window.dispatchEvent(new Event("online"));
 		dispatchPageShow(true);
 		window.dispatchEvent(new Event("focus"));
 
+		expect(firstSocket.close).toHaveBeenCalledOnce();
 		expect(wsCtorSpy).toHaveBeenCalledTimes(2);
+		expect(resumedSocket.close).not.toHaveBeenCalled();
+		openSocket(resumedSocket);
+		expect(wsStore.getSnapshot().wsStatus).toBe("connected");
 	});
 
 	it("coalesces resume signals after the hidden socket already closed", () => {
@@ -245,16 +411,112 @@ describe("wsStore — lifecycle reconnect", () => {
 		expect(wsStore.getSnapshot().wsStatus).toBe("connected");
 	});
 
-	it("ordinary pageshow and focus ensure without replacing an active socket", () => {
+	it("validates a stale-looking OPEN socket when background events were missed", () => {
 		setVisibility("visible");
 		const socket = sockets[0];
 		openSocket(socket);
+		socket.send.mockClear();
 
+		// The document stayed visible throughout: no hidden, pagehide, or freeze
+		// event tells the store that this apparently OPEN socket may be stale.
 		dispatchPageShow(false);
 		window.dispatchEvent(new Event("focus"));
+		const probeId = latestProbeId(socket);
 
+		expect(sentMessages(socket)).toEqual([
+			{ type: "connection_probe", request_id: probeId },
+		]);
 		expect(socket.close).not.toHaveBeenCalled();
 		expect(wsCtorSpy).toHaveBeenCalledOnce();
+		expect(wsStore.send({ type: "abort" })).toBe(false);
+		expect(
+			wsStore.send({
+				type: "chat",
+				text: "send after resume",
+				session_id: "session-a",
+			}),
+		).toBe(true);
+		expect(wsStore.send({ type: "sync" })).toBe(true);
+		expect(sentMessages(socket)).toEqual([
+			{ type: "connection_probe", request_id: probeId },
+		]);
+
+		vi.advanceTimersByTime(2_999);
+		receiveConnectionAck(socket, probeId);
+		vi.advanceTimersByTime(1);
+		expect(socket.close).not.toHaveBeenCalled();
+		expect(wsStore.getSnapshot().wsStatus).toBe("connected");
+		expect(sentMessages(socket)).toEqual([
+			{ type: "connection_probe", request_id: probeId },
+			{
+				type: "chat",
+				text: "send after resume",
+				session_id: "session-a",
+			},
+			{ type: "sync" },
+		]);
+		expect(wsCtorSpy).toHaveBeenCalledOnce();
+	});
+
+	it("replaces a stale OPEN socket when an ordinary focus probe times out", () => {
+		setVisibility("visible");
+		const staleSocket = sockets[0];
+		openSocket(staleSocket);
+		staleSocket.send.mockClear();
+
+		// As above, deliberately omit every background event.
+		window.dispatchEvent(new Event("focus"));
+		expect(sentMessages(staleSocket)).toEqual([
+			{
+				type: "connection_probe",
+				request_id: latestProbeId(staleSocket),
+			},
+		]);
+
+		vi.advanceTimersByTime(2_999);
+		expect(staleSocket.close).not.toHaveBeenCalled();
+		vi.advanceTimersByTime(1);
+
+		expect(staleSocket.close).toHaveBeenCalledOnce();
+		expect(wsCtorSpy).toHaveBeenCalledTimes(2);
+		expect(wsStore.getSnapshot().wsStatus).toBe("connecting");
+		openSocket(sockets[1]);
+		vi.advanceTimersByTime(60_000);
+		expect(wsCtorSpy).toHaveBeenCalledTimes(2);
+	});
+
+	it("carries an explicitly scoped chat through stale-socket replacement", () => {
+		setVisibility("visible");
+		const staleSocket = sockets[0];
+		openSocket(staleSocket);
+		staleSocket.send.mockClear();
+
+		window.dispatchEvent(new Event("focus"));
+		expect(
+			wsStore.send({
+				type: "chat",
+				text: "survive reconnect",
+				session_id: "session-a",
+			}),
+		).toBe(true);
+		expect(wsStore.send({ type: "sync" })).toBe(true);
+		expect(wsStore.send({ type: "abort" })).toBe(false);
+
+		vi.advanceTimersByTime(3_000);
+		const replacement = sockets[1];
+		openSocket(replacement);
+
+		expect(sentMessages(replacement)).toEqual([
+			{
+				type: "connection_probe",
+				request_id: latestProbeId(replacement),
+			},
+			{
+				type: "chat",
+				text: "survive reconnect",
+				session_id: "session-a",
+			},
+		]);
 	});
 
 	it("ordinary pageshow recovers when the visible event was missed", () => {
@@ -270,7 +532,7 @@ describe("wsStore — lifecycle reconnect", () => {
 		dispatchPageShow(false);
 		expect(socket.close).toHaveBeenCalledOnce();
 		expect(wsCtorSpy).toHaveBeenCalledTimes(2);
-		vi.advanceTimersByTime(3_000);
+		vi.advanceTimersByTime(12_000);
 
 		expect(wsStore.getSnapshot().wsStatus).toBe("disconnected");
 	});
