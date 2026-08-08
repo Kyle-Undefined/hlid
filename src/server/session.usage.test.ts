@@ -591,6 +591,107 @@ describe("SessionManager — auto-sleep gates", () => {
 		expect(queryCount).toBe(2);
 	});
 
+	it("registers a Claude spend-limit transport error as spend_control", async () => {
+		const providerMessage =
+			"spend limit reached (monthly; resets 2030-08-09 14:30 UTC) — Ask your organization owner to raise the limit";
+		const expectedReset = Math.floor(
+			Date.parse("2030-08-09T14:30:00Z") / 1_000,
+		);
+		let queryCount = 0;
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(): AgentSession {
+				queryCount += 1;
+				const current = queryCount;
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: `spend-limit-${current}` };
+					if (current === 1) {
+						yield { type: "transport_error", message: providerMessage };
+						return;
+					}
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		const firstEvents: ServerMessage[] = [];
+		const sm = new SessionManager(sleepConfig(), makeProviders(provider));
+		await sm.runQuery("probe", (message) => firstEvents.push(message), {
+			sessionId: "transport-spend-limit-session",
+		});
+		expect(firstEvents).toContainEqual(
+			expect.objectContaining({
+				type: "rate_limit",
+				status: "rejected",
+				rateLimitType: "spend_control",
+				resetsAt: expectedReset,
+				providerId: "claude",
+			}),
+		);
+		expect(firstEvents).toContainEqual(
+			expect.objectContaining({ type: "error", message: providerMessage }),
+		);
+
+		const second = sm.runQuery("wait for reset", () => {}, {
+			sessionId: "transport-spend-limit-session",
+			turnId: "transport-spend-limit-turn",
+		});
+		await waitFor(() =>
+			expect(sm.getSleepState()).toMatchObject({
+				state: "sleeping",
+				reason: "limit_reached",
+				windowId: "spend_control",
+			}),
+		);
+		expect(queryCount).toBe(1);
+		sm.skipSleep();
+		await second;
+		expect(queryCount).toBe(2);
+	});
+
+	it("does not treat a spend-limit availability error as a hard cap", async () => {
+		const providerMessage = "spend limit unavailable (fetch_error)";
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "spend-unavailable" };
+					yield { type: "transport_error", message: providerMessage };
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		const emitted: ServerMessage[] = [];
+		const config = sleepConfig();
+		const sm = new SessionManager(config, makeProviders(provider));
+		await sm.runQuery("probe", (message) => emitted.push(message), {
+			sessionId: "spend-unavailable-session",
+		});
+		expect(emitted.some((message) => message.type === "rate_limit")).toBe(
+			false,
+		);
+		expect(emitted).toContainEqual(
+			expect.objectContaining({ type: "error", message: providerMessage }),
+		);
+		expect(evaluateSleep("claude", config.auto_sleep)).toBeNull();
+	});
+
 	it("abort during a turn-gate sleep cancels without dispatching", async () => {
 		reportRateLimitSignal("claude", "five_hour", "rejected", epochNow() + 3600);
 		const emitted: ServerMessage[] = [];

@@ -140,16 +140,30 @@ import type { ResolvedWorkspaceReference } from "./workspaceReferences";
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 
 function providerTransportLimit(message: string): {
-	windowId?: "five_hour";
+	windowId?: "five_hour" | "spend_control";
 	resetsAt: number | null;
 } | null {
 	const sessionLimit = /\bsession limit\b/i.test(message);
-	if (!sessionLimit && !/\b(?:usage|rate) limit\b/i.test(message)) return null;
+	const spendLimit = /\bspend limit reached\b/i.test(message);
+	if (
+		!sessionLimit &&
+		!spendLimit &&
+		!/\b(?:usage|rate) limit\b/i.test(message)
+	)
+		return null;
+	const utcReset = message.match(
+		/\bresets?\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}):(\d{2})\s+UTC\b/i,
+	);
 	const reset = message.match(
 		/\bresets?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([^)]+)\)/i,
 	);
 	let resetsAt: number | null = null;
-	if (reset) {
+	if (utcReset) {
+		const parsed = Date.parse(
+			`${utcReset[1]}T${utcReset[2]}:${utcReset[3]}:00Z`,
+		);
+		if (Number.isFinite(parsed)) resetsAt = Math.floor(parsed / 1_000);
+	} else if (reset) {
 		let hour = Number(reset[1]) % 12;
 		if (reset[3].toLowerCase() === "pm") hour += 12;
 		const time = `${String(hour).padStart(2, "0")}:${reset[2] ?? "00"}`;
@@ -165,7 +179,11 @@ function providerTransportLimit(message: string): {
 		}
 	}
 	return {
-		...(sessionLimit ? { windowId: "five_hour" as const } : {}),
+		...(spendLimit
+			? { windowId: "spend_control" as const }
+			: sessionLimit
+				? { windowId: "five_hour" as const }
+				: {}),
 		resetsAt,
 	};
 }
@@ -7053,7 +7071,9 @@ export class SessionManager {
 		const sleepingWindow = this.sleepState?.windowId;
 		skipProviderSleep(
 			providerId,
-			sleepingWindow === "five_hour" || sleepingWindow === "weekly"
+			sleepingWindow === "five_hour" ||
+				sleepingWindow === "weekly" ||
+				sleepingWindow === "spend_control"
 				? sleepingWindow
 				: undefined,
 		);

@@ -2362,6 +2362,56 @@ describe("ADD_ASK_USER_QUESTION", () => {
 		expect(after).toBe(before);
 	});
 
+	it("re-arms a resolved question when the provider redelivers the same id", () => {
+		const pending = reducer(empty(), {
+			type: "ADD_ASK_USER_QUESTION",
+			id: "aq-redelivery",
+			questions: [
+				{ question: "Original?", options: ["A", "B"], multiSelect: false },
+			],
+			provenance: {
+				provider_id: "claude",
+				kind: "provider_dialog",
+				source_name: "original",
+			},
+		});
+		const resolved = reducer(pending, {
+			type: "RESOLVE_ASK_USER_QUESTION",
+			id: "aq-redelivery",
+			answers: { "Original?": ["A"] },
+			notes: { "Original?": "old note" },
+		});
+
+		const rearmed = reducer(resolved, {
+			type: "ADD_ASK_USER_QUESTION",
+			id: "aq-redelivery",
+			questions: [
+				{ question: "Retry?", options: ["Yes", "No"], multiSelect: false },
+			],
+			provenance: {
+				provider_id: "claude",
+				kind: "provider_dialog",
+				source_name: "redelivered",
+			},
+		});
+
+		expect(rearmed).toHaveLength(1);
+		expect(rearmed).not.toBe(resolved);
+		expect(rearmed[0]).toEqual({
+			id: "aq-redelivery",
+			role: "ask_user_question",
+			questions: [
+				{ question: "Retry?", options: ["Yes", "No"], multiSelect: false },
+			],
+			provenance: {
+				provider_id: "claude",
+				kind: "provider_dialog",
+				source_name: "redelivered",
+			},
+			answers: null,
+		});
+	});
+
 	it("still appends when the existing id belongs to a different role", () => {
 		const before = reducer(empty(), {
 			type: "ADD_USER",

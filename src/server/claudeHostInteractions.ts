@@ -315,13 +315,12 @@ export function createClaudeHostInteractionHandlers(params: AgentQueryParams): {
 	onUserDialog: OnUserDialog;
 	supportedDialogKinds: string[];
 } {
-	let sequence = 0;
 	const ask = async (
 		...args: Parameters<AgentQueryParams["canUseTool"]>
 	): Promise<AgentToolDecision | null> =>
 		params.canUseTool(...args).catch(() => null);
-	const requestId = (kind: string, nativeId?: string) =>
-		`claude-${kind}:${params.hostSessionId ?? "ephemeral"}:${nativeId ?? ++sequence}`;
+	const interactionId = (kind: string, controlRequestId: string) =>
+		`claude-${kind}:${params.hostSessionId ?? "ephemeral"}:${controlRequestId}`;
 
 	const onElicitation: OnElicitation = async (request, options) => {
 		if (options.signal.aborted) return { action: "cancel" };
@@ -344,7 +343,7 @@ export function createClaudeHostInteractionHandlers(params: AgentQueryParams): {
 					],
 				},
 				{
-					toolUseID: requestId("elicitation", request.elicitationId),
+					toolUseID: interactionId("elicitation", options.requestId),
 					signal: options.signal,
 					title: request.title ?? request.message,
 					displayName: request.displayName ?? request.serverName,
@@ -379,7 +378,7 @@ export function createClaudeHostInteractionHandlers(params: AgentQueryParams): {
 			"AskUserQuestion",
 			{ questions: providerElicitationQuestions(fields) },
 			{
-				toolUseID: requestId("elicitation", request.elicitationId),
+				toolUseID: interactionId("elicitation", options.requestId),
 				signal: options.signal,
 				title: request.title ?? request.message,
 				displayName: request.displayName ?? request.serverName,
@@ -413,7 +412,7 @@ export function createClaudeHostInteractionHandlers(params: AgentQueryParams): {
 				return { behavior: "cancelled" };
 			}
 			const sourceName = peer.from_address ?? "another Claude session";
-			const interactionId = requestId("dialog", request.toolUseID);
+			const dialogInteractionId = interactionId("dialog", options.requestId);
 			const decision = await ask(
 				"AskUserQuestion",
 				{
@@ -426,7 +425,7 @@ export function createClaudeHostInteractionHandlers(params: AgentQueryParams): {
 					],
 				},
 				{
-					toolUseID: interactionId,
+					toolUseID: dialogInteractionId,
 					signal: options.signal,
 					title: "Claude peer message",
 					displayName: request.dialogKind,
@@ -458,7 +457,7 @@ export function createClaudeHostInteractionHandlers(params: AgentQueryParams): {
 			const consumerReady = await params
 				.onProviderInitiatedTurn({
 					kind: "claude_peer_message",
-					interactionId,
+					interactionId: dialogInteractionId,
 					sourceName,
 					...(request.toolUseID ? { toolUseId: request.toolUseID } : {}),
 					preview: peer.preview,
@@ -494,7 +493,7 @@ export function createClaudeHostInteractionHandlers(params: AgentQueryParams): {
 				],
 			},
 			{
-				toolUseID: requestId("dialog", request.toolUseID),
+				toolUseID: interactionId("dialog", options.requestId),
 				signal: options.signal,
 				title: "Claude needs input",
 				displayName: request.dialogKind,

@@ -18,6 +18,13 @@ function params(
 	};
 }
 
+function callbackOptions(requestId: string) {
+	return {
+		signal: new AbortController().signal,
+		requestId,
+	};
+}
+
 describe("Claude host interactions", () => {
 	it("maps structured MCP form answers back to the native elicitation result", async () => {
 		const canUseTool = vi.fn(async (_tool, input) => {
@@ -63,7 +70,7 @@ describe("Claude host interactions", () => {
 					},
 				},
 			},
-			{ signal: new AbortController().signal },
+			callbackOptions("control-elicitation-1"),
 		);
 
 		expect(result).toEqual({
@@ -79,7 +86,7 @@ describe("Claude host interactions", () => {
 			"AskUserQuestion",
 			expect.any(Object),
 			expect.objectContaining({
-				toolUseID: expect.stringContaining("hlid-session"),
+				toolUseID: "claude-elicitation:hlid-session:control-elicitation-1",
 				interaction: expect.objectContaining({
 					provider_id: "claude",
 					kind: "mcp_elicitation",
@@ -114,13 +121,14 @@ describe("Claude host interactions", () => {
 					url: "https://example.test/oauth",
 					elicitationId: "oauth-1",
 				},
-				{ signal: new AbortController().signal },
+				callbackOptions("control-oauth-1"),
 			),
 		).resolves.toEqual({ action: "accept" });
 		expect(canUseTool).toHaveBeenCalledWith(
 			"AskUserQuestion",
 			expect.any(Object),
 			expect.objectContaining({
+				toolUseID: "claude-elicitation:hlid-session:control-oauth-1",
 				interaction: expect.objectContaining({
 					source_name: "oauth-mcp",
 					url: "https://example.test/oauth",
@@ -152,7 +160,7 @@ describe("Claude host interactions", () => {
 						properties: { value: { type: "string" } },
 					},
 				},
-				{ signal: new AbortController().signal },
+				callbackOptions("control-cancel-1"),
 			),
 		).resolves.toEqual({ action: "cancel" });
 	});
@@ -181,7 +189,7 @@ describe("Claude host interactions", () => {
 					payload: { message: "Choose a recovery path" },
 					toolUseID: "tool-1",
 				},
-				{ signal: new AbortController().signal },
+				callbackOptions("control-dialog-1"),
 			),
 		).resolves.toEqual({
 			behavior: "completed",
@@ -191,6 +199,7 @@ describe("Claude host interactions", () => {
 			"AskUserQuestion",
 			expect.any(Object),
 			expect.objectContaining({
+				toolUseID: "claude-dialog:hlid-session:control-dialog-1",
 				interaction: expect.objectContaining({
 					kind: "provider_dialog",
 					source_name: "refusal_fallback_prompt",
@@ -217,7 +226,7 @@ describe("Claude host interactions", () => {
 						holdCause: "future-cause",
 					},
 				},
-				{ signal: new AbortController().signal },
+				callbackOptions("control-malformed-peer"),
 			),
 		).resolves.toEqual({ behavior: "cancelled" });
 		expect(canUseTool).not.toHaveBeenCalled();
@@ -253,7 +262,7 @@ describe("Claude host interactions", () => {
 					},
 					toolUseID: "peer-tool-7",
 				},
-				{ signal: new AbortController().signal },
+				callbackOptions("control-peer-deny"),
 			),
 		).resolves.toEqual({
 			behavior: "completed",
@@ -310,7 +319,7 @@ describe("Claude host interactions", () => {
 					},
 					toolUseID,
 				},
-				{ signal: new AbortController().signal },
+				callbackOptions(`control-${toolUseID}`),
 			);
 
 		await expect(request("peer-tool-not-ready")).resolves.toEqual({
@@ -324,7 +333,7 @@ describe("Claude host interactions", () => {
 			2,
 			expect.objectContaining({
 				kind: "claude_peer_message",
-				interactionId: "claude-dialog:hlid-session:peer-tool-ready",
+				interactionId: "claude-dialog:hlid-session:control-peer-tool-ready",
 				sourceName: "peer-release",
 				toolUseId: "peer-tool-ready",
 				preview: "Coordinate the release",
@@ -342,7 +351,7 @@ describe("Claude host interactions", () => {
 		await expect(
 			handlers.onUserDialog(
 				{ dialogKind: "future_dialog", payload: {} },
-				{ signal: new AbortController().signal },
+				callbackOptions("control-unknown-dialog"),
 			),
 		).resolves.toEqual({ behavior: "cancelled" });
 		expect(canUseTool).not.toHaveBeenCalled();
@@ -362,7 +371,7 @@ describe("Claude host interactions", () => {
 						properties: { nested: { type: "object" } },
 					},
 				},
-				{ signal: new AbortController().signal },
+				callbackOptions("control-malformed-schema"),
 			),
 		).resolves.toEqual({ action: "decline" });
 		expect(canUseTool).not.toHaveBeenCalled();

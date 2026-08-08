@@ -338,6 +338,7 @@ import {
 	isNewProjectPreviewPresentationRequest,
 	providerBackgroundOperationAvailable,
 	Route,
+	ravenSleepDetail,
 	ravenTabAfterProjectPreviewStops,
 } from "./raven";
 
@@ -579,6 +580,29 @@ describe("Project Preview tabs", () => {
 
 		fireEvent.pointerMove(window, { clientX: 600, pointerId: 1 });
 		expect(pane.style.width).toBe("620px");
+	});
+});
+
+describe("Raven auto-sleep copy", () => {
+	it("labels spend-control threshold and hard-limit sleeps accurately", () => {
+		expect(
+			ravenSleepDetail({ windowId: "spend_control", utilization: 0.99 }),
+		).toBe(" — spend control at 99%");
+		expect(
+			ravenSleepDetail({
+				windowId: "spend_control",
+				reason: "limit_reached",
+			}),
+		).toBe(" — spend limit reached");
+	});
+
+	it("retains the rolling-window sleep labels", () => {
+		expect(ravenSleepDetail({ windowId: "weekly", utilization: 0.9 })).toBe(
+			" — weekly usage at 90%",
+		);
+		expect(
+			ravenSleepDetail({ windowId: "five_hour", reason: "limit_reached" }),
+		).toBe(" — usage limit reached");
 	});
 });
 

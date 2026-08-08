@@ -8,9 +8,9 @@ minimumReleaseAge = 432000 # 5 days in seconds
 #   - hono 4.12.34 (2026-08-03) patches GHSA-8j4g-w8fx-2239.
 #   - mermaid 11.16.1 (2026-08-04) patches the current Mermaid audit findings.
 #   - dompurify 3.4.13 (2026-08-07) patches GHSA-55q2-fjhq-7xh7.
-#   - Claude Agent SDK 0.3.224 (2026-08-07) is explicitly selected for upcoming
+#   - Claude Agent SDK 0.3.226 (2026-08-08) is explicitly selected for upcoming
 #     provider work. Its exact platform companions must resolve with it.
-# Review and remove these exclusions after 2026-08-12.
+# Review and remove these exclusions after 2026-08-13.
 minimumReleaseAgeExcludes = [
   "@anthropic-ai/claude-agent-sdk",
   "@anthropic-ai/claude-agent-sdk-darwin-arm64",

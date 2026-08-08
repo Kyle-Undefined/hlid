@@ -3171,6 +3171,122 @@ describe("ClaudeProvider — event mapping", () => {
 		});
 	});
 
+	it("normalizes a rejected organization spend cap to spend_control", async () => {
+		const overageResetsAt = 1_786_216_200;
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "rate_limit_event",
+					rate_limit_info: {
+						status: "rejected",
+						resetsAt: overageResetsAt,
+						overageResetsAt,
+						overageDisabledReason: "org_level_disabled_until",
+						isUsingOverage: false,
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events.filter((event) => event.type === "rate_limit")).toEqual([
+			{
+				type: "rate_limit",
+				status: "rejected",
+				rateLimitType: "spend_control",
+				resetsAt: overageResetsAt,
+			},
+		]);
+	});
+
+	it("uses the rejected rolling window when a spend cap only disables overage", async () => {
+		const usageResetsAt = 1_786_200_000;
+		const overageResetsAt = 1_786_216_200;
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "rate_limit_event",
+					rate_limit_info: {
+						status: "rejected",
+						rateLimitType: "five_hour",
+						utilization: 100,
+						resetsAt: usageResetsAt,
+						overageStatus: "rejected",
+						overageResetsAt,
+						overageDisabledReason: "org_level_disabled_until",
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events.filter((event) => event.type === "rate_limit")).toEqual([
+			{
+				type: "rate_limit",
+				status: "rejected",
+				rateLimitType: "five_hour",
+				utilization: 1,
+				resetsAt: usageResetsAt,
+			},
+		]);
+	});
+
+	it("does not treat an ordinary organization disable as a spend cap", async () => {
+		const usageResetsAt = 1_786_200_000;
+		const overageResetsAt = 1_786_216_200;
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "rate_limit_event",
+					rate_limit_info: {
+						status: "allowed_warning",
+						rateLimitType: "five_hour",
+						utilization: 73,
+						resetsAt: usageResetsAt,
+						overageStatus: "rejected",
+						overageResetsAt,
+						overageDisabledReason: "org_level_disabled",
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events.filter((event) => event.type === "rate_limit")).toEqual([
+			{
+				type: "rate_limit",
+				status: "allowed_warning",
+				rateLimitType: "five_hour",
+				utilization: 0.73,
+				resetsAt: usageResetsAt,
+			},
+		]);
+	});
+
 	it("yields done with cost, turns, stopReason from result event", async () => {
 		vi.mocked(query).mockReturnValueOnce(
 			sdkGen([

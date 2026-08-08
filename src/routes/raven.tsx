@@ -202,6 +202,23 @@ export function isNewProjectPreviewPresentationRequest(
 ): boolean {
 	return request > requestAtSessionEntry;
 }
+
+export function ravenSleepDetail(
+	sleepState: Partial<
+		Pick<wsStore.SleepBanner, "reason" | "utilization" | "windowId">
+	>,
+): string {
+	if (sleepState.utilization != null) {
+		if (sleepState.windowId === "spend_control") {
+			return ` — spend control at ${Math.round(sleepState.utilization * 100)}%`;
+		}
+		const window = sleepState.windowId === "weekly" ? "weekly" : "five-hour";
+		return ` — ${window} usage at ${Math.round(sleepState.utilization * 100)}%`;
+	}
+	if (sleepState.reason !== "limit_reached") return "";
+	if (sleepState.windowId === "spend_control") return " — spend limit reached";
+	return ` — ${sleepState.windowId === "weekly" ? "weekly " : ""}usage limit reached`;
+}
 const RAVEN_PREVIEW_WIDTH_KEY = "hlid:raven-preview-width";
 
 // ─── route ───────────────────────────────────────────────────────────────────
@@ -5436,11 +5453,7 @@ function ChatComposer(props: ChatComposerProps) {
 						{sleepState.until
 							? ` until ${new Date(sleepState.until * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
 							: ""}
-						{sleepState.utilization != null
-							? ` — ${sleepState.windowId === "weekly" ? "weekly" : "five-hour"} usage at ${Math.round(sleepState.utilization * 100)}%`
-							: sleepState.reason === "limit_reached"
-								? ` — ${sleepState.windowId === "weekly" ? "weekly " : ""}usage limit reached`
-								: ""}
+						{ravenSleepDetail(sleepState)}
 					</span>
 					<button
 						type="button"

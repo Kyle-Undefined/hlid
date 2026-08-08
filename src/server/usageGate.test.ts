@@ -155,6 +155,33 @@ describe("evaluateSleep", () => {
 		});
 	});
 
+	it("does not let a low spend mark hide a five-hour hard limit", () => {
+		updateWindowMark(provider, "spend_control", 0.1, now() + 3600);
+		reportRateLimitSignal(provider, "five_hour", "rejected", now() + 600);
+		expect(evaluateSleep(provider, cfg())).toMatchObject({
+			reason: "limit_reached",
+			windowId: "five_hour",
+		});
+	});
+
+	it("does not let a reset-less spend mark hide a five-hour hard limit", () => {
+		updateWindowMark(provider, "spend_control", 0.99, null);
+		reportRateLimitSignal(provider, "five_hour", "rejected", now() + 600);
+		expect(evaluateSleep(provider, cfg())).toMatchObject({
+			reason: "limit_reached",
+			windowId: "five_hour",
+		});
+	});
+
+	it("prefers a spend hard limit over a five-hour hard limit", () => {
+		reportRateLimitSignal(provider, "five_hour", "rejected", now() + 600);
+		reportRateLimitSignal(provider, "spend_control", "rejected", now() + 3600);
+		expect(evaluateSleep(provider, cfg())).toMatchObject({
+			reason: "limit_reached",
+			windowId: "spend_control",
+		});
+	});
+
 	it("prefers five-hour when both windows report hard limits", () => {
 		reportRateLimitSignal(provider, "weekly", "rejected", now() + 86400);
 		reportRateLimitSignal(provider, "five_hour", "rejected", now() + 600);
@@ -283,6 +310,7 @@ describe("sleepUntilAllowed", () => {
 	it.each([
 		"five_hour",
 		"weekly",
+		"spend_control",
 	] as const)("skipSleep wakes all %s waiters and suppresses re-sleep", async (windowId) => {
 		updateWindowMark(provider, windowId, 0.99, now() + 3600);
 		const wakes: string[] = [];

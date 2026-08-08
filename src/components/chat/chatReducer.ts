@@ -1309,24 +1309,29 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 			return hydrateHistory(state, action.items);
 		}
 		case "ADD_ASK_USER_QUESTION": {
+			const prompt: AskUserQuestionChatMessage = {
+				id: action.id,
+				role: "ask_user_question",
+				questions: action.questions,
+				...(action.provenance ? { provenance: action.provenance } : {}),
+				answers: null,
+			};
 			// Dedup: LOAD_HISTORY may have already hydrated this id from DB. The
 			// WS server also re-emits pending questions on reconnect (see
-			// wsHandlers.ts pending replay). Without this guard the same prompt
-			// would render twice.
-			const exists = state.some(
+			// wsHandlers.ts pending replay). A resolved card with the same id is a
+			// provider redelivery after a lost response and must be re-armed.
+			const existingIndex = state.findIndex(
 				(m) => m.id === action.id && m.role === "ask_user_question",
 			);
-			if (exists) return state;
-			return [
-				...state,
-				{
-					id: action.id,
-					role: "ask_user_question" as const,
-					questions: action.questions,
-					...(action.provenance ? { provenance: action.provenance } : {}),
-					answers: null,
-				},
-			];
+			if (existingIndex >= 0) {
+				const existing = state[existingIndex];
+				if (existing?.role !== "ask_user_question" || existing.answers === null)
+					return state;
+				return state.map((message, index) =>
+					index === existingIndex ? prompt : message,
+				);
+			}
+			return [...state, prompt];
 		}
 		case "RESOLVE_ASK_USER_QUESTION":
 			return patchMessage(state, action.id, "ask_user_question", (m) => ({

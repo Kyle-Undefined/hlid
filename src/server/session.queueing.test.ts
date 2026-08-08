@@ -2008,7 +2008,10 @@ describe("SessionManager — Claude peer inbox", () => {
 					holdCause: "explicit-setting",
 				},
 			},
-			{ signal: new AbortController().signal },
+			{
+				signal: new AbortController().signal,
+				requestId: "control-native-peer-1",
+			},
 		);
 		await waitFor(() =>
 			expect(sm.getPendingAskUserQuestions()).toHaveLength(1),
@@ -2118,7 +2121,10 @@ describe("SessionManager — Claude peer inbox", () => {
 						holdCause: "mode-mismatch",
 					},
 				},
-				{ signal: new AbortController().signal },
+				{
+					signal: new AbortController().signal,
+					requestId: "control-native-peer-2",
+				},
 			)
 			.then((result) => {
 				dialogSettled = true;
@@ -2203,7 +2209,10 @@ describe("SessionManager — Claude peer inbox", () => {
 					holdCause: "explicit-setting",
 				},
 			},
-			{ signal: new AbortController().signal },
+			{
+				signal: new AbortController().signal,
+				requestId: "control-native-peer-disabled",
+			},
 		);
 		await waitFor(() =>
 			expect(sm.getPendingAskUserQuestions()).toHaveLength(1),
@@ -2257,7 +2266,10 @@ describe("SessionManager — Claude peer inbox", () => {
 					holdCause: "explicit-setting",
 				},
 			},
-			{ signal: dialogController.signal },
+			{
+				signal: dialogController.signal,
+				requestId: "control-native-peer-control-cancel",
+			},
 		);
 		await waitFor(() =>
 			expect(sm.getPendingAskUserQuestions()).toHaveLength(1),
@@ -2299,7 +2311,10 @@ describe("SessionManager — Claude peer inbox", () => {
 					holdCause: "explicit-setting",
 				},
 			},
-			{ signal: new AbortController().signal },
+			{
+				signal: new AbortController().signal,
+				requestId: "control-native-peer-storage-failure",
+			},
 		);
 		await waitFor(() =>
 			expect(sm.getPendingAskUserQuestions()).toHaveLength(1),
@@ -2348,7 +2363,10 @@ describe("SessionManager — Claude peer inbox", () => {
 						holdCause: "explicit-setting",
 					},
 				},
-				{ signal: new AbortController().signal },
+				{
+					signal: new AbortController().signal,
+					requestId: "control-native-peer-insert-failure",
+				},
 			),
 		).resolves.toEqual({ behavior: "cancelled" });
 		expect(sm.getPendingAskUserQuestions()).toEqual([]);
@@ -2382,7 +2400,10 @@ describe("SessionManager — Claude peer inbox", () => {
 					holdCause: "explicit-setting",
 				},
 			},
-			{ signal: new AbortController().signal },
+			{
+				signal: new AbortController().signal,
+				requestId: "control-native-peer-mode-race",
+			},
 		);
 		await waitFor(() =>
 			expect(sm.getPendingAskUserQuestions()).toHaveLength(1),

@@ -1961,16 +1961,36 @@ function translateRateLimitMessage(
 		info.utilization != null && info.utilization >= 1
 			? info.utilization / 100
 			: info.utilization;
+	// Claude 2.1.225+ reports org_spend_cap_reached internally, but the
+	// 0.3.226 SDK stream aliases it to org_level_disabled_until. Claude treats
+	// both as monthly spend or usage caps; org_level_disabled is the distinct
+	// generic organization disable reason.
+	const overageDisabledReason: string | undefined = info.overageDisabledReason;
+	const spendControlRejected =
+		info.status === "rejected" &&
+		(info.rateLimitType === undefined || info.rateLimitType === "overage") &&
+		(overageDisabledReason === "org_spend_cap_reached" ||
+			overageDisabledReason === "org_level_disabled_until");
+	const events: AgentEvent[] = [];
+	if (!spendControlRejected) {
+		events.push({
+			type: "rate_limit",
+			status: info.status,
+			rateLimitType: info.rateLimitType,
+			utilization,
+			resetsAt: rateLimitResetTime(info.resetsAt),
+		});
+	}
+	if (spendControlRejected) {
+		events.push({
+			type: "rate_limit",
+			status: info.status,
+			rateLimitType: "spend_control",
+			resetsAt: rateLimitResetTime(info.overageResetsAt ?? info.resetsAt),
+		});
+	}
 	return {
-		events: [
-			{
-				type: "rate_limit",
-				status: info.status,
-				rateLimitType: info.rateLimitType,
-				utilization,
-				resetsAt: rateLimitResetTime(info.resetsAt),
-			},
-		],
+		events,
 		hadText,
 	};
 }

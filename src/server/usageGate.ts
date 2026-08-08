@@ -73,19 +73,38 @@ function activeWindow(
 	providerId: string,
 	windowId: SleepWindowId,
 	now: number,
+	options: {
+		minimumUtilization?: number;
+		requireMarkReset?: boolean;
+	} = {},
 ): boolean {
+	const { minimumUtilization = 0, requireMarkReset = false } = options;
 	const key = windowKey(providerId, windowId);
 	const record = hardLimits.get(key);
 	if (record && (record.resetsAt == null || record.resetsAt > now)) return true;
 	if (record) hardLimits.delete(key);
 	const mark = getWindowMark(providerId, windowId);
 	return (
-		mark?.utilization != null && (mark.resetsAt == null || mark.resetsAt > now)
+		mark?.utilization != null &&
+		mark.utilization >= minimumUtilization &&
+		(requireMarkReset
+			? mark.resetsAt != null && mark.resetsAt > now
+			: mark.resetsAt == null || mark.resetsAt > now)
 	);
 }
 
-function selectedWindow(providerId: string, now: number): SleepWindowId | null {
-	if (activeWindow(providerId, "spend_control", now)) return "spend_control";
+function selectedWindow(
+	providerId: string,
+	now: number,
+	spendMinimumUtilization = 0,
+): SleepWindowId | null {
+	if (
+		activeWindow(providerId, "spend_control", now, {
+			minimumUtilization: spendMinimumUtilization,
+			requireMarkReset: true,
+		})
+	)
+		return "spend_control";
 	if (activeWindow(providerId, "five_hour", now)) return "five_hour";
 	if (activeWindow(providerId, "weekly", now)) return "weekly";
 	return null;
@@ -134,7 +153,11 @@ export function evaluateSleep(
 	if (!cfg?.enabled) return null;
 
 	const maxSleepSecs = cfg.max_sleep_minutes * 60;
-	const windowId = selectedWindow(providerId, now);
+	const proactiveThreshold = Math.max(
+		0,
+		cfg.threshold - Math.min(IN_FLIGHT_HEADROOM, cfg.threshold * 0.1),
+	);
+	const windowId = selectedWindow(providerId, now, proactiveThreshold);
 	if (!windowId) return null;
 	const key = windowKey(providerId, windowId);
 
@@ -184,10 +207,6 @@ export function evaluateSleep(
 	}
 
 	const mark = getWindowMark(providerId, windowId);
-	const proactiveThreshold = Math.max(
-		0,
-		cfg.threshold - Math.min(IN_FLIGHT_HEADROOM, cfg.threshold * 0.1),
-	);
 	if (mark?.utilization == null || mark.utilization < proactiveThreshold)
 		return null;
 	if (mark.resetsAt == null) {
