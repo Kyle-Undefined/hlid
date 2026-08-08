@@ -301,6 +301,7 @@ describe("chat submission policy", () => {
 			model: "pi-pro",
 			effort: "medium",
 			permissionMode: "default",
+			approvalsReviewer: "auto_review" as const,
 		};
 		for (const running of [false, true]) {
 			expect(submission({ ...controls, running })).toMatchObject({
@@ -309,6 +310,7 @@ describe("chat submission policy", () => {
 					model: "pi-pro",
 					effort: "medium",
 					permission_mode: "default",
+					approvals_reviewer: "auto_review",
 				},
 			});
 		}

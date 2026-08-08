@@ -87,6 +87,7 @@ export function mockDbModule() {
 		setSessionModel: vi.fn().mockResolvedValue(undefined),
 		setSessionEffort: vi.fn().mockResolvedValue(undefined),
 		setSessionPermissionMode: vi.fn().mockResolvedValue(undefined),
+		setSessionApprovalsReviewer: vi.fn().mockResolvedValue(undefined),
 		enqueuePendingSessionTurn: vi.fn().mockResolvedValue(true),
 		markPendingSessionTurnSleeping: vi.fn().mockResolvedValue(undefined),
 		markPendingSessionTurnDispatching: vi.fn().mockResolvedValue(undefined),

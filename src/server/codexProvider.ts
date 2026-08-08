@@ -33,6 +33,8 @@ import type {
 	ForkSessionParams,
 	ForkSessionResult,
 	McpServerStatus,
+	ProviderApprovalReviewContext,
+	ProviderApprovalsReviewer,
 	ProviderBackgroundActivity,
 	ProviderBackgroundActivityControl,
 	ProviderEffortInfo,
@@ -119,7 +121,10 @@ import type {
 	ThreadRealtimeTranscriptDeltaNotification,
 	ThreadRealtimeTranscriptDoneNotification,
 	ThreadResumeParams,
+	ThreadResumeResponse,
+	ThreadSettingsUpdatedNotification,
 	ThreadStartParams,
+	ThreadStartResponse,
 	TurnStartParams,
 	TurnSteerParams,
 	UserInput,
@@ -1580,6 +1585,42 @@ function autoApprovesPermissions(params: AgentQueryParams): boolean {
 	);
 }
 
+/**
+ * Hlid's policy and bypass paths remain authoritative. Auto-review is only
+ * meaningful at Codex's interactive approval boundary, so those paths always
+ * retain the explicit user reviewer instead of introducing a second decider.
+ */
+function effectiveApprovalsReviewer(
+	params: AgentQueryParams,
+): ProviderApprovalsReviewer {
+	if (
+		params.policyEnforced ||
+		params.usageGateEnforced ||
+		params.permissionMode === "plan" ||
+		autoApprovesPermissions(params)
+	) {
+		return "user";
+	}
+	return params.approvalsReviewer ?? "user";
+}
+
+function normalizeApprovalsReviewer(
+	value: unknown,
+): ProviderApprovalsReviewer | null {
+	if (value === "user") return "user";
+	if (value === "auto_review" || value === "guardian_subagent") {
+		return "auto_review";
+	}
+	return null;
+}
+
+type ApprovalsReviewerRequestContext = {
+	selectedReviewer: ProviderApprovalsReviewer;
+	sentReviewer: ProviderApprovalsReviewer;
+	temporarilyForced: boolean;
+	selectionRevision: number;
+};
+
 function effectivePermissionMode(
 	params: AgentQueryParams,
 ): AgentQueryParams["permissionMode"] {
@@ -2134,6 +2175,11 @@ class CodexAgentSession implements AgentSession {
 	private cumulativeUsageByThread = new Map<string, CanonicalTokenUsage>();
 	private cumulativeUsageTurns = new Set<string>();
 	private resolvedModel: string | null = null;
+	private lastReportedApprovalsReviewer: ProviderApprovalsReviewer | null =
+		null;
+	private approvalsReviewerSelectionRevision = 0;
+	private lastSentApprovalsReviewerContext: ApprovalsReviewerRequestContext | null =
+		null;
 	private elicitationSequence = 0;
 	private nextSkillInput: WindowsVisualizeSkill | null = null;
 	/** Dedicated transport owned by a one-shot Windows-native worker. */
@@ -2750,9 +2796,11 @@ class CodexAgentSession implements AgentSession {
 				(path): UserInput => ({ type: "localAudio", path }),
 			),
 		];
+		const approvalsReviewerRequest = this.captureApprovalsReviewerRequest();
 		const params: TurnStartParams = {
 			threadId: this.threadId,
 			input,
+			approvalsReviewer: approvalsReviewerRequest.sentReviewer,
 			...(this.delegatedWindowsWorker?.kind === "visualize"
 				? {}
 				: {
@@ -2803,6 +2851,7 @@ class CodexAgentSession implements AgentSession {
 		this.activeTurnModel = this.params.model ?? this.resolvedModel;
 		this.ordinaryQueryActive = true;
 		this.ordinaryTurnStartPending = true;
+		this.lastSentApprovalsReviewerContext = approvalsReviewerRequest;
 		try {
 			const result = asObj(await this.request("turn/start", params));
 			const turn = asObj(result.turn);
@@ -2914,6 +2963,67 @@ class CodexAgentSession implements AgentSession {
 				? { implementationPermissionMode: this.params.permissionMode }
 				: {}),
 		};
+		this.lastReportedApprovalsReviewer = null;
+	}
+
+	async setApprovalsReviewer(
+		reviewer: ProviderApprovalsReviewer,
+	): Promise<void> {
+		this.params = { ...this.params, approvalsReviewer: reviewer };
+		this.approvalsReviewerSelectionRevision += 1;
+		this.lastReportedApprovalsReviewer = null;
+	}
+
+	setApprovalReviewContext(context: ProviderApprovalReviewContext): void {
+		this.params = { ...this.params, ...context };
+		this.lastReportedApprovalsReviewer = null;
+	}
+
+	private captureApprovalsReviewerRequest(): ApprovalsReviewerRequestContext {
+		const selectedReviewer = this.params.approvalsReviewer ?? "user";
+		const sentReviewer = effectiveApprovalsReviewer(this.params);
+		return {
+			selectedReviewer,
+			sentReviewer,
+			temporarilyForced: sentReviewer !== selectedReviewer,
+			selectionRevision: this.approvalsReviewerSelectionRevision,
+		};
+	}
+
+	private reportAuthoritativeApprovalsReviewer(
+		value: unknown,
+		source: "thread_response" | "thread_settings",
+		requestContext: ApprovalsReviewerRequestContext | null,
+	): void {
+		// One-shot Computer Use and Visualize workers inherit the parent session's
+		// callback but do not represent its effective reviewer state.
+		if (this.delegatedWindowsWorker) return;
+		const reviewer = normalizeApprovalsReviewer(value);
+		if (!reviewer || !requestContext) return;
+
+		const currentSelectedReviewer = this.params.approvalsReviewer ?? "user";
+		const selectionIsCurrent =
+			this.approvalsReviewerSelectionRevision ===
+				requestContext.selectionRevision &&
+			currentSelectedReviewer === requestContext.selectedReviewer;
+		const persistPreference =
+			!requestContext.temporarilyForced &&
+			selectionIsCurrent &&
+			reviewer !== requestContext.sentReviewer;
+		const effectiveChanged = this.lastReportedApprovalsReviewer !== reviewer;
+
+		if (persistPreference) {
+			this.params = { ...this.params, approvalsReviewer: reviewer };
+			this.approvalsReviewerSelectionRevision += 1;
+		}
+		if (!effectiveChanged && !persistPreference) return;
+
+		this.lastReportedApprovalsReviewer = reviewer;
+		this.params.onApprovalsReviewerChange?.({
+			reviewer,
+			source,
+			persistPreference,
+		});
 	}
 
 	setPlanHtmlPath(path: string | undefined): void {
@@ -3719,8 +3829,10 @@ class CodexAgentSession implements AgentSession {
 				? (await refreshWindowsVisualizeCapability(true)).available
 				: false;
 
+		const approvalsReviewerRequest = this.captureApprovalsReviewerRequest();
 		const threadParams: ThreadStartParams = {
 			cwd: launch.rpcCwd,
+			approvalsReviewer: approvalsReviewerRequest.sentReviewer,
 			...(this.delegatedWindowsWorker?.kind === "visualize"
 				? { runtimeWorkspaceRoots: [launch.rpcCwd] }
 				: {}),
@@ -3754,18 +3866,24 @@ class CodexAgentSession implements AgentSession {
 					? []
 					: hlidDynamicTools(computerUseAvailable, visualizeAvailable),
 		};
-		let rawResult: unknown;
+		let rawResult: ThreadStartResponse | ThreadResumeResponse;
 		let replacedMissingRollout = false;
+		this.lastSentApprovalsReviewerContext = approvalsReviewerRequest;
+		// Every fresh or resumed thread response is an authority boundary, including
+		// transport recovery that reports the same value as the prior connection.
+		this.lastReportedApprovalsReviewer = null;
 		if (this.params.sessionId) {
 			try {
-				rawResult = await this.request("thread/resume", {
+				rawResult = (await this.request("thread/resume", {
 					threadId: this.params.sessionId,
 					...threadParams,
 					// NOTE: `ephemeral` is a ThreadStartParams-only field —
 					// ThreadResumeParams (vendored in ./codexProtocol) has no
 					// such field, so this is likely a no-op/ignored on resume.
 					// Pre-existing behavior; typed here, not changed.
-				} satisfies ThreadResumeParams & { ephemeral?: boolean | null });
+				} satisfies ThreadResumeParams & {
+					ephemeral?: boolean | null;
+				})) as ThreadResumeResponse;
 			} catch (error) {
 				if (!isMissingRolloutError(error)) throw error;
 				console.warn(
@@ -3775,10 +3893,16 @@ class CodexAgentSession implements AgentSession {
 				// provider id so future transport recovery cannot retry it again.
 				this.params = { ...this.params, sessionId: undefined };
 				replacedMissingRollout = true;
-				rawResult = await this.request("thread/start", threadParams);
+				rawResult = (await this.request(
+					"thread/start",
+					threadParams,
+				)) as ThreadStartResponse;
 			}
 		} else {
-			rawResult = await this.request("thread/start", threadParams);
+			rawResult = (await this.request(
+				"thread/start",
+				threadParams,
+			)) as ThreadStartResponse;
 		}
 		const result = asObj(rawResult);
 		const thread = asObj(result.thread);
@@ -3786,6 +3910,11 @@ class CodexAgentSession implements AgentSession {
 			throw new Error("Codex thread start did not return a thread id");
 		}
 		this.threadId = thread.id;
+		this.reportAuthoritativeApprovalsReviewer(
+			rawResult.approvalsReviewer,
+			"thread_response",
+			approvalsReviewerRequest,
+		);
 		if (this.params.sessionId) {
 			const resumedActiveTurnId = this.inProgressTurnId(thread);
 			if (resumedActiveTurnId) {
@@ -4032,6 +4161,7 @@ class CodexAgentSession implements AgentSession {
 				model: resolved.model,
 				effort: resolved.effort,
 				permissionMode: "default",
+				approvalsReviewer: "user",
 				implementationPermissionMode: undefined,
 				planHtmlPath: undefined,
 				additionalDirectories: undefined,
@@ -4199,6 +4329,7 @@ class CodexAgentSession implements AgentSession {
 				model: resolved.model,
 				effort: resolved.effort,
 				permissionMode: "default",
+				approvalsReviewer: "user",
 				implementationPermissionMode: undefined,
 				sandboxModeOverride: undefined,
 				policyEnforced: false,
@@ -5965,6 +6096,17 @@ class CodexAgentSession implements AgentSession {
 			return;
 		}
 		switch (method) {
+			case "thread/settings/updated": {
+				const notification = params as ThreadSettingsUpdatedNotification;
+				if (!childNotification && notification.threadId === this.threadId) {
+					this.reportAuthoritativeApprovalsReviewer(
+						notification.threadSettings?.approvalsReviewer,
+						"thread_settings",
+						this.lastSentApprovalsReviewerContext,
+					);
+				}
+				break;
+			}
 			case "thread/goal/updated": {
 				const notification = params as ThreadGoalUpdatedNotification;
 				if (!childNotification && notification.goal) {
@@ -6168,6 +6310,20 @@ export class CodexProvider implements AgentProvider {
 			value: "bypassPermissions",
 			label: "Auto-approve all",
 			desc: "no prompts",
+		},
+	] as const;
+
+	readonly approvalReviewers = [
+		{
+			value: "user",
+			label: "User review",
+			desc: "approval requests wait for you",
+			isDefault: true,
+		},
+		{
+			value: "auto_review",
+			label: "Auto-review",
+			desc: "Codex reviews native interactive requests; bypass mode has none",
 		},
 	] as const;
 

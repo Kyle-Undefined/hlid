@@ -5,6 +5,7 @@ import {
 	isSyntheticModel,
 } from "../lib/providerPricing";
 import { normalizeSearchText } from "../lib/search";
+import type { ProviderApprovalsReviewer } from "../server/agentProvider";
 import { markAnalyticsChanged } from "./analyticsRevision";
 import { type LedgerStatsRange, ledgerRangeCondition } from "./ledgerAnalytics";
 import type { Db } from "./schema";
@@ -124,6 +125,7 @@ export async function getSessionSelection(
 				model: string | null;
 				effort: string | null;
 				permission_mode: string | null;
+				approvals_reviewer: string | null;
 			},
 			[string]
 		>(
@@ -131,7 +133,8 @@ export async function getSessionSelection(
 			        provider_id,
 			        COALESCE(selected_model, actual_model, model) AS model,
 			        selected_effort AS effort,
-			        selected_permission_mode AS permission_mode
+			        selected_permission_mode AS permission_mode,
+			        selected_approvals_reviewer AS approvals_reviewer
 			 FROM sessions WHERE id = ?`,
 		)
 		.get(sessionId);
@@ -142,6 +145,11 @@ export async function getSessionSelection(
 				model: row.model,
 				effort: row.effort,
 				permissionMode: row.permission_mode,
+				approvalsReviewer:
+					row.approvals_reviewer === "user" ||
+					row.approvals_reviewer === "auto_review"
+						? row.approvals_reviewer
+						: null,
 			}
 		: null;
 }
@@ -164,6 +172,17 @@ export async function setSessionPermissionMode(
 	const db = await getDb();
 	db.run(`UPDATE sessions SET selected_permission_mode = ? WHERE id = ?`, [
 		permissionMode,
+		sessionId,
+	]);
+}
+
+export async function setSessionApprovalsReviewer(
+	sessionId: string,
+	approvalsReviewer: ProviderApprovalsReviewer,
+): Promise<void> {
+	const db = await getDb();
+	db.run(`UPDATE sessions SET selected_approvals_reviewer = ? WHERE id = ?`, [
+		approvalsReviewer,
 		sessionId,
 	]);
 }
@@ -294,6 +313,7 @@ export async function setSessionProviderSelection(
 		model?: string;
 		effort?: string;
 		permissionMode?: string;
+		approvalsReviewer?: ProviderApprovalsReviewer;
 	},
 ): Promise<void> {
 	const db = await getDb();
@@ -328,7 +348,8 @@ export async function setSessionProviderSelection(
 			     model = ?,
 			     selected_model = ?,
 			     selected_effort = ?,
-			     selected_permission_mode = ?
+			     selected_permission_mode = ?,
+			     selected_approvals_reviewer = ?
 			 WHERE id = ?`,
 			[
 				providerId,
@@ -340,6 +361,7 @@ export async function setSessionProviderSelection(
 				selectedModel,
 				selection.effort ?? null,
 				selection.permissionMode ?? null,
+				selection.approvalsReviewer ?? null,
 				sessionId,
 			],
 		);
@@ -402,6 +424,7 @@ export async function createSession(
 	selection: {
 		effort?: string;
 		permissionMode?: string;
+		approvalsReviewer?: ProviderApprovalsReviewer;
 		agentCwd?: string;
 		providerId?: string;
 	} = {},
@@ -412,8 +435,9 @@ export async function createSession(
 		({ changes } = db.run(
 			`INSERT OR IGNORE INTO sessions
 			 (id, label, model, selected_model, selected_effort,
-			  selected_permission_mode, agent_cwd, provider_id, started_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, unixepoch())`,
+			  selected_permission_mode, selected_approvals_reviewer, agent_cwd,
+			  provider_id, started_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())`,
 			[
 				id,
 				label,
@@ -421,6 +445,7 @@ export async function createSession(
 				model,
 				selection.effort ?? null,
 				selection.permissionMode ?? null,
+				selection.approvalsReviewer ?? null,
 				selection.agentCwd ?? null,
 				selection.providerId ?? "claude",
 			],
@@ -439,9 +464,10 @@ export async function createSession(
 
 /**
  * Create a new session row copying the durable selection (model/effort/
- * permission mode/cwd/provider) from an existing source session, pointing it
- * at an already-forked native provider session id. Used by the fork-session
- * flow — the transcript fork itself happens provider-side before this runs.
+ * permission mode/approval reviewer/cwd/provider) from an existing source
+ * session, pointing it at an already-forked native provider session id. Used
+ * by the fork-session flow — the transcript fork itself happens provider-side
+ * before this runs.
  */
 export async function createForkedSessionRow(
 	sourceId: string,
@@ -462,6 +488,11 @@ export async function createForkedSessionRow(
 		{
 			effort: source.selected_effort ?? undefined,
 			permissionMode: source.selected_permission_mode ?? undefined,
+			approvalsReviewer:
+				source.selected_approvals_reviewer === "user" ||
+				source.selected_approvals_reviewer === "auto_review"
+					? source.selected_approvals_reviewer
+					: undefined,
 			providerId: source.provider_id ?? "claude",
 		},
 	);

@@ -35,6 +35,7 @@ const state = vi.hoisted(() => ({
 	model: "claude-sonnet-4-6",
 	effort: "high",
 	permissionMode: "default",
+	approvalsReviewer: "user" as "user" | "auto_review" | null,
 	sessions: [] as unknown[],
 	onMessage: null as ((message: ServerMessage) => void) | null,
 	handleChatWsMessage: vi.fn(),
@@ -256,6 +257,7 @@ vi.mock("#/hooks/useWs", () => ({
 			model: state.model,
 			actualModel: state.actualModel,
 			permissionMode: state.permissionMode,
+			approvalsReviewer: state.approvalsReviewer,
 			effort: state.effort,
 			runningTurnId: state.sessionState === "running" ? "running" : null,
 			send: state.send,
@@ -354,6 +356,7 @@ beforeEach(() => {
 	state.model = "claude-sonnet-4-6";
 	state.effort = "high";
 	state.permissionMode = "default";
+	state.approvalsReviewer = "user";
 	state.sessions = [];
 	state.onMessage = null;
 	state.handleChatWsMessage.mockReset();
@@ -406,6 +409,7 @@ beforeEach(() => {
 		sessionProviderId: null,
 		sessionEffort: null,
 		sessionPermissionMode: null,
+		sessionApprovalsReviewer: null,
 		agentList: [],
 		vaultSkills: [],
 		interactiveMode: false,
@@ -2155,6 +2159,194 @@ describe("Raven composed submission behavior", () => {
 
 		fireEvent.focus(screen.getByRole("combobox"));
 		expect(screen.queryByRole("dialog", { name: "Model settings" })).toBeNull();
+	});
+
+	it("only exposes approval reviewers for Codex and carries its default when switching", () => {
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				vault_provider: "claude",
+				claude: { model: "claude-sonnet-4-6" },
+			},
+			providers: [
+				{
+					id: "claude",
+					label: "Claude",
+					available: true,
+					models: [{ value: "claude-sonnet-4-6", label: "Sonnet 4.6" }],
+				},
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [
+						{
+							value: "gpt-5.6-sol",
+							label: "GPT-5.6 Sol",
+							isDefault: true,
+						},
+					],
+					approvalReviewers: [
+						{ value: "user", label: "User review", isDefault: true },
+						{ value: "auto_review", label: "Auto-review" },
+					],
+				},
+			],
+		};
+
+		render(<ChatPage />);
+		fireEvent.click(
+			screen.getByRole("button", { name: /claude.*sonnet 4\.6/i }),
+		);
+		expect(screen.queryByText("approval reviewer")).toBeNull();
+		expect(screen.queryByRole("button", { name: "Auto-review" })).toBeNull();
+
+		fireEvent.click(screen.getByRole("button", { name: "Codex" }));
+
+		expect(state.send).toHaveBeenCalledWith({
+			type: "set_provider",
+			provider: "codex",
+			model: "gpt-5.6-sol",
+			approvals_reviewer: "user",
+			session_id: expect.any(String),
+		});
+		expect(screen.getByText("approval reviewer")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Auto-review" })).toBeTruthy();
+	});
+
+	it("selects Codex auto-review and shows it on the session badge", () => {
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				vault_provider: "codex",
+				codex: { model: "gpt-5.6-sol" },
+			},
+			providers: [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [{ value: "gpt-5.6-sol", label: "GPT-5.6 Sol" }],
+					approvalReviewers: [
+						{ value: "user", label: "User review", isDefault: true },
+						{ value: "auto_review", label: "Auto-review" },
+					],
+				},
+			],
+		};
+
+		render(<ChatPage />);
+		fireEvent.click(
+			screen.getByRole("button", { name: /codex.*gpt-5\.6-sol/i }),
+		);
+		state.send.mockClear();
+
+		fireEvent.click(screen.getByRole("button", { name: "Auto-review" }));
+
+		expect(state.send).toHaveBeenCalledWith({
+			type: "set_approvals_reviewer",
+			reviewer: "auto_review",
+			session_id: expect.any(String),
+		});
+		expect(
+			screen.getByRole("button", {
+				name: /codex.*gpt-5\.6-sol.*auto-review/i,
+			}),
+		).toBeTruthy();
+		expect(
+			screen.getByText(
+				"Codex does not expose Auto-review token usage, so Ledger excludes it.",
+			),
+		).toBeTruthy();
+	});
+
+	it("keeps auto-review unavailable while Hlid policy enforcement owns approvals", () => {
+		state.approvalsReviewer = "auto_review";
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				vault_provider: "codex",
+				codex: { model: "gpt-5.6-sol" },
+				umbod: { enabled: true },
+			},
+			providers: [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [{ value: "gpt-5.6-sol", label: "GPT-5.6 Sol" }],
+					approvalReviewers: [
+						{ value: "user", label: "User review", isDefault: true },
+						{ value: "auto_review", label: "Auto-review" },
+					],
+				},
+			],
+		};
+
+		render(<ChatPage />);
+		const badge = screen.getByRole("button", {
+			name: /codex.*gpt-5\.6-sol/i,
+		});
+		expect(badge.getAttribute("aria-label")).not.toMatch(/auto-review/i);
+		fireEvent.click(badge);
+
+		expect(screen.queryByRole("button", { name: "Auto-review" })).toBeNull();
+		expect(screen.getByRole("button", { name: /User review/ })).toBeTruthy();
+		expect(
+			screen.getByText(
+				"Auto-review is unavailable while Hlid policy enforcement is enabled.",
+			),
+		).toBeTruthy();
+	});
+
+	it("does not present auto-review as active when bypass mode has no approvals", () => {
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				vault_provider: "codex",
+				codex: {
+					model: "gpt-5.6-sol",
+					permission_mode: "bypassPermissions",
+				},
+			},
+			existingSessionId: "bypass-review-session",
+			isExplicitSession: true,
+			sessionModel: "gpt-5.6-sol",
+			sessionProviderId: "codex",
+			sessionPermissionMode: "bypassPermissions",
+			sessionApprovalsReviewer: "auto_review",
+			providers: [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [{ value: "gpt-5.6-sol", label: "GPT-5.6 Sol" }],
+					approvalReviewers: [
+						{ value: "user", label: "User review", isDefault: true },
+						{ value: "auto_review", label: "Auto-review" },
+					],
+				},
+			],
+		};
+
+		render(<ChatPage />);
+		const badge = screen.getByRole("button", {
+			name: /codex.*gpt-5\.6-sol/i,
+		});
+		expect(badge.getAttribute("aria-label")).not.toMatch(/auto-review/i);
+		fireEvent.click(badge);
+
+		expect(screen.queryByRole("button", { name: "Auto-review" })).toBeNull();
+		expect(screen.getByRole("button", { name: /User review/ })).toBeTruthy();
+		expect(
+			screen.getByText(
+				"Bypass permissions has no approval requests to review.",
+			),
+		).toBeTruthy();
 	});
 
 	it("keeps an optimistic model selection until live status acknowledges it", async () => {

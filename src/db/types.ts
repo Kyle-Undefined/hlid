@@ -1,3 +1,5 @@
+import type { ProviderApprovalsReviewer } from "../server/agentProvider";
+
 export type SessionRow = {
 	id: string;
 	label: string | null;
@@ -5,6 +7,7 @@ export type SessionRow = {
 	selected_model?: string | null;
 	selected_effort?: string | null;
 	selected_permission_mode?: string | null;
+	selected_approvals_reviewer?: string | null;
 	provider_id?: string | null;
 	agent_cwd?: string | null;
 	/** 1 when the user keeps this session above unpinned rows in Ledger. */
@@ -60,6 +63,7 @@ export type SessionSelection = {
 	model: string | null;
 	effort: string | null;
 	permissionMode: string | null;
+	approvalsReviewer?: ProviderApprovalsReviewer | null;
 };
 
 /** Read-only impact summary returned before destructive age-based cleanup. */

@@ -551,6 +551,23 @@ export type BeforeToolUse = (
 	meta: { toolUseID?: string; signal?: AbortSignal },
 ) => Promise<"proceeded" | "aborted">;
 
+/** Provider approval reviewers Hlid may select without exposing legacy variants. */
+export type ProviderApprovalsReviewer = "user" | "auto_review";
+
+/** Provider-authoritative effective reviewer state for a live session. */
+export type ProviderApprovalsReviewerChange = {
+	reviewer: ProviderApprovalsReviewer;
+	source: "thread_response" | "thread_settings";
+	/** Whether provider authority should replace the user's stored preference. */
+	persistPreference: boolean;
+};
+
+/** Live Hlid boundaries that temporarily keep approval review with the user. */
+export type ProviderApprovalReviewContext = {
+	policyEnforced: boolean;
+	usageGateEnforced: boolean;
+};
+
 export type AgentQueryParams = {
 	cwd: string;
 	/** Active Hlid provider identity for capability-gated host guidance. */
@@ -572,6 +589,8 @@ export type AgentQueryParams = {
 	serviceTier?: string;
 	maxTurns?: number;
 	permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
+	/** Provider-native reviewer for interactive approval requests. */
+	approvalsReviewer?: ProviderApprovalsReviewer;
 	/** Narrow a provider sandbox independently of its conversational mode. */
 	sandboxModeOverride?: "read-only";
 	/** A host policy layer must see calls even when interactive prompts are bypassed. */
@@ -597,6 +616,8 @@ export type AgentQueryParams = {
 	windowsComputerUse?: { model: string; effort: string };
 	/** Provider-owned goal changes that can arrive outside a normal chat turn. */
 	onGoalChange?: (goal: ProviderThreadGoal | null) => void;
+	/** Provider-authoritative approval reviewer changes for truthful live status. */
+	onApprovalsReviewerChange?: (change: ProviderApprovalsReviewerChange) => void;
 	/** Explicitly enable Codex's under-development realtime conversation RPCs. */
 	codexRealtimeEnabled?: boolean;
 };
@@ -733,6 +754,10 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	 * permission mode mid-session.
 	 */
 	setPermissionMode?(mode: string): Promise<void>;
+	/** Switch the provider-native approval reviewer for subsequent turns. */
+	setApprovalsReviewer?(reviewer: ProviderApprovalsReviewer): Promise<void>;
+	/** Update live Hlid enforcement without replacing the selected reviewer. */
+	setApprovalReviewContext?(context: ProviderApprovalReviewContext): void;
 	/**
 	 * Switch the effort/thinking level used for subsequent turns in this
 	 * already-running session. No-op (absent) on providers that can't change
@@ -861,6 +886,13 @@ export interface AgentProvider {
 		value: string;
 		label: string;
 		desc?: string;
+	}>;
+	/** Provider-native reviewers available for interactive approval requests. */
+	readonly approvalReviewers?: ReadonlyArray<{
+		value: ProviderApprovalsReviewer;
+		label: string;
+		desc?: string;
+		isDefault?: boolean;
 	}>;
 	/** Rolling usage windows shown in Cockpit/Ledger for this provider. */
 	readonly usageWindows?: ReadonlyArray<{

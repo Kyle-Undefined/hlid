@@ -67,20 +67,28 @@ function experimentalEvidence(
 		if (!name) return [];
 		const enabled = booleanValue(item, ["enabled", "defaultEnabled"]);
 		const stage = maturity(item.stage);
+		const approvalReviewerSelection =
+			name.toLowerCase() === "guardian_approval";
 		return [
 			{
 				id: providerCapabilityId(providerId, "experimental-feature", name),
 				label: textValue(item, ["displayName"]) ?? name,
-				scope: "provider" as const,
+				scope: approvalReviewerSelection
+					? ("session" as const)
+					: ("provider" as const),
 				support: "advertised" as const,
-				integration: "provider-native" as const,
+				integration: approvalReviewerSelection
+					? ("integrated" as const)
+					: ("provider-native" as const),
 				readiness:
 					enabled === false || stage === "removed"
 						? ("unavailable" as const)
 						: ("ready" as const),
 				source: "provider-runtime" as const,
 				maturity: stage,
-				operations: ["inspect"],
+				operations: approvalReviewerSelection
+					? ["inspect", "select"]
+					: ["inspect"],
 				...(enabled === false
 					? { reason: "Disabled by the current provider configuration." }
 					: {}),

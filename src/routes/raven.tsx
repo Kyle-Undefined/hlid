@@ -167,6 +167,7 @@ import {
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import { uid } from "#/lib/utils";
 import { voiceInputPresentation } from "#/lib/voiceInputPresentation";
+import type { ProviderApprovalsReviewer } from "#/server/agentProvider";
 import {
 	type ChatAttachment,
 	decisionFromScope,
@@ -335,6 +336,7 @@ async function loadRavenRoute(session?: string, agent?: string) {
 	let sessionProviderId: string | null = null;
 	let sessionEffort: string | null = null;
 	let sessionPermissionMode: string | null = null;
+	let sessionApprovalsReviewer: string | null = null;
 	let forkParentSessionId: string | null = null;
 	let forkKind: "exact" | "recap" | null = null;
 	let delegationParentSessionId: string | null = null;
@@ -357,6 +359,7 @@ async function loadRavenRoute(session?: string, agent?: string) {
 		sessionProviderId = savedSelection?.providerId ?? null;
 		sessionEffort = savedSelection?.effort ?? null;
 		sessionPermissionMode = savedSelection?.permissionMode ?? null;
+		sessionApprovalsReviewer = savedSelection?.approvalsReviewer ?? null;
 		forkParentSessionId = savedRow?.fork_parent_session_id ?? null;
 		forkKind = savedRow?.fork_kind ?? null;
 		delegationParentSessionId = savedRow?.delegation_parent_session_id ?? null;
@@ -383,6 +386,7 @@ async function loadRavenRoute(session?: string, agent?: string) {
 		sessionProviderId,
 		sessionEffort,
 		sessionPermissionMode,
+		sessionApprovalsReviewer,
 		forkParentSessionId,
 		forkKind,
 		delegationParentSessionId,
@@ -446,6 +450,7 @@ type RavenSessionSelection = {
 	model?: string;
 	effort?: string;
 	permissionMode?: string;
+	approvalsReviewer?: ProviderApprovalsReviewer;
 };
 
 type RavenProviderIdentity = {
@@ -465,10 +470,16 @@ function restoredRavenSessionSelection(
 	initialSessionProviderId: string | null,
 	initialSessionEffort: string | null,
 	initialSessionPermissionMode: string | null,
+	initialSessionApprovalsReviewer: string | null,
 ): RavenSessionSelection {
 	if (!existingSessionId || agentSkillContext !== initialAgentSkillContext) {
 		return {};
 	}
+	const approvalsReviewer: ProviderApprovalsReviewer | undefined =
+		initialSessionApprovalsReviewer === "user" ||
+		initialSessionApprovalsReviewer === "auto_review"
+			? initialSessionApprovalsReviewer
+			: undefined;
 	return {
 		// Empty is the durable provider-default sentinel. Preserve it separately
 		// from NULL (no saved selection) so a reconnect cannot turn an explicit
@@ -481,6 +492,7 @@ function restoredRavenSessionSelection(
 		...(initialSessionPermissionMode
 			? { permissionMode: initialSessionPermissionMode }
 			: {}),
+		...(approvalsReviewer ? { approvalsReviewer } : {}),
 	};
 }
 
@@ -1805,6 +1817,7 @@ function useRavenSend(props: RavenActionProps) {
 				model: sessionSelection.model,
 				effort: sessionSelection.effort,
 				permissionMode: sessionSelection.permissionMode,
+				approvalsReviewer: sessionSelection.approvalsReviewer,
 				goal: goalStart
 					? {
 							objective: goalStart.objective,
@@ -2175,11 +2188,22 @@ function defaultSelectionForProvider(
 			?.value ??
 		permissions.find((candidate) => candidate.value === "default")?.value ??
 		permissions[0]?.value;
+	const reviewers = provider.approvalReviewers ?? [];
+	const configuredReviewer = useConfigured
+		? configured.approvalsReviewer
+		: undefined;
+	const approvalsReviewer =
+		reviewers.find((candidate) => candidate.value === configuredReviewer)
+			?.value ??
+		reviewers.find((candidate) => candidate.isDefault)?.value ??
+		reviewers.find((candidate) => candidate.value === "user")?.value ??
+		reviewers[0]?.value;
 	return {
 		providerId: provider.id,
 		...(model ? { model } : {}),
 		...(effort ? { effort } : {}),
 		...(permissionMode ? { permissionMode } : {}),
+		...(approvalsReviewer ? { approvalsReviewer } : {}),
 	};
 }
 
@@ -2312,6 +2336,29 @@ function deriveRavenComposerState({
 	const provider = providers.find(
 		(candidate) => candidate.id === activeProviderId,
 	);
+	const reviewerOptions = provider?.approvalReviewers ?? [];
+	const supportsAutoReview = reviewerOptions.some(
+		(candidate) => candidate.value === "auto_review",
+	);
+	const approvalsReviewerUnavailableReason = !supportsAutoReview
+		? null
+		: config.umbod?.enabled
+			? "Auto-review is unavailable while Hlid policy enforcement is enabled."
+			: config.auto_sleep?.enabled
+				? "Auto-review is unavailable while Hlid's auto-sleep usage gate is enabled."
+				: planMode || selectedPermissionMode === "plan"
+					? "Auto-review is inactive in Plan mode; Hlid keeps plan approvals."
+					: selectedPermissionMode === "bypassPermissions"
+						? "Bypass permissions has no approval requests to review."
+						: null;
+	const selectedApprovalsReviewer = approvalsReviewerUnavailableReason
+		? (reviewerOptions.find((candidate) => candidate.value === "user")?.value ??
+			null)
+		: (selection.approvalsReviewer ??
+			reviewerOptions.find((candidate) => candidate.isDefault)?.value ??
+			reviewerOptions.find((candidate) => candidate.value === "user")?.value ??
+			reviewerOptions[0]?.value ??
+			null);
 	const configuredProvider = providers.find(
 		(candidate) => candidate.id === configuredProviderId,
 	);
@@ -2321,6 +2368,7 @@ function deriveRavenComposerState({
 		activeModel: selectedModel,
 		activeEffort: selectedEffort,
 		activePermissionMode: selectedPermissionMode,
+		activeApprovalsReviewer: selectedApprovalsReviewer,
 		modelShort: selectedModel ? fmtModel(selectedModel) : null,
 		actualModelShort: effectiveActualModel
 			? fmtModel(effectiveActualModel)
@@ -2335,6 +2383,10 @@ function deriveRavenComposerState({
 		configuredSelection,
 		modelPickerOptions: modelOptions(provider),
 		permissionOptions: provider?.permissionModes ?? [],
+		approvalsReviewerOptions: approvalsReviewerUnavailableReason
+			? reviewerOptions.filter((candidate) => candidate.value === "user")
+			: reviewerOptions,
+		approvalsReviewerUnavailableReason,
 		effortOptions: effortOptionsFor(provider, selectedModel ?? "", planMode),
 	};
 }
@@ -2350,6 +2402,7 @@ export function ChatPage() {
 		sessionProviderId: initialSessionProviderId,
 		sessionEffort: initialSessionEffort,
 		sessionPermissionMode: initialSessionPermissionMode,
+		sessionApprovalsReviewer: initialSessionApprovalsReviewer,
 		forkParentSessionId,
 		forkKind,
 		delegationParentSessionId,
@@ -2457,6 +2510,7 @@ export function ChatPage() {
 				initialSessionProviderId,
 				initialSessionEffort,
 				initialSessionPermissionMode,
+				initialSessionApprovalsReviewer,
 			),
 		);
 	const [pendingProviderId, setPendingProviderId] = useState<string | null>(
@@ -2479,6 +2533,7 @@ export function ChatPage() {
 				initialSessionProviderId,
 				initialSessionEffort,
 				initialSessionPermissionMode,
+				initialSessionApprovalsReviewer,
 			),
 		);
 	}, [
@@ -2489,6 +2544,7 @@ export function ChatPage() {
 		initialSessionProviderId,
 		initialSessionEffort,
 		initialSessionPermissionMode,
+		initialSessionApprovalsReviewer,
 	]);
 	const liveSessionStatus = session.liveSessionStatus;
 	const liveSessionSelection: RavenSessionSelection | null =
@@ -2503,6 +2559,9 @@ export function ChatPage() {
 						: {}),
 					...(liveSessionStatus.permission_mode
 						? { permissionMode: liveSessionStatus.permission_mode }
+						: {}),
+					...(liveSessionStatus.approvals_reviewer
+						? { approvalsReviewer: liveSessionStatus.approvals_reviewer }
 						: {}),
 				}
 			: null;
@@ -2525,6 +2584,10 @@ export function ChatPage() {
 		const applyPermissionMode =
 			pendingControls.permissionMode === undefined ||
 			pendingControls.permissionMode === liveSessionStatus.permission_mode;
+		const applyApprovalsReviewer =
+			pendingControls.approvalsReviewer === undefined ||
+			pendingControls.approvalsReviewer ===
+				liveSessionStatus.approvals_reviewer;
 		pendingSessionControlsRef.current = {
 			...(!applyModel && pendingControls.model !== undefined
 				? { model: pendingControls.model }
@@ -2534,6 +2597,10 @@ export function ChatPage() {
 				: {}),
 			...(!applyPermissionMode && pendingControls.permissionMode !== undefined
 				? { permissionMode: pendingControls.permissionMode }
+				: {}),
+			...(!applyApprovalsReviewer &&
+			pendingControls.approvalsReviewer !== undefined
+				? { approvalsReviewer: pendingControls.approvalsReviewer }
 				: {}),
 		};
 		setSessionSelection((current) => {
@@ -2551,11 +2618,15 @@ export function ChatPage() {
 				...(applyPermissionMode && liveSessionStatus.permission_mode
 					? { permissionMode: liveSessionStatus.permission_mode }
 					: {}),
+				...(applyApprovalsReviewer && liveSessionStatus.approvals_reviewer
+					? { approvalsReviewer: liveSessionStatus.approvals_reviewer }
+					: {}),
 			};
 			return next.providerId === current.providerId &&
 				next.model === current.model &&
 				next.effort === current.effort &&
-				next.permissionMode === current.permissionMode
+				next.permissionMode === current.permissionMode &&
+				next.approvalsReviewer === current.approvalsReviewer
 				? current
 				: next;
 		});
@@ -2574,6 +2645,9 @@ export function ChatPage() {
 				...(next.effort !== undefined ? { effort: next.effort } : {}),
 				...(next.permissionMode !== undefined
 					? { permissionMode: next.permissionMode }
+					: {}),
+				...(next.approvalsReviewer !== undefined
+					? { approvalsReviewer: next.approvalsReviewer }
 					: {}),
 			};
 			setPendingProviderId(pending);
@@ -2658,6 +2732,9 @@ export function ChatPage() {
 				...(liveSessionStatus.permission_mode
 					? { permissionMode: liveSessionStatus.permission_mode }
 					: {}),
+				...(liveSessionStatus.approvals_reviewer
+					? { approvalsReviewer: liveSessionStatus.approvals_reviewer }
+					: {}),
 			};
 		} else if (existingSessionId) {
 			rollbackSelection = restoredRavenSessionSelection(
@@ -2668,6 +2745,7 @@ export function ChatPage() {
 				initialSessionProviderId,
 				initialSessionEffort,
 				initialSessionPermissionMode,
+				initialSessionApprovalsReviewer,
 			);
 		}
 		if (!rollbackSelection) return;
@@ -2675,7 +2753,8 @@ export function ChatPage() {
 			current.providerId === rollbackSelection.providerId &&
 			current.model === rollbackSelection.model &&
 			current.effort === rollbackSelection.effort &&
-			current.permissionMode === rollbackSelection.permissionMode
+			current.permissionMode === rollbackSelection.permissionMode &&
+			current.approvalsReviewer === rollbackSelection.approvalsReviewer
 				? current
 				: rollbackSelection,
 		);
@@ -2689,6 +2768,7 @@ export function ChatPage() {
 		initialSessionProviderId,
 		initialSessionEffort,
 		initialSessionPermissionMode,
+		initialSessionApprovalsReviewer,
 	]);
 	const { prompt: seededPrompt } = ravenSearch;
 	const { input, setInput, clearDraft } = useDraft({
@@ -2842,6 +2922,7 @@ export function ChatPage() {
 		activeModel,
 		activeEffort,
 		activePermissionMode,
+		activeApprovalsReviewer,
 		actualModelShort,
 		modelMismatch,
 		actualSelectionMismatch,
@@ -2851,6 +2932,8 @@ export function ChatPage() {
 		configuredSelection,
 		modelPickerOptions,
 		permissionOptions,
+		approvalsReviewerOptions,
+		approvalsReviewerUnavailableReason,
 		effortOptions,
 	} = deriveRavenComposerState({
 		config,
@@ -2880,6 +2963,9 @@ export function ChatPage() {
 		...(activeEffort !== null ? { effort: activeEffort } : {}),
 		...(activePermissionMode !== null
 			? { permissionMode: activePermissionMode }
+			: {}),
+		...(activeApprovalsReviewer !== null
+			? { approvalsReviewer: activeApprovalsReviewer }
 			: {}),
 	};
 
@@ -2982,6 +3068,7 @@ export function ChatPage() {
 		activeModel,
 		activeEffort,
 		activePermissionMode,
+		activeApprovalsReviewer,
 		selectSessionControls,
 		selectSessionProvider,
 		actualModelShort,
@@ -2996,6 +3083,8 @@ export function ChatPage() {
 		providers,
 		modelPickerOptions,
 		permissionOptions,
+		approvalsReviewerOptions,
+		approvalsReviewerUnavailableReason,
 		effortOptions,
 		canSend,
 		canQueue,
@@ -3981,6 +4070,7 @@ function ChatModelBadge({
 	activeModel,
 	activeEffort,
 	activePermissionMode,
+	activeApprovalsReviewer,
 	selectSessionControls,
 	selectSessionProvider,
 	actualModelShort,
@@ -3994,15 +4084,28 @@ function ChatModelBadge({
 	providers,
 	modelPickerOptions,
 	permissionOptions,
+	approvalsReviewerOptions,
+	approvalsReviewerUnavailableReason,
 	effortOptions,
 }: ChatComposerProps) {
-	const { wsStatus, model, permissionMode, effort, sessionState, send } =
-		runtime;
+	const {
+		wsStatus,
+		model,
+		permissionMode,
+		approvalsReviewer,
+		effort,
+		sessionState,
+		send,
+	} = runtime;
 	const { sessionId } = session;
 	const displayedModel = activeModel ?? model;
 	const liveActive = isRavenLiveInteractionLocked(voice.livePhase);
 	const displayedEffort = activeEffort ?? effort;
 	const displayedPermissionMode = activePermissionMode ?? permissionMode;
+	const displayedApprovalsReviewer =
+		approvalsReviewerOptions.length > 0
+			? (activeApprovalsReviewer ?? approvalsReviewer)
+			: null;
 	const permissionBadge =
 		displayedPermissionMode === "bypassPermissions"
 			? "auto"
@@ -4011,6 +4114,8 @@ function ChatModelBadge({
 				: displayedPermissionMode === "default"
 					? "ask"
 					: displayedPermissionMode;
+	const approvalsReviewerBadge =
+		displayedApprovalsReviewer === "auto_review" ? "auto-review" : null;
 	// The primary badge is a control: it must show what the next turn will use.
 	// Provider-reported history remains visible below as a diagnostic.
 	const rawModelBadge = modelShort ?? actualModelShort;
@@ -4026,12 +4131,14 @@ function ChatModelBadge({
 		modelBadge,
 		displayedEffort,
 		permissionBadge,
+		approvalsReviewerBadge,
 	].filter(Boolean);
 	const compactBadgeParts = [
 		isCliProxyProvider(activeProviderId) ? "CLIProxy" : activeProviderLabel,
 		modelBadge,
 		displayedEffort,
 		permissionBadge,
+		approvalsReviewerBadge,
 	].filter(Boolean);
 	const { modelBadgeRef } = viewport;
 	const popupRef = useRef<HTMLDivElement>(null);
@@ -4159,6 +4266,9 @@ function ChatModelBadge({
 										...(next.permissionMode
 											? { permission_mode: next.permissionMode }
 											: {}),
+										...(next.approvalsReviewer
+											? { approvals_reviewer: next.approvalsReviewer }
+											: {}),
 									});
 									if (!delivered) return;
 									selectSessionProvider(next);
@@ -4234,6 +4344,44 @@ function ChatModelBadge({
 									selectSessionControls({ permissionMode: value });
 								}}
 							/>
+							<OptionGroup
+								label="approval reviewer"
+								divider
+								disabled={wsStatus !== "connected" || liveActive}
+								options={approvalsReviewerOptions.map((reviewer) => ({
+									value: reviewer.value,
+									label: reviewer.label,
+									...(reviewer.desc !== undefined
+										? { title: reviewer.desc }
+										: {}),
+									...(reviewer.isDefault !== undefined
+										? { isDefault: reviewer.isDefault }
+										: {}),
+								}))}
+								selectedValue={displayedApprovalsReviewer}
+								onSelect={(value) => {
+									if (value !== "user" && value !== "auto_review") return;
+									const delivered = send({
+										type: "set_approvals_reviewer",
+										reviewer: value,
+										session_id: sessionId,
+									});
+									if (!delivered) return;
+									selectSessionControls({ approvalsReviewer: value });
+								}}
+							/>
+							{approvalsReviewerUnavailableReason && (
+								<div className="normal-case tracking-normal text-muted-foreground/40">
+									{approvalsReviewerUnavailableReason}
+								</div>
+							)}
+							{displayedApprovalsReviewer === "auto_review" &&
+								!approvalsReviewerUnavailableReason && (
+									<div className="normal-case tracking-normal text-muted-foreground/40">
+										Codex does not expose Auto-review token usage, so Ledger
+										excludes it.
+									</div>
+								)}
 							<div className="normal-case tracking-normal text-muted-foreground/30 pt-1 border-t border-border/50">
 								session only — not saved to config
 							</div>
@@ -5153,6 +5301,7 @@ interface ChatComposerProps {
 	activeModel: string | undefined;
 	activeEffort: string | null;
 	activePermissionMode: string | null;
+	activeApprovalsReviewer: ProviderApprovalsReviewer | null;
 	selectSessionControls: (
 		selection: Partial<Omit<RavenSessionSelection, "providerId">>,
 	) => void;
@@ -5169,6 +5318,10 @@ interface ChatComposerProps {
 	providers: RavenProviders;
 	modelPickerOptions: ReturnType<typeof modelOptions>;
 	permissionOptions: NonNullable<RavenProviders[number]["permissionModes"]>;
+	approvalsReviewerOptions: NonNullable<
+		RavenProviders[number]["approvalReviewers"]
+	>;
+	approvalsReviewerUnavailableReason: string | null;
 	effortOptions: ReturnType<typeof effortOptionsFor>;
 	canSend: boolean;
 	canQueue: boolean;

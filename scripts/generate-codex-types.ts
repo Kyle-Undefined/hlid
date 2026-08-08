@@ -32,7 +32,13 @@ const outDir = join(root, "src", "server", "codexProtocol");
 // name -> path relative to the generator's --out dir.
 const SEEDS: Array<[name: string, relPath: string]> = [
 	["ThreadStartParams", "v2/ThreadStartParams.ts"],
+	["ThreadStartResponse", "v2/ThreadStartResponse.ts"],
 	["ThreadResumeParams", "v2/ThreadResumeParams.ts"],
+	["ThreadResumeResponse", "v2/ThreadResumeResponse.ts"],
+	[
+		"ThreadSettingsUpdatedNotification",
+		"v2/ThreadSettingsUpdatedNotification.ts",
+	],
 	["ThreadForkParams", "v2/ThreadForkParams.ts"],
 	["ThreadForkResponse", "v2/ThreadForkResponse.ts"],
 	["ThreadCompactStartParams", "v2/ThreadCompactStartParams.ts"],

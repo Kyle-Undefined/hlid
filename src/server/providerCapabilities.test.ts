@@ -211,6 +211,12 @@ describe("Codex capability discovery", () => {
 							stage: "beta",
 							enabled: true,
 						},
+						{
+							name: "guardian_approval",
+							displayName: "Auto-review",
+							stage: "stable",
+							enabled: true,
+						},
 					],
 					nextCursor: null,
 				};
@@ -268,6 +274,15 @@ describe("Codex capability discovery", () => {
 			integration: "provider-native",
 			readiness: "ready",
 			maturity: "beta",
+		});
+		expect(
+			discovery.evidence.find((item) => item.label === "Auto-review"),
+		).toMatchObject({
+			scope: "session",
+			integration: "integrated",
+			readiness: "ready",
+			maturity: "stable",
+			operations: ["inspect", "select"],
 		});
 		expect(
 			discovery.evidence.find((item) => item.id.includes("permission-profile")),

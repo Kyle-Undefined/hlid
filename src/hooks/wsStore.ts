@@ -1,3 +1,4 @@
+import type { ProviderApprovalsReviewer } from "../server/agentProvider";
 import type { ClientMessage, ServerMessage } from "../server/protocol";
 import type { SessionState } from "../server/session";
 import {
@@ -85,6 +86,8 @@ type Snapshot = {
 	 * first status message arrives.
 	 */
 	permissionMode: string | null;
+	/** Codex-native reviewer for interactive approval requests. */
+	approvalsReviewer: ProviderApprovalsReviewer | null;
 	/**
 	 * Current effort/thinking level for the subscribed session. Same
 	 * session-scoped semantics as permissionMode — null until the first
@@ -120,6 +123,7 @@ export const INITIAL_SNAPSHOT: Snapshot = {
 	model: "",
 	actualModel: null,
 	permissionMode: null,
+	approvalsReviewer: null,
 	effort: null,
 	hasPendingPermissions: false,
 	runningTurnId: null,
@@ -197,6 +201,9 @@ function sendChatToServer(msg: QueuedChatMessage): boolean {
 	if (msg.model) payload.model = msg.model;
 	if (msg.effort) payload.effort = msg.effort;
 	if (msg.permission_mode) payload.permission_mode = msg.permission_mode;
+	if (msg.approvals_reviewer) {
+		payload.approvals_reviewer = msg.approvals_reviewer;
+	}
 	if (msg.goal) payload.goal = msg.goal;
 	try {
 		_ws.send(JSON.stringify(payload));
@@ -321,6 +328,7 @@ function onStatus(msg: Extract<ServerMessage, { type: "status" }>): void {
 		sessionState: msg.state,
 		model: msg.model,
 		permissionMode: msg.permission_mode ?? _snap.permissionMode,
+		approvalsReviewer: msg.approvals_reviewer ?? _snap.approvalsReviewer,
 		effort: msg.effort ?? _snap.effort,
 		hasPendingPermissions: _pendingInteractionKeys.size > 0,
 		runningTurnId,
@@ -992,6 +1000,7 @@ export function subscribeToSession(sessionId: string): void {
 		model: "",
 		actualModel: null,
 		permissionMode: null,
+		approvalsReviewer: null,
 		effort: null,
 		hasPendingPermissions: false,
 		runningTurnId: null,

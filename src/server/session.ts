@@ -53,6 +53,9 @@ import type {
 	CanUseTool,
 	McpServerStatus,
 	ProviderAccountInfo,
+	ProviderApprovalReviewContext,
+	ProviderApprovalsReviewer,
+	ProviderApprovalsReviewerChange,
 	ProviderBackgroundActivity,
 	ProviderBackgroundActivityControl,
 	ProviderFileRewindResult,
@@ -704,6 +707,8 @@ function buildAgentQueryParams(options: {
 	serviceTierOverride: string | null;
 	defaultModel: string | undefined;
 	configuredPermissionMode: PermissionMode;
+	approvalsReviewer: ProviderApprovalsReviewer | undefined;
+	onApprovalsReviewerChange?: AgentQueryParams["onApprovalsReviewerChange"];
 	planMode: boolean | undefined;
 	planHtmlPath: string | null;
 	defaultEffort: string | undefined;
@@ -747,6 +752,8 @@ function buildAgentQueryParams(options: {
 		permissionMode: options.planMode
 			? "plan"
 			: options.configuredPermissionMode,
+		approvalsReviewer: options.approvalsReviewer,
+		onApprovalsReviewerChange: options.onApprovalsReviewerChange,
 		sandboxModeOverride: options.sandboxModeOverride,
 		policyEnforced: options.policyEnforced,
 		usageGateEnforced: options.usageGateEnforced,
@@ -1036,6 +1043,7 @@ export class SessionManager {
 	private effortOverride: string | null = null;
 	private serviceTierOverride: string | null = null;
 	private permissionModeOverride: PermissionMode | null = null;
+	private approvalsReviewerOverride: ProviderApprovalsReviewer | null = null;
 	/** The next provider thread needs the persisted Hlid transcript as context. */
 	private providerHandoffPending = false;
 	/** Provider conversation that has accepted the compact Hlid operating brief. */
@@ -1048,6 +1056,10 @@ export class SessionManager {
 	private vaultPath!: string;
 	private vaultName!: string;
 	private permissionMode!: PermissionMode;
+	/** User-selected reviewer persisted with the Hlid session. */
+	private approvalsReviewer: ProviderApprovalsReviewer | null = null;
+	/** Provider-authoritative reviewer currently in effect for truthful status. */
+	private effectiveApprovalsReviewer: ProviderApprovalsReviewer | null = null;
 	private claudeExecutable: string | undefined;
 	private codexExecutable: string | undefined;
 	private windowsComputerUse!: NonNullable<
@@ -1211,6 +1223,118 @@ export class SessionManager {
 		);
 	}
 
+	private defaultApprovalsReviewer(
+		provider?: AgentProvider,
+	): ProviderApprovalsReviewer | null {
+		if (!provider && this.providers.size === 0) return null;
+		const resolvedProvider = provider ?? this.resolveProvider(this.agentCwd);
+		return (
+			resolvedProvider.approvalReviewers?.find((reviewer) => reviewer.isDefault)
+				?.value ??
+			resolvedProvider.approvalReviewers?.[0]?.value ??
+			null
+		);
+	}
+
+	private supportedApprovalsReviewer(
+		provider: AgentProvider,
+		reviewer: string | null | undefined,
+	): reviewer is ProviderApprovalsReviewer {
+		return Boolean(
+			reviewer &&
+				provider.approvalReviewers?.some(
+					(candidate) => candidate.value === reviewer,
+				),
+		);
+	}
+
+	private autoReviewUnavailableReason(): string | null {
+		if (this.policyEnforced) {
+			return "Auto-review is unavailable while Hlid policy enforcement is enabled.";
+		}
+		if (this.usageGateEnforced) {
+			return "Auto-review is unavailable while Hlid's auto-sleep usage gate is enabled.";
+		}
+		return null;
+	}
+
+	private effectiveReviewerForSelection(
+		reviewer: ProviderApprovalsReviewer | null,
+	): ProviderApprovalsReviewer | null {
+		return reviewer === "auto_review" && this.autoReviewUnavailableReason()
+			? "user"
+			: reviewer;
+	}
+
+	private resetEffectiveApprovalsReviewer(): void {
+		this.effectiveApprovalsReviewer = this.effectiveReviewerForSelection(
+			this.approvalsReviewer,
+		);
+	}
+
+	private statusApprovalsReviewer(): ProviderApprovalsReviewer | null {
+		return this.effectiveApprovalsReviewer ?? this.approvalsReviewer;
+	}
+
+	private approvalsReviewerStatusField(): {
+		approvals_reviewer?: ProviderApprovalsReviewer;
+	} {
+		const reviewer = this.statusApprovalsReviewer();
+		return reviewer ? { approvals_reviewer: reviewer } : {};
+	}
+
+	/**
+	 * Reconcile provider-authoritative reviewer state without letting temporary
+	 * Hlid forcing overwrite the user's stored preference. The callback is tied
+	 * to the provider generation and Hlid session that created the native stream,
+	 * so a late notification from a retired stream cannot mutate the new chat.
+	 */
+	private reconcileProviderApprovalsReviewer(
+		change: ProviderApprovalsReviewerChange,
+		context: {
+			sessionId: string | undefined;
+			providerId: string;
+			ownershipGeneration: number;
+			emit: (message: ServerMessage) => void;
+		},
+	): void {
+		if (
+			!this.ownsProviderGeneration(
+				context.providerId,
+				context.ownershipGeneration,
+			) ||
+			(this.currentSessionId ?? undefined) !== context.sessionId
+		) {
+			return;
+		}
+
+		const selectedChanged =
+			change.persistPreference && this.approvalsReviewer !== change.reviewer;
+		if (selectedChanged) {
+			this.approvalsReviewer = change.reviewer;
+			this.approvalsReviewerOverride = change.reviewer;
+		}
+		// The callback already carries the provider's effective value. Local policy
+		// only predicts the value before provider authority arrives; remapping this
+		// report would hide a provider that failed to honor Hlid's forced reviewer.
+		const nextEffectiveReviewer = change.reviewer;
+		const effectiveChanged =
+			this.effectiveApprovalsReviewer !== nextEffectiveReviewer;
+		if (effectiveChanged) {
+			this.effectiveApprovalsReviewer = nextEffectiveReviewer;
+			context.emit({ type: "status", ...this.getStatus() });
+		}
+
+		if (selectedChanged && context.sessionId) {
+			const sessionId = context.sessionId;
+			void this.enqueueProviderOwnershipWrite(() =>
+				db.setSessionApprovalsReviewer(sessionId, change.reviewer),
+			).catch((error) =>
+				logDbError("reconcile provider approval reviewer", error),
+			);
+		}
+	}
+
 	/** Apply runtime settings from config. Shared by constructor, reinitialize, and syncConfig. */
 	private applyConfig(
 		config: HlidConfig,
@@ -1263,6 +1387,10 @@ export class SessionManager {
 		this.policyEnforced = config.umbod?.enabled ?? false;
 		this.usageGateEnforced = config.auto_sleep?.enabled ?? false;
 		this.codexRealtimeEnabled = config.voice?.codex_live_mode ?? false;
+		if (!preserveSessionOverrides || this.approvalsReviewerOverride === null) {
+			this.approvalsReviewer = this.defaultApprovalsReviewer();
+		}
+		this.resetEffectiveApprovalsReviewer();
 	}
 
 	reinitialize(config: HlidConfig): void {
@@ -1273,6 +1401,7 @@ export class SessionManager {
 		this.effortOverride = null;
 		this.serviceTierOverride = null;
 		this.permissionModeOverride = null;
+		this.approvalsReviewerOverride = null;
 		this.applyConfig(config);
 		this.state = "idle";
 		this.clearCurrentSessionIdentity();
@@ -1306,6 +1435,7 @@ export class SessionManager {
 	private clearCurrentSessionIdentity(): void {
 		this.currentSessionId = null;
 		this.currentSessionLabel = null;
+		this.resetEffectiveApprovalsReviewer();
 		this.clearSessionProvenance();
 	}
 
@@ -1333,6 +1463,7 @@ export class SessionManager {
 			activeSession.cancel();
 			this.agentSession = null;
 			this.agentSessionKey = null;
+			this.resetEffectiveApprovalsReviewer();
 		};
 		const mustStopRealtime =
 			Boolean(this.realtimeAgentSession && this.realtimeMode) &&
@@ -1380,6 +1511,10 @@ export class SessionManager {
 		const previous = this.getStatus();
 		const previousCodexRealtimeEnabled = this.codexRealtimeEnabled;
 		const previousCodexExecutable = this.codexExecutable;
+		const previousApprovalReviewContext: ProviderApprovalReviewContext = {
+			policyEnforced: this.policyEnforced,
+			usageGateEnforced: this.usageGateEnforced,
+		};
 		const nextProviderId = config.vault_provider ?? "claude";
 		const providerChanged =
 			this.providerOverride === null && nextProviderId !== this.vaultProviderId;
@@ -1389,6 +1524,7 @@ export class SessionManager {
 			this.effortOverride = null;
 			this.serviceTierOverride = null;
 			this.permissionModeOverride = null;
+			this.approvalsReviewerOverride = null;
 		}
 		this.applyConfig(config, !providerChanged);
 		this.reconcileCodexRuntimeIdentity(
@@ -1396,11 +1532,31 @@ export class SessionManager {
 			previousCodexExecutable,
 		);
 		void this.agentSession?.setWindowsComputerUse?.(this.windowsComputerUse);
+		if (
+			previousApprovalReviewContext.policyEnforced !== this.policyEnforced ||
+			previousApprovalReviewContext.usageGateEnforced !== this.usageGateEnforced
+		) {
+			this.agentSession?.setApprovalReviewContext?.({
+				policyEnforced: this.policyEnforced,
+				usageGateEnforced: this.usageGateEnforced,
+			});
+		}
+		if (
+			previous.approvals_reviewer !== this.effectiveApprovalsReviewer &&
+			this.approvalsReviewer
+		) {
+			void this.agentSession
+				?.setApprovalsReviewer?.(this.approvalsReviewer)
+				.catch((error) =>
+					logDbError("reconcile effective approval reviewer", error),
+				);
+		}
 		const current = this.getStatus();
 		return (
 			previous.model !== current.model ||
 			previous.effort !== current.effort ||
-			previous.permission_mode !== current.permission_mode
+			previous.permission_mode !== current.permission_mode ||
+			previous.approvals_reviewer !== current.approvals_reviewer
 		);
 	}
 
@@ -1408,6 +1564,7 @@ export class SessionManager {
 		state: SessionState;
 		model: string;
 		permission_mode: PermissionMode;
+		approvals_reviewer?: ProviderApprovalsReviewer;
 		effort: string;
 		turn_id?: string;
 	} {
@@ -1415,6 +1572,7 @@ export class SessionManager {
 			state: this.state,
 			model: this.model,
 			permission_mode: this.permissionMode,
+			...this.approvalsReviewerStatusField(),
 			effort: this.effort,
 			...(this.state === "running" && this.currentTurnId !== undefined
 				? { turn_id: this.currentTurnId }
@@ -1693,6 +1851,7 @@ export class SessionManager {
 			effort?: string;
 			serviceTier?: string;
 			permissionMode?: string;
+			approvalsReviewer?: string;
 			/** Internal orchestration can persist selection in its own DB CAS. */
 			persistSessionSelection?: boolean;
 		} = {},
@@ -1709,6 +1868,25 @@ export class SessionManager {
 			!KNOWN_PERMISSION_MODES.has(selection.permissionMode)
 		) {
 			throw new Error(`Unknown permission mode: ${selection.permissionMode}`);
+		}
+		const nextProvider = this.providers.get(providerId);
+		if (!nextProvider) {
+			throw new Error(`Unknown or unavailable provider: ${providerId}`);
+		}
+		if (
+			selection.approvalsReviewer !== undefined &&
+			!this.supportedApprovalsReviewer(
+				nextProvider,
+				selection.approvalsReviewer,
+			)
+		) {
+			throw new Error(
+				`${nextProvider.label ?? providerId} does not support approval reviewer ${selection.approvalsReviewer}`,
+			);
+		}
+		const unavailableReason = this.autoReviewUnavailableReason();
+		if (selection.approvalsReviewer === "auto_review" && unavailableReason) {
+			throw new Error(unavailableReason);
 		}
 
 		const currentProviderId =
@@ -1741,6 +1919,12 @@ export class SessionManager {
 			: null;
 		this.permissionMode =
 			(selection.permissionMode as PermissionMode | undefined) ?? "default";
+		const nextApprovalsReviewer = selection.approvalsReviewer
+			? (selection.approvalsReviewer as ProviderApprovalsReviewer)
+			: this.defaultApprovalsReviewer(nextProvider);
+		this.approvalsReviewerOverride = nextApprovalsReviewer;
+		this.approvalsReviewer = nextApprovalsReviewer;
+		this.resetEffectiveApprovalsReviewer();
 
 		const currentSessionId = this.currentSessionId;
 		if (currentSessionId && selection.persistSessionSelection !== false) {
@@ -1749,9 +1933,40 @@ export class SessionManager {
 					model: selection.model,
 					effort: selection.effort,
 					permissionMode: selection.permissionMode,
+					approvalsReviewer: nextApprovalsReviewer ?? undefined,
 				}),
 			);
 		}
+	}
+
+	/** Select who evaluates Codex-native approval requests for future turns. */
+	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket set_approvals_reviewer dispatch in wsHandlers.
+	async setApprovalsReviewer(reviewer: string): Promise<void> {
+		this.assertRealtimeIdle("changing the approval reviewer");
+		const provider =
+			this.providers.get(this.getProviderId()) ??
+			this.resolveProvider(this.agentCwd);
+		if (!this.supportedApprovalsReviewer(provider, reviewer)) {
+			throw new Error(
+				`${provider.label ?? provider.providerId} does not support approval reviewer ${reviewer}`,
+			);
+		}
+		const unavailableReason = this.autoReviewUnavailableReason();
+		if (reviewer === "auto_review" && unavailableReason) {
+			throw new Error(unavailableReason);
+		}
+		this.approvalsReviewerOverride = reviewer;
+		this.approvalsReviewer = reviewer;
+		this.resetEffectiveApprovalsReviewer();
+		const sessionId = this.currentSessionId;
+		await Promise.all([
+			this.agentSession?.setApprovalsReviewer?.(reviewer),
+			sessionId
+				? this.enqueueProviderOwnershipWrite(() =>
+						db.setSessionApprovalsReviewer(sessionId, reviewer),
+					)
+				: Promise.resolve(),
+		]);
 	}
 
 	/**
@@ -2793,6 +3008,7 @@ export class SessionManager {
 						agentSettings: context.agentSettings,
 						planMode: false,
 						emit: options.emit,
+						reconcileApprovalsReviewer: false,
 					})
 				: this.createDetachedRealtimeAgentSession({
 						provider: context.provider,
@@ -3660,6 +3876,7 @@ export class SessionManager {
 			state: this.state,
 			model: this.model,
 			permission_mode: this.permissionMode,
+			...this.approvalsReviewerStatusField(),
 			effort: this.effort,
 		});
 	}
@@ -3709,6 +3926,7 @@ export class SessionManager {
 		this.realtimeStopPromise = null;
 		this.realtimeStopMode = null;
 		this.realtimeStoppingGeneration = null;
+		this.resetEffectiveApprovalsReviewer();
 	}
 
 	abort(): void {
@@ -3810,6 +4028,7 @@ export class SessionManager {
 			this.historyResumeMode = "none";
 			this.providerHandoffPending =
 				this.currentSessionId !== null && this.messageSeq > 0;
+			this.resetEffectiveApprovalsReviewer();
 		}
 		if (retiresOverride) {
 			this.providerOverride = null;
@@ -3817,6 +4036,9 @@ export class SessionManager {
 			this.effortOverride = null;
 			this.serviceTierOverride = null;
 			this.permissionModeOverride = null;
+			this.approvalsReviewerOverride = null;
+			this.approvalsReviewer = this.defaultApprovalsReviewer();
+			this.resetEffectiveApprovalsReviewer();
 		}
 		return true;
 	}
@@ -3872,6 +4094,7 @@ export class SessionManager {
 		updateGlobalFocus = true,
 	): Promise<boolean> {
 		this.providerOwnershipGeneration += 1;
+		this.resetEffectiveApprovalsReviewer();
 		this.clearSessionProvenance();
 		const [
 			savedSession,
@@ -3964,6 +4187,21 @@ export class SessionManager {
 			this.permissionModeOverride =
 				savedSession.selected_permission_mode as PermissionMode;
 		}
+		if (this.approvalsReviewerOverride === null) {
+			const restoredProvider =
+				(savedProviderId ? this.providers.get(savedProviderId) : undefined) ??
+				this.resolveProvider(this.agentCwd);
+			const savedReviewer = savedSession?.selected_approvals_reviewer;
+			const reviewer = this.supportedApprovalsReviewer(
+				restoredProvider,
+				savedReviewer,
+			)
+				? savedReviewer
+				: this.defaultApprovalsReviewer(restoredProvider);
+			this.approvalsReviewer = reviewer;
+			this.approvalsReviewerOverride = this.approvalsReviewer;
+		}
+		this.resetEffectiveApprovalsReviewer();
 		if (updateGlobalFocus) {
 			db.setCurrentSessionId(sessionId).catch((e) =>
 				logDbError("setCurrentSessionId", e),
@@ -4039,6 +4277,7 @@ export class SessionManager {
 			await db.createSession(sessionId, label, selectedModel, {
 				effort: selectedEffort,
 				permissionMode: selectedPermissionMode,
+				approvalsReviewer: this.approvalsReviewer ?? undefined,
 			});
 		}
 
@@ -6048,6 +6287,7 @@ export class SessionManager {
 				state: this.state,
 				model: this.model,
 				permission_mode: this.permissionMode,
+				...this.approvalsReviewerStatusField(),
 				effort: this.effort,
 			});
 		}
@@ -6915,6 +7155,7 @@ export class SessionManager {
 			state: "running",
 			model: this.model,
 			permission_mode: this.permissionMode,
+			...this.approvalsReviewerStatusField(),
 			effort: this.effort,
 			...(this.currentTurnId !== undefined
 				? { turn_id: this.currentTurnId }
@@ -7074,6 +7315,7 @@ export class SessionManager {
 				serviceTierOverride: this.serviceTierOverride,
 				defaultModel: this.agentCwd ? undefined : this.model,
 				configuredPermissionMode: "default",
+				approvalsReviewer: undefined,
 				planMode: false,
 				planHtmlPath: null,
 				defaultEffort: this.effort,
@@ -7106,6 +7348,8 @@ export class SessionManager {
 		onGoalChange?: AgentQueryParams["onGoalChange"];
 		/** Dictation owns an isolated process and must not initialize the ordinary thread. */
 		observeBackgroundActivities?: boolean;
+		/** Realtime startup must not reconcile ordinary thread preferences. */
+		reconcileApprovalsReviewer?: boolean;
 	}): AgentSession {
 		const {
 			provider,
@@ -7119,6 +7363,7 @@ export class SessionManager {
 			emit,
 			onGoalChange,
 			observeBackgroundActivities = true,
+			reconcileApprovalsReviewer = true,
 		} = options;
 		const desiredKey = `${provider.providerId}|${sessionId ?? "ephemeral"}|${this.agentCwd ?? ""}`;
 		if (
@@ -7133,6 +7378,7 @@ export class SessionManager {
 			this.agentSessionKey = null;
 			this.restartAgentSessionForEffort = false;
 			this.restartProviderRuntimeAfterTurn = false;
+			this.resetEffectiveApprovalsReviewer();
 		}
 		if (this.agentSession) {
 			if (onGoalChange) {
@@ -7158,6 +7404,7 @@ export class SessionManager {
 			configuredPermissionMode === "bypassPermissions" &&
 			!this.policyEnforced &&
 			this.usageGateEnforced;
+		const reviewerOwnershipGeneration = this.providerOwnershipGeneration;
 		const session = provider.query(
 			buildAgentQueryParams({
 				activeCwd,
@@ -7175,6 +7422,18 @@ export class SessionManager {
 				serviceTierOverride: this.serviceTierOverride,
 				defaultModel: this.agentCwd ? undefined : this.model,
 				configuredPermissionMode,
+				approvalsReviewer: this.activeRoutineContext
+					? "user"
+					: (this.approvalsReviewer ?? undefined),
+				onApprovalsReviewerChange: reconcileApprovalsReviewer
+					? (change) =>
+							this.reconcileProviderApprovalsReviewer(change, {
+								sessionId,
+								providerId: provider.providerId,
+								ownershipGeneration: reviewerOwnershipGeneration,
+								emit,
+							})
+					: undefined,
 				planMode,
 				planHtmlPath: this.planHtmlPath,
 				defaultEffort: this.effort,
@@ -7246,6 +7505,7 @@ export class SessionManager {
 			this.providerSessionId = null;
 			this.providerSessionProviderId = provider.providerId;
 			this.historyResumeMode = "none";
+			this.resetEffectiveApprovalsReviewer();
 		}
 		const ownershipGeneration = this.providerOwnershipGeneration;
 		if (sessionId) {

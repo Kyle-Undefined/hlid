@@ -4,7 +4,10 @@
 // deliberate manual updates, not run automatically on every build.
 
 export type { ThreadStartParams } from "./v2/ThreadStartParams";
+export type { ThreadStartResponse } from "./v2/ThreadStartResponse";
 export type { ThreadResumeParams } from "./v2/ThreadResumeParams";
+export type { ThreadResumeResponse } from "./v2/ThreadResumeResponse";
+export type { ThreadSettingsUpdatedNotification } from "./v2/ThreadSettingsUpdatedNotification";
 export type { ThreadForkParams } from "./v2/ThreadForkParams";
 export type { ThreadForkResponse } from "./v2/ThreadForkResponse";
 export type { ThreadCompactStartParams } from "./v2/ThreadCompactStartParams";

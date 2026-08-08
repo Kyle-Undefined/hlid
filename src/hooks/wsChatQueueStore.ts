@@ -19,6 +19,7 @@ export type QueuedChatMessage = {
 	model?: string;
 	effort?: string;
 	permission_mode?: string;
+	approvals_reviewer?: string;
 	goal?: GoalStartRequest;
 	steerable?: boolean;
 	/** True after the message has been delivered to the server. */
