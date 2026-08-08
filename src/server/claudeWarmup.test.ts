@@ -72,6 +72,7 @@ describe("Claude startup metadata cache", () => {
 				additionalDirectories: ["/tmp/vault"],
 			}),
 		);
+		expect(call?.options?.env).toBeUndefined();
 		expect(call?.options?.abortController?.signal.aborted).toBe(true);
 		expect(getClaudeWarmupSnapshot("/tmp/project")).toEqual(
 			expect.objectContaining({

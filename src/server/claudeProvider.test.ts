@@ -7021,6 +7021,7 @@ describe("ClaudeProvider — providerId + proxyConfig", () => {
 			}
 			expect(capturedEnv).toBeDefined();
 			expect(capturedEnv).not.toHaveProperty("ANTHROPIC_BASE_URL");
+			expect(capturedEnv?.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS).toBe("1");
 		} finally {
 			if (previous === undefined) delete process.env.ANTHROPIC_BASE_URL;
 			else process.env.ANTHROPIC_BASE_URL = previous;
@@ -7060,7 +7061,65 @@ describe("ClaudeProvider — providerId + proxyConfig", () => {
 			// drain
 		}
 
-		expect(capturedEnv).toBe(sdkEnv);
+		expect(capturedEnv).toEqual({
+			...sdkEnv,
+			CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
+		});
+		expect(sdkEnv).not.toHaveProperty("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS");
+	});
+
+	it("enables session-state evidence only for live query subprocesses", async () => {
+		const sdkEnv = { HLID_CLAUDE_ENV_SENTINEL: "preserved" };
+		let liveEnv: Record<string, string | undefined> | undefined;
+		let modelProbeEnv: Record<string, string | undefined> | undefined;
+		let skillProbeEnv: Record<string, string | undefined> | undefined;
+
+		vi.mocked(query)
+			.mockImplementationOnce(({ options }) => {
+				liveEnv = options?.env;
+				return sdkGen([
+					{
+						type: "result",
+						subtype: "success",
+						total_cost_usd: 0,
+						num_turns: 1,
+						duration_ms: 1,
+						usage: { input_tokens: 1, output_tokens: 1 },
+					},
+				]);
+			})
+			.mockImplementationOnce(({ options }) => {
+				modelProbeEnv = options?.env;
+				const gen = sdkGen([]);
+				gen.supportedModels = vi.fn().mockResolvedValue([]);
+				return gen;
+			})
+			.mockImplementationOnce(({ options }) => {
+				skillProbeEnv = options?.env;
+				const gen = sdkGen([]);
+				gen.supportedCommands = vi.fn().mockResolvedValue([]);
+				return gen;
+			});
+
+		const provider = new ClaudeProvider({ sdkEnv });
+		for await (const _ of provider.query(baseParams())) {
+			// drain the real query
+		}
+		await provider.listModels();
+		await provider.listSkills?.({ cwd: "/tmp/test" });
+
+		expect(liveEnv).toEqual({
+			...sdkEnv,
+			CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
+		});
+		expect(modelProbeEnv).toBe(sdkEnv);
+		expect(skillProbeEnv).toBe(sdkEnv);
+		expect(modelProbeEnv).not.toHaveProperty(
+			"CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS",
+		);
+		expect(skillProbeEnv).not.toHaveProperty(
+			"CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS",
+		);
 	});
 
 	it("has providerId = 'claude'", () => {
@@ -7732,6 +7791,830 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			durationMs: 300,
 			stopReason: "end_turn",
 		});
+		session.cancel();
+	});
+
+	it("uses a matching idle state to release a result held only for steering evidence", async () => {
+		let releaseTail = () => {};
+		const tail = new Promise<void>((resolve) => {
+			releaseTail = resolve;
+		});
+		vi.mocked(query).mockReturnValueOnce(
+			sdkStream(async function* () {
+				yield {
+					type: "system",
+					subtype: "init",
+					session_id: "native-steer-idle",
+					tools: [],
+				};
+				yield {
+					type: "result",
+					subtype: "success",
+					session_id: "native-steer-idle",
+					total_cost_usd: 0.1,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 5, output_tokens: 2 },
+				};
+				yield {
+					type: "system",
+					subtype: "session_state_changed",
+					state: "idle",
+					uuid: "idle-after-result",
+					session_id: "native-steer-idle",
+				};
+				await tail;
+			}),
+		);
+
+		const session = new ClaudeProvider().query(baseParams());
+		await session.steer?.("keep this turn open");
+		const events: AgentEvent[] = [];
+		const completed = (async () => {
+			for await (const event of session) {
+				events.push(event);
+				if (event.type === "done") return true;
+			}
+			return false;
+		})();
+
+		const released = await Promise.race([
+			completed,
+			new Promise<false>((resolve) => setTimeout(() => resolve(false), 100)),
+		]);
+		expect(released).toBe(true);
+		expect(events.filter((event) => event.type === "done")).toHaveLength(1);
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "session_state_changed" }),
+		);
+		releaseTail();
+		session.cancel();
+	});
+
+	it("does not complete from idle evidence that arrives before the result", async () => {
+		let signalIdle = () => {};
+		let releaseResult = () => {};
+		const idleObserved = new Promise<void>((resolve) => {
+			signalIdle = resolve;
+		});
+		const resultReady = new Promise<void>((resolve) => {
+			releaseResult = resolve;
+		});
+		vi.mocked(query).mockReturnValueOnce(
+			sdkStream(async function* () {
+				yield {
+					type: "system",
+					subtype: "init",
+					session_id: "native-idle-first",
+					tools: [],
+				};
+				yield {
+					type: "system",
+					subtype: "session_state_changed",
+					state: "running",
+					uuid: "running-before-result",
+					session_id: "native-idle-first",
+				};
+				yield {
+					type: "system",
+					subtype: "session_state_changed",
+					state: "requires_action",
+					uuid: "action-before-result",
+					session_id: "native-idle-first",
+				};
+				yield {
+					type: "system",
+					subtype: "session_state_changed",
+					state: "idle",
+					uuid: "idle-before-result",
+					session_id: "native-idle-first",
+				};
+				signalIdle();
+				await resultReady;
+				yield {
+					type: "result",
+					subtype: "success",
+					session_id: "native-idle-first",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 25,
+					usage: { input_tokens: 2, output_tokens: 1 },
+				};
+			}),
+		);
+
+		const session = new ClaudeProvider().query(baseParams());
+		await session.send("finish only after a result");
+		const events: AgentEvent[] = [];
+		const completed = (async () => {
+			for await (const event of session) {
+				events.push(event);
+				if (event.type === "done") return;
+			}
+		})();
+		await idleObserved;
+		await Promise.resolve();
+		expect(events.some((event) => event.type === "done")).toBe(false);
+
+		releaseResult();
+		await completed;
+		expect(events.filter((event) => event.type === "done")).toHaveLength(1);
+		session.cancel();
+	});
+
+	it("ignores mismatched, stale, and duplicate idle state frames", async () => {
+		let signalIgnored = () => {};
+		let releaseFreshIdle = () => {};
+		const ignoredObserved = new Promise<void>((resolve) => {
+			signalIgnored = resolve;
+		});
+		const freshIdleReady = new Promise<void>((resolve) => {
+			releaseFreshIdle = resolve;
+		});
+		vi.mocked(query).mockReturnValueOnce(
+			sdkStream(async function* () {
+				yield {
+					type: "system",
+					subtype: "init",
+					session_id: "native-state-match",
+					tools: [],
+				};
+				yield {
+					type: "system",
+					subtype: "session_state_changed",
+					state: "idle",
+					uuid: "stale-idle",
+					session_id: "native-state-match",
+				};
+				yield {
+					type: "result",
+					subtype: "success",
+					session_id: "native-state-match",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 20,
+					usage: { input_tokens: 2, output_tokens: 1 },
+				};
+				yield {
+					type: "system",
+					subtype: "session_state_changed",
+					state: "idle",
+					uuid: "wrong-session-idle",
+					session_id: "another-native-session",
+				};
+				yield {
+					type: "system",
+					subtype: "session_state_changed",
+					state: "idle",
+					uuid: "stale-idle",
+					session_id: "native-state-match",
+				};
+				signalIgnored();
+				await freshIdleReady;
+				yield {
+					type: "system",
+					subtype: "session_state_changed",
+					state: "idle",
+					uuid: "fresh-idle",
+					session_id: "native-state-match",
+				};
+			}),
+		);
+
+		const session = new ClaudeProvider().query(baseParams());
+		await session.steer?.("expect a continuation");
+		const events: AgentEvent[] = [];
+		const completed = (async () => {
+			for await (const event of session) {
+				events.push(event);
+				if (event.type === "done") return;
+			}
+		})();
+		await ignoredObserved;
+		await Promise.resolve();
+		expect(events.some((event) => event.type === "done")).toBe(false);
+
+		releaseFreshIdle();
+		await completed;
+		expect(events.filter((event) => event.type === "done")).toHaveLength(1);
+		session.cancel();
+	});
+
+	it("ignores an old-session idle after reset and a late old child frame", async () => {
+		let signalOldIdle = () => {};
+		let releaseStream = () => {};
+		const oldIdleObserved = new Promise<void>((resolve) => {
+			signalOldIdle = resolve;
+		});
+		const streamReady = new Promise<void>((resolve) => {
+			releaseStream = resolve;
+		});
+		vi.mocked(query).mockReturnValueOnce(
+			sdkStream(async function* () {
+				yield {
+					type: "system",
+					subtype: "init",
+					session_id: "native-before-reset",
+					tools: [],
+				};
+				yield {
+					type: "result",
+					subtype: "success",
+					session_id: "native-before-reset",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 20,
+					usage: { input_tokens: 2, output_tokens: 1 },
+				};
+				yield {
+					type: "conversation_reset",
+					new_conversation_id: "native-after-reset",
+					uuid: "reset-event",
+					session_id: "native-before-reset",
+				};
+				yield {
+					type: "assistant",
+					uuid: "late-old-child-frame",
+					session_id: "native-before-reset",
+					parent_tool_use_id: "late-old-child",
+					message: {
+						model: "claude-sonnet-4-6",
+						content: [],
+						usage: { input_tokens: 1, output_tokens: 0 },
+					},
+				};
+				yield {
+					type: "system",
+					subtype: "session_state_changed",
+					state: "idle",
+					uuid: "late-old-session-idle",
+					session_id: "native-before-reset",
+				};
+				signalOldIdle();
+				await streamReady;
+			}),
+		);
+
+		const session = new ClaudeProvider().query(baseParams());
+		await session.steer?.("hold across the reset");
+		const events: AgentEvent[] = [];
+		const completed = (async () => {
+			for await (const event of session) {
+				events.push(event);
+				if (event.type === "done") return;
+			}
+		})();
+		await oldIdleObserved;
+		await Promise.resolve();
+		expect(events.some((event) => event.type === "done")).toBe(false);
+
+		releaseStream();
+		await completed;
+		expect(events.filter((event) => event.type === "done")).toHaveLength(1);
+		expect(events).toContainEqual({
+			type: "provider_context_reset",
+			sessionId: "native-after-reset",
+		});
+		session.cancel();
+	});
+
+	it("does not let idle bypass a pending background task-version obligation", async () => {
+		let signalIdle = () => {};
+		let releaseTask = () => {};
+		const idleObserved = new Promise<void>((resolve) => {
+			signalIdle = resolve;
+		});
+		const taskReady = new Promise<void>((resolve) => {
+			releaseTask = resolve;
+		});
+		vi.mocked(query).mockReturnValueOnce(
+			sdkStream(async function* () {
+				yield {
+					type: "assistant",
+					uuid: "background-candidate-frame",
+					session_id: "native-background-version",
+					parent_tool_use_id: null,
+					message: {
+						model: "claude-sonnet-4-6",
+						content: [
+							{
+								type: "tool_use",
+								id: "background-candidate-tool",
+								name: "Agent",
+								input: { prompt: "work in the background" },
+							},
+						],
+						usage: { input_tokens: 4, output_tokens: 2 },
+					},
+				};
+				yield {
+					type: "result",
+					subtype: "success",
+					terminal_reason: "background_requested",
+					session_id: "native-background-version",
+					total_cost_usd: 0.1,
+					num_turns: 1,
+					duration_ms: 50,
+					usage: { input_tokens: 4, output_tokens: 2 },
+				};
+				yield {
+					type: "system",
+					subtype: "session_state_changed",
+					state: "idle",
+					uuid: "idle-before-task-start",
+					session_id: "native-background-version",
+				};
+				signalIdle();
+				await taskReady;
+				yield {
+					type: "system",
+					subtype: "task_started",
+					task_id: "background-task",
+					tool_use_id: "background-candidate-tool",
+					task_type: "subagent",
+					session_id: "native-background-version",
+				};
+				yield {
+					type: "system",
+					subtype: "task_notification",
+					task_id: "background-task",
+					status: "completed",
+					summary: "Background work finished",
+					session_id: "native-background-version",
+				};
+				yield {
+					type: "result",
+					subtype: "success",
+					session_id: "native-background-version",
+					total_cost_usd: 0.2,
+					num_turns: 1,
+					duration_ms: 75,
+					usage: { input_tokens: 3, output_tokens: 1 },
+				};
+			}),
+		);
+
+		const session = new ClaudeProvider().query(baseParams());
+		await session.steer?.("keep collecting the background task");
+		const events: AgentEvent[] = [];
+		const completed = (async () => {
+			for await (const event of session) {
+				events.push(event);
+				if (event.type === "done") return;
+			}
+		})();
+		await idleObserved;
+		await Promise.resolve();
+		expect(events.some((event) => event.type === "done")).toBe(false);
+
+		releaseTask();
+		await completed;
+		expect(events.filter((event) => event.type === "done")).toHaveLength(1);
+		expect(events.find((event) => event.type === "done")).toMatchObject({
+			turns: 2,
+			durationMs: 125,
+		});
+		session.cancel();
+	});
+
+	it("does not let idle cancel a provider-owned background activity", async () => {
+		let releaseBackground = () => {};
+		const backgroundReady = new Promise<void>((resolve) => {
+			releaseBackground = resolve;
+		});
+		vi.mocked(query).mockReturnValueOnce(
+			sdkStream(async function* () {
+				yield {
+					type: "system",
+					subtype: "background_tasks_changed",
+					tasks: [
+						{
+							task_id: "provider-background-task",
+							task_type: "local_bash",
+							description: "Long-running provider command",
+						},
+					],
+					uuid: "background-list-running",
+					session_id: "native-background-registry",
+				};
+				yield {
+					type: "result",
+					subtype: "success",
+					session_id: "native-background-registry",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 20,
+					usage: { input_tokens: 2, output_tokens: 1 },
+				};
+				yield {
+					type: "system",
+					subtype: "session_state_changed",
+					state: "idle",
+					uuid: "idle-with-background-registry",
+					session_id: "native-background-registry",
+				};
+				await backgroundReady;
+				yield {
+					type: "system",
+					subtype: "background_tasks_changed",
+					tasks: [],
+					uuid: "background-list-empty",
+					session_id: "native-background-registry",
+				};
+				yield {
+					type: "result",
+					subtype: "success",
+					session_id: "native-background-registry",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 30,
+					usage: { input_tokens: 2, output_tokens: 1 },
+				};
+			}),
+		);
+
+		const session = new ClaudeProvider().query(baseParams());
+		await session.steer?.("keep the provider task alive");
+		const events: AgentEvent[] = [];
+		const completed = (async () => {
+			for await (const event of session) {
+				events.push(event);
+				if (event.type === "done") return;
+			}
+		})();
+		expect(
+			await Promise.race([
+				completed.then(() => true),
+				new Promise<false>((resolve) => setTimeout(() => resolve(false), 100)),
+			]),
+		).toBe(true);
+		expect(events.filter((event) => event.type === "done")).toHaveLength(1);
+		if (!session.listBackgroundActivities) {
+			throw new Error("Claude session must expose background activities");
+		}
+		await expect(session.listBackgroundActivities()).resolves.toEqual([
+			expect.objectContaining({
+				activityId: "provider-background-task",
+				status: "running",
+			}),
+		]);
+		releaseBackground();
+		session.cancel();
+	});
+
+	it("does not let idle settle a workflow awaiting its continuation", async () => {
+		let signalIdle = () => {};
+		let releaseContinuation = () => {};
+		const idleObserved = new Promise<void>((resolve) => {
+			signalIdle = resolve;
+		});
+		const continuationReady = new Promise<void>((resolve) => {
+			releaseContinuation = resolve;
+		});
+		vi.mocked(query).mockReturnValueOnce(
+			sdkStream(async function* () {
+				yield {
+					type: "assistant",
+					uuid: "workflow-tool-frame",
+					session_id: "native-workflow-idle",
+					parent_tool_use_id: null,
+					message: {
+						model: "claude-sonnet-4-6",
+						content: [
+							{
+								type: "tool_use",
+								id: "workflow-tool-idle",
+								name: "Workflow",
+								input: { name: "idle-safety" },
+							},
+						],
+						usage: { input_tokens: 5, output_tokens: 2 },
+					},
+				};
+				yield {
+					type: "system",
+					subtype: "task_started",
+					task_id: "workflow-task-idle",
+					tool_use_id: "workflow-tool-idle",
+					task_type: "local_workflow",
+					workflow_name: "idle-safety",
+					session_id: "native-workflow-idle",
+				};
+				yield {
+					type: "result",
+					subtype: "success",
+					session_id: "native-workflow-idle",
+					total_cost_usd: 0.1,
+					num_turns: 1,
+					duration_ms: 40,
+					usage: { input_tokens: 5, output_tokens: 2 },
+				};
+				yield {
+					type: "system",
+					subtype: "task_notification",
+					task_id: "workflow-task-idle",
+					status: "completed",
+					summary: "Workflow phase completed",
+					session_id: "native-workflow-idle",
+				};
+				yield {
+					type: "system",
+					subtype: "session_state_changed",
+					state: "idle",
+					uuid: "idle-before-workflow-continuation",
+					session_id: "native-workflow-idle",
+				};
+				signalIdle();
+				await continuationReady;
+				yield {
+					type: "assistant",
+					uuid: "workflow-continuation-frame",
+					session_id: "native-workflow-idle",
+					parent_tool_use_id: null,
+					message: {
+						model: "claude-sonnet-4-6",
+						content: [{ type: "text", text: "Workflow is complete." }],
+						usage: { input_tokens: 6, output_tokens: 3 },
+					},
+				};
+				yield {
+					type: "result",
+					subtype: "success",
+					session_id: "native-workflow-idle",
+					total_cost_usd: 0.2,
+					num_turns: 1,
+					duration_ms: 60,
+					usage: { input_tokens: 6, output_tokens: 3 },
+				};
+			}),
+		);
+
+		const session = new ClaudeProvider({
+			workflowProgressReader: async () => null,
+		}).query(baseParams());
+		await session.steer?.("wait for the workflow continuation");
+		const events: AgentEvent[] = [];
+		const completed = (async () => {
+			for await (const event of session) {
+				events.push(event);
+				if (event.type === "done") return;
+			}
+		})();
+		await idleObserved;
+		await Promise.resolve();
+		expect(events.some((event) => event.type === "done")).toBe(false);
+
+		releaseContinuation();
+		await completed;
+		expect(events.filter((event) => event.type === "done")).toHaveLength(1);
+		expect(events).toContainEqual({
+			type: "text_delta",
+			text: "Workflow is complete.",
+			providerFrame: {
+				providerSessionId: "native-workflow-idle",
+				providerUuid: "workflow-continuation-frame",
+			},
+		});
+		session.cancel();
+	});
+
+	it("keeps the existing result timer fallback when no state event arrives", async () => {
+		vi.useFakeTimers();
+		let releaseTail = () => {};
+		try {
+			let signalTaskSettled = () => {};
+			const taskSettled = new Promise<void>((resolve) => {
+				signalTaskSettled = resolve;
+			});
+			const tail = new Promise<void>((resolve) => {
+				releaseTail = resolve;
+			});
+			vi.mocked(query).mockReturnValueOnce(
+				sdkStream(async function* () {
+					yield {
+						type: "assistant",
+						uuid: "timer-tool-frame",
+						session_id: "native-timer-fallback",
+						parent_tool_use_id: null,
+						message: {
+							model: "claude-sonnet-4-6",
+							content: [
+								{
+									type: "tool_use",
+									id: "timer-agent-tool",
+									name: "Agent",
+									input: { prompt: "finish shortly" },
+								},
+							],
+							usage: { input_tokens: 3, output_tokens: 1 },
+						},
+					};
+					yield {
+						type: "system",
+						subtype: "task_started",
+						task_id: "timer-task",
+						tool_use_id: "timer-agent-tool",
+						task_type: "subagent",
+						session_id: "native-timer-fallback",
+					};
+					yield {
+						type: "result",
+						subtype: "success",
+						session_id: "native-timer-fallback",
+						total_cost_usd: 0,
+						num_turns: 1,
+						duration_ms: 30,
+						usage: { input_tokens: 3, output_tokens: 1 },
+					};
+					yield {
+						type: "system",
+						subtype: "task_notification",
+						task_id: "timer-task",
+						status: "completed",
+						summary: "Finished",
+						session_id: "native-timer-fallback",
+					};
+					signalTaskSettled();
+					await tail;
+				}),
+			);
+
+			const session = new ClaudeProvider().query(baseParams());
+			await session.send("run the short task");
+			const events: AgentEvent[] = [];
+			const completed = (async () => {
+				for await (const event of session) {
+					events.push(event);
+					if (event.type === "done") return;
+				}
+			})();
+			await taskSettled;
+			await vi.advanceTimersByTimeAsync(249);
+			expect(events.some((event) => event.type === "done")).toBe(false);
+			await vi.advanceTimersByTimeAsync(1);
+			await completed;
+			expect(events.filter((event) => event.type === "done")).toHaveLength(1);
+			session.cancel();
+		} finally {
+			releaseTail();
+			vi.useRealTimers();
+		}
+	});
+
+	it("completes a steering continuation before consuming its trailing idle", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkStream(async function* () {
+				yield {
+					type: "result",
+					subtype: "success",
+					session_id: "native-started-steer",
+					total_cost_usd: 0.1,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 5, output_tokens: 2 },
+				};
+				yield {
+					type: "assistant",
+					uuid: "steer-continuation-text",
+					session_id: "native-started-steer",
+					parent_tool_use_id: null,
+					message: {
+						model: "claude-sonnet-4-6",
+						content: [{ type: "text", text: "Continuation started." }],
+						usage: { input_tokens: 4, output_tokens: 2 },
+					},
+				};
+				yield {
+					type: "result",
+					subtype: "success",
+					session_id: "native-started-steer",
+					total_cost_usd: 0.2,
+					num_turns: 1,
+					duration_ms: 200,
+					usage: { input_tokens: 4, output_tokens: 2 },
+				};
+				yield {
+					type: "system",
+					subtype: "session_state_changed",
+					state: "idle",
+					uuid: "idle-after-continuation-result",
+					session_id: "native-started-steer",
+				};
+			}),
+		);
+
+		const session = new ClaudeProvider().query(baseParams());
+		await session.steer?.("continue differently");
+		const events: AgentEvent[] = [];
+		for await (const event of session) {
+			events.push(event);
+			if (event.type === "done") break;
+		}
+		expect(events.filter((event) => event.type === "done")).toHaveLength(1);
+		expect(events).toContainEqual({
+			type: "text_delta",
+			text: "Continuation started.",
+			providerFrame: {
+				providerSessionId: "native-started-steer",
+				providerUuid: "steer-continuation-text",
+			},
+		});
+		expect(events.find((event) => event.type === "done")).toMatchObject({
+			turns: 2,
+			durationMs: 300,
+		});
+		await expect(session[Symbol.asyncIterator]().next()).resolves.toEqual({
+			done: true,
+			value: undefined,
+		});
+		session.cancel();
+	});
+
+	it("does not reuse a stale idle frame on the next turn of a long-lived query", async () => {
+		let releaseSecondTurn = () => {};
+		let signalStaleReplay = () => {};
+		let releaseFreshIdle = () => {};
+		const secondTurnReady = new Promise<void>((resolve) => {
+			releaseSecondTurn = resolve;
+		});
+		const staleReplayObserved = new Promise<void>((resolve) => {
+			signalStaleReplay = resolve;
+		});
+		const freshIdleReady = new Promise<void>((resolve) => {
+			releaseFreshIdle = resolve;
+		});
+		vi.mocked(query).mockReturnValueOnce(
+			sdkStream(async function* () {
+				yield {
+					type: "result",
+					subtype: "success",
+					session_id: "native-long-lived-state",
+					total_cost_usd: 0.1,
+					num_turns: 1,
+					duration_ms: 10,
+					usage: { input_tokens: 1, output_tokens: 1 },
+				};
+				yield {
+					type: "system",
+					subtype: "session_state_changed",
+					state: "idle",
+					uuid: "turn-one-idle",
+					session_id: "native-long-lived-state",
+				};
+				await secondTurnReady;
+				yield {
+					type: "result",
+					subtype: "success",
+					session_id: "native-long-lived-state",
+					total_cost_usd: 0.2,
+					num_turns: 1,
+					duration_ms: 20,
+					usage: { input_tokens: 1, output_tokens: 1 },
+				};
+				yield {
+					type: "system",
+					subtype: "session_state_changed",
+					state: "idle",
+					uuid: "turn-one-idle",
+					session_id: "native-long-lived-state",
+				};
+				signalStaleReplay();
+				await freshIdleReady;
+				yield {
+					type: "system",
+					subtype: "session_state_changed",
+					state: "idle",
+					uuid: "turn-two-idle",
+					session_id: "native-long-lived-state",
+				};
+			}),
+		);
+
+		const session = new ClaudeProvider().query(baseParams());
+		await session.steer?.("first turn");
+		const firstTurn: AgentEvent[] = [];
+		for await (const event of session) {
+			firstTurn.push(event);
+			if (event.type === "done") break;
+		}
+		expect(firstTurn.filter((event) => event.type === "done")).toHaveLength(1);
+
+		await session.steer?.("second turn");
+		const secondTurn: AgentEvent[] = [];
+		const secondCompleted = (async () => {
+			for await (const event of session) {
+				secondTurn.push(event);
+				if (event.type === "done") return;
+			}
+		})();
+		releaseSecondTurn();
+		await staleReplayObserved;
+		await Promise.resolve();
+		expect(secondTurn.some((event) => event.type === "done")).toBe(false);
+
+		releaseFreshIdle();
+		await secondCompleted;
+		expect(secondTurn.filter((event) => event.type === "done")).toHaveLength(1);
 		session.cancel();
 	});
 

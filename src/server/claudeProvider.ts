@@ -481,6 +481,13 @@ function claudePermissionFrameKey(
 	return JSON.stringify([providerSessionId, providerUuid]);
 }
 
+function claudeSessionStateEventKey(
+	providerSessionId: string,
+	providerUuid: string,
+): string {
+	return JSON.stringify([providerSessionId, providerUuid]);
+}
+
 function retainBoundedMapEntry<K, V>(map: Map<K, V>, key: K, value: V): void {
 	map.delete(key);
 	map.set(key, value);
@@ -2870,7 +2877,10 @@ class ClaudeAgentSession implements AgentSession {
 	private readonly permissionToolResultFrames = new Map<string, Set<string>>();
 	private permissionToolResultFrameLinkCount = 0;
 	private readonly reportedPermissionDenials = new Set<string>();
+	private readonly seenSessionStateEvents = new Set<string>();
 	private currentNativeSessionId: string | undefined;
+	private lifecycleNativeSessionId: string | undefined;
+	private lifecycleNativeSessionGeneration = 0;
 	private subagents = new ClaudeSubagentTracker();
 	private backgroundActivities: ClaudeBackgroundActivityTracker;
 	private turnUsage = new ClaudeTurnUsageAccumulator();
@@ -3618,6 +3628,12 @@ class ClaudeAgentSession implements AgentSession {
 		return events;
 	}
 
+	private setLifecycleNativeSessionId(providerSessionId: string): void {
+		if (this.lifecycleNativeSessionId === providerSessionId) return;
+		this.lifecycleNativeSessionId = providerSessionId;
+		this.lifecycleNativeSessionGeneration++;
+	}
+
 	private async *translateEvents(): AsyncGenerator<AgentEvent> {
 		const sdkQuery = this.sdkQuery;
 		if (!sdkQuery) return;
@@ -3627,6 +3643,8 @@ class ClaudeAgentSession implements AgentSession {
 		type PendingClaudeResult = {
 			results: Array<Extract<SDKMessage, { type: "result" }>>;
 			done: Extract<AgentEvent, { type: "done" }>;
+			providerSessionId: string | null;
+			providerSessionGeneration: number | null;
 			deadlineMs: number;
 			awaitTaskVersion: number | null;
 			usageDrainDeadlineMs: number | null;
@@ -3713,8 +3731,76 @@ class ClaudeAgentSession implements AgentSession {
 				const rawProviderSessionId = exactClaudePermissionId(
 					(message as { session_id?: unknown }).session_id,
 				);
-				if (rawProviderSessionId) {
-					this.currentNativeSessionId = rawProviderSessionId;
+				const sessionStateChanged =
+					message.type === "system" &&
+					(message as { subtype?: unknown }).subtype ===
+						"session_state_changed";
+				const sessionInit =
+					message.type === "system" &&
+					(message as { subtype?: unknown }).subtype === "init";
+				if (rawProviderSessionId && !sessionStateChanged) {
+					if (this.currentNativeSessionId === undefined || sessionInit) {
+						this.currentNativeSessionId = rawProviderSessionId;
+					}
+					if (
+						sessionInit ||
+						(this.lifecycleNativeSessionId === undefined &&
+							message.type === "result")
+					) {
+						this.setLifecycleNativeSessionId(rawProviderSessionId);
+					}
+				}
+				if (sessionStateChanged) {
+					const state = (message as { state?: unknown }).state;
+					const providerUuid = exactClaudePermissionId(
+						(message as { uuid?: unknown }).uuid,
+					);
+					if (
+						rawProviderSessionId &&
+						providerUuid &&
+						(state === "idle" ||
+							state === "running" ||
+							state === "requires_action")
+					) {
+						const eventKey = claudeSessionStateEventKey(
+							rawProviderSessionId,
+							providerUuid,
+						);
+						const duplicate = this.seenSessionStateEvents.has(eventKey);
+						if (!duplicate) {
+							retainBoundedSetEntry(this.seenSessionStateEvents, eventKey);
+						}
+						if (
+							!duplicate &&
+							state === "idle" &&
+							pendingResult !== null &&
+							pendingResult.providerSessionId === rawProviderSessionId &&
+							pendingResult.providerSessionGeneration ===
+								this.lifecycleNativeSessionGeneration &&
+							this.lifecycleNativeSessionId === rawProviderSessionId &&
+							pendingResult.steerContinuationExpected &&
+							pendingResult.awaitTaskVersion === null &&
+							pendingResult.usageDrainDeadlineMs === null &&
+							!pendingResult.workflowContinuationStarted &&
+							!pendingResult.workflowContinuationExpected &&
+							pendingResult.workflowContinuationDeadlineMs === null &&
+							!this.subagents.hasUnsettledTasks() &&
+							!this.subagents.hasActiveWorkflowTasks() &&
+							!this.subagents.hasWorkflowContinuationPotential() &&
+							!this.subagents.hasWorkflowContinuationCandidate()
+						) {
+							yield this.completeResult(
+								pendingResult.results,
+								pendingResult.done,
+							);
+							hadText = false;
+							pendingResult = null;
+							workflowProgressRefreshAtMs = null;
+						}
+					}
+					// Native session state is supporting lifecycle evidence only. It is
+					// never translated, persisted, or allowed to open/close Hlid state.
+					continue;
 				}
 				if (
 					message.type === "system" &&
@@ -3725,6 +3811,7 @@ class ClaudeAgentSession implements AgentSession {
 				if (message.type === "conversation_reset") {
 					this.resumeId = message.new_conversation_id;
 					this.currentNativeSessionId = message.new_conversation_id;
+					this.setLifecycleNativeSessionId(message.new_conversation_id);
 				}
 				if (message.type === "result" && isEmptyClaudeIdleBoundary(message)) {
 					// This belongs to the resumed stream's idle state, not the
@@ -4037,6 +4124,12 @@ class ClaudeAgentSession implements AgentSession {
 					pendingResult = {
 						results,
 						done,
+						providerSessionId: rawProviderSessionId ?? null,
+						providerSessionGeneration:
+							rawProviderSessionId &&
+							this.lifecycleNativeSessionId === rawProviderSessionId
+								? this.lifecycleNativeSessionGeneration
+								: null,
 						deadlineMs: steerContinuationExpected
 							? Number.POSITIVE_INFINITY
 							: Date.now() + CLAUDE_BACKGROUND_SETTLE_TIMEOUT_MS,
@@ -4273,6 +4366,15 @@ function claudeSdkEnv(
 	const env: Record<string, string | undefined> = { ...process.env };
 	delete env.ANTHROPIC_BASE_URL;
 	return env;
+}
+
+function claudeLiveQueryEnv(
+	base: Record<string, string | undefined> | undefined,
+): Record<string, string | undefined> {
+	return {
+		...(base ?? process.env),
+		CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
+	};
 }
 
 // Serializes CLAUDE_CONFIG_DIR mutation windows across concurrent
@@ -4565,7 +4667,7 @@ export class ClaudeProvider implements AgentProvider {
 
 	query(params: AgentQueryParams): AgentSession {
 		const abortController = new AbortController();
-		const sdkEnv = claudeSdkEnv(params.cwd, this.sdkEnv);
+		const sdkEnv = claudeLiveQueryEnv(claudeSdkEnv(params.cwd, this.sdkEnv));
 		const hostInteractions = createClaudeHostInteractionHandlers(params);
 		const reservedMcpServerNames = new Set([
 			HLID_AGENT_NAMESPACE,
@@ -4636,7 +4738,7 @@ export class ClaudeProvider implements AgentProvider {
 					...(this.passSdkEffort
 						? { effort: (params.effort ?? "medium") as SdkEffortLevel }
 						: {}),
-					...(sdkEnv ? { env: sdkEnv } : {}),
+					env: sdkEnv,
 					...(params.maxTurns !== undefined
 						? { maxTurns: params.maxTurns }
 						: {}),
