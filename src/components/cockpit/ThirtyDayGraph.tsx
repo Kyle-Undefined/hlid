@@ -6,12 +6,14 @@ import {
 } from "react";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { ThirtyDayStats } from "#/db";
+import { useIsDesktop } from "#/hooks/useIsDesktop";
 
 const CHART_WIDTH = 1_000;
 const PLOT_HEIGHT = 40;
 const PLOT_TOP = 2;
 const PLOT_BOTTOM = 38;
-const TICK_INDEXES = [0, 9, 19, 29] as const;
+const DESKTOP_TICK_COUNT = 4;
+const MOBILE_TICK_COUNT = 3;
 
 type GraphPoint = {
 	date: string;
@@ -37,6 +39,17 @@ function fmtTickDate(iso: string): string {
 		"Dec",
 	][parseInt(m, 10) - 1];
 	return `${month} ${parseInt(d, 10)}`;
+}
+
+function buildTickIndexes(dayCount: number, maxTickCount: number): number[] {
+	const tickCount = Math.min(maxTickCount, dayCount);
+	if (tickCount <= 0) return [];
+	if (tickCount === 1) return [0];
+
+	const lastIndex = dayCount - 1;
+	return Array.from({ length: tickCount }, (_, tickIndex) =>
+		Math.floor((tickIndex * lastIndex) / (tickCount - 1)),
+	);
 }
 
 function buildGraphPoints(days: ThirtyDayStats["days"]): GraphPoint[] {
@@ -94,15 +107,21 @@ export function ThirtyDayGraph({
 	label?: string;
 }) {
 	const gradientId = `thirty-day-fill-${useId().replaceAll(":", "")}`;
+	const isDesktop = useIsDesktop();
 	const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 	const points = useMemo(() => buildGraphPoints(data.days), [data.days]);
 	const seriesPath = useMemo(() => linePath(points), [points]);
 	const fillPath = useMemo(() => areaPath(points), [points]);
 	const tickIndexes = useMemo(
-		() => TICK_INDEXES.filter((index) => index < data.days.length),
-		[data.days.length],
+		() =>
+			buildTickIndexes(
+				data.days.length,
+				isDesktop ? DESKTOP_TICK_COUNT : MOBILE_TICK_COUNT,
+			),
+		[data.days.length, isDesktop],
 	);
 	const hoveredPoint = hoveredIndex === null ? undefined : points[hoveredIndex];
+	const chartLabel = `${label}: cumulative queries`;
 
 	return (
 		<div className="border-b border-border shrink-0 px-4 pt-2.5 pb-0">
@@ -120,7 +139,7 @@ export function ThirtyDayGraph({
 			<div className="relative h-14 w-full">
 				<svg
 					role="img"
-					aria-label="Cumulative queries over 30 days"
+					aria-label={chartLabel}
 					className="absolute inset-x-0 top-0 h-10 w-full touch-pan-y overflow-visible"
 					viewBox={`0 0 ${CHART_WIDTH} ${PLOT_HEIGHT}`}
 					preserveAspectRatio="none"
@@ -129,7 +148,7 @@ export function ThirtyDayGraph({
 					}
 					onPointerLeave={() => setHoveredIndex(null)}
 				>
-					<title>Cumulative queries over 30 days</title>
+					<title>{chartLabel}</title>
 					<defs>
 						<linearGradient
 							id={gradientId}
@@ -211,7 +230,7 @@ export function ThirtyDayGraph({
 					return (
 						<span
 							key={`${index}-${data.days[index].date}`}
-							className="absolute bottom-0 text-[8px] text-muted-foreground/45"
+							className="absolute bottom-0 whitespace-nowrap text-[8px] text-muted-foreground/45"
 							style={{ left: `${position}%`, transform }}
 						>
 							{fmtTickDate(data.days[index].date)}
