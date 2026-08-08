@@ -4882,6 +4882,8 @@ class CodexAgentSession implements AgentSession {
 			!this.params.usageGateEnforced &&
 			autoApprovesPermissions(this.params)
 		) {
+			// Bypass mode is a turn-level host decision, not permission to persist
+			// a native grant after the session returns to an approval-gated mode.
 			return this.allowedServerRequestResult(method, params);
 		}
 		if (typeof this.params.canUseTool !== "function") {
@@ -4914,18 +4916,17 @@ class CodexAgentSession implements AgentSession {
 			description:
 				typeof params.reason === "string" ? params.reason : undefined,
 		});
-		const allowed = decision.behavior === "allow";
+		if (decision.behavior !== "allow") {
+			return this.deniedServerRequestResult(method);
+		}
 		if (
-			allowed &&
 			this.params.permissionMode === "plan" &&
 			filePath &&
 			isHtmlPlanPath(filePath, this.params.planHtmlPath)
 		) {
 			this.approvedHtmlPlanItemId = itemId;
 		}
-		return allowed
-			? this.allowedServerRequestResult(method, params)
-			: this.deniedServerRequestResult(method);
+		return this.allowedServerRequestResult(method, params, decision.saveScope);
 	}
 
 	private ownsServerRequest(params: Record<string, unknown>): boolean {
@@ -4991,13 +4992,21 @@ class CodexAgentSession implements AgentSession {
 	private allowedServerRequestResult(
 		method: string,
 		params: Record<string, unknown>,
+		saveScope?: "session" | "local",
 	): ApprovalRequestResult {
 		if (method === "item/permissions/requestApproval") {
 			// `params.permissions` arrives via the tolerant asObj() parse above
 			// (inbound, not compile-time checked) — cast, don't re-derive.
 			const permissions =
 				(params.permissions as GrantedPermissionProfile | undefined) ?? {};
-			return { scope: "session", permissions };
+			// Codex's native `session` scope persists the grant into later turns.
+			// An unsaved Hlid approval is Allow once, so keep it turn-scoped. Both
+			// Hlid session and local persistence intentionally grant the current
+			// native thread; Hlid owns persistence beyond that thread.
+			return {
+				scope: saveScope === undefined ? "turn" : "session",
+				permissions,
+			};
 		}
 		return { decision: "accept" };
 	}

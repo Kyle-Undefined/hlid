@@ -7615,6 +7615,117 @@ describe("CodexAgentSession — notifications", () => {
 		session.cancel();
 	});
 
+	it.each([
+		{
+			label: "Allow once",
+			decision: { behavior: "allow" as const },
+			result: {
+				scope: "turn",
+				permissions: { network: true, writableRoots: ["/tmp/project"] },
+			},
+		},
+		{
+			label: "session persistence",
+			decision: { behavior: "allow" as const, saveScope: "session" as const },
+			result: {
+				scope: "session",
+				permissions: { network: true, writableRoots: ["/tmp/project"] },
+			},
+		},
+		{
+			label: "local persistence",
+			decision: { behavior: "allow" as const, saveScope: "local" as const },
+			result: {
+				scope: "session",
+				permissions: { network: true, writableRoots: ["/tmp/project"] },
+			},
+		},
+		{
+			label: "denial",
+			decision: { behavior: "deny" as const },
+			result: { scope: "turn", permissions: {} },
+		},
+	])("maps $label to the matching native permission grant scope", async ({
+		decision,
+		result,
+	}) => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi.fn().mockResolvedValue(decision);
+		const session = new CodexProvider().query(baseCodexParams({ canUseTool }));
+		await session.send("use the requested permissions");
+
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 82,
+					method: "item/permissions/requestApproval",
+					params: {
+						threadId: "thread-1",
+						itemId: "permission-1",
+						permissions: {
+							network: true,
+							writableRoots: ["/tmp/project"],
+						},
+					},
+				})}\n`,
+			),
+		);
+
+		await vi.waitFor(() => {
+			expect(canUseTool).toHaveBeenCalledWith(
+				"item/permissions/requestApproval",
+				expect.objectContaining({ itemId: "permission-1" }),
+				expect.objectContaining({ toolUseID: "permission-1" }),
+			);
+			const response = writes
+				.map((line) => JSON.parse(line))
+				.find((message) => message.id === 82);
+			expect(response?.result).toEqual(result);
+		});
+		session.cancel();
+	});
+
+	it("keeps bypassPermissions native grants turn-scoped", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi.fn();
+		const session = new CodexProvider().query(
+			baseCodexParams({ permissionMode: "bypassPermissions", canUseTool }),
+		);
+		await session.send("use the requested permissions");
+
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 83,
+					method: "item/permissions/requestApproval",
+					params: {
+						threadId: "thread-1",
+						itemId: "permission-bypass",
+						permissions: { network: true },
+					},
+				})}\n`,
+			),
+		);
+
+		await vi.waitFor(() => {
+			const response = writes
+				.map((line) => JSON.parse(line))
+				.find((message) => message.id === 83);
+			expect(response?.result).toEqual({
+				scope: "turn",
+				permissions: { network: true },
+			});
+		});
+		expect(canUseTool).not.toHaveBeenCalled();
+		session.cancel();
+	});
+
 	it("auto-approves app-server requests while a bypassPermissions session is planning", async () => {
 		const { proc, writes } = makeFakeSessionProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);
@@ -7933,7 +8044,10 @@ describe("CodexAgentSession — notifications", () => {
 				{ file_path: "/vault/.hlid/plans/plan-session.html" },
 				expect.objectContaining({ toolUseID: "change-1" }),
 			);
-			expect(writes.some((line) => JSON.parse(line).id === 99)).toBe(true);
+			const response = writes
+				.map((line) => JSON.parse(line))
+				.find((message) => message.id === 99);
+			expect(response?.result).toEqual({ decision: "accept" });
 		});
 
 		emitSessionNotification(proc, "item/completed", {
