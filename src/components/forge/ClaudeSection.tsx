@@ -563,7 +563,9 @@ export function ClaudeSection({
 							}
 						/>
 					)}
-					<MaxTurnsField claude={claude} onChange={onChange} />
+					{!claude.vaultProvider.startsWith("acp:") && (
+						<MaxTurnsField claude={claude} onChange={onChange} />
+					)}
 					<CheckboxField
 						label="Turn recaps"
 						hint="generate a brief summary after turns with tool use"

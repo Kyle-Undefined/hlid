@@ -25,6 +25,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, normalize } from "node:path";
 
 const CLI_VERSION_PIN = "0.147.0";
+const CLI_SCHEMA_MODE = "--experimental";
 
 const root = join(import.meta.dir, "..");
 const outDir = join(root, "src", "server", "codexProtocol");
@@ -39,6 +40,15 @@ const SEEDS: Array<[name: string, relPath: string]> = [
 		"ThreadSettingsUpdatedNotification",
 		"v2/ThreadSettingsUpdatedNotification.ts",
 	],
+	[
+		"ServerRequestResolvedNotification",
+		"v2/ServerRequestResolvedNotification.ts",
+	],
+	[
+		"McpServerStatusUpdatedNotification",
+		"v2/McpServerStatusUpdatedNotification.ts",
+	],
+	["ModelReroutedNotification", "v2/ModelReroutedNotification.ts"],
 	["ThreadForkParams", "v2/ThreadForkParams.ts"],
 	["ThreadForkResponse", "v2/ThreadForkResponse.ts"],
 	["ThreadCompactStartParams", "v2/ThreadCompactStartParams.ts"],
@@ -150,6 +160,8 @@ const SEEDS: Array<[name: string, relPath: string]> = [
 		"PermissionsRequestApprovalResponse",
 		"v2/PermissionsRequestApprovalResponse.ts",
 	],
+	["CurrentTimeReadParams", "v2/CurrentTimeReadParams.ts"],
+	["CurrentTimeReadResponse", "v2/CurrentTimeReadResponse.ts"],
 	// Not top-level RPC payloads themselves, but referenced directly by
 	// codexProvider.ts when typing model/list parsing and approval results —
 	// barrel-exporting them saves a deep import path at the call site.
@@ -247,6 +259,7 @@ async function walkClosure(
 
 const BARREL_BANNER = `// AUTO-GENERATED — Hlid-owned barrel for vendored codex-cli app-server types.
 // Source version: ${CLI_VERSION_PIN} (pinned in scripts/generate-codex-types.ts).
+// Schema mode: ${CLI_SCHEMA_MODE}; Hlid opts into experimentalApi at initialize.
 // Regenerate via \`bun scripts/generate-codex-types.ts\`; version bumps are
 // deliberate manual updates, not run automatically on every build.
 
@@ -274,13 +287,13 @@ async function main(): Promise<void> {
 	const genRoot = mkdtempSync(join(tmpdir(), "codex-app-server-ts-"));
 	try {
 		console.log(
-			`Running \`codex app-server generate-ts --experimental --out ${genRoot}\`...`,
+			`Running \`codex app-server generate-ts ${CLI_SCHEMA_MODE} --out ${genRoot}\`...`,
 		);
 		await run([
 			"codex",
 			"app-server",
 			"generate-ts",
-			"--experimental",
+			CLI_SCHEMA_MODE,
 			"--out",
 			genRoot,
 		]);

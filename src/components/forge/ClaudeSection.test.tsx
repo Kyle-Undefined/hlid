@@ -138,6 +138,7 @@ describe("Vault Agent and Computer Use model/effort interplay", () => {
 			screen.getAllByRole("option", { name: "— provider default —" }),
 		).toHaveLength(2);
 		expect(screen.getByText(/has not advertised model choices/i)).toBeTruthy();
+		expect(screen.queryByText("Max turns")).toBeNull();
 	});
 
 	it("keeps a configured ACP model visible when the catalog is empty", () => {

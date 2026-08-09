@@ -282,6 +282,7 @@ type TurnState = {
 	receivedAny: boolean;
 	receivedUsage: boolean;
 	queryRecorded: boolean;
+	terminalFailure: Extract<AgentEvent, { type: "done" }>["terminalFailure"];
 	assistantText: string;
 	lastAssistantText: string;
 	assistantMessageBoundaryPending: boolean;
@@ -859,7 +860,9 @@ function configuredAgentSettings(
 	const settings: AgentSettings = {};
 	if (agent.model) settings.model = agent.model;
 	if (agent.effort) settings.effort = agent.effort;
-	if (agent.max_turns) settings.maxTurns = agent.max_turns;
+	if (!agent.provider?.startsWith("acp:") && agent.max_turns) {
+		settings.maxTurns = agent.max_turns;
+	}
 	if (agent.permission_mode) settings.permissionMode = agent.permission_mode;
 	if (agent.recap_model) settings.recapModel = agent.recap_model;
 	return Object.keys(settings).length > 0 ? settings : null;
@@ -952,7 +955,11 @@ function buildAgentQueryParams(options: {
 			options.agentSettings?.effort ??
 			options.defaultEffort,
 		serviceTier: options.serviceTierOverride ?? undefined,
-		maxTurns: options.agentSettings?.maxTurns ?? options.defaultMaxTurns,
+		...(options.providerId.startsWith("acp:")
+			? {}
+			: {
+					maxTurns: options.agentSettings?.maxTurns ?? options.defaultMaxTurns,
+				}),
 		executable: options.executable,
 		windowsComputerUse: options.windowsComputerUse,
 		onGoalChange: options.onGoalChange,
@@ -1009,7 +1016,7 @@ function buildQueryData(
 			turns: event.turns,
 			context_window:
 				primaryModel?.contextWindow ?? turn.lastKnownContextWindow ?? null,
-			stop_reason: event.stopReason ?? null,
+			stop_reason: event.terminalFailure?.code ?? event.stopReason ?? null,
 			tokens_in_context: tokensInContext,
 			model:
 				(turn.lastActualModel ?? primaryModelId ?? turn.selectedModel) || null,
@@ -1093,7 +1100,9 @@ function sessionDefaultsFromSelection(
 			configuredAgent?.permissionMode ??
 			providerDefaults.permission_mode ??
 			"default",
-		maxTurns: configuredAgent?.maxTurns ?? providerDefaults.max_turns,
+		maxTurns: providerId.startsWith("acp:")
+			? undefined
+			: (configuredAgent?.maxTurns ?? providerDefaults.max_turns),
 		turnRecaps: providerDefaults.turn_recaps ?? true,
 		recapModel:
 			configuredAgent?.recapModel ??
@@ -1182,6 +1191,7 @@ function createTurnState(
 		receivedAny: false,
 		receivedUsage: false,
 		queryRecorded: false,
+		terminalFailure: undefined,
 		assistantText: "",
 		lastAssistantText: "",
 		assistantMessageBoundaryPending: false,
@@ -5519,14 +5529,16 @@ export class SessionManager {
 					"Claude peer continuation ended before a turn boundary",
 				);
 			}
-			this.scheduleTurnRecap({
-				turn,
-				sessionId: job.sessionId,
-				userMessage: "Approved Claude peer message",
-				emit: job.emit,
-				provider: job.provider,
-				agentSettings: job.agentSettings,
-			});
+			if (!turn.terminalFailure) {
+				this.scheduleTurnRecap({
+					turn,
+					sessionId: job.sessionId,
+					userMessage: "Approved Claude peer message",
+					emit: job.emit,
+					provider: job.provider,
+					agentSettings: job.agentSettings,
+				});
+			}
 		} catch (error) {
 			this.settleProviderContinuationReady(job, false);
 			if (!expectedStop()) {
@@ -5681,14 +5693,16 @@ export class SessionManager {
 					turn,
 					provider,
 				);
-				this.scheduleTurnRecap({
-					turn,
-					sessionId,
-					userMessage: objective,
-					emit,
-					provider,
-					agentSettings,
-				});
+				if (!turn.terminalFailure) {
+					this.scheduleTurnRecap({
+						turn,
+						sessionId,
+						userMessage: objective,
+						emit,
+						provider,
+						agentSettings,
+					});
+				}
 			} catch (error) {
 				this.state = "error";
 				const message =
@@ -6919,6 +6933,7 @@ export class SessionManager {
 			event,
 			turn,
 		);
+		turn.terminalFailure = event.terminalFailure;
 		// Captured before any reset below — sent on "done" so the client can
 		// offer "branch from here" on this row without a history reload.
 		const dbMessageId = turn.dbMessageId;
@@ -6973,6 +6988,17 @@ export class SessionManager {
 				turn.dbMessageId = null;
 				turn.assistantText = "";
 			}
+		}
+		if (event.terminalFailure) {
+			emit({
+				type: "error",
+				message: event.terminalFailure.message,
+				turn_scoped: true,
+				...(this.currentTurnId !== undefined
+					? { turn_id: this.currentTurnId }
+					: {}),
+			});
+			return;
 		}
 		emit({
 			type: "done",
@@ -9702,6 +9728,7 @@ export class SessionManager {
 					displayName,
 					description,
 					agentID,
+					signal,
 					passInput,
 					autoApproveTools,
 					resolve,
@@ -10041,6 +10068,7 @@ export class SessionManager {
 		displayName: string | undefined;
 		description: string | undefined;
 		agentID: string | undefined;
+		signal: AbortSignal;
 		passInput: Record<string, unknown>;
 		autoApproveTools: boolean;
 		resolve: (decision: AgentToolDecision) => void;
@@ -10056,6 +10084,7 @@ export class SessionManager {
 			displayName,
 			description,
 			agentID,
+			signal,
 			passInput,
 			autoApproveTools,
 			resolve,
@@ -10128,6 +10157,30 @@ export class SessionManager {
 			);
 			const approvalRequest = { ...request, input: approvalInput };
 			return new Promise<"allow" | "block">((finish) => {
+				let settled = false;
+				let emitted = false;
+				const onAbort = () => {
+					if (settled) return;
+					const pending = this.permissions
+						.getPending()
+						.some((candidate) => candidate.id === toolUseID);
+					if (!pending) return;
+					if (emitted) {
+						emit({
+							type: "permission_resolved",
+							id: toolUseID,
+							toolName,
+							displayName: approvalRequest.displayName,
+							decision: "denied",
+						});
+					}
+					this.permissions.complete(
+						toolUseID,
+						false,
+						undefined,
+						"Provider cleared the request",
+					);
+				};
 				this.permissions.register(
 					toolUseID,
 					{
@@ -10135,6 +10188,9 @@ export class SessionManager {
 						policy: reason ? { source: "umbod" as const, reason } : undefined,
 					},
 					(approved, saveScope, customDenyMessage) => {
+						if (settled) return;
+						settled = true;
+						signal.removeEventListener("abort", onAbort);
 						this.permissions.delete(toolUseID);
 						if (!approved) {
 							denyMessage = customDenyMessage;
@@ -10169,10 +10225,15 @@ export class SessionManager {
 						finish("allow");
 					},
 				);
-				emit({
-					...approvalRequest,
-					policy: reason ? { source: "umbod" as const, reason } : undefined,
-				});
+				signal.addEventListener("abort", onAbort, { once: true });
+				if (signal.aborted) onAbort();
+				if (!settled) {
+					emitted = true;
+					emit({
+						...approvalRequest,
+						policy: reason ? { source: "umbod" as const, reason } : undefined,
+					});
+				}
 			});
 		};
 
@@ -11194,14 +11255,16 @@ export class SessionManager {
 			// after the queue empties. Successful turns leave state alone so the
 			// drain loop sees "running" → resets to "idle" at end.
 
-			this.scheduleTurnRecap({
-				turn,
-				sessionId,
-				userMessage,
-				emit,
-				provider: currentProvider,
-				agentSettings,
-			});
+			if (!turn.terminalFailure) {
+				this.scheduleTurnRecap({
+					turn,
+					sessionId,
+					userMessage,
+					emit,
+					provider: currentProvider,
+					agentSettings,
+				});
+			}
 		} catch (err) {
 			if (
 				err instanceof ProviderPermissionModeRejectedError &&

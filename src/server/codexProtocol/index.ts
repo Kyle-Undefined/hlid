@@ -1,5 +1,6 @@
 // AUTO-GENERATED — Hlid-owned barrel for vendored codex-cli app-server types.
 // Source version: 0.147.0 (pinned in scripts/generate-codex-types.ts).
+// Schema mode: --experimental; Hlid opts into experimentalApi at initialize.
 // Regenerate via `bun scripts/generate-codex-types.ts`; version bumps are
 // deliberate manual updates, not run automatically on every build.
 
@@ -8,6 +9,9 @@ export type { ThreadStartResponse } from "./v2/ThreadStartResponse";
 export type { ThreadResumeParams } from "./v2/ThreadResumeParams";
 export type { ThreadResumeResponse } from "./v2/ThreadResumeResponse";
 export type { ThreadSettingsUpdatedNotification } from "./v2/ThreadSettingsUpdatedNotification";
+export type { ServerRequestResolvedNotification } from "./v2/ServerRequestResolvedNotification";
+export type { McpServerStatusUpdatedNotification } from "./v2/McpServerStatusUpdatedNotification";
+export type { ModelReroutedNotification } from "./v2/ModelReroutedNotification";
 export type { ThreadForkParams } from "./v2/ThreadForkParams";
 export type { ThreadForkResponse } from "./v2/ThreadForkResponse";
 export type { ThreadCompactStartParams } from "./v2/ThreadCompactStartParams";
@@ -56,6 +60,8 @@ export type { FileChangeRequestApprovalParams } from "./v2/FileChangeRequestAppr
 export type { FileChangeRequestApprovalResponse } from "./v2/FileChangeRequestApprovalResponse";
 export type { PermissionsRequestApprovalParams } from "./v2/PermissionsRequestApprovalParams";
 export type { PermissionsRequestApprovalResponse } from "./v2/PermissionsRequestApprovalResponse";
+export type { CurrentTimeReadParams } from "./v2/CurrentTimeReadParams";
+export type { CurrentTimeReadResponse } from "./v2/CurrentTimeReadResponse";
 export type { ReasoningEffortOption } from "./v2/ReasoningEffortOption";
 export type { GrantedPermissionProfile } from "./v2/GrantedPermissionProfile";
 export type { RateLimitSnapshot } from "./v2/RateLimitSnapshot";

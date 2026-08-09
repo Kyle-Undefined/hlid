@@ -17,6 +17,10 @@
  * server's SIGINT/SIGTERM handlers.
  */
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import type {
+	CurrentTimeReadResponse,
+	ServerRequestResolvedNotification,
+} from "./codexProtocol";
 import { resetCodexRealtimeBackendStatus } from "./codexRealtimeStatus";
 
 export type CodexAppServerLaunch = {
@@ -155,6 +159,13 @@ export type CodexRateLimitsRead =
 	| { status: "current"; snapshot: unknown }
 	| { status: "superseded" };
 
+export type ServerRequestContext = {
+	/** Native JSON-RPC request ID used by `serverRequest/resolved`. */
+	requestId: number | string;
+	/** Aborted when Codex reports that this request no longer needs a reply. */
+	signal: AbortSignal;
+};
+
 /** Per-thread callbacks a session registers to receive its routed traffic. */
 export type ThreadHandler = {
 	onNotification(method: string, params: unknown): void;
@@ -163,7 +174,11 @@ export type ThreadHandler = {
 	 * value is written back as the JSON-RPC result; a throw becomes an error
 	 * response.
 	 */
-	onRequest(method: string, params: unknown): Promise<unknown>;
+	onRequest(
+		method: string,
+		params: unknown,
+		context: ServerRequestContext,
+	): Promise<unknown>;
 	/** The shared app-server process exited or errored. */
 	onExit(err: Error): void;
 };
@@ -296,6 +311,10 @@ export class CodexAppServer {
 	private termination: Promise<void> | null = null;
 	private idleTimer: ReturnType<typeof setTimeout> | undefined;
 	private activeServerRequests = 0;
+	private activeServerRequestControllers = new Map<
+		number | string,
+		AbortController
+	>();
 	private accountRateLimitsRevision = 0;
 	private accountRateLimitsRead: {
 		revision: number;
@@ -571,6 +590,10 @@ export class CodexAppServer {
 			pending.reject(err);
 		}
 		this.pending.clear();
+		for (const controller of this.activeServerRequestControllers.values()) {
+			controller.abort(err);
+		}
+		this.activeServerRequestControllers.clear();
 		const handlers = new Set(this.threads.values());
 		this.threads.clear();
 		try {
@@ -756,6 +779,14 @@ export class CodexAppServer {
 		if (msg.id !== undefined && msg.method) {
 			const id = msg.id;
 			const method = msg.method;
+			if (method === "currentTime/read") {
+				const result = {
+					currentTimeAt: Math.floor(Date.now() / 1_000),
+				} satisfies CurrentTimeReadResponse;
+				this.write({ id, result });
+				this.scheduleIdleReap();
+				return;
+			}
 			const handler = this.threads.get(this.threadIdOf(msg.params) ?? "");
 			if (!handler) {
 				// No session owns this thread (cancelled mid-approval) — refuse.
@@ -763,12 +794,22 @@ export class CodexAppServer {
 				this.scheduleIdleReap();
 				return;
 			}
+			const controller = new AbortController();
+			this.activeServerRequestControllers.set(id, controller);
 			this.activeServerRequests++;
 			this.cancelIdleReap();
 			void Promise.resolve()
-				.then(() => handler.onRequest(method, msg.params))
-				.then((result) => this.write({ id, result }))
+				.then(() =>
+					handler.onRequest(method, msg.params, {
+						requestId: id,
+						signal: controller.signal,
+					}),
+				)
+				.then((result) => {
+					if (!controller.signal.aborted) this.write({ id, result });
+				})
 				.catch((err: unknown) => {
+					if (controller.signal.aborted) return;
 					this.write({
 						id,
 						error: {
@@ -777,6 +818,9 @@ export class CodexAppServer {
 					});
 				})
 				.finally(() => {
+					if (this.activeServerRequestControllers.get(id) === controller) {
+						this.activeServerRequestControllers.delete(id);
+					}
 					this.activeServerRequests--;
 					this.scheduleIdleReap();
 				});
@@ -785,6 +829,12 @@ export class CodexAppServer {
 		// Notification — route by threadId; thread-less notifications (e.g.
 		// account/mcp status updates) fan out once per attached session owner.
 		if (msg.method) {
+			if (msg.method === "serverRequest/resolved") {
+				const notification = msg.params as ServerRequestResolvedNotification;
+				this.activeServerRequestControllers
+					.get(notification.requestId)
+					?.abort(new Error("Codex resolved the server request"));
+			}
 			if (msg.method === "account/rateLimits/updated") {
 				this.accountRateLimitsRevision++;
 			}

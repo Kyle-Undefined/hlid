@@ -400,7 +400,6 @@ const AcpAgentSchema = z.object({
 	/** Vault-chat defaults for this ACP provider. Empty/absent values defer to the agent. */
 	model: z.string().optional(),
 	effort: z.string().optional(),
-	max_turns: z.number().int().positive().optional(),
 	permission_mode: z
 		.enum(["default", "acceptEdits", "bypassPermissions", "plan"])
 		.optional(),

@@ -414,6 +414,31 @@ export class ProviderPermissionModeRejectedError extends Error {
 	}
 }
 
+/** Per-model query-pipeline usage reported by a provider at a turn boundary. */
+export type ProviderModelUsage = {
+	inputTokens?: number;
+	outputTokens?: number;
+	cacheReadInputTokens?: number;
+	cacheCreationInputTokens?: number;
+	webSearchRequests?: number;
+	costUSD?: number;
+	contextWindow: number;
+	maxOutputTokens: number;
+	canonicalModel?: string;
+	provider?: string;
+};
+
+/** Structured provider result failure retained through final usage accounting. */
+export type ProviderTerminalFailure = {
+	/** Stable provider-native result subtype or terminal reason. */
+	code: string;
+	/** User-facing description of the failed turn boundary. */
+	message: string;
+	terminalReason?: string;
+	apiErrorStatus?: number;
+	details?: string[];
+};
+
 export type AgentEvent =
 	| { type: "session_start"; sessionId: string }
 	/** Native provider narrowed the live session's effective permission mode. */
@@ -621,16 +646,16 @@ export type AgentEvent =
 			turns: number;
 			durationMs: number;
 			stopReason?: string;
-			modelUsage?: Record<
-				string,
-				{ contextWindow: number; maxOutputTokens: number }
-			>;
+			/** Incremental per-model usage attributed to this Hlid turn. */
+			modelUsage?: Record<string, ProviderModelUsage>;
 			usage?: {
 				inputTokens: number;
 				outputTokens: number;
 				cacheReadTokens?: number;
 				cacheCreationTokens?: number;
 			};
+			/** Provider result boundary completed as a failed turn, not success. */
+			terminalFailure?: ProviderTerminalFailure;
 	  };
 
 export type AgentToolDecision =

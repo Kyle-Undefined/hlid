@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { makeConfig as makeBaseConfig } from "#/test/fixtures";
 import type { HlidConfig } from "../config";
 import {
+	agentConfigToEntry,
 	readAgentMcpFile,
 	readAgentMcpFileAsync,
 	toggleAgentMcpFile,
@@ -45,6 +46,23 @@ beforeEach(() => {
 afterEach(() => {
 	rmSync(agentDir, { recursive: true, force: true });
 	rmSync(otherDir, { recursive: true, force: true });
+});
+
+describe("agentConfigToEntry", () => {
+	it("omits max turns for ACP agents while preserving it for SDK providers", () => {
+		const base = {
+			path: agentDir,
+			mode: "cwd" as const,
+			max_turns: 7,
+		};
+		expect(
+			agentConfigToEntry({ ...base, provider: "acp:opencode" }),
+		).not.toHaveProperty("maxTurns");
+		expect(agentConfigToEntry({ ...base, provider: "claude" })).toHaveProperty(
+			"maxTurns",
+			"7",
+		);
+	});
 });
 
 // ── readAgentMcpFile ─────────────────────────────────────────────────────────

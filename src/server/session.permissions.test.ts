@@ -1298,6 +1298,72 @@ describe("SessionManager — session-scoped permission persistence", () => {
 		});
 	});
 
+	it("dismisses a pending permission when the provider clears its request", async () => {
+		const request = new AbortController();
+		let capturedResult: unknown;
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "codex-session-1" };
+					capturedResult = await params.canUseTool(
+						"bash",
+						{ command: "git status" },
+						{
+							toolUseID: "codex-request-1",
+							signal: request.signal,
+							displayName: "Codex command",
+						},
+					);
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const emitted: ServerMessage[] = [];
+		const turn = sm.runQuery("inspect it", (message) => emitted.push(message), {
+			sessionId: "sess-1",
+		});
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()).toHaveLength(1),
+		);
+
+		request.abort();
+		await turn;
+
+		expect(sm.getPendingPermissionRequests()).toEqual([]);
+		expect(capturedResult).toEqual({
+			behavior: "deny",
+			message: "Provider cleared the request",
+		});
+		expect(emitted).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: "permission_request",
+					id: "codex-request-1",
+				}),
+				{
+					type: "permission_resolved",
+					id: "codex-request-1",
+					toolName: "bash",
+					displayName: "Codex command",
+					decision: "denied",
+				},
+			]),
+		);
+	});
+
 	it("local ('always') approval writes tool to settings.local.json", async () => {
 		vi.mocked(fsMock.writeFileSync).mockClear();
 		vi.mocked(fsMock.readFileSync).mockClear();

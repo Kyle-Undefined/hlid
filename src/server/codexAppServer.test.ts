@@ -54,14 +54,20 @@ function respond(proc: FakeProc, id: number, result: unknown): void {
 	proc.stdout.emit("data", Buffer.from(`${JSON.stringify({ id, result })}\n`));
 }
 
-function serverRequest(proc: FakeProc, id: number, threadId: string): void {
+function serverRequest(
+	proc: FakeProc,
+	id: number,
+	threadId: string | undefined,
+	method = "item/commandExecution/requestApproval",
+	params: Record<string, unknown> = {},
+): void {
 	proc.stdout.emit(
 		"data",
 		Buffer.from(
 			`${JSON.stringify({
 				id,
-				method: "item/commandExecution/requestApproval",
-				params: { threadId },
+				method,
+				params: { ...(threadId ? { threadId } : {}), ...params },
 			})}\n`,
 		),
 	);
@@ -949,6 +955,64 @@ describe("CodexAppServer idle lifecycle", () => {
 		await vi.advanceTimersByTimeAsync(50);
 		expect(server.alive).toBe(false);
 		expect(proc.kill).toHaveBeenCalledOnce();
+	});
+
+	it("answers currentTime/read centrally with whole Unix seconds", async () => {
+		vi.setSystemTime(new Date("2026-08-09T12:34:56.789Z"));
+		const { server, proc, writes } = await create();
+		const handler: ThreadHandler = {
+			onNotification: vi.fn(),
+			onRequest: vi.fn(async () => ({})),
+			onExit: vi.fn(),
+		};
+		server.attachThread("thread-1", handler);
+
+		serverRequest(proc, 98, undefined, "currentTime/read");
+
+		expect(handler.onRequest).not.toHaveBeenCalled();
+		expect(
+			writes
+				.map((line) => JSON.parse(line) as { id?: number; result?: unknown })
+				.find((message) => message.id === 98),
+		).toEqual({
+			id: 98,
+			result: { currentTimeAt: 1_786_278_896 },
+		});
+	});
+
+	it("aborts a resolved native request and suppresses its late reply", async () => {
+		const { server, proc, writes } = await create();
+		let resolveApproval: ((value: unknown) => void) | undefined;
+		const approval = new Promise((resolve) => {
+			resolveApproval = resolve;
+		});
+		const handler: ThreadHandler = {
+			onNotification: vi.fn(),
+			onRequest: vi.fn(() => approval),
+			onExit: vi.fn(),
+		};
+		server.attachThread("thread-1", handler);
+		serverRequest(proc, 99, "thread-1");
+		await Promise.resolve();
+		const context = vi.mocked(handler.onRequest).mock.calls[0]?.[2];
+		expect(context).toMatchObject({ requestId: 99 });
+		expect(context?.signal.aborted).toBe(false);
+
+		serverNotification(proc, "serverRequest/resolved", {
+			threadId: "thread-1",
+			requestId: 99,
+		});
+		expect(context?.signal.aborted).toBe(true);
+
+		resolveApproval?.({ decision: "accept" });
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(
+			writes
+				.map((line) => JSON.parse(line) as { id?: number })
+				.filter((message) => message.id === 99),
+		).toEqual([]);
 	});
 
 	it("drops a server-request response that settles after the transport dies", async () => {

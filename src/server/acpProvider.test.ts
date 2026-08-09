@@ -157,11 +157,7 @@ describe("AcpProvider — plan mode", () => {
 			params("allow", { permissionMode: "plan", canUseTool }),
 		);
 		expect(events).toContainEqual({ type: "text_delta", text: "plan" });
-		expect(canUseTool).toHaveBeenCalledWith(
-			"ExitPlanMode",
-			{ plan: "plan" },
-			expect.any(Object),
-		);
+		expect(canUseTool).not.toHaveBeenCalled();
 		session.cancel();
 	});
 
@@ -177,9 +173,10 @@ describe("AcpProvider — plan mode", () => {
 			}),
 		);
 		expect(canUseTool).toHaveBeenCalledWith(
-			"Write",
+			"filesystem.write",
 			{
 				path: "/vault/.hlid/plans/plan-fake.html",
+				acp_kind: "edit",
 				file_path: "/vault/.hlid/plans/plan-fake.html",
 			},
 			expect.objectContaining({ toolUseID: "tool-1" }),
@@ -200,6 +197,35 @@ describe("AcpProvider — plan mode", () => {
 		session.cancel();
 	});
 
+	it("does not hand off an HTML plan until its write completes successfully", async () => {
+		for (const message of ["html-plan-missing", "html-plan-failed"]) {
+			const canUseTool = vi.fn(async (_toolName: string) => ({
+				behavior: "allow" as const,
+			}));
+			const { events, session } = await run(
+				message,
+				params("allow", {
+					permissionMode: "plan",
+					planHtmlPath: "/vault/.hlid/plans/plan-fake.html",
+					canUseTool,
+				}),
+			);
+			expect(
+				vi
+					.mocked(canUseTool)
+					.mock.calls.some(([name]) => name === "ExitPlanMode"),
+			).toBe(false);
+			expect(events).not.toContainEqual({
+				type: "text_delta",
+				text: "implemented",
+			});
+			expect(events).toContainEqual(
+				expect.objectContaining({ type: "done", stopReason: "end_turn" }),
+			);
+			session.cancel();
+		}
+	});
+
 	it("switches an already-running ACP session into its native plan mode", async () => {
 		const session = makeProvider().query(params());
 		await session.send("report-mode");
@@ -218,7 +244,9 @@ describe("AcpProvider — plan mode", () => {
 	});
 
 	it("hands a native ACP plan through the shared plan approval without HTML", async () => {
-		const canUseTool = vi.fn(async () => ({ behavior: "allow" as const }));
+		const canUseTool = vi.fn(async (_toolName: string) => ({
+			behavior: "allow" as const,
+		}));
 		const { events, session } = await run(
 			"plan-update",
 			params("allow", { permissionMode: "plan", canUseTool }),
@@ -229,6 +257,25 @@ describe("AcpProvider — plan mode", () => {
 			expect.objectContaining({ title: "Fake ACP completed its plan" }),
 		);
 		expect(events).toContainEqual({ type: "text_delta", text: "implemented" });
+		session.cancel();
+	});
+
+	it("does not hand off a native plan when the ACP turn refuses", async () => {
+		const canUseTool = vi.fn(async (_toolName: string) => ({
+			behavior: "allow" as const,
+		}));
+		const { events, session } = await run(
+			"plan-refusal",
+			params("allow", { permissionMode: "plan", canUseTool }),
+		);
+		expect(
+			vi
+				.mocked(canUseTool)
+				.mock.calls.some(([name]) => name === "ExitPlanMode"),
+		).toBe(false);
+		expect(events).toContainEqual(
+			expect.objectContaining({ type: "done", stopReason: "refusal" }),
+		);
 		session.cancel();
 	});
 
@@ -252,8 +299,27 @@ describe("AcpProvider — plan mode", () => {
 		}
 		expect(implementation).toContainEqual({
 			type: "text_delta",
-			text: "code",
+			text: "default",
 		});
+		session.cancel();
+	});
+
+	it("selects an explicit implementation mode when several non-plan modes remain", async () => {
+		const provider = behaviorProvider("stable-mode-start-plan");
+		const session = provider.query(params("deny", { permissionMode: "plan" }));
+		await session.send("report-mode");
+		for await (const event of session) {
+			if (event.type === "done") break;
+		}
+
+		await session.setPermissionMode?.("default");
+		await session.send("report-mode");
+		const events: AgentEvent[] = [];
+		for await (const event of session) {
+			events.push(event);
+			if (event.type === "done") break;
+		}
+		expect(events).toContainEqual({ type: "text_delta", text: "code" });
 		session.cancel();
 	});
 
@@ -312,9 +378,12 @@ describe("AcpProvider — permission modes", () => {
 			params("allow", { permissionMode: "bypassPermissions", canUseTool }),
 		);
 		expect(canUseTool).toHaveBeenCalledWith(
-			"Obsidian run command",
-			{ id: "app:toggle-left-sidebar" },
-			expect.objectContaining({ toolUseID: "tool-1" }),
+			"hlid_obsidian.run_command",
+			{ id: "app:toggle-left-sidebar", acp_kind: "execute" },
+			expect.objectContaining({
+				toolUseID: "tool-1",
+				title: "Obsidian run command",
+			}),
 		);
 		expect(events).toContainEqual(
 			expect.objectContaining({
@@ -358,13 +427,47 @@ describe("AcpProvider — event mapping", () => {
 		session.cancel();
 	});
 
+	it("emits an assistant boundary when ACP changes messageId", async () => {
+		const { events, session } = await run("message-boundaries");
+		expect(
+			events.filter(
+				(event) =>
+					event.type === "text_delta" ||
+					event.type === "assistant_message_boundary",
+			),
+		).toEqual([
+			{ type: "text_delta", text: "first " },
+			{ type: "text_delta", text: "message" },
+			{ type: "assistant_message_boundary" },
+			{ type: "text_delta", text: "second message" },
+		]);
+		session.cancel();
+	});
+
 	it("yields tool_start when ACP server requests a tool invocation", async () => {
 		const { events, session } = await run();
 		expect(events).toContainEqual({
 			type: "tool_start",
 			toolId: "tool-1",
-			name: "Write file",
-			input: { path: "a.txt" },
+			name: "Write",
+			input: { path: "a.txt", acp_kind: "edit", file_path: "a.txt" },
+		});
+		session.cancel();
+	});
+
+	it("accumulates ACP tool patches before rendering the terminal result", async () => {
+		const { events, session } = await run("patch-tool");
+		expect(events).toContainEqual({
+			type: "tool_start",
+			toolId: "patch-1",
+			name: "custom.patch",
+			input: { value: 1, acp_kind: "other" },
+		});
+		expect(events).toContainEqual({
+			type: "tool_result",
+			toolId: "patch-1",
+			content: "result from earlier patch",
+			isError: false,
 		});
 		session.cancel();
 	});
@@ -423,8 +526,8 @@ describe("AcpProvider — event mapping", () => {
 		expect(events).toContainEqual({
 			type: "tool_start",
 			toolId: "structured-1",
-			name: "Edit a file",
-			input: { path: "a.txt" },
+			name: "Write",
+			input: { path: "a.txt", acp_kind: "edit", file_path: "a.txt" },
 		});
 		expect(events).toContainEqual(
 			expect.objectContaining({
@@ -446,6 +549,8 @@ describe("AcpProvider — event mapping", () => {
 				target: "path",
 				path: "Projects/Hlid.md",
 				content: "x".repeat(2_000),
+				acp_kind: "other",
+				file_path: "Projects/Hlid.md",
 			},
 		});
 		expect(events).toContainEqual({
@@ -529,7 +634,10 @@ describe("AcpProvider — canUseTool", () => {
 		}));
 		const { events, session } = await run("test", query);
 		expect(events).toContainEqual(
-			expect.objectContaining({ type: "tool_start", input: { path: "a.txt" } }),
+			expect.objectContaining({
+				type: "tool_start",
+				input: { path: "a.txt", acp_kind: "edit", file_path: "a.txt" },
+			}),
 		);
 		session.cancel();
 	});
@@ -539,7 +647,7 @@ describe("AcpProvider — canUseTool", () => {
 		const { session } = await run("read-permission", query);
 		expect(query.canUseTool).toHaveBeenCalledWith(
 			"Read",
-			{ path: "a.txt" },
+			{ path: "a.txt", acp_kind: "read", file_path: "a.txt" },
 			expect.objectContaining({ title: "Read file" }),
 		);
 		session.cancel();
@@ -553,17 +661,40 @@ describe("AcpProvider — canUseTool", () => {
 				.mocked(query.canUseTool)
 				.mock.calls.map(([toolName, input]) => [toolName, input]),
 		).toEqual([
-			["Read", { kind: "read" }],
-			["Write", { kind: "edit" }],
-			["Write", { kind: "delete" }],
-			["Write", { kind: "move" }],
-			["Grep", { kind: "search" }],
-			["Bash", { kind: "execute" }],
-			["Reasoning", { kind: "think" }],
-			["WebFetch", { kind: "fetch" }],
-			["Planning mode", { kind: "switch_mode" }],
-			["Custom action", { kind: "other" }],
+			["Read", { kind: "read", acp_kind: "read" }],
+			["Write", { kind: "edit", acp_kind: "edit" }],
+			["Write", { kind: "delete", acp_kind: "delete" }],
+			["Write", { kind: "move", acp_kind: "move" }],
+			["Grep", { kind: "search", acp_kind: "search" }],
+			["Bash", { kind: "execute", acp_kind: "execute" }],
+			["Reasoning", { kind: "think", acp_kind: "think" }],
+			["WebFetch", { kind: "fetch", acp_kind: "fetch" }],
+			["session.set_mode", { kind: "switch_mode", acp_kind: "switch_mode" }],
+			["custom.action", { kind: "other", acp_kind: "other" }],
 		]);
+		session.cancel();
+	});
+
+	it("uses the ACP programmatic name and locations for policy identity", async () => {
+		const query = params();
+		const { events, session } = await run("locations-tool", query);
+		const input = {
+			path: "selection-alias",
+			acp_kind: "edit",
+			file_path: "/vault/selected.md",
+			locations: [{ path: "/vault/selected.md", line: 12 }],
+		};
+		expect(query.canUseTool).toHaveBeenCalledWith(
+			"filesystem.edit",
+			input,
+			expect.objectContaining({ title: "Edit selected file" }),
+		);
+		expect(events).toContainEqual({
+			type: "tool_start",
+			toolId: "locations-1",
+			name: "filesystem.edit",
+			input,
+		});
 		session.cancel();
 	});
 });
@@ -646,6 +777,66 @@ describe("AcpProvider — session lifecycle", () => {
 			type: "session_start",
 			sessionId: "resumed-session",
 		});
+		session.cancel();
+	});
+
+	it("prefers session/resume over replaying session/load", async () => {
+		const session = behaviorProvider("resume-preferred").query(
+			params("allow", { sessionId: "resumed-session" }),
+		);
+		await session.send("report-mode");
+		const events: AgentEvent[] = [];
+		for await (const event of session) {
+			events.push(event);
+			if (event.type === "done") break;
+		}
+		expect(events[0]).toEqual({
+			type: "session_start",
+			sessionId: "resumed-session",
+		});
+		expect(events).toContainEqual({ type: "text_delta", text: "code" });
+		session.cancel();
+	});
+
+	it("resumes when the ACP agent advertises resume without load", async () => {
+		const session = behaviorProvider("resume-only").query(
+			params("allow", { sessionId: "resume-only-session" }),
+		);
+		await session.send("report-mode");
+		const events: AgentEvent[] = [];
+		for await (const event of session) {
+			events.push(event);
+			if (event.type === "done") break;
+		}
+		expect(events[0]).toEqual({
+			type: "session_start",
+			sessionId: "resume-only-session",
+		});
+		session.cancel();
+	});
+
+	it("suppresses historical replay emitted by session/load", async () => {
+		const session = behaviorProvider("load-only-replay").query(
+			params("allow", { sessionId: "loaded-session" }),
+		);
+		await session.send("test");
+		const events: AgentEvent[] = [];
+		for await (const event of session) {
+			events.push(event);
+			if (event.type === "done") break;
+		}
+		expect(events[0]).toEqual({
+			type: "session_start",
+			sessionId: "loaded-session",
+		});
+		expect(events).not.toContainEqual({
+			type: "text_delta",
+			text: "historical answer",
+		});
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ toolId: "historical-tool" }),
+		);
+		expect(events).toContainEqual({ type: "text_delta", text: "hello " });
 		session.cancel();
 	});
 

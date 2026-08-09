@@ -923,9 +923,14 @@ async function forkSession({
 	const liveEntry = pool?.findByDbSessionId(sourceId) ?? pool?.get(sourceId);
 	const hasRunningTurn = liveEntry?.manager.getStatus().state === "running";
 	const hasRealtime = liveEntry?.manager.hasActiveRealtime?.() === true;
+	const hasProviderBackgroundWork =
+		liveEntry?.manager
+			.getBackgroundActivities?.()
+			.some((activity) => activity.status === "running") === true;
 	if (
 		hasRunningTurn ||
 		hasRealtime ||
+		hasProviderBackgroundWork ||
 		hasLiveTerminalSession(terminalPool, sourceId)
 	) {
 		return new Response("Cannot fork an active session. Stop it first.", {

@@ -2892,7 +2892,6 @@ describe("SessionManager — provider resolution", () => {
 					id: "opencode",
 					model: "anthropic/claude-sonnet-4-6",
 					effort: "high",
-					max_turns: 18,
 					permission_mode: "bypassPermissions",
 					turn_recaps: false,
 				},
@@ -2905,9 +2904,9 @@ describe("SessionManager — provider resolution", () => {
 			providerId: "acp:opencode",
 			model: "anthropic/claude-sonnet-4-6",
 			effort: "high",
-			maxTurns: 18,
 			permissionMode: "bypassPermissions",
 		});
+		expect(captured.params).not.toHaveProperty("maxTurns");
 	});
 
 	it("lets an ACP agent choose defaults when none are configured", async () => {
@@ -3284,6 +3283,20 @@ describe("SessionManager — per-agent settings", () => {
 			agentCwd: AGENT_PATH,
 		});
 		expect(captured.params?.maxTurns).toBe(5);
+	});
+
+	it("does not pass an unmapped agent-specific maxTurns to ACP", async () => {
+		const { provider, captured } = makeCaptureProvider("acp:opencode");
+		const config = makeConfigWithAgent(AGENT_PATH, {
+			provider: "acp:opencode",
+			max_turns: 5,
+		});
+		const sm = new SessionManager(config, makeProviders(provider));
+		await sm.runQuery("hello", () => {}, {
+			sessionId: "sess-acp-mt",
+			agentCwd: AGENT_PATH,
+		});
+		expect(captured.params).not.toHaveProperty("maxTurns");
 	});
 
 	it("agent query passes undefined model when agent has no model override (defers to CLAUDE.md)", async () => {

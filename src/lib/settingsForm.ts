@@ -91,9 +91,6 @@ export function applyAgentFormPatch(
 			...(patch.effort !== undefined
 				? { effort: patch.effort || undefined }
 				: {}),
-			...(patch.maxTurns !== undefined
-				? { max_turns: parsedMaxTurns(patch.maxTurns) }
-				: {}),
 			...(patch.permissionMode !== undefined
 				? { permission_mode: patch.permissionMode }
 				: {}),

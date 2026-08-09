@@ -37,10 +37,14 @@ function agentEntryToConfig(a: AgentEntry): Agent {
 			a.effort != null && VALID_EFFORTS.includes(a.effort)
 				? (a.effort as Agent["effort"])
 				: undefined,
-		max_turns: (() => {
-			const parsed = parseInt(a.maxTurns ?? "", 10);
-			return !Number.isNaN(parsed) ? parsed : undefined;
-		})(),
+		...(a.provider.startsWith("acp:")
+			? {}
+			: {
+					max_turns: (() => {
+						const parsed = parseInt(a.maxTurns ?? "", 10);
+						return !Number.isNaN(parsed) ? parsed : undefined;
+					})(),
+				}),
 		permission_mode:
 			a.permissionMode != null &&
 			VALID_PERMISSION_MODES.includes(a.permissionMode)

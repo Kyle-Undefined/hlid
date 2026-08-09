@@ -271,11 +271,11 @@ describe("agent form routing", () => {
 				id: "opencode",
 				model: "anthropic/claude-sonnet-4-6",
 				effort: "high",
-				max_turns: 18,
 				permission_mode: "bypassPermissions",
 				turn_recaps: false,
 			}),
 		]);
+		expect(edited.acpAgents[0]).not.toHaveProperty("max_turns");
 		expect(edited.claude.model).toBe(forms.claude.model);
 		expect(edited.cliproxy.model).toBe(forms.cliproxy.model);
 	});

@@ -115,24 +115,26 @@ export function ProviderOptionFields({
 				</select>
 			</FieldRow>
 
-			<FieldRow label="Max turns">
-				<input
-					type="number"
-					min={1}
-					value={value.maxTurns}
-					onChange={(event) => {
-						const parsed = Number.parseInt(event.target.value, 10);
-						onChange({
-							maxTurns:
-								event.target.value === "" || !Number.isFinite(parsed)
-									? ""
-									: String(Math.max(1, parsed)),
-						});
-					}}
-					placeholder="vault default"
-					className="flex-1 bg-input border border-border px-2 py-1 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
-				/>
-			</FieldRow>
+			{!activeProvider?.id.startsWith("acp:") && (
+				<FieldRow label="Max turns">
+					<input
+						type="number"
+						min={1}
+						value={value.maxTurns}
+						onChange={(event) => {
+							const parsed = Number.parseInt(event.target.value, 10);
+							onChange({
+								maxTurns:
+									event.target.value === "" || !Number.isFinite(parsed)
+										? ""
+										: String(Math.max(1, parsed)),
+							});
+						}}
+						placeholder="vault default"
+						className="flex-1 bg-input border border-border px-2 py-1 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+					/>
+				</FieldRow>
+			)}
 
 			<FieldRow label="Recap model">
 				<select

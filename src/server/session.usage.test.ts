@@ -259,6 +259,82 @@ describe("SessionManager — provider usage refresh", () => {
 	});
 });
 
+describe("SessionManager — terminal provider result failures", () => {
+	it("records usage and cost with a failure reason, then emits an error instead of done", async () => {
+		const cancel = vi.fn();
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(): AgentSession {
+				const generator = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "native-terminal-failure" };
+					yield {
+						type: "usage",
+						inputTokens: 3,
+						outputTokens: 1,
+						model: "claude-opus-4-6",
+					};
+					yield {
+						type: "done",
+						estimatedCost: 0.125,
+						turns: 2,
+						durationMs: 450,
+						usage: {
+							inputTokens: 40,
+							outputTokens: 12,
+							cacheReadTokens: 9,
+							cacheCreationTokens: 4,
+						},
+						terminalFailure: {
+							code: "error_during_execution",
+							message: "Claude failed while executing the turn.",
+							terminalReason: "turn_setup_failed",
+						},
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => generator[Symbol.asyncIterator](),
+					cancel,
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		};
+		vi.mocked(dbMock.recordQuery).mockResolvedValueOnce({
+			estimatedCost: 0.125,
+			queryId: 1,
+		});
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery("run failing turn", (message) => emitted.push(message), {
+			sessionId: "terminal-failure-session",
+			turnId: "terminal-failure-turn",
+		});
+
+		expect(dbMock.recordQuery).toHaveBeenCalledWith(
+			"terminal-failure-session",
+			expect.objectContaining({
+				estimated_cost: 0.125,
+				input_tokens: 40,
+				output_tokens: 12,
+				cache_read_tokens: 9,
+				cache_creation_tokens: 4,
+				turns: 2,
+				stop_reason: "error_during_execution",
+			}),
+			"claude",
+		);
+		expect(emitted).toContainEqual({
+			type: "error",
+			message: "Claude failed while executing the turn.",
+			turn_scoped: true,
+			turn_id: "terminal-failure-turn",
+		});
+		expect(emitted.some((message) => message.type === "done")).toBe(false);
+		expect(sm.getStatus().state).toBe("idle");
+		expect(cancel).not.toHaveBeenCalled();
+	});
+});
+
 describe("SessionManager — handleRateLimit mirrors rate_limit into window mark", () => {
 	function makeRateLimitProvider(
 		providerId: string,

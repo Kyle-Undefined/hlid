@@ -3888,6 +3888,273 @@ describe("ClaudeProvider — event mapping", () => {
 		});
 	});
 
+	it("reconciles cumulative whole-query modelUsage into per-model turn deltas", async () => {
+		const modelUsage = (values: {
+			inputTokens: number;
+			outputTokens: number;
+			cacheReadInputTokens: number;
+			cacheCreationInputTokens: number;
+			webSearchRequests: number;
+			costUSD: number;
+			contextWindow: number;
+			maxOutputTokens: number;
+			canonicalModel: string;
+			provider: string;
+		}) => values;
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					parent_tool_use_id: null,
+					message: {
+						id: "turn-1-root",
+						model: "claude-opus-alias",
+						content: [],
+						usage: { input_tokens: 10, output_tokens: 4 },
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0.3,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 4 },
+					modelUsage: {
+						"claude-opus-alias": modelUsage({
+							inputTokens: 100,
+							outputTokens: 30,
+							cacheReadInputTokens: 40,
+							cacheCreationInputTokens: 10,
+							webSearchRequests: 2,
+							costUSD: 0.25,
+							contextWindow: 200_000,
+							maxOutputTokens: 64_000,
+							canonicalModel: "claude-opus-4-6",
+							provider: "firstParty",
+						}),
+						"claude-haiku-alias": modelUsage({
+							inputTokens: 20,
+							outputTokens: 8,
+							cacheReadInputTokens: 5,
+							cacheCreationInputTokens: 3,
+							webSearchRequests: 0,
+							costUSD: 0.05,
+							contextWindow: 200_000,
+							maxOutputTokens: 8_192,
+							canonicalModel: "claude-haiku-4-5",
+							provider: "firstParty",
+						}),
+					},
+				},
+				{
+					type: "assistant",
+					parent_tool_use_id: null,
+					message: {
+						id: "turn-2-root",
+						model: "claude-opus-alias",
+						content: [],
+						usage: { input_tokens: 12, output_tokens: 5 },
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0.5,
+					num_turns: 1,
+					duration_ms: 120,
+					usage: { input_tokens: 12, output_tokens: 5 },
+					modelUsage: {
+						"claude-opus-alias": modelUsage({
+							inputTokens: 140,
+							outputTokens: 42,
+							cacheReadInputTokens: 60,
+							cacheCreationInputTokens: 14,
+							webSearchRequests: 3,
+							costUSD: 0.42,
+							contextWindow: 200_000,
+							maxOutputTokens: 64_000,
+							canonicalModel: "claude-opus-4-6",
+							provider: "firstParty",
+						}),
+						"claude-haiku-alias": modelUsage({
+							inputTokens: 25,
+							outputTokens: 10,
+							cacheReadInputTokens: 7,
+							cacheCreationInputTokens: 3,
+							webSearchRequests: 0,
+							costUSD: 0.08,
+							contextWindow: 200_000,
+							maxOutputTokens: 8_192,
+							canonicalModel: "claude-haiku-4-5",
+							provider: "firstParty",
+						}),
+					},
+				},
+			]),
+		);
+
+		const session = new ClaudeProvider().query(baseParams());
+		await session.send("first turn");
+		const firstTurn: AgentEvent[] = [];
+		for await (const event of session) {
+			firstTurn.push(event);
+			if (event.type === "done") break;
+		}
+		await session.send("second turn");
+		const secondTurn: AgentEvent[] = [];
+		for await (const event of session) {
+			secondTurn.push(event);
+			if (event.type === "done") break;
+		}
+
+		expect(firstTurn.find((event) => event.type === "usage")).toMatchObject({
+			inputTokens: 10,
+			outputTokens: 4,
+		});
+		expect(firstTurn.find((event) => event.type === "done")).toMatchObject({
+			usage: {
+				inputTokens: 120,
+				outputTokens: 38,
+				cacheReadTokens: 45,
+				cacheCreationTokens: 13,
+			},
+			modelUsage: {
+				"claude-opus-alias": expect.objectContaining({
+					inputTokens: 100,
+					canonicalModel: "claude-opus-4-6",
+					provider: "firstParty",
+				}),
+			},
+		});
+		expect(secondTurn.find((event) => event.type === "usage")).toMatchObject({
+			inputTokens: 12,
+			outputTokens: 5,
+		});
+		expect(secondTurn.find((event) => event.type === "done")).toMatchObject({
+			usage: {
+				inputTokens: 45,
+				outputTokens: 14,
+				cacheReadTokens: 22,
+				cacheCreationTokens: 4,
+			},
+			modelUsage: {
+				"claude-opus-alias": expect.objectContaining({
+					inputTokens: 40,
+					outputTokens: 12,
+					costUSD: expect.closeTo(0.17, 10),
+				}),
+				"claude-haiku-alias": expect.objectContaining({
+					inputTokens: 5,
+					outputTokens: 2,
+					costUSD: expect.closeTo(0.03, 10),
+				}),
+			},
+		});
+		session.cancel();
+	});
+
+	it("resets cumulative usage and cost baselines after a conversation reset", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "system",
+					subtype: "init",
+					session_id: "native-before-clear",
+					tools: [],
+				},
+				{
+					type: "result",
+					subtype: "success",
+					session_id: "native-before-clear",
+					total_cost_usd: 0.3,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 4 },
+					modelUsage: {
+						"claude-opus-alias": {
+							inputTokens: 100,
+							outputTokens: 30,
+							cacheReadInputTokens: 40,
+							cacheCreationInputTokens: 10,
+							webSearchRequests: 2,
+							costUSD: 0.3,
+							contextWindow: 200_000,
+							maxOutputTokens: 64_000,
+						},
+					},
+				},
+				{
+					type: "conversation_reset",
+					new_conversation_id: "native-after-clear",
+					uuid: "clear-reset",
+					session_id: "native-before-clear",
+				},
+				{
+					type: "result",
+					subtype: "success",
+					session_id: "native-after-clear",
+					total_cost_usd: 0.5,
+					num_turns: 1,
+					duration_ms: 120,
+					usage: { input_tokens: 12, output_tokens: 5 },
+					modelUsage: {
+						"claude-opus-alias": {
+							inputTokens: 140,
+							outputTokens: 42,
+							cacheReadInputTokens: 60,
+							cacheCreationInputTokens: 14,
+							webSearchRequests: 3,
+							costUSD: 0.5,
+							contextWindow: 200_000,
+							maxOutputTokens: 64_000,
+						},
+					},
+				},
+			]),
+		);
+
+		const session = new ClaudeProvider().query(baseParams());
+		await session.send("before clear");
+		const firstTurn: AgentEvent[] = [];
+		for await (const event of session) {
+			firstTurn.push(event);
+			if (event.type === "done") break;
+		}
+		await session.send("after clear");
+		const secondTurn: AgentEvent[] = [];
+		for await (const event of session) {
+			secondTurn.push(event);
+			if (event.type === "done") break;
+		}
+
+		expect(firstTurn.find((event) => event.type === "done")).toMatchObject({
+			estimatedCost: 0.3,
+			usage: { inputTokens: 100, outputTokens: 30 },
+		});
+		expect(secondTurn).toContainEqual({
+			type: "provider_context_reset",
+			sessionId: "native-after-clear",
+		});
+		expect(secondTurn.find((event) => event.type === "done")).toMatchObject({
+			estimatedCost: 0.5,
+			usage: {
+				inputTokens: 140,
+				outputTokens: 42,
+				cacheReadTokens: 60,
+				cacheCreationTokens: 14,
+			},
+			modelUsage: {
+				"claude-opus-alias": expect.objectContaining({
+					inputTokens: 140,
+					outputTokens: 42,
+					costUSD: 0.5,
+				}),
+			},
+		});
+		session.cancel();
+	});
+
 	it("adds deduplicated child API usage when Claude result usage is root-only", async () => {
 		vi.mocked(query).mockReturnValueOnce(
 			sdkGen([
@@ -4222,6 +4489,122 @@ describe("ClaudeProvider — event mapping", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	it("retains an earlier terminal failure across grouped workflow results", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					parent_tool_use_id: null,
+					message: {
+						id: "msg-workflow-failed-root",
+						model: "claude-opus-5",
+						content: [
+							{
+								type: "tool_use",
+								id: "workflow-tool-failed-root",
+								name: "Workflow",
+								input: { name: "failure-smoke" },
+							},
+						],
+						usage: { input_tokens: 10, output_tokens: 5 },
+					},
+				},
+				{
+					type: "system",
+					subtype: "task_started",
+					task_id: "workflow-task-failed-root",
+					tool_use_id: "workflow-tool-failed-root",
+					task_type: "local_workflow",
+					workflow_name: "failure-smoke",
+					description: "Running failure smoke",
+				},
+				{
+					type: "user",
+					tool_use_result: {
+						status: "async_launched",
+						taskId: "workflow-task-failed-root",
+						taskType: "local_workflow",
+						runId: "workflow-run-failed-root",
+						scriptPath:
+							"/tmp/workflow/scripts/failure-smoke-workflow-run-failed-root.js",
+					},
+					message: {
+						content: [
+							{
+								type: "tool_result",
+								tool_use_id: "workflow-tool-failed-root",
+								content: "Workflow launched in background.",
+							},
+						],
+					},
+				},
+				{
+					type: "result",
+					subtype: "error_during_execution",
+					is_error: true,
+					errors: ["root failed while workflow remained active"],
+					total_cost_usd: 0.1,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+					modelUsage: {},
+					permission_denials: [],
+				},
+				{
+					type: "system",
+					subtype: "task_notification",
+					task_id: "workflow-task-failed-root",
+					status: "completed",
+					output_file: "/tmp/workflow-failed-root-result",
+					summary: "Workflow completed after root failure",
+				},
+				{
+					type: "user",
+					message: {
+						role: "user",
+						content:
+							"<task-notification><task-id>workflow-task-failed-root</task-id><status>completed</status></task-notification>",
+					},
+				},
+				{
+					type: "assistant",
+					parent_tool_use_id: null,
+					message: {
+						id: "msg-workflow-failed-continuation",
+						model: "claude-opus-5",
+						content: [{ type: "text", text: "Workflow still completed." }],
+						usage: { input_tokens: 20, output_tokens: 8 },
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					terminal_reason: "completed",
+					total_cost_usd: 0.2,
+					num_turns: 1,
+					duration_ms: 200,
+					usage: { input_tokens: 20, output_tokens: 8 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams(), {
+			workflowProgressReader: async () => null,
+		});
+		const doneEvents = events.filter((event) => event.type === "done");
+		expect(doneEvents).toHaveLength(1);
+		expect(doneEvents[0]).toMatchObject({
+			turns: 2,
+			durationMs: 300,
+			estimatedCost: 0.2,
+			usage: { inputTokens: 30, outputTokens: 13 },
+			terminalFailure: {
+				code: "error_during_execution",
+				details: ["root failed while workflow remained active"],
+			},
+		});
 	});
 
 	it("closes a stopped workflow turn without waiting for a completion continuation", async () => {
@@ -9188,6 +9571,120 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			usage: { inputTokens: 12, outputTokens: 7 },
 		});
 		session.cancel();
+	});
+
+	it.each([
+		"error_during_execution",
+		"error_max_turns",
+		"error_max_budget_usd",
+		"error_max_structured_output_retries",
+	] as const)("retains usage and structurally marks %s", async (subtype) => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "result",
+					subtype,
+					is_error: true,
+					errors: ["provider detail"],
+					total_cost_usd: 0.25,
+					num_turns: 2,
+					duration_ms: 400,
+					usage: {
+						input_tokens: 33,
+						output_tokens: 12,
+						cache_read_input_tokens: 7,
+						cache_creation_input_tokens: 4,
+					},
+					modelUsage: {},
+					permission_denials: [],
+				},
+			]),
+		);
+
+		const done = (await collectEvents(baseParams())).find(
+			(event) => event.type === "done",
+		);
+		expect(done).toMatchObject({
+			type: "done",
+			estimatedCost: 0.25,
+			usage: {
+				inputTokens: 33,
+				outputTokens: 12,
+				cacheReadTokens: 7,
+				cacheCreationTokens: 4,
+			},
+			terminalFailure: {
+				code: subtype,
+				details: ["provider detail"],
+			},
+		});
+	});
+
+	it.each([
+		"api_error",
+		"malformed_tool_use_exhausted",
+		"budget_exhausted",
+		"structured_output_retry_exhausted",
+		"tool_deferred_unavailable",
+		"turn_setup_failed",
+	] as const)("marks dead-turn terminal reason %s as failure", async (reason) => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "result",
+					subtype: "success",
+					result: "",
+					is_error: false,
+					terminal_reason: reason,
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 10,
+					usage: { input_tokens: 2, output_tokens: 1 },
+					modelUsage: {},
+					permission_denials: [],
+				},
+			]),
+		);
+
+		expect(await collectEvents(baseParams())).toContainEqual(
+			expect.objectContaining({
+				type: "done",
+				terminalFailure: expect.objectContaining({
+					code: reason,
+					terminalReason: reason,
+				}),
+			}),
+		);
+	});
+
+	it("marks a success-shaped API status as a failed result boundary", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "result",
+					subtype: "success",
+					result: "",
+					is_error: true,
+					api_error_status: 529,
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 10,
+					usage: { input_tokens: 2, output_tokens: 1 },
+					modelUsage: {},
+					permission_denials: [],
+				},
+			]),
+		);
+
+		expect(await collectEvents(baseParams())).toContainEqual(
+			expect.objectContaining({
+				type: "done",
+				terminalFailure: expect.objectContaining({
+					code: "api_error",
+					apiErrorStatus: 529,
+				}),
+			}),
+		);
 	});
 
 	describe("permission denial reconciliation", () => {

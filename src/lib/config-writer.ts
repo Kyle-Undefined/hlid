@@ -240,7 +240,11 @@ function serializeAgent(
 		),
 		...optionalEntry("model", agent.model),
 		...optionalEntry("effort", agent.effort),
-		...optionalEntry("max_turns", agent.max_turns),
+		...optionalEntry(
+			"max_turns",
+			agent.max_turns,
+			!agent.provider?.startsWith("acp:") && agent.max_turns !== undefined,
+		),
 		...optionalEntry("permission_mode", agent.permission_mode),
 		...optionalEntry("recap_model", agent.recap_model),
 		...optionalEntry(
@@ -262,7 +266,6 @@ function serializeAcpAgent(
 		...(agent.env ? [`env = ${tomlInlineTable(agent.env)}`] : []),
 		...optionalEntry("model", agent.model),
 		...optionalEntry("effort", agent.effort),
-		...optionalEntry("max_turns", agent.max_turns),
 		...optionalEntry("permission_mode", agent.permission_mode),
 		...optionalEntry(
 			"turn_recaps",

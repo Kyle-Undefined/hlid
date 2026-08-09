@@ -170,10 +170,7 @@ function AgentSettings({
 					? {
 							model: acpAgent.model ?? "",
 							effort: acpAgent.effort ?? "",
-							maxTurns:
-								acpAgent.max_turns === undefined
-									? ""
-									: String(acpAgent.max_turns),
+							maxTurns: "",
 							permissionMode: acpAgent.permission_mode ?? "default",
 							turnRecaps: acpAgent.turn_recaps ?? true,
 							recapModel: acpAgent.recap_model ?? "",

@@ -7,6 +7,7 @@ import type {
 	EffortLevel as SdkEffortLevel,
 	McpServerConfig as SdkMcpServerConfig,
 	ModelInfo as SdkModelInfo,
+	ModelUsage as SdkModelUsage,
 	PermissionMode as SdkPermissionMode,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
@@ -567,12 +568,76 @@ function claudeUsageEquals(
 	);
 }
 
+type ClaudeReconciledUsage = {
+	usage: ClaudeTokenBuckets;
+	modelUsage: NonNullable<Extract<AgentEvent, { type: "done" }>["modelUsage"]>;
+};
+
+const CLAUDE_MODEL_USAGE_COUNTERS = [
+	"inputTokens",
+	"outputTokens",
+	"cacheReadInputTokens",
+	"cacheCreationInputTokens",
+	"webSearchRequests",
+	"costUSD",
+] as const satisfies ReadonlyArray<keyof SdkModelUsage>;
+
+function cumulativeClaudeModelUsageReset(
+	current: SdkModelUsage,
+	previous: SdkModelUsage | undefined,
+): boolean {
+	return Boolean(
+		previous &&
+			CLAUDE_MODEL_USAGE_COUNTERS.some(
+				(counter) => current[counter] < previous[counter],
+			),
+	);
+}
+
+function incrementalClaudeModelUsage(
+	current: SdkModelUsage,
+	previous: SdkModelUsage | undefined,
+): SdkModelUsage {
+	const reset = cumulativeClaudeModelUsageReset(current, previous);
+	const baseline = reset ? undefined : previous;
+	return {
+		inputTokens: Math.max(
+			0,
+			current.inputTokens - (baseline?.inputTokens ?? 0),
+		),
+		outputTokens: Math.max(
+			0,
+			current.outputTokens - (baseline?.outputTokens ?? 0),
+		),
+		cacheReadInputTokens: Math.max(
+			0,
+			current.cacheReadInputTokens - (baseline?.cacheReadInputTokens ?? 0),
+		),
+		cacheCreationInputTokens: Math.max(
+			0,
+			current.cacheCreationInputTokens -
+				(baseline?.cacheCreationInputTokens ?? 0),
+		),
+		webSearchRequests: Math.max(
+			0,
+			current.webSearchRequests - (baseline?.webSearchRequests ?? 0),
+		),
+		costUSD: Math.max(0, current.costUSD - (baseline?.costUSD ?? 0)),
+		contextWindow: current.contextWindow,
+		maxOutputTokens: current.maxOutputTokens,
+		...(current.canonicalModel
+			? { canonicalModel: current.canonicalModel }
+			: {}),
+		...(current.provider ? { provider: current.provider } : {}),
+	};
+}
+
 /**
- * Claude's result.usage has historically covered the root API calls but not
- * child Agent calls. The SDK does stream those child assistant messages with a
- * parent_tool_use_id, so retain the latest usage snapshot for each API message
- * id and add children only when the root stream exactly fingerprints the result.
- * Newer SDKs that already return the combined total are detected and left alone.
+ * Claude assistant frames provide provisional live usage. At a result boundary,
+ * prefer modelUsage: the SDK defines it as cumulative whole-query-tree usage,
+ * including Task subagents, sidechains, compaction, and Workflow agents. Keep
+ * the older frame reconciliation only as a compatibility fallback for result
+ * fixtures and crash boundaries that do not carry modelUsage.
  */
 class ClaudeTurnUsageAccumulator {
 	private calls = new Map<
@@ -580,6 +645,7 @@ class ClaudeTurnUsageAccumulator {
 		{ usage: ClaudeTokenBuckets; child: boolean }
 	>();
 	private ambiguousIds = new Set<string>();
+	private cumulativeModelUsage = new Map<string, SdkModelUsage>();
 
 	record(message: Extract<SDKMessage, { type: "assistant" }>): void {
 		const messageId = message.message.id;
@@ -601,7 +667,31 @@ class ClaudeTurnUsageAccumulator {
 
 	reconcileMany(
 		results: ReadonlyArray<Extract<SDKMessage, { type: "result" }>>,
-	): ClaudeTokenBuckets | null {
+	): ClaudeReconciledUsage | null {
+		const latestModelUsage = [...results]
+			.reverse()
+			.map((result) => result.modelUsage)
+			.find((usage) => usage && Object.keys(usage).length > 0);
+		if (latestModelUsage) {
+			const modelUsage: ClaudeReconciledUsage["modelUsage"] = {};
+			let usage = { ...EMPTY_CLAUDE_USAGE };
+			for (const [model, cumulative] of Object.entries(latestModelUsage)) {
+				const incremental = incrementalClaudeModelUsage(
+					cumulative,
+					this.cumulativeModelUsage.get(model),
+				);
+				this.cumulativeModelUsage.set(model, { ...cumulative });
+				modelUsage[model] = incremental;
+				usage = addClaudeUsage(usage, {
+					inputTokens: incremental.inputTokens,
+					outputTokens: incremental.outputTokens,
+					cacheReadTokens: incremental.cacheReadInputTokens,
+					cacheCreationTokens: incremental.cacheCreationInputTokens,
+				});
+			}
+			return { usage, modelUsage };
+		}
+
 		let reported: ClaudeTokenBuckets | null = null;
 		for (const result of results) {
 			const current = claudeUsageBuckets(result.usage);
@@ -616,14 +706,22 @@ class ClaudeTurnUsageAccumulator {
 			else root = addClaudeUsage(root, call.usage);
 		}
 		const combined = addClaudeUsage(root, children);
-		if (claudeUsageEquals(reported, combined)) return reported;
-		if (claudeUsageEquals(reported, root)) return combined;
-		return reported;
+		if (claudeUsageEquals(reported, combined)) {
+			return { usage: reported, modelUsage: {} };
+		}
+		if (claudeUsageEquals(reported, root)) {
+			return { usage: combined, modelUsage: {} };
+		}
+		return { usage: reported, modelUsage: {} };
 	}
 
 	reset(): void {
 		this.calls.clear();
 		this.ambiguousIds.clear();
+	}
+
+	resetCumulativeModelUsage(): void {
+		this.cumulativeModelUsage.clear();
 	}
 }
 
@@ -2741,12 +2839,82 @@ function resultUsage(
 	};
 }
 
+const CLAUDE_FAILED_TERMINAL_REASONS = new Set([
+	"blocking_limit",
+	"rapid_refill_breaker",
+	"prompt_too_long",
+	"image_error",
+	"model_error",
+	"api_error",
+	"malformed_tool_use_exhausted",
+	"max_turns",
+	"budget_exhausted",
+	"structured_output_retry_exhausted",
+	"tool_deferred_unavailable",
+	"turn_setup_failed",
+]);
+
+function claudeResultFailure(
+	message: Extract<SDKMessage, { type: "result" }>,
+): Extract<AgentEvent, { type: "done" }>["terminalFailure"] {
+	const apiErrorStatus =
+		"api_error_status" in message &&
+		typeof message.api_error_status === "number"
+			? message.api_error_status
+			: undefined;
+	let code: string | undefined;
+	if (message.subtype !== "success") code = message.subtype;
+	else if (apiErrorStatus !== undefined) code = "api_error";
+	else if (
+		message.terminal_reason &&
+		CLAUDE_FAILED_TERMINAL_REASONS.has(message.terminal_reason)
+	) {
+		code = message.terminal_reason;
+	} else if (message.is_error) {
+		code = message.terminal_reason ?? "provider_result_error";
+	}
+	if (!code) return undefined;
+
+	const details =
+		"errors" in message && Array.isArray(message.errors)
+			? message.errors
+					.filter((detail): detail is string => typeof detail === "string")
+					.map((detail) => detail.trim())
+					.filter(Boolean)
+					.slice(0, 5)
+					.map((detail) => detail.slice(0, 2_000))
+			: [];
+	const description =
+		code === "error_max_turns" || code === "max_turns"
+			? "Claude reached the maximum number of turns."
+			: code === "error_max_budget_usd" || code === "budget_exhausted"
+				? "Claude reached the configured budget."
+				: code === "error_max_structured_output_retries" ||
+						code === "structured_output_retry_exhausted"
+					? "Claude could not produce valid structured output."
+					: apiErrorStatus !== undefined
+						? `Claude API request failed (HTTP ${apiErrorStatus}).`
+						: code === "error_during_execution"
+							? "Claude failed while executing the turn."
+							: `Claude turn failed: ${code.replaceAll("_", " ")}.`;
+	return {
+		code,
+		message: details[0] ? `${description} ${details[0]}` : description,
+		...(message.terminal_reason
+			? { terminalReason: message.terminal_reason }
+			: {}),
+		...(apiErrorStatus !== undefined ? { apiErrorStatus } : {}),
+		...(details.length > 0 ? { details } : {}),
+	};
+}
+
 function translateResultMessage(
 	message: Extract<SDKMessage, { type: "result" }>,
 	_hadText: boolean,
 	includeEstimatedCost: boolean,
 ): EventTranslation {
 	const events: AgentEvent[] = [];
+	const terminalFailure = claudeResultFailure(message);
 	if (message.subtype === "success" && message.result) {
 		const hasFrameIdentity = Boolean(message.uuid && message.session_id);
 		events.push({
@@ -2771,9 +2939,10 @@ function translateResultMessage(
 		durationMs: message.duration_ms ?? 0,
 		stopReason: message.stop_reason ?? undefined,
 		modelUsage: message.modelUsage as
-			| Record<string, { contextWindow: number; maxOutputTokens: number }>
+			| NonNullable<Extract<AgentEvent, { type: "done" }>["modelUsage"]>
 			| undefined,
 		usage: resultUsage(message),
+		...(terminalFailure ? { terminalFailure } : {}),
 	});
 	return { events, hadText: false };
 }
@@ -3474,10 +3643,9 @@ class ClaudeAgentSession implements AgentSession {
 		this.permissionToolResultFrames.clear();
 		this.permissionToolResultFrameLinkCount = 0;
 		this.permissionAdvisories.clear();
-		const modelUsage = Object.assign(
-			{},
-			...messages.map((message) => message.modelUsage ?? {}),
-		) as NonNullable<Extract<AgentEvent, { type: "done" }>["modelUsage"]>;
+		const terminalFailure = messages
+			.map((message) => claudeResultFailure(message))
+			.find((failure) => failure !== undefined);
 		const reportedEstimatedCost = messages.at(-1)?.total_cost_usd;
 		let incrementalEstimatedCost: number | undefined;
 		if (
@@ -3495,7 +3663,10 @@ class ClaudeAgentSession implements AgentSession {
 		}
 		const completed: Extract<AgentEvent, { type: "done" }> = {
 			...done,
-			...(Object.keys(modelUsage).length > 0 ? { modelUsage } : {}),
+			...(terminalFailure ? { terminalFailure } : {}),
+			...(reconciled && Object.keys(reconciled.modelUsage).length > 0
+				? { modelUsage: reconciled.modelUsage }
+				: {}),
 			turns: messages.reduce((total, message) => total + message.num_turns, 0),
 			durationMs: messages.reduce(
 				(total, message) => total + (message.duration_ms ?? 0),
@@ -3509,10 +3680,10 @@ class ClaudeAgentSession implements AgentSession {
 		return {
 			...completed,
 			usage: {
-				inputTokens: reconciled.inputTokens,
-				outputTokens: reconciled.outputTokens,
-				cacheReadTokens: reconciled.cacheReadTokens,
-				cacheCreationTokens: reconciled.cacheCreationTokens,
+				inputTokens: reconciled.usage.inputTokens,
+				outputTokens: reconciled.usage.outputTokens,
+				cacheReadTokens: reconciled.usage.cacheReadTokens,
+				cacheCreationTokens: reconciled.usage.cacheCreationTokens,
 			},
 		};
 	}
@@ -3998,6 +4169,8 @@ class ClaudeAgentSession implements AgentSession {
 					this.resumeId = message.new_conversation_id;
 					this.currentNativeSessionId = message.new_conversation_id;
 					this.setLifecycleNativeSessionId(message.new_conversation_id);
+					this.turnUsage.resetCumulativeModelUsage();
+					this.lastProviderEstimatedCost = 0;
 				}
 				if (message.type === "result" && isEmptyClaudeIdleBoundary(message)) {
 					// This belongs to the resumed stream's idle state, not the

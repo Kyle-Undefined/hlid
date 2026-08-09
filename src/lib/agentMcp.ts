@@ -46,8 +46,12 @@ export function agentConfigToEntry(agent: Agent) {
 		dirExists: isWslAgent || existsSync(resolved),
 		model: agent.model,
 		effort: agent.effort,
-		maxTurns:
-			agent.max_turns !== undefined ? String(agent.max_turns) : undefined,
+		...(agent.provider?.startsWith("acp:")
+			? {}
+			: {
+					maxTurns:
+						agent.max_turns !== undefined ? String(agent.max_turns) : undefined,
+				}),
 		permissionMode: agent.permission_mode,
 		recapModel: agent.recap_model,
 		interactiveMode: agent.interactive_mode,

@@ -5063,6 +5063,58 @@ describe("CodexAgentSession — setModel", () => {
 		});
 	});
 
+	it("attributes rerouted usage to the served model without changing selection", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		await session.send("use the selected model");
+		await nextSessionEvent(events); // session_start
+
+		emitSessionNotification(proc, "model/rerouted", {
+			threadId: "thread-1",
+			turnId: "turn-1",
+			fromModel: "gpt-5.4",
+			toModel: "gpt-5.6-terra",
+			reason: "highRiskCyberActivity",
+		});
+		emitSessionNotification(proc, "thread/tokenUsage/updated", {
+			threadId: "thread-1",
+			turnId: "turn-1",
+			tokenUsage: {
+				total: {
+					inputTokens: 12,
+					outputTokens: 7,
+					cacheReadTokens: 3,
+				},
+				last: {
+					inputTokens: 12,
+					outputTokens: 7,
+					cacheReadTokens: 3,
+				},
+				modelContextWindow: 128_000,
+			},
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "usage",
+			model: "gpt-5.6-terra",
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "turn-1", status: "completed" },
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "done",
+			estimatedCost: 0.0001026,
+		});
+
+		await session.send("keep the configured selection");
+		expect(turnStartParams(writes).at(-1)?.model).toBe("gpt-5.4");
+		session.cancel();
+	});
+
 	it("carries a catalog-selected service tier into the thread and turn", async () => {
 		const { proc, writes } = makeFakeSessionProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);
@@ -5906,7 +5958,11 @@ describe("CodexAgentSession — notifications", () => {
 			},
 		});
 		emitSessionNotification(proc, "mcpServer/startupStatus/updated", {
-			servers: [{ name: "filesystem" }, { status: "ignored-without-name" }],
+			threadId: "thread-1",
+			name: "filesystem",
+			status: "starting",
+			error: null,
+			failureReason: null,
 		});
 		emitSessionNotification(proc, "thread/tokenUsage/updated", {
 			threadId: "thread-1",
@@ -5993,6 +6049,85 @@ describe("CodexAgentSession — notifications", () => {
 			},
 		});
 		expect(await events.next()).toEqual({ value: undefined, done: true });
+	});
+
+	it("merges single-server MCP deltas into the seeded root inventory", async () => {
+		const { proc } = makeFakeSessionProc({
+			mcpStatusResult: {
+				data: [
+					{ name: "filesystem", status: "running" },
+					{ name: "github", status: "running" },
+				],
+			},
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(baseCodexParams());
+		expect(await session.mcpServerStatus?.()).toEqual([
+			{ name: "filesystem", status: "connected" },
+			{ name: "github", status: "connected" },
+		]);
+		const events = session[Symbol.asyncIterator]();
+		await session.send("check MCP status");
+		await nextSessionEvent(events); // session_start
+
+		const update = (
+			name: string,
+			status: "starting" | "ready" | "failed" | "cancelled",
+			error: string | null = null,
+			failureReason: "reauthenticationRequired" | null = null,
+			threadId = "thread-1",
+		) =>
+			emitSessionNotification(proc, "mcpServer/startupStatus/updated", {
+				threadId,
+				name,
+				status,
+				error,
+				failureReason,
+			});
+
+		update("filesystem", "starting");
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "mcp_status",
+			servers: [
+				{ name: "filesystem", status: "pending" },
+				{ name: "github", status: "connected" },
+			],
+		});
+		update("filesystem", "ready");
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "mcp_status",
+			servers: [
+				{ name: "filesystem", status: "connected" },
+				{ name: "github", status: "connected" },
+			],
+		});
+		update("github", "starting", null, null, "child-thread");
+		update("filesystem", "cancelled");
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "mcp_status",
+			servers: [
+				{ name: "filesystem", status: "disabled" },
+				{ name: "github", status: "connected" },
+			],
+		});
+		update("github", "failed", "Sign in again", "reauthenticationRequired");
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "mcp_status",
+			servers: [
+				{ name: "filesystem", status: "disabled" },
+				{ name: "github", status: "needs-auth", error: "Sign in again" },
+			],
+		});
+		update("filesystem", "failed", "Process exited");
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "mcp_status",
+			servers: [
+				{ name: "filesystem", status: "failed", error: "Process exited" },
+				{ name: "github", status: "needs-auth", error: "Sign in again" },
+			],
+		});
+		session.cancel();
 	});
 
 	it("separates streamed assistant items without splitting chunks from one item", async () => {
@@ -7678,7 +7813,7 @@ describe("CodexAgentSession — notifications", () => {
 			expect(canUseTool).toHaveBeenCalledWith(
 				"item/permissions/requestApproval",
 				expect.objectContaining({ itemId: "permission-1" }),
-				expect.objectContaining({ toolUseID: "permission-1" }),
+				expect.objectContaining({ toolUseID: "codex-request:number:82" }),
 			);
 			const response = writes
 				.map((line) => JSON.parse(line))
@@ -7809,7 +7944,7 @@ describe("CodexAgentSession — notifications", () => {
 			1,
 			"bash",
 			{ command: "git status" },
-			expect.objectContaining({ toolUseID: "command-from-item" }),
+			expect.objectContaining({ toolUseID: "codex-request:number:78" }),
 		);
 		expect(canUseTool).toHaveBeenNthCalledWith(
 			2,
@@ -7833,6 +7968,206 @@ describe("CodexAgentSession — notifications", () => {
 					}),
 				]),
 			);
+		});
+		session.cancel();
+	});
+
+	it("isolates concurrent approval callbacks for one item and resolves only the matching request", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const pending = new Map<
+			string,
+			{
+				signal: AbortSignal;
+				resolve: (decision: { behavior: "allow" }) => void;
+			}
+		>();
+		const canUseTool = vi.fn(
+			(
+				_toolName: string,
+				_input: unknown,
+				meta: { toolUseID: string; signal: AbortSignal },
+			) =>
+				new Promise<{ behavior: "allow" }>((resolve) => {
+					pending.set(meta.toolUseID, { signal: meta.signal, resolve });
+				}),
+		);
+		const session = new CodexProvider().query(baseCodexParams({ canUseTool }));
+		await session.send("run both subcommands");
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			turnId: "turn-1",
+			item: {
+				id: "shared-command-item",
+				type: "commandExecution",
+				command: "git status",
+			},
+		});
+
+		for (const request of [
+			{ id: 190, approvalId: "callback-a" },
+			{ id: 191, approvalId: "callback-b" },
+		]) {
+			proc.stdout.emit(
+				"data",
+				Buffer.from(
+					`${JSON.stringify({
+						id: request.id,
+						method: "item/commandExecution/requestApproval",
+						params: {
+							threadId: "thread-1",
+							turnId: "turn-1",
+							itemId: "shared-command-item",
+							approvalId: request.approvalId,
+						},
+					})}\n`,
+				),
+			);
+		}
+
+		await vi.waitFor(() => expect(canUseTool).toHaveBeenCalledTimes(2));
+		expect(canUseTool.mock.calls.map(([, input]) => input)).toEqual([
+			{ command: "git status" },
+			{ command: "git status" },
+		]);
+		expect([...pending.keys()]).toEqual(["callback-a", "callback-b"]);
+		expect(pending.get("callback-a")?.signal.aborted).toBe(false);
+		expect(pending.get("callback-b")?.signal.aborted).toBe(false);
+
+		emitSessionNotification(proc, "serverRequest/resolved", {
+			threadId: "thread-1",
+			requestId: 190,
+		});
+		expect(pending.get("callback-a")?.signal.aborted).toBe(true);
+		expect(pending.get("callback-b")?.signal.aborted).toBe(false);
+
+		pending.get("callback-a")?.resolve({ behavior: "allow" });
+		pending.get("callback-b")?.resolve({ behavior: "allow" });
+		await vi.waitFor(() => {
+			const responses = writes
+				.map((line) => JSON.parse(line))
+				.filter((message) => message.id === 190 || message.id === 191);
+			expect(responses).toEqual([{ id: 191, result: { decision: "accept" } }]);
+		});
+		session.cancel();
+	});
+
+	it("preserves native command, network, and file approval scope", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi.fn().mockResolvedValue({ behavior: "allow" });
+		const session = new CodexProvider().query(baseCodexParams({ canUseTool }));
+		await session.send("inspect approval context");
+
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 180,
+					method: "item/commandExecution/requestApproval",
+					params: {
+						threadId: "thread-1",
+						turnId: "turn-1",
+						itemId: "network-command",
+						command: "curl https://api.example.com",
+						cwd: "/work/project",
+						commandActions: [
+							{
+								type: "unknown",
+								command: "curl https://api.example.com",
+							},
+						],
+						networkApprovalContext: {
+							host: "api.example.com",
+							protocol: "https",
+						},
+						additionalPermissions: {
+							network: { hosts: ["api.example.com"] },
+							fileSystem: null,
+						},
+						proposedExecpolicyAmendment: ["curl"],
+						proposedNetworkPolicyAmendments: [
+							{ host: "api.example.com", action: "allow" },
+						],
+						availableDecisions: ["accept", "decline"],
+					},
+				})}\n`,
+			),
+		);
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			item: {
+				id: "file-change",
+				type: "fileChange",
+				changes: [{ path: "/work/project/generated.txt" }],
+			},
+		});
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 181,
+					method: "item/fileChange/requestApproval",
+					params: {
+						threadId: "thread-1",
+						turnId: "turn-1",
+						itemId: "file-change",
+						grantRoot: "/work/project/generated",
+					},
+				})}\n`,
+			),
+		);
+
+		await vi.waitFor(() => expect(canUseTool).toHaveBeenCalledTimes(2));
+		expect(canUseTool).toHaveBeenNthCalledWith(
+			1,
+			"bash",
+			{
+				command: "curl https://api.example.com",
+				cwd: "/work/project",
+				commandActions: [
+					{
+						type: "unknown",
+						command: "curl https://api.example.com",
+					},
+				],
+				networkApprovalContext: {
+					host: "api.example.com",
+					protocol: "https",
+				},
+				additionalPermissions: {
+					network: { hosts: ["api.example.com"] },
+					fileSystem: null,
+				},
+				proposedExecpolicyAmendment: ["curl"],
+				proposedNetworkPolicyAmendments: [
+					{ host: "api.example.com", action: "allow" },
+				],
+				availableDecisions: ["accept", "decline"],
+			},
+			expect.objectContaining({
+				toolUseID: "codex-request:number:180",
+				title: "Allow Codex to access https://api.example.com?",
+				displayName: "Codex network access",
+				signal: expect.any(AbortSignal),
+			}),
+		);
+		expect(canUseTool).toHaveBeenNthCalledWith(
+			2,
+			"Write",
+			{
+				file_path: "/work/project/generated.txt",
+				grantRoot: "/work/project/generated",
+			},
+			expect.objectContaining({ toolUseID: "codex-request:number:181" }),
+		);
+		await vi.waitFor(() => {
+			const responses = writes
+				.map((line) => JSON.parse(line))
+				.filter((message) => message.id === 180 || message.id === 181);
+			expect(responses).toHaveLength(2);
 		});
 		session.cancel();
 	});
@@ -7869,7 +8204,7 @@ describe("CodexAgentSession — notifications", () => {
 			expect(canUseTool).toHaveBeenCalledWith(
 				"item/commandExecution/requestApproval",
 				expect.objectContaining({ itemId: "command-sleep" }),
-				expect.objectContaining({ toolUseID: "command-sleep" }),
+				expect.objectContaining({ toolUseID: "codex-request:number:79" }),
 			);
 		});
 		session.cancel();
@@ -8042,7 +8377,7 @@ describe("CodexAgentSession — notifications", () => {
 			expect(canUseTool).toHaveBeenCalledWith(
 				"Write",
 				{ file_path: "/vault/.hlid/plans/plan-session.html" },
-				expect.objectContaining({ toolUseID: "change-1" }),
+				expect.objectContaining({ toolUseID: "codex-request:number:99" }),
 			);
 			const response = writes
 				.map((line) => JSON.parse(line))

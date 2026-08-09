@@ -58,6 +58,7 @@ import {
 	acquireCodexAppServer,
 	CodexAppServer,
 	type CodexAppServerLaunch,
+	type ServerRequestContext,
 	type ThreadHandler,
 } from "./codexAppServer";
 import { type CodexAppAuthAttempt, mapCodexAppCatalogPage } from "./codexApps";
@@ -72,9 +73,11 @@ import type {
 	CollabAgentState,
 	CollabAgentStatus,
 	CollabAgentTool,
+	CommandExecutionRequestApprovalParams,
 	CommandExecutionRequestApprovalResponse,
 	DynamicToolCallResponse,
 	DynamicToolSpec,
+	FileChangeRequestApprovalParams,
 	FileChangeRequestApprovalResponse,
 	SandboxMode as GeneratedSandboxMode,
 	GrantedPermissionProfile,
@@ -83,9 +86,11 @@ import type {
 	McpServerElicitationRequestResponse,
 	McpServerOauthLoginParams,
 	McpServerOauthLoginResponse,
+	McpServerStatusUpdatedNotification,
 	Model,
 	ModelListParams,
 	ModelListResponse,
+	ModelReroutedNotification,
 	PermissionsRequestApprovalResponse,
 	RateLimitSnapshot,
 	RealtimeVoice,
@@ -245,6 +250,33 @@ function asObj(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object"
 		? (value as Record<string, unknown>)
 		: {};
+}
+
+function serverRequestSignal(
+	requestSignal: AbortSignal,
+	sessionSignal: AbortSignal | undefined,
+): AbortSignal {
+	return sessionSignal
+		? AbortSignal.any([sessionSignal, requestSignal])
+		: requestSignal;
+}
+
+function serverRequestToolUseId(
+	params: Record<string, unknown>,
+	requestId: ServerRequestContext["requestId"] | undefined,
+): string {
+	if (typeof params.approvalId === "string" && params.approvalId) {
+		return params.approvalId;
+	}
+	// JSON-RPC string and numeric ids occupy distinct namespaces. Preserve that
+	// distinction so two live native requests can never share one Hlid card.
+	if (typeof requestId === "string" && requestId) {
+		return `codex-request:string:${requestId}`;
+	}
+	if (typeof requestId === "number" && Number.isFinite(requestId)) {
+		return `codex-request:number:${requestId}`;
+	}
+	return String(params.itemId ?? "approval");
 }
 
 const CODEX_MCP_STATUS_PAGE_SIZE = 100;
@@ -2174,6 +2206,11 @@ class CodexAgentSession implements AgentSession {
 	private childLastUsage = new Map<string, CanonicalTokenUsage>();
 	private cumulativeUsageByThread = new Map<string, CanonicalTokenUsage>();
 	private cumulativeUsageTurns = new Set<string>();
+	private actualModelByTurn = new Map<string, string>();
+	private mcpServerStatusesByThread = new Map<
+		string,
+		Map<string, McpServerStatus>
+	>();
 	private resolvedModel: string | null = null;
 	private lastReportedApprovalsReviewer: ProviderApprovalsReviewer | null =
 		null;
@@ -3761,7 +3798,7 @@ class CodexAgentSession implements AgentSession {
 				{ detail: "toolsAndAuthOnly", timeoutMs: 5_000 },
 			);
 			const servers = result.data;
-			return servers.flatMap((server) => {
+			const mapped = servers.flatMap((server) => {
 				const obj = asObj(server);
 				const name = String(obj.name ?? obj.serverName ?? "");
 				if (!name) return [];
@@ -3776,11 +3813,40 @@ class CodexAgentSession implements AgentSession {
 								: raw === "unknown"
 									? "pending"
 									: "connected";
-				return [{ name, status }];
+				return [
+					{
+						name,
+						status,
+						...(typeof obj.error === "string" && obj.error
+							? { error: obj.error }
+							: {}),
+					},
+				];
 			});
+			const statuses = this.rootMcpServerStatuses();
+			statuses.clear();
+			for (const server of mapped) statuses.set(server.name, server);
+			return mapped;
 		} catch {
 			return [];
 		}
+	}
+
+	private rootMcpServerStatuses(): Map<string, McpServerStatus> {
+		const key = this.threadId ?? "";
+		let statuses = this.mcpServerStatusesByThread.get(key);
+		if (!statuses && key) {
+			statuses = this.mcpServerStatusesByThread.get("");
+			if (statuses) {
+				this.mcpServerStatusesByThread.delete("");
+				this.mcpServerStatusesByThread.set(key, statuses);
+			}
+		}
+		if (!statuses) {
+			statuses = new Map();
+			this.mcpServerStatusesByThread.set(key, statuses);
+		}
+		return statuses;
 	}
 
 	async usageWindows(): Promise<ProviderWindowReading[]> {
@@ -3934,7 +4000,8 @@ class CodexAgentSession implements AgentSession {
 		this.threadHandler = {
 			onNotification: (method, params) =>
 				this.handleNotification(method, params),
-			onRequest: (method, params) => this.handleServerRequest(method, params),
+			onRequest: (method, params, context) =>
+				this.handleServerRequest(method, params, context),
 			onExit: (err) => {
 				if (this.canceled) return;
 				this.handleAppServerExit(err);
@@ -4542,6 +4609,7 @@ class CodexAgentSession implements AgentSession {
 
 	private async handleDynamicToolCall(
 		params: Record<string, unknown>,
+		signal: AbortSignal,
 	): Promise<DynamicToolCallResponse> {
 		if (params.namespace === OBSIDIAN_AGENT_NAMESPACE) {
 			try {
@@ -4557,7 +4625,7 @@ class CodexAgentSession implements AgentSession {
 						params.arguments,
 						{
 							toolUseID: String(params.callId ?? `${toolName}-${Date.now()}`),
-							signal: this.params.signal ?? new AbortController().signal,
+							signal,
 							title: `Obsidian ${toolName.replaceAll("_", " ")}`,
 						},
 					);
@@ -4615,7 +4683,7 @@ class CodexAgentSession implements AgentSession {
 						params.arguments,
 						{
 							toolUseID: String(params.callId ?? `hlid-tool-${Date.now()}`),
-							signal: this.params.signal ?? new AbortController().signal,
+							signal,
 							title: spec.approvalTitle,
 						},
 					);
@@ -4771,6 +4839,7 @@ class CodexAgentSession implements AgentSession {
 
 	private async handleMcpElicitation(
 		params: Record<string, unknown>,
+		signal: AbortSignal,
 	): Promise<McpServerElicitationRequestResponse> {
 		if (params.mode === "url") {
 			return { action: "cancel", content: null, _meta: null };
@@ -4811,7 +4880,7 @@ class CodexAgentSession implements AgentSession {
 			},
 			{
 				toolUseID: `codex-elicitation-${String(params.threadId ?? "thread")}-${++this.elicitationSequence}`,
-				signal: this.params.signal ?? new AbortController().signal,
+				signal,
 				title: `Allow Codex to use ${details.displayName}?`,
 				displayName: `Windows Computer Use · ${details.displayName}`,
 				description: [
@@ -4840,8 +4909,10 @@ class CodexAgentSession implements AgentSession {
 	private async handleServerRequest(
 		method: string,
 		rawParams: unknown,
+		context: ServerRequestContext,
 	): Promise<unknown> {
 		const params = asObj(rawParams);
+		const signal = serverRequestSignal(context.signal, this.params.signal);
 		// Visualize runs as a no-tools, job-root-only worker. Never let generic
 		// bypass-permissions handling widen that contract, even if Codex asks for
 		// a permission or attempts a dynamic/MCP call that was not advertised.
@@ -4872,15 +4943,15 @@ class CodexAgentSession implements AgentSession {
 			return this.deniedServerRequestResult(method);
 		}
 		if (method === "item/tool/requestUserInput") {
-			return this.handleRequestUserInput(params);
+			return this.handleRequestUserInput(params, signal);
 		}
 		if (method === "item/tool/call") {
-			return this.handleDynamicToolCall(params);
+			return this.handleDynamicToolCall(params, signal);
 		}
 		if (method === "mcpServer/elicitation/request") {
 			// Computer Use app access must always flow through Hlid, even when the
 			// surrounding Codex session uses bypassPermissions.
-			return this.handleMcpElicitation(params);
+			return this.handleMcpElicitation(params, signal);
 		}
 		if (
 			!this.params.policyEnforced &&
@@ -4895,6 +4966,7 @@ class CodexAgentSession implements AgentSession {
 			return this.deniedServerRequestResult(method);
 		}
 		const itemId = String(params.itemId ?? params.approvalId ?? "approval");
+		const toolUseID = serverRequestToolUseId(params, context.requestId);
 		const startedItem = this.startedItems.get(itemId);
 		const filePath =
 			method === "item/fileChange/requestApproval" ||
@@ -4907,17 +4979,55 @@ class CodexAgentSession implements AgentSession {
 				? (commandFromProviderInput(params) ??
 					commandFromStartedItem(startedItem))
 				: null;
+		const commandParams =
+			params as Partial<CommandExecutionRequestApprovalParams>;
+		const fileParams = params as Partial<FileChangeRequestApprovalParams>;
+		const networkContext = commandParams.networkApprovalContext ?? null;
 		const toolName = filePath ? "Write" : command ? "bash" : method;
 		const toolInput = filePath
-			? { file_path: filePath }
+			? {
+					file_path: filePath,
+					...(typeof fileParams.grantRoot === "string"
+						? { grantRoot: fileParams.grantRoot }
+						: {}),
+				}
 			: command
-				? { command }
+				? {
+						command,
+						...(commandParams.cwd != null ? { cwd: commandParams.cwd } : {}),
+						...(commandParams.commandActions != null
+							? { commandActions: commandParams.commandActions }
+							: {}),
+						...(networkContext != null
+							? { networkApprovalContext: networkContext }
+							: {}),
+						...(commandParams.additionalPermissions != null
+							? { additionalPermissions: commandParams.additionalPermissions }
+							: {}),
+						...(commandParams.proposedExecpolicyAmendment != null
+							? {
+									proposedExecpolicyAmendment:
+										commandParams.proposedExecpolicyAmendment,
+								}
+							: {}),
+						...(commandParams.proposedNetworkPolicyAmendments != null
+							? {
+									proposedNetworkPolicyAmendments:
+										commandParams.proposedNetworkPolicyAmendments,
+								}
+							: {}),
+						...(commandParams.availableDecisions != null
+							? { availableDecisions: commandParams.availableDecisions }
+							: {}),
+					}
 				: params;
 		const decision = await this.params.canUseTool(toolName, toolInput, {
-			toolUseID: itemId,
-			signal: this.params.signal ?? new AbortController().signal,
-			title: "Codex wants approval",
-			displayName: method,
+			toolUseID,
+			signal,
+			title: networkContext
+				? `Allow Codex to access ${networkContext.protocol}://${networkContext.host}?`
+				: "Codex wants approval",
+			displayName: networkContext ? "Codex network access" : method,
 			description:
 				typeof params.reason === "string" ? params.reason : undefined,
 		});
@@ -4957,6 +5067,7 @@ class CodexAgentSession implements AgentSession {
 
 	private async handleRequestUserInput(
 		params: Record<string, unknown>,
+		signal: AbortSignal,
 	): Promise<{ answers: Record<string, { answers: string[] }> }> {
 		// Codex 0.147 makes this lifecycle explicit. A non-blocking request may be
 		// resolved by the provider without a user response, so never leave Hlid's
@@ -4966,7 +5077,7 @@ class CodexAgentSession implements AgentSession {
 		const itemId = String(params.itemId ?? "request-user-input");
 		const decision = await this.params.canUseTool("AskUserQuestion", params, {
 			toolUseID: itemId,
-			signal: this.params.signal ?? new AbortController().signal,
+			signal,
 			title: "Codex needs your input",
 			displayName: "request_user_input",
 		});
@@ -5038,6 +5149,7 @@ class CodexAgentSession implements AgentSession {
 	private addQueryUsage(
 		usage: CanonicalTokenUsage,
 		estimatedCost?: number | null,
+		model: string | undefined = this.usageModel(),
 	): void {
 		this.queryUsage.inputTokens += usage.inputTokens;
 		this.queryUsage.outputTokens += usage.outputTokens;
@@ -5045,13 +5157,17 @@ class CodexAgentSession implements AgentSession {
 		this.queryUsage.cacheCreationTokens += usage.cacheCreationTokens;
 		const cost =
 			estimatedCost === undefined
-				? estimateCodexCost(this.usageModel(), usage)
+				? estimateCodexCost(model, usage)
 				: estimatedCost;
 		if (cost == null) this.queryUsageIsPriced = false;
 		else this.queryEstimatedCost += cost;
 	}
 
-	private recordCumulativeUsage(threadId: string, value: unknown): boolean {
+	private recordCumulativeUsage(
+		threadId: string,
+		value: unknown,
+		model?: string,
+	): boolean {
 		if (!threadId) return false;
 		const total = maybeTotalUsage(value);
 		if (!total) return false;
@@ -5084,7 +5200,7 @@ class CodexAgentSession implements AgentSession {
 			// produced it. Price the delta independently so several short-context
 			// calls do not accidentally trigger the long-context multiplier merely
 			// because their query-wide sum crosses the threshold.
-			this.addQueryUsage(increment);
+			this.addQueryUsage(increment, undefined, model);
 		}
 		return true;
 	}
@@ -5099,6 +5215,7 @@ class CodexAgentSession implements AgentSession {
 		this.queryTurns = 0;
 		this.queryWebSearchItemIds.clear();
 		this.childLastUsage.clear();
+		this.actualModelByTurn.clear();
 		this.cumulativeUsageTurns.clear();
 		this.queryChildThreadIds.clear();
 		this.ordinaryQueryActive = false;
@@ -5236,6 +5353,7 @@ class CodexAgentSession implements AgentSession {
 		this.clearPendingDone();
 		const id = asObj(obj.turn).id;
 		if (typeof id === "string") {
+			this.activeTurnModel = this.params.model ?? this.resolvedModel;
 			this.activeTurnId = id;
 			this.activeTurnIdIsAuthoritative = true;
 			this.ownedOrdinaryTurnIds.add(id);
@@ -5719,6 +5837,9 @@ class CodexAgentSession implements AgentSession {
 		const usage = maybeUsage(params);
 		if (usage?.type !== "usage") return;
 		this.recordUsage(usage);
+		const turnId = this.notificationTurnId(asObj(params));
+		const model =
+			usage.model ?? this.actualModelByTurn.get(turnId) ?? this.usageModel();
 		const threadId = this.threadId ?? "";
 		if (!this.ownsOpenQuery()) {
 			// A resumed thread can publish its current cumulative token snapshot
@@ -5729,7 +5850,11 @@ class CodexAgentSession implements AgentSession {
 			if (threadId && total) this.cumulativeUsageByThread.set(threadId, total);
 			return;
 		}
-		const capturedCumulative = this.recordCumulativeUsage(threadId, params);
+		const capturedCumulative = this.recordCumulativeUsage(
+			threadId,
+			params,
+			model,
+		);
 		const queryUsage = capturedCumulative
 			? this.queryUsage
 			: {
@@ -5741,7 +5866,6 @@ class CodexAgentSession implements AgentSession {
 						this.queryUsage.cacheCreationTokens +
 						(usage.cacheCreationTokens ?? 0),
 				};
-		const model = usage.model ?? this.usageModel();
 		this.events.push({
 			...usage,
 			...(model ? { model } : {}),
@@ -5761,23 +5885,51 @@ class CodexAgentSession implements AgentSession {
 		}
 		const usage = maybeUsage(params);
 		if (usage?.type !== "usage") return;
+		const turnId = this.notificationTurnId(asObj(params));
+		const model =
+			usage.model ?? this.actualModelByTurn.get(turnId) ?? this.usageModel();
 		this.childLastUsage.set(threadId, {
 			inputTokens: usage.inputTokens,
 			outputTokens: usage.outputTokens,
 			cacheReadTokens: usage.cacheReadTokens ?? 0,
 			cacheCreationTokens: usage.cacheCreationTokens ?? 0,
 		});
-		this.recordCumulativeUsage(threadId, params);
+		this.recordCumulativeUsage(threadId, params, model);
 	}
 
-	private handleMcpStartupStatus(obj: Record<string, unknown>): void {
-		const servers = Array.isArray(obj.servers) ? obj.servers : [];
+	private handleMcpStartupStatus(raw: unknown): void {
+		const notification = raw as McpServerStatusUpdatedNotification;
+		if (!notification.name) return;
+		// MCP inventory is provider-wide in Hlid. A subagent may have a different
+		// startup lifecycle, but its delta must never replace the root inventory.
+		if (
+			notification.threadId &&
+			this.threadId &&
+			notification.threadId !== this.threadId
+		) {
+			return;
+		}
+		const statuses = this.rootMcpServerStatuses();
+		const status: McpServerStatus["status"] =
+			notification.status === "ready"
+				? "connected"
+				: notification.status === "failed"
+					? notification.failureReason === "reauthenticationRequired"
+						? "needs-auth"
+						: "failed"
+					: notification.status === "cancelled"
+						? "disabled"
+						: "pending";
+		statuses.set(notification.name, {
+			name: notification.name,
+			status,
+			...(notification.error ? { error: notification.error } : {}),
+		});
 		this.events.push({
 			type: "mcp_status",
-			servers: servers.flatMap((server) => {
-				const name = String(asObj(server).name ?? "");
-				return name ? [{ name, status: "pending" as const }] : [];
-			}),
+			servers: [...statuses.values()].sort((a, b) =>
+				a.name.localeCompare(b.name),
+			),
 		});
 	}
 
@@ -5790,17 +5942,25 @@ class CodexAgentSession implements AgentSession {
 			typeof turn.id === "string" ? turn.id : this.activeTurnId;
 		const completedCurrentTurn =
 			!completedTurnId || this.activeTurnId === completedTurnId;
+		const completedUsage = maybeUsage(turn) ?? maybeUsage(params);
+		const completedModel =
+			(completedUsage?.type === "usage" ? completedUsage.model : undefined) ??
+			(completedTurnId
+				? this.actualModelByTurn.get(completedTurnId)
+				: undefined) ??
+			this.usageModel();
 		this.handleCompletedTurnAgentMessage(turn);
-		this.recordUsage(maybeUsage(turn) ?? maybeUsage(params));
+		this.recordUsage(completedUsage);
 		const threadId = this.threadId ?? String(obj.threadId ?? "");
 		const capturedFinalTotal =
-			this.recordCumulativeUsage(threadId, turn) ||
-			this.recordCumulativeUsage(threadId, params);
+			this.recordCumulativeUsage(threadId, turn, completedModel) ||
+			this.recordCumulativeUsage(threadId, params, completedModel);
 		if (!capturedFinalTotal && !this.cumulativeUsageTurns.has(threadId)) {
 			// Older app-server payloads expose only the final call. Preserve that
 			// fallback without double-counting modern cumulative snapshots.
-			this.addQueryUsage(this.lastUsage);
+			this.addQueryUsage(this.lastUsage, undefined, completedModel);
 		}
+		if (completedTurnId) this.actualModelByTurn.delete(completedTurnId);
 		this.cumulativeUsageTurns.delete(threadId);
 		this.queryTurns += 1;
 		if (completedTurnId) this.ownedOrdinaryTurnIds.delete(completedTurnId);
@@ -5866,10 +6026,15 @@ class CodexAgentSession implements AgentSession {
 		if (!ordinaryChild && !liveChild) return;
 		const turn = asObj(obj.turn);
 		if (ordinaryChild) {
+			const turnId = typeof turn.id === "string" ? turn.id : "";
 			const reportedUsage = maybeUsage(turn) ?? maybeUsage(obj);
+			const model =
+				(reportedUsage?.type === "usage" ? reportedUsage.model : undefined) ??
+				this.actualModelByTurn.get(turnId) ??
+				this.usageModel();
 			const capturedFinalTotal =
-				this.recordCumulativeUsage(threadId, turn) ||
-				this.recordCumulativeUsage(threadId, obj);
+				this.recordCumulativeUsage(threadId, turn, model) ||
+				this.recordCumulativeUsage(threadId, obj, model);
 			const usage =
 				reportedUsage?.type === "usage"
 					? {
@@ -5884,8 +6049,9 @@ class CodexAgentSession implements AgentSession {
 				!capturedFinalTotal &&
 				!this.cumulativeUsageTurns.has(threadId)
 			) {
-				this.addQueryUsage(usage);
+				this.addQueryUsage(usage, undefined, model);
 			}
+			if (turnId) this.actualModelByTurn.delete(turnId);
 			this.queryTurns += 1;
 		}
 		this.childLastUsage.delete(threadId);
@@ -6164,6 +6330,20 @@ class CodexAgentSession implements AgentSession {
 			case "account/rateLimits/updated":
 				this.emitRateLimits(obj.rateLimits);
 				break;
+			case "model/rerouted": {
+				const notification = params as ModelReroutedNotification;
+				const ownedReroute = childNotification
+					? this.queryChildThreadIds.has(notification.threadId)
+					: this.ordinaryQueryActive &&
+						(this.ownedOrdinaryTurnIds.has(notification.turnId) ||
+							this.ordinaryTurnStartPending ||
+							this.activeTurnId === notification.turnId);
+				if (ownedReroute && notification.turnId && notification.toModel) {
+					this.actualModelByTurn.set(notification.turnId, notification.toModel);
+					if (!childNotification) this.activeTurnModel = notification.toModel;
+				}
+				break;
+			}
 			case "thread/tokenUsage/updated":
 				if (childNotification) {
 					this.handleChildTokenUsageUpdated(notificationThreadId, params);
@@ -6171,7 +6351,7 @@ class CodexAgentSession implements AgentSession {
 					this.handleTokenUsageUpdated(params);
 				break;
 			case "mcpServer/startupStatus/updated":
-				this.handleMcpStartupStatus(obj);
+				this.handleMcpStartupStatus(params);
 				break;
 			case "turn/completed":
 				if (childNotification) this.handleChildTurnCompleted(obj);

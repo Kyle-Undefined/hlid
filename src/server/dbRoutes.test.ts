@@ -1273,6 +1273,37 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		expect(mockGetSessionById).not.toHaveBeenCalled();
 	});
 
+	it("returns 409 while provider background work is still running", async () => {
+		const pool = makePool({
+			findByDbSessionId: vi.fn().mockReturnValue({
+				manager: {
+					getStatus: () => ({ state: "idle" }),
+					hasActiveRealtime: () => false,
+					getBackgroundActivities: () => [
+						{
+							providerId: "claude",
+							providerSessionId: "native-live-session",
+							activityId: "task-1",
+							kind: "agent",
+							status: "running",
+							startedAtMs: 1,
+							updatedAtMs: 2,
+							capabilities: { stop: true },
+						},
+					],
+				},
+			}),
+		});
+		const res = await handleDbRoute(
+			makeUrl("/db/session/fork"),
+			forkRequest({ id: "live-session" }),
+			pool,
+		);
+		if (!res) throw new Error("Expected a Response, got null");
+		expect(res.status).toBe(409);
+		expect(mockGetSessionById).not.toHaveBeenCalled();
+	});
+
 	it("allows an idle live session to fork without a reload", async () => {
 		mockGetSessionById.mockResolvedValue({
 			...sampleRow,

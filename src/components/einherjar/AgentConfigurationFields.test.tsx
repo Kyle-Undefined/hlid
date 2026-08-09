@@ -99,4 +99,21 @@ describe("AgentConfigurationFields", () => {
 		expect(screen.queryByRole("combobox")).toBeNull();
 		expect(onChange).toHaveBeenCalledWith({ mode: "context" });
 	});
+
+	it("hides the unmapped max-turns setting for ACP providers", () => {
+		const acpProvider: ProviderInfo = {
+			...provider,
+			id: "acp:opencode",
+			label: "OpenCode",
+		};
+		render(
+			<AgentConfigurationFields
+				value={{ ...value, provider: acpProvider.id }}
+				providers={[acpProvider]}
+				onChange={vi.fn()}
+			/>,
+		);
+		expect(screen.queryByText("Max turns")).toBeNull();
+		expect(screen.queryByRole("spinbutton")).toBeNull();
+	});
 });

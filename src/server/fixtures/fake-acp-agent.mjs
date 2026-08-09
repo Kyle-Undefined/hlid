@@ -10,6 +10,12 @@ import {
 
 const sessions = new Map();
 const behavior = process.env.HLID_FAKE_ACP_BEHAVIOR ?? "";
+const stableModeBehavior = behavior.startsWith("stable-mode");
+const supportsResume = ![
+	"hang-load",
+	"reject-load",
+	"load-only-replay",
+].includes(behavior);
 const never = () => new Promise(() => {});
 const stall = async (phase) => {
 	process.stderr.write(`fake ${phase} stalled\n`);
@@ -47,18 +53,28 @@ const configOptions = (session) => [
 			{ value: "high", name: "High" },
 		],
 	},
-	...(behavior === "stable-mode"
+	...(stableModeBehavior
 		? [
 				{
 					type: "select",
 					id: "mode",
 					name: "Mode",
 					category: "mode",
-					currentValue: session?.mode ?? "code",
-					options: [
-						{ value: "code", name: "Code" },
-						{ value: "plan", name: "Plan" },
-					],
+					currentValue:
+						session?.mode ??
+						(behavior === "stable-mode-start-plan" ? "plan" : "default"),
+					options:
+						behavior === "stable-mode-start-plan"
+							? [
+									{ value: "ask", name: "Ask" },
+									{ value: "architect", name: "Architect" },
+									{ value: "plan", name: "Plan" },
+									{ value: "code", name: "Code" },
+								]
+							: [
+									{ value: "default", name: "Default" },
+									{ value: "plan", name: "Plan" },
+								],
 				},
 			]
 		: []),
@@ -71,7 +87,7 @@ const modes = (session) => ({
 	],
 });
 const sessionMetadata = (session) => ({
-	...(behavior === "stable-mode" ? {} : { modes: modes(session) }),
+	...(stableModeBehavior ? {} : { modes: modes(session) }),
 	configOptions: configOptions(session),
 });
 const validateSessionInputs = (params) => {
@@ -105,13 +121,14 @@ agent({ name: "hlid-fake-agent" })
 		return {
 			protocolVersion: PROTOCOL_VERSION,
 			agentCapabilities: {
-				loadSession: true,
+				...(behavior === "resume-only" ? {} : { loadSession: true }),
 				mcpCapabilities:
 					behavior === "strict-capabilities" ? {} : { http: true, sse: true },
 				sessionCapabilities: {
 					fork: {},
 					delete: {},
 					close: {},
+					...(supportsResume ? { resume: {} } : {}),
 					...(behavior === "strict-capabilities"
 						? {}
 						: { additionalDirectories: {} }),
@@ -131,7 +148,12 @@ agent({ name: "hlid-fake-agent" })
 		const sessionId = "fake-session";
 		const session = {
 			cancelled: false,
-			mode: "code",
+			mode:
+				behavior === "stable-mode-start-plan"
+					? "plan"
+					: behavior === "stable-mode"
+						? "default"
+						: "code",
 			model: behavior === "cwd-model" ? params.cwd : "fake-fast",
 			effort: "medium",
 			mcpCount: params.mcpServers.length,
@@ -144,10 +166,13 @@ agent({ name: "hlid-fake-agent" })
 			...sessionMetadata(session),
 		};
 	})
-	.onRequest("session/load", async ({ params }) => {
+	.onRequest("session/load", async ({ params, client }) => {
 		if (behavior === "hang-load") await stall("session load");
 		if (behavior === "reject-load") {
 			throw new Error("fake session is not durable");
+		}
+		if (behavior === "resume-preferred") {
+			throw new Error("session/load must not be used when resume is available");
 		}
 		validateSessionInputs(params);
 		const session = {
@@ -158,6 +183,51 @@ agent({ name: "hlid-fake-agent" })
 			mcpCount: params.mcpServers.length,
 			additionalDirectories: params.additionalDirectories ?? [],
 			mcpTransports: params.mcpServers.map((server) => server.type ?? "stdio"),
+		};
+		sessions.set(params.sessionId, session);
+		if (behavior === "load-only-replay") {
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "user_message_chunk",
+					messageId: "historical-user",
+					content: { type: "text", text: "historical question" },
+				},
+			});
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "agent_message_chunk",
+					messageId: "historical-agent",
+					content: { type: "text", text: "historical answer" },
+				},
+			});
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "tool_call",
+					toolCallId: "historical-tool",
+					title: "Historical tool",
+					name: "history.tool",
+					status: "completed",
+					rawOutput: "historical output",
+				},
+			});
+		}
+		return sessionMetadata(session);
+	})
+	.onRequest("session/resume", async ({ params }) => {
+		validateSessionInputs(params);
+		const session = {
+			cancelled: false,
+			mode: "code",
+			model: "fake-fast",
+			effort: "medium",
+			mcpCount: params.mcpServers?.length ?? 0,
+			additionalDirectories: params.additionalDirectories ?? [],
+			mcpTransports: (params.mcpServers ?? []).map(
+				(server) => server.type ?? "stdio",
+			),
 		};
 		sessions.set(params.sessionId, session);
 		return sessionMetadata(session);
@@ -286,6 +356,23 @@ agent({ name: "hlid-fake-agent" })
 			});
 			return { stopReason: "end_turn" };
 		}
+		if (text === "message-boundaries") {
+			for (const [messageId, chunk] of [
+				["message-a", "first "],
+				["message-a", "message"],
+				["message-b", "second message"],
+			]) {
+				await client.notify(methods.client.session.update, {
+					sessionId: params.sessionId,
+					update: {
+						sessionUpdate: "agent_message_chunk",
+						messageId,
+						content: { type: "text", text: chunk },
+					},
+				});
+			}
+			return { stopReason: "end_turn" };
+		}
 		if (text === "elicit") {
 			const response = await client.request(methods.client.elicitation.create, {
 				mode: "form",
@@ -316,7 +403,7 @@ agent({ name: "hlid-fake-agent" })
 			});
 			return { stopReason: "end_turn" };
 		}
-		if (text === "plan-update") {
+		if (text === "plan-update" || text === "plan-refusal") {
 			await client.notify(methods.client.session.update, {
 				sessionId: params.sessionId,
 				update: {
@@ -326,7 +413,9 @@ agent({ name: "hlid-fake-agent" })
 					],
 				},
 			});
-			return { stopReason: "end_turn" };
+			return {
+				stopReason: text === "plan-refusal" ? "refusal" : "end_turn",
+			};
 		}
 		if (text === "plan-remove") {
 			await client.notify(methods.client.session.update, {
@@ -376,6 +465,75 @@ agent({ name: "hlid-fake-agent" })
 							newText: "new",
 						},
 					],
+				},
+			});
+			return { stopReason: "end_turn" };
+		}
+		if (text === "patch-tool") {
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "tool_call",
+					toolCallId: "patch-1",
+					title: "Patch tool",
+					name: "custom.patch",
+					kind: "other",
+					status: "pending",
+					rawInput: { value: 1 },
+				},
+			});
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "tool_call_update",
+					toolCallId: "patch-1",
+					status: "in_progress",
+					content: [
+						{
+							type: "content",
+							content: { type: "text", text: "result from earlier patch" },
+						},
+					],
+				},
+			});
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "tool_call_update",
+					toolCallId: "patch-1",
+					status: "completed",
+				},
+			});
+			return { stopReason: "end_turn" };
+		}
+		if (text === "locations-tool") {
+			const tool = {
+				toolCallId: "locations-1",
+				title: "Edit selected file",
+				name: "filesystem.edit",
+				kind: "edit",
+				rawInput: { path: "selection-alias" },
+				locations: [{ path: "/vault/selected.md", line: 12 }],
+			};
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: { sessionUpdate: "tool_call", ...tool, status: "pending" },
+			});
+			await client.request(methods.client.session.requestPermission, {
+				sessionId: params.sessionId,
+				toolCall: tool,
+				options: [
+					{ optionId: "allow", name: "Allow", kind: "allow_once" },
+					{ optionId: "deny", name: "Deny", kind: "reject_once" },
+				],
+			});
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "tool_call_update",
+					toolCallId: "locations-1",
+					status: "completed",
+					rawOutput: "edited",
 				},
 			});
 			return { stopReason: "end_turn" };
@@ -434,6 +592,9 @@ agent({ name: "hlid-fake-agent" })
 				const toolCall = {
 					toolCallId: `kind-${index}`,
 					title,
+					...((kind === "switch_mode" || kind === "other") && {
+						name: kind === "switch_mode" ? "session.set_mode" : "custom.action",
+					}),
 					kind,
 					rawInput: { kind },
 				};
@@ -489,6 +650,9 @@ agent({ name: "hlid-fake-agent" })
 				content: { type: "text", text: "world" },
 			},
 		});
+		if (text === "html-plan-missing") {
+			return { stopReason: "end_turn" };
+		}
 		const obsidianCommand = text === "obsidian-command";
 		const tool = {
 			toolCallId: "tool-1",
@@ -498,15 +662,20 @@ agent({ name: "hlid-fake-agent" })
 					? "Read file"
 					: "Write file",
 			kind: obsidianCommand
-				? "other"
+				? "execute"
 				: text === "read-permission"
 					? "read"
 					: "edit",
+			...(obsidianCommand
+				? { name: "hlid_obsidian.run_command" }
+				: text === "html-plan" || text === "html-plan-failed"
+					? { name: "filesystem.write" }
+					: {}),
 			rawInput: obsidianCommand
 				? { id: "app:toggle-left-sidebar" }
 				: {
 						path:
-							text === "html-plan"
+							text === "html-plan" || text === "html-plan-failed"
 								? "/vault/.hlid/plans/plan-fake.html"
 								: "a.txt",
 					},
@@ -534,8 +703,11 @@ agent({ name: "hlid-fake-agent" })
 			update: {
 				sessionUpdate: "tool_call_update",
 				toolCallId: "tool-1",
-				status: allowed ? "completed" : "failed",
-				rawOutput: allowed ? "allowed" : "permission_denied",
+				status: allowed && text !== "html-plan-failed" ? "completed" : "failed",
+				rawOutput:
+					allowed && text !== "html-plan-failed"
+						? "allowed"
+						: "permission_denied",
 			},
 		});
 		return {

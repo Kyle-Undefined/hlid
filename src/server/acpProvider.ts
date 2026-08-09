@@ -475,6 +475,19 @@ function toolResultText(update: ToolCallUpdate): string {
 	return "";
 }
 
+function mergeToolCallUpdate(
+	previous: ToolCallUpdate | undefined,
+	update: ToolCallUpdate,
+): ToolCallUpdate {
+	const merged = { ...previous, ...update };
+	// ACP 1.3 defines an explicit null name as "leave the existing name unchanged".
+	if (update.name === null) {
+		if (previous?.name != null) merged.name = previous.name;
+		else delete merged.name;
+	}
+	return merged;
+}
+
 function planEntriesText(
 	entries: Array<{ content: string; status: string }>,
 ): string {
@@ -497,6 +510,7 @@ function planUpdateText(
 function eventsFromUpdate(
 	update: SessionUpdate,
 	planEventId?: string,
+	toolCalls?: Map<string, ToolCallUpdate>,
 ): AgentEvent[] {
 	switch (update.sessionUpdate) {
 		case "agent_message_chunk": {
@@ -507,36 +521,48 @@ function eventsFromUpdate(
 			const text = textFromContent(update.content);
 			return text == null ? [] : [{ type: "summary", text }];
 		}
-		case "tool_call":
+		case "tool_call": {
+			const toolCall = mergeToolCallUpdate(
+				toolCalls?.get(update.toolCallId),
+				update,
+			);
+			toolCalls?.set(update.toolCallId, toolCall);
 			return [
 				{
 					type: "tool_start",
 					toolId: update.toolCallId,
-					name: update.title,
-					input: update.rawInput ?? null,
+					name: acpToolName(toolCall),
+					input: acpToolInput(toolCall),
 				},
-				...(update.status === "completed" || update.status === "failed"
+				...(toolCall.status === "completed" || toolCall.status === "failed"
 					? [
 							{
 								type: "tool_result" as const,
 								toolId: update.toolCallId,
-								content: toolResultText(update),
-								isError: update.status === "failed",
+								content: toolResultText(toolCall),
+								isError: toolCall.status === "failed",
 							},
 						]
 					: []),
 			];
-		case "tool_call_update":
-			if (update.status !== "completed" && update.status !== "failed")
+		}
+		case "tool_call_update": {
+			const toolCall = mergeToolCallUpdate(
+				toolCalls?.get(update.toolCallId),
+				update,
+			);
+			toolCalls?.set(update.toolCallId, toolCall);
+			if (toolCall.status !== "completed" && toolCall.status !== "failed")
 				return [];
 			return [
 				{
 					type: "tool_result",
 					toolId: update.toolCallId,
-					content: toolResultText(update),
-					isError: update.status === "failed",
+					content: toolResultText(toolCall),
+					isError: toolCall.status === "failed",
 				},
 			];
+		}
 		case "plan": {
 			const toolId = planEventId ?? "acp-plan";
 			return [
@@ -608,7 +634,16 @@ function filePathFromToolInput(value: unknown): string | null {
 	return null;
 }
 
+function filePathFromToolCall(toolCall: ToolCallUpdate): string | null {
+	return (
+		toolCall.locations?.find((location) => location.path.trim())?.path ??
+		filePathFromToolInput(toolCall.rawInput) ??
+		null
+	);
+}
+
 function acpToolName(toolCall: ToolCallUpdate): string {
+	if (toolCall.name?.trim()) return toolCall.name;
 	switch (toolCall.kind) {
 		case "read":
 			return "Read";
@@ -625,7 +660,7 @@ function acpToolName(toolCall: ToolCallUpdate): string {
 		case "fetch":
 			return "WebFetch";
 		case "switch_mode":
-			return toolCall.title ?? "SwitchMode";
+			return "SwitchMode";
 		default:
 			return toolCall.title ?? "ACP tool";
 	}
@@ -633,12 +668,25 @@ function acpToolName(toolCall: ToolCallUpdate): string {
 
 function acpToolInput(toolCall: ToolCallUpdate): unknown {
 	const raw = toolCall.rawInput;
-	const filePath = filePathFromToolInput(raw);
-	if (!filePath || acpToolName(toolCall) !== "Write") return raw ?? null;
+	const locations =
+		toolCall.locations?.map((location) => ({ ...location })) ?? [];
+	const filePath = filePathFromToolCall(toolCall);
+	const kind = toolCall.kind ? { acp_kind: toolCall.kind } : {};
 	if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-		return { ...(raw as Record<string, unknown>), file_path: filePath };
+		return {
+			...(raw as Record<string, unknown>),
+			...kind,
+			...(filePath ? { file_path: filePath } : {}),
+			...(locations.length > 0 ? { locations } : {}),
+		};
 	}
-	return { file_path: filePath };
+	if (!filePath && locations.length === 0 && !toolCall.kind) return raw ?? null;
+	return {
+		...(raw != null ? { raw_input: raw } : {}),
+		...kind,
+		...(filePath ? { file_path: filePath } : {}),
+		...(locations.length > 0 ? { locations } : {}),
+	};
 }
 
 function headers(value: unknown): Array<{ name: string; value: string }> {
@@ -812,9 +860,31 @@ function implementationConfigValue(
 	planValue: string,
 ): string | null {
 	if (option.type !== "select") return null;
+	return implementationValue(
+		selectOptions(option)
+			.filter((entry) => entry.value !== planValue)
+			.map((entry) => ({ id: entry.value, name: entry.label })),
+	);
+}
+
+function implementationValue(
+	options: Array<{ id: string; name: string }>,
+): string | null {
+	if (options.length === 1) return options[0]?.id ?? null;
+	const exact = options.find((option) =>
+		[option.id, option.name].some((value) =>
+			/^(?:code|coding|implement|implementation|build|execute|execution)$/i.test(
+				value.trim(),
+			),
+		),
+	);
+	if (exact) return exact.id;
 	return (
-		selectOptions(option).find((entry) => entry.value !== planValue)?.value ??
-		null
+		options.find((option) =>
+			[option.id, option.name].some((value) =>
+				/(?:^|[^a-z])(?:code|implement|build|execute)(?:[^a-z]|$)/i.test(value),
+			),
+		)?.id ?? null
 	);
 }
 
@@ -934,16 +1004,19 @@ class AcpSession implements AgentSession {
 	private canDeleteSession = false;
 	private canCloseSession = false;
 	private canLoadSession = false;
+	private canResumeSession = false;
 	private allowInterruptedResumeFallback = false;
+	private loadingSessionReplay = false;
 	private modes: SessionModeState | null = null;
 	private configOptions: SessionConfigOption[] = [];
 	private initialConfigValues = new Map<string, string>();
 	private implementationModeId: string | null = null;
 	private implementationConfigModeValue: string | null = null;
+	private readonly toolCalls = new Map<string, ToolCallUpdate>();
 	private approvedHtmlPlanToolIds = new Set<string>();
 	private htmlPlanReady = false;
 	private nativePlanText = "";
-	private turnText = "";
+	private lastAgentMessageId: string | null = null;
 	private planEventSeq = 0;
 	private elicitationSeq = 0;
 	private latestCostUsd: number | null = null;
@@ -1085,9 +1158,9 @@ class AcpSession implements AgentSession {
 
 	private resetAfterRuntimeStop(
 		previousSessionId: string | null,
-		canResume: boolean,
+		canReconnect: boolean,
 	): void {
-		if (canResume && previousSessionId) {
+		if (canReconnect && previousSessionId) {
 			this.params.sessionId = previousSessionId;
 			this.allowInterruptedResumeFallback = true;
 		} else {
@@ -1103,7 +1176,7 @@ class AcpSession implements AgentSession {
 		error: unknown,
 	): Promise<void> {
 		const previousSessionId = this.sessionId;
-		const canResume = this.canLoadSession;
+		const canReconnect = this.canResumeSession || this.canLoadSession;
 		const active =
 			this.activePrompt && !this.activePrompt.settled
 				? this.activePrompt
@@ -1121,7 +1194,7 @@ class AcpSession implements AgentSession {
 				stopReason: "cancelled",
 			});
 		}
-		this.resetAfterRuntimeStop(previousSessionId, canResume);
+		this.resetAfterRuntimeStop(previousSessionId, canReconnect);
 	}
 
 	private async runLiveControl(run: () => Promise<void>): Promise<void> {
@@ -1267,11 +1340,15 @@ class AcpSession implements AgentSession {
 		this.canDeleteSession = false;
 		this.canCloseSession = false;
 		this.canLoadSession = false;
+		this.canResumeSession = false;
+		this.loadingSessionReplay = false;
 		this.modes = null;
 		this.configOptions = [];
 		this.initialConfigValues.clear();
 		this.implementationModeId = null;
 		this.implementationConfigModeValue = null;
+		this.toolCalls.clear();
+		this.lastAgentMessageId = null;
 	}
 
 	private async doInitialize(): Promise<void> {
@@ -1379,7 +1456,7 @@ class AcpSession implements AgentSession {
 
 		const client: Client = {
 			requestPermission: async ({ toolCall, options }) => {
-				const filePath = filePathFromToolInput(toolCall.rawInput);
+				const filePath = filePathFromToolCall(toolCall);
 				const toolName = acpToolName(toolCall);
 				const toolInput = acpToolInput(toolCall);
 				const requiresObsidianCommandApproval = isObsidianRunCommandRequest(
@@ -1402,7 +1479,7 @@ class AcpSession implements AgentSession {
 				if (
 					allowed &&
 					this.params.permissionMode === "plan" &&
-					toolName === "Write" &&
+					(toolCall.kind === "edit" || toolName === "Write") &&
 					filePath &&
 					isHtmlPlanPath(filePath, this.params.planHtmlPath)
 				) {
@@ -1426,8 +1503,31 @@ class AcpSession implements AgentSession {
 				}
 			},
 			sessionUpdate: ({ update }) => {
+				if (this.loadingSessionReplay) {
+					if (update.sessionUpdate === "available_commands_update") {
+						this.commands = update.availableCommands.map((command) => ({
+							name: command.name,
+							description: command.description ?? "",
+							argumentHint: command.input?.hint ?? "",
+						}));
+					}
+					if (
+						update.sessionUpdate === "usage_update" &&
+						update.cost?.currency.toUpperCase() === "USD"
+					) {
+						this.latestCostUsd = update.cost.amount;
+					}
+					return;
+				}
 				if (update.sessionUpdate === "agent_message_chunk") {
-					this.turnText += textFromContent(update.content) ?? "";
+					if (
+						update.messageId &&
+						this.lastAgentMessageId &&
+						update.messageId !== this.lastAgentMessageId
+					) {
+						this.events.push({ type: "assistant_message_boundary" });
+					}
+					if (update.messageId) this.lastAgentMessageId = update.messageId;
 				}
 				if (update.sessionUpdate === "available_commands_update") {
 					this.commands = update.availableCommands.map((command) => ({
@@ -1439,13 +1539,6 @@ class AcpSession implements AgentSession {
 						type: "commands_changed",
 						commands: this.commands,
 					});
-				}
-				if (
-					update.sessionUpdate === "tool_call_update" &&
-					update.status === "completed" &&
-					this.approvedHtmlPlanToolIds.has(update.toolCallId)
-				) {
-					this.htmlPlanReady = true;
 				}
 				if (update.sessionUpdate === "current_mode_update" && this.modes) {
 					this.modes = { ...this.modes, currentModeId: update.currentModeId };
@@ -1474,7 +1567,19 @@ class AcpSession implements AgentSession {
 					update.sessionUpdate === "plan_removed"
 						? `acp-plan-${++this.planEventSeq}`
 						: undefined;
-				for (const event of eventsFromUpdate(update, planEventId)) {
+				const events = eventsFromUpdate(update, planEventId, this.toolCalls);
+				if (
+					(update.sessionUpdate === "tool_call" ||
+						update.sessionUpdate === "tool_call_update") &&
+					this.approvedHtmlPlanToolIds.has(update.toolCallId)
+				) {
+					const toolCall = this.toolCalls.get(update.toolCallId);
+					if (toolCall?.status === "completed") this.htmlPlanReady = true;
+					if (toolCall?.status === "failed") {
+						this.approvedHtmlPlanToolIds.delete(update.toolCallId);
+					}
+				}
+				for (const event of events) {
 					this.events.push(event);
 				}
 			},
@@ -1506,30 +1611,55 @@ class AcpSession implements AgentSession {
 			initialized.agentCapabilities?.mcpCapabilities,
 		);
 		this.canLoadSession = Boolean(initialized.agentCapabilities?.loadSession);
+		this.canResumeSession = Boolean(sessionCapabilities?.resume);
 		this.canDeleteSession = Boolean(sessionCapabilities?.delete);
 		this.canCloseSession = Boolean(sessionCapabilities?.close);
 		if (this.cancelled) return;
 		let modes: SessionModeState | null | undefined;
 		let configOptions: SessionConfigOption[] | null | undefined;
-		if (this.params.sessionId && initialized.agentCapabilities?.loadSession) {
+		if (
+			this.params.sessionId &&
+			(this.canResumeSession || this.canLoadSession)
+		) {
 			// A usage_update cost is session-cumulative. Until the resumed agent
 			// supplies an idle baseline, its first in-turn update cannot be separated
 			// from historical spend and must not be charged to the new Hlid query.
 			this.costBaselineKnown = false;
 			try {
-				const loaded = await this.runPhase(
-					"session load",
-					this.timeouts.sessionMs,
-					() =>
-						connection.loadSession({
-							sessionId: this.params.sessionId ?? "",
-							cwd: this.params.cwd,
-							...additionalDirectoryParams,
-							mcpServers: sessionMcpServers,
-						}),
-				);
-				modes = loaded.modes;
-				configOptions = loaded.configOptions;
+				if (this.canResumeSession) {
+					const resumed = await this.runPhase(
+						"session resume",
+						this.timeouts.sessionMs,
+						() =>
+							connection.resumeSession({
+								sessionId: this.params.sessionId ?? "",
+								cwd: this.params.cwd,
+								...additionalDirectoryParams,
+								mcpServers: sessionMcpServers,
+							}),
+					);
+					modes = resumed.modes;
+					configOptions = resumed.configOptions;
+				} else {
+					this.loadingSessionReplay = true;
+					try {
+						const loaded = await this.runPhase(
+							"session load",
+							this.timeouts.sessionMs,
+							() =>
+								connection.loadSession({
+									sessionId: this.params.sessionId ?? "",
+									cwd: this.params.cwd,
+									...additionalDirectoryParams,
+									mcpServers: sessionMcpServers,
+								}),
+						);
+						modes = loaded.modes;
+						configOptions = loaded.configOptions;
+					} finally {
+						this.loadingSessionReplay = false;
+					}
+				}
 				this.sessionId = this.params.sessionId;
 				this.allowInterruptedResumeFallback = false;
 			} catch (error) {
@@ -1586,9 +1716,9 @@ class AcpSession implements AgentSession {
 		}
 		const planningModeId = planModeId(this.modes);
 		if (planningModeId && this.modes?.currentModeId === planningModeId) {
-			this.implementationModeId =
-				this.modes.availableModes.find((mode) => mode.id !== planningModeId)
-					?.id ?? null;
+			this.implementationModeId = implementationValue(
+				this.modes.availableModes.filter((mode) => mode.id !== planningModeId),
+			);
 		}
 		await this.setConfigValue(
 			"model",
@@ -1649,7 +1779,8 @@ class AcpSession implements AgentSession {
 		this.approvedHtmlPlanToolIds.clear();
 		this.htmlPlanReady = false;
 		this.nativePlanText = "";
-		this.turnText = "";
+		this.lastAgentMessageId = null;
+		this.toolCalls.clear();
 		this.turnStartCostUsd = costStartUsd;
 		const response = await this.connection.prompt({
 			sessionId: this.sessionId,
@@ -1670,13 +1801,17 @@ class AcpSession implements AgentSession {
 				cacheCreationTokens: response.usage.cachedWriteTokens ?? undefined,
 			});
 		}
-		if (this.params.permissionMode === "plan") {
-			const plan =
-				this.nativePlanText ||
-				(this.htmlPlanReady || this.params.planHtmlPath
-					? "HTML plan ready for review."
-					: this.turnText.trim() ||
-						`${this.options.label} completed its plan.`);
+		const confirmedPlan = this.nativePlanText.trim()
+			? this.nativePlanText
+			: this.htmlPlanReady
+				? "HTML plan ready for review."
+				: null;
+		if (
+			this.params.permissionMode === "plan" &&
+			response.stopReason === "end_turn" &&
+			confirmedPlan
+		) {
+			const plan = confirmedPlan;
 			const signal = this.runtimeSignal();
 			const decision = await this.params.canUseTool(
 				"ExitPlanMode",
@@ -1692,8 +1827,11 @@ class AcpSession implements AgentSession {
 				decision.behavior === "deny" &&
 				decision.message?.startsWith("User requested changes to the plan:")
 			) {
+				const revisionInstruction = this.htmlPlanReady
+					? "Replace the HTML plan document specified earlier and present it for approval again."
+					: "Revise the native plan and present it for approval again.";
 				await this.runPrompt(
-					`${decision.message}\n\nRevise the plan accordingly. Replace the HTML plan document specified earlier and present it for approval again.`,
+					`${decision.message}\n\n${revisionInstruction}`,
 					costStartUsd,
 					queryTurnStart,
 					queryStartedMs,
@@ -1792,13 +1930,13 @@ class AcpSession implements AgentSession {
 
 		active.suppressError = true;
 		const previousSessionId = this.sessionId;
-		const canResume = this.canLoadSession;
+		const canReconnect = this.canResumeSession || this.canLoadSession;
 		this.runtimeAbortController.abort(
 			new Error("ACP agent did not settle session cancellation"),
 		);
 		await this.stopOwnedProcess(true);
 		await waitForPromptSettlement(active, this.timeouts.terminateGraceMs);
-		this.resetAfterRuntimeStop(previousSessionId, canResume);
+		this.resetAfterRuntimeStop(previousSessionId, canReconnect);
 		if (this.activePrompt === active) this.activePrompt = null;
 		this.events.push({
 			type: "done",

@@ -121,7 +121,6 @@ describe("writeConfig — persistence invariants", () => {
 					env: { API_URL: "https://example.test:8443/path" },
 					model: "anthropic/claude-sonnet-4-6",
 					effort: "high",
-					max_turns: 12,
 					permission_mode: "default",
 					turn_recaps: false,
 					recap_model: "openai/gpt-5.6-luna",
@@ -521,6 +520,23 @@ describe("writeConfig — agents all provider fields", () => {
 		expect(agents).not.toMatch(/^effort\s*=/m);
 		expect(agents).not.toMatch(/^max_turns\s*=/m);
 		expect(agents).not.toMatch(/^permission_mode\s*=/m);
+	});
+
+	it("omits an unmapped max_turns value for ACP directory agents", () => {
+		writeConfig(
+			makeConfig({
+				agents: [
+					{
+						path: "/agents/acp",
+						mode: "cwd",
+						provider: "acp:opencode",
+						max_turns: 5,
+					},
+				],
+			}),
+		);
+		const agents = capturedToml().slice(capturedToml().indexOf("[[agents]]"));
+		expect(agents).not.toMatch(/^max_turns\s*=/m);
 	});
 
 	it("writes mode when not default (cwd)", () => {
