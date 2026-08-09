@@ -260,6 +260,16 @@ function serializeAcpAgent(
 		...optionalEntry("executable", agent.executable),
 		...optionalEntry("args", agent.args),
 		...(agent.env ? [`env = ${tomlInlineTable(agent.env)}`] : []),
+		...optionalEntry("model", agent.model),
+		...optionalEntry("effort", agent.effort),
+		...optionalEntry("max_turns", agent.max_turns),
+		...optionalEntry("permission_mode", agent.permission_mode),
+		...optionalEntry(
+			"turn_recaps",
+			agent.turn_recaps,
+			agent.turn_recaps !== undefined,
+		),
+		...optionalEntry("recap_model", agent.recap_model),
 	];
 }
 

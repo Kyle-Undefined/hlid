@@ -53,6 +53,8 @@ export class SessionPool {
 	private detachedPermissionConfigGeneration = 0;
 	private detachedPermissionConfigFingerprint: string;
 	private statusChangeHandler: (() => void) | null = null;
+	private draining = false;
+	private drainPromise: Promise<void> | null = null;
 	/** Session ID of the vault's lazy singleton entry, or null if not yet created. */
 	private _vaultSessionId: string | null = null;
 
@@ -79,6 +81,9 @@ export class SessionPool {
 		agentName: string,
 		useAgentDefaults = true,
 	): PoolEntry {
+		if (this.draining) {
+			throw new Error("Session pool is draining provider processes.");
+		}
 		if (this.entries.size >= this.maxSize) {
 			throw new Error(
 				`Session pool at capacity (${this.maxSize}). Close a session before creating a new one.`,
@@ -211,6 +216,7 @@ export class SessionPool {
 	 * Suspend and remove all sessions for process shutdown. Provider work is
 	 * stopped while durable pre-dispatch turns remain available after restart.
 	 */
+	// fallow-ignore-next-line unused-class-member -- Retained as the synchronous pool lifecycle API for non-process-owning callers.
 	closeAll(): void {
 		for (const entry of this.entries.values()) {
 			entry.manager.suspendForRestart();
@@ -219,6 +225,31 @@ export class SessionPool {
 		this.entries.clear();
 		this.attentionBySession.clear();
 		this._vaultSessionId = null;
+	}
+
+	/** Shutdown variant that waits for provider-owned process trees to exit. */
+	closeAllAndWait(): Promise<void> {
+		if (this.drainPromise) return this.drainPromise;
+		this.draining = true;
+		const entries = [...this.entries.values()];
+		this.entries.clear();
+		this.attentionBySession.clear();
+		this._vaultSessionId = null;
+		for (const entry of entries) {
+			entry.manager.setBackgroundActivityChangeHandler(null);
+		}
+		const pending = Promise.all(
+			entries.map((entry) => entry.manager.suspendForRestartAndWait()),
+		)
+			.then(() => undefined)
+			.finally(() => {
+				if (this.drainPromise === pending) {
+					this.drainPromise = null;
+					this.draining = false;
+				}
+			});
+		this.drainPromise = pending;
+		return pending;
 	}
 
 	/** Recreate every durable pre-dispatch Raven queue after process startup. */

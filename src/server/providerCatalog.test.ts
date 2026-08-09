@@ -287,22 +287,21 @@ describe("createCachedList", () => {
 		expect(onChange).not.toHaveBeenCalled();
 	});
 
-	it("waits for live data and ignores persisted fallback after an identity change", async () => {
+	it("returns the static fallback without fetching after an identity change", async () => {
 		mockGetSetting.mockResolvedValue(JSON.stringify(["obsolete"]));
 		const fetcher = vi.fn().mockResolvedValue(["current"]);
 		const cache = createCachedList<string[]>({
 			persistKey: "k:identity-change",
 			fetcher,
-			fallback: [],
+			fallback: ["safe"],
 			allowPersistedFallback: false,
-			waitForInitialFetch: true,
 		});
 
 		await expect(cache.getCached()).resolves.toEqual({
-			value: ["current"],
-			source: "live",
+			value: ["safe"],
+			source: "fallback",
 		});
-		expect(fetcher).toHaveBeenCalledOnce();
+		expect(fetcher).not.toHaveBeenCalled();
 		expect(mockGetSetting).not.toHaveBeenCalled();
 	});
 });
@@ -320,6 +319,52 @@ function makeProvider(
 }
 
 describe("createModelCatalog", () => {
+	it("treats a live empty refresh as authoritative and removes cached models", async () => {
+		const provider = makeProvider({
+			providerId: "acp:opencode",
+			listModels: vi
+				.fn()
+				.mockResolvedValueOnce([{ value: "old", label: "Old" }])
+				.mockResolvedValueOnce([]),
+		});
+		const catalog = createModelCatalog(
+			new Map([[provider.providerId, provider]]),
+		);
+
+		expect(await catalog.refreshModelsFor(provider)).toMatchObject({
+			models: [{ value: "old", label: "Old" }],
+			source: "live",
+		});
+		expect(await catalog.refreshModelsFor(provider)).toEqual({
+			models: [],
+			source: "live",
+		});
+		expect(mockSaveSetting).toHaveBeenLastCalledWith(
+			"model_catalog:acp:opencode",
+			"[]",
+		);
+	});
+
+	it("reports stale memory when an explicit model refresh fails", async () => {
+		const provider = makeProvider({
+			providerId: "acp:opencode",
+			listModels: vi
+				.fn()
+				.mockResolvedValueOnce([{ value: "cached", label: "Cached" }])
+				.mockRejectedValueOnce(new Error("agent stopped")),
+		});
+		const catalog = createModelCatalog(
+			new Map([[provider.providerId, provider]]),
+		);
+		await catalog.refreshModelsFor(provider);
+
+		expect(await catalog.refreshModelsFor(provider)).toEqual({
+			models: [{ value: "cached", label: "Cached" }],
+			source: "memory",
+			reason: "Live model discovery did not return current options",
+		});
+	});
+
 	it("notifies when live discovery refreshes the server snapshot", async () => {
 		const onChange = vi.fn();
 		const provider = makeProvider({
@@ -362,6 +407,29 @@ describe("createModelCatalog", () => {
 		const models = await catalog.modelsFor(provider);
 
 		expect(models).toEqual(live);
+	});
+
+	it("cachedModelsFor never starts live discovery in the background", async () => {
+		mockGetSetting.mockResolvedValue(
+			JSON.stringify([{ value: "persisted", label: "Persisted" }]),
+		);
+		const listModels = vi
+			.fn()
+			.mockResolvedValue([{ value: "live", label: "Live" }]);
+		const provider = makeProvider({
+			providerId: "cached-only",
+			listModels,
+		});
+		const catalog = createModelCatalog(
+			new Map([[provider.providerId, provider]]),
+		);
+
+		await expect(catalog.cachedModelsFor(provider)).resolves.toEqual([
+			{ value: "persisted", label: "Persisted" },
+		]);
+		await Promise.resolve();
+
+		expect(listModels).not.toHaveBeenCalled();
 	});
 
 	it("warm() never rejects even when a provider's listModels rejects", async () => {
@@ -490,6 +558,34 @@ describe("createProviderCapabilityCatalog", () => {
 		);
 	});
 
+	it("cached capability reads never start live discovery in the background", async () => {
+		mockGetSetting.mockResolvedValue(
+			JSON.stringify({ observedAt: 7, evidence: [] }),
+		);
+		const discoverCapabilities = vi.fn().mockResolvedValue({
+			observedAt: 8,
+			evidence: [],
+		});
+		const provider = makeProvider({
+			providerId: "codex",
+			discoverCapabilities,
+		});
+		const catalog = createProviderCapabilityCatalog(
+			new Map([[provider.providerId, provider]]),
+			"/work/project",
+		);
+
+		await expect(
+			catalog.cachedCapabilitiesFor(provider),
+		).resolves.toMatchObject({
+			source: "persisted",
+			discovery: { observedAt: 7 },
+		});
+		await Promise.resolve();
+
+		expect(discoverCapabilities).not.toHaveBeenCalled();
+	});
+
 	it("rediscovers realtime capability evidence after the provider is registered again", async () => {
 		let realtimeEnabled = false;
 		const discoverCapabilities = vi.fn().mockImplementation(() =>
@@ -529,6 +625,7 @@ describe("createProviderCapabilityCatalog", () => {
 						capabilitiesFor: catalog.capabilitiesFor,
 					},
 					{
+						refresh: true,
 						includeProviderCapabilities: true,
 						discoveryCwd: "/work/project",
 					},
@@ -615,7 +712,7 @@ describe("loadProviderCatalog", () => {
 		});
 	});
 
-	it("publishes a negotiated whole-session-only ACP fork capability", async () => {
+	it("negotiates dynamic fork capability only for an explicit refresh", async () => {
 		const provider = makeProvider({
 			providerId: "acp:test",
 			resolveForkCapability: vi.fn().mockResolvedValue({
@@ -625,8 +722,16 @@ describe("loadProviderCatalog", () => {
 			}),
 		});
 
-		const result = await loadProviderCatalog([provider], {
+		const catalog = {
 			modelsFor: vi.fn().mockResolvedValue([]),
+		};
+
+		const cached = await loadProviderCatalog([provider], catalog);
+		expect(cached[0]?.forkCapability).toBeUndefined();
+		expect(provider.resolveForkCapability).not.toHaveBeenCalled();
+
+		const result = await loadProviderCatalog([provider], catalog, {
+			refresh: true,
 		});
 
 		expect(result[0]?.forkCapability).toEqual({
@@ -634,6 +739,168 @@ describe("loadProviderCatalog", () => {
 			wholeSession: true,
 			throughMessage: false,
 		});
+		expect(provider.resolveForkCapability).toHaveBeenCalledOnce();
+	});
+
+	it("lets an explicit refresh populate an empty ACP cache", async () => {
+		const listModels = vi
+			.fn()
+			.mockResolvedValue([{ value: "opencode/default", label: "Default" }]);
+		const resolveForkCapability = vi.fn().mockResolvedValue({
+			kind: "exact" as const,
+			wholeSession: true,
+			throughMessage: false,
+		});
+		const provider = makeProvider({
+			providerId: "acp:opencode",
+			models: [],
+			listModels,
+			resolveForkCapability,
+		});
+		const models = createModelCatalog(
+			new Map([[provider.providerId, provider]]),
+		);
+		const sources = {
+			modelsFor: models.modelsFor,
+			refreshModelsFor: models.refreshModelsFor,
+			cachedModelsFor: models.cachedModelsFor,
+		};
+
+		expect((await loadProviderCatalog([provider], sources))[0]?.models).toEqual(
+			[],
+		);
+		expect(listModels).not.toHaveBeenCalled();
+		expect(resolveForkCapability).not.toHaveBeenCalled();
+
+		const refreshed = await loadProviderCatalog([provider], sources, {
+			refresh: true,
+			refreshProviderId: "acp:opencode",
+		});
+
+		expect(refreshed[0]?.models).toEqual([
+			{ value: "opencode/default", label: "Default" },
+		]);
+		expect(refreshed[0]?.forkCapability).toMatchObject({
+			kind: "exact",
+			wholeSession: true,
+		});
+		expect(refreshed[0]?.modelCatalogRefresh).toEqual({
+			status: "current",
+			source: "live",
+		});
+		expect(listModels).toHaveBeenCalledOnce();
+		expect(resolveForkCapability).toHaveBeenCalledOnce();
+	});
+
+	it("labels cached fallback from a provider-scoped refresh as stale", async () => {
+		const provider = makeProvider({
+			providerId: "acp:opencode",
+			label: "OpenCode",
+			check: vi.fn().mockResolvedValue({ available: true }),
+		});
+		const result = await loadProviderCatalog(
+			[provider],
+			{
+				modelsFor: vi.fn(),
+				refreshModelsFor: vi.fn().mockResolvedValue({
+					models: [{ value: "cached", label: "Cached" }],
+					source: "memory",
+					reason: "Live model discovery did not return current options",
+				}),
+			},
+			{ refresh: true, refreshProviderId: "acp:opencode" },
+		);
+
+		expect(result[0]).toMatchObject({
+			models: [{ value: "cached", label: "Cached" }],
+			modelCatalogRefresh: {
+				status: "stale",
+				source: "memory",
+				reason: "Live model discovery did not return current options",
+			},
+		});
+	});
+
+	it("labels a failed provider check as unavailable without dropping cached models", async () => {
+		const provider = makeProvider({
+			providerId: "acp:opencode",
+			label: "OpenCode",
+			check: vi.fn().mockResolvedValue({
+				available: false,
+				reason: "ACP initialize failed",
+			}),
+		});
+		const result = await loadProviderCatalog(
+			[provider],
+			{
+				modelsFor: vi.fn(),
+				refreshModelsFor: vi.fn(),
+				cachedModelsFor: vi
+					.fn()
+					.mockResolvedValue([{ value: "cached", label: "Cached" }]),
+			},
+			{ refresh: true, refreshProviderId: "acp:opencode" },
+		);
+
+		expect(result[0]).toMatchObject({
+			available: false,
+			models: [{ value: "cached", label: "Cached" }],
+			modelCatalogRefresh: {
+				status: "unavailable",
+				source: "fallback",
+				reason: "ACP initialize failed",
+			},
+		});
+	});
+
+	it("limits a provider-scoped refresh to that ACP runtime", async () => {
+		const openCode = makeProvider({
+			providerId: "acp:opencode",
+			check: vi.fn().mockResolvedValue({ available: true }),
+			resolveForkCapability: vi.fn().mockResolvedValue(undefined),
+		});
+		const pi = makeProvider({
+			providerId: "acp:pi-acp",
+			check: vi.fn().mockResolvedValue({ available: true }),
+			resolveForkCapability: vi.fn().mockResolvedValue(undefined),
+		});
+		const modelsFor = vi.fn().mockResolvedValue([]);
+		const cachedModelsFor = vi.fn().mockResolvedValue([]);
+
+		await loadProviderCatalog(
+			[openCode, pi],
+			{ modelsFor, cachedModelsFor },
+			{ refresh: true, refreshProviderId: "acp:opencode" },
+		);
+
+		expect(openCode.check).toHaveBeenCalledOnce();
+		expect(openCode.resolveForkCapability).toHaveBeenCalledOnce();
+		expect(pi.check).not.toHaveBeenCalled();
+		expect(pi.resolveForkCapability).not.toHaveBeenCalled();
+		expect(modelsFor).toHaveBeenCalledOnce();
+		expect(modelsFor).toHaveBeenCalledWith(openCode, true);
+		expect(cachedModelsFor).toHaveBeenCalledWith(pi);
+	});
+
+	it("preserves a native fork capability when refresh negotiation is empty", async () => {
+		const forkCapability = {
+			kind: "exact",
+			wholeSession: true,
+			throughMessage: true,
+		} as const;
+		const provider = makeProvider({
+			providerId: "native",
+			forkCapability,
+			resolveForkCapability: vi.fn().mockResolvedValue(undefined),
+		});
+
+		const result = await loadProviderCatalog(
+			[provider],
+			{ modelsFor: vi.fn().mockResolvedValue([]) },
+			{ refresh: true },
+		);
+
+		expect(result[0]?.forkCapability).toEqual(forkCapability);
 		expect(provider.resolveForkCapability).toHaveBeenCalledOnce();
 	});
 
@@ -655,25 +922,112 @@ describe("loadProviderCatalog", () => {
 		expect(modelsFor).not.toHaveBeenCalled();
 	});
 
-	it("does not run host capability probes for normal route loaders", async () => {
+	it("ordinary reads make no live provider calls", async () => {
+		const check = vi.fn().mockResolvedValue({ available: true });
+		const resolveForkCapability = vi.fn().mockResolvedValue({
+			kind: "exact" as const,
+			wholeSession: true,
+			throughMessage: false,
+		});
 		const hostCapabilities = vi.fn(
 			() => new Promise<Record<string, never>>(() => {}),
 		);
+		const discoverCapabilities = vi.fn().mockResolvedValue({
+			observedAt: 1,
+			evidence: [],
+		});
 		const provider = makeProvider({
-			providerId: "codex",
+			providerId: "acp:test",
+			check,
+			resolveForkCapability,
 			hostCapabilities,
+			discoverCapabilities,
 		});
 		const modelsFor = vi
 			.fn()
-			.mockResolvedValue([{ value: "m1", label: "Model 1" }]);
+			.mockResolvedValue([{ value: "live", label: "Live" }]);
+		const cachedModelsFor = vi
+			.fn()
+			.mockResolvedValue([{ value: "cached", label: "Cached" }]);
+		const cachedCapabilitiesFor = vi.fn().mockResolvedValue(undefined);
 
-		const result = await loadProviderCatalog([provider], { modelsFor });
+		const result = await loadProviderCatalog(
+			[provider],
+			{ modelsFor, cachedModelsFor, cachedCapabilitiesFor },
+			{
+				includeHostCapabilities: true,
+				includeProviderCapabilities: true,
+			},
+		);
 
-		expect(result[0]?.models).toEqual([{ value: "m1", label: "Model 1" }]);
+		expect(result[0]?.models).toEqual([{ value: "cached", label: "Cached" }]);
+		expect(check).not.toHaveBeenCalled();
+		expect(modelsFor).not.toHaveBeenCalled();
+		expect(resolveForkCapability).not.toHaveBeenCalled();
 		expect(hostCapabilities).not.toHaveBeenCalled();
+		expect(discoverCapabilities).not.toHaveBeenCalled();
+		expect(cachedModelsFor).toHaveBeenCalledOnce();
+		expect(cachedCapabilitiesFor).toHaveBeenCalledOnce();
 	});
 
-	it("runs host capability probes only when explicitly requested", async () => {
+	it("uses a provider's cached availability without probing it", async () => {
+		const check = vi.fn().mockResolvedValue({ available: true });
+		const provider = makeProvider({
+			providerId: "acp:test",
+			check,
+			cachedAvailability: () => ({
+				available: false,
+				reason: "test-agent is not installed",
+			}),
+		});
+
+		const result = await loadProviderCatalog([provider], {
+			modelsFor: vi.fn(),
+			cachedModelsFor: vi.fn().mockResolvedValue([]),
+		});
+
+		expect(result[0]).toMatchObject({
+			available: false,
+			unavailableReason: "test-agent is not installed",
+		});
+		expect(check).not.toHaveBeenCalled();
+	});
+
+	it("bounds an explicit refresh before starting dependent provider probes", async () => {
+		vi.useFakeTimers();
+		try {
+			const check = vi.fn(() => new Promise<{ available: boolean }>(() => {}));
+			const modelsFor = vi.fn().mockResolvedValue([]);
+			const resolveForkCapability = vi.fn().mockResolvedValue(undefined);
+			const provider = makeProvider({
+				providerId: "acp:test",
+				check,
+				resolveForkCapability,
+			});
+
+			const pending = loadProviderCatalog(
+				[provider],
+				{ modelsFor },
+				{ refresh: true },
+			);
+			await vi.advanceTimersByTimeAsync(12_001);
+
+			await expect(pending).resolves.toEqual([
+				expect.objectContaining({
+					id: "acp:test",
+					available: false,
+					unavailableReason: "check failed",
+				}),
+			]);
+			expect(check).toHaveBeenCalledOnce();
+			expect(modelsFor).not.toHaveBeenCalled();
+			expect(resolveForkCapability).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("runs host capability probes only when requested by an explicit refresh", async () => {
 		const hostCapabilities = vi.fn().mockResolvedValue({
 			windowsComputerUse: { label: "Windows Computer Use", available: true },
 		});
@@ -686,7 +1040,7 @@ describe("loadProviderCatalog", () => {
 		const result = await loadProviderCatalog(
 			[provider],
 			{ modelsFor },
-			{ includeHostCapabilities: true },
+			{ refresh: true, includeHostCapabilities: true },
 		);
 
 		expect(hostCapabilities).toHaveBeenCalledOnce();
@@ -718,7 +1072,7 @@ describe("loadProviderCatalog", () => {
 		);
 	});
 
-	it("only discovers provider evidence for an explicitly requested surface", async () => {
+	it("only discovers provider evidence for an explicit refresh", async () => {
 		const discoverCapabilities = vi.fn().mockResolvedValue({
 			observedAt: 100,
 			evidence: [
@@ -745,7 +1099,18 @@ describe("loadProviderCatalog", () => {
 		).toBeUndefined();
 		expect(discoverCapabilities).not.toHaveBeenCalled();
 
+		const cached = await loadProviderCatalog([provider], catalog, {
+			includeProviderCapabilities: true,
+			discoveryCwd: "/work/project",
+		});
+		expect(discoverCapabilities).not.toHaveBeenCalled();
+		expect(cached[0]?.capabilitySnapshot).toMatchObject({
+			source: "adapter",
+			context: { cwd: "/work/project" },
+		});
+
 		const result = await loadProviderCatalog([provider], catalog, {
+			refresh: true,
 			includeProviderCapabilities: true,
 			discoveryCwd: "/work/project",
 		});
@@ -761,6 +1126,44 @@ describe("loadProviderCatalog", () => {
 				}),
 			]),
 		});
+	});
+
+	it("keeps an explicit uncached capability read scoped to that probe", async () => {
+		const check = vi.fn().mockResolvedValue({ available: true });
+		const modelsFor = vi.fn().mockResolvedValue([]);
+		const cachedModelsFor = vi
+			.fn()
+			.mockResolvedValue([{ value: "cached", label: "Cached" }]);
+		const resolveForkCapability = vi.fn().mockResolvedValue(undefined);
+		const capabilitiesFor = vi.fn().mockResolvedValue({
+			source: "live" as const,
+			discovery: { observedAt: 1, evidence: [] },
+		});
+		const provider = makeProvider({
+			providerId: "codex",
+			check,
+			resolveForkCapability,
+		});
+
+		const result = await loadProviderCatalog(
+			[provider],
+			{ modelsFor, cachedModelsFor, capabilitiesFor },
+			{
+				includeProviderCapabilities: true,
+				preferCachedProviderCapabilities: false,
+				discoveryCwd: "/work/project",
+			},
+		);
+
+		expect(result[0]?.models).toEqual([{ value: "cached", label: "Cached" }]);
+		expect(check).toHaveBeenCalledOnce();
+		expect(capabilitiesFor).toHaveBeenCalledWith(
+			provider,
+			"/work/project",
+			true,
+		);
+		expect(modelsFor).not.toHaveBeenCalled();
+		expect(resolveForkCapability).not.toHaveBeenCalled();
 	});
 });
 
@@ -818,7 +1221,7 @@ describe("createProviderCatalogSnapshot", () => {
 			snapshot.get({
 				refresh,
 				includeProviderCapabilities: true,
-				preferCachedProviderCapabilities: false,
+				preferCachedProviderCapabilities: !refresh,
 				discoveryCwd: "/work/project",
 			});
 
@@ -839,7 +1242,14 @@ describe("createProviderCatalogSnapshot", () => {
 		capabilities.register(provider);
 		snapshot.invalidate();
 
-		const after = (await read(false))[0];
+		const cachedAfterRestart = (await read(false))[0];
+		expect(cachedAfterRestart?.models).toEqual([
+			{ value: "m1", label: "Model 1" },
+		]);
+		expect(provider.listModels).toHaveBeenCalledOnce();
+		expect(provider.discoverCapabilities).toHaveBeenCalledOnce();
+
+		const after = (await read(true))[0];
 		expect(after?.models).toEqual([
 			expect.objectContaining({
 				value: "new-audio-model",
@@ -853,6 +1263,7 @@ describe("createProviderCatalogSnapshot", () => {
 			)?.availability,
 		).toBe("available");
 		expect(provider.listModels).toHaveBeenCalledTimes(2);
+		expect(provider.discoverCapabilities).toHaveBeenCalledTimes(2);
 	});
 
 	it("reuses one materialized response for capability and base reads", async () => {
@@ -868,12 +1279,14 @@ describe("createProviderCatalogSnapshot", () => {
 		const cachedModelsFor = vi
 			.fn()
 			.mockResolvedValue([{ value: "cached", label: "Cached" }]);
+		const modelsFor = vi.fn().mockResolvedValue([]);
 		const snapshot = createProviderCatalogSnapshot([provider], {
-			modelsFor: vi.fn(),
+			modelsFor,
 			cachedModelsFor,
 		});
 
 		const withCapabilities = await snapshot.get({
+			refresh: true,
 			includeHostCapabilities: true,
 		});
 		const repeated = await snapshot.get({ includeHostCapabilities: true });
@@ -882,7 +1295,8 @@ describe("createProviderCatalogSnapshot", () => {
 		expect(repeated).toBe(withCapabilities);
 		expect(base[0]?.hostCapabilities).toBeUndefined();
 		expect(check).toHaveBeenCalledOnce();
-		expect(cachedModelsFor).toHaveBeenCalledOnce();
+		expect(modelsFor).toHaveBeenCalledOnce();
+		expect(cachedModelsFor).not.toHaveBeenCalled();
 		expect(hostCapabilities).toHaveBeenCalledOnce();
 	});
 
@@ -941,44 +1355,382 @@ describe("createProviderCatalogSnapshot", () => {
 		expect(load).toHaveBeenCalledTimes(2);
 	});
 
-	it("returns stale data immediately and revalidates it in the background", async () => {
+	it("re-materializes stale data in the background without live provider work", async () => {
 		let now = 0;
 		const check = vi
 			.fn()
-			.mockResolvedValueOnce({ available: true })
-			.mockResolvedValueOnce({ available: false, reason: "missing" });
+			.mockResolvedValue({ available: false, reason: "missing" });
+		const cachedModelsFor = vi.fn().mockResolvedValue([]);
 		const provider = makeProvider({ providerId: "codex", check });
 		const snapshot = createProviderCatalogSnapshot(
 			[provider],
 			{
 				modelsFor: vi.fn(),
-				cachedModelsFor: vi.fn().mockResolvedValue([]),
+				cachedModelsFor,
 			},
 			{ ttlMs: 100, now: () => now },
 		);
 
-		expect((await snapshot.get())[0]?.available).toBe(true);
+		expect((await snapshot.get({ refresh: true }))[0]?.available).toBe(false);
 		now = 101;
-		expect((await snapshot.get())[0]?.available).toBe(true);
-		await vi.waitFor(() => expect(check).toHaveBeenCalledTimes(2));
-		await vi.waitFor(async () =>
-			expect((await snapshot.get())[0]?.available).toBe(false),
+		expect((await snapshot.get())[0]?.available).toBe(false);
+		await vi.waitFor(() => expect(cachedModelsFor).toHaveBeenCalledTimes(2));
+		expect(check).toHaveBeenCalledOnce();
+		expect((await snapshot.get())[0]?.available).toBe(false);
+	});
+
+	it("preserves live-only fields while stale snapshots re-materialize from cache", async () => {
+		let now = 0;
+		const forkCapability = {
+			kind: "exact" as const,
+			wholeSession: true,
+			throughMessage: false,
+		};
+		const check = vi.fn().mockResolvedValue({ available: true });
+		const resolveForkCapability = vi.fn().mockResolvedValue(forkCapability);
+		const hostCapabilities = vi.fn().mockResolvedValue({
+			windowsComputerUse: { label: "Windows Computer Use", available: true },
+		});
+		const cachedModelsFor = vi.fn().mockResolvedValue([]);
+		const provider = makeProvider({
+			providerId: "acp:test",
+			check,
+			resolveForkCapability,
+			hostCapabilities,
+		});
+		const snapshot = createProviderCatalogSnapshot(
+			[provider],
+			{
+				modelsFor: vi.fn().mockResolvedValue([]),
+				cachedModelsFor,
+			},
+			{ ttlMs: 100, now: () => now },
 		);
+
+		await snapshot.get({ refresh: true, includeHostCapabilities: true });
+		now = 101;
+		await snapshot.get({ includeHostCapabilities: true });
+		await vi.waitFor(() => expect(cachedModelsFor).toHaveBeenCalledOnce());
+		const rematerialized = (
+			await snapshot.get({ includeHostCapabilities: true })
+		)[0];
+
+		expect(rematerialized).toMatchObject({
+			available: true,
+			forkCapability,
+			hostCapabilities: {
+				windowsComputerUse: {
+					label: "Windows Computer Use",
+					available: true,
+				},
+			},
+		});
+		expect(check).toHaveBeenCalledOnce();
+		expect(resolveForkCapability).toHaveBeenCalledOnce();
+		expect(hostCapabilities).toHaveBeenCalledOnce();
+	});
+
+	it("preserves other ACP runtimes during a provider-scoped refresh", async () => {
+		const piFork = {
+			kind: "exact" as const,
+			wholeSession: true as const,
+			throughMessage: false as const,
+		};
+		const load = vi.fn(async (_providers, _catalog, options) => [
+			{
+				id: "acp:opencode",
+				label: "OpenCode",
+				available: true,
+				models: options.refreshProviderId
+					? []
+					: [{ value: "old-model", label: "Old Model" }],
+			},
+			{
+				id: "acp:pi-acp",
+				label: "Pi ACP",
+				available: Boolean(options.refreshProviderId),
+				...(options.refreshProviderId
+					? {}
+					: {
+							unavailableReason: "Pi is not installed",
+							forkCapability: piFork,
+						}),
+				models: [],
+			},
+		]);
+		const snapshot = createProviderCatalogSnapshot(
+			[
+				makeProvider({ providerId: "acp:opencode" }),
+				makeProvider({ providerId: "acp:pi-acp" }),
+			],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+
+		await snapshot.get({ refresh: true });
+		const refreshed = await snapshot.get({
+			refresh: true,
+			refreshProviderId: "acp:opencode",
+		});
+
+		expect(
+			refreshed.find((provider) => provider.id === "acp:opencode")?.models,
+		).toEqual([]);
+		expect(
+			refreshed.find((provider) => provider.id === "acp:pi-acp"),
+		).toMatchObject({
+			available: false,
+			unavailableReason: "Pi is not installed",
+			forkCapability: piFork,
+		});
 	});
 
 	it("recomputes after explicit invalidation", async () => {
 		const check = vi.fn().mockResolvedValue({ available: true });
+		const cachedModelsFor = vi.fn().mockResolvedValue([]);
 		const provider = makeProvider({ providerId: "codex", check });
 		const snapshot = createProviderCatalogSnapshot([provider], {
 			modelsFor: vi.fn(),
-			cachedModelsFor: vi.fn().mockResolvedValue([]),
+			cachedModelsFor,
 		});
 
 		await snapshot.get();
 		snapshot.invalidate();
 		await snapshot.get();
 
-		expect(check).toHaveBeenCalledTimes(2);
+		expect(cachedModelsFor).toHaveBeenCalledTimes(2);
+		expect(check).not.toHaveBeenCalled();
+	});
+
+	it("retains a live refresh when its metadata cache invalidates the snapshot", async () => {
+		const provider = makeProvider({ providerId: "acp:test" });
+		let snapshot!: ReturnType<typeof createProviderCatalogSnapshot>;
+		const load = vi.fn(async () => {
+			// Successful model/capability discovery invalidates the derived
+			// snapshot through its cache onChange callback before returning.
+			snapshot.invalidateMetadata();
+			return [
+				{
+					id: "acp:test",
+					label: "ACP Test",
+					available: true,
+					models: [{ value: "agent/model", label: "Agent Model" }],
+					forkCapability: {
+						kind: "exact" as const,
+						wholeSession: true as const,
+						throughMessage: false as const,
+					},
+				},
+			];
+		});
+		snapshot = createProviderCatalogSnapshot(
+			[provider],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+
+		await snapshot.get({ refresh: true });
+		const cached = await snapshot.get();
+
+		expect(load).toHaveBeenCalledOnce();
+		expect(cached[0]).toMatchObject({
+			models: [{ value: "agent/model", label: "Agent Model" }],
+			forkCapability: { kind: "exact" },
+		});
+	});
+
+	it("does not let an older live refresh overwrite newer metadata", async () => {
+		let resolveFirst: ((value: ProviderInfo[]) => void) | undefined;
+		let resolveSecond: ((value: ProviderInfo[]) => void) | undefined;
+		const load = vi
+			.fn()
+			.mockImplementationOnce(
+				() =>
+					new Promise<ProviderInfo[]>((resolve) => {
+						resolveFirst = resolve;
+					}),
+			)
+			.mockImplementationOnce(
+				() =>
+					new Promise<ProviderInfo[]>((resolve) => {
+						resolveSecond = resolve;
+					}),
+			);
+		const snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "acp:test" })],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+
+		const older = snapshot.get({ refresh: true });
+		snapshot.invalidateMetadata();
+		const newer = snapshot.get({ refresh: true });
+		resolveSecond?.([
+			{
+				id: "acp:test",
+				label: "ACP Test",
+				available: true,
+				models: [{ value: "new", label: "New" }],
+			},
+		]);
+		await newer;
+		resolveFirst?.([
+			{
+				id: "acp:test",
+				label: "ACP Test",
+				available: true,
+				models: [{ value: "old", label: "Old" }],
+			},
+		]);
+		await older;
+
+		expect((await snapshot.get())[0]?.models).toEqual([
+			{ value: "new", label: "New" },
+		]);
+		expect(load).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not let an older base refresh overwrite a newer rich projection", async () => {
+		let resolveBase: ((value: ProviderInfo[]) => void) | undefined;
+		let resolveRich: ((value: ProviderInfo[]) => void) | undefined;
+		const load = vi.fn((_providers, _catalog, options) =>
+			options.includeHostCapabilities
+				? new Promise<ProviderInfo[]>((resolve) => {
+						resolveRich = resolve;
+					})
+				: new Promise<ProviderInfo[]>((resolve) => {
+						resolveBase = resolve;
+					}),
+		);
+		const snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "acp:test" })],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+
+		const olderBase = snapshot.get({ refresh: true });
+		const newerRich = snapshot.get({
+			refresh: true,
+			includeHostCapabilities: true,
+		});
+		resolveRich?.([
+			{
+				id: "acp:test",
+				label: "ACP Test",
+				available: true,
+				models: [{ value: "new", label: "New" }],
+				hostCapabilities: {
+					windowsComputerUse: { label: "Windows", available: true },
+				},
+			},
+		]);
+		await newerRich;
+		resolveBase?.([
+			{
+				id: "acp:test",
+				label: "ACP Test",
+				available: true,
+				models: [{ value: "old", label: "Old" }],
+			},
+		]);
+		await olderBase;
+
+		expect((await snapshot.get())[0]?.models).toEqual([
+			{ value: "new", label: "New" },
+		]);
+	});
+
+	it("does not let an older cached read overwrite a live unavailable result", async () => {
+		let resolveCached: ((value: ProviderInfo[]) => void) | undefined;
+		const load = vi.fn((_providers, _catalog, options) => {
+			if (options.refresh) {
+				return Promise.resolve([
+					{
+						id: "acp:test",
+						label: "ACP Test",
+						available: false,
+						unavailableReason: "test-agent is not installed",
+						models: [],
+					},
+				]);
+			}
+			return new Promise<ProviderInfo[]>((resolve) => {
+				resolveCached = resolve;
+			});
+		});
+		const snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "acp:test" })],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+
+		const cached = snapshot.get();
+		const live = snapshot.get({ refresh: true });
+		await live;
+		resolveCached?.([
+			{
+				id: "acp:test",
+				label: "ACP Test",
+				available: true,
+				models: [{ value: "stale", label: "Stale" }],
+			},
+		]);
+		await cached;
+
+		expect((await snapshot.get())[0]).toMatchObject({
+			available: false,
+			unavailableReason: "test-agent is not installed",
+			models: [],
+		});
+		expect(load).toHaveBeenCalledTimes(2);
+	});
+
+	it("retains last-known live availability across metadata invalidation", async () => {
+		const load = vi.fn((_providers, _catalog, options) =>
+			Promise.resolve([
+				{
+					id: "acp:test",
+					label: "ACP Test",
+					available: !options.refresh,
+					...(options.refresh
+						? { unavailableReason: "test-agent is not installed" }
+						: {}),
+					models: [],
+				},
+			]),
+		);
+		const snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "acp:test" })],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+
+		await snapshot.get({ refresh: true });
+		snapshot.invalidateMetadata();
+
+		expect((await snapshot.get())[0]).toMatchObject({
+			available: false,
+			unavailableReason: "test-agent is not installed",
+		});
+		expect(load).toHaveBeenCalledTimes(2);
 	});
 
 	it("starts a new read immediately after invalidating an in-flight snapshot", async () => {
@@ -1079,7 +1831,7 @@ describe("providerCatalogRequestOptions", () => {
 		});
 	});
 
-	it("uses live discovery only for an explicit refresh", () => {
+	it("uses full live discovery only for an explicit refresh", () => {
 		expect(
 			providerCatalogRequestOptions(
 				new URLSearchParams("refresh=1&host_capabilities=1"),
@@ -1089,6 +1841,21 @@ describe("providerCatalogRequestOptions", () => {
 			preferCachedModels: false,
 			preferCachedProviderCapabilities: true,
 			includeHostCapabilities: true,
+			includeProviderCapabilities: false,
+		});
+	});
+
+	it("parses a provider-scoped explicit refresh", () => {
+		expect(
+			providerCatalogRequestOptions(
+				new URLSearchParams("refresh=1&provider_id=acp%3Aopencode"),
+			),
+		).toEqual({
+			refresh: true,
+			refreshProviderId: "acp:opencode",
+			preferCachedModels: false,
+			preferCachedProviderCapabilities: true,
+			includeHostCapabilities: false,
 			includeProviderCapabilities: false,
 		});
 	});
@@ -1107,7 +1874,7 @@ describe("providerCatalogRequestOptions", () => {
 		});
 	});
 
-	it("accepts an exact workspace and can await its first provider snapshot", () => {
+	it("keeps an explicit capability wait separate from full refresh", () => {
 		expect(
 			providerCatalogRequestOptions(
 				new URLSearchParams(

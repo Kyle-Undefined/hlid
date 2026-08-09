@@ -114,6 +114,60 @@ describe("Vault Agent and Computer Use model/effort interplay", () => {
 		expect(screen.getByText("the big one")).not.toBeNull();
 	});
 
+	it("shows provider default when an ACP agent advertises no models", () => {
+		const acpProvider: ProviderInfo = {
+			id: "acp:pi-acp",
+			label: "Pi ACP",
+			available: true,
+			models: [],
+			permissionModes: [{ value: "default", label: "Agent asks" }],
+		};
+		render(
+			<ClaudeSection
+				claude={makeClaude({
+					vaultProvider: "acp:pi-acp",
+					model: "",
+					effort: "",
+				})}
+				onChange={vi.fn()}
+				providers={[acpProvider]}
+			/>,
+		);
+
+		expect(
+			screen.getAllByRole("option", { name: "— provider default —" }),
+		).toHaveLength(2);
+		expect(screen.getByText(/has not advertised model choices/i)).toBeTruthy();
+	});
+
+	it("keeps a configured ACP model visible when the catalog is empty", () => {
+		const acpProvider: ProviderInfo = {
+			id: "acp:opencode",
+			label: "OpenCode",
+			available: true,
+			models: [],
+		};
+		render(
+			<ClaudeSection
+				claude={makeClaude({
+					vaultProvider: "acp:opencode",
+					model: "anthropic/claude-sonnet-4-6",
+				})}
+				onChange={vi.fn()}
+				providers={[acpProvider]}
+			/>,
+		);
+
+		expect(
+			screen.getByRole("option", {
+				name: "anthropic/claude-sonnet-4-6 (configured)",
+			}),
+		).toBeTruthy();
+		expect(
+			screen.getByText(/still request the configured model/i),
+		).toBeTruthy();
+	});
+
 	it("offers the default-off Claude peer inbox only for Claude", () => {
 		const onChange = vi.fn();
 		const { rerender } = render(

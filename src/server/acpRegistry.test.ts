@@ -149,9 +149,74 @@ describe("AcpRegistry", () => {
 		);
 		expect(which).toHaveBeenCalledTimes(registry.agents.length * 2);
 	});
+
+	it("bounds a nonresponsive executable availability resolver", async () => {
+		const instance = new AcpRegistry(async () => registry, undefined, {
+			which: () => new Promise(() => {}),
+			availabilityProbeTimeoutMs: 20,
+		});
+
+		const catalog = await instance.catalog(HlidConfigSchema.parse({}), true);
+
+		expect(catalog.every((item) => item.available === false)).toBe(true);
+	});
+
+	it("resolves configured commands relative to the vault workspace", async () => {
+		const which = vi.fn(() => null);
+		const instance = new AcpRegistry(async () => registry, undefined, {
+			which,
+		});
+
+		await instance.catalog(
+			HlidConfigSchema.parse({ vault: { path: "/vault/workspace" } }),
+			true,
+		);
+
+		expect(which).toHaveBeenCalledWith(
+			expect.any(String),
+			expect.objectContaining({ cwd: "/vault/workspace" }),
+		);
+	});
 });
 
 describe("resolveAcpInvocation", () => {
+	it("uses a logical Windows command stem for registry binaries", () => {
+		const agent = {
+			id: "windows-agent",
+			name: "Windows agent",
+			version: "1",
+			description: "",
+			distribution: {
+				binary: {
+					"windows-x86_64": {
+						cmd: "opencode.exe",
+						args: ["acp"],
+						archive: "https://example.com/opencode.exe",
+					},
+				},
+			},
+		};
+		expect(
+			resolveAcpInvocation(agent, undefined, {
+				platform: "win32",
+				architecture: "x64",
+			}),
+		).toEqual({
+			command: "opencode",
+			args: ["acp"],
+			env: {},
+			installGuidance:
+				"Download and place https://example.com/opencode.exe on PATH as opencode.exe",
+		});
+		expect(
+			resolveAcpInvocation(
+				agent,
+				{ id: "windows-agent", executable: "opencode.exe" },
+				{ platform: "win32", architecture: "x64" },
+			).command,
+		).toBe("opencode.exe");
+	});
+
 	it("turns an npx distribution into an installed global command and guidance", () => {
 		expect(resolveAcpInvocation(registry.agents[0])).toEqual({
 			command: "other-acp",
@@ -177,6 +242,35 @@ describe("resolveAcpInvocation", () => {
 			args: ["-x"],
 			env: {},
 			installGuidance: "uv tool install fast-agent-acp==1.0.0",
+		});
+	});
+
+	it("preserves binary distribution environment and applies overrides", () => {
+		const os = process.platform === "win32" ? "windows" : process.platform;
+		const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
+		expect(
+			resolveAcpInvocation(
+				{
+					id: "binary-agent",
+					name: "Binary agent",
+					version: "1",
+					description: "",
+					distribution: {
+						binary: {
+							[`${os}-${arch}`]: {
+								cmd: "binary-agent",
+								env: { FROM_BINARY: "yes", SHARED: "binary" },
+							},
+						},
+					},
+				},
+				{
+					id: "binary-agent",
+					env: { SHARED: "override" },
+				},
+			),
+		).toMatchObject({
+			env: { FROM_BINARY: "yes", SHARED: "override" },
 		});
 	});
 });

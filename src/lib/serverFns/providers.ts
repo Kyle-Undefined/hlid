@@ -2,7 +2,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import type { ProviderUsageSnapshot } from "#/db";
-import { dbJson } from "#/lib/dbClient";
+import { dbFetch, dbJson, requireDbOk } from "#/lib/dbClient";
 import type { AccountInfo, ProviderInfo } from "#/lib/providerTypes";
 import { withRefreshQuery } from "#/lib/serverFnSchemas";
 
@@ -12,11 +12,19 @@ const providerCatalogQuerySchema = z
 		includeHostCapabilities: z.boolean().optional(),
 		includeProviderCapabilities: z.boolean().optional(),
 		preferCachedModels: z.boolean().optional(),
+		refreshProviderId: z.string().min(1).optional(),
 	})
 	.optional();
 
 const CACHED_PROVIDER_READ_BUDGET = {
 	initialTimeoutMs: 1_250,
+	retryTimeoutMs: false,
+} as const;
+const LIVE_PROVIDER_READ_BUDGET = {
+	// Explicit refresh may negotiate bounded ACP startup stages (12s server-side).
+	// Give that user-requested work enough time to return instead of masking it
+	// as a successful empty catalog while discovery keeps running in the server.
+	initialTimeoutMs: 15_000,
 	retryTimeoutMs: false,
 } as const;
 
@@ -29,6 +37,9 @@ export function providerCatalogPath(
 	if (data?.includeProviderCapabilities)
 		params.set("provider_capabilities", "1");
 	if (data?.preferCachedModels) params.set("cached_models", "1");
+	if (data?.refresh && data.refreshProviderId) {
+		params.set("provider_id", data.refreshProviderId);
+	}
 	if (params.size === 0) return path;
 	return `${path}${path.includes("?") ? "&" : "?"}${params}`;
 }
@@ -36,15 +47,31 @@ export function providerCatalogPath(
 /** Returns the list of compiled-in providers with availability status. */
 export const getProvidersFn = createServerFn({ method: "GET" })
 	.validator((raw) => providerCatalogQuerySchema.parse(raw))
-	.handler(({ data }) =>
-		dbJson<{ providers: ProviderInfo[] }>(
-			providerCatalogPath(data),
-			{
-				providers: [],
-			},
-			data?.refresh ? undefined : CACHED_PROVIDER_READ_BUDGET,
-		).then((response) => response.providers),
-	);
+	.handler(async ({ data }) => {
+		const path = providerCatalogPath(data);
+		if (data?.refresh) {
+			const response = await requireDbOk(
+				await dbFetch(path, {
+					signal: AbortSignal.timeout(
+						LIVE_PROVIDER_READ_BUDGET.initialTimeoutMs,
+					),
+				}),
+				"refresh provider catalog",
+			);
+			const payload = (await response.json()) as { providers?: unknown };
+			if (!Array.isArray(payload.providers)) {
+				throw new Error(
+					"refresh provider catalog returned an invalid response",
+				);
+			}
+			return payload.providers as ProviderInfo[];
+		}
+		return dbJson<{ providers: ProviderInfo[] }>(
+			path,
+			{ providers: [] },
+			CACHED_PROVIDER_READ_BUDGET,
+		).then((response) => response.providers);
+	});
 
 /**
  * Returns account info (email/org/subscription) for the first live session

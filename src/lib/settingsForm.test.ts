@@ -197,6 +197,7 @@ describe("agent form routing", () => {
 			forms.claude,
 			forms.codex,
 			forms.cliproxy,
+			forms.acpAgents,
 			{ vaultProvider: "codex" },
 		);
 		expect(selected.claude.vaultProvider).toBe("codex");
@@ -205,6 +206,7 @@ describe("agent form routing", () => {
 			selected.claude,
 			selected.codex,
 			selected.cliproxy,
+			selected.acpAgents,
 			{
 				model: "gpt-5.5",
 				effort: "high",
@@ -222,12 +224,14 @@ describe("agent form routing", () => {
 			edited.claude,
 			edited.codex,
 			edited.cliproxy,
+			edited.acpAgents,
 			{ vaultProvider: "cliproxy-codex" },
 		);
 		const editedProxy = applyAgentFormPatch(
 			selectedProxy.claude,
 			selectedProxy.codex,
 			selectedProxy.cliproxy,
+			selectedProxy.acpAgents,
 			{ model: "gpt-5.6-sol", effort: "xhigh" },
 		);
 		expect(editedProxy.cliproxy).toMatchObject({
@@ -235,5 +239,44 @@ describe("agent form routing", () => {
 			effort: "xhigh",
 		});
 		expect(editedProxy.codex.model).toBe("gpt-5.5");
+	});
+
+	it("routes ACP defaults into that agent instead of Claude or CLIProxy", () => {
+		const forms = createSettingsForms(
+			HlidConfigSchema.parse({ acp_agents: [{ id: "opencode" }] }),
+		);
+		const selected = applyAgentFormPatch(
+			forms.claude,
+			forms.codex,
+			forms.cliproxy,
+			forms.acpAgents,
+			{ vaultProvider: "acp:opencode" },
+		);
+		const edited = applyAgentFormPatch(
+			selected.claude,
+			selected.codex,
+			selected.cliproxy,
+			selected.acpAgents,
+			{
+				model: "anthropic/claude-sonnet-4-6",
+				effort: "high",
+				maxTurns: "18",
+				permissionMode: "bypassPermissions",
+				turnRecaps: false,
+			},
+		);
+
+		expect(edited.acpAgents).toEqual([
+			expect.objectContaining({
+				id: "opencode",
+				model: "anthropic/claude-sonnet-4-6",
+				effort: "high",
+				max_turns: 18,
+				permission_mode: "bypassPermissions",
+				turn_recaps: false,
+			}),
+		]);
+		expect(edited.claude.model).toBe(forms.claude.model);
+		expect(edited.cliproxy.model).toBe(forms.cliproxy.model);
 	});
 });

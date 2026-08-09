@@ -40,6 +40,12 @@ export type ProviderInfo = {
 			isDefault?: boolean;
 		}>;
 	}>;
+	/** Result of an explicit provider model refresh. Omitted on cached navigation reads. */
+	modelCatalogRefresh?: {
+		status: "current" | "stale" | "unavailable";
+		source: "live" | "memory" | "persisted" | "fallback";
+		reason?: string;
+	};
 	/** Effort/thinking levels. Absent if the provider has no such concept. */
 	effortLevels?: Array<{ value: string; label: string; desc?: string }>;
 	/** Permission gate modes the provider honours. */

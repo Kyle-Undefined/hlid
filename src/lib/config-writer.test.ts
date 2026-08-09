@@ -119,6 +119,12 @@ describe("writeConfig — persistence invariants", () => {
 					executable: "/opt/opencode",
 					args: ["acp"],
 					env: { API_URL: "https://example.test:8443/path" },
+					model: "anthropic/claude-sonnet-4-6",
+					effort: "high",
+					max_turns: 12,
+					permission_mode: "default",
+					turn_recaps: false,
+					recap_model: "openai/gpt-5.6-luna",
 				},
 			],
 		});

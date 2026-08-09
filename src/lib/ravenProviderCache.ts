@@ -1,3 +1,4 @@
+import { getDataRevisionSnapshot } from "#/hooks/wsDataRevisionStore";
 import { getProvidersFn } from "#/lib/serverFns/providers";
 
 type RavenProviders = Awaited<ReturnType<typeof getProvidersFn>>;
@@ -5,9 +6,19 @@ type RavenProviders = Awaited<ReturnType<typeof getProvidersFn>>;
 const RAVEN_PROVIDER_CACHE_TTL_MS = 60_000;
 const RAVEN_PROVIDER_FAILURE_CACHE_TTL_MS = 10_000;
 
-let catalogRead: Promise<RavenProviders> | null = null;
-let catalogValue: RavenProviders | null = null;
-let catalogExpiresAt = 0;
+type RavenProviderCacheEntry = {
+	revision: number;
+	value: RavenProviders;
+	expiresAt: number;
+};
+
+type RavenProviderRead = {
+	revision: number;
+	promise: Promise<RavenProviders>;
+};
+
+let catalogRead: RavenProviderRead | null = null;
+let catalogCache: RavenProviderCacheEntry | null = null;
 
 /**
  * Session navigation reruns the Raven loader. Share the provider inventory read
@@ -16,38 +27,49 @@ let catalogExpiresAt = 0;
  */
 export function loadRavenProviders(): Promise<RavenProviders> {
 	const now = Date.now();
-	if (catalogValue !== null && now < catalogExpiresAt) {
-		return Promise.resolve(catalogValue);
+	const revision = getDataRevisionSnapshot().providers;
+	if (
+		catalogCache !== null &&
+		catalogCache.revision === revision &&
+		now < catalogCache.expiresAt
+	) {
+		return Promise.resolve(catalogCache.value);
 	}
-	if (catalogRead) return catalogRead;
+	if (catalogRead?.revision === revision) return catalogRead.promise;
 
-	const read = Promise.resolve(
+	const entry = { revision } as RavenProviderRead;
+	entry.promise = Promise.resolve(
 		getProvidersFn({ data: { preferCachedModels: true } }),
-	).then(
-		(value) => {
-			catalogValue = value;
-			catalogExpiresAt =
-				Date.now() +
-				(value.length > 0
-					? RAVEN_PROVIDER_CACHE_TTL_MS
-					: RAVEN_PROVIDER_FAILURE_CACHE_TTL_MS);
-			return value;
-		},
-		(error) => {
-			catalogValue = null;
-			catalogExpiresAt = 0;
-			throw error;
-		},
-	);
-	catalogRead = read.finally(() => {
-		catalogRead = null;
-	});
-	return catalogRead;
+	)
+		.then(
+			(value) => {
+				if (getDataRevisionSnapshot().providers === revision) {
+					catalogCache = {
+						revision,
+						value,
+						expiresAt:
+							Date.now() +
+							(value.length > 0
+								? RAVEN_PROVIDER_CACHE_TTL_MS
+								: RAVEN_PROVIDER_FAILURE_CACHE_TTL_MS),
+					};
+				}
+				return value;
+			},
+			(error) => {
+				if (catalogCache?.revision === revision) catalogCache = null;
+				throw error;
+			},
+		)
+		.finally(() => {
+			if (catalogRead === entry) catalogRead = null;
+		});
+	catalogRead = entry;
+	return entry.promise;
 }
 
 /** @internal */
 export function resetRavenProviderCacheForTesting(): void {
 	catalogRead = null;
-	catalogValue = null;
-	catalogExpiresAt = 0;
+	catalogCache = null;
 }

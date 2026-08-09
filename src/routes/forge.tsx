@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ForgeSettings } from "#/components/forge/ForgeSettings";
 import { useSettingsForm } from "#/hooks/useSettingsForm";
 import { optionalLoaderValue } from "#/lib/loaderFallback";
+import type { ProviderInfo } from "#/lib/providerTypes";
 import { getAcpRegistryFn } from "#/lib/serverFns/acp";
 import {
 	getCliProxyInfoFn,
@@ -38,6 +39,35 @@ const UNAVAILABLE_CLIPROXY_INFO = {
 	},
 	error: "CLIProxy integration unavailable",
 };
+
+export function providerOptionRefreshError(
+	providerId: string,
+	providers: ProviderInfo[],
+): Error | null {
+	const provider = providers.find((candidate) => candidate.id === providerId);
+	if (!provider) {
+		return new Error(
+			`Provider ${providerId} disappeared during option refresh`,
+		);
+	}
+	const refresh = provider.modelCatalogRefresh;
+	if (refresh?.status === "current") return null;
+	const reason = refresh?.reason ?? provider.unavailableReason;
+	const detail = reason ? `: ${reason}` : "";
+	if (refresh?.status === "stale") {
+		return new Error(
+			`${provider.label} option refresh failed; showing cached options${detail}`,
+		);
+	}
+	if (refresh?.status === "unavailable" || provider.available === false) {
+		return new Error(
+			`${provider.label} option refresh failed; no current options are available${detail}`,
+		);
+	}
+	// Older Hlid servers do not return refresh metadata. Preserve compatibility
+	// and treat their otherwise valid provider response as successful.
+	return null;
+}
 
 export const Route = createFileRoute("/forge")({
 	loader: async () => {
@@ -182,6 +212,20 @@ function SettingsPage() {
 				: "unavailable",
 		);
 	}, []);
+	const refreshProviderOptions = useCallback(async (providerId: string) => {
+		const providers = await getProvidersFn({
+			data: {
+				refresh: true,
+				refreshProviderId: providerId,
+				includeHostCapabilities: true,
+				includeProviderCapabilities: true,
+				preferCachedModels: false,
+			},
+		});
+		setInventory((current) => ({ ...current, providers }));
+		const error = providerOptionRefreshError(providerId, providers);
+		if (error) throw error;
+	}, []);
 
 	useEffect(() => {
 		setInventory({
@@ -213,7 +257,8 @@ function SettingsPage() {
 			initial={initial}
 			state={state}
 			inventoryStatus={inventoryStatus}
-			onRetryInventory={() => void refreshInventory(true)}
+			onRetryInventory={() => refreshInventory(true)}
+			onRefreshProviderOptions={refreshProviderOptions}
 		/>
 	);
 }

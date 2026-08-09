@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { appendFileSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
 import {
 	agent,
@@ -8,6 +9,12 @@ import {
 } from "@agentclientprotocol/sdk";
 
 const sessions = new Map();
+const behavior = process.env.HLID_FAKE_ACP_BEHAVIOR ?? "";
+const never = () => new Promise(() => {});
+const stall = async (phase) => {
+	process.stderr.write(`fake ${phase} stalled\n`);
+	await never();
+};
 const configOptions = (session) => [
 	{
 		type: "select",
@@ -15,10 +22,18 @@ const configOptions = (session) => [
 		name: "Model",
 		category: "model",
 		currentValue: session?.model ?? "fake-fast",
-		options: [
-			{ value: "fake-fast", name: "Fake Fast" },
-			{ value: "fake-smart", name: "Fake Smart" },
-		],
+		options:
+			behavior === "cwd-model"
+				? [{ value: session?.model ?? "unknown", name: "Discovery CWD" }]
+				: behavior === "model-plan-option"
+					? [
+							{ value: "code", name: "Code model" },
+							{ value: "plan", name: "Planning model" },
+						]
+					: [
+							{ value: "fake-fast", name: "Fake Fast" },
+							{ value: "fake-smart", name: "Fake Smart" },
+						],
 	},
 	{
 		type: "select",
@@ -32,66 +47,123 @@ const configOptions = (session) => [
 			{ value: "high", name: "High" },
 		],
 	},
+	...(behavior === "stable-mode"
+		? [
+				{
+					type: "select",
+					id: "mode",
+					name: "Mode",
+					category: "mode",
+					currentValue: session?.mode ?? "code",
+					options: [
+						{ value: "code", name: "Code" },
+						{ value: "plan", name: "Plan" },
+					],
+				},
+			]
+		: []),
 ];
+const modes = (session) => ({
+	currentModeId: session.mode,
+	availableModes: [
+		{ id: "code", name: "Code" },
+		{ id: "plan", name: "Plan" },
+	],
+});
+const sessionMetadata = (session) => ({
+	...(behavior === "stable-mode" ? {} : { modes: modes(session) }),
+	configOptions: configOptions(session),
+});
+const validateSessionInputs = (params) => {
+	if (behavior !== "strict-capabilities") return;
+	if (params.additionalDirectories !== undefined) {
+		throw new Error("fake agent received unsupported additionalDirectories");
+	}
+	const unsupportedMcp = params.mcpServers.find(
+		(server) => server.type === "http" || server.type === "sse",
+	);
+	if (unsupportedMcp) {
+		throw new Error(
+			`fake agent received unsupported ${unsupportedMcp.type} MCP transport`,
+		);
+	}
+};
 const stream = ndJsonStream(
 	Writable.toWeb(process.stdout),
 	Readable.toWeb(process.stdin),
 );
 
 agent({ name: "hlid-fake-agent" })
-	.onRequest("initialize", () => ({
-		protocolVersion: PROTOCOL_VERSION,
-		agentCapabilities: {
-			loadSession: true,
-			sessionCapabilities: { fork: {} },
-		},
-		authMethods: [{ id: "fake-login", name: "Fake login" }],
-		agentInfo: { name: "fake-acp", version: "1.0.0" },
-	}))
-	.onRequest("authenticate", () => ({}))
-	.onRequest("session/new", ({ params }) => {
+	.onRequest("initialize", async () => {
+		if (behavior === "hang-initialize") await stall("initialize");
+		if (process.env.HLID_FAKE_ACP_INITIALIZE_MARKER) {
+			appendFileSync(
+				process.env.HLID_FAKE_ACP_INITIALIZE_MARKER,
+				"initialize\n",
+			);
+		}
+		return {
+			protocolVersion: PROTOCOL_VERSION,
+			agentCapabilities: {
+				loadSession: true,
+				mcpCapabilities:
+					behavior === "strict-capabilities" ? {} : { http: true, sse: true },
+				sessionCapabilities: {
+					fork: {},
+					delete: {},
+					close: {},
+					...(behavior === "strict-capabilities"
+						? {}
+						: { additionalDirectories: {} }),
+				},
+			},
+			authMethods: [{ id: "fake-login", name: "Fake login" }],
+			agentInfo: { name: "fake-acp", version: "1.0.0" },
+		};
+	})
+	.onRequest("authenticate", async () => {
+		if (behavior === "hang-authenticate") await stall("authentication");
+		return {};
+	})
+	.onRequest("session/new", async ({ params }) => {
+		if (behavior === "hang-new") await stall("session creation");
+		validateSessionInputs(params);
 		const sessionId = "fake-session";
 		const session = {
 			cancelled: false,
 			mode: "code",
-			model: "fake-fast",
+			model: behavior === "cwd-model" ? params.cwd : "fake-fast",
 			effort: "medium",
 			mcpCount: params.mcpServers.length,
+			additionalDirectories: params.additionalDirectories ?? [],
+			mcpTransports: params.mcpServers.map((server) => server.type ?? "stdio"),
 		};
 		sessions.set(sessionId, session);
 		return {
 			sessionId,
-			modes: {
-				currentModeId: "code",
-				availableModes: [
-					{ id: "code", name: "Code" },
-					{ id: "plan", name: "Plan" },
-				],
-			},
-			configOptions: configOptions(session),
+			...sessionMetadata(session),
 		};
 	})
-	.onRequest("session/load", ({ params }) => {
+	.onRequest("session/load", async ({ params }) => {
+		if (behavior === "hang-load") await stall("session load");
+		if (behavior === "reject-load") {
+			throw new Error("fake session is not durable");
+		}
+		validateSessionInputs(params);
 		const session = {
 			cancelled: false,
 			mode: "code",
 			model: "fake-fast",
 			effort: "medium",
 			mcpCount: params.mcpServers.length,
+			additionalDirectories: params.additionalDirectories ?? [],
+			mcpTransports: params.mcpServers.map((server) => server.type ?? "stdio"),
 		};
 		sessions.set(params.sessionId, session);
-		return {
-			modes: {
-				currentModeId: session.mode,
-				availableModes: [
-					{ id: "code", name: "Code" },
-					{ id: "plan", name: "Plan" },
-				],
-			},
-			configOptions: configOptions(session),
-		};
+		return sessionMetadata(session);
 	})
-	.onRequest("session/fork", ({ params }) => {
+	.onRequest("session/fork", async ({ params }) => {
+		if (behavior === "hang-fork") await stall("session fork");
 		const source = sessions.get(params.sessionId);
 		const sessionId = `${params.sessionId}-fork`;
 		const session = {
@@ -107,30 +179,40 @@ agent({ name: "hlid-fake-agent" })
 		sessions.set(sessionId, session);
 		return {
 			sessionId,
-			modes: {
-				currentModeId: session.mode,
-				availableModes: [
-					{ id: "code", name: "Code" },
-					{ id: "plan", name: "Plan" },
-				],
-			},
-			configOptions: configOptions(session),
+			...sessionMetadata(session),
 		};
 	})
-	.onRequest("session/set_mode", ({ params }) => {
+	.onRequest("session/delete", ({ params }) => {
+		sessions.delete(params.sessionId);
+		if (process.env.HLID_FAKE_ACP_DELETE_MARKER) {
+			appendFileSync(
+				process.env.HLID_FAKE_ACP_DELETE_MARKER,
+				`${params.sessionId}\n`,
+			);
+		}
+		return {};
+	})
+	.onRequest("session/close", ({ params }) => {
+		sessions.delete(params.sessionId);
+		return {};
+	})
+	.onRequest("session/set_mode", async ({ params }) => {
+		if (behavior === "hang-mode") await stall("legacy mode configuration");
 		const session = sessions.get(params.sessionId);
 		if (session) session.mode = params.modeId;
 		return {};
 	})
-	.onRequest("session/set_config_option", ({ params }) => {
+	.onRequest("session/set_config_option", async ({ params }) => {
+		if (behavior === "hang-config") await stall("config option");
 		const session = sessions.get(params.sessionId);
 		if (session && params.configId === "model") session.model = params.value;
 		if (session && params.configId === "thought") session.effort = params.value;
+		if (session && params.configId === "mode") session.mode = params.value;
 		return { configOptions: configOptions(session) };
 	})
 	.onNotification("session/cancel", ({ params }) => {
 		const session = sessions.get(params.sessionId);
-		if (session) session.cancelled = true;
+		if (session && !session.ignoreCancel) session.cancelled = true;
 	})
 	.onRequest("session/prompt", async ({ params, client }) => {
 		const text =
@@ -141,6 +223,11 @@ agent({ name: "hlid-fake-agent" })
 				await new Promise((resolve) => setTimeout(resolve, 5));
 			}
 			return { stopReason: "cancelled" };
+		}
+		if (text === "ignore-cancel") {
+			const session = sessions.get(params.sessionId);
+			if (session) session.ignoreCancel = true;
+			await never();
 		}
 		if (text === "report-mode") {
 			await client.notify(methods.client.session.update, {
@@ -177,6 +264,23 @@ agent({ name: "hlid-fake-agent" })
 					content: {
 						type: "text",
 						text: String(sessions.get(params.sessionId)?.mcpCount ?? 0),
+					},
+				},
+			});
+			return { stopReason: "end_turn" };
+		}
+		if (text === "report-session-inputs") {
+			const session = sessions.get(params.sessionId);
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "agent_message_chunk",
+					content: {
+						type: "text",
+						text: JSON.stringify({
+							additionalDirectories: session?.additionalDirectories ?? [],
+							mcpTransports: session?.mcpTransports ?? [],
+						}),
 					},
 				},
 			});

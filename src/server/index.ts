@@ -358,6 +358,11 @@ for (const item of acpCatalog.filter((candidate) => candidate.enabled)) {
 			command: item.command,
 			args: item.args,
 			env: { ...item.env, ...configured?.env },
+			initialAvailability: {
+				available: item.available,
+				...(item.unavailableReason ? { reason: item.unavailableReason } : {}),
+			},
+			discoveryCwd: config.vault.path || process.cwd(),
 		}),
 	);
 }
@@ -372,22 +377,31 @@ for (const provider of providers.values()) {
 // `listModels()` through its app-server, so warming this cache during boot
 // would retain a roughly 100 MB helper process before anyone selects Codex.
 let providerCatalogSnapshot: ProviderCatalogSnapshot;
+let providerMetadataRevisionInProgress = false;
+const publishProviderMetadataRevision = () => {
+	providerCatalogSnapshot.invalidateMetadata();
+	providerMetadataRevisionInProgress = true;
+	try {
+		bumpDataRevision("providers");
+	} finally {
+		providerMetadataRevisionInProgress = false;
+	}
+};
 const modelCatalog = createModelCatalog(providers, () => {
-	providerCatalogSnapshot.invalidate();
-	bumpDataRevision("providers");
+	publishProviderMetadataRevision();
 });
 const providerCapabilityCatalog = createProviderCapabilityCatalog(
 	providers,
 	config.vault.path || process.cwd(),
 	() => {
-		providerCatalogSnapshot.invalidate();
-		bumpDataRevision("providers");
+		publishProviderMetadataRevision();
 	},
 );
 providerCatalogSnapshot = createProviderCatalogSnapshot(
 	() => providers.values(),
 	{
 		modelsFor: modelCatalog.modelsFor,
+		refreshModelsFor: modelCatalog.refreshModelsFor,
 		cachedModelsFor: modelCatalog.cachedModelsFor,
 		capabilitiesFor: providerCapabilityCatalog.capabilitiesFor,
 		cachedCapabilitiesFor: providerCapabilityCatalog.cachedCapabilitiesFor,
@@ -409,7 +423,9 @@ let providerCatalogRevision = getDataRevisions().providers;
 subscribeDataRevisions((revisions) => {
 	if (revisions.providers !== providerCatalogRevision) {
 		providerCatalogRevision = revisions.providers;
-		providerCatalogSnapshot.invalidate();
+		if (!providerMetadataRevisionInProgress) {
+			providerCatalogSnapshot.invalidate();
+		}
 	}
 	broadcast({ type: "data_revisions", revisions });
 });
@@ -548,7 +564,7 @@ async function cleanupForShutdown(): Promise<void> {
 	cliProxy.close();
 	voice.close();
 	tts.close();
-	pool.closeAll();
+	await pool.closeAllAndWait();
 	terminalPool.closeAll();
 	shellPool.closeAll();
 	closeAllCodexAppServers();
@@ -1237,7 +1253,7 @@ async function dispatchServerFetch(
 		const appServers = listCodexAppServers().filter(
 			(entry) => entry.alive,
 		).length;
-		pool.closeAll();
+		await pool.closeAllAndWait();
 		closeAllCodexAppServers();
 		broadcast({
 			type: "sessions_status",

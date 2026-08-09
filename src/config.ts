@@ -397,6 +397,15 @@ const AcpAgentSchema = z.object({
 	executable: z.string().optional(),
 	args: z.array(z.string()).optional(),
 	env: z.record(z.string(), z.string()).optional(),
+	/** Vault-chat defaults for this ACP provider. Empty/absent values defer to the agent. */
+	model: z.string().optional(),
+	effort: z.string().optional(),
+	max_turns: z.number().int().positive().optional(),
+	permission_mode: z
+		.enum(["default", "acceptEdits", "bypassPermissions", "plan"])
+		.optional(),
+	turn_recaps: z.boolean().optional(),
+	recap_model: z.string().optional(),
 });
 
 export type Agent = z.infer<typeof AgentSchema>;

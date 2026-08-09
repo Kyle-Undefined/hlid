@@ -1,5 +1,9 @@
 import type { HlidConfig } from "#/config";
-import type { AcpAuthMethod, AcpCatalogItem } from "#/lib/serverFns/acp";
+import type {
+	AcpAgentInfo,
+	AcpAuthMethod,
+	AcpCatalogItem,
+} from "#/lib/serverFns/acp";
 import { AcpAuthMethodRow } from "./AcpAuthMethodRow";
 
 export type AcpAgentConfig = NonNullable<HlidConfig["acp_agents"]>[number];
@@ -9,18 +13,24 @@ export function AcpAgentCard({
 	item,
 	configured,
 	busy,
+	disabled,
 	authMethods,
+	agentInfo,
 	onToggle,
 	onUpdateOverride,
 	onInspect,
+	onRefreshOptions,
 }: {
 	item: AcpCatalogItem;
 	configured: AcpAgentConfig | undefined;
 	busy: boolean;
+	disabled: boolean;
 	authMethods: AcpAuthMethod[] | undefined;
+	agentInfo: AcpAgentInfo | null | undefined;
 	onToggle: () => void;
 	onUpdateOverride: (patch: Partial<AcpAgentConfig>) => void;
 	onInspect: (methodId?: string) => void;
+	onRefreshOptions: () => void;
 }) {
 	const enabled = Boolean(configured);
 	return (
@@ -30,7 +40,7 @@ export function AcpAgentCard({
 					<div className="break-words text-sm">
 						{item.name}{" "}
 						<span className="text-[9px] text-muted-foreground">
-							{item.version}
+							catalog {item.version}
 						</span>
 					</div>
 					<p className="break-words text-xs text-muted-foreground">
@@ -39,6 +49,7 @@ export function AcpAgentCard({
 				</div>
 				<button
 					type="button"
+					disabled={disabled}
 					onClick={onToggle}
 					className="shrink-0 border border-border px-2 py-1 text-[10px] uppercase"
 				>
@@ -47,14 +58,20 @@ export function AcpAgentCard({
 			</div>
 			<div className="min-w-0 break-all font-mono text-[10px] text-muted-foreground">
 				{item.available
-					? `${item.command} ${item.args.join(" ")} · ready`
+					? `${item.command} ${item.args.join(" ")} · path found`
 					: item.installGuidance}
 			</div>
+			{agentInfo && (
+				<div className="break-all font-mono text-[10px] text-status-success/80">
+					initialized {agentInfo.name} {agentInfo.version}
+				</div>
+			)}
 			{configured && (
 				<div className="grid sm:grid-cols-2 gap-2">
 					<label className="text-[9px] tracking-widest text-muted-foreground uppercase">
 						Executable override
 						<input
+							disabled={disabled}
 							value={configured.executable ?? ""}
 							onChange={(event) =>
 								onUpdateOverride({
@@ -68,6 +85,7 @@ export function AcpAgentCard({
 					<label className="text-[9px] tracking-widest text-muted-foreground uppercase">
 						Arguments override
 						<input
+							disabled={disabled}
 							value={configured.args?.join(" ") ?? ""}
 							onChange={(event) =>
 								onUpdateOverride({
@@ -83,23 +101,47 @@ export function AcpAgentCard({
 				</div>
 			)}
 			{enabled && item.available && (
-				<button
-					type="button"
-					disabled={busy}
-					onClick={() => onInspect()}
-					className="text-[10px] text-primary uppercase"
-				>
-					{busy ? "Checking…" : "Authentication options"}
-				</button>
+				<div className="flex flex-wrap gap-x-3 gap-y-1">
+					<button
+						type="button"
+						disabled={disabled}
+						onClick={() => onInspect()}
+						className="text-[10px] text-primary uppercase"
+					>
+						{busy ? "Checking…" : "Inspect agent"}
+					</button>
+					<button
+						type="button"
+						disabled={disabled}
+						onClick={onRefreshOptions}
+						className="text-[10px] text-primary uppercase"
+					>
+						Refresh options
+					</button>
+				</div>
 			)}
-			{authMethods?.map((method) => (
-				<AcpAuthMethodRow
-					key={method.id}
-					method={method}
-					item={item}
-					onAuthenticate={(methodId) => onInspect(methodId)}
-				/>
-			))}
+			{authMethods && authMethods.length > 0 && (
+				<div className="min-w-0 space-y-2">
+					<div className="space-y-1 text-xs text-muted-foreground">
+						<div className="text-[9px] tracking-widest uppercase">
+							Credential management
+						</div>
+						<p>
+							These are login methods advertised by the agent, not a sign-in
+							status. If the agent is already signed in, no action is needed.
+						</p>
+					</div>
+					{authMethods.map((method) => (
+						<AcpAuthMethodRow
+							key={method.id}
+							method={method}
+							item={item}
+							disabled={disabled}
+							onAuthenticate={(methodId) => onInspect(methodId)}
+						/>
+					))}
+				</div>
+			)}
 		</div>
 	);
 }

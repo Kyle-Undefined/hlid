@@ -25,6 +25,18 @@ describe("providerCatalogPath", () => {
 		).toBe("/providers?refresh=1&host_capabilities=1");
 	});
 
+	it("scopes an explicit ACP option refresh to its provider", () => {
+		expect(
+			providerCatalogPath({
+				refresh: true,
+				refreshProviderId: "acp:opencode",
+				includeProviderCapabilities: true,
+			}),
+		).toBe(
+			"/providers?refresh=1&provider_capabilities=1&provider_id=acp%3Aopencode",
+		);
+	});
+
 	it("opts focused surfaces into provider capability evidence", () => {
 		expect(providerCatalogPath({ includeProviderCapabilities: true })).toBe(
 			"/providers?provider_capabilities=1",

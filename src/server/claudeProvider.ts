@@ -4623,6 +4623,7 @@ async function hydrateForkedMessages(
 export class ClaudeProvider implements AgentProvider {
 	readonly providerId: string;
 	readonly label: string;
+	// fallow-ignore-next-line unused-class-member -- Read through AgentProvider by the provider catalog.
 	readonly capabilities = {
 		workflowCatalog: true,
 		backgroundActivities: {
@@ -4641,6 +4642,7 @@ export class ClaudeProvider implements AgentProvider {
 			buildHlidToolLoadingSummary("hlid_obsidian", obsidianTools),
 		];
 	}
+	// fallow-ignore-next-line unused-class-member -- Read through AgentProvider by the provider catalog.
 	readonly forkCapability = {
 		kind: "exact",
 		cutoff: "message",
@@ -4743,6 +4745,7 @@ export class ClaudeProvider implements AgentProvider {
 		return { available: true };
 	}
 
+	// fallow-ignore-next-line unused-class-member -- Invoked through AgentProvider by provider capability discovery.
 	async discoverCapabilities(context: { cwd: string }) {
 		return discoverClaudeProviderCapabilities({
 			providerId: this.providerId,

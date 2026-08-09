@@ -43,6 +43,25 @@ async function responseWarning(response: Response): Promise<string | null> {
 	}
 }
 
+function acpRuntimeIdentity(
+	agents: NonNullable<HlidConfig["acp_agents"]>,
+): string {
+	return JSON.stringify(
+		agents
+			.map((agent) => ({
+				id: agent.id,
+				executable: agent.executable,
+				args: agent.args,
+				env: agent.env
+					? Object.fromEntries(
+							Object.entries(agent.env).sort(([a], [b]) => a.localeCompare(b)),
+						)
+					: undefined,
+			}))
+			.sort((a, b) => a.id.localeCompare(b.id)),
+	);
+}
+
 export function useSettingsForm(
 	initial: SettingsInitial,
 	onSaved: () => Promise<void>,
@@ -179,7 +198,8 @@ export function useSettingsForm(
 		}
 		const requiresRestart =
 			server !== initialForms.server ||
-			acpAgents !== initialForms.acpAgents ||
+			acpRuntimeIdentity(acpAgents) !==
+				acpRuntimeIdentity(initialForms.acpAgents) ||
 			umbod !== initialForms.umbod;
 		revisionRef.current += 1;
 		dirtyRef.current = true;
@@ -231,10 +251,11 @@ export function useSettingsForm(
 	);
 
 	const changeClaude = (patch: Partial<ClaudeForm>) => {
-		const next = applyAgentFormPatch(claude, codex, cliproxy, patch);
+		const next = applyAgentFormPatch(claude, codex, cliproxy, acpAgents, patch);
 		setClaude(next.claude);
 		setCodex(next.codex);
 		setCliProxy(next.cliproxy);
+		setAcpAgents(next.acpAgents);
 	};
 
 	return {

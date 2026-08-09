@@ -833,6 +833,8 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	 */
 	steer?(message: string, opts?: SendOptions): Promise<void>;
 	cancel(): void;
+	/** Await provider-owned process cleanup when the host itself is shutting down. */
+	cancelAndWait?(): Promise<void>;
 	/**
 	 * Slice C: stop the currently running assistant turn early and return
 	 * control to the caller. The session stays alive for subsequent send()s
@@ -1119,6 +1121,12 @@ export interface AgentProvider {
 	resolveForkCapability?(): Promise<ProviderForkCapability | undefined>;
 	/** Optional availability check. Returns false + reason if provider can't run. */
 	check?(): Promise<{ available: boolean; reason?: string }>;
+	/**
+	 * Last known availability that can be read without filesystem, network, or
+	 * provider process work. Catalog navigation uses this instead of assuming an
+	 * unchecked provider is ready.
+	 */
+	cachedAvailability?(): { available: boolean; reason?: string } | undefined;
 	/** Optional host-only capabilities surfaced in Forge diagnostics. */
 	hostCapabilities?(): Promise<
 		Record<string, { label: string; available: boolean; reason?: string }>

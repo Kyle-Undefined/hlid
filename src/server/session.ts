@@ -1064,19 +1064,35 @@ function sessionDefaultsFromSelection(
 		permission_mode: "default" as const,
 		turn_recaps: true,
 	};
-	const providerDefaults =
-		providerId === "codex"
-			? codexConfig
-			: isCliProxyProvider(providerId)
-				? config.cliproxy
-				: config.claude;
+	const acpDefaults = providerId.startsWith("acp:")
+		? (config.acp_agents ?? []).find(
+				(agent) => agent.id === providerId.slice("acp:".length),
+			)
+		: undefined;
+	const providerDefaults: {
+		model?: string;
+		effort?: string;
+		permission_mode?: PermissionMode;
+		max_turns?: number;
+		turn_recaps?: boolean;
+		recap_model?: string;
+	} =
+		providerId === "claude"
+			? config.claude
+			: providerId === "codex"
+				? codexConfig
+				: isCliProxyProvider(providerId)
+					? config.cliproxy
+					: (acpDefaults ?? {});
 	return {
 		...(configuredAgentPath ? { agentCwd: configuredAgentPath } : {}),
 		providerId,
-		model: configuredAgent?.model ?? providerDefaults.model,
-		effort: configuredAgent?.effort ?? providerDefaults.effort,
+		model: configuredAgent?.model ?? providerDefaults.model ?? "",
+		effort: configuredAgent?.effort ?? providerDefaults.effort ?? "",
 		permissionMode:
-			configuredAgent?.permissionMode ?? providerDefaults.permission_mode,
+			configuredAgent?.permissionMode ??
+			providerDefaults.permission_mode ??
+			"default",
 		maxTurns: configuredAgent?.maxTurns ?? providerDefaults.max_turns,
 		turnRecaps: providerDefaults.turn_recaps ?? true,
 		recapModel:
@@ -5833,6 +5849,19 @@ export class SessionManager {
 		this.cancelAllAskUserQuestions();
 		this.planModeManager.clearAll();
 		this.tearDownNativeSessionState();
+	}
+
+	/** Stop native processes and await transports that expose owned cleanup. */
+	async suspendForRestartAndWait(): Promise<void> {
+		const sessions = [this.agentSession, this.realtimeAgentSession].filter(
+			(session, index, all) => session && all.indexOf(session) === index,
+		);
+		this.suspendForRestart();
+		await Promise.all(
+			sessions.map(
+				(session) => session?.cancelAndWait?.() ?? Promise.resolve(),
+			),
+		);
 	}
 
 	/**

@@ -2185,6 +2185,16 @@ function configuredVaultSelection(
 	config: RavenConfig,
 	providerId: string,
 ): Omit<RavenSessionSelection, "providerId"> {
+	if (providerId.startsWith("acp:")) {
+		const configured = config.acp_agents?.find(
+			(agent) => agent.id === providerId.slice("acp:".length),
+		);
+		return {
+			model: configured?.model,
+			effort: configured?.effort,
+			permissionMode: configured?.permission_mode,
+		};
+	}
 	if (providerId === "codex") {
 		return {
 			model: config.codex?.model,
@@ -2219,12 +2229,18 @@ function defaultSelectionForProvider(
 	const configuredModel = useConfigured ? configured.model : undefined;
 	const model =
 		models.find((candidate) => candidate.value === configuredModel)?.value ??
+		(provider.id.startsWith("acp:") && models.length === 0
+			? configuredModel
+			: undefined) ??
 		models.find((candidate) => candidate.isDefault)?.value ??
 		models[0]?.value;
 	const efforts = effortOptionsFor(provider, model ?? "");
 	const configuredEffort = useConfigured ? configured.effort : undefined;
 	const effort =
 		efforts.find((candidate) => candidate.value === configuredEffort)?.value ??
+		(provider.id.startsWith("acp:") && efforts.length === 0
+			? configuredEffort
+			: undefined) ??
 		efforts.find((candidate) => candidate.isDefault)?.value ??
 		efforts.find((candidate) => candidate.value === "medium")?.value ??
 		efforts[0]?.value;
@@ -2420,6 +2436,20 @@ function deriveRavenComposerState({
 	const configuredProvider = providers.find(
 		(candidate) => candidate.id === configuredProviderId,
 	);
+	const advertisedModels = modelOptions(provider);
+	const modelPickerOptions = provider?.id.startsWith("acp:")
+		? [
+				{
+					value: "",
+					label: "Provider default",
+					description:
+						advertisedModels.length > 0
+							? "Let the ACP agent choose its configured default model."
+							: "This ACP agent has not advertised model choices.",
+				},
+				...advertisedModels,
+			]
+		: advertisedModels;
 	return {
 		canSend: hasInput && !isRunning,
 		canQueue: hasInput && isRunning,
@@ -2439,7 +2469,7 @@ function deriveRavenComposerState({
 			? fmtModel(configuredSelection.model)
 			: null,
 		configuredSelection,
-		modelPickerOptions: modelOptions(provider),
+		modelPickerOptions,
 		permissionOptions,
 		approvalsReviewerOptions: approvalsReviewerUnavailableReason
 			? reviewerOptions.filter((candidate) => candidate.value === "user")
@@ -4395,11 +4425,11 @@ function ChatModelBadge({
 										? { isDefault: m.isDefault }
 										: {}),
 								}))}
-								selectedValue={displayedModel}
+								selectedValue={displayedModel ?? ""}
 								onSelect={(value) => {
 									const delivered = send({
 										type: "set_model",
-										model: value,
+										...(value ? { model: value } : {}),
 										session_id: sessionId,
 									});
 									if (!delivered) return;

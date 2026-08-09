@@ -49,6 +49,7 @@ async function authenticateAcpAgent(
 			command: item.command,
 			args: item.args,
 			env: { ...item.env, ...configured?.env },
+			discoveryCwd: config.vault.path || process.cwd(),
 		},
 		body.methodId,
 	);

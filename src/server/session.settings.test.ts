@@ -2882,6 +2882,53 @@ describe("SessionManager — provider resolution", () => {
 		});
 	});
 
+	it("uses ACP-agent defaults without inheriting Claude settings", async () => {
+		const { provider, captured } = makeCaptureProvider("acp:opencode");
+		const config = {
+			...makeConfig(),
+			vault_provider: "acp:opencode",
+			acp_agents: [
+				{
+					id: "opencode",
+					model: "anthropic/claude-sonnet-4-6",
+					effort: "high",
+					max_turns: 18,
+					permission_mode: "bypassPermissions",
+					turn_recaps: false,
+				},
+			],
+		} as HlidConfig;
+		const sm = new SessionManager(config, makeProviders(provider));
+		await sm.runQuery("hello", () => {}, { sessionId: "sess-acp" });
+
+		expect(captured.params).toMatchObject({
+			providerId: "acp:opencode",
+			model: "anthropic/claude-sonnet-4-6",
+			effort: "high",
+			maxTurns: 18,
+			permissionMode: "bypassPermissions",
+		});
+	});
+
+	it("lets an ACP agent choose defaults when none are configured", async () => {
+		const { provider, captured } = makeCaptureProvider("acp:pi-acp");
+		const config = {
+			...makeConfig(),
+			vault_provider: "acp:pi-acp",
+			acp_agents: [{ id: "pi-acp" }],
+		} as HlidConfig;
+		const sm = new SessionManager(config, makeProviders(provider));
+		await sm.runQuery("hello", () => {}, { sessionId: "sess-pi" });
+
+		expect(captured.params).toMatchObject({
+			providerId: "acp:pi-acp",
+			model: "",
+			effort: "",
+			permissionMode: "default",
+		});
+		expect(captured.params?.model).not.toBe(config.claude.model);
+	});
+
 	it("agent query uses provider from agentProviderMap when set", async () => {
 		const { provider: claudeProvider, captured: claudeCaptured } =
 			makeCaptureProvider("claude");

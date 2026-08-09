@@ -147,6 +147,7 @@ export class CliProxyCodexProvider extends ClaudeProvider {
 		this.connection = { base_url: baseUrl, api_key: apiKey };
 	}
 
+	// fallow-ignore-next-line unused-class-member -- Invoked through AgentProvider by explicit provider refresh.
 	override async check(): Promise<{ available: boolean; reason?: string }> {
 		if (!resolveClaudeExecutable()) {
 			return { available: false, reason: "Claude Code CLI not found" };
@@ -180,6 +181,7 @@ export class CliProxyNativeCodexProvider extends CodexProvider {
 		this.connection = { base_url: baseUrl, api_key: apiKey };
 	}
 
+	// fallow-ignore-next-line unused-class-member -- Invoked through AgentProvider by explicit provider refresh.
 	override async check(): Promise<{ available: boolean; reason?: string }> {
 		if (!resolveCodexExecutable()) {
 			return { available: false, reason: "Codex CLI not found" };

@@ -6202,6 +6202,7 @@ class CodexAgentSession implements AgentSession {
 export class CodexProvider implements AgentProvider {
 	readonly providerId: string;
 	readonly label: string;
+	// fallow-ignore-next-line unused-class-member -- Read through AgentProvider by the provider catalog.
 	readonly capabilities = {
 		goalControl: true,
 		structuredActivities: ["compact", "review"],
@@ -6250,6 +6251,7 @@ export class CodexProvider implements AgentProvider {
 			buildHlidToolLoadingSummary("hlid_obsidian", obsidianTools),
 		];
 	}
+	// fallow-ignore-next-line unused-class-member -- Read through AgentProvider by the provider catalog.
 	readonly forkCapability = {
 		kind: "exact",
 		cutoff: "turn",
@@ -6408,6 +6410,7 @@ export class CodexProvider implements AgentProvider {
 		};
 	}
 
+	// fallow-ignore-next-line unused-class-member -- Invoked through AgentProvider by provider capability discovery.
 	async discoverCapabilities(context: { cwd: string }) {
 		const launch = this.metadataLaunchConfig(context);
 		const conn = acquireCodexAppServer(launch.appServer);

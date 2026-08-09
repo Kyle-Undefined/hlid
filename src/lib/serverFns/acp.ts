@@ -31,6 +31,12 @@ export type AcpAuthMethod = {
 	vars?: Array<{ name: string; label?: string | null; secret?: boolean }>;
 };
 
+export type AcpAgentInfo = {
+	name: string;
+	version: string;
+	title?: string | null;
+};
+
 export const getAcpRegistryFn = createServerFn({ method: "GET" })
 	.validator((raw) => optionalRefreshSchema.parse(raw))
 	.handler(({ data }) =>
@@ -55,5 +61,8 @@ export const authenticateAcpFn = createServerFn({ method: "POST" })
 			body: JSON.stringify(data),
 		});
 		await requireDbOk(response, "inspect ACP authentication");
-		return (await response.json()) as { authMethods: AcpAuthMethod[] };
+		return (await response.json()) as {
+			authMethods: AcpAuthMethod[];
+			agentInfo: AcpAgentInfo | null;
+		};
 	});

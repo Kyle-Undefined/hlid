@@ -263,6 +263,10 @@ function ModelField({
 }) {
 	const modelOptions = getModelOptions(activeProvider);
 	const selectedModel = modelOptions.find((m) => m.value === claude.model);
+	const configuredModelIsUnadvertised =
+		allowProviderDefault &&
+		claude.model.length > 0 &&
+		selectedModel === undefined;
 	// Model switch may invalidate the effort choice — reset to the new model's default.
 	const changeModel = (model: string) => {
 		const newEffortOptions = effortOptionsFor(activeProvider, model);
@@ -286,6 +290,9 @@ function ModelField({
 					{allowProviderDefault && (
 						<option value="">— provider default —</option>
 					)}
+					{configuredModelIsUnadvertised && (
+						<option value={claude.model}>{claude.model} (configured)</option>
+					)}
 					{modelOptions.map((m) => (
 						<option key={m.value} value={m.value} title={m.description}>
 							{m.label}
@@ -296,6 +303,13 @@ function ModelField({
 				{selectedModel?.description && (
 					<div className="text-xs text-muted-foreground mt-1 max-w-none sm:max-w-xs lg:max-w-sm">
 						{selectedModel.description}
+					</div>
+				)}
+				{allowProviderDefault && modelOptions.length === 0 && (
+					<div className="text-xs text-muted-foreground mt-1 max-w-none sm:max-w-xs lg:max-w-sm">
+						{configuredModelIsUnadvertised
+							? "This agent has not advertised model choices. Hlid will still request the configured model."
+							: "This agent has not advertised model choices. Hlid will use its default."}
 					</div>
 				)}
 			</div>
@@ -474,7 +488,8 @@ export function ClaudeSection({
 	const hasProviderOptions =
 		modelOptions.length > 0 ||
 		effortOptions.length > 0 ||
-		permissionOptions.length > 0;
+		permissionOptions.length > 0 ||
+		Boolean(activeProvider && !isClaude);
 
 	return (
 		<Section title="Vault Agent">
@@ -517,7 +532,7 @@ export function ClaudeSection({
 				)}
 			{hasProviderOptions && (
 				<>
-					{modelOptions.length > 0 && (
+					{(modelOptions.length > 0 || !isClaude) && (
 						<ModelField
 							claude={claude}
 							onChange={onChange}

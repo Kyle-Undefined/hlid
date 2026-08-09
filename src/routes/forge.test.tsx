@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, waitFor } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import type { ComponentType } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -112,6 +112,120 @@ describe("forge route loader", () => {
 });
 
 describe("forge inventory refresh", () => {
+	it("waits for an explicit ACP option refresh beyond the recovery-loader budget", async () => {
+		vi.useFakeTimers();
+		try {
+			routeState.loaderData = {
+				server: { port: 3000 },
+				cwd: "C:\\workspace",
+				providers: [],
+				accountInfo: null,
+				voiceInfo: {
+					status: { state: "ready", model: "base" },
+					models: [],
+				},
+				cliProxyInfo: {
+					state: "ready",
+					managed: false,
+					authenticated: false,
+					oauth: "idle",
+					accounts: {},
+				},
+				acpCatalog: [],
+				inventoryStatus: "ready",
+			};
+			vi.mocked(getProvidersFn).mockImplementation(
+				() =>
+					new Promise((resolve) =>
+						setTimeout(
+							() =>
+								resolve([
+									{
+										id: "acp:opencode",
+										label: "OpenCode",
+										available: true,
+										models: [{ value: "agent/model", label: "Agent Model" }],
+										modelCatalogRefresh: {
+											status: "current",
+											source: "live",
+										},
+									},
+								] as never),
+							12_000,
+						),
+					),
+			);
+			const Component = route.component;
+			render(<Component />);
+			const refresh = routeState.forgeSettings.mock.lastCall?.[0]
+				.onRefreshProviderOptions as (providerId: string) => Promise<void>;
+
+			await act(async () => {
+				const pending = refresh("acp:opencode");
+				await vi.advanceTimersByTimeAsync(12_000);
+				await pending;
+			});
+
+			expect(
+				routeState.forgeSettings.mock.lastCall?.[0].initial.providers[0]
+					.models[0].value,
+			).toBe("agent/model");
+			expect(getProvidersFn).toHaveBeenCalledWith({
+				data: expect.objectContaining({
+					refresh: true,
+					refreshProviderId: "acp:opencode",
+				}),
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps cached options visible while rejecting a stale explicit refresh", async () => {
+		routeState.loaderData = {
+			server: { port: 3000 },
+			cwd: "C:\\workspace",
+			providers: [],
+			accountInfo: null,
+			voiceInfo: { status: { state: "ready", model: "base" }, models: [] },
+			cliProxyInfo: {
+				state: "ready",
+				managed: false,
+				authenticated: false,
+				oauth: "idle",
+				accounts: {},
+			},
+			acpCatalog: [],
+			inventoryStatus: "ready",
+		};
+		vi.mocked(getProvidersFn).mockResolvedValue([
+			{
+				id: "acp:opencode",
+				label: "OpenCode",
+				available: true,
+				models: [{ value: "cached", label: "Cached" }],
+				modelCatalogRefresh: {
+					status: "stale",
+					source: "memory",
+					reason: "Live model discovery did not return current options",
+				},
+			},
+		] as never);
+		const Component = route.component;
+		render(<Component />);
+		const refresh = routeState.forgeSettings.mock.lastCall?.[0]
+			.onRefreshProviderOptions as (providerId: string) => Promise<void>;
+
+		await expect(refresh("acp:opencode")).rejects.toThrow(
+			"OpenCode option refresh failed; showing cached options",
+		);
+		await waitFor(() =>
+			expect(
+				routeState.forgeSettings.mock.lastCall?.[0].initial.providers[0].models,
+			).toEqual([{ value: "cached", label: "Cached" }]),
+		);
+	});
+
 	it("replaces a provisional capability after route revalidation", async () => {
 		const base = {
 			server: { port: 3000 },

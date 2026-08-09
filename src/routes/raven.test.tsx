@@ -2397,6 +2397,100 @@ describe("Raven composed submission behavior", () => {
 		expect(screen.queryByRole("dialog", { name: "Model settings" })).toBeNull();
 	});
 
+	it("keeps an ACP provider usable when it advertises no model choices", () => {
+		state.model = "";
+		state.effort = "";
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				vault_provider: "acp:pi-acp",
+				acp_agents: [{ id: "pi-acp" }],
+			},
+			providers: [
+				{
+					id: "acp:pi-acp",
+					label: "Pi ACP",
+					available: true,
+					models: [],
+					permissionModes: [{ value: "default", label: "Agent asks" }],
+				},
+			],
+		};
+
+		render(<ChatPage />);
+		fireEvent.click(screen.getByRole("button", { name: /Pi ACP/i }));
+		const providerDefault = screen.getByRole("button", {
+			name: "Provider default",
+		});
+		expect(providerDefault.getAttribute("title")).toContain(
+			"has not advertised model choices",
+		);
+		fireEvent.click(providerDefault);
+		expect(state.send).toHaveBeenCalledWith({
+			type: "set_model",
+			session_id: expect.any(String),
+		});
+	});
+
+	it("preserves and can explicitly reset a configured ACP model without a catalog", () => {
+		state.model = "";
+		state.effort = "";
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				vault_provider: "acp:opencode",
+				acp_agents: [{ id: "opencode", model: "anthropic/claude-sonnet-4-6" }],
+			},
+			providers: [
+				{
+					id: "acp:opencode",
+					label: "OpenCode",
+					available: true,
+					models: [],
+					permissionModes: [{ value: "default", label: "Agent asks" }],
+				},
+				{
+					id: "claude",
+					label: "Claude",
+					available: true,
+					models: [{ value: "claude-sonnet-4-6", label: "Sonnet 4.6" }],
+				},
+			],
+		};
+
+		render(<ChatPage />);
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: /OpenCode.*anthropic\/sonnet-4-6/i,
+			}),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Claude" }));
+		if (!screen.queryByRole("button", { name: "OpenCode" })) {
+			fireEvent.click(
+				screen.getByRole("button", { name: /Claude.*Sonnet 4\.6/i }),
+			);
+		}
+		fireEvent.click(screen.getByRole("button", { name: "OpenCode" }));
+		expect(state.send).toHaveBeenCalledWith({
+			type: "set_provider",
+			provider: "acp:opencode",
+			model: "anthropic/claude-sonnet-4-6",
+			permission_mode: "default",
+			session_id: expect.any(String),
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "Provider default" }));
+		expect(state.send).toHaveBeenCalledWith({
+			type: "set_model",
+			session_id: expect.any(String),
+		});
+		expect(
+			screen.getByRole("button", { name: /^OpenCode · ask$/i }),
+		).toBeTruthy();
+	});
+
 	it("rolls an optimistic effort picker back on its correlated rejection", () => {
 		configureEffortRejectionSession();
 		render(<ChatPage />);

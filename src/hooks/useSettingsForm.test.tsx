@@ -79,7 +79,7 @@ describe("useSettingsForm autosave", () => {
 		expect(result.current.saving).toBe(false);
 	});
 
-	it("marks server and ACP changes as requiring restart", async () => {
+	it("marks server changes as requiring restart", async () => {
 		const fetchMock = vi.fn().mockResolvedValue(Response.json({ ok: true }));
 		vi.stubGlobal("fetch", fetchMock);
 		const { result } = renderHook(() =>
@@ -92,6 +92,54 @@ describe("useSettingsForm autosave", () => {
 		expect(result.current.savedMsg).toBe("restart");
 		const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
 		expect(body.server.port).toBe(4100);
+	});
+
+	it("saves ACP defaults without requiring a restart", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(Response.json({ ok: true }));
+		vi.stubGlobal("fetch", fetchMock);
+		const initial = initialSettings();
+		initial.acp_agents = [{ id: "opencode" }];
+		const { result } = renderHook(() =>
+			useSettingsForm(initial, vi.fn().mockResolvedValue(undefined)),
+		);
+
+		act(() =>
+			result.current.setAcpAgents([
+				{ id: "opencode", model: "anthropic/claude-sonnet-4-6" },
+			]),
+		);
+		await advance(800);
+
+		expect(result.current.savedMsg).toBe("saved");
+		expect(
+			JSON.parse(fetchMock.mock.calls[0][1].body as string).acp_agents,
+		).toEqual([
+			expect.objectContaining({
+				id: "opencode",
+				model: "anthropic/claude-sonnet-4-6",
+			}),
+		]);
+	});
+
+	it("requires a restart when an ACP process identity changes", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(Response.json({ ok: true })),
+		);
+		const initial = initialSettings();
+		initial.acp_agents = [{ id: "opencode" }];
+		const { result } = renderHook(() =>
+			useSettingsForm(initial, vi.fn().mockResolvedValue(undefined)),
+		);
+
+		act(() =>
+			result.current.setAcpAgents([
+				{ id: "opencode", executable: "C:\\tools\\opencode.exe" },
+			]),
+		);
+		await advance(800);
+
+		expect(result.current.savedMsg).toBe("restart");
 	});
 
 	it("shows the server error and preserves edited state", async () => {

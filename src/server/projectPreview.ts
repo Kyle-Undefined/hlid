@@ -8,6 +8,7 @@ import {
 } from "node:net";
 import { isAbsolute, posix, resolve, win32 } from "node:path";
 import { parseWslUncSyntax } from "#/lib/paths";
+import { childIsRunning, waitForChildExit } from "./childProcessLifecycle";
 import { projectPreviewBrowserManager } from "./projectPreviewBrowser";
 import { disposeProjectPreviewRelay } from "./projectPreviewRelay";
 import {
@@ -407,30 +408,6 @@ async function runBoundedProcessHelper(
 		} catch {
 			finish();
 		}
-	});
-}
-
-function childIsRunning(child: ChildProcess): boolean {
-	return child.exitCode === null && child.signalCode === null;
-}
-
-async function waitForChildExit(
-	child: ChildProcess,
-	timeoutMs: number,
-): Promise<boolean> {
-	if (!childIsRunning(child)) return true;
-	return new Promise((resolveResult) => {
-		let settled = false;
-		const finish = (exited: boolean) => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			child.off("close", onClose);
-			resolveResult(exited);
-		};
-		const onClose = () => finish(true);
-		const timer = setTimeout(() => finish(false), timeoutMs);
-		child.once("close", onClose);
 	});
 }
 

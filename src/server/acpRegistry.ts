@@ -1,8 +1,7 @@
-import { constants } from "node:fs";
-import { access, readdir } from "node:fs/promises";
-import { basename, delimiter, isAbsolute, join } from "node:path";
+import { basename } from "node:path";
 import { z } from "zod";
 import type { HlidConfig } from "../config";
+import { findAcpExecutable } from "./acpExecutable";
 import { bumpDataRevision } from "./dataRevision";
 import { type CachedList, createCachedList } from "./providerCatalog";
 import { createSlowOperationObserver } from "./requestDiagnostics";
@@ -10,93 +9,27 @@ import { createSlowOperationObserver } from "./requestDiagnostics";
 const ACP_REGISTRY_URL =
 	"https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 const ACP_AVAILABILITY_TTL_MS = 60_000;
+const ACP_AVAILABILITY_PROBE_TIMEOUT_MS = 1_000;
 
-let pathIndexKey = "";
-let pathIndexRead: Promise<Map<string, string>> | null = null;
-
-function executableNames(command: string): string[] {
-	if (process.platform !== "win32") return [command];
-	const extensions = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
-		.split(";")
-		.filter(Boolean);
-	const lower = command.toLowerCase();
-	if (extensions.some((extension) => lower.endsWith(extension.toLowerCase()))) {
-		return [lower];
-	}
-	return [lower, ...extensions.map((extension) => `${lower}${extension}`)];
-}
-
-async function buildPathIndex(): Promise<Map<string, string>> {
-	const directories = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
-	const listings = await Promise.all(
-		directories.map(async (directory) => {
-			try {
-				return {
-					directory,
-					entries: await readdir(directory, { withFileTypes: true }),
-				};
-			} catch {
-				return null;
-			}
+async function boundedAvailabilityProbe(
+	probe: Promise<unknown>,
+	timeoutMs: number,
+): Promise<boolean> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	return Promise.race([
+		probe.then(Boolean, () => false),
+		new Promise<false>((resolve) => {
+			timer = setTimeout(() => resolve(false), timeoutMs);
 		}),
-	);
-	const index = new Map<string, string>();
-	for (const listing of listings) {
-		if (!listing) continue;
-		for (const entry of listing.entries) {
-			if (!entry.isFile() && !entry.isSymbolicLink()) continue;
-			const key =
-				process.platform === "win32" ? entry.name.toLowerCase() : entry.name;
-			if (!index.has(key)) index.set(key, join(listing.directory, entry.name));
-		}
-	}
-	return index;
-}
-
-async function pathIndex(): Promise<Map<string, string>> {
-	const key = `${process.env.PATH ?? ""}\0${process.env.PATHEXT ?? ""}`;
-	if (!pathIndexRead || pathIndexKey !== key) {
-		pathIndexKey = key;
-		pathIndexRead = buildPathIndex();
-	}
-	return pathIndexRead;
-}
-
-async function findExecutable(command: string): Promise<string | null> {
-	if (!command) return null;
-	if (isAbsolute(command) || command.includes("/") || command.includes("\\")) {
-		try {
-			await access(
-				command,
-				process.platform === "win32" ? constants.F_OK : constants.X_OK,
-			);
-			return command;
-		} catch {
-			return null;
-		}
-	}
-	const index = await pathIndex();
-	for (const name of executableNames(command)) {
-		const candidate = index.get(
-			process.platform === "win32" ? name.toLowerCase() : name,
-		);
-		if (!candidate) continue;
-		try {
-			await access(
-				candidate,
-				process.platform === "win32" ? constants.F_OK : constants.X_OK,
-			);
-			return candidate;
-		} catch {
-			// Keep looking through PATHEXT candidates.
-		}
-	}
-	return null;
+	]).finally(() => {
+		if (timer !== undefined) clearTimeout(timer);
+	});
 }
 
 const InvocationSchema = z.object({
 	cmd: z.string(),
 	args: z.array(z.string()).optional(),
+	env: z.record(z.string(), z.string()).optional(),
 	archive: z.string().url().optional(),
 });
 
@@ -172,9 +105,12 @@ const FALLBACK: z.infer<typeof RegistrySchema> = {
 	],
 };
 
-function platformTarget(): string {
-	const os = process.platform === "win32" ? "windows" : process.platform;
-	const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
+function platformTarget(
+	platform: NodeJS.Platform = process.platform,
+	architecture: NodeJS.Architecture = process.arch,
+): string {
+	const os = platform === "win32" ? "windows" : platform;
+	const arch = architecture === "arm64" ? "aarch64" : "x86_64";
 	return `${os}-${arch}`;
 }
 
@@ -190,20 +126,23 @@ function inferredUvxCommand(packageName: string): string {
 export function resolveAcpInvocation(
 	agent: AcpRegistryAgent,
 	override?: NonNullable<HlidConfig["acp_agents"]>[number],
+	runtime: {
+		platform?: NodeJS.Platform;
+		architecture?: NodeJS.Architecture;
+	} = {},
 ): {
 	command: string;
 	args: string[];
 	env: Record<string, string>;
 	installGuidance: string;
 } {
-	const binary = agent.distribution.binary?.[platformTarget()];
+	const target = platformTarget(runtime.platform, runtime.architecture);
+	const binary = agent.distribution.binary?.[target];
 	const npx = agent.distribution.npx;
 	const uvx = agent.distribution.uvx;
+	const binaryFilename = binary ? basename(binary.cmd) : "";
 	const registryCommand = binary
-		? basename(binary.cmd).replace(
-				/\.exe$/i,
-				process.platform === "win32" ? ".exe" : "",
-			)
+		? binaryFilename.replace(/\.exe$/i, "")
 		: npx
 			? inferredNpxCommand(npx.package)
 			: uvx
@@ -211,14 +150,17 @@ export function resolveAcpInvocation(
 				: "";
 	const command = override?.executable || registryCommand;
 	const args = override?.args ?? binary?.args ?? npx?.args ?? uvx?.args ?? [];
-	const env = { ...(npx?.env ?? uvx?.env), ...override?.env };
+	const env = {
+		...(binary?.env ?? npx?.env ?? uvx?.env),
+		...override?.env,
+	};
 	const installGuidance = npx
 		? `bun add --global ${npx.package}`
 		: uvx
 			? `uv tool install ${uvx.package}`
 			: binary?.archive
-				? `Download and place ${binary.archive} on PATH as ${registryCommand}`
-				: `Install ${agent.name} for ${platformTarget()} and place its ACP command on PATH`;
+				? `Download and place ${binary.archive} on PATH as ${binaryFilename}`
+				: `Install ${agent.name} for ${target} and place its ACP command on PATH`;
 	return { command, args, env, installGuidance };
 }
 
@@ -226,9 +168,11 @@ export class AcpRegistry {
 	private readonly cache: CachedList<z.infer<typeof RegistrySchema>>;
 	private readonly which: (
 		command: string,
+		options?: Parameters<typeof findAcpExecutable>[1],
 	) => string | null | undefined | Promise<string | null | undefined>;
 	private readonly now: () => number;
 	private readonly availabilityTtlMs: number;
+	private readonly availabilityProbeTimeoutMs: number;
 	private readonly observeAvailability: ReturnType<
 		typeof createSlowOperationObserver
 	>;
@@ -252,18 +196,22 @@ export class AcpRegistry {
 		options: {
 			which?: (
 				command: string,
+				options?: Parameters<typeof findAcpExecutable>[1],
 			) => string | null | undefined | Promise<string | null | undefined>;
 			now?: () => number;
 			availabilityTtlMs?: number;
+			availabilityProbeTimeoutMs?: number;
 		} = {},
 	) {
 		// Bun.which performs synchronous filesystem work. On a cold PATH that held
 		// the server event loop for seconds while cataloging ACP agents. The default
 		// resolver indexes PATH through asynchronous fs reads instead.
-		this.which = options.which ?? findExecutable;
+		this.which = options.which ?? findAcpExecutable;
 		this.now = options.now ?? Date.now;
 		this.availabilityTtlMs =
 			options.availabilityTtlMs ?? ACP_AVAILABILITY_TTL_MS;
+		this.availabilityProbeTimeoutMs =
+			options.availabilityProbeTimeoutMs ?? ACP_AVAILABILITY_PROBE_TIMEOUT_MS;
 		this.observeAvailability = createSlowOperationObserver({
 			scope: "acp registry",
 		});
@@ -297,7 +245,10 @@ export class AcpRegistry {
 			void this.cache.get().catch(() => {});
 		}
 		const registryKey = JSON.stringify(value);
-		const configKey = JSON.stringify(config.acp_agents ?? []);
+		const configKey = JSON.stringify({
+			agents: config.acp_agents ?? [],
+			discoveryCwd: config.vault.path,
+		});
 		const materialized = this.materializedCatalog;
 		if (
 			materialized &&
@@ -321,7 +272,15 @@ export class AcpRegistry {
 				const availability = await Promise.all(
 					resolved.map(({ invocation }) =>
 						invocation.command
-							? Promise.resolve(this.which(invocation.command)).then(Boolean)
+							? boundedAvailabilityProbe(
+									Promise.resolve(
+										this.which(invocation.command, {
+											cwd: config.vault.path || process.cwd(),
+											env: { ...process.env, ...invocation.env },
+										}),
+									),
+									this.availabilityProbeTimeoutMs,
+								)
 							: false,
 					),
 				);

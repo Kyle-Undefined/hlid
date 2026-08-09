@@ -63,17 +63,55 @@ export function applyAgentFormPatch(
 	claude: ClaudeForm,
 	codex: CodexForm,
 	cliproxy: CliProxyForm,
+	acpAgents: NonNullable<HlidConfig["acp_agents"]>,
 	patch: Partial<ClaudeForm>,
-): { claude: ClaudeForm; codex: CodexForm; cliproxy: CliProxyForm } {
+): {
+	claude: ClaudeForm;
+	codex: CodexForm;
+	cliproxy: CliProxyForm;
+	acpAgents: NonNullable<HlidConfig["acp_agents"]>;
+} {
 	if (patch.vaultProvider) {
 		return {
 			claude: { ...claude, vaultProvider: patch.vaultProvider },
 			codex,
 			cliproxy,
+			acpAgents,
 		};
 	}
 	if (claude.vaultProvider === "claude") {
-		return { claude: { ...claude, ...patch }, codex, cliproxy };
+		return { claude: { ...claude, ...patch }, codex, cliproxy, acpAgents };
+	}
+	if (claude.vaultProvider.startsWith("acp:")) {
+		const id = claude.vaultProvider.slice("acp:".length);
+		const existing = acpAgents.find((agent) => agent.id === id) ?? { id };
+		const updated = {
+			...existing,
+			...(patch.model !== undefined ? { model: patch.model || undefined } : {}),
+			...(patch.effort !== undefined
+				? { effort: patch.effort || undefined }
+				: {}),
+			...(patch.maxTurns !== undefined
+				? { max_turns: parsedMaxTurns(patch.maxTurns) }
+				: {}),
+			...(patch.permissionMode !== undefined
+				? { permission_mode: patch.permissionMode }
+				: {}),
+			...(patch.turnRecaps !== undefined
+				? { turn_recaps: patch.turnRecaps }
+				: {}),
+			...(patch.recapModel !== undefined
+				? { recap_model: patch.recapModel || undefined }
+				: {}),
+		};
+		return {
+			claude,
+			codex,
+			cliproxy,
+			acpAgents: acpAgents.some((agent) => agent.id === id)
+				? acpAgents.map((agent) => (agent.id === id ? updated : agent))
+				: [...acpAgents, updated],
+		};
 	}
 	const providerForm = claude.vaultProvider === "codex" ? codex : cliproxy;
 	const next = {
@@ -91,6 +129,7 @@ export function applyAgentFormPatch(
 		return {
 			claude,
 			cliproxy,
+			acpAgents,
 			codex: {
 				...codex,
 				...(patch.model !== undefined ? { model: patch.model } : {}),
@@ -119,7 +158,7 @@ export function applyAgentFormPatch(
 			},
 		};
 	}
-	return { claude, codex, cliproxy: next as CliProxyForm };
+	return { claude, codex, cliproxy: next as CliProxyForm, acpAgents };
 }
 
 function optionalNumber(value: number | undefined): string {

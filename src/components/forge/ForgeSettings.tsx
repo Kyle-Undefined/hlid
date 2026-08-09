@@ -154,6 +154,11 @@ function AgentSettings({
 	state: SettingsFormState;
 	initial: SettingsInitial;
 }) {
+	const acpAgent = state.claude.vaultProvider.startsWith("acp:")
+		? state.acpAgents.find(
+				(agent) => agent.id === state.claude.vaultProvider.slice("acp:".length),
+			)
+		: undefined;
 	const providerForm =
 		state.claude.vaultProvider === "codex"
 			? {
@@ -161,7 +166,19 @@ function AgentSettings({
 				}
 			: state.claude.vaultProvider === CLIPROXY_CODEX_PROVIDER_ID
 				? state.cliproxy
-				: state.claude;
+				: acpAgent
+					? {
+							model: acpAgent.model ?? "",
+							effort: acpAgent.effort ?? "",
+							maxTurns:
+								acpAgent.max_turns === undefined
+									? ""
+									: String(acpAgent.max_turns),
+							permissionMode: acpAgent.permission_mode ?? "default",
+							turnRecaps: acpAgent.turn_recaps ?? true,
+							recapModel: acpAgent.recap_model ?? "",
+						}
+					: state.claude;
 	const agentForm = {
 		...providerForm,
 		vaultProvider: state.claude.vaultProvider,
@@ -199,10 +216,12 @@ function AcpCatalogPage({
 	state,
 	initial,
 	onBack,
+	onRefreshProviders,
 }: {
 	state: SettingsFormState;
 	initial: SettingsInitial;
 	onBack: () => void;
+	onRefreshProviders: (providerId: string) => void | Promise<void>;
 }) {
 	return (
 		<>
@@ -221,6 +240,7 @@ function AcpCatalogPage({
 				initialCatalog={initial.acpCatalog}
 				value={state.acpAgents}
 				onChange={state.setAcpAgents}
+				onRefreshProviders={onRefreshProviders}
 			/>
 		</>
 	);
@@ -654,6 +674,7 @@ function CategoryContent({
 	onThemeTarget,
 	developerView,
 	onDeveloperView,
+	onRefreshProviders,
 }: {
 	category: Category;
 	state: SettingsFormState;
@@ -670,6 +691,7 @@ function CategoryContent({
 	onThemeTarget: (target: ThemeTarget) => void;
 	developerView: DeveloperView;
 	onDeveloperView: (view: DeveloperView) => void;
+	onRefreshProviders: (providerId: string) => void | Promise<void>;
 }) {
 	if (category === "integrations" && showApps)
 		return (
@@ -685,6 +707,7 @@ function CategoryContent({
 				state={state}
 				initial={initial}
 				onBack={() => onShowCatalog(false)}
+				onRefreshProviders={onRefreshProviders}
 			/>
 		);
 	if (category === "integrations" && showUmbod)
@@ -836,11 +859,13 @@ export function ForgeSettings({
 	state,
 	inventoryStatus = "ready",
 	onRetryInventory = () => {},
+	onRefreshProviderOptions = onRetryInventory,
 }: {
 	initial: SettingsInitial;
 	state: SettingsFormState;
 	inventoryStatus?: "loading" | "ready" | "unavailable";
-	onRetryInventory?: () => void;
+	onRetryInventory?: () => void | Promise<void>;
+	onRefreshProviderOptions?: (providerId: string) => void | Promise<void>;
 }) {
 	const [category, setCategory] = useState<Category>("overview");
 	const [search, setSearch] = useState("");
@@ -994,6 +1019,7 @@ export function ForgeSettings({
 								onThemeTarget={setThemeTarget}
 								developerView={developerView}
 								onDeveloperView={setDeveloperView}
+								onRefreshProviders={onRefreshProviderOptions}
 							/>
 						)}
 					</div>

@@ -29,6 +29,7 @@ import type { AgentProvider } from "./agentProvider";
 const mockInstances: {
 	abort: ReturnType<typeof vi.fn>;
 	suspendForRestart: ReturnType<typeof vi.fn>;
+	suspendForRestartAndWait: ReturnType<typeof vi.fn>;
 	restoreDurableTurns: ReturnType<typeof vi.fn>;
 	syncConfig: ReturnType<typeof vi.fn>;
 	retireProviderSessions: ReturnType<typeof vi.fn>;
@@ -55,6 +56,7 @@ vi.mock("./session", () => ({
 		const instance = {
 			abort: vi.fn(),
 			suspendForRestart: vi.fn(),
+			suspendForRestartAndWait: vi.fn().mockResolvedValue(undefined),
 			restoreDurableTurns: vi.fn((rows: unknown[]) => rows.length),
 			syncConfig: vi.fn().mockReturnValue(false),
 			retireProviderSessions: vi.fn().mockReturnValue(false),
@@ -710,6 +712,41 @@ describe("SessionPool.closeAll", () => {
 	it("is a no-op on empty pool (does not throw)", () => {
 		const pool = makePool();
 		expect(() => pool.closeAll()).not.toThrow();
+	});
+});
+
+describe("SessionPool.closeAllAndWait", () => {
+	it("awaits every manager before emptying the pool", async () => {
+		const pool = makePool();
+		const a = pool.create("/a", "A");
+		const b = pool.create("/b", "B");
+
+		await pool.closeAllAndWait();
+
+		expect(a.manager.suspendForRestartAndWait).toHaveBeenCalledOnce();
+		expect(b.manager.suspendForRestartAndWait).toHaveBeenCalledOnce();
+		expect(pool.getSize()).toBe(0);
+	});
+
+	it("detaches entries and blocks creation until provider cleanup settles", async () => {
+		let finishCleanup: (() => void) | undefined;
+		const pool = makePool();
+		pool.create("/a", "A");
+		const manager = mockInstances.at(-1);
+		if (!manager) throw new Error("missing manager mock");
+		manager.suspendForRestartAndWait.mockReturnValueOnce(
+			new Promise<void>((resolve) => {
+				finishCleanup = resolve;
+			}),
+		);
+
+		const draining = pool.closeAllAndWait();
+		expect(pool.getSize()).toBe(0);
+		expect(() => pool.create("/new", "New")).toThrow("pool is draining");
+		finishCleanup?.();
+		await draining;
+
+		expect(pool.create("/new", "New")).toBeTruthy();
 	});
 });
 

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -11,17 +11,53 @@ vi.mock("./obsidianCli", async (importOriginal) => ({
 	getObsidianCliStatus,
 }));
 
-import { AcpProvider, inspectAcpAgent } from "./acpProvider";
+import {
+	acpCmdShimCommand,
+	acpLaunchUsesShell,
+	assertSafeAcpCmdShimInvocation,
+} from "./acpExecutable";
+import {
+	AcpProvider,
+	type AcpProviderOptions,
+	inspectAcpAgent,
+} from "./acpProvider";
 import type { AgentEvent, AgentQueryParams } from "./agentProvider";
 
 const fixture = resolve("src/server/fixtures/fake-acp-agent.mjs");
 
-function makeProvider(): AcpProvider {
+function makeProvider(
+	overrides: Partial<AcpProviderOptions> = {},
+): AcpProvider {
 	return new AcpProvider({
 		id: "acp:fake",
 		label: "Fake ACP",
 		command: "bun",
 		args: [fixture],
+		...overrides,
+	});
+}
+
+const processTestTimeouts = {
+	preparationMs: 2_000,
+	spawnMs: 2_000,
+	initializeMs: 2_000,
+	sessionMs: 2_000,
+	configMs: 2_000,
+	modeMs: 2_000,
+	authenticationMs: 2_000,
+	forkMs: 2_000,
+	inspectionMs: 5_000,
+	interruptGraceMs: 75,
+	terminateGraceMs: 500,
+} as const;
+
+function behaviorProvider(
+	behavior: string,
+	timeouts: AcpProviderOptions["timeouts"] = processTestTimeouts,
+): AcpProvider {
+	return makeProvider({
+		env: { HLID_FAKE_ACP_BEHAVIOR: behavior },
+		timeouts,
 	});
 }
 
@@ -73,6 +109,43 @@ describe("AcpProvider — interface compliance", () => {
 			done: true,
 			value: undefined,
 		});
+	});
+
+	it("checks executable availability without a synchronous Bun global", async () => {
+		await expect(makeProvider().check()).resolves.toEqual({ available: true });
+	});
+
+	it("serves and refreshes a cached availability snapshot", async () => {
+		const provider = makeProvider({
+			initialAvailability: {
+				available: false,
+				reason: "registry snapshot",
+			},
+		});
+		expect(provider.cachedAvailability()).toEqual({
+			available: false,
+			reason: "registry snapshot",
+		});
+		await expect(provider.check()).resolves.toEqual({ available: true });
+		expect(provider.cachedAvailability()).toEqual({ available: true });
+	});
+
+	it("runs Windows command shims through a shell after path resolution", () => {
+		expect(acpLaunchUsesShell("C:\\tools\\agent.cmd", "win32")).toBe(true);
+		expect(acpLaunchUsesShell("C:\\tools\\agent.exe", "win32")).toBe(false);
+		expect(acpLaunchUsesShell("/usr/bin/agent.cmd", "linux")).toBe(false);
+		expect(() =>
+			assertSafeAcpCmdShimInvocation("C:\\tools\\agent.cmd", ["acp"]),
+		).not.toThrow();
+		expect(() =>
+			assertSafeAcpCmdShimInvocation("C:\\tools\\agent.cmd", ["acp%PATH%"]),
+		).toThrow("shell metacharacters");
+		expect(
+			acpCmdShimCommand("C:\\Program Files (x86)\\agent.cmd", [
+				"acp",
+				"two words",
+			]),
+		).toBe('"C:\\Program Files (x86)\\agent.cmd" "acp" "two words"');
 	});
 });
 
@@ -158,9 +231,60 @@ describe("AcpProvider — plan mode", () => {
 		expect(events).toContainEqual({ type: "text_delta", text: "implemented" });
 		session.cancel();
 	});
+
+	it("prefers stable mode configOptions and can return to implementation mode", async () => {
+		const provider = behaviorProvider("stable-mode");
+		const session = provider.query(params("deny", { permissionMode: "plan" }));
+		await session.send("report-mode");
+		const planned: AgentEvent[] = [];
+		for await (const event of session) {
+			planned.push(event);
+			if (event.type === "done") break;
+		}
+		expect(planned).toContainEqual({ type: "text_delta", text: "plan" });
+
+		await session.setPermissionMode?.("default");
+		await session.send("report-mode");
+		const implementation: AgentEvent[] = [];
+		for await (const event of session) {
+			implementation.push(event);
+			if (event.type === "done") break;
+		}
+		expect(implementation).toContainEqual({
+			type: "text_delta",
+			text: "code",
+		});
+		session.cancel();
+	});
+
+	it("does not mistake a model selector with planning values for mode config", async () => {
+		const provider = behaviorProvider("model-plan-option");
+		const session = provider.query(params("deny", { permissionMode: "plan" }));
+		await session.send("report-mode");
+		const events: AgentEvent[] = [];
+		for await (const event of session) {
+			events.push(event);
+			if (event.type === "done") break;
+		}
+		expect(events).toContainEqual({ type: "text_delta", text: "plan" });
+		session.cancel();
+	});
 });
 
 describe("AcpProvider — permission modes", () => {
+	it("describes only approval requests that the ACP agent sends", () => {
+		expect(makeProvider().permissionModes).toEqual([
+			expect.objectContaining({
+				value: "default",
+				desc: expect.stringContaining("agent sends"),
+			}),
+			expect.objectContaining({
+				value: "bypassPermissions",
+				desc: expect.stringContaining("sent by the ACP agent"),
+			}),
+		]);
+	});
+
 	it("selects an allow option without prompting Hlid in bypassPermissions", async () => {
 		const canUseTool = vi.fn();
 		const { events, session } = await run(
@@ -579,6 +703,133 @@ describe("AcpProvider — session lifecycle", () => {
 		session.cancel();
 	});
 
+	it("does not apply startup phase budgets as a total prompt timeout", async () => {
+		const session = behaviorProvider("", {
+			...processTestTimeouts,
+			interruptGraceMs: 40,
+		}).query(params());
+		await session.send("ignore-cancel");
+		const iterator = session[Symbol.asyncIterator]();
+		expect((await iterator.next()).value).toMatchObject({
+			type: "session_start",
+		});
+		const pending = iterator.next();
+		const early = await Promise.race([
+			pending.then(
+				() => "event",
+				() => "error",
+			),
+			new Promise<"waiting">((resolve) =>
+				setTimeout(() => resolve("waiting"), 125),
+			),
+		]);
+		expect(early).toBe("waiting");
+		await session.interrupt?.();
+		expect((await pending).value).toMatchObject({
+			type: "done",
+			stopReason: "cancelled",
+		});
+		session.cancel();
+	});
+
+	it("escalates an ignored soft cancel and reopens the resumable session", async () => {
+		const session = behaviorProvider("reject-load", processTestTimeouts).query(
+			params(),
+		);
+		await session.send("ignore-cancel");
+		const iterator = session[Symbol.asyncIterator]();
+		expect((await iterator.next()).value).toMatchObject({
+			type: "session_start",
+		});
+		await session.interrupt?.();
+		expect((await iterator.next()).value).toMatchObject({
+			type: "done",
+			stopReason: "cancelled",
+		});
+
+		await session.send("report-mode");
+		const resumed: AgentEvent[] = [];
+		for await (const event of session) {
+			resumed.push(event);
+			if (event.type === "done") break;
+		}
+		expect(resumed).toContainEqual({ type: "text_delta", text: "code" });
+		session.cancel();
+	});
+
+	it("retires a runtime after a live control timeout before the next prompt", async () => {
+		const session = behaviorProvider("hang-config", {
+			...processTestTimeouts,
+			configMs: 100,
+		}).query(params());
+		await session.send("report-mode");
+		for await (const event of session) {
+			if (event.type === "done") break;
+		}
+
+		await expect(session.setModel?.("fake-smart")).rejects.toThrow(
+			/ACP model configuration timed out after 100ms/,
+		);
+		await session.setModel?.(undefined);
+		await session.send("report-mode");
+		const recovered: AgentEvent[] = [];
+		for await (const event of session) {
+			recovered.push(event);
+			if (event.type === "done") break;
+		}
+		expect(recovered).toContainEqual({ type: "text_delta", text: "code" });
+		session.cancel();
+	});
+
+	it.each([
+		["permission request", "test", undefined],
+		["elicitation", "elicit", undefined],
+		["plan approval", "plan-update", "plan"],
+	] as const)("aborts a stale %s wait before recovering the next prompt", async (_label, message, permissionMode) => {
+		let observedSignal: AbortSignal | undefined;
+		const canUseTool = vi.fn(
+			async (
+				_toolName: string,
+				_input: unknown,
+				options: { signal: AbortSignal },
+			) => {
+				if (!observedSignal) {
+					observedSignal = options.signal;
+					return new Promise<never>((_resolve, reject) => {
+						const abort = () => reject(options.signal.reason);
+						if (options.signal.aborted) abort();
+						else
+							options.signal.addEventListener("abort", abort, { once: true });
+					});
+				}
+				return { behavior: "allow" as const };
+			},
+		);
+		const session = behaviorProvider("", processTestTimeouts).query(
+			params("allow", {
+				canUseTool,
+				...(permissionMode ? { permissionMode } : {}),
+			}),
+		);
+		await session.send(message);
+		await vi.waitFor(() => expect(canUseTool).toHaveBeenCalled());
+		await session.interrupt?.();
+		expect(observedSignal?.aborted).toBe(true);
+		for await (const event of session) {
+			if (event.type === "done") break;
+		}
+
+		await session.setPermissionMode?.("default");
+		await session.send("report-mode");
+		const recovered: AgentEvent[] = [];
+		for await (const event of session) {
+			recovered.push(event);
+			if (event.type === "done") break;
+		}
+		expect(recovered).toContainEqual({ type: "text_delta", text: "code" });
+		session.cancel();
+	});
+
 	it("applies ACP model and thought-level configuration initially and live", async () => {
 		const session = makeProvider().query(
 			params("allow", { model: "fake-smart", effort: "high" }),
@@ -604,6 +855,27 @@ describe("AcpProvider — session lifecycle", () => {
 		expect(updated).toContainEqual({
 			type: "text_delta",
 			text: "fake-fast/low",
+		});
+		session.cancel();
+	});
+
+	it("restores the initially advertised model when live selection is cleared", async () => {
+		const session = makeProvider().query(params());
+		await session.send("report-config");
+		for await (const event of session) {
+			if (event.type === "done") break;
+		}
+		await session.setModel?.("fake-smart");
+		await session.setModel?.(undefined);
+		await session.send("report-config");
+		const events: AgentEvent[] = [];
+		for await (const event of session) {
+			events.push(event);
+			if (event.type === "done") break;
+		}
+		expect(events).toContainEqual({
+			type: "text_delta",
+			text: "fake-fast/medium",
 		});
 		session.cancel();
 	});
@@ -709,6 +981,100 @@ describe("AcpProvider — MCP status", () => {
 		});
 		session.cancel();
 	});
+
+	it("omits unadvertised additional directories and remote MCP transports", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "hlid-acp-capabilities-"));
+		try {
+			writeFileSync(
+				join(cwd, ".mcp.json"),
+				JSON.stringify({
+					mcpServers: {
+						local: { command: "bun", args: ["server.ts"] },
+						http: { type: "http", url: "https://example.com/mcp" },
+						sse: { type: "sse", url: "https://example.com/events" },
+					},
+				}),
+			);
+			for (const sessionId of [undefined, "strict-resumed-session"]) {
+				const session = behaviorProvider("strict-capabilities").query(
+					params("allow", {
+						cwd,
+						sessionId,
+						additionalDirectories: [join(cwd, "extra")],
+					}),
+				);
+				await session.send("report-session-inputs");
+				const events: AgentEvent[] = [];
+				for await (const event of session) {
+					events.push(event);
+					if (event.type === "done") break;
+				}
+				expect(events).toContainEqual({
+					type: "text_delta",
+					text: JSON.stringify({
+						additionalDirectories: [],
+						mcpTransports: ["stdio", "stdio"],
+					}),
+				});
+				expect(await session.mcpServerStatus?.()).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({ name: "local", status: "pending" }),
+						expect.objectContaining({
+							name: "http",
+							status: "failed",
+							error: expect.stringContaining("HTTP MCP transport"),
+						}),
+						expect.objectContaining({
+							name: "sse",
+							status: "failed",
+							error: expect.stringContaining("SSE MCP transport"),
+						}),
+					]),
+				);
+				session.cancel();
+			}
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("passes advertised additional directories and remote MCP transports", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "hlid-acp-capabilities-"));
+		const additionalDirectory = join(cwd, "extra");
+		try {
+			writeFileSync(
+				join(cwd, ".mcp.json"),
+				JSON.stringify({
+					mcpServers: {
+						http: { type: "http", url: "https://example.com/mcp" },
+						sse: { type: "sse", url: "https://example.com/events" },
+					},
+				}),
+			);
+			const session = makeProvider().query(
+				params("allow", {
+					cwd,
+					additionalDirectories: [additionalDirectory],
+				}),
+			);
+			await session.send("report-session-inputs");
+			const events: AgentEvent[] = [];
+			for await (const event of session) {
+				events.push(event);
+				if (event.type === "done") break;
+			}
+			expect(events).toContainEqual({
+				type: "text_delta",
+				text: JSON.stringify({
+					additionalDirectories: [additionalDirectory],
+					mcpTransports: ["stdio", "http", "sse"],
+				}),
+			});
+			session.cancel();
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
 });
 
 describe("AcpProvider — model catalog", () => {
@@ -725,6 +1091,47 @@ describe("AcpProvider — model catalog", () => {
 			}),
 			expect.objectContaining({ value: "fake-smart", label: "Fake Smart" }),
 		]);
+	});
+
+	it("uses discoveryCwd for provider-owned metadata sessions", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "hlid-acp-discovery-"));
+		try {
+			const models = await makeProvider({
+				discoveryCwd: cwd,
+				env: { HLID_FAKE_ACP_BEHAVIOR: "cwd-model" },
+			}).listModels();
+			expect(models[0]).toMatchObject({
+				value: cwd,
+				label: "Discovery CWD",
+			});
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("coalesces metadata discovery and deletes its throwaway session", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "hlid-acp-metadata-"));
+		const initializeMarker = join(cwd, "initialize.log");
+		const deleteMarker = join(cwd, "delete.log");
+		try {
+			const provider = makeProvider({
+				discoveryCwd: cwd,
+				env: {
+					HLID_FAKE_ACP_INITIALIZE_MARKER: initializeMarker,
+					HLID_FAKE_ACP_DELETE_MARKER: deleteMarker,
+				},
+			});
+			const [models, forkCapability] = await Promise.all([
+				provider.listModels(),
+				provider.resolveForkCapability(),
+			]);
+			expect(models).not.toHaveLength(0);
+			expect(forkCapability).toMatchObject({ kind: "exact" });
+			expect(readFileSync(initializeMarker, "utf8")).toBe("initialize\n");
+			expect(readFileSync(deleteMarker, "utf8")).toBe("fake-session\n");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
 	});
 });
 
@@ -755,6 +1162,116 @@ describe("AcpProvider — native session forking", () => {
 });
 
 describe("AcpProvider — error handling", () => {
+	it.each([
+		[
+			"initialize",
+			"hang-initialize",
+			{},
+			"fake initialize stalled",
+			"initializeMs",
+			500,
+		],
+		[
+			"session creation",
+			"hang-new",
+			{},
+			"fake session creation stalled",
+			"sessionMs",
+			100,
+		],
+		[
+			"session load",
+			"hang-load",
+			{ sessionId: "resumed-session" },
+			"fake session load stalled",
+			"sessionMs",
+			100,
+		],
+		[
+			"model configuration",
+			"hang-config",
+			{ model: "fake-smart" },
+			"fake config option stalled",
+			"configMs",
+			100,
+		],
+		[
+			"legacy session mode configuration",
+			"hang-mode",
+			{ permissionMode: "plan" },
+			"fake legacy mode configuration stalled",
+			"modeMs",
+			100,
+		],
+	])("bounds %s and includes agent stderr", async (phase, behavior, queryOverrides, stderr, timeoutField, timeoutMs) => {
+		const session = behaviorProvider(behavior, {
+			...processTestTimeouts,
+			[timeoutField]: timeoutMs,
+		}).query(params("allow", queryOverrides as Partial<AgentQueryParams>));
+		await expect(session.send("test")).rejects.toThrow(
+			new RegExp(
+				`ACP ${phase} timed out after ${timeoutMs}ms[\\s\\S]*${stderr}`,
+			),
+		);
+		session.cancel();
+	});
+
+	it("hard cancellation settles initialization and tears down its process", async () => {
+		const session = behaviorProvider("hang-initialize", {
+			...processTestTimeouts,
+			initializeMs: 10_000,
+		}).query(params());
+		const pending = session.send("test");
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		await session.cancelAndWait?.();
+		await expect(pending).rejects.toThrow(/ACP initialize cancelled/);
+		expect(await session[Symbol.asyncIterator]().next()).toEqual({
+			done: true,
+			value: undefined,
+		});
+	});
+
+	it("bounds inspection initialization, reports stderr, and cleans up", async () => {
+		await expect(
+			inspectAcpAgent(
+				behaviorProvider("hang-initialize", {
+					...processTestTimeouts,
+					initializeMs: 500,
+				}).options,
+			),
+		).rejects.toThrow(
+			/ACP initialize timed out after 500ms[\s\S]*fake initialize stalled/,
+		);
+	});
+
+	it("bounds out-of-band authentication independently", async () => {
+		await expect(
+			inspectAcpAgent(
+				behaviorProvider("hang-authenticate", {
+					...processTestTimeouts,
+					authenticationMs: 100,
+				}).options,
+				"fake-login",
+			),
+		).rejects.toThrow(
+			/ACP authentication timed out after 100ms[\s\S]*fake authentication stalled/,
+		);
+	});
+
+	it("bounds native session forks and cleans up inspection processes", async () => {
+		await expect(
+			behaviorProvider("hang-fork", {
+				...processTestTimeouts,
+				forkMs: 100,
+			}).forkSession({
+				sessionId: "fake-session",
+				cwd: process.cwd(),
+			}),
+		).rejects.toThrow(
+			/ACP session fork timed out after 100ms[\s\S]*fake session fork stalled/,
+		);
+	});
+
 	it("propagates ACP transport errors from send", async () => {
 		const session = makeProvider().query(params());
 		await session.send("transport-error");

@@ -4,10 +4,12 @@ import type { AcpAuthMethod, AcpCatalogItem } from "#/lib/serverFns/acp";
 export function AcpAuthMethodRow({
 	method,
 	item,
+	disabled = false,
 	onAuthenticate,
 }: {
 	method: AcpAuthMethod;
 	item: AcpCatalogItem;
+	disabled?: boolean;
 	onAuthenticate: (methodId: string) => void;
 }) {
 	return (
@@ -26,7 +28,7 @@ export function AcpAuthMethodRow({
 			)}
 			{method.type === "terminal" && (
 				<div className="break-all font-mono text-[10px]">
-					Run: {item.command} {(method.args ?? []).join(" ")}
+					Credential command: {item.command} {(method.args ?? []).join(" ")}
 				</div>
 			)}
 			{method.link && (
@@ -42,10 +44,11 @@ export function AcpAuthMethodRow({
 			{!method.type && (
 				<button
 					type="button"
+					disabled={disabled}
 					onClick={() => onAuthenticate(method.id)}
 					className="text-primary uppercase"
 				>
-					Authenticate
+					Add or replace credentials
 				</button>
 			)}
 		</div>
