@@ -44,6 +44,7 @@ function makeConfig(overrides: Partial<HlidConfig> = {}): HlidConfig {
 			effort: "high",
 			permission_mode: "default",
 			turn_recaps: true,
+			agent_progress_summaries: false,
 			interactive_mode: false,
 			peer_inbox: false,
 		},
@@ -420,6 +421,7 @@ describe("writeConfig — claude section", () => {
 					effort: "high",
 					permission_mode: "default",
 					turn_recaps: false,
+					agent_progress_summaries: false,
 					interactive_mode: false,
 					peer_inbox: false,
 				},
@@ -438,6 +440,20 @@ describe("writeConfig — claude section", () => {
 		);
 	});
 
+	it("writes Claude AI subagent summaries only after opt-in", () => {
+		expect(serializeConfig(makeConfig())).not.toContain(
+			"agent_progress_summaries",
+		);
+		const config = HlidConfigSchema.parse({
+			claude: { agent_progress_summaries: true },
+		});
+		const serialized = serializeConfig(config);
+		expect(serialized).toContain("agent_progress_summaries = true");
+		expect(
+			HlidConfigSchema.parse(parse(serialized)).claude.agent_progress_summaries,
+		).toBe(true);
+	});
+
 	it("writes max_turns when set", () => {
 		writeConfig(
 			makeConfig({
@@ -446,6 +462,7 @@ describe("writeConfig — claude section", () => {
 					effort: "low",
 					permission_mode: "default",
 					turn_recaps: true,
+					agent_progress_summaries: false,
 					interactive_mode: false,
 					peer_inbox: false,
 					max_turns: 10,
@@ -468,6 +485,7 @@ describe("writeConfig — claude section", () => {
 					effort: "high",
 					permission_mode: "default",
 					turn_recaps: true,
+					agent_progress_summaries: false,
 					interactive_mode: false,
 					peer_inbox: false,
 					recap_model: "claude-sonnet-4-6",

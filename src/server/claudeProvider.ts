@@ -5337,6 +5337,11 @@ export class ClaudeProvider implements AgentProvider {
 								extraArgs: { "replay-user-messages": null },
 							}),
 					...(params.persistSession === false ? { persistSession: false } : {}),
+					...(this.providerId === "claude" && params.claude
+						? {
+								agentProgressSummaries: params.claude.agentProgressSummaries,
+							}
+						: {}),
 					// biome-ignore lint/suspicious/noExplicitAny: SDK canUseTool type changed between versions
 					canUseTool: params.canUseTool as any,
 				},

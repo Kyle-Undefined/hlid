@@ -553,6 +553,179 @@ describe("SessionManager — syncConfig", () => {
 		});
 	});
 
+	it("cold-resumes an idle native Claude session when AI subagent summaries change", async () => {
+		const queryParams: AgentQueryParams[] = [];
+		const cancels: Array<ReturnType<typeof vi.fn>> = [];
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(params): AgentSession {
+				queryParams.push(params);
+				const cancel = vi.fn();
+				cancels.push(cancel);
+				const events = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "claude-thread-1" };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => events[Symbol.asyncIterator](),
+					cancel,
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		};
+		const config = makeConfig();
+		const sm = new SessionManager(config, makeProviders(provider));
+
+		await sm.runQuery("first", () => {}, {
+			sessionId: "claude-progress-config-session",
+		});
+		expect(queryParams[0]?.claude).toEqual({
+			agentProgressSummaries: false,
+		});
+
+		const enabled = structuredClone(config);
+		enabled.claude.agent_progress_summaries = true;
+		sm.syncConfig(enabled);
+
+		expect(cancels[0]).toHaveBeenCalledOnce();
+		await sm.runQuery("second", () => {}, {
+			sessionId: "claude-progress-config-session",
+		});
+		expect(queryParams[1]).toMatchObject({
+			sessionId: "claude-thread-1",
+			claude: { agentProgressSummaries: true },
+		});
+	});
+
+	it("retires native Claude between an active turn and an already-queued turn", async () => {
+		let releaseFirstTurn = () => {};
+		const firstTurnRelease = new Promise<void>((resolve) => {
+			releaseFirstTurn = resolve;
+		});
+		let markFirstTurnActive = () => {};
+		const firstTurnActive = new Promise<void>((resolve) => {
+			markFirstTurnActive = resolve;
+		});
+		const queryParams: AgentQueryParams[] = [];
+		const cancels: Array<ReturnType<typeof vi.fn>> = [];
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(params): AgentSession {
+				queryParams.push(params);
+				const queryIndex = queryParams.length;
+				const cancel = vi.fn();
+				cancels.push(cancel);
+				const events = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "claude-thread-1" };
+					if (queryIndex === 1) {
+						markFirstTurnActive();
+						await firstTurnRelease;
+					}
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => events[Symbol.asyncIterator](),
+					cancel,
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		};
+		const config = makeConfig();
+		const sm = new SessionManager(config, makeProviders(provider));
+		const firstTurn = sm.runQuery("first", () => {}, {
+			sessionId: "claude-progress-active-session",
+		});
+		await firstTurnActive;
+		const secondTurn = sm.runQuery("second", () => {}, {
+			sessionId: "claude-progress-active-session",
+		});
+
+		const enabled = structuredClone(config);
+		enabled.claude.agent_progress_summaries = true;
+		sm.syncConfig(enabled);
+		expect(cancels[0]).not.toHaveBeenCalled();
+		expect(queryParams).toHaveLength(1);
+
+		releaseFirstTurn();
+		await firstTurn;
+		await secondTurn;
+		expect(cancels[0]).toHaveBeenCalledOnce();
+		expect(queryParams[1]).toMatchObject({
+			sessionId: "claude-thread-1",
+			claude: { agentProgressSummaries: true },
+		});
+	});
+
+	it("keeps native Claude alive until provider background activity settles", async () => {
+		const running = {
+			providerId: "claude",
+			providerSessionId: "claude-thread-1",
+			activityId: "subagent-1",
+			kind: "agent" as const,
+			status: "running" as const,
+			startedAtMs: 100,
+			updatedAtMs: 100,
+			capabilities: { clean: true },
+		};
+		let observed = [running];
+		const cancel = vi.fn();
+		const listBackgroundActivities = vi.fn(async () => observed);
+		const controlBackgroundActivity = vi.fn(async () => {
+			observed = [];
+		});
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(): AgentSession {
+				const events = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "claude-thread-1" };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => events[Symbol.asyncIterator](),
+					cancel,
+					send: vi.fn().mockResolvedValue(undefined),
+					listBackgroundActivities,
+					controlBackgroundActivity,
+				};
+			},
+		};
+		const config = makeConfig();
+		const sm = new SessionManager(config, makeProviders(provider));
+		await sm.runQuery("first", () => {}, {
+			sessionId: "claude-progress-background-session",
+		});
+		await vi.waitFor(() => {
+			expect(sm.getBackgroundActivities()).toEqual([running]);
+		});
+
+		const enabled = structuredClone(config);
+		enabled.claude.agent_progress_summaries = true;
+		sm.syncConfig(enabled);
+		expect(cancel).not.toHaveBeenCalled();
+
+		await sm.controlProviderBackgroundActivity({ action: "clean" });
+		expect(cancel).toHaveBeenCalledOnce();
+		expect(sm.getBackgroundActivities()).toEqual([]);
+	});
+
 	it("cold-resumes an idle Codex thread after realtime preview is enabled", async () => {
 		const queryParams: AgentQueryParams[] = [];
 		const cancels: Array<ReturnType<typeof vi.fn>> = [];
@@ -597,6 +770,7 @@ describe("SessionManager — syncConfig", () => {
 			sessionId: "realtime-config-session",
 		});
 		expect(queryParams[0]).toMatchObject({ codexRealtimeEnabled: false });
+		expect(queryParams[0]).not.toHaveProperty("claude");
 
 		const enabled = structuredClone(config);
 		enabled.voice.codex_live_mode = true;

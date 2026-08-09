@@ -2884,8 +2884,10 @@ describe("SessionManager — provider resolution", () => {
 
 	it("uses ACP-agent defaults without inheriting Claude settings", async () => {
 		const { provider, captured } = makeCaptureProvider("acp:opencode");
+		const base = makeConfig();
 		const config = {
-			...makeConfig(),
+			...base,
+			claude: { ...base.claude, agent_progress_summaries: true },
 			vault_provider: "acp:opencode",
 			acp_agents: [
 				{
@@ -2907,6 +2909,7 @@ describe("SessionManager — provider resolution", () => {
 			permissionMode: "bypassPermissions",
 		});
 		expect(captured.params).not.toHaveProperty("maxTurns");
+		expect(captured.params).not.toHaveProperty("claude");
 	});
 
 	it("lets an ACP agent choose defaults when none are configured", async () => {

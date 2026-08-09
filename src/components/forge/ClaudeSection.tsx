@@ -15,6 +15,8 @@ export type ClaudeForm = {
 	turnRecaps: boolean;
 	recapModel: string;
 	vaultProvider: string;
+	/** Ask native Claude SDK subagents to generate periodic AI status text. */
+	agentProgressSummaries: boolean;
 	/** Use Claude CLI directly in a terminal instead of the Agent SDK. */
 	interactiveMode: boolean;
 	/** Hold inbound Claude peer messages for explicit review in Raven. */
@@ -579,6 +581,14 @@ export function ClaudeSection({
 					/>
 					{isClaude && (
 						<>
+							<CheckboxField
+								label="AI subagent progress summaries"
+								hint="About every 30 seconds, Claude makes an extra model call for each running SDK subagent to write a short status. This adds token usage and may increase cost."
+								checked={claude.agentProgressSummaries}
+								onChange={(agentProgressSummaries) =>
+									onChange({ agentProgressSummaries })
+								}
+							/>
 							<CheckboxField
 								label="Interactive mode"
 								hint='to not go against your "programmatic" usage, if you desire'

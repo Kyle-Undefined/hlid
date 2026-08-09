@@ -462,6 +462,7 @@ describe("SessionManager — native Codex realtime", () => {
 			persistSession: false,
 			sandboxModeOverride: "read-only",
 		});
+		expect(query.mock.calls[1]?.[0]).not.toHaveProperty("claude");
 		expect(query.mock.calls[1]?.[0].sessionId).toBeUndefined();
 		expect(appendRealtimeSpeech).toHaveBeenCalledWith("Read this");
 		expect(ordinaryCancel).not.toHaveBeenCalled();

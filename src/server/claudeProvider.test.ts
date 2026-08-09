@@ -7752,6 +7752,54 @@ describe("ClaudeProvider — persistSession", () => {
 	});
 });
 
+describe("ClaudeProvider — AI subagent progress summaries", () => {
+	it("passes the namespaced boolean only to ordinary native Claude queries", async () => {
+		const capturedOptions: Array<Record<string, unknown>> = [];
+		vi.mocked(query).mockImplementation(
+			({ options }: { prompt: unknown; options?: Record<string, unknown> }) => {
+				capturedOptions.push(options ?? {});
+				return sdkGen([
+					{
+						type: "result",
+						subtype: "success",
+						total_cost_usd: 0,
+						num_turns: 1,
+						duration_ms: 1,
+						usage: { input_tokens: 1, output_tokens: 1 },
+					},
+				]);
+			},
+		);
+
+		const direct = new ClaudeProvider();
+		for (const enabled of [true, false]) {
+			for await (const _ of direct.query(
+				baseParams({ claude: { agentProgressSummaries: enabled } }),
+			)) {
+				// Drain the ordinary query.
+			}
+		}
+		for await (const _ of direct.query(baseParams())) {
+			// Direct provider calls without Hlid's namespace preserve SDK defaults.
+		}
+
+		const cliProxy = new CliProxyCodexProvider({
+			base_url: "http://127.0.0.1:8317",
+			api_key: "test-key",
+		});
+		for await (const _ of cliProxy.query(
+			baseParams({ claude: { agentProgressSummaries: true } }),
+		)) {
+			// CLIProxy uses Claude's transport but is not native Claude.
+		}
+
+		expect(capturedOptions[0]).toHaveProperty("agentProgressSummaries", true);
+		expect(capturedOptions[1]).toHaveProperty("agentProgressSummaries", false);
+		expect(capturedOptions[2]).not.toHaveProperty("agentProgressSummaries");
+		expect(capturedOptions[3]).not.toHaveProperty("agentProgressSummaries");
+	});
+});
+
 // ── providerId + proxyConfig ───────────────────────────────────────────────────
 
 describe("ClaudeProvider — providerId + proxyConfig", () => {
@@ -7840,6 +7888,8 @@ describe("ClaudeProvider — providerId + proxyConfig", () => {
 		let liveEnv: Record<string, string | undefined> | undefined;
 		let modelProbeEnv: Record<string, string | undefined> | undefined;
 		let skillProbeEnv: Record<string, string | undefined> | undefined;
+		let modelProbeOptions: Record<string, unknown> | undefined;
+		let skillProbeOptions: Record<string, unknown> | undefined;
 
 		vi.mocked(query)
 			.mockImplementationOnce(({ options }) => {
@@ -7856,12 +7906,14 @@ describe("ClaudeProvider — providerId + proxyConfig", () => {
 				]);
 			})
 			.mockImplementationOnce(({ options }) => {
+				modelProbeOptions = options;
 				modelProbeEnv = options?.env;
 				const gen = sdkGen([]);
 				gen.supportedModels = vi.fn().mockResolvedValue([]);
 				return gen;
 			})
 			.mockImplementationOnce(({ options }) => {
+				skillProbeOptions = options;
 				skillProbeEnv = options?.env;
 				const gen = sdkGen([]);
 				gen.supportedCommands = vi.fn().mockResolvedValue([]);
@@ -7887,6 +7939,8 @@ describe("ClaudeProvider — providerId + proxyConfig", () => {
 		expect(skillProbeEnv).not.toHaveProperty(
 			"CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS",
 		);
+		expect(modelProbeOptions).not.toHaveProperty("agentProgressSummaries");
+		expect(skillProbeOptions).not.toHaveProperty("agentProgressSummaries");
 	});
 
 	it("has providerId = 'claude'", () => {

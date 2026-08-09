@@ -67,7 +67,10 @@ describe("first-run configuration policy", () => {
 				path: "/vault",
 				projects: "10 Projects",
 			},
-			claude: { permission_mode: "acceptEdits" },
+			claude: {
+				permission_mode: "acceptEdits",
+				agent_progress_summaries: false,
+			},
 			ui: { theme: "dark" },
 			attachments: { max_bytes: 25 * 1024 * 1024 },
 			voice: { enabled: false },

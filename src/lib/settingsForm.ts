@@ -191,6 +191,7 @@ function createClaudeForm(initial: HlidConfig): ClaudeForm {
 		turnRecaps: initial.claude.turn_recaps ?? true,
 		recapModel: initial.claude.recap_model ?? "",
 		vaultProvider: initial.vault_provider ?? "claude",
+		agentProgressSummaries: initial.claude.agent_progress_summaries ?? false,
 		interactiveMode: initial.claude.interactive_mode ?? false,
 		peerInbox: initial.claude.peer_inbox ?? false,
 	};
@@ -384,6 +385,7 @@ export function buildSettingsConfig(
 			permission_mode: forms.claude.permissionMode,
 			turn_recaps: forms.claude.turnRecaps,
 			recap_model: forms.claude.recapModel || undefined,
+			agent_progress_summaries: forms.claude.agentProgressSummaries,
 			interactive_mode: forms.claude.interactiveMode,
 			peer_inbox: forms.claude.peerInbox,
 		},

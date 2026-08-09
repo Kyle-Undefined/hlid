@@ -179,6 +179,7 @@ function AgentSettings({
 	const agentForm = {
 		...providerForm,
 		vaultProvider: state.claude.vaultProvider,
+		agentProgressSummaries: state.claude.agentProgressSummaries,
 		interactiveMode: state.claude.interactiveMode,
 		peerInbox: state.claude.peerInbox,
 	};

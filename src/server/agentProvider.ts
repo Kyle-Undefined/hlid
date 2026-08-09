@@ -814,6 +814,10 @@ export type AgentQueryParams = {
 	onProviderInitiatedTurn?: (turn: ProviderInitiatedTurn) => Promise<boolean>;
 	/** Claude-only inbound peer policy. Hlid never enables automatic acceptance. */
 	claudeCrossSessionInbound?: "refuse" | "hold";
+	/** Claude Agent SDK initialization options for an ordinary streaming chat. */
+	claude?: {
+		agentProgressSummaries: boolean;
+	};
 	/** Explicitly enable Codex's under-development realtime conversation RPCs. */
 	codexRealtimeEnabled?: boolean;
 };

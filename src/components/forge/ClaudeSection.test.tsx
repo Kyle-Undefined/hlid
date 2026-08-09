@@ -51,6 +51,7 @@ function makeClaude(overrides: Partial<ClaudeForm> = {}): ClaudeForm {
 		turnRecaps: true,
 		recapModel: "",
 		vaultProvider: "claude",
+		agentProgressSummaries: false,
 		interactiveMode: false,
 		peerInbox: false,
 		...overrides,
@@ -198,6 +199,44 @@ describe("Vault Agent and Computer Use model/effort interplay", () => {
 		);
 		expect(
 			screen.queryByRole("checkbox", { name: "Claude peer inbox" }),
+		).toBeNull();
+	});
+
+	it("offers costed AI subagent progress summaries only for native Claude", () => {
+		const onChange = vi.fn();
+		const { rerender } = render(
+			<ClaudeSection
+				claude={makeClaude()}
+				onChange={onChange}
+				providers={[provider]}
+			/>,
+		);
+
+		const summaries = screen.getByRole("checkbox", {
+			name: "AI subagent progress summaries",
+		}) as HTMLInputElement;
+		expect(summaries.checked).toBe(false);
+		expect(
+			screen.getByText(
+				"About every 30 seconds, Claude makes an extra model call for each running SDK subagent to write a short status. This adds token usage and may increase cost.",
+			),
+		).not.toBeNull();
+		fireEvent.click(summaries);
+		expect(onChange).toHaveBeenCalledWith({
+			agentProgressSummaries: true,
+		});
+
+		rerender(
+			<ClaudeSection
+				claude={makeClaude({ vaultProvider: "codex" })}
+				onChange={onChange}
+				providers={[{ ...provider, id: "codex" }]}
+			/>,
+		);
+		expect(
+			screen.queryByRole("checkbox", {
+				name: "AI subagent progress summaries",
+			}),
 		).toBeNull();
 	});
 

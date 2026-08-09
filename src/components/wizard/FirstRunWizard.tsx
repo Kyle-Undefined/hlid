@@ -84,6 +84,7 @@ export function buildFirstRunConfig(s: StructureState): HlidConfig {
 			permission_mode:
 				s.vaultProvider === "claude" ? selectedPermissionMode : "default",
 			turn_recaps: true,
+			agent_progress_summaries: false,
 			interactive_mode: false,
 			peer_inbox: false,
 		},

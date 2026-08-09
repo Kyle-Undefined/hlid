@@ -88,6 +88,7 @@ describe("Claude startup metadata cache", () => {
 			}),
 		);
 		expect(call?.options?.env).toBeUndefined();
+		expect(call?.options).not.toHaveProperty("agentProgressSummaries");
 		expect(call?.options?.abortController?.signal.aborted).toBe(true);
 		expect(getClaudeWarmupSnapshot("/tmp/project")).toEqual(
 			expect.objectContaining({

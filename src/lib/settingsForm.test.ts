@@ -16,6 +16,7 @@ describe("settings form conversion", () => {
 			},
 			claude: {
 				max_turns: 12,
+				agent_progress_summaries: true,
 				interactive_mode: true,
 				peer_inbox: true,
 			},
@@ -33,6 +34,7 @@ describe("settings form conversion", () => {
 		expect(forms.claude).toMatchObject({
 			maxTurns: "12",
 			vaultProvider: "codex",
+			agentProgressSummaries: true,
 			interactiveMode: true,
 			peerInbox: true,
 		});
@@ -65,6 +67,19 @@ describe("settings form conversion", () => {
 		expect(buildSettingsConfig(initial, forms, false).claude.peer_inbox).toBe(
 			true,
 		);
+	});
+
+	it("defaults Claude AI subagent summaries off and persists an explicit opt-in", () => {
+		const initial = HlidConfigSchema.parse({});
+		expect(initial.claude.agent_progress_summaries).toBe(false);
+		const forms = createSettingsForms(initial);
+		expect(forms.claude.agentProgressSummaries).toBe(false);
+
+		forms.claude = { ...forms.claude, agentProgressSummaries: true };
+		expect(
+			buildSettingsConfig(initial, forms, false).claude
+				.agent_progress_summaries,
+		).toBe(true);
 	});
 
 	it("round-trips an empty workspace Obsidian template selection", () => {

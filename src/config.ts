@@ -93,6 +93,8 @@ const ClaudeSchema = z.object({
 		.default("default"),
 	turn_recaps: z.boolean().default(true),
 	recap_model: z.string().optional(),
+	/** Ask Claude to periodically summarize each running SDK subagent. */
+	agent_progress_summaries: z.boolean().default(false),
 	/** When true, Raven spawns the Claude CLI in a PTY instead of using the SDK. */
 	interactive_mode: z.boolean().default(false),
 	/** When true, Raven can hold inbound Claude peer messages for explicit review. */
@@ -426,6 +428,7 @@ export const HlidConfigSchema = z.object({
 		effort: "high" as const,
 		permission_mode: "default" as const,
 		turn_recaps: true,
+		agent_progress_summaries: false,
 		interactive_mode: false,
 		peer_inbox: false,
 	})),

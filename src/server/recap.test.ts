@@ -597,6 +597,7 @@ describe("generateTurnRecap — usage accounting", () => {
 		});
 
 		expect(capturedParams?.persistSession).toBe(false);
+		expect(capturedParams).not.toHaveProperty("claude");
 		expect(mockRecordQuery).toHaveBeenCalledTimes(1);
 		expect(mockRecordQuery).toHaveBeenCalledWith(
 			"sess-usage",

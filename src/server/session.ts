@@ -896,6 +896,7 @@ function buildAgentQueryParams(options: {
 	onGoalChange?: AgentQueryParams["onGoalChange"];
 	onProviderInitiatedTurn?: AgentQueryParams["onProviderInitiatedTurn"];
 	claudeCrossSessionInbound?: AgentQueryParams["claudeCrossSessionInbound"];
+	claude?: AgentQueryParams["claude"];
 	canUseTool: CanUseTool;
 	beforeToolUse: AgentQueryParams["beforeToolUse"];
 	policyEnforced: boolean;
@@ -965,6 +966,7 @@ function buildAgentQueryParams(options: {
 		onGoalChange: options.onGoalChange,
 		onProviderInitiatedTurn: options.onProviderInitiatedTurn,
 		claudeCrossSessionInbound: options.claudeCrossSessionInbound,
+		...(options.claude ? { claude: options.claude } : {}),
 		codexRealtimeEnabled: options.codexRealtimeEnabled,
 		settingSources: ["user", "project", "local"],
 		canUseTool: options.canUseTool,
@@ -1374,6 +1376,10 @@ export class SessionManager {
 	private maxTurns: number | undefined;
 	/** Explicit opt-in; live Claude sessions hold peers for Raven instead of accepting. */
 	private claudePeerInbox = false;
+	/** Claude SDK initialization flag; changing it requires a fresh native Query. */
+	private claudeAgentProgressSummaries = false;
+	/** Retire only after the current turn and any SDK background subagents settle. */
+	private restartClaudeRuntimeForAgentProgressSummaries = false;
 	private vaultPath!: string;
 	private vaultName!: string;
 	private permissionMode!: PermissionMode;
@@ -1749,6 +1755,8 @@ export class SessionManager {
 			this.effort = configuredDefaults.effort;
 		this.maxTurns = configuredDefaults.maxTurns;
 		this.claudePeerInbox = config.claude.peer_inbox ?? false;
+		this.claudeAgentProgressSummaries =
+			config.claude.agent_progress_summaries ?? false;
 		if (!preserveSessionOverrides || this.permissionModeOverride === null)
 			this.permissionMode = configuredDefaults.permissionMode;
 		this.turnRecaps = configuredDefaults.turnRecaps;
@@ -1796,6 +1804,7 @@ export class SessionManager {
 		this.historyResumeMode = "none";
 		this.providerHandoffPending = false;
 		this.operatingBriefProviderKey = null;
+		this.restartClaudeRuntimeForAgentProgressSummaries = false;
 		this.messageSeq = 0;
 		this.sessionAllowedTools.clear();
 		db.clearCurrentSessionId().catch((e) =>
@@ -1893,6 +1902,55 @@ export class SessionManager {
 		this.agentSessionKey = null;
 	}
 
+	private hasRunningProviderBackgroundActivities(): boolean {
+		return this.backgroundActivities.some(
+			(activity) => activity.status === "running",
+		);
+	}
+
+	private retireClaudeProgressSummaryRuntimeIfSafe(
+		options: { betweenTurns?: boolean } = {},
+	): boolean {
+		if (!this.restartClaudeRuntimeForAgentProgressSummaries) return false;
+		const activeProviderId = this.agentSessionKey?.split("|", 1)[0];
+		if (activeProviderId !== "claude" || !this.agentSession) {
+			this.restartClaudeRuntimeForAgentProgressSummaries = false;
+			return false;
+		}
+		if (
+			(this.state === "running" && !options.betweenTurns) ||
+			this.hasRunningProviderBackgroundActivities()
+		) {
+			return false;
+		}
+		const retiredSession = this.agentSession;
+		this.agentSession = null;
+		this.agentSessionKey = null;
+		this.restartClaudeRuntimeForAgentProgressSummaries = false;
+		try {
+			this.stopBackgroundActivityObserver();
+		} catch {
+			// Runtime ownership is already retired; observer cleanup is best effort.
+		}
+		try {
+			retiredSession.cancel();
+		} catch {
+			// A throwing transport cannot restore the stale construction-time option.
+		}
+		this.resetEffectiveApprovalsReviewer();
+		return true;
+	}
+
+	private reconcileClaudeAgentProgressSummaries(
+		previousEnabled: boolean,
+	): void {
+		if (previousEnabled === this.claudeAgentProgressSummaries) return;
+		const activeProviderId = this.agentSessionKey?.split("|", 1)[0];
+		if (activeProviderId !== "claude" || !this.agentSession) return;
+		this.restartClaudeRuntimeForAgentProgressSummaries = true;
+		this.retireClaudeProgressSummaryRuntimeIfSafe();
+	}
+
 	/**
 	 * Refresh only the process-identity settings required to start Codex realtime.
 	 * Unlike syncConfig, this deliberately avoids rebuilding filesystem-backed
@@ -1920,6 +1978,8 @@ export class SessionManager {
 	syncConfig(config: HlidConfig): boolean {
 		const previous = this.getStatus();
 		const previousClaudePeerInbox = this.claudePeerInbox;
+		const previousClaudeAgentProgressSummaries =
+			this.claudeAgentProgressSummaries;
 		const previousCodexRealtimeEnabled = this.codexRealtimeEnabled;
 		const previousCodexExecutable = this.codexExecutable;
 		const previousApprovalReviewContext: ProviderApprovalReviewContext = {
@@ -1966,6 +2026,9 @@ export class SessionManager {
 			previousCodexExecutable,
 		);
 		this.reconcileClaudePeerInbox(previousClaudePeerInbox);
+		this.reconcileClaudeAgentProgressSummaries(
+			previousClaudeAgentProgressSummaries,
+		);
 		void this.agentSession?.setWindowsComputerUse?.(this.windowsComputerUse);
 		if (
 			previousApprovalReviewContext.policyEnforced !== this.policyEnforced ||
@@ -2194,6 +2257,7 @@ export class SessionManager {
 		if (!this.backgroundActivitySnapshotChanged(next)) return;
 		this.backgroundActivities = next;
 		this.backgroundActivityChangeHandler?.();
+		this.retireClaudeProgressSummaryRuntimeIfSafe();
 		const sessionId = this.currentSessionId;
 		if (!persist || !sessionId) return;
 		const snapshot = next.map((activity) => ({
@@ -9376,6 +9440,9 @@ export class SessionManager {
 					this.currentTurnId = undefined;
 					this.currentTurnArgs = null;
 					await this.runProviderContinuation(providerContinuation);
+					this.retireClaudeProgressSummaryRuntimeIfSafe({
+						betweenTurns: true,
+					});
 					continue;
 				}
 				const next = this.turnQueue.shift();
@@ -9402,6 +9469,10 @@ export class SessionManager {
 						);
 					}
 					next.reject(err instanceof Error ? err : new Error(String(err)));
+				} finally {
+					this.retireClaudeProgressSummaryRuntimeIfSafe({
+						betweenTurns: true,
+					});
 				}
 			}
 		} finally {
@@ -9419,6 +9490,7 @@ export class SessionManager {
 			// Settle final state. Per-turn errors set state="error" via the
 			// runOneTurn catch; preserve that. Otherwise return to idle.
 			if (this.state === "running") this.state = "idle";
+			this.retireClaudeProgressSummaryRuntimeIfSafe();
 			// An idle/error session is not sleeping. The status message clears the
 			// client banner; clear the replay copy as the matching server invariant.
 			this.sleepState = null;
@@ -10609,6 +10681,12 @@ export class SessionManager {
 			provider.providerId === "claude" &&
 			Boolean(sessionId) &&
 			this.claudePeerInbox;
+		const claude =
+			provider.providerId === "claude"
+				? {
+						agentProgressSummaries: this.claudeAgentProgressSummaries,
+					}
+				: undefined;
 		const session = provider.query(
 			buildAgentQueryParams({
 				activeCwd,
@@ -10659,6 +10737,7 @@ export class SessionManager {
 								})
 						: undefined,
 				claudeCrossSessionInbound: peerInboxEnabled ? "hold" : "refuse",
+				claude,
 				policyEnforced: this.policyEnforced,
 				usageGateEnforced: this.usageGateEnforced,
 				codexRealtimeEnabled: this.codexRealtimeEnabled,
