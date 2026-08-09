@@ -491,6 +491,87 @@ describe("createModelCatalog", () => {
 			JSON.stringify(newModels),
 		);
 	});
+
+	it("isolates workspace-scoped model discovery and persistence", async () => {
+		const listModels = vi.fn(({ cwd }: { cwd: string }) =>
+			Promise.resolve([{ value: cwd, label: cwd }]),
+		);
+		const provider = makeProvider({
+			providerId: "acp:opencode",
+			metadataCacheIdentity: "opencode-runtime-one",
+			modelCatalogScope: "workspace",
+			listModels,
+		});
+		const catalog = createModelCatalog(
+			new Map([[provider.providerId, provider]]),
+		);
+
+		await expect(
+			catalog.refreshModelsFor(provider, "/work/one"),
+		).resolves.toMatchObject({
+			models: [{ value: "/work/one", label: "/work/one" }],
+			source: "live",
+		});
+		await expect(
+			catalog.refreshModelsFor(provider, "/work/two"),
+		).resolves.toMatchObject({
+			models: [{ value: "/work/two", label: "/work/two" }],
+			source: "live",
+		});
+		expect(listModels).toHaveBeenNthCalledWith(1, { cwd: "/work/one" });
+		expect(listModels).toHaveBeenNthCalledWith(2, { cwd: "/work/two" });
+		expect(mockSaveSetting.mock.calls[0]?.[0]).not.toBe(
+			mockSaveSetting.mock.calls[1]?.[0],
+		);
+		expect(mockSaveSetting.mock.calls[0]?.[0]).toMatch(
+			/^model_catalog:acp%3Aopencode:[0-9a-f]{16}:[0-9a-f]{16}$/,
+		);
+	});
+
+	it("does not reuse a previous runtime's persisted models after restart", async () => {
+		let previousKey: string | undefined;
+		mockGetSetting.mockImplementation((key: string) => {
+			if (!previousKey) {
+				previousKey = key;
+				return Promise.resolve(
+					JSON.stringify([{ value: "old", label: "Old runtime" }]),
+				);
+			}
+			return Promise.resolve(
+				key === previousKey
+					? JSON.stringify([{ value: "old", label: "Old runtime" }])
+					: null,
+			);
+		});
+		const oldProvider = makeProvider({
+			providerId: "acp:opencode",
+			metadataCacheIdentity: "old-runtime",
+			modelCatalogScope: "workspace",
+			listModels: vi.fn(),
+		});
+		const oldCatalog = createModelCatalog(
+			new Map([[oldProvider.providerId, oldProvider]]),
+		);
+		await expect(
+			oldCatalog.cachedModelsFor(oldProvider, "/work/project"),
+		).resolves.toEqual([{ value: "old", label: "Old runtime" }]);
+
+		const newProvider = makeProvider({
+			providerId: "acp:opencode",
+			metadataCacheIdentity: "new-runtime",
+			modelCatalogScope: "workspace",
+			listModels: vi.fn(),
+		});
+		const restartedCatalog = createModelCatalog(
+			new Map([[newProvider.providerId, newProvider]]),
+		);
+		await expect(
+			restartedCatalog.cachedModelsFor(newProvider, "/work/project"),
+		).resolves.toEqual([{ value: "m1", label: "Model 1" }]);
+		expect(mockGetSetting.mock.calls[0]?.[0]).not.toBe(
+			mockGetSetting.mock.calls[1]?.[0],
+		);
+	});
 });
 
 describe("createProviderCapabilityCatalog", () => {
@@ -686,6 +767,98 @@ describe("createProviderCapabilityCatalog", () => {
 			JSON.stringify(currentDiscovery),
 		);
 	});
+
+	it("does not reuse persisted capability evidence after runtime replacement", async () => {
+		mockGetSetting.mockResolvedValue(
+			JSON.stringify({
+				observedAt: 1,
+				evidence: [
+					{
+						id: "acp:opencode:old-runtime",
+						label: "Old runtime capability",
+						scope: "provider",
+						support: "advertised",
+						integration: "integrated",
+						readiness: "ready",
+						source: "provider-runtime",
+					},
+				],
+			}),
+		);
+		const provider = makeProvider({
+			providerId: "acp:opencode",
+			discoverCapabilities: vi.fn().mockResolvedValue({
+				observedAt: 2,
+				evidence: [],
+			}),
+		});
+		const catalog = createProviderCapabilityCatalog(
+			new Map([[provider.providerId, provider]]),
+			"/work/project",
+		);
+
+		catalog.register(provider, { refreshIdentity: true });
+		const cached = await catalog.cachedCapabilitiesFor(
+			provider,
+			"/work/project",
+		);
+
+		expect(cached).toMatchObject({
+			source: "fallback",
+			discovery: { observedAt: 0, evidence: [] },
+		});
+		expect(mockGetSetting).not.toHaveBeenCalled();
+		expect(provider.discoverCapabilities).not.toHaveBeenCalled();
+	});
+
+	it("isolates persisted capability evidence across runtime identities", async () => {
+		let previousKey: string | undefined;
+		mockGetSetting.mockImplementation((key: string) => {
+			if (!previousKey) {
+				previousKey = key;
+				return Promise.resolve(JSON.stringify({ observedAt: 1, evidence: [] }));
+			}
+			return Promise.resolve(
+				key === previousKey
+					? JSON.stringify({ observedAt: 1, evidence: [] })
+					: null,
+			);
+		});
+		const oldProvider = makeProvider({
+			providerId: "acp:opencode",
+			metadataCacheIdentity: "old-runtime",
+			discoverCapabilities: vi.fn(),
+		});
+		const oldCatalog = createProviderCapabilityCatalog(
+			new Map([[oldProvider.providerId, oldProvider]]),
+			"/work/project",
+		);
+		await expect(
+			oldCatalog.cachedCapabilitiesFor(oldProvider, "/work/project"),
+		).resolves.toMatchObject({
+			source: "persisted",
+			discovery: { observedAt: 1 },
+		});
+
+		const newProvider = makeProvider({
+			providerId: "acp:opencode",
+			metadataCacheIdentity: "new-runtime",
+			discoverCapabilities: vi.fn(),
+		});
+		const restartedCatalog = createProviderCapabilityCatalog(
+			new Map([[newProvider.providerId, newProvider]]),
+			"/work/project",
+		);
+		await expect(
+			restartedCatalog.cachedCapabilitiesFor(newProvider, "/work/project"),
+		).resolves.toMatchObject({
+			source: "fallback",
+			discovery: { observedAt: 0 },
+		});
+		expect(mockGetSetting.mock.calls[0]?.[0]).not.toBe(
+			mockGetSetting.mock.calls[1]?.[0],
+		);
+	});
 });
 
 describe("loadProviderCatalog", () => {
@@ -878,8 +1051,8 @@ describe("loadProviderCatalog", () => {
 		expect(pi.check).not.toHaveBeenCalled();
 		expect(pi.resolveForkCapability).not.toHaveBeenCalled();
 		expect(modelsFor).toHaveBeenCalledOnce();
-		expect(modelsFor).toHaveBeenCalledWith(openCode, true);
-		expect(cachedModelsFor).toHaveBeenCalledWith(pi);
+		expect(modelsFor).toHaveBeenCalledWith(openCode, true, process.cwd());
+		expect(cachedModelsFor).toHaveBeenCalledWith(pi, process.cwd());
 	});
 
 	it("preserves a native fork capability when refresh negotiation is empty", async () => {
@@ -1257,7 +1430,7 @@ describe("createProviderCatalogSnapshot", () => {
 			JSON.stringify([{ value: "old-model", label: "Persisted old model" }]),
 		);
 		models.register(provider, { refreshIdentity: true });
-		capabilities.register(provider);
+		capabilities.register(provider, { refreshIdentity: true });
 		snapshot.invalidate();
 
 		const cachedAfterRestart = (await read(false))[0];
@@ -1370,6 +1543,79 @@ describe("createProviderCatalogSnapshot", () => {
 			cwd: "/work/two",
 		});
 		expect(repeated).toBe(first);
+		expect(load).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not reuse an assembled model snapshot across workspaces", async () => {
+		const load: typeof loadProviderCatalog = vi.fn(
+			(_providers, _catalog, options = {}) =>
+				Promise.resolve([
+					{
+						id: "acp:opencode",
+						label: "OpenCode",
+						available: true,
+						models: [
+							{
+								value: options.discoveryCwd ?? "unknown",
+								label: options.discoveryCwd ?? "unknown",
+							},
+						],
+					},
+				]),
+		);
+		const snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "acp:opencode" })],
+			{ modelsFor: vi.fn() },
+			{ load },
+		);
+
+		const first = await snapshot.get({ discoveryCwd: "/work/one" });
+		const second = await snapshot.get({ discoveryCwd: "/work/two" });
+		const repeated = await snapshot.get({ discoveryCwd: "/work/one" });
+
+		expect(first[0]?.models?.[0]?.value).toBe("/work/one");
+		expect(second[0]?.models?.[0]?.value).toBe("/work/two");
+		expect(repeated).toBe(first);
+		expect(load).toHaveBeenCalledTimes(2);
+	});
+
+	it("reads a dynamic default capability workspace after a hot vault change", async () => {
+		let currentCwd = "/work/one";
+		const load: typeof loadProviderCatalog = vi.fn(
+			(_providers, _catalog, options = {}) =>
+				Promise.resolve([
+					{
+						id: "acp:opencode",
+						label: "OpenCode",
+						available: true,
+						models: [],
+						capabilitySnapshot: {
+							contractVersion: 1 as const,
+							providerId: "acp:opencode",
+							status: "current" as const,
+							source: "live" as const,
+							revision: options.discoveryCwd ?? "unknown",
+							observedAt: 1,
+							context: { cwd: options.discoveryCwd ?? "unknown" },
+							capabilities: [],
+						},
+					},
+				]),
+		);
+		const snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "acp:opencode" })],
+			{ modelsFor: vi.fn() },
+			{ load, discoveryCwd: () => currentCwd },
+		);
+
+		const first = await snapshot.get({ includeProviderCapabilities: true });
+		currentCwd = "/work/two";
+		const second = await snapshot.get({ includeProviderCapabilities: true });
+
+		expect(first[0]?.capabilitySnapshot?.context).toEqual({ cwd: "/work/one" });
+		expect(second[0]?.capabilitySnapshot?.context).toEqual({
+			cwd: "/work/two",
+		});
 		expect(load).toHaveBeenCalledTimes(2);
 	});
 

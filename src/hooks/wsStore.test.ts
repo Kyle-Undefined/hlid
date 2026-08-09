@@ -443,6 +443,17 @@ describe("wsStore state management", () => {
 			expect(store.drainMessageBuffer()).toEqual([revision]);
 			expect(store.drainMessageBuffer()).toEqual([]);
 		});
+
+		it("buffers a live tool progress snapshot while history is loading", () => {
+			store.subscribeToSession("session-1");
+			const progress = {
+				type: "tool_progress_update" as const,
+				id: "tool-1",
+				progress: { status: "in_progress" as const, content: "Halfway" },
+			};
+			wsStore.__handleParsedMessageForTesting(progress);
+			expect(store.drainMessageBuffer()).toEqual([progress]);
+		});
 	});
 
 	// ── subscription edge cases ───────────────────────────────────────────────

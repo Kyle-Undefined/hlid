@@ -323,6 +323,43 @@ describe("AcpProvider — plan mode", () => {
 		session.cancel();
 	});
 
+	it("restores the custom mode that preceded an explicit Plan selection", async () => {
+		const session = behaviorProvider("dependent-config").query(params("deny"));
+		await session.send("report-mode");
+		for await (const event of session) {
+			if (event.type === "done") break;
+		}
+
+		await session.setModel?.("fake-smart");
+		await session.setSessionMode?.("review");
+		await session.setSessionMode?.("plan");
+		expect(session.sessionConfig?.()?.activeMode).toBe("plan");
+		await session.restoreSessionMode?.();
+		expect(session.sessionConfig?.()?.activeMode).toBe("review");
+
+		await session.send("report-mode");
+		const events: AgentEvent[] = [];
+		for await (const event of session) {
+			events.push(event);
+			if (event.type === "done") break;
+		}
+		expect(events).toContainEqual({ type: "text_delta", text: "review" });
+		session.cancel();
+	});
+
+	it("restores the legacy mode that preceded an explicit Plan selection", async () => {
+		const session = behaviorProvider("").query(params("deny"));
+		await session.send("report-mode");
+		for await (const event of session) {
+			if (event.type === "done") break;
+		}
+
+		await session.setSessionMode?.("plan");
+		await session.restoreSessionMode?.();
+		expect(session.sessionConfig?.()?.activeMode).toBe("code");
+		session.cancel();
+	});
+
 	it("does not mistake a model selector with planning values for mode config", async () => {
 		const provider = behaviorProvider("model-plan-option");
 		const session = provider.query(params("deny", { permissionMode: "plan" }));
@@ -469,6 +506,62 @@ describe("AcpProvider — event mapping", () => {
 			content: "result from earlier patch",
 			isError: false,
 		});
+		session.cancel();
+	});
+
+	it("streams bounded deduplicated progress without regressing a settled tool", async () => {
+		const { events, session } = await run("tool-progress");
+		expect(events.filter((event) => event.type === "tool_progress")).toEqual([
+			{
+				type: "tool_progress",
+				toolId: "progress-1",
+				progress: {
+					status: "in_progress",
+					title: "Run progress tool",
+					content: "Starting",
+				},
+			},
+			{
+				type: "tool_progress",
+				toolId: "progress-1",
+				progress: {
+					status: "in_progress",
+					title: "Run progress tool",
+					content: "Halfway",
+				},
+			},
+		]);
+		expect(
+			events.filter(
+				(event) =>
+					event.type === "tool_result" && event.toolId === "progress-1",
+			),
+		).toEqual([
+			{
+				type: "tool_result",
+				toolId: "progress-1",
+				content: "Done",
+				isError: false,
+			},
+		]);
+		session.cancel();
+	});
+
+	it("bounds large ACP progress snapshots before exposing them to Raven", async () => {
+		const { events, session } = await run("tool-progress-long");
+		const progress = events.find((event) => event.type === "tool_progress");
+		expect(progress).toMatchObject({
+			type: "tool_progress",
+			toolId: "progress-1",
+			progress: {
+				status: "in_progress",
+				contentTruncated: true,
+			},
+		});
+		if (progress?.type === "tool_progress") {
+			expect(progress.progress.content).toHaveLength(16_000);
+			expect(progress.progress.content?.endsWith("…")).toBe(true);
+		}
 		session.cancel();
 	});
 
@@ -694,6 +787,64 @@ describe("AcpProvider — canUseTool", () => {
 			toolId: "locations-1",
 			name: "filesystem.edit",
 			input,
+		});
+		session.cancel();
+	});
+
+	it.each([
+		[undefined, "allow-once"],
+		["session" as const, "allow-once"],
+		["local" as const, "allow-always"],
+	])("maps Hlid allow scope %s onto the exact ACP permission option", async (saveScope, selectedOption) => {
+		const canUseTool = vi.fn(async () => ({
+			behavior: "allow" as const,
+			...(saveScope ? { saveScope } : {}),
+		}));
+		const { events, session } = await run(
+			"permission-options",
+			params("allow", { canUseTool }),
+		);
+		expect(events).toContainEqual({
+			type: "tool_result",
+			toolId: "permission-options-1",
+			content: selectedOption,
+			isError: false,
+		});
+		session.cancel();
+	});
+
+	it("prefers a one-shot ACP rejection and retains approval context", async () => {
+		const canUseTool = vi.fn(async () => ({ behavior: "deny" as const }));
+		const { events, session } = await run(
+			"permission-options",
+			params("deny", { canUseTool }),
+		);
+		expect(canUseTool).toHaveBeenCalledWith(
+			"filesystem.edit",
+			expect.objectContaining({
+				file_path: "/vault/note.md",
+				locations: [{ path: "/vault/note.md", line: 7 }],
+				content: expect.stringContaining("Edit the selected note"),
+				changes: [
+					expect.objectContaining({
+						path: "/vault/note.md",
+						diff: expect.stringContaining("-before\n+after"),
+					}),
+				],
+			}),
+			expect.objectContaining({
+				title: "Review proposed edit",
+				description: expect.stringContaining("Edit the selected note"),
+				allowOnce: true,
+				allowSession: true,
+				allowAlways: true,
+			}),
+		);
+		expect(events).toContainEqual({
+			type: "tool_result",
+			toolId: "permission-options-1",
+			content: "reject-once",
+			isError: false,
 		});
 		session.cancel();
 	});
@@ -1282,6 +1433,81 @@ describe("AcpProvider — model catalog", () => {
 			}),
 			expect.objectContaining({ value: "fake-smart", label: "Fake Smart" }),
 		]);
+		expect(models[1]).not.toHaveProperty("efforts");
+	});
+
+	it("publishes dependent model, effort, and mode options for the live session", async () => {
+		const onSessionConfigChange = vi.fn();
+		const session = behaviorProvider("dependent-config").query(
+			params("allow", { onSessionConfigChange }),
+		);
+		await session.send("report-config");
+		for await (const event of session) {
+			if (event.type === "done") break;
+		}
+		expect(onSessionConfigChange).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				activeModel: "fake-fast",
+				activeEffort: "medium",
+				activeMode: "build",
+				planModeValue: "plan",
+			}),
+		);
+		expect(session.sessionConfig?.()).toEqual(
+			expect.objectContaining({
+				activeModel: "fake-fast",
+				activeEffort: "medium",
+				activeMode: "build",
+			}),
+		);
+
+		onSessionConfigChange.mockClear();
+		await session.setModel?.("fake-smart");
+		expect(onSessionConfigChange).toHaveBeenCalledTimes(1);
+		expect(onSessionConfigChange).toHaveBeenLastCalledWith({
+			models: [
+				expect.objectContaining({ value: "fake-fast" }),
+				expect.objectContaining({
+					value: "fake-smart",
+					isDefault: true,
+					efforts: [
+						expect.objectContaining({ value: "high", isDefault: true }),
+						expect.objectContaining({ value: "xhigh" }),
+					],
+				}),
+			],
+			activeModel: "fake-smart",
+			effortLevels: [
+				expect.objectContaining({ value: "high", isDefault: true }),
+				expect.objectContaining({ value: "xhigh" }),
+			],
+			activeEffort: "high",
+			modes: [
+				expect.objectContaining({ value: "build", isDefault: true }),
+				expect.objectContaining({ value: "plan" }),
+				expect.objectContaining({ value: "review" }),
+			],
+			activeMode: "build",
+			planModeValue: "plan",
+		});
+
+		onSessionConfigChange.mockClear();
+		await session.setEffort?.("xhigh");
+		expect(onSessionConfigChange).toHaveBeenCalledTimes(1);
+		expect(onSessionConfigChange).toHaveBeenLastCalledWith(
+			expect.objectContaining({ activeEffort: "xhigh" }),
+		);
+
+		onSessionConfigChange.mockClear();
+		await session.setSessionMode?.("review");
+		expect(onSessionConfigChange).toHaveBeenCalledTimes(1);
+		expect(onSessionConfigChange).toHaveBeenLastCalledWith(
+			expect.objectContaining({ activeMode: "review" }),
+		);
+		expect(session.sessionConfig?.()).toEqual(
+			expect.objectContaining({ activeMode: "review" }),
+		);
+		session.cancel();
 	});
 
 	it("uses discoveryCwd for provider-owned metadata sessions", async () => {
@@ -1312,12 +1538,27 @@ describe("AcpProvider — model catalog", () => {
 					HLID_FAKE_ACP_DELETE_MARKER: deleteMarker,
 				},
 			});
-			const [models, forkCapability] = await Promise.all([
+			const [models, forkCapability, capabilities] = await Promise.all([
 				provider.listModels(),
 				provider.resolveForkCapability(),
+				provider.discoverCapabilities({ cwd }),
 			]);
 			expect(models).not.toHaveLength(0);
 			expect(forkCapability).toMatchObject({ kind: "exact" });
+			expect(capabilities.context).toEqual({ cwd });
+			expect(capabilities.evidence).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						label: "Model configuration (2)",
+						integration: "integrated",
+					}),
+					expect.objectContaining({
+						label: "Session mode configuration (2)",
+						integration: "integrated",
+						readiness: "ready",
+					}),
+				]),
+			);
 			expect(readFileSync(initializeMarker, "utf8")).toBe("initialize\n");
 			expect(readFileSync(deleteMarker, "utf8")).toBe("fake-session\n");
 		} finally {

@@ -69,6 +69,7 @@ describe("AcpRegistry", () => {
 		expect(catalog[0]).toMatchObject({
 			enabled: true,
 			available: true,
+			resolvedExecutable: "/bin/custom-open",
 			command: "custom-open",
 			args: ["serve"],
 			providerId: "acp:opencode",

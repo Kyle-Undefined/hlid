@@ -187,6 +187,7 @@ export type ProviderRealtimeActivity = Extract<
 			| "tool_start"
 			| "tool_update"
 			| "tool_activity_update"
+			| "tool_progress"
 			| "tool_result"
 			| "generated_media";
 	}
@@ -242,6 +243,14 @@ export type ProviderEffortInfo = {
 	isDefault?: boolean;
 };
 
+/** One provider-owned conversational mode exposed by a live session. */
+export type ProviderSessionModeInfo = {
+	value: string;
+	label: string;
+	desc?: string;
+	isDefault?: boolean;
+};
+
 /**
  * A single model entry as reported by a provider's live model catalog
  * (AgentProvider.listModels). Strict superset of the existing static
@@ -267,6 +276,22 @@ export type ProviderModelInfo = {
 		desc?: string;
 		isDefault?: boolean;
 	}>;
+};
+
+/**
+ * Session-scoped configuration advertised by a provider after initialization
+ * or a dependent option change. Unlike the provider catalog, this snapshot is
+ * authoritative only for one live session and may change when its model does.
+ */
+export type ProviderSessionConfigSnapshot = {
+	models?: ProviderModelInfo[];
+	activeModel?: string;
+	effortLevels?: ProviderEffortInfo[];
+	activeEffort?: string;
+	modes?: ProviderSessionModeInfo[];
+	activeMode?: string;
+	/** Provider mode value Hlid maps to its existing Plan control. */
+	planModeValue?: string;
 };
 
 export type SubagentStatus =
@@ -356,6 +381,15 @@ export type TaskActivity = {
 	operation: "snapshot" | "create" | "update" | "list" | "get";
 	explanation?: string;
 	items: TaskActivityItem[];
+};
+
+/** Bounded provider-authored snapshot for a tool that is still running. */
+export type ToolProgressSnapshot = {
+	status: "pending" | "in_progress";
+	title?: string;
+	content?: string;
+	contentTruncated?: boolean;
+	locations?: Array<{ path: string; line?: number }>;
 };
 
 export type ProviderBackgroundActivityStatus =
@@ -587,6 +621,12 @@ export type AgentEvent =
 			providerFrame?: { providerSessionId: string; providerUuid: string };
 	  }
 	| {
+			type: "tool_progress";
+			toolId: string;
+			progress: ToolProgressSnapshot;
+			providerFrame?: { providerSessionId: string; providerUuid: string };
+	  }
+	| {
 			type: "tool_result";
 			toolId: string;
 			content: string;
@@ -673,6 +713,12 @@ export type ToolMeta = {
 	title?: string;
 	displayName?: string;
 	description?: string;
+	/** Whether this provider offers a one-shot grant for this exact request. */
+	allowOnce?: boolean;
+	/** Whether Hlid can remember one-shot grants for the current chat. */
+	allowSession?: boolean;
+	/** Whether this provider offers a persistent grant for this request. */
+	allowAlways?: boolean;
 	suggestions?: unknown[];
 	blockedPath?: string;
 	decisionReason?: string;
@@ -805,6 +851,11 @@ export type AgentQueryParams = {
 	windowsComputerUse?: { model: string; effort: string };
 	/** Provider-owned goal changes that can arrive outside a normal chat turn. */
 	onGoalChange?: (goal: ProviderThreadGoal | null) => void;
+	/**
+	 * Provider-owned dependent configuration changes that can arrive while the
+	 * session is idle. The host scopes these to the owning Raven conversation.
+	 */
+	onSessionConfigChange?: (config: ProviderSessionConfigSnapshot) => void;
 	/** Provider-authoritative approval reviewer changes for truthful live status. */
 	onApprovalsReviewerChange?: (change: ProviderApprovalsReviewerChange) => void;
 	/**
@@ -964,6 +1015,12 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	 */
 	contextUsage?(): Promise<ProviderContextUsage | null>;
 	/**
+	 * Read the last session-scoped configuration already advertised by this
+	 * live provider runtime. This must be process-free: callers use it to replay
+	 * dependent options when Raven reconnects, never to initialize an agent.
+	 */
+	sessionConfig?(): ProviderSessionConfigSnapshot | null;
+	/**
 	 * Switch the model used for subsequent turns in this already-running
 	 * session. `undefined` resets to the provider's default. No-op (absent)
 	 * on providers that can't change model mid-session.
@@ -990,6 +1047,13 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	 * without rebuilding their native runtime.
 	 */
 	setEffort?(effort: string): Promise<void>;
+	/**
+	 * Switch one provider-advertised conversational mode in the live session.
+	 * Values are opaque provider-owned identifiers from sessionConfig().modes.
+	 */
+	setSessionMode?(mode: string): Promise<void>;
+	/** Restore the provider mode that was active before entering its Plan mode. */
+	restoreSessionMode?(): Promise<void>;
 	/** Update preferences used by the next Windows-native Computer Use worker. */
 	setWindowsComputerUse?(settings: {
 		model: string;
@@ -1186,8 +1250,15 @@ export interface AgentProvider {
 	startAppAuthentication?(
 		request: ProviderAppAuthenticationRequest,
 	): Promise<ProviderAppAuthenticationStart>;
-	/** Live-fetch the provider's model catalog. Falls back to the static `models` list on failure. */
-	listModels?(): Promise<ProviderModelInfo[]>;
+	/**
+	 * Opaque process/config identity used only to isolate persisted metadata. Hosts
+	 * hash this value before building cache keys; it must never be displayed.
+	 */
+	readonly metadataCacheIdentity?: string;
+	/** Whether model options can vary with the requested working directory. */
+	readonly modelCatalogScope?: "provider" | "workspace";
+	/** Live-fetch the provider's model catalog for an optional exact workspace. */
+	listModels?(context?: { cwd: string }): Promise<ProviderModelInfo[]>;
 	/** Discover skills visible to this provider for a concrete working directory. */
 	listSkills?(context: {
 		cwd: string;

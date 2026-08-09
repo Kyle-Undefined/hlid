@@ -99,6 +99,25 @@ describe("ToolBlock — collapsed", () => {
 		expect(screen.queryByText("(empty)")).toBeNull();
 	});
 
+	it("shows the latest provider progress while the tool remains running", () => {
+		render(
+			<ToolBlock
+				event={makeEvent({
+					progress: {
+						status: "in_progress",
+						title: "Downloading dependencies",
+						content: "Downloaded 4 of 10 files",
+					},
+				})}
+			/>,
+		);
+		expect(screen.getByText("Downloaded 4 of 10 files")).not.toBeNull();
+		fireEvent.click(screen.getByRole("button", { expanded: false }));
+		expect(screen.getByText("Running")).not.toBeNull();
+		expect(screen.getByText("Downloading dependencies")).not.toBeNull();
+		expect(screen.queryByText("Complete")).toBeNull();
+	});
+
 	it("renders error indicator on isError", () => {
 		render(
 			<ToolBlock

@@ -20,10 +20,12 @@ const enabledAgent = {
 const catalog = vi.fn();
 const loadConfig = vi.fn();
 const inspectAgent = vi.fn();
+const syncRuntime = vi.fn();
 const handle = createAcpRouteHandler({
 	registry: { catalog },
 	loadConfig,
 	inspectAgent,
+	syncRuntime,
 });
 
 function request(path: string, method = "GET", body?: unknown): Request {
@@ -48,6 +50,11 @@ beforeEach(() => {
 		authMethods: [{ id: "login", name: "Login" }],
 		agentInfo: { name: "OpenCode", version: "1" },
 	});
+	syncRuntime.mockResolvedValue({
+		added: ["acp:opencode"],
+		removed: [],
+		replaced: [],
+	});
 });
 
 describe("ACP internal HTTP routes", () => {
@@ -62,6 +69,7 @@ describe("ACP internal HTTP routes", () => {
 			loadConfig.mock.results[0]?.value,
 			true,
 		);
+		expect(syncRuntime).toHaveBeenCalledOnce();
 		expect(await response?.json()).toEqual({ agents: [enabledAgent] });
 	});
 
@@ -121,6 +129,21 @@ describe("ACP internal HTTP routes", () => {
 		expect(await response?.json()).toEqual({
 			authMethods: [{ id: "login", name: "Login" }],
 			agentInfo: { name: "OpenCode", version: "1" },
+		});
+	});
+
+	it("synchronizes enabled ACP providers without restarting Hlid", async () => {
+		const response = await handle(
+			new URL("http://localhost/acp/sync"),
+			request("/acp/sync", "POST"),
+		);
+
+		expect(response?.status).toBe(200);
+		expect(syncRuntime).toHaveBeenCalledOnce();
+		expect(await response?.json()).toEqual({
+			added: ["acp:opencode"],
+			removed: [],
+			replaced: [],
 		});
 	});
 

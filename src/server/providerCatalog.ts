@@ -38,6 +38,7 @@ const DEFAULT_TTL_MS = 6 * 3600_000;
 const DEFAULT_FAILURE_TTL_MS = 60_000;
 const PROVIDER_SNAPSHOT_TTL_MS = 60_000;
 const PROVIDER_LIVE_DISCOVERY_TIMEOUT_MS = 12_000;
+const MAX_PROVIDER_MODEL_WORKSPACES = 64;
 const MAX_PROVIDER_CAPABILITY_WORKSPACES = 64;
 const observeCatalogStep = createSlowOperationObserver({
 	scope: "provider catalog",
@@ -170,6 +171,32 @@ function staticModels(p: AgentProvider): ProviderModelInfo[] {
 	return (p.models ?? []).map((m) => ({ value: m.value, label: m.label }));
 }
 
+function metadataIdentityHash(provider: AgentProvider): string | undefined {
+	const identity = provider.metadataCacheIdentity?.trim();
+	if (!identity) return undefined;
+	return createHash("sha256").update(identity).digest("hex").slice(0, 16);
+}
+
+function workspaceHash(cwd: string): string {
+	return createHash("sha256")
+		.update(declaredPathKey(cwd))
+		.digest("hex")
+		.slice(0, 16);
+}
+
+function modelCatalogPersistKey(provider: AgentProvider, cwd: string): string {
+	const identity = metadataIdentityHash(provider);
+	const workspace =
+		provider.modelCatalogScope === "workspace" ? workspaceHash(cwd) : undefined;
+	if (!identity && !workspace) return `model_catalog:${provider.providerId}`;
+	return [
+		"model_catalog",
+		encodeURIComponent(provider.providerId),
+		identity ?? "default-runtime",
+		...(workspace ? [workspace] : []),
+	].join(":");
+}
+
 /**
  * Wraps `createCachedList` per-provider for `AgentProvider.listModels`,
  * keyed by `model_catalog:<providerId>` in the settings table.
@@ -178,41 +205,83 @@ export function createModelCatalog(
 	providers: Map<string, AgentProvider>,
 	onChange?: (providerId: string) => void,
 ): {
-	modelsFor(p: AgentProvider, refresh?: boolean): Promise<ProviderModelInfo[]>;
+	modelsFor(
+		p: AgentProvider,
+		refresh?: boolean,
+		discoveryCwd?: string,
+	): Promise<ProviderModelInfo[]>;
 	/** Force one bounded fetch while preserving the source when fallback is used. */
-	refreshModelsFor(p: AgentProvider): Promise<ProviderModelCatalogRead>;
-	cachedModelsFor(p: AgentProvider): Promise<ProviderModelInfo[]>;
+	refreshModelsFor(
+		p: AgentProvider,
+		discoveryCwd?: string,
+	): Promise<ProviderModelCatalogRead>;
+	cachedModelsFor(
+		p: AgentProvider,
+		discoveryCwd?: string,
+	): Promise<ProviderModelInfo[]>;
 	register(p: AgentProvider, options?: { refreshIdentity?: boolean }): void;
 	/** Fire-and-forget warm-up of every provider's cache; never rejects. */
 	warm(): void;
 } {
-	const caches = new Map<string, CachedList<ProviderModelInfo[]>>();
+	type ModelCache = {
+		providerId: string;
+		cache: CachedList<ProviderModelInfo[]>;
+	};
+	const registered = new Map(providers);
+	const caches = new Map<string, ModelCache>();
+	const refreshedIdentities = new Set<string>();
+	const cacheFor = (
+		p: AgentProvider,
+		discoveryCwd = process.cwd(),
+	): CachedList<ProviderModelInfo[]> | undefined => {
+		if (!p.listModels) return undefined;
+		const cwd = discoveryCwd.trim() || process.cwd();
+		const cacheKey =
+			p.modelCatalogScope === "workspace"
+				? `${p.providerId}\0${declaredPathKey(cwd)}`
+				: p.providerId;
+		const existing = caches.get(cacheKey);
+		if (existing) return existing.cache;
+		if (caches.size >= MAX_PROVIDER_MODEL_WORKSPACES) {
+			const oldest = caches.keys().next().value;
+			if (oldest !== undefined) {
+				caches.get(oldest)?.cache.dispose();
+				caches.delete(oldest);
+			}
+		}
+		const listModels = p.listModels.bind(p);
+		const cache = createCachedList<ProviderModelInfo[]>({
+			persistKey: modelCatalogPersistKey(p, cwd),
+			fetcher: () =>
+				listModels(p.modelCatalogScope === "workspace" ? { cwd } : undefined),
+			fallback: staticModels(p),
+			fetchTimeoutMs: 12_000,
+			allowPersistedFallback: !refreshedIdentities.has(p.providerId),
+			onChange: () => onChange?.(p.providerId),
+		});
+		caches.set(cacheKey, { providerId: p.providerId, cache });
+		return cache;
+	};
 	const register = (
 		p: AgentProvider,
 		options: { refreshIdentity?: boolean } = {},
 	) => {
-		caches.get(p.providerId)?.dispose();
-		caches.delete(p.providerId);
-		if (!p.listModels) return;
-		const listModels = p.listModels.bind(p);
-		caches.set(
-			p.providerId,
-			createCachedList<ProviderModelInfo[]>({
-				persistKey: `model_catalog:${p.providerId}`,
-				fetcher: () => listModels(),
-				fallback: staticModels(p),
-				fetchTimeoutMs: 12_000,
-				allowPersistedFallback: !options.refreshIdentity,
-				onChange: () => onChange?.(p.providerId),
-			}),
-		);
+		registered.set(p.providerId, p);
+		if (options.refreshIdentity) refreshedIdentities.add(p.providerId);
+		else refreshedIdentities.delete(p.providerId);
+		for (const [key, value] of caches) {
+			if (value.providerId !== p.providerId) continue;
+			value.cache.dispose();
+			caches.delete(key);
+		}
 	};
 	for (const p of providers.values()) register(p);
 	const modelReadFor = async (
 		p: AgentProvider,
 		refresh = false,
+		discoveryCwd?: string,
 	): Promise<ProviderModelCatalogRead> => {
-		const cache = caches.get(p.providerId);
+		const cache = cacheFor(p, discoveryCwd);
 		if (!cache) return { models: staticModels(p), source: "live" };
 		const { value, source } = await cache.get(refresh);
 		return {
@@ -226,21 +295,22 @@ export function createModelCatalog(
 
 	return {
 		register,
-		async modelsFor(p, refresh) {
-			return (await modelReadFor(p, refresh)).models;
+		async modelsFor(p, refresh, discoveryCwd) {
+			return (await modelReadFor(p, refresh, discoveryCwd)).models;
 		},
-		refreshModelsFor(p) {
-			return modelReadFor(p, true);
+		refreshModelsFor(p, discoveryCwd) {
+			return modelReadFor(p, true, discoveryCwd);
 		},
-		async cachedModelsFor(p) {
-			const cache = caches.get(p.providerId);
+		async cachedModelsFor(p, discoveryCwd) {
+			const cache = cacheFor(p, discoveryCwd);
 			if (!cache) return staticModels(p);
 			const { value } = await cache.getCached();
 			return value;
 		},
 		warm() {
-			for (const cache of caches.values()) {
-				void cache.get().catch(() => {});
+			for (const provider of registered.values()) {
+				const cache = cacheFor(provider);
+				if (cache) void cache.get().catch(() => {});
 			}
 		},
 	};
@@ -276,7 +346,10 @@ export function createProviderCapabilityCatalog(
 		provider: AgentProvider,
 		discoveryCwd?: string,
 	): Promise<ProviderCapabilityDiscoveryRead | undefined>;
-	register(provider: AgentProvider): void;
+	register(
+		provider: AgentProvider,
+		options?: { refreshIdentity?: boolean },
+	): void;
 	warm(): void;
 } {
 	type CapabilityCache = {
@@ -285,6 +358,7 @@ export function createProviderCapabilityCatalog(
 	};
 	const registered = new Map(providers);
 	const caches = new Map<string, CapabilityCache>();
+	const refreshedIdentities = new Set<string>();
 	const workspaceKey = (providerId: string, cwd: string) =>
 		`${providerId}\0${declaredPathKey(cwd)}`;
 	const cacheFor = (
@@ -304,12 +378,15 @@ export function createProviderCapabilityCatalog(
 			}
 		}
 		const discover = provider.discoverCapabilities.bind(provider);
-		const workspaceHash = createHash("sha256")
-			.update(declaredPathKey(cwd))
-			.digest("hex")
-			.slice(0, 16);
+		const identity = metadataIdentityHash(provider);
+		const persistenceKey = [
+			"provider_capabilities",
+			encodeURIComponent(provider.providerId),
+			...(identity ? [identity] : []),
+			workspaceHash(cwd),
+		].join(":");
 		const cache = createCachedList<ProviderCapabilityDiscovery>({
-			persistKey: `provider_capabilities:${encodeURIComponent(provider.providerId)}:${workspaceHash}`,
+			persistKey: persistenceKey,
 			fetcher: () => discover({ cwd }),
 			fallback: {
 				observedAt: 0,
@@ -319,14 +396,20 @@ export function createProviderCapabilityCatalog(
 			fetchTimeoutMs: 12_000,
 			ttlMs: 60_000,
 			failureTtlMs: 15_000,
+			allowPersistedFallback: !refreshedIdentities.has(provider.providerId),
 			validate: isProviderCapabilityDiscovery,
 			onChange: () => onChange?.(provider.providerId),
 		});
 		caches.set(key, { providerId: provider.providerId, cache });
 		return cache;
 	};
-	const register = (provider: AgentProvider) => {
+	const register = (
+		provider: AgentProvider,
+		options: { refreshIdentity?: boolean } = {},
+	) => {
 		registered.set(provider.providerId, provider);
+		if (options.refreshIdentity) refreshedIdentities.add(provider.providerId);
+		else refreshedIdentities.delete(provider.providerId);
 		for (const [key, value] of caches) {
 			if (value.providerId !== provider.providerId) continue;
 			value.cache.dispose();
@@ -361,9 +444,16 @@ type ProviderCatalogSources = {
 	modelsFor(
 		provider: AgentProvider,
 		refresh?: boolean,
+		discoveryCwd?: string,
 	): Promise<ProviderModelInfo[]>;
-	refreshModelsFor?(provider: AgentProvider): Promise<ProviderModelCatalogRead>;
-	cachedModelsFor?(provider: AgentProvider): Promise<ProviderModelInfo[]>;
+	refreshModelsFor?(
+		provider: AgentProvider,
+		discoveryCwd?: string,
+	): Promise<ProviderModelCatalogRead>;
+	cachedModelsFor?(
+		provider: AgentProvider,
+		discoveryCwd?: string,
+	): Promise<ProviderModelInfo[]>;
 	capabilitiesFor?(
 		provider: AgentProvider,
 		discoveryCwd: string,
@@ -455,13 +545,17 @@ export async function loadProviderCatalog(
 							? observeCatalogStep(
 									`models:${provider.providerId}`,
 									`${provider.providerId} model discovery`,
-									() => refreshModelsFor(provider),
+									() => refreshModelsFor(provider, discoveryCwd),
 								)
 							: boundedProviderDiscovery<ProviderModelCatalogRead>(
 									`models:${provider.providerId}`,
 									`${provider.providerId} model discovery`,
 									async () => ({
-										models: await catalog.modelsFor(provider, true),
+										models: await catalog.modelsFor(
+											provider,
+											true,
+											discoveryCwd,
+										),
 										source: "live",
 									}),
 									{
@@ -475,7 +569,10 @@ export async function loadProviderCatalog(
 									`models:${provider.providerId}`,
 									`${provider.providerId} cached model snapshot`,
 									async () => ({
-										models: await (catalog.cachedModelsFor?.(provider) ?? []),
+										models: await (catalog.cachedModelsFor?.(
+											provider,
+											discoveryCwd,
+										) ?? []),
 										source: "memory" as const,
 									}),
 								)
@@ -645,7 +742,7 @@ export function createProviderCatalogSnapshot(
 		ttlMs?: number;
 		now?: () => number;
 		load?: typeof loadProviderCatalog;
-		discoveryCwd?: string;
+		discoveryCwd?: string | (() => string);
 	} = {},
 ): ProviderCatalogSnapshot {
 	const providerList = () => [
@@ -674,9 +771,13 @@ export function createProviderCatalogSnapshot(
 	) =>
 		`${includeHostCapabilities ? "host" : "base"}:${
 			includeProviderCapabilities ? "provider" : "static"
-		}${includeProviderCapabilities ? `:${declaredPathKey(discoveryCwd)}` : ""}`;
+		}:${declaredPathKey(discoveryCwd)}`;
 	const effectiveDiscoveryCwd = (loadOptions: ProviderCatalogLoadOptions) =>
-		loadOptions.discoveryCwd ?? options.discoveryCwd ?? process.cwd();
+		loadOptions.discoveryCwd ??
+		(typeof options.discoveryCwd === "function"
+			? options.discoveryCwd()
+			: options.discoveryCwd) ??
+		process.cwd();
 
 	function store(
 		includeHostCapabilities: boolean,

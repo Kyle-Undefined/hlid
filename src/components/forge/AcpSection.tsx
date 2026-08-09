@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { HlidConfig } from "#/config";
+import { acpRuntimeIdentity } from "#/lib/acpRuntimeIdentity";
 import { includesSearchText } from "#/lib/search";
 import {
 	type AcpAgentInfo,
@@ -14,27 +15,37 @@ import { Section } from "./fields";
 export function AcpSection({
 	initialCatalog,
 	value,
+	savedValue = value,
 	onChange,
 	onRefreshProviders,
 }: {
 	initialCatalog: AcpCatalogItem[];
 	value: NonNullable<HlidConfig["acp_agents"]>;
+	savedValue?: NonNullable<HlidConfig["acp_agents"]>;
 	onChange: (value: NonNullable<HlidConfig["acp_agents"]>) => void;
 	onRefreshProviders?: (providerId: string) => void | Promise<void>;
 }) {
 	const [catalog, setCatalog] = useState(initialCatalog);
 	const [search, setSearch] = useState("");
-	const [busy, setBusy] = useState<string | null>(null);
+	const [busy, setBusy] = useState<{
+		id: string;
+		type: "inspect" | "refresh";
+	} | null>(null);
 	const [auth, setAuth] = useState<Record<string, AcpAuthMethod[]>>({});
 	const [agentInfo, setAgentInfo] = useState<
 		Record<string, AcpAgentInfo | null>
 	>({});
+	const [optionsRefreshed, setOptionsRefreshed] = useState<
+		Record<string, boolean>
+	>({});
 	const [error, setError] = useState<string | null>(null);
+	const [catalogRefreshing, setCatalogRefreshing] = useState(false);
 	const operation = useRef<symbol | null>(null);
 	useEffect(() => {
 		setCatalog(initialCatalog);
 		setAuth({});
 		setAgentInfo({});
+		setOptionsRefreshed({});
 	}, [initialCatalog]);
 	const shown = useMemo(() => {
 		const query = search.trim();
@@ -49,6 +60,7 @@ export function AcpSection({
 		const enabled = value.some((candidate) => candidate.id === item.id);
 		setAuth((current) => ({ ...current, [item.id]: [] }));
 		setAgentInfo((current) => ({ ...current, [item.id]: null }));
+		setOptionsRefreshed((current) => ({ ...current, [item.id]: false }));
 		onChange(
 			enabled
 				? value.filter((candidate) => candidate.id !== item.id)
@@ -62,6 +74,7 @@ export function AcpSection({
 	): void {
 		setAuth((current) => ({ ...current, [id]: [] }));
 		setAgentInfo((current) => ({ ...current, [id]: null }));
+		setOptionsRefreshed((current) => ({ ...current, [id]: false }));
 		onChange(
 			value.map((candidate) =>
 				candidate.id === id ? { ...candidate, ...patch } : candidate,
@@ -76,7 +89,7 @@ export function AcpSection({
 		if (operation.current) return;
 		const token = Symbol(item.id);
 		operation.current = token;
-		setBusy(item.id);
+		setBusy({ id: item.id, type: "inspect" });
 		setError(null);
 		setAuth((current) => ({ ...current, [item.id]: [] }));
 		setAgentInfo((current) => ({ ...current, [item.id]: null }));
@@ -106,10 +119,12 @@ export function AcpSection({
 		if (operation.current) return;
 		const token = Symbol(item.id);
 		operation.current = token;
-		setBusy(item.id);
+		setBusy({ id: item.id, type: "refresh" });
 		setError(null);
+		setOptionsRefreshed((current) => ({ ...current, [item.id]: false }));
 		try {
 			await onRefreshProviders(item.providerId);
+			setOptionsRefreshed((current) => ({ ...current, [item.id]: true }));
 		} catch (cause) {
 			setError(
 				cause instanceof Error ? cause.message : "ACP option refresh failed",
@@ -122,8 +137,27 @@ export function AcpSection({
 		}
 	}
 
+	async function refreshCatalog(): Promise<void> {
+		if (catalogRefreshing || busy !== null) return;
+		setCatalogRefreshing(true);
+		setError(null);
+		try {
+			const refreshed = await getAcpRegistryFn({ data: { refresh: true } });
+			setCatalog(refreshed);
+			setAuth({});
+			setAgentInfo({});
+			setOptionsRefreshed({});
+		} catch (cause) {
+			setError(
+				cause instanceof Error ? cause.message : "ACP catalog refresh failed",
+			);
+		} finally {
+			setCatalogRefreshing(false);
+		}
+	}
+
 	return (
-		<Section title="Agent Client Protocol Catalog">
+		<Section title="OpenCode and ACP agents">
 			<div className="px-4 py-3 space-y-2">
 				<div className="flex gap-2">
 					<input
@@ -134,18 +168,16 @@ export function AcpSection({
 					/>
 					<button
 						type="button"
-						onClick={() =>
-							void getAcpRegistryFn({ data: { refresh: true } }).then(
-								setCatalog,
-							)
-						}
+						disabled={catalogRefreshing || busy !== null}
+						onClick={() => void refreshCatalog()}
 						className="px-3 py-1.5 border border-border text-[10px] tracking-widest uppercase"
 					>
-						Refresh
+						{catalogRefreshing ? "Refreshing…" : "Refresh"}
 					</button>
 				</div>
 				<p className="text-xs text-muted-foreground">
-					Enabling an agent saves its configuration and requires a Hlid restart.
+					Enabling, disabling, or changing an ACP agent applies immediately.
+					Sessions using a removed or replaced agent are disconnected.
 					Installation commands are guidance only and are never run
 					automatically.
 				</p>
@@ -157,21 +189,40 @@ export function AcpSection({
 				</p>
 				{error && <p className="text-xs text-destructive">{error}</p>}
 			</div>
-			{shown.map((item) => (
-				<AcpAgentCard
-					key={item.id}
-					item={item}
-					configured={value.find((candidate) => candidate.id === item.id)}
-					busy={busy === item.id}
-					disabled={busy !== null}
-					authMethods={auth[item.id]}
-					agentInfo={agentInfo[item.id]}
-					onToggle={() => toggle(item)}
-					onUpdateOverride={(patch) => updateOverride(item.id, patch)}
-					onInspect={(methodId) => void inspect(item, methodId)}
-					onRefreshOptions={() => void refreshOptions(item)}
-				/>
-			))}
+			{shown.map((item) => {
+				const openCode = item.id === "opencode";
+				const configured = value.find((candidate) => candidate.id === item.id);
+				const savedConfigured = savedValue.find(
+					(candidate) => candidate.id === item.id,
+				);
+				const configurationCurrent =
+					Boolean(savedConfigured) &&
+					acpRuntimeIdentity(configured ? [configured] : []) ===
+						acpRuntimeIdentity(savedConfigured ? [savedConfigured] : []);
+				return (
+					<div
+						key={item.id}
+						className={
+							openCode ? "border-y border-primary/30 bg-primary/5" : undefined
+						}
+					>
+						<AcpAgentCard
+							item={item}
+							configured={configured}
+							operation={busy?.id === item.id ? busy.type : null}
+							disabled={busy !== null}
+							authMethods={auth[item.id]}
+							agentInfo={agentInfo[item.id]}
+							optionsRefreshed={optionsRefreshed[item.id] ?? false}
+							configurationCurrent={configurationCurrent}
+							onToggle={() => toggle(item)}
+							onUpdateOverride={(patch) => updateOverride(item.id, patch)}
+							onInspect={(methodId) => void inspect(item, methodId)}
+							onRefreshOptions={() => void refreshOptions(item)}
+						/>
+					</div>
+				);
+			})}
 		</Section>
 	);
 }

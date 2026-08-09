@@ -66,6 +66,25 @@ describe.sequential("findAcpExecutable", () => {
 		}
 	});
 
+	it("prefers a newly installed command ahead of a cached lower-priority executable", async () => {
+		const first = mkdtempSync(join(tmpdir(), "hlid-acp-path-first-"));
+		const second = mkdtempSync(join(tmpdir(), "hlid-acp-path-second-"));
+		const command = `hlid-acp-priority-${process.pid}`;
+		process.env.PATH = [first, second, originalPath]
+			.filter(Boolean)
+			.join(delimiter);
+		try {
+			const lowerPriority = installExecutable(second, command);
+			await expect(findAcpExecutable(command)).resolves.toBe(lowerPriority);
+
+			const higherPriority = installExecutable(first, command);
+			await expect(findAcpExecutable(command)).resolves.toBe(higherPriority);
+		} finally {
+			rmSync(first, { recursive: true, force: true });
+			rmSync(second, { recursive: true, force: true });
+		}
+	});
+
 	it("resolves explicit relative commands against the launch cwd", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "hlid-acp-relative-"));
 		try {

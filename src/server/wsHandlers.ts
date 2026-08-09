@@ -115,6 +115,8 @@ function delegationMutationTarget(
 		case "set_provider":
 		case "set_model":
 		case "set_effort":
+		case "set_provider_mode":
+		case "restore_provider_mode":
 		case "set_permission_mode":
 		case "set_approvals_reviewer":
 		case "workflow_control":
@@ -486,6 +488,7 @@ async function handleRealtimeControl(
 					event.type === "tool_result" ||
 					event.type === "tool_update" ||
 					event.type === "tool_activity_update" ||
+					event.type === "tool_progress_update" ||
 					event.type === "attachment_created";
 				if (
 					durableLiveActivity ||
@@ -1195,6 +1198,41 @@ async function handleEffort(
 	// Raven updates its picker optimistically. Always republish the accepted
 	// server value so native rejection or supersession converges immediately.
 	entry.runState.broadcast({ type: "status", ...status });
+}
+
+async function handleProviderMode(
+	context: MessageContext,
+	entry: PoolEntry,
+	msg: MessageOf<"set_provider_mode"> | MessageOf<"restore_provider_mode">,
+): Promise<void> {
+	const targetSessionId =
+		msg.session_id ??
+		entry.manager.getCurrentSessionId() ??
+		context.ws.data.subscribedSessionId;
+	try {
+		if (msg.type === "set_provider_mode") {
+			await entry.manager.setProviderSessionMode(msg.mode);
+		} else {
+			await entry.manager.restoreProviderSessionMode();
+		}
+		entry.manager.probeProviderSessionConfig(
+			(event) => entry.runState.broadcast(event),
+			{
+				sessionId: targetSessionId,
+				...(entry.manager.getAgentCwd()
+					? { agentCwd: entry.manager.getAgentCwd() }
+					: {}),
+			},
+		);
+	} catch (error) {
+		send(context.ws, {
+			type: "error",
+			message:
+				error instanceof Error
+					? error.message
+					: "Invalid provider session mode",
+		});
+	}
 }
 
 function handlePermissionResponse(
@@ -2054,6 +2092,12 @@ async function handleSessionMessage(
 				await resolveProbeScope(msg),
 			);
 			return;
+		case "probe_provider_config":
+			entry.manager.probeProviderSessionConfig(
+				sendProbeResult,
+				await resolveProbeScope(msg),
+			);
+			return;
 		case "mcp_control":
 			await handleMcpControl(context, entry, msg);
 			return;
@@ -2108,6 +2152,10 @@ async function handleSessionMessage(
 		case "set_effort":
 			await handleEffort(context, entry, msg);
 			broadcastSessionsStatus(context);
+			return;
+		case "set_provider_mode":
+		case "restore_provider_mode":
+			await handleProviderMode(context, entry, msg);
 			return;
 		case "sync_mcp_list":
 			if (msg.inventory)
@@ -2189,6 +2237,8 @@ async function handleMessage(
 		(msg.type === "set_provider" ||
 			msg.type === "set_model" ||
 			msg.type === "set_effort" ||
+			msg.type === "set_provider_mode" ||
+			msg.type === "restore_provider_mode" ||
 			msg.type === "set_permission_mode" ||
 			msg.type === "set_approvals_reviewer" ||
 			msg.type === "workflow_control" ||
@@ -2598,6 +2648,15 @@ async function handleMessage(
 				} finally {
 					releaseDetachedControl();
 				}
+			} else if (
+				msg.type === "set_provider_mode" ||
+				msg.type === "restore_provider_mode"
+			) {
+				send(context.ws, {
+					type: "error",
+					message:
+						"This provider session is not live. Send a turn before changing its native mode.",
+				});
 			} else if (msg.type === "workflow_control") {
 				send(context.ws, {
 					type: "error",

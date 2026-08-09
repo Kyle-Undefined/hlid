@@ -103,6 +103,195 @@ function advancedClaudeProvider(
 }
 
 describe("SessionManager — setModel", () => {
+	it("forwards live provider options with the owning Raven session scope", async () => {
+		const { provider, captured } = makeCaptureProvider("acp:fake");
+		const config = makeConfig("fake-fast");
+		config.vault_provider = "acp:fake";
+		const emit = vi.fn();
+		const sm = new SessionManager(config, makeProviders(provider));
+
+		await sm.runQuery("hello", emit, { sessionId: "config-session" });
+		captured.params?.onSessionConfigChange?.({
+			models: [{ value: "fake-smart", label: "Fake Smart" }],
+			activeModel: "fake-smart",
+			effortLevels: [{ value: "high", label: "High" }],
+			activeEffort: "high",
+		});
+
+		expect(emit).toHaveBeenCalledWith({
+			type: "provider_config_options",
+			provider_id: "acp:fake",
+			session_id: "config-session",
+			models: [{ value: "fake-smart", label: "Fake Smart" }],
+			activeModel: "fake-smart",
+			effortLevels: [{ value: "high", label: "High" }],
+			activeEffort: "high",
+		});
+	});
+
+	it("replays live dependent options without starting a provider and delegates mode changes", async () => {
+		const setSessionMode = vi.fn().mockResolvedValue(undefined);
+		const restoreSessionMode = vi.fn().mockResolvedValue(undefined);
+		const snapshot = {
+			modes: [
+				{ value: "build", label: "Build" },
+				{ value: "review", label: "Review" },
+			],
+			activeMode: "build",
+		};
+		const { provider } = makeSwitchableProvider(
+			{
+				sessionConfig: () => snapshot,
+				setSessionMode,
+				restoreSessionMode,
+			},
+			"acp:fake",
+		);
+		const config = makeConfig("fake-fast");
+		config.vault_provider = "acp:fake";
+		const sm = new SessionManager(config, makeProviders(provider));
+		await sm.runQuery("hello", vi.fn(), { sessionId: "config-session" });
+
+		const replay = vi.fn();
+		sm.probeProviderSessionConfig(replay, {
+			sessionId: "config-session",
+		});
+		expect(replay).toHaveBeenCalledWith({
+			type: "provider_config_options",
+			provider_id: "acp:fake",
+			session_id: "config-session",
+			...snapshot,
+		});
+
+		await sm.setProviderSessionMode("review");
+		expect(setSessionMode).toHaveBeenCalledWith("review");
+		await sm.restoreProviderSessionMode();
+		expect(restoreSessionMode).toHaveBeenCalledTimes(1);
+	});
+
+	it("holds an immediately submitted turn behind an accepted provider mode change", async () => {
+		const modeGate = deferred();
+		const setSessionMode = vi.fn(() => modeGate.promise);
+		const { provider, getSession } = makeSwitchableProvider(
+			{ setSessionMode },
+			"acp:fake",
+		);
+		const config = makeConfig("fake-fast");
+		config.vault_provider = "acp:fake";
+		const sm = new SessionManager(config, makeProviders(provider));
+		await sm.runQuery("first", vi.fn(), { sessionId: "mode-chat-barrier" });
+		const send = vi.mocked(
+			getSession()?.send as NonNullable<AgentSession["send"]>,
+		);
+		send.mockClear();
+
+		const modeChange = sm.setProviderSessionMode("review");
+		const nextTurn = sm.runQuery("after mode", vi.fn(), {
+			sessionId: "mode-chat-barrier",
+		});
+		await vi.waitFor(() =>
+			expect(setSessionMode).toHaveBeenCalledWith("review"),
+		);
+		expect(send).not.toHaveBeenCalled();
+
+		modeGate.resolve();
+		await modeChange;
+		await nextTurn;
+		expect(send).toHaveBeenCalledWith(
+			"test prompt",
+			expect.objectContaining({ inputOrigin: "unclassified" }),
+		);
+	});
+
+	it("uses the authoritative provider Plan mode for an immediate turn", async () => {
+		const modeGate = deferred();
+		let activeMode = "build";
+		const setSessionMode = vi.fn(async (mode: string) => {
+			await modeGate.promise;
+			activeMode = mode;
+		});
+		const setPermissionMode = vi.fn(async (mode: string) => {
+			activeMode = mode === "plan" ? "plan" : "build";
+		});
+		const { provider, getSession } = makeSwitchableProvider(
+			{
+				setSessionMode,
+				setPermissionMode,
+				sessionConfig: () => ({
+					modes: [
+						{ value: "build", label: "Build" },
+						{ value: "plan", label: "Plan" },
+					],
+					activeMode,
+					planModeValue: "plan",
+				}),
+			},
+			"acp:fake",
+		);
+		const config = makeConfig("fake-fast");
+		config.vault_provider = "acp:fake";
+		const sm = new SessionManager(config, makeProviders(provider));
+		await sm.runQuery("first", vi.fn(), {
+			sessionId: "plan-chat-barrier",
+			planMode: false,
+		});
+		const send = vi.mocked(
+			getSession()?.send as NonNullable<AgentSession["send"]>,
+		);
+		send.mockClear();
+		setPermissionMode.mockClear();
+
+		const modeChange = sm.setProviderSessionMode("plan");
+		const nextTurn = sm.runQuery("after Plan", vi.fn(), {
+			sessionId: "plan-chat-barrier",
+			planMode: false,
+		});
+		await vi.waitFor(() => expect(setSessionMode).toHaveBeenCalledWith("plan"));
+		expect(send).not.toHaveBeenCalled();
+		expect(setPermissionMode).not.toHaveBeenCalled();
+
+		modeGate.resolve();
+		await modeChange;
+		await nextTurn;
+		expect(setPermissionMode).toHaveBeenCalledTimes(1);
+		expect(setPermissionMode).toHaveBeenCalledWith("plan");
+		expect(activeMode).toBe("plan");
+		expect(send).toHaveBeenCalledWith(
+			"test prompt",
+			expect.objectContaining({ inputOrigin: "unclassified" }),
+		);
+	});
+
+	it("serializes a Plan mode change before its dependent effort update", async () => {
+		const modeGate = deferred();
+		const order: string[] = [];
+		const setSessionMode = vi.fn(async () => {
+			order.push("mode:start");
+			await modeGate.promise;
+			order.push("mode:end");
+		});
+		const setEffort = vi.fn(async () => {
+			order.push("effort");
+		});
+		const { provider } = makeSwitchableProvider(
+			{ setSessionMode, setEffort },
+			"acp:fake",
+		);
+		const config = makeConfig("fake-fast");
+		config.vault_provider = "acp:fake";
+		const sm = new SessionManager(config, makeProviders(provider));
+		await sm.runQuery("first", vi.fn(), { sessionId: "mode-effort-order" });
+
+		const modeChange = sm.setProviderSessionMode("plan");
+		const effortChange = sm.setEffort("high");
+		await vi.waitFor(() => expect(order).toEqual(["mode:start"]));
+		expect(setEffort).not.toHaveBeenCalled();
+
+		modeGate.resolve();
+		await Promise.all([modeChange, effortChange]);
+		expect(order).toEqual(["mode:start", "mode:end", "effort"]);
+	});
+
 	it("updates getStatus().model with no active AgentSession (no-op delegate)", async () => {
 		const sm = new SessionManager(
 			makeConfig("model-a"),
@@ -879,12 +1068,66 @@ describe("SessionManager — setProvider", () => {
 		});
 
 		providers.delete("cliproxy-codex");
-		expect(sm.retireProviderSessions(new Set(["cliproxy-codex"]))).toBe(true);
+		expect(await sm.retireProviderSessions(new Set(["cliproxy-codex"]))).toBe(
+			true,
+		);
 		sm.syncConfig(makeConfig("claude-sonnet-4-6"));
 
 		expect(proxyCancel).toHaveBeenCalledOnce();
 		expect(sm.getProviderId()).toBe("claude");
 		expect(sm.getStatus().model).toBe("claude-sonnet-4-6");
+	});
+
+	it("retires a replaced ACP runtime without clearing the selected provider", async () => {
+		const oldRuntime = makeSwitchableProvider({}, "acp:opencode");
+		const providers = makeProviders(oldRuntime.provider);
+		const sm = new SessionManager(makeConfig("claude-sonnet-4-6"), providers);
+		await sm.setProvider("acp:opencode", { model: "open-model" });
+		await sm.runQuery("first", () => {}, {
+			sessionId: "replace-opencode-chat",
+		});
+
+		const replacement = makeSwitchableProvider({}, "acp:opencode");
+		providers.set("acp:opencode", replacement.provider);
+		expect(
+			await sm.retireProviderSessions(new Set(["acp:opencode"]), {
+				preserveSelection: true,
+			}),
+		).toBe(true);
+
+		expect(oldRuntime.getSession()?.cancel).toHaveBeenCalledOnce();
+		expect(sm.getProviderId()).toBe("acp:opencode");
+		expect(sm.getStatus().model).toBe("open-model");
+		await sm.runQuery("second", () => {}, {
+			sessionId: "replace-opencode-chat",
+		});
+		expect(replacement.getSession()).toBeDefined();
+	});
+
+	it("waits for owned ACP cleanup before completing runtime retirement", async () => {
+		const cleanup = deferred();
+		const cancelAndWait = vi.fn(() => cleanup.promise);
+		const oldRuntime = makeSwitchableProvider(
+			{ cancelAndWait },
+			"acp:opencode",
+		);
+		const providers = makeProviders(oldRuntime.provider);
+		const sm = new SessionManager(makeConfig("claude-sonnet-4-6"), providers);
+		await sm.setProvider("acp:opencode");
+		await sm.runQuery("first", vi.fn(), { sessionId: "retire-cleanup-chat" });
+
+		let settled = false;
+		const retirement = sm
+			.retireProviderSessions(new Set(["acp:opencode"]))
+			.then((retired) => {
+				settled = true;
+				return retired;
+			});
+		await vi.waitFor(() => expect(cancelAndWait).toHaveBeenCalledOnce());
+		expect(settled).toBe(false);
+
+		cleanup.resolve();
+		await expect(retirement).resolves.toBe(true);
 	});
 });
 

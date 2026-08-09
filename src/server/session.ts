@@ -479,6 +479,8 @@ type RunQueryArgs = {
 	readonly effortReady?: Promise<void>;
 	/** Permission work already accepted when this turn entered the queue. */
 	readonly permissionModeReady?: Promise<void>;
+	/** Provider-native mode work already accepted when this turn entered the queue. */
+	readonly providerSessionModeReady?: Promise<void>;
 	/** Codex profile selection in effect when this turn entered the queue. */
 	readonly codexPermissionProfileGeneration?: number;
 	/** Accepted while a Codex Routine owned the active purpose-built runtime. */
@@ -905,6 +907,7 @@ function buildAgentQueryParams(options: {
 	executable: string | undefined;
 	windowsComputerUse: AgentQueryParams["windowsComputerUse"];
 	onGoalChange?: AgentQueryParams["onGoalChange"];
+	onSessionConfigChange?: AgentQueryParams["onSessionConfigChange"];
 	onProviderInitiatedTurn?: AgentQueryParams["onProviderInitiatedTurn"];
 	claudeCrossSessionInbound?: AgentQueryParams["claudeCrossSessionInbound"];
 	claude?: AgentQueryParams["claude"];
@@ -976,6 +979,7 @@ function buildAgentQueryParams(options: {
 		executable: options.executable,
 		windowsComputerUse: options.windowsComputerUse,
 		onGoalChange: options.onGoalChange,
+		onSessionConfigChange: options.onSessionConfigChange,
 		onProviderInitiatedTurn: options.onProviderInitiatedTurn,
 		claudeCrossSessionInbound: options.claudeCrossSessionInbound,
 		...(options.claude ? { claude: options.claude } : {}),
@@ -1384,6 +1388,8 @@ export class SessionManager {
 	private effortChangeTail: Promise<void> = Promise.resolve();
 	/** Invalidates an in-flight effort request when setProvider replaces its selection. */
 	private effortControlGeneration = 0;
+	/** Preserves provider-declared mode ordering when Raven sends rapid choices. */
+	private providerSessionModeChangeTail: Promise<void> = Promise.resolve();
 	/** Extension changes made mid-turn retire the native runtime before its next turn. */
 	private restartProviderRuntimeAfterTurn = false;
 	private maxTurns: number | undefined;
@@ -3652,6 +3658,80 @@ export class SessionManager {
 		return operation;
 	}
 
+	private async applyProviderSessionModeControl(
+		control: (session: AgentSession) => Promise<void>,
+	): Promise<void> {
+		this.assertRealtimeIdle("changing the provider session mode");
+		const sessionId = this.currentSessionId;
+		const sessionGeneration = this.sessionControlGeneration;
+		const providerGeneration = this.providerOwnershipGeneration;
+		const providerId = this.getProviderId();
+		const agentSession = this.agentSession;
+		if (!agentSession) {
+			throw new Error(
+				`${this.providers.get(providerId)?.label ?? providerId} session mode control requires a live compatible session.`,
+			);
+		}
+		const configReady = Promise.all([
+			this.providerSessionModeChangeTail,
+			this.effortChangeTail,
+			this.permissionModeChangeTail,
+		]);
+		const operation = configReady.then(async () => {
+			const ownsControl = () =>
+				this.currentSessionId === sessionId &&
+				this.sessionControlGeneration === sessionGeneration &&
+				this.providerOwnershipGeneration === providerGeneration &&
+				this.getProviderId() === providerId &&
+				this.agentSession === agentSession;
+			if (!ownsControl()) {
+				throw new Error(
+					"The provider session changed before its mode was updated.",
+				);
+			}
+			await control(agentSession);
+			if (!ownsControl()) {
+				throw new Error(
+					"The provider session changed while its mode was updating.",
+				);
+			}
+		});
+		const settled = operation.then(
+			() => undefined,
+			() => undefined,
+		);
+		this.providerSessionModeChangeTail = settled;
+		// Model, effort, permission, and ACP mode setters all exchange complete
+		// configOptions snapshots. Share their ordering lane so a later response
+		// cannot overwrite a newer dependent selection.
+		this.permissionModeChangeTail = settled;
+		await operation;
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket set_provider_mode dispatch in wsHandlers.
+	async setProviderSessionMode(mode: string): Promise<void> {
+		await this.applyProviderSessionModeControl(async (session) => {
+			if (!session.setSessionMode) {
+				throw new Error(
+					`${this.providers.get(this.getProviderId())?.label ?? this.getProviderId()} session mode control requires a live compatible session.`,
+				);
+			}
+			await session.setSessionMode(mode);
+		});
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket restore_provider_mode dispatch in wsHandlers.
+	async restoreProviderSessionMode(): Promise<void> {
+		await this.applyProviderSessionModeControl(async (session) => {
+			if (!session.restoreSessionMode) {
+				throw new Error(
+					`${this.providers.get(this.getProviderId())?.label ?? this.getProviderId()} cannot restore a previous provider session mode.`,
+				);
+			}
+			await session.restoreSessionMode();
+		});
+	}
+
 	private ownsEffortChangeTarget(target: EffortChangeTarget): boolean {
 		return (
 			this.currentSessionId === target.sessionId &&
@@ -4148,6 +4228,24 @@ export class SessionManager {
 				(!scope.sessionId || scope.sessionId === this.currentSessionId) &&
 				providerId === this.getProviderId(activeAgentCwd),
 		};
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket probe_provider_config dispatch in wsHandlers.
+	probeProviderSessionConfig(
+		emit: (msg: ServerMessage) => void,
+		scope: ProviderProbeScope = {},
+	): void {
+		const { providerId, targetsLiveScope } = this.resolveProbeContext(scope);
+		if (!targetsLiveScope || !scope.sessionId) return;
+		const config = this.agentSession?.sessionConfig?.();
+		if (!config) return;
+		emit({
+			type: "provider_config_options",
+			provider_id: providerId,
+			session_id: scope.sessionId,
+			...(scope.agentCwd ? { agent_cwd: scope.agentCwd } : {}),
+			...config,
+		});
 	}
 
 	async probeMcpStatus(
@@ -5070,7 +5168,8 @@ export class SessionManager {
 				message.type !== "tool_event" &&
 				message.type !== "tool_result" &&
 				message.type !== "tool_update" &&
-				message.type !== "tool_activity_update"
+				message.type !== "tool_activity_update" &&
+				message.type !== "tool_progress_update"
 			) {
 				options.emit(message);
 				return;
@@ -5128,6 +5227,9 @@ export class SessionManager {
 						options.sessionId,
 						emit,
 					);
+					break;
+				case "tool_progress":
+					this.handleToolProgress(event, activity.turn, emit);
 					break;
 				case "tool_result":
 					queueLiveActivityWork(async () => {
@@ -6113,7 +6215,11 @@ export class SessionManager {
 	 * The Hlid transcript remains intact and the next turn hands it to the
 	 * configured fallback provider instead of talking to a stopped sidecar.
 	 */
-	retireProviderSessions(providerIds: ReadonlySet<string>): boolean {
+	async retireProviderSessions(
+		providerIds: ReadonlySet<string>,
+		options?: { preserveSelection?: boolean },
+	): Promise<boolean> {
+		const retiredSessions = new Set<AgentSession>();
 		const activeProviderId = this.agentSessionKey?.split("|", 1)[0];
 		const retiresActiveSession = Boolean(
 			activeProviderId && providerIds.has(activeProviderId),
@@ -6139,8 +6245,8 @@ export class SessionManager {
 
 		if (retiresRealtimeSession) {
 			this.realtimeGeneration += 1;
-			if (this.realtimeAgentSession !== this.agentSession) {
-				this.realtimeAgentSession?.cancel();
+			if (this.realtimeAgentSession) {
+				retiredSessions.add(this.realtimeAgentSession);
 			}
 			this.realtimeAgentSession = null;
 			this.realtimeMode = null;
@@ -6152,7 +6258,7 @@ export class SessionManager {
 		}
 		if (retiresActiveSession) {
 			this.stopBackgroundActivityObserver();
-			this.agentSession?.cancel();
+			if (this.agentSession) retiredSessions.add(this.agentSession);
 			this.agentSession = null;
 			this.agentSessionKey = null;
 			this.restartAgentSessionForEffort = false;
@@ -6166,7 +6272,7 @@ export class SessionManager {
 				this.currentSessionId !== null && this.messageSeq > 0;
 			this.resetEffectiveApprovalsReviewer();
 		}
-		if (retiresOverride) {
+		if (retiresOverride && !options?.preserveSelection) {
 			this.providerOverride = null;
 			this.modelOverride = null;
 			this.effortOverride = null;
@@ -6176,6 +6282,15 @@ export class SessionManager {
 			this.approvalsReviewer = this.defaultApprovalsReviewer();
 			this.resetEffectiveApprovalsReviewer();
 		}
+		await Promise.all(
+			[...retiredSessions].map(async (session) => {
+				if (session.cancelAndWait) {
+					await session.cancelAndWait();
+					return;
+				}
+				session.cancel();
+			}),
+		);
 		return true;
 	}
 
@@ -8180,6 +8295,24 @@ export class SessionManager {
 		}
 	}
 
+	private handleToolProgress(
+		event: Extract<AgentEvent, { type: "tool_progress" }>,
+		turn: TurnState,
+		emit: (msg: ServerMessage) => void,
+	): void {
+		if (
+			turn.retractedToolIds.has(event.toolId) ||
+			!this.providerContributionAccepted(event.providerFrame, turn)
+		) {
+			return;
+		}
+		emit({
+			type: "tool_progress_update",
+			id: event.toolId,
+			progress: event.progress,
+		});
+	}
+
 	/**
 	 * A provider turn cannot leave a child card live after the parent has ended.
 	 * Some transports finish or are cancelled without emitting a final child
@@ -8791,6 +8924,9 @@ export class SessionManager {
 			case "tool_activity_update":
 				this.handleToolActivityUpdate(event, turn, sessionId, emit);
 				break;
+			case "tool_progress":
+				this.handleToolProgress(event, turn, emit);
+				break;
 			case "tool_result":
 				await this.handleToolResult(event, turn, sessionId, emit, provider);
 				break;
@@ -9006,6 +9142,7 @@ export class SessionManager {
 			inputOrigin,
 			effortReady: this.effortChangeTail,
 			permissionModeReady: this.capturePermissionAcceptanceBarrier(),
+			providerSessionModeReady: this.providerSessionModeChangeTail,
 			codexPermissionProfileGeneration: this.codexPermissionProfileGeneration,
 			acceptedBehindCodexPurposeBuiltTurn,
 		};
@@ -9110,6 +9247,7 @@ export class SessionManager {
 				inputOrigin: normalizeAgentInputOrigin(payload.inputOrigin),
 				effortReady: this.effortChangeTail,
 				permissionModeReady: this.capturePermissionAcceptanceBarrier(),
+				providerSessionModeReady: this.providerSessionModeChangeTail,
 				codexPermissionProfileGeneration: this.codexPermissionProfileGeneration,
 				options: {
 					...payload.options,
@@ -9914,6 +10052,9 @@ export class SessionManager {
 				title,
 				displayName,
 				description,
+				allowOnce,
+				allowSession,
+				allowAlways,
 				agentID,
 				interaction,
 			},
@@ -9988,6 +10129,9 @@ export class SessionManager {
 					title,
 					displayName,
 					description,
+					allowOnce,
+					allowSession,
+					allowAlways,
 					agentID,
 					signal,
 					passInput,
@@ -10328,6 +10472,9 @@ export class SessionManager {
 		title: string | undefined;
 		displayName: string | undefined;
 		description: string | undefined;
+		allowOnce: boolean | undefined;
+		allowSession: boolean | undefined;
+		allowAlways: boolean | undefined;
 		agentID: string | undefined;
 		signal: AbortSignal;
 		passInput: Record<string, unknown>;
@@ -10344,6 +10491,9 @@ export class SessionManager {
 			title,
 			displayName,
 			description,
+			allowOnce,
+			allowSession,
+			allowAlways,
 			agentID,
 			signal,
 			passInput,
@@ -10379,7 +10529,11 @@ export class SessionManager {
 				: undefined,
 			...(toolName.startsWith("hlid.windows_computer_use:")
 				? { allowOnce: false }
-				: {}),
+				: allowOnce !== undefined
+					? { allowOnce }
+					: {}),
+			...(allowSession !== undefined ? { allowSession } : {}),
+			...(allowAlways !== undefined ? { allowAlways } : {}),
 		};
 		let denyMessage: string | undefined;
 		let approvalSaveScope: "session" | "local" | undefined;
@@ -11128,6 +11282,26 @@ export class SessionManager {
 				executable,
 				windowsComputerUse: this.windowsComputerUse,
 				onGoalChange,
+				onSessionConfigChange: sessionId
+					? (config) => {
+							if (
+								this.currentSessionId !== sessionId ||
+								!this.ownsProviderGeneration(
+									provider.providerId,
+									ownershipGeneration,
+								)
+							) {
+								return;
+							}
+							emit({
+								type: "provider_config_options",
+								provider_id: provider.providerId,
+								session_id: sessionId,
+								...(this.agentCwd ? { agent_cwd: this.agentCwd } : {}),
+								...config,
+							});
+						}
+					: undefined,
 				onProviderInitiatedTurn:
 					peerInboxEnabled && sessionId
 						? (trigger) =>
@@ -11352,8 +11526,10 @@ export class SessionManager {
 	}
 
 	private async runOneTurn(args: RunQueryArgs): Promise<void> {
+		await (args.providerSessionModeReady ?? this.providerSessionModeChangeTail);
 		await (args.effortReady ?? this.effortChangeTail);
 		await (args.permissionModeReady ?? this.permissionModeAcceptanceBarrier);
+		const authoritativeSessionConfig = this.agentSession?.sessionConfig?.();
 		const { userMessage, emit } = args;
 		const {
 			sessionId,
@@ -11361,7 +11537,7 @@ export class SessionManager {
 			attachments,
 			agentCwd,
 			turnId,
-			planMode,
+			planMode: requestedPlanMode,
 			planHtml,
 			commandAction,
 			vaultReferences,
@@ -11371,6 +11547,12 @@ export class SessionManager {
 			delegationContext,
 			backgroundSession,
 		} = args.options;
+		const planMode =
+			authoritativeSessionConfig?.activeMode &&
+			authoritativeSessionConfig.planModeValue
+				? authoritativeSessionConfig.activeMode ===
+					authoritativeSessionConfig.planModeValue
+				: requestedPlanMode;
 		this.currentTurnId = turnId;
 		await this.initSessionContext(
 			sessionId,

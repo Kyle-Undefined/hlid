@@ -96,6 +96,27 @@ describe("applyReplayTransition", () => {
 		expect(state.buffer).toEqual([start, result]);
 	});
 
+	it("coalesces repeated tool progress snapshots for reconnect replay", () => {
+		const state = makeState();
+		applyReplayTransition(state, {
+			type: "tool_progress_update",
+			id: "tool-1",
+			progress: { status: "in_progress", content: "step 1" },
+		});
+		applyReplayTransition(state, {
+			type: "tool_progress_update",
+			id: "tool-1",
+			progress: { status: "in_progress", content: "step 2" },
+		});
+		expect(state.buffer).toEqual([
+			{
+				type: "tool_progress_update",
+				id: "tool-1",
+				progress: { status: "in_progress", content: "step 2" },
+			},
+		]);
+	});
+
 	it("retains canonical assistant revisions in replay order", () => {
 		const state = makeState();
 		const revision: ServerMessage = {

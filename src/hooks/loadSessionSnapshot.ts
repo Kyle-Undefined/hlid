@@ -439,7 +439,8 @@ function isLiveRealtimeFrame(message: ServerMessage): boolean {
 		(message.type === "tool_event" ||
 			message.type === "tool_result" ||
 			message.type === "tool_update" ||
-			message.type === "tool_activity_update") &&
+			message.type === "tool_activity_update" ||
+			message.type === "tool_progress_update") &&
 		Boolean(message.realtime_utterance_id)
 	);
 }

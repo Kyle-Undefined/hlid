@@ -49,7 +49,7 @@ import { getAcpRegistryFn } from "#/lib/serverFns/acp";
 import { getConfig } from "#/lib/serverFns/config";
 import { getAccountInfoFn, getProvidersFn } from "#/lib/serverFns/providers";
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
-import { Route } from "./forge";
+import { providerOptionRefreshError, Route } from "./forge";
 
 type ForgeRoute = {
 	loader: () => Promise<Record<string, unknown>>;
@@ -112,6 +112,26 @@ describe("forge route loader", () => {
 });
 
 describe("forge inventory refresh", () => {
+	it("does not claim modes refreshed when ACP capability inspection fell back", () => {
+		const error = providerOptionRefreshError("acp:opencode", [
+			{
+				id: "acp:opencode",
+				label: "OpenCode",
+				available: true,
+				models: [{ value: "agent/model", label: "Agent Model" }],
+				modelCatalogRefresh: { status: "current", source: "live" },
+				capabilitySnapshot: {
+					status: "partial",
+					issues: ["Provider capability discovery failed"],
+				},
+			} as never,
+		]);
+
+		expect(error?.message).toBe(
+			"OpenCode option refresh was incomplete; models were refreshed, but live mode capabilities were not: Provider capability discovery failed",
+		);
+	});
+
 	it("waits for an explicit ACP option refresh beyond the recovery-loader budget", async () => {
 		vi.useFakeTimers();
 		try {

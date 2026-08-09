@@ -3328,6 +3328,56 @@ describe("SessionManager — live tool_event persistence", () => {
 		await runPromise;
 	});
 
+	it("forwards provider tool progress without settling the tool result", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const progress = {
+			status: "in_progress" as const,
+			title: "Running command",
+			content: "Downloaded 4 of 10 files",
+		};
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "sdk-progress-1" },
+				{
+					type: "tool_start",
+					toolId: "progress-tool-1",
+					name: "Bash",
+					input: { command: "download" },
+				},
+				{
+					type: "tool_progress",
+					toolId: "progress-tool-1",
+					progress,
+				},
+			],
+			gate,
+		);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const runPromise = sm.runQuery(
+			"download",
+			(message) => emitted.push(message),
+			{ sessionId: "sess-progress-1" },
+		);
+		await gateReached;
+		expect(emitted).toContainEqual({
+			type: "tool_progress_update",
+			id: "progress-tool-1",
+			progress,
+		});
+		expect(
+			emitted.some(
+				(message) =>
+					message.type === "tool_result" && message.id === "progress-tool-1",
+			),
+		).toBe(false);
+		release();
+		await runPromise;
+	});
+
 	it("multiple tool_starts share the reserved assistant_seq with a single placeholder", async () => {
 		let release!: () => void;
 		const gate = new Promise<void>((r) => {

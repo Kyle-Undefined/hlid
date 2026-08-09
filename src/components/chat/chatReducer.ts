@@ -83,6 +83,7 @@ export type PermissionMessage = {
 	requester?: PermissionRequestMessage["requester"];
 	policy?: PermissionRequestMessage["policy"];
 	allowOnce?: boolean;
+	allowSession?: boolean;
 	allowAlways?: boolean;
 	decision: "pending" | PermissionDecision | "provider_blocked";
 	providerOutcome?: "blocked";
@@ -292,6 +293,11 @@ export type Action =
 			type: "UPDATE_TOOL_ACTIVITY";
 			toolUseId: string;
 			taskActivity: NonNullable<ToolEventMessage["taskActivity"]>;
+	  }
+	| {
+			type: "UPDATE_TOOL_PROGRESS";
+			toolUseId: string;
+			progress: NonNullable<ToolEventMessage["progress"]>;
 	  }
 	| {
 			type: "ADD_TOOL_RESULT";
@@ -1285,6 +1291,10 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				...te,
 				taskActivity: action.taskActivity,
 			}));
+		case "UPDATE_TOOL_PROGRESS":
+			return patchToolEvent(state, action.toolUseId, (te) =>
+				te.result !== undefined ? te : { ...te, progress: action.progress },
+			);
 		case "ADD_TOOL_RESULT":
 			return state.map((message) => {
 				if (message.role !== "assistant") return message;
@@ -1296,6 +1306,7 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				if (!previous) return message;
 				const next = {
 					...previous,
+					progress: undefined,
 					result: action.content,
 					resultTruncated: action.resultTruncated,
 					resultLength: action.resultLength,
@@ -1434,6 +1445,7 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 					requester: action.msg.requester,
 					policy: action.msg.policy,
 					allowOnce: action.msg.allowOnce,
+					allowSession: action.msg.allowSession,
 					allowAlways: action.msg.allowAlways,
 					decision: "pending",
 				},

@@ -51,7 +51,22 @@ export function providerOptionRefreshError(
 		);
 	}
 	const refresh = provider.modelCatalogRefresh;
-	if (refresh?.status === "current") return null;
+	if (refresh?.status === "current") {
+		const capabilities = provider.capabilitySnapshot;
+		if (
+			provider.id.startsWith("acp:") &&
+			capabilities &&
+			capabilities.status !== "current"
+		) {
+			const capabilityReason = capabilities.issues?.[0];
+			return new Error(
+				`${provider.label} option refresh was incomplete; models were refreshed, but live mode capabilities were not${
+					capabilityReason ? `: ${capabilityReason}` : ""
+				}`,
+			);
+		}
+		return null;
+	}
 	const reason = refresh?.reason ?? provider.unavailableReason;
 	const detail = reason ? `: ${reason}` : "";
 	if (refresh?.status === "stale") {

@@ -248,6 +248,20 @@ describe("PermissionCard", () => {
 		expect(screen.getByLabelText("Approve for this session")).not.toBeNull();
 	});
 
+	it("hides chat-scoped approval when the provider has no one-shot option", () => {
+		render(
+			<PermissionCard
+				message={permission({ allowOnce: false, allowSession: false })}
+				onDecide={vi.fn()}
+			/>,
+		);
+		expect(screen.queryByLabelText("Approve")).toBeNull();
+		expect(screen.queryByLabelText("Approve for this session")).toBeNull();
+		expect(screen.getByLabelText("Approve always").className).not.toContain(
+			"col-span-2",
+		);
+	});
+
 	it("hides one-time approval when the native app needs a durable scope", () => {
 		render(
 			<PermissionCard

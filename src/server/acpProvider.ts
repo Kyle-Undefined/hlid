@@ -13,6 +13,7 @@ import {
 	type McpServer,
 	MultiSelectItems,
 	ndJsonStream,
+	type PermissionOption,
 	PROTOCOL_VERSION,
 	type SessionConfigOption,
 	type SessionModeState,
@@ -22,11 +23,17 @@ import {
 } from "@agentclientprotocol/sdk";
 import { describeHlidToolLoading } from "../lib/hlidContext";
 import { legacyProjectMcpAdapter } from "../lib/mcpConfig";
+import { replacementUnifiedDiff } from "../lib/unifiedDiff";
+import { discoverAcpProviderCapabilities } from "./acpCapabilityDiscovery";
 import {
 	acpCmdShimCommand,
 	acpLaunchUsesShell,
 	findAcpExecutable,
 } from "./acpExecutable";
+import {
+	acpSelectValues,
+	findAcpSessionConfigOption as configOption,
+} from "./acpSessionConfig";
 import type {
 	AgentEvent,
 	AgentProvider,
@@ -37,7 +44,9 @@ import type {
 	McpServerStatus,
 	ProviderForkCapability,
 	ProviderModelInfo,
+	ProviderSessionConfigSnapshot,
 	SlashCommand,
+	ToolProgressSnapshot,
 } from "./agentProvider";
 import { childIsRunning, waitForChildExit } from "./childProcessLifecycle";
 import { HLID_AGENT_NAMESPACE, HLID_AGENT_TOOL_SPECS } from "./hlidAgentTools";
@@ -371,6 +380,8 @@ export type AcpProviderOptions = {
 	requestModel?: (model: string) => string;
 	/** Workspace used for provider-owned metadata sessions. */
 	discoveryCwd?: string;
+	/** Opaque runtime/config identity used to isolate persisted provider metadata. */
+	metadataCacheIdentity?: string;
 	/** Provider-neutral lifecycle budgets. Primarily injectable for tests. */
 	timeouts?: Partial<AcpLifecycleTimeouts>;
 	/** Last registry-owned availability result, used before the first live check. */
@@ -475,6 +486,135 @@ function toolResultText(update: ToolCallUpdate): string {
 	return "";
 }
 
+const ACP_TOOL_PROGRESS_CHARS = 16_000;
+const ACP_PERMISSION_DESCRIPTION_CHARS = 2_000;
+const ACP_TOOL_PROGRESS_THROTTLE_MS = 100;
+
+function boundedText(
+	value: string,
+	limit: number,
+): {
+	text: string;
+	truncated: boolean;
+} {
+	return value.length <= limit
+		? { text: value, truncated: false }
+		: { text: `${value.slice(0, limit - 1)}…`, truncated: true };
+}
+
+function toolProgressSnapshot(
+	update: ToolCallUpdate,
+): ToolProgressSnapshot | null {
+	const content = toolResultText(update);
+	const bounded = content
+		? boundedText(content, ACP_TOOL_PROGRESS_CHARS)
+		: null;
+	const title = update.title?.trim() || undefined;
+	const locations = update.locations?.slice(0, 50).flatMap((location) =>
+		location.path.trim()
+			? [
+					{
+						path: location.path,
+						...(location.line != null ? { line: location.line } : {}),
+					},
+				]
+			: [],
+	);
+	if (
+		!title &&
+		!bounded &&
+		!locations?.length &&
+		update.status !== "in_progress"
+	) {
+		return null;
+	}
+	return {
+		status: update.status === "pending" ? "pending" : "in_progress",
+		...(title ? { title } : {}),
+		...(bounded
+			? {
+					content: bounded.text,
+					...(bounded.truncated ? { contentTruncated: true } : {}),
+				}
+			: {}),
+		...(locations?.length ? { locations } : {}),
+	};
+}
+
+function acpPermissionDescription(
+	toolCall: ToolCallUpdate,
+): string | undefined {
+	const textContent = (toolCall.content ?? []).flatMap((item) => {
+		if (item.type !== "content") return [];
+		const text = textFromContent(item.content);
+		return text ? [text] : [];
+	});
+	const content =
+		textContent.length > 0
+			? textContent.join("\n\n")
+			: toolContentText(toolCall.content);
+	return content
+		? boundedText(content, ACP_PERMISSION_DESCRIPTION_CHARS).text
+		: undefined;
+}
+
+function acpDiffChanges(content: ToolCallContent[] | null | undefined) {
+	return (content ?? []).slice(0, 20).flatMap((item) => {
+		if (item.type !== "diff") return [];
+		const bounded = boundedText(
+			replacementUnifiedDiff(item.path, item.oldText ?? "", item.newText),
+			ACP_TOOL_PROGRESS_CHARS,
+		);
+		return [
+			{
+				path: item.path,
+				kind: "update",
+				diff: bounded.text,
+				...(bounded.truncated ? { truncated: true } : {}),
+			},
+		];
+	});
+}
+
+function acpApprovalInput(toolCall: ToolCallUpdate): unknown {
+	const input = acpToolInput(toolCall);
+	const base =
+		input && typeof input === "object" && !Array.isArray(input)
+			? (input as Record<string, unknown>)
+			: { raw_input: input };
+	const changes = acpDiffChanges(toolCall.content);
+	const content = acpPermissionDescription(toolCall);
+	const terminalIds = (toolCall.content ?? []).flatMap((item) =>
+		item.type === "terminal" ? [item.terminalId] : [],
+	);
+	return {
+		...base,
+		...(changes.length > 0 && base.changes === undefined ? { changes } : {}),
+		...(content && base.content === undefined ? { content } : {}),
+		...(terminalIds.length > 0 ? { terminal_ids: terminalIds } : {}),
+	};
+}
+
+function permissionOptionForDecision(
+	options: PermissionOption[],
+	decision:
+		| { behavior: "allow"; saveScope?: "session" | "local" }
+		| {
+				behavior: "deny";
+		  },
+): PermissionOption | undefined {
+	// Never widen an unscoped Hlid decision into provider-persistent state.
+	const kinds =
+		decision.behavior === "deny"
+			? (["reject_once"] as const)
+			: decision.saveScope === "local"
+				? (["allow_always", "allow_once"] as const)
+				: (["allow_once"] as const);
+	return kinds.flatMap((kind) =>
+		options.filter((item) => item.kind === kind),
+	)[0];
+}
+
 function mergeToolCallUpdate(
 	previous: ToolCallUpdate | undefined,
 	update: ToolCallUpdate,
@@ -511,6 +651,8 @@ function eventsFromUpdate(
 	update: SessionUpdate,
 	planEventId?: string,
 	toolCalls?: Map<string, ToolCallUpdate>,
+	startedToolCalls?: Set<string>,
+	terminalToolCalls?: Set<string>,
 ): AgentEvent[] {
 	switch (update.sessionUpdate) {
 		case "agent_message_chunk": {
@@ -521,47 +663,45 @@ function eventsFromUpdate(
 			const text = textFromContent(update.content);
 			return text == null ? [] : [{ type: "summary", text }];
 		}
-		case "tool_call": {
+		case "tool_call":
+		case "tool_call_update": {
+			if (terminalToolCalls?.has(update.toolCallId)) return [];
 			const toolCall = mergeToolCallUpdate(
 				toolCalls?.get(update.toolCallId),
 				update,
 			);
 			toolCalls?.set(update.toolCallId, toolCall);
-			return [
-				{
+			const events: AgentEvent[] = [];
+			if (!startedToolCalls?.has(update.toolCallId)) {
+				startedToolCalls?.add(update.toolCallId);
+				events.push({
 					type: "tool_start",
 					toolId: update.toolCallId,
 					name: acpToolName(toolCall),
 					input: acpToolInput(toolCall),
-				},
-				...(toolCall.status === "completed" || toolCall.status === "failed"
-					? [
-							{
-								type: "tool_result" as const,
-								toolId: update.toolCallId,
-								content: toolResultText(toolCall),
-								isError: toolCall.status === "failed",
-							},
-						]
-					: []),
-			];
-		}
-		case "tool_call_update": {
-			const toolCall = mergeToolCallUpdate(
-				toolCalls?.get(update.toolCallId),
-				update,
-			);
-			toolCalls?.set(update.toolCallId, toolCall);
-			if (toolCall.status !== "completed" && toolCall.status !== "failed")
-				return [];
-			return [
-				{
+				});
+			}
+			if (toolCall.status === "completed" || toolCall.status === "failed") {
+				terminalToolCalls?.add(update.toolCallId);
+				events.push({
 					type: "tool_result",
 					toolId: update.toolCallId,
 					content: toolResultText(toolCall),
 					isError: toolCall.status === "failed",
-				},
-			];
+				});
+				return events;
+			}
+			if (update.sessionUpdate === "tool_call_update") {
+				const progress = toolProgressSnapshot(toolCall);
+				if (progress) {
+					events.push({
+						type: "tool_progress",
+						toolId: update.toolCallId,
+						progress,
+					});
+				}
+			}
+			return events;
 		}
 		case "plan": {
 			const toolId = planEventId ?? "acp-plan";
@@ -802,35 +942,12 @@ function supportsMcpTransport(
 }
 
 function selectOptions(option: SessionConfigOption): ProviderModelInfo[] {
-	if (option.type !== "select") return [];
-	return option.options.flatMap((item) =>
-		"group" in item
-			? item.options.map((nested) => ({
-					value: nested.value,
-					label: nested.name,
-					description: nested.description ?? undefined,
-					isDefault: nested.value === option.currentValue,
-				}))
-			: [
-					{
-						value: item.value,
-						label: item.name,
-						description: item.description ?? undefined,
-						isDefault: item.value === option.currentValue,
-					},
-				],
-	);
-}
-
-function configOption(
-	options: SessionConfigOption[],
-	category: string,
-	namePattern: RegExp,
-): SessionConfigOption | undefined {
-	return (
-		options.find((option) => option.category === category) ??
-		options.find((option) => namePattern.test(`${option.id} ${option.name}`))
-	);
+	return acpSelectValues(option).values.map((item) => ({
+		value: item.value,
+		label: item.name,
+		description: item.description ?? undefined,
+		isDefault: option.type === "select" && item.value === option.currentValue,
+	}));
 }
 
 function modeConfigOption(
@@ -886,6 +1003,71 @@ function implementationValue(
 			),
 		)?.id ?? null
 	);
+}
+
+function sessionConfigSnapshot(
+	options: SessionConfigOption[],
+	modes: SessionModeState | null,
+): ProviderSessionConfigSnapshot {
+	const model = configOption(options, "model", /model/i);
+	const thought = configOption(
+		options,
+		"thought_level",
+		/thought|reason|effort/i,
+	);
+	const activeModel = model?.type === "select" ? model.currentValue : undefined;
+	const effortLevels = thought
+		? selectOptions(thought).map((effort) => ({
+				value: effort.value,
+				label: effort.label,
+				...(effort.description ? { desc: effort.description } : {}),
+				...(effort.isDefault !== undefined
+					? { isDefault: effort.isDefault }
+					: {}),
+			}))
+		: undefined;
+	const models = model
+		? selectOptions(model).map((entry) => ({
+				...entry,
+				...(entry.value === activeModel && effortLevels?.length
+					? { efforts: effortLevels }
+					: {}),
+			}))
+		: undefined;
+	const stableMode = modeConfigOption(options);
+	const availableModes = stableMode
+		? selectOptions(stableMode).map((mode) => ({
+				value: mode.value,
+				label: mode.label,
+				...(mode.description ? { desc: mode.description } : {}),
+				...(mode.isDefault !== undefined ? { isDefault: mode.isDefault } : {}),
+			}))
+		: modes
+			? modes.availableModes.map((mode) => ({
+					value: mode.id,
+					label: mode.name,
+					...(mode.description ? { desc: mode.description } : {}),
+					isDefault: mode.id === modes.currentModeId,
+				}))
+			: undefined;
+	const planValue = stableMode
+		? planConfigValue(stableMode)
+		: planModeId(modes);
+	return {
+		...(models ? { models } : {}),
+		...(activeModel !== undefined ? { activeModel } : {}),
+		...(effortLevels ? { effortLevels } : {}),
+		...(thought?.type === "select"
+			? { activeEffort: thought.currentValue }
+			: {}),
+		...(availableModes ? { modes: availableModes } : {}),
+		...(stableMode?.type === "select"
+			? { activeMode: stableMode.currentValue }
+			: modes
+				? { activeMode: modes.currentModeId }
+				: {}),
+		...(planValue ? { planModeValue: planValue } : {}),
+	};
 }
 
 type ElicitationField = {
@@ -977,6 +1159,7 @@ type ActiveAcpPrompt = {
 type AcpMetadataInspection = {
 	initialized: InitializeResponse;
 	configOptions: SessionConfigOption[];
+	modes: SessionModeState | null;
 };
 
 class AcpSession implements AgentSession {
@@ -1010,9 +1193,23 @@ class AcpSession implements AgentSession {
 	private modes: SessionModeState | null = null;
 	private configOptions: SessionConfigOption[] = [];
 	private initialConfigValues = new Map<string, string>();
+	private configNotificationsReady = false;
+	private lastConfigSnapshot = "";
 	private implementationModeId: string | null = null;
 	private implementationConfigModeValue: string | null = null;
 	private readonly toolCalls = new Map<string, ToolCallUpdate>();
+	private readonly startedToolCalls = new Set<string>();
+	private readonly terminalToolCalls = new Set<string>();
+	private readonly toolProgressFingerprints = new Map<string, string>();
+	private readonly pendingToolProgress = new Map<
+		string,
+		Extract<AgentEvent, { type: "tool_progress" }>
+	>();
+	private readonly toolProgressTimers = new Map<
+		string,
+		ReturnType<typeof setTimeout>
+	>();
+	private readonly toolProgressEmittedAt = new Map<string, number>();
 	private approvedHtmlPlanToolIds = new Set<string>();
 	private htmlPlanReady = false;
 	private nativePlanText = "";
@@ -1050,6 +1247,68 @@ class AcpSession implements AgentSession {
 					this.runtimeAbortController.signal,
 				])
 			: this.runtimeAbortController.signal;
+	}
+
+	private flushToolProgress(toolId: string): void {
+		const timer = this.toolProgressTimers.get(toolId);
+		if (timer) clearTimeout(timer);
+		this.toolProgressTimers.delete(toolId);
+		const event = this.pendingToolProgress.get(toolId);
+		this.pendingToolProgress.delete(toolId);
+		if (!event) return;
+		this.toolProgressEmittedAt.set(toolId, Date.now());
+		this.events.push(event);
+	}
+
+	private queueToolProgress(
+		event: Extract<AgentEvent, { type: "tool_progress" }>,
+	): void {
+		if (this.terminalToolCalls.has(event.toolId)) return;
+		const fingerprint = JSON.stringify(event.progress);
+		if (this.toolProgressFingerprints.get(event.toolId) === fingerprint) return;
+		this.toolProgressFingerprints.set(event.toolId, fingerprint);
+		const now = Date.now();
+		const emittedAt = this.toolProgressEmittedAt.get(event.toolId);
+		const elapsed = emittedAt === undefined ? Infinity : now - emittedAt;
+		if (elapsed >= ACP_TOOL_PROGRESS_THROTTLE_MS) {
+			this.pendingToolProgress.delete(event.toolId);
+			const timer = this.toolProgressTimers.get(event.toolId);
+			if (timer) clearTimeout(timer);
+			this.toolProgressTimers.delete(event.toolId);
+			this.toolProgressEmittedAt.set(event.toolId, now);
+			this.events.push(event);
+			return;
+		}
+		this.pendingToolProgress.set(event.toolId, event);
+		if (this.toolProgressTimers.has(event.toolId)) return;
+		this.toolProgressTimers.set(
+			event.toolId,
+			setTimeout(
+				() => this.flushToolProgress(event.toolId),
+				ACP_TOOL_PROGRESS_THROTTLE_MS - elapsed,
+			),
+		);
+	}
+
+	private pushMappedEvent(event: AgentEvent): void {
+		if (event.type === "tool_progress") {
+			this.queueToolProgress(event);
+			return;
+		}
+		if (event.type === "tool_result") {
+			this.flushToolProgress(event.toolId);
+			this.toolProgressFingerprints.delete(event.toolId);
+			this.toolProgressEmittedAt.delete(event.toolId);
+		}
+		this.events.push(event);
+	}
+
+	private clearToolProgress(): void {
+		for (const timer of this.toolProgressTimers.values()) clearTimeout(timer);
+		this.toolProgressTimers.clear();
+		this.pendingToolProgress.clear();
+		this.toolProgressFingerprints.clear();
+		this.toolProgressEmittedAt.clear();
 	}
 
 	private negotiatedMcpServers(
@@ -1138,7 +1397,24 @@ class AcpSession implements AgentSession {
 				value,
 			}),
 		);
-		if (response) this.configOptions = response.configOptions;
+		if (response) {
+			this.configOptions = response.configOptions;
+			this.publishSessionConfig();
+		}
+	}
+
+	private publishSessionConfig(): void {
+		if (!this.configNotificationsReady || !this.params.onSessionConfigChange)
+			return;
+		const snapshot = sessionConfigSnapshot(this.configOptions, this.modes);
+		const serialized = JSON.stringify(snapshot);
+		if (serialized === this.lastConfigSnapshot) return;
+		this.lastConfigSnapshot = serialized;
+		try {
+			this.params.onSessionConfigChange(snapshot);
+		} catch (error) {
+			console.error("[acp] live session configuration callback failed:", error);
+		}
 	}
 
 	private adoptCreatedSession(created: {
@@ -1274,6 +1550,7 @@ class AcpSession implements AgentSession {
 						}),
 				);
 				this.modes = { ...this.modes, currentModeId: planningModeId };
+				this.publishSessionConfig();
 			}
 			return;
 		}
@@ -1292,6 +1569,7 @@ class AcpSession implements AgentSession {
 					}),
 			);
 			this.modes = { ...this.modes, currentModeId: this.implementationModeId };
+			this.publishSessionConfig();
 		}
 	}
 
@@ -1345,9 +1623,14 @@ class AcpSession implements AgentSession {
 		this.modes = null;
 		this.configOptions = [];
 		this.initialConfigValues.clear();
+		this.configNotificationsReady = false;
+		this.lastConfigSnapshot = "";
 		this.implementationModeId = null;
 		this.implementationConfigModeValue = null;
 		this.toolCalls.clear();
+		this.startedToolCalls.clear();
+		this.terminalToolCalls.clear();
+		this.clearToolProgress();
 		this.lastAgentMessageId = null;
 	}
 
@@ -1458,7 +1741,7 @@ class AcpSession implements AgentSession {
 			requestPermission: async ({ toolCall, options }) => {
 				const filePath = filePathFromToolCall(toolCall);
 				const toolName = acpToolName(toolCall);
-				const toolInput = acpToolInput(toolCall);
+				const toolInput = acpApprovalInput(toolCall);
 				const requiresObsidianCommandApproval = isObsidianRunCommandRequest(
 					toolName,
 					toolInput,
@@ -1473,6 +1756,16 @@ class AcpSession implements AgentSession {
 								toolUseID: toolCall.toolCallId,
 								signal,
 								title: toolCall.title ?? undefined,
+								description: acpPermissionDescription(toolCall),
+								allowOnce: options.some(
+									(option) => option.kind === "allow_once",
+								),
+								allowSession: options.some(
+									(option) => option.kind === "allow_once",
+								),
+								allowAlways: options.some(
+									(option) => option.kind === "allow_always",
+								),
 							});
 				if (signal.aborted) return { outcome: { outcome: "cancelled" } };
 				const allowed = decision.behavior === "allow";
@@ -1485,10 +1778,11 @@ class AcpSession implements AgentSession {
 				) {
 					this.approvedHtmlPlanToolIds.add(toolCall.toolCallId);
 				}
-				const option = options.find((item) =>
-					allowed
-						? item.kind.startsWith("allow")
-						: item.kind.startsWith("reject"),
+				const option = permissionOptionForDecision(
+					options,
+					decision.behavior === "allow"
+						? { behavior: "allow", saveScope: decision.saveScope }
+						: { behavior: "deny" },
 				);
 				return option
 					? { outcome: { outcome: "selected", optionId: option.optionId } }
@@ -1542,9 +1836,11 @@ class AcpSession implements AgentSession {
 				}
 				if (update.sessionUpdate === "current_mode_update" && this.modes) {
 					this.modes = { ...this.modes, currentModeId: update.currentModeId };
+					this.publishSessionConfig();
 				}
 				if (update.sessionUpdate === "config_option_update") {
 					this.configOptions = update.configOptions;
+					this.publishSessionConfig();
 				}
 				if (update.sessionUpdate === "plan") {
 					this.nativePlanText = planEntriesText(update.entries);
@@ -1567,7 +1863,13 @@ class AcpSession implements AgentSession {
 					update.sessionUpdate === "plan_removed"
 						? `acp-plan-${++this.planEventSeq}`
 						: undefined;
-				const events = eventsFromUpdate(update, planEventId, this.toolCalls);
+				const events = eventsFromUpdate(
+					update,
+					planEventId,
+					this.toolCalls,
+					this.startedToolCalls,
+					this.terminalToolCalls,
+				);
 				if (
 					(update.sessionUpdate === "tool_call" ||
 						update.sessionUpdate === "tool_call_update") &&
@@ -1580,7 +1882,7 @@ class AcpSession implements AgentSession {
 					}
 				}
 				for (const event of events) {
-					this.events.push(event);
+					this.pushMappedEvent(event);
 				}
 			},
 		};
@@ -1728,6 +2030,8 @@ class AcpSession implements AgentSession {
 		);
 		await this.setConfigValue("thought_level", this.params.effort);
 		await this.syncPermissionMode(this.params.permissionMode ?? "default");
+		this.configNotificationsReady = true;
+		this.publishSessionConfig();
 		this.events.push({ type: "session_start", sessionId: this.sessionId });
 	}
 
@@ -1781,6 +2085,9 @@ class AcpSession implements AgentSession {
 		this.nativePlanText = "";
 		this.lastAgentMessageId = null;
 		this.toolCalls.clear();
+		this.startedToolCalls.clear();
+		this.terminalToolCalls.clear();
+		this.clearToolProgress();
 		this.turnStartCostUsd = costStartUsd;
 		const response = await this.connection.prompt({
 			sessionId: this.sessionId,
@@ -1890,6 +2197,7 @@ class AcpSession implements AgentSession {
 		const initializing = this.initPromise;
 		if (!this.cancelled) {
 			this.cancelled = true;
+			this.clearToolProgress();
 			this.runtimeAbortController.abort(new Error("ACP session cancelled"));
 			if (this.connection && this.sessionId) {
 				void this.connection
@@ -1979,6 +2287,12 @@ class AcpSession implements AgentSession {
 		return this.commands;
 	}
 
+	sessionConfig(): ProviderSessionConfigSnapshot | null {
+		return this.configNotificationsReady
+			? sessionConfigSnapshot(this.configOptions, this.modes)
+			: null;
+	}
+
 	async setPermissionMode(mode: string): Promise<void> {
 		if (
 			mode === "default" ||
@@ -2011,6 +2325,126 @@ class AcpSession implements AgentSession {
 		);
 	}
 
+	private async applyAdvertisedSessionMode(mode: string): Promise<void> {
+		if (!this.connection || !this.sessionId) {
+			throw new Error("ACP session mode control requires a live session");
+		}
+		const stableMode = modeConfigOption(this.configOptions);
+		if (stableMode?.type === "select") {
+			if (!selectOptions(stableMode).some((option) => option.value === mode)) {
+				throw new Error(`ACP agent does not advertise session mode ${mode}`);
+			}
+			if (stableMode.currentValue !== mode) {
+				await this.applyConfigOption(
+					stableMode,
+					mode,
+					"session mode configuration",
+					this.timeouts.modeMs,
+				);
+			}
+			return;
+		}
+		const modes = this.modes;
+		if (!modes) {
+			throw new Error("ACP agent does not advertise session modes");
+		}
+		if (!modes.availableModes.some((candidate) => candidate.id === mode)) {
+			throw new Error(`ACP agent does not advertise session mode ${mode}`);
+		}
+		if (modes.currentModeId === mode) return;
+		await this.runPhase(
+			"legacy session mode configuration",
+			this.timeouts.modeMs,
+			() =>
+				this.connection?.setSessionMode({
+					sessionId: this.sessionId ?? "",
+					modeId: mode,
+				}),
+		);
+		this.modes = { ...modes, currentModeId: mode };
+		this.publishSessionConfig();
+	}
+
+	async setSessionMode(mode: string): Promise<void> {
+		await this.runLiveControl(async () => {
+			const stableMode = modeConfigOption(this.configOptions);
+			let nextImplementationConfigModeValue: string | undefined;
+			let nextImplementationModeId: string | undefined;
+			if (stableMode?.type === "select") {
+				const planValue = planConfigValue(stableMode);
+				if (
+					planValue &&
+					mode === planValue &&
+					stableMode.currentValue !== planValue
+				) {
+					nextImplementationConfigModeValue = stableMode.currentValue;
+				} else if (!planValue || mode !== planValue) {
+					nextImplementationConfigModeValue = mode;
+				}
+			} else if (this.modes) {
+				const planningModeId = planModeId(this.modes);
+				if (
+					planningModeId &&
+					mode === planningModeId &&
+					this.modes.currentModeId !== planningModeId
+				) {
+					nextImplementationModeId = this.modes.currentModeId;
+				} else if (!planningModeId || mode !== planningModeId) {
+					nextImplementationModeId = mode;
+				}
+			}
+			await this.applyAdvertisedSessionMode(mode);
+			if (nextImplementationConfigModeValue !== undefined) {
+				this.implementationConfigModeValue = nextImplementationConfigModeValue;
+			}
+			if (nextImplementationModeId !== undefined) {
+				this.implementationModeId = nextImplementationModeId;
+			}
+		});
+	}
+
+	async restoreSessionMode(): Promise<void> {
+		await this.runLiveControl(async () => {
+			const stableMode = modeConfigOption(this.configOptions);
+			if (stableMode?.type === "select") {
+				const planValue = planConfigValue(stableMode);
+				if (!planValue) {
+					throw new Error("ACP agent does not advertise a planning mode");
+				}
+				if (stableMode.currentValue !== planValue) return;
+				const target = this.implementationConfigModeValue;
+				if (
+					!target ||
+					target === planValue ||
+					!selectOptions(stableMode).some((option) => option.value === target)
+				) {
+					throw new Error(
+						"ACP session has no previous non-Plan mode to restore",
+					);
+				}
+				await this.applyAdvertisedSessionMode(target);
+				return;
+			}
+			if (!this.modes) {
+				throw new Error("ACP agent does not advertise session modes");
+			}
+			const planningModeId = planModeId(this.modes);
+			if (!planningModeId) {
+				throw new Error("ACP agent does not advertise a planning mode");
+			}
+			if (this.modes.currentModeId !== planningModeId) return;
+			const target = this.implementationModeId;
+			if (
+				!target ||
+				target === planningModeId ||
+				!this.modes.availableModes.some((mode) => mode.id === target)
+			) {
+				throw new Error("ACP session has no previous non-Plan mode to restore");
+			}
+			await this.applyAdvertisedSessionMode(target);
+		});
+	}
+
 	setPlanHtmlPath(path: string | undefined): void {
 		this.params.planHtmlPath = path;
 	}
@@ -2023,6 +2457,8 @@ class AcpSession implements AgentSession {
 export class AcpProvider implements AgentProvider {
 	readonly providerId: string;
 	readonly label: string;
+	readonly metadataCacheIdentity?: string;
+	readonly modelCatalogScope = "workspace" as const;
 	readonly permissionModes = [
 		{
 			value: "default",
@@ -2041,7 +2477,10 @@ export class AcpProvider implements AgentProvider {
 	private forkCapabilityProbe: Promise<
 		ProviderForkCapability | undefined
 	> | null = null;
-	private metadataInspection: Promise<AcpMetadataInspection> | null = null;
+	private metadataInspections = new Map<
+		string,
+		Promise<AcpMetadataInspection>
+	>();
 	private availabilitySnapshot:
 		| { available: boolean; reason?: string }
 		| undefined;
@@ -2049,6 +2488,7 @@ export class AcpProvider implements AgentProvider {
 	constructor(readonly options: AcpProviderOptions) {
 		this.providerId = options.id;
 		this.label = options.label;
+		this.metadataCacheIdentity = options.metadataCacheIdentity;
 		this.availabilitySnapshot = options.initialAvailability;
 	}
 
@@ -2107,34 +2547,37 @@ export class AcpProvider implements AgentProvider {
 		return this.availabilitySnapshot;
 	}
 
-	private inspectMetadata(): Promise<AcpMetadataInspection> {
-		if (this.metadataInspection) return this.metadataInspection;
-		const pending = inspectAcpMetadata(this.options).finally(() => {
-			if (this.metadataInspection === pending) this.metadataInspection = null;
+	private inspectMetadata(
+		cwd = this.options.discoveryCwd ?? process.cwd(),
+	): Promise<AcpMetadataInspection> {
+		const existing = this.metadataInspections.get(cwd);
+		if (existing) return existing;
+		const pending = inspectAcpMetadata(this.options, cwd).finally(() => {
+			if (this.metadataInspections.get(cwd) === pending) {
+				this.metadataInspections.delete(cwd);
+			}
 		});
-		this.metadataInspection = pending;
+		this.metadataInspections.set(cwd, pending);
 		return pending;
 	}
 
-	async listModels(): Promise<ProviderModelInfo[]> {
-		const { configOptions: options } = await this.inspectMetadata();
-		const model = configOption(options, "model", /model/i);
-		if (!model) return [];
-		const thought = configOption(
-			options,
-			"thought_level",
-			/thought|reason|effort/i,
+	async listModels(context?: { cwd: string }): Promise<ProviderModelInfo[]> {
+		const { configOptions: options } = await this.inspectMetadata(context?.cwd);
+		return sessionConfigSnapshot(options, null).models ?? [];
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Invoked through AgentProvider by explicit capability discovery.
+	async discoverCapabilities(context: { cwd: string }) {
+		const { initialized, configOptions, modes } = await this.inspectMetadata(
+			context.cwd,
 		);
-		const efforts = (thought ? selectOptions(thought) : []).map((effort) => ({
-			value: effort.value,
-			label: effort.label,
-			desc: effort.description,
-			isDefault: effort.isDefault,
-		}));
-		return selectOptions(model).map((entry) => ({
-			...entry,
-			...(efforts.length > 0 ? { efforts } : {}),
-		}));
+		return discoverAcpProviderCapabilities({
+			providerId: this.providerId,
+			cwd: context.cwd,
+			initialized,
+			configOptions,
+			modes,
+		});
 	}
 
 	// fallow-ignore-next-line unused-class-member -- Invoked through AgentProvider by explicit provider refresh.
@@ -2339,8 +2782,8 @@ function createInspectionDeadline(
 
 async function inspectAcpMetadata(
 	options: AcpProviderOptions,
+	cwd = options.discoveryCwd ?? process.cwd(),
 ): Promise<AcpMetadataInspection> {
-	const cwd = options.discoveryCwd ?? process.cwd();
 	const timeouts = acpTimeouts(options);
 	const deadline = createInspectionDeadline(
 		timeouts.inspectionMs,
@@ -2371,6 +2814,7 @@ async function inspectAcpMetadata(
 		return {
 			initialized,
 			configOptions: created.configOptions ?? [],
+			modes: created.modes ?? null,
 		};
 	} finally {
 		if (inspection && createdSessionId && !deadline.signal.aborted) {

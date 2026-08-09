@@ -1182,6 +1182,10 @@ describe("Raven composed submission behavior", () => {
 		rerender(<ChatPage />);
 
 		await waitFor(() => {
+			expect(state.send).toHaveBeenCalledWith({
+				type: "probe_provider_config",
+				session_id: expect.any(String),
+			});
 			expect(state.send).not.toHaveBeenCalledWith(
 				expect.objectContaining({ type: "sync_mcp_list" }),
 			);
@@ -2489,6 +2493,314 @@ describe("Raven composed submission behavior", () => {
 		expect(
 			screen.getByRole("button", { name: /^OpenCode · ask$/i }),
 		).toBeTruthy();
+	});
+
+	it("applies live dependent ACP effort and mode options to the active session", async () => {
+		state.model = "fake-smart";
+		state.effort = "medium";
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				vault_provider: "acp:opencode",
+				acp_agents: [{ id: "opencode" }],
+			},
+			existingSessionId: "saved-session",
+			isExplicitSession: true,
+			sessionModel: "fake-smart",
+			sessionProviderId: "acp:opencode",
+			sessionEffort: "medium",
+			sessionPermissionMode: "default",
+			providers: [
+				{
+					id: "acp:opencode",
+					label: "OpenCode",
+					available: true,
+					models: [
+						{ value: "fake-fast", label: "Fast" },
+						{ value: "fake-smart", label: "Smart" },
+					],
+					effortLevels: [{ value: "medium", label: "Medium" }],
+					permissionModes: [{ value: "default", label: "Ask" }],
+				},
+			],
+		};
+		state.sessions = [
+			{
+				session_id: "live-session",
+				db_session_id: "saved-session",
+				mode: "sdk",
+				state: "idle",
+				provider_id: "acp:opencode",
+				model: "fake-smart",
+				effort: "medium",
+				permission_mode: "default",
+			},
+		];
+		const initialProviders = state.loaderData.providers;
+
+		const view = render(<ChatPage />);
+		act(() => {
+			state.onMessage?.({
+				type: "provider_config_options",
+				provider_id: "acp:opencode",
+				session_id: "saved-session",
+				models: [
+					{ value: "fake-fast", label: "Fast" },
+					{
+						value: "fake-smart",
+						label: "Smart",
+						efforts: [
+							{ value: "high", label: "High", isDefault: true },
+							{ value: "xhigh", label: "Extra High" },
+						],
+					},
+				],
+				activeModel: "fake-smart",
+				activeEffort: "high",
+				effortLevels: [
+					{ value: "high", label: "High", isDefault: true },
+					{ value: "xhigh", label: "Extra High" },
+				],
+				modes: [
+					{ value: "build", label: "Build" },
+					{ value: "plan", label: "Plan", isDefault: true },
+					{ value: "review", label: "Review" },
+				],
+				activeMode: "plan",
+				planModeValue: "plan",
+			});
+		});
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", {
+					name: /OpenCode.*Smart.*High.*Ask/i,
+				}),
+			).toBeTruthy(),
+		);
+		expect(screen.getByRole("button", { name: "plan" }).className).toContain(
+			"text-primary",
+		);
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: /OpenCode.*Smart.*High.*Ask/i,
+			}),
+		);
+		expect(screen.getByRole("button", { name: "Extra High" })).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Medium" })).toBeNull();
+
+		state.loaderData = {
+			...state.loaderData,
+			providers: [
+				{
+					...(initialProviders as Array<Record<string, unknown>>)[0],
+					label: "OpenCode Reloaded",
+				},
+			],
+		};
+		view.rerender(<ChatPage />);
+		await screen.findByRole("button", {
+			name: /OpenCode Reloaded.*Smart.*High.*Plan.*Ask/i,
+		});
+		expect(screen.getByRole("button", { name: "Extra High" })).toBeTruthy();
+
+		fireEvent.click(screen.getByRole("button", { name: "Review" }));
+		expect(state.send).toHaveBeenCalledWith({
+			type: "set_provider_mode",
+			mode: "review",
+			session_id: "saved-session",
+		});
+		// The control stays provider-authoritative instead of flipping on delivery.
+		expect(screen.getByRole("button", { name: "plan" }).className).toContain(
+			"text-primary",
+		);
+		act(() => {
+			state.onMessage?.({
+				type: "provider_config_options",
+				provider_id: "acp:opencode",
+				session_id: "saved-session",
+				modes: [
+					{ value: "build", label: "Build" },
+					{ value: "plan", label: "Plan" },
+					{ value: "review", label: "Review", isDefault: true },
+				],
+				activeMode: "review",
+				planModeValue: "plan",
+			});
+		});
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: "plan" }).className,
+			).not.toContain("text-primary"),
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "plan" }));
+		expect(state.send).toHaveBeenCalledWith({
+			type: "set_provider_mode",
+			mode: "plan",
+			session_id: "saved-session",
+		});
+		expect(
+			screen.getByRole("button", { name: "plan" }).className,
+		).not.toContain("text-primary");
+		act(() => {
+			state.onMessage?.({
+				type: "provider_config_options",
+				provider_id: "acp:opencode",
+				session_id: "saved-session",
+				modes: [
+					{ value: "build", label: "Build" },
+					{ value: "plan", label: "Plan", isDefault: true },
+					{ value: "review", label: "Review" },
+				],
+				activeMode: "plan",
+				planModeValue: "plan",
+			});
+		});
+		await waitFor(() =>
+			expect(screen.getByRole("button", { name: "plan" }).className).toContain(
+				"text-primary",
+			),
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "plan" }));
+		expect(state.send).toHaveBeenLastCalledWith({
+			type: "restore_provider_mode",
+			session_id: "saved-session",
+		});
+		// Plan remains authoritative while the provider restores Review.
+		expect(screen.getByRole("button", { name: "plan" }).className).toContain(
+			"text-primary",
+		);
+		act(() => {
+			state.onMessage?.({
+				type: "provider_config_options",
+				provider_id: "acp:opencode",
+				session_id: "saved-session",
+				modes: [
+					{ value: "build", label: "Build" },
+					{ value: "plan", label: "Plan" },
+					{ value: "review", label: "Review", isDefault: true },
+				],
+				activeMode: "review",
+				planModeValue: "plan",
+			});
+		});
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: "plan" }).className,
+			).not.toContain("text-primary"),
+		);
+
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: "other-session",
+			providers: initialProviders,
+		};
+		state.sessions = [];
+		view.rerender(<ChatPage />);
+		const resetBadge = await screen.findByRole("button", {
+			name: /OpenCode.*Smart.*Medium.*Ask/i,
+		});
+		expect(
+			screen.getByRole("button", { name: "plan" }).className,
+		).not.toContain("text-primary");
+		fireEvent.click(resetBadge);
+		expect(screen.queryByRole("button", { name: "Extra High" })).toBeNull();
+		expect(screen.getByRole("button", { name: "Medium" })).toBeTruthy();
+	});
+
+	it("rebases an early live ACP snapshot onto a late provider catalog recovery", async () => {
+		let resolveProviders: (providers: Array<Record<string, unknown>>) => void =
+			() => {};
+		const providerRead = new Promise<Array<Record<string, unknown>>>(
+			(resolve) => {
+				resolveProviders = resolve;
+			},
+		);
+		vi.mocked(getProvidersFn).mockReturnValue(providerRead as never);
+		state.model = "fake-smart";
+		state.effort = "medium";
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				vault_provider: "acp:opencode",
+				acp_agents: [{ id: "opencode" }],
+			},
+			existingSessionId: "late-catalog-session",
+			isExplicitSession: true,
+			sessionModel: "fake-smart",
+			sessionProviderId: "acp:opencode",
+			sessionEffort: "medium",
+			sessionPermissionMode: "default",
+			providers: [],
+		};
+		state.sessions = [
+			{
+				session_id: "late-catalog-live",
+				db_session_id: "late-catalog-session",
+				mode: "sdk",
+				state: "idle",
+				provider_id: "acp:opencode",
+				model: "fake-smart",
+				effort: "medium",
+				permission_mode: "default",
+			},
+		];
+
+		render(<ChatPage />);
+		act(() => {
+			state.onMessage?.({
+				type: "provider_config_options",
+				provider_id: "acp:opencode",
+				session_id: "late-catalog-session",
+				models: [
+					{
+						value: "fake-smart",
+						label: "Smart",
+						efforts: [
+							{ value: "high", label: "High" },
+							{ value: "xhigh", label: "Extra High", isDefault: true },
+						],
+					},
+				],
+				activeModel: "fake-smart",
+				activeEffort: "xhigh",
+				effortLevels: [
+					{ value: "high", label: "High" },
+					{ value: "xhigh", label: "Extra High", isDefault: true },
+				],
+				modes: [
+					{ value: "build", label: "Build" },
+					{ value: "review", label: "Review", isDefault: true },
+				],
+				activeMode: "review",
+			});
+		});
+		expect(screen.queryByRole("button", { name: /xhigh.*Review/i })).toBeNull();
+
+		await act(async () => {
+			resolveProviders([
+				{
+					id: "acp:opencode",
+					label: "OpenCode",
+					available: true,
+					models: [{ value: "fake-smart", label: "Smart" }],
+					effortLevels: [{ value: "medium", label: "Medium" }],
+					permissionModes: [{ value: "default", label: "Ask" }],
+				},
+			]);
+			await providerRead;
+		});
+
+		const badge = await screen.findByRole("button", {
+			name: /OpenCode.*Smart.*xhigh.*Review.*Ask/i,
+		});
+		fireEvent.click(badge);
+		expect(screen.getByRole("button", { name: /^Extra High/ })).toBeTruthy();
+		expect(screen.getByRole("button", { name: /^Review/ })).toBeTruthy();
 	});
 
 	it("rolls an optimistic effort picker back on its correlated rejection", () => {
@@ -4765,7 +5077,7 @@ describe("raven route loader", () => {
 			expect(data.existingSessionId).toBe("s1");
 			expect(data.providers).toEqual([]);
 			expect(getProvidersFn).toHaveBeenCalledWith({
-				data: { preferCachedModels: true },
+				data: { preferCachedModels: true, discoveryCwd: "/vault" },
 			});
 		} finally {
 			vi.useRealTimers();
@@ -4860,9 +5172,9 @@ describe("raven route loader", () => {
 		expect(data.existingSessionId).toBe("cur");
 	});
 
-	it("derives the agent skill context from the resolved session cwd", async () => {
+	it("uses a cwd-mode agent workspace for provider options", async () => {
 		vi.mocked(getConfig).mockResolvedValue(
-			makeLoaderConfig({ agents: [{ path: "/proj" }] }) as never,
+			makeLoaderConfig({ agents: [{ path: "/proj", mode: "cwd" }] }) as never,
 		);
 		vi.mocked(getCurrentSessionFn).mockResolvedValue("cur" as never);
 		vi.mocked(getSessionSelectionFn).mockResolvedValue({
@@ -4875,6 +5187,32 @@ describe("raven route loader", () => {
 		const data = await route.loader({ deps: {} });
 		expect(data.agentSkillContext).toBe("/proj");
 		expect(getSessionSelectionFn).toHaveBeenCalledWith({ data: "cur" });
+		expect(getProvidersFn).toHaveBeenCalledWith({
+			data: { preferCachedModels: true, discoveryCwd: "/proj" },
+		});
+	});
+
+	it("uses the vault workspace for context-mode agent options", async () => {
+		vi.mocked(getConfig).mockResolvedValue(
+			makeLoaderConfig({
+				agents: [{ path: "/proj", mode: "context" }],
+			}) as never,
+		);
+		vi.mocked(getCurrentSessionFn).mockResolvedValue("cur" as never);
+		vi.mocked(getSessionSelectionFn).mockResolvedValue({
+			agentCwd: "/proj",
+			providerId: "acp:opencode",
+			model: null,
+			effort: null,
+			permissionMode: null,
+		} as never);
+
+		const data = await route.loader({ deps: {} });
+
+		expect(data.agentSkillContext).toBe("/proj");
+		expect(getProvidersFn).toHaveBeenCalledWith({
+			data: { preferCachedModels: true, discoveryCwd: "/vault" },
+		});
 	});
 
 	it("normalizes an equivalent saved WSL path to the configured agent path", async () => {

@@ -371,9 +371,9 @@ describe("ForgeSettings category navigation", () => {
 			},
 		);
 
-		fireEvent.click(screen.getByRole("button", { name: "Open catalog" }));
+		fireEvent.click(screen.getByRole("button", { name: "Open integrations" }));
 		expect(
-			screen.getByRole("heading", { name: "ACP Agent Catalog" }),
+			screen.getByRole("heading", { name: "OpenCode and ACP integrations" }),
 		).toBeTruthy();
 		fireEvent.click(screen.getByRole("button", { name: "← Integrations" }));
 

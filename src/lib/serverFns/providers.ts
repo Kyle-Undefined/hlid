@@ -13,6 +13,7 @@ const providerCatalogQuerySchema = z
 		includeProviderCapabilities: z.boolean().optional(),
 		preferCachedModels: z.boolean().optional(),
 		refreshProviderId: z.string().min(1).optional(),
+		discoveryCwd: z.string().min(1).max(4_096).optional(),
 	})
 	.optional();
 
@@ -40,6 +41,7 @@ export function providerCatalogPath(
 	if (data?.refresh && data.refreshProviderId) {
 		params.set("provider_id", data.refreshProviderId);
 	}
+	if (data?.discoveryCwd) params.set("capability_cwd", data.discoveryCwd);
 	if (params.size === 0) return path;
 	return `${path}${path.includes("?") ? "&" : "?"}${params}`;
 }

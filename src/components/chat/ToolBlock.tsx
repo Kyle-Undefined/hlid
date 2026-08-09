@@ -16,6 +16,7 @@ import {
 } from "#/hooks/toolEventDetailStore";
 import { useDialogFocus } from "#/hooks/useDialogFocus";
 import { useIsDesktop } from "#/hooks/useIsDesktop";
+import { replacementUnifiedDiff } from "#/lib/unifiedDiff";
 import type { SubagentSnapshot } from "#/server/agentProvider";
 import type { ToolEventMessage } from "#/server/protocol";
 import type { PermissionMessage } from "./chatReducer";
@@ -52,6 +53,15 @@ const taskActivityOpenOverrides = new Map<string, boolean>();
 function firstLine(text: string): string {
 	const nl = text.indexOf("\n");
 	return nl === -1 ? text : text.slice(0, nl);
+}
+
+function lastNonemptyLine(text: string): string {
+	return (
+		text
+			.split("\n")
+			.reverse()
+			.find((line) => line.trim()) ?? ""
+	);
 }
 
 function inputPreview(value: unknown): string {
@@ -119,27 +129,6 @@ function fileChanges(object: JsonObject | null): ToolDiffChange[] {
 	});
 }
 
-function prefixedDiffLines(value: string, prefix: "+" | "-"): string[] {
-	return value.length === 0
-		? []
-		: value.split("\n").map((line) => `${prefix}${line}`);
-}
-
-function replacementDiff(
-	path: string,
-	oldValue: string,
-	newValue: string,
-	label?: string,
-): string {
-	return [
-		`--- ${path}`,
-		`+++ ${path}`,
-		...(label ? [`@@ ${label} @@`] : []),
-		...prefixedDiffLines(oldValue, "-"),
-		...prefixedDiffLines(newValue, "+"),
-	].join("\n");
-}
-
 function claudeMutationChanges(
 	eventName: string,
 	input: JsonObject | null,
@@ -153,7 +142,7 @@ function claudeMutationChanges(
 			{
 				path,
 				kind: "add",
-				diff: replacementDiff(path, "", content),
+				diff: replacementUnifiedDiff(path, "", content),
 			},
 		];
 	}
@@ -165,7 +154,7 @@ function claudeMutationChanges(
 			{
 				path,
 				kind: "update",
-				diff: replacementDiff(path, oldValue, newValue),
+				diff: replacementUnifiedDiff(path, oldValue, newValue),
 			},
 		];
 	}
@@ -176,7 +165,7 @@ function claudeMutationChanges(
 		const newValue = stringField(edit, "new_string");
 		return oldValue === null || newValue === null
 			? []
-			: [replacementDiff(path, oldValue, newValue, `edit ${index + 1}`)];
+			: [replacementUnifiedDiff(path, oldValue, newValue, `edit ${index + 1}`)];
 	});
 	return diffs.length > 0
 		? [{ path, kind: "update", diff: diffs.join("\n") }]
@@ -532,6 +521,10 @@ type ToolEventPresentation = {
 	resultLabel?: string;
 	resultMeta: ToolResultMeta[];
 	diffChanges: ToolDiffChange[];
+	progressContent?: string;
+	progressPreview?: string;
+	progressTitle?: string;
+	progressTruncated?: boolean;
 };
 
 type ToolResultState = {
@@ -749,6 +742,10 @@ function toolEventPresentation(
 		normalized.diffChanges.length === 0 &&
 		(isReasoning || looksLikeMarkdown(strippedResult));
 	const previewText = normalized.resultText || result.preview;
+	const progressContent = event.progress?.content;
+	const progressPreview = progressContent
+		? lastNonemptyLine(progressContent).slice(0, RESULT_PREVIEW_CHARS)
+		: event.progress?.title;
 
 	return {
 		inputEntries: normalized.inputEntries,
@@ -766,6 +763,10 @@ function toolEventPresentation(
 		...(normalized.resultLabel ? { resultLabel: normalized.resultLabel } : {}),
 		resultMeta: normalized.resultMeta,
 		diffChanges: normalized.diffChanges,
+		...(progressContent ? { progressContent } : {}),
+		...(progressPreview ? { progressPreview } : {}),
+		...(event.progress?.title ? { progressTitle: event.progress.title } : {}),
+		...(event.progress?.contentTruncated ? { progressTruncated: true } : {}),
 	};
 }
 
@@ -802,17 +803,42 @@ function ToolDetailPanel({
 		);
 	}
 	return (
-		<ToolBlockExpandedPanel
-			inputEntries={presentation.inputEntries}
-			hasResult={presentation.hasResult}
-			isError={presentation.isError}
-			isReasoning={presentation.isReasoning}
-			renderResultAsMarkdown={presentation.renderResultAsMarkdown}
-			strippedResult={presentation.strippedResult}
-			resultLabel={presentation.resultLabel}
-			resultMeta={presentation.resultMeta}
-			diffChanges={presentation.diffChanges}
-		/>
+		<>
+			{!presentation.hasResult &&
+				(presentation.progressContent || presentation.progressTitle) && (
+					<PrivacyMask className="mx-3 mb-2 min-w-0 max-w-[calc(100%_-_1.5rem)] border border-primary/15 bg-primary/[0.025] px-3 py-2">
+						<div className="text-[8px] tracking-widest text-primary/60 uppercase">
+							Running
+						</div>
+						{presentation.progressTitle && (
+							<div className="mt-1 text-[10px] text-muted-foreground/70">
+								{presentation.progressTitle}
+							</div>
+						)}
+						{presentation.progressContent && (
+							<pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] text-foreground/75">
+								{presentation.progressContent}
+							</pre>
+						)}
+						{presentation.progressTruncated && (
+							<div className="mt-1 text-[8px] tracking-wider text-muted-foreground/50 uppercase">
+								Latest snapshot truncated
+							</div>
+						)}
+					</PrivacyMask>
+				)}
+			<ToolBlockExpandedPanel
+				inputEntries={presentation.inputEntries}
+				hasResult={presentation.hasResult}
+				isError={presentation.isError}
+				isReasoning={presentation.isReasoning}
+				renderResultAsMarkdown={presentation.renderResultAsMarkdown}
+				strippedResult={presentation.strippedResult}
+				resultLabel={presentation.resultLabel}
+				resultMeta={presentation.resultMeta}
+				diffChanges={presentation.diffChanges}
+			/>
+		</>
 	);
 }
 
@@ -838,6 +864,12 @@ function CompactOrdinaryToolEvent({
 		completedStatus === "error" ||
 		/"status"\s*:\s*"(?:failed|error)"/.test(event.result ?? "");
 	const running = !responseSettled && event.result === undefined && !failed;
+	const progressSummary = running
+		? event.progress?.content
+			? lastNonemptyLine(event.progress.content).slice(0, RESULT_PREVIEW_CHARS)
+			: event.progress?.title
+		: undefined;
+	const visibleSummary = progressSummary || summary;
 	const status = failed ? "Failed" : running ? "Running" : "Complete";
 	return (
 		<div className="min-w-0 max-w-full border-b border-border/35 last:border-b-0">
@@ -845,7 +877,7 @@ function CompactOrdinaryToolEvent({
 				type="button"
 				data-tool-event-id={event.id}
 				onClick={(clickEvent) => onInspect(event, clickEvent.currentTarget)}
-				aria-label={`${label}${summary ? ` ${summary}` : ""}${diffOverview ? `, ${diffOverviewLabel(diffOverview)}` : ""}, ${status}`}
+				aria-label={`${label}${visibleSummary ? ` ${visibleSummary}` : ""}${diffOverview ? `, ${diffOverviewLabel(diffOverview)}` : ""}, ${status}`}
 				className="group flex min-h-8 w-full min-w-0 items-center gap-2 overflow-hidden px-3 py-1.5 text-left transition-colors hover:bg-primary/[0.035] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/55"
 			>
 				<ChevronRight
@@ -862,7 +894,7 @@ function CompactOrdinaryToolEvent({
 					inline
 					className="min-w-0 flex-1 truncate font-mono text-[9px] text-muted-foreground/50"
 				>
-					{summary}
+					{visibleSummary}
 				</PrivacyMask>
 				{diffOverview && (
 					<span
@@ -1123,6 +1155,17 @@ function ToolEventSummary({
 									? "(error)"
 									: "(empty)"}
 						</PrivacyMask>
+					</span>
+				</div>
+			)}
+			{!open && !presentation.hasResult && presentation.progressPreview && (
+				<div className="flex items-center gap-1.5 pl-8 pr-3 pb-1 text-[10px] font-mono leading-tight text-primary/60">
+					<LoaderCircle
+						className="h-2.5 w-2.5 shrink-0 animate-spin"
+						aria-hidden="true"
+					/>
+					<span className="truncate">
+						<PrivacyMask inline>{presentation.progressPreview}</PrivacyMask>
 					</span>
 				</div>
 			)}

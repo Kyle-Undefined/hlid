@@ -1605,6 +1605,48 @@ describe("UPDATE_TOOL_EVENT", () => {
 	});
 });
 
+describe("UPDATE_TOOL_PROGRESS", () => {
+	it("keeps the latest running snapshot and clears it on completion", () => {
+		let state = reducer(withAssistant("a1"), {
+			type: "ADD_TOOL_EVENT",
+			id: "a1",
+			event: {
+				type: "tool_event",
+				id: "progress-1",
+				name: "Bash",
+				input: { command: "download" },
+			},
+		});
+		state = reducer(state, {
+			type: "UPDATE_TOOL_PROGRESS",
+			toolUseId: "progress-1",
+			progress: {
+				status: "in_progress",
+				content: "4 of 10 files",
+			},
+		});
+		let message = state[0];
+		if (message.role === "assistant") {
+			expect(message.toolEvents[0].progress?.content).toBe("4 of 10 files");
+		}
+		state = reducer(state, {
+			type: "ADD_TOOL_RESULT",
+			toolUseId: "progress-1",
+			content: "done",
+		});
+		state = reducer(state, {
+			type: "UPDATE_TOOL_PROGRESS",
+			toolUseId: "progress-1",
+			progress: { status: "in_progress", content: "late" },
+		});
+		message = state[0];
+		if (message.role === "assistant") {
+			expect(message.toolEvents[0].progress).toBeUndefined();
+			expect(message.toolEvents[0].result).toBe("done");
+		}
+	});
+});
+
 describe("SETTLE_ACTIVE_SUBAGENTS", () => {
 	it("interrupts stale live cards while preserving completed children", () => {
 		let state = reducer(withAssistant("a1"), {

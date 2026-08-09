@@ -11,15 +11,18 @@ const ACP_REGISTRY_URL =
 const ACP_AVAILABILITY_TTL_MS = 60_000;
 const ACP_AVAILABILITY_PROBE_TIMEOUT_MS = 1_000;
 
-async function boundedAvailabilityProbe(
-	probe: Promise<unknown>,
+async function boundedExecutableProbe(
+	probe: Promise<string | null | undefined>,
 	timeoutMs: number,
-): Promise<boolean> {
+): Promise<string | null> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	return Promise.race([
-		probe.then(Boolean, () => false),
-		new Promise<false>((resolve) => {
-			timer = setTimeout(() => resolve(false), timeoutMs);
+		probe.then(
+			(value) => value || null,
+			() => null,
+		),
+		new Promise<null>((resolve) => {
+			timer = setTimeout(() => resolve(null), timeoutMs);
 		}),
 	]).finally(() => {
 		if (timer !== undefined) clearTimeout(timer);
@@ -70,6 +73,7 @@ export type AcpCatalogItem = AcpRegistryAgent & {
 	providerId: string;
 	enabled: boolean;
 	available: boolean;
+	resolvedExecutable?: string;
 	unavailableReason?: string;
 	command: string;
 	args: string[];
@@ -269,10 +273,10 @@ export class AcpRegistry {
 					const invocation = resolveAcpInvocation(agent, override);
 					return { agent, invocation, enabled: Boolean(override) };
 				});
-				const availability = await Promise.all(
+				const resolvedExecutables = await Promise.all(
 					resolved.map(({ invocation }) =>
 						invocation.command
-							? boundedAvailabilityProbe(
+							? boundedExecutableProbe(
 									Promise.resolve(
 										this.which(invocation.command, {
 											cwd: config.vault.path || process.cwd(),
@@ -281,16 +285,18 @@ export class AcpRegistry {
 									),
 									this.availabilityProbeTimeoutMs,
 								)
-							: false,
+							: null,
 					),
 				);
 				return resolved.map(({ agent, invocation, enabled }, index) => {
-					const available = availability[index] ?? false;
+					const resolvedExecutable = resolvedExecutables[index] ?? undefined;
+					const available = Boolean(resolvedExecutable);
 					return {
 						...agent,
 						providerId: `acp:${agent.id}`,
 						enabled,
 						available,
+						resolvedExecutable,
 						unavailableReason: available
 							? undefined
 							: invocation.command

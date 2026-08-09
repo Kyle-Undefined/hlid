@@ -121,7 +121,7 @@ describe("useSettingsForm autosave", () => {
 		]);
 	});
 
-	it("requires a restart when an ACP process identity changes", async () => {
+	it("applies ACP process identity changes without requiring a restart", async () => {
 		vi.stubGlobal(
 			"fetch",
 			vi.fn().mockResolvedValue(Response.json({ ok: true })),
@@ -139,7 +139,7 @@ describe("useSettingsForm autosave", () => {
 		);
 		await advance(800);
 
-		expect(result.current.savedMsg).toBe("restart");
+		expect(result.current.savedMsg).toBe("saved");
 	});
 
 	it("shows the server error and preserves edited state", async () => {
@@ -202,6 +202,53 @@ describe("useSettingsForm autosave", () => {
 		expect(result.current.error).toBeNull();
 		expect(result.current.dirty).toBe(false);
 		expect(result.current.savedMsg).toBe("saved");
+	});
+
+	it("records persisted ACP runtime identity even when the follow-up refresh fails", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(Response.json({ ok: true })),
+		);
+		const initial = initialSettings();
+		initial.acp_agents = [{ id: "opencode" }];
+		const { result } = renderHook(() =>
+			useSettingsForm(
+				initial,
+				vi.fn().mockRejectedValue(new Error("route refresh failed")),
+			),
+		);
+		act(() =>
+			result.current.setAcpAgents([
+				{ id: "opencode", executable: "C:\\tools\\opencode.cmd" },
+			]),
+		);
+
+		await advance(800);
+
+		expect(result.current.persistedAcpAgents).toEqual([
+			{ id: "opencode", executable: "C:\\tools\\opencode.cmd" },
+		]);
+		expect(result.current.error).toBeNull();
+		expect(result.current.savedMsg).toBe("saved");
+	});
+
+	it("records a newly enabled ACP agent when the follow-up refresh fails", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(Response.json({ ok: true })),
+		);
+		const { result } = renderHook(() =>
+			useSettingsForm(
+				initialSettings(),
+				vi.fn().mockRejectedValue(new Error("route refresh failed")),
+			),
+		);
+		act(() => result.current.setAcpAgents([{ id: "opencode" }]));
+
+		await advance(800);
+
+		expect(result.current.persistedAcpAgents).toEqual([{ id: "opencode" }]);
+		expect(result.current.error).toBeNull();
 	});
 
 	it("surfaces a runtime warning without marking the persisted save as failed", async () => {

@@ -43,25 +43,6 @@ async function responseWarning(response: Response): Promise<string | null> {
 	}
 }
 
-function acpRuntimeIdentity(
-	agents: NonNullable<HlidConfig["acp_agents"]>,
-): string {
-	return JSON.stringify(
-		agents
-			.map((agent) => ({
-				id: agent.id,
-				executable: agent.executable,
-				args: agent.args,
-				env: agent.env
-					? Object.fromEntries(
-							Object.entries(agent.env).sort(([a], [b]) => a.localeCompare(b)),
-						)
-					: undefined,
-			}))
-			.sort((a, b) => a.id.localeCompare(b.id)),
-	);
-}
-
 export function useSettingsForm(
 	initial: SettingsInitial,
 	onSaved: () => Promise<void>,
@@ -74,6 +55,9 @@ export function useSettingsForm(
 	const [cliproxy, setCliProxy] = useState(initialForms.cliproxy);
 	const [voice, setVoice] = useState(initialForms.voice);
 	const [acpAgents, setAcpAgents] = useState(initialForms.acpAgents);
+	const [persistedAcpAgents, setPersistedAcpAgents] = useState(
+		initialForms.acpAgents,
+	);
 	const [umbod, setUmbod] = useState(initialForms.umbod);
 	const [autoSleep, setAutoSleep] = useState(initialForms.autoSleep);
 	const [projectPreview, setProjectPreview] = useState(
@@ -100,6 +84,9 @@ export function useSettingsForm(
 		null,
 	);
 	initialRef.current = initial;
+	useEffect(() => {
+		setPersistedAcpAgents(initial.acp_agents ?? []);
+	}, [initial.acp_agents]);
 	const currentForms = {
 		vault,
 		claude,
@@ -154,6 +141,7 @@ export function useSettingsForm(
 				dirtyRef.current = false;
 				setDirty(false);
 			}
+			setPersistedAcpAgents(forms.acpAgents);
 			setWarning(runtimeWarning);
 			setSavedMsg(requiresRestart ? "restart" : "saved");
 			if (!requiresRestart) {
@@ -197,10 +185,7 @@ export function useSettingsForm(
 			return;
 		}
 		const requiresRestart =
-			server !== initialForms.server ||
-			acpRuntimeIdentity(acpAgents) !==
-				acpRuntimeIdentity(initialForms.acpAgents) ||
-			umbod !== initialForms.umbod;
+			server !== initialForms.server || umbod !== initialForms.umbod;
 		revisionRef.current += 1;
 		dirtyRef.current = true;
 		restartRequiredRef.current ||= requiresRestart;
@@ -268,6 +253,7 @@ export function useSettingsForm(
 		voice,
 		setVoice,
 		acpAgents,
+		persistedAcpAgents,
 		setAcpAgents,
 		umbod,
 		setUmbod,

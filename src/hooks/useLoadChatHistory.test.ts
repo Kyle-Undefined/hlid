@@ -556,10 +556,19 @@ describe("useLoadChatHistory — initial load", () => {
 			realtime_session_id: "realtime-tail",
 			transcript_seq: 3,
 		};
+		const progress: ServerMessage = {
+			type: "tool_progress_update",
+			id: "live-tool-tail",
+			progress: { status: "in_progress", content: "Checking availability" },
+			realtime_utterance_id: "utterance-assistant-tail",
+			realtime_session_id: "realtime-tail",
+			transcript_seq: 3,
+		};
 		vi.mocked(wsStore.drainMessageBuffer)
 			.mockReturnValueOnce([
 				partial,
 				tool,
+				progress,
 				{ type: "chunk", text: "stale ordinary turn" },
 			])
 			.mockReturnValueOnce([
@@ -585,10 +594,11 @@ describe("useLoadChatHistory — initial load", () => {
 			sessionIdRef: { current: "sess-1" },
 		});
 
-		await vi.waitFor(() => expect(handleWsMessage).toHaveBeenCalledTimes(4));
+		await vi.waitFor(() => expect(handleWsMessage).toHaveBeenCalledTimes(5));
 		expect(handleWsMessage.mock.calls.map(([message]) => message)).toEqual([
 			partial,
 			tool,
+			progress,
 			result,
 			closed,
 		]);

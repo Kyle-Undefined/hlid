@@ -140,6 +140,7 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		handlePermissionResponse: vi.fn(),
 		handleAskUserQuestionResponse: vi.fn().mockResolvedValue(true),
 		handlePlanModeExitResponse: vi.fn(),
+		probeProviderSessionConfig: vi.fn(),
 		probeMcpStatus: vi.fn().mockResolvedValue(undefined),
 		applyProviderMcpServers: vi.fn().mockResolvedValue({
 			providerId: "claude",
@@ -175,6 +176,7 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 			.fn()
 			.mockResolvedValue({ restored: false }),
 		setEffort: vi.fn().mockResolvedValue(undefined),
+		setProviderSessionMode: vi.fn().mockResolvedValue(undefined),
 		validateEffort: vi.fn(),
 		validatePermissionMode: vi.fn().mockResolvedValue(undefined),
 		setPermissionMode: vi.fn().mockResolvedValue(undefined),
@@ -1162,6 +1164,45 @@ describe("message — realtime control", () => {
 });
 
 describe("message — provider probes", () => {
+	it("replays live provider configuration only to the requesting client", async () => {
+		const probeProviderSessionConfig = vi.fn(
+			(emit: (message: ServerMessage) => void) => {
+				emit({
+					type: "provider_config_options",
+					provider_id: "acp:fake",
+					session_id: "mock-db-session",
+					activeMode: "build",
+					modes: [{ value: "build", label: "Build" }],
+				});
+			},
+		);
+		const session = makeSession({ probeProviderSessionConfig });
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "probe_provider_config",
+				session_id: "mock-db-session",
+			}),
+		);
+
+		expect(probeProviderSessionConfig).toHaveBeenCalledWith(
+			expect.any(Function),
+			expect.objectContaining({ sessionId: "mock-db-session" }),
+		);
+		expect(runState.send).toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({
+				type: "provider_config_options",
+				activeMode: "build",
+			}),
+		);
+		expect(runState.broadcast).not.toHaveBeenCalled();
+	});
+
 	it("replies directly when an archived session is detached from the live pool", async () => {
 		vi.mocked(dbMock.getSessionSelection).mockResolvedValueOnce({
 			agentCwd: "/tmp/test",
@@ -1273,6 +1314,85 @@ describe("message — provider probes", () => {
 		expect(mockSend).not.toHaveBeenCalledWith(
 			ws,
 			expect.objectContaining({ type: "mcp_status" }),
+		);
+	});
+});
+
+describe("message — set_provider_mode", () => {
+	it("delegates the live mode and republishes the authoritative snapshot", async () => {
+		const setProviderSessionMode = vi.fn().mockResolvedValue(undefined);
+		const probeProviderSessionConfig = vi.fn(
+			(emit: (message: ServerMessage) => void) => {
+				emit({
+					type: "provider_config_options",
+					provider_id: "acp:fake",
+					session_id: "mock-db-session",
+					activeMode: "review",
+					modes: [{ value: "review", label: "Review" }],
+				});
+			},
+		);
+		const session = makeSession({
+			setProviderSessionMode,
+			probeProviderSessionConfig,
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "set_provider_mode",
+				mode: "review",
+				session_id: "mock-db-session",
+			}),
+		);
+
+		expect(setProviderSessionMode).toHaveBeenCalledWith("review");
+		expect(runState.broadcast).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "provider_config_options",
+				activeMode: "review",
+			}),
+		);
+	});
+
+	it("restores the live provider's previous non-Plan mode", async () => {
+		const restoreProviderSessionMode = vi.fn().mockResolvedValue(undefined);
+		const probeProviderSessionConfig = vi.fn(
+			(emit: (message: ServerMessage) => void) => {
+				emit({
+					type: "provider_config_options",
+					provider_id: "acp:fake",
+					session_id: "mock-db-session",
+					activeMode: "review",
+					modes: [{ value: "review", label: "Review" }],
+				});
+			},
+		);
+		const session = makeSession({
+			restoreProviderSessionMode,
+			probeProviderSessionConfig,
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "restore_provider_mode",
+				session_id: "mock-db-session",
+			}),
+		);
+
+		expect(restoreProviderSessionMode).toHaveBeenCalledTimes(1);
+		expect(runState.broadcast).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "provider_config_options",
+				activeMode: "review",
+			}),
 		);
 	});
 });

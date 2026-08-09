@@ -41,11 +41,21 @@ export function applyReplayTransition(
 		msg.type === "tool_result" ||
 		msg.type === "tool_update" ||
 		msg.type === "tool_activity_update" ||
+		msg.type === "tool_progress_update" ||
 		msg.type === "permission_request" ||
 		msg.type === "permission_resolved" ||
 		msg.type === "provider_permission_denied"
 	) {
-		state.buffer.push(msg);
+		const replaceProgressAt =
+			msg.type === "tool_progress_update"
+				? state.buffer.findLastIndex(
+						(buffered) =>
+							buffered.type === "tool_progress_update" &&
+							buffered.id === msg.id,
+					)
+				: -1;
+		if (replaceProgressAt >= 0) state.buffer[replaceProgressAt] = msg;
+		else state.buffer.push(msg);
 		if (state.buffer.length > REPLAY_BUFFER_MAX) state.buffer.shift();
 	}
 }

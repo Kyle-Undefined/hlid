@@ -115,6 +115,11 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 		session_id: id.optional(),
 	}),
 	z.strictObject({
+		type: z.literal("probe_provider_config"),
+		agent_cwd: path.optional(),
+		session_id: id.optional(),
+	}),
+	z.strictObject({
 		type: z.literal("mcp_control"),
 		request_id: id,
 		session_id: id,
@@ -311,6 +316,15 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 	z.strictObject({
 		type: z.literal("set_effort"),
 		effort: shortText,
+		session_id: id.optional(),
+	}),
+	z.strictObject({
+		type: z.literal("set_provider_mode"),
+		mode: shortText,
+		session_id: id.optional(),
+	}),
+	z.strictObject({
+		type: z.literal("restore_provider_mode"),
 		session_id: id.optional(),
 	}),
 	z.strictObject({

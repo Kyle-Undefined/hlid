@@ -11,6 +11,7 @@ import {
 const sessions = new Map();
 const behavior = process.env.HLID_FAKE_ACP_BEHAVIOR ?? "";
 const stableModeBehavior = behavior.startsWith("stable-mode");
+const dependentConfigBehavior = behavior === "dependent-config";
 const supportsResume = ![
 	"hang-load",
 	"reject-load",
@@ -47,13 +48,19 @@ const configOptions = (session) => [
 		name: "Reasoning",
 		category: "thought_level",
 		currentValue: session?.effort ?? "medium",
-		options: [
-			{ value: "low", name: "Low" },
-			{ value: "medium", name: "Medium" },
-			{ value: "high", name: "High" },
-		],
+		options:
+			dependentConfigBehavior && session?.model === "fake-smart"
+				? [
+						{ value: "high", name: "High" },
+						{ value: "xhigh", name: "Extra High" },
+					]
+				: [
+						{ value: "low", name: "Low" },
+						{ value: "medium", name: "Medium" },
+						{ value: "high", name: "High" },
+					],
 	},
-	...(stableModeBehavior
+	...(stableModeBehavior || dependentConfigBehavior
 		? [
 				{
 					type: "select",
@@ -64,17 +71,23 @@ const configOptions = (session) => [
 						session?.mode ??
 						(behavior === "stable-mode-start-plan" ? "plan" : "default"),
 					options:
-						behavior === "stable-mode-start-plan"
+						dependentConfigBehavior && session?.model === "fake-smart"
 							? [
-									{ value: "ask", name: "Ask" },
-									{ value: "architect", name: "Architect" },
+									{ value: "build", name: "Build" },
 									{ value: "plan", name: "Plan" },
-									{ value: "code", name: "Code" },
+									{ value: "review", name: "Review" },
 								]
-							: [
-									{ value: "default", name: "Default" },
-									{ value: "plan", name: "Plan" },
-								],
+							: behavior === "stable-mode-start-plan"
+								? [
+										{ value: "ask", name: "Ask" },
+										{ value: "architect", name: "Architect" },
+										{ value: "plan", name: "Plan" },
+										{ value: "code", name: "Code" },
+									]
+								: [
+										{ value: "default", name: "Default" },
+										{ value: "plan", name: "Plan" },
+									],
 				},
 			]
 		: []),
@@ -153,7 +166,9 @@ agent({ name: "hlid-fake-agent" })
 					? "plan"
 					: behavior === "stable-mode"
 						? "default"
-						: "code",
+						: dependentConfigBehavior
+							? "build"
+							: "code",
 			model: behavior === "cwd-model" ? params.cwd : "fake-fast",
 			effort: "medium",
 			mcpCount: params.mcpServers.length,
@@ -272,12 +287,26 @@ agent({ name: "hlid-fake-agent" })
 		if (session) session.mode = params.modeId;
 		return {};
 	})
-	.onRequest("session/set_config_option", async ({ params }) => {
+	.onRequest("session/set_config_option", async ({ params, client }) => {
 		if (behavior === "hang-config") await stall("config option");
 		const session = sessions.get(params.sessionId);
-		if (session && params.configId === "model") session.model = params.value;
+		if (session && params.configId === "model") {
+			session.model = params.value;
+			if (dependentConfigBehavior && params.value === "fake-smart") {
+				session.effort = "high";
+			}
+		}
 		if (session && params.configId === "thought") session.effort = params.value;
 		if (session && params.configId === "mode") session.mode = params.value;
+		if (dependentConfigBehavior) {
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "config_option_update",
+					configOptions: configOptions(session),
+				},
+			});
+		}
 		return { configOptions: configOptions(session) };
 	})
 	.onNotification("session/cancel", ({ params }) => {
@@ -502,6 +531,138 @@ agent({ name: "hlid-fake-agent" })
 					sessionUpdate: "tool_call_update",
 					toolCallId: "patch-1",
 					status: "completed",
+				},
+			});
+			return { stopReason: "end_turn" };
+		}
+		if (text === "tool-progress" || text === "tool-progress-long") {
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "tool_call",
+					toolCallId: "progress-1",
+					title: "Run progress tool",
+					name: "custom.progress",
+					kind: "execute",
+					status: "pending",
+					rawInput: { command: "long-task" },
+				},
+			});
+			const progressOutputs =
+				text === "tool-progress-long"
+					? ["x".repeat(20_000)]
+					: ["Starting", "Starting", "Halfway"];
+			for (const rawOutput of progressOutputs) {
+				await client.notify(methods.client.session.update, {
+					sessionId: params.sessionId,
+					update: {
+						sessionUpdate: "tool_call_update",
+						toolCallId: "progress-1",
+						status: "in_progress",
+						rawOutput,
+					},
+				});
+			}
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "tool_call_update",
+					toolCallId: "progress-1",
+					status: "completed",
+					rawOutput: "Done",
+				},
+			});
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "tool_call_update",
+					toolCallId: "progress-1",
+					status: "in_progress",
+					rawOutput: "Late progress",
+				},
+			});
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "tool_call_update",
+					toolCallId: "progress-1",
+					status: "completed",
+					rawOutput: "Duplicate completion",
+				},
+			});
+			return { stopReason: "end_turn" };
+		}
+		if (text === "permission-options") {
+			const tool = {
+				toolCallId: "permission-options-1",
+				title: "Review proposed edit",
+				name: "filesystem.edit",
+				kind: "edit",
+				rawInput: { path: "alias.md" },
+				locations: [{ path: "/vault/note.md", line: 7 }],
+				content: [
+					{
+						type: "diff",
+						path: "/vault/note.md",
+						oldText: "before",
+						newText: "after",
+					},
+					{
+						type: "content",
+						content: { type: "text", text: "Edit the selected note" },
+					},
+				],
+			};
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: { sessionUpdate: "tool_call", ...tool, status: "pending" },
+			});
+			const permission = await client.request(
+				methods.client.session.requestPermission,
+				{
+					sessionId: params.sessionId,
+					toolCall: tool,
+					options: [
+						{
+							optionId: "allow-always",
+							name: "Always allow",
+							kind: "allow_always",
+						},
+						{
+							optionId: "reject-always",
+							name: "Always reject",
+							kind: "reject_always",
+						},
+						{
+							optionId: "allow-once",
+							name: "Allow once",
+							kind: "allow_once",
+						},
+						{
+							optionId: "reject-once",
+							name: "Reject once",
+							kind: "reject_once",
+						},
+					],
+				},
+			);
+			const selected =
+				permission.outcome.outcome === "selected"
+					? permission.outcome.optionId
+					: "cancelled";
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "tool_call_update",
+					toolCallId: "permission-options-1",
+					status: "completed",
+					rawOutput: selected,
+					content: [
+						{
+							type: "content",
+							content: { type: "text", text: selected },
+						},
+					],
 				},
 			});
 			return { stopReason: "end_turn" };

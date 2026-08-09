@@ -101,7 +101,7 @@ const CATEGORIES = [
 	{
 		id: "integrations",
 		label: "Integrations",
-		description: "MCP servers, external agents, and ACP",
+		description: "OpenCode, MCP servers, and external agents",
 		sections: [
 			"Apps and Connectors",
 			"MCP",
@@ -110,10 +110,10 @@ const CATEGORIES = [
 			"Generate agent hooks",
 			"Umbod activity",
 			"Call explorer",
-			"ACP Agent Catalog",
+			"OpenCode and ACP agents",
 		],
 		keywords:
-			"apps connectors mcp servers cliproxy codex claude code oauth authentication external agents acp catalog integrations",
+			"apps connectors mcp servers cliproxy codex claude code opencode oauth authentication external agents acp catalog integrations",
 		group: "secondary",
 	},
 	{
@@ -231,12 +231,13 @@ function AcpCatalogPage({
 				← Integrations
 			</button>
 			<PageIntro
-				title="ACP Agent Catalog"
-				description="Discover and configure Agent Client Protocol integrations."
+				title="OpenCode and ACP integrations"
+				description="Set up OpenCode through its supported ACP connection or discover another Agent Client Protocol integration."
 			/>
 			<AcpSection
 				initialCatalog={initial.acpCatalog}
 				value={state.acpAgents}
+				savedValue={state.persistedAcpAgents}
 				onChange={state.setAcpAgents}
 				onRefreshProviders={onRefreshProviders}
 			/>
@@ -499,10 +500,10 @@ function IntegrationsCategory({
 			</div>
 			<div className="flex min-w-0 flex-col items-start gap-3 border border-border bg-card p-4 @2xl:flex-row @2xl:items-center @2xl:justify-between">
 				<div className="min-w-0">
-					<div className="text-sm">ACP Agent Catalog</div>
+					<div className="text-sm">OpenCode and ACP agents</div>
 					<p className="mt-0.5 break-words text-xs text-muted-foreground">
-						Browse and configure Agent Client Protocol integrations on their own
-						screen.
+						Set up the featured OpenCode connection or browse other Agent Client
+						Protocol integrations.
 					</p>
 				</div>
 				<button
@@ -510,7 +511,7 @@ function IntegrationsCategory({
 					onClick={onShowCatalog}
 					className="max-w-full shrink-0 whitespace-normal border border-border px-3 py-1.5 text-center text-[10px] tracking-widest uppercase hover:bg-accent"
 				>
-					Open catalog
+					Open integrations
 				</button>
 			</div>
 		</>

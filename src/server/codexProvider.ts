@@ -255,6 +255,7 @@ function isProviderRealtimeActivity(
 		event.type === "tool_start" ||
 		event.type === "tool_update" ||
 		event.type === "tool_activity_update" ||
+		event.type === "tool_progress" ||
 		event.type === "tool_result" ||
 		event.type === "generated_media"
 	);

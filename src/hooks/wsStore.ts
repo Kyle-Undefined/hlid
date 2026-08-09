@@ -596,6 +596,7 @@ const BUFFERED_MESSAGE_TYPES: ReadonlySet<ServerMessage["type"]> = new Set([
 	"tool_event",
 	"tool_update",
 	"tool_activity_update",
+	"tool_progress_update",
 	"tool_result",
 	"permission_request",
 	"permission_resolved",

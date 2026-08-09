@@ -67,10 +67,13 @@ describe("AcpSection", () => {
 			/>,
 		);
 
-		const inspect = screen.getAllByRole("button", { name: "Inspect agent" });
-		fireEvent.click(inspect[0]);
-		expect((inspect[1] as HTMLButtonElement).disabled).toBe(true);
-		fireEvent.click(inspect[1]);
+		const openCodeInspect = screen.getByRole("button", {
+			name: "Verify OpenCode ACP",
+		});
+		const piInspect = screen.getByRole("button", { name: "Inspect agent" });
+		fireEvent.click(openCodeInspect);
+		expect((piInspect as HTMLButtonElement).disabled).toBe(true);
+		fireEvent.click(piInspect);
 		expect(serverFns.authenticate).toHaveBeenCalledOnce();
 
 		finish?.({
@@ -78,8 +81,40 @@ describe("AcpSection", () => {
 			agentInfo: { name: "OpenCode", version: "1.2.3" },
 		});
 		await waitFor(() =>
-			expect(screen.getByText("initialized OpenCode 1.2.3")).toBeTruthy(),
+			expect(screen.getByText("installed OpenCode 1.2.3")).toBeTruthy(),
 		);
+	});
+
+	it("preserves the last-good catalog when an explicit refresh fails", async () => {
+		let rejectRefresh: (reason: Error) => void = () => {};
+		serverFns.registry.mockImplementation(
+			() =>
+				new Promise((_, reject) => {
+					rejectRefresh = reject;
+				}),
+		);
+		render(
+			<AcpSection
+				initialCatalog={[item("opencode", "OpenCode")]}
+				value={[{ id: "opencode" }]}
+				onChange={vi.fn()}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+		expect(
+			screen.getByText("OpenCode CLI found · verify the ACP connection"),
+		).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Refreshing…" })).toBeTruthy();
+		rejectRefresh(new Error("ACP registry refresh timed out"));
+
+		expect(
+			await screen.findByText("ACP registry refresh timed out"),
+		).toBeTruthy();
+		expect(
+			screen.getByText("OpenCode CLI found · verify the ACP connection"),
+		).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
 	});
 
 	it("clears negotiated identity when catalog invocation metadata changes", async () => {
@@ -95,8 +130,10 @@ describe("AcpSection", () => {
 				onChange={vi.fn()}
 			/>,
 		);
-		fireEvent.click(screen.getByRole("button", { name: "Inspect agent" }));
-		await screen.findByText("initialized OpenCode 1.2.3");
+		fireEvent.click(
+			screen.getByRole("button", { name: "Verify OpenCode ACP" }),
+		);
+		await screen.findByText("installed OpenCode 1.2.3");
 
 		view.rerender(
 			<AcpSection
@@ -106,8 +143,49 @@ describe("AcpSection", () => {
 			/>,
 		);
 		await waitFor(() =>
-			expect(screen.queryByText("initialized OpenCode 1.2.3")).toBeNull(),
+			expect(screen.queryByText("installed OpenCode 1.2.3")).toBeNull(),
 		);
+	});
+
+	it("clears prior inspection evidence after a manual catalog refresh", async () => {
+		serverFns.authenticate.mockResolvedValue({
+			authMethods: [{ id: "login", name: "OpenCode login" }],
+			agentInfo: { name: "OpenCode", version: "1.2.3" },
+		});
+		serverFns.registry.mockResolvedValue([
+			{
+				...item("opencode", "OpenCode"),
+				available: false,
+				unavailableReason: "OpenCode CLI is no longer available",
+			},
+		]);
+		render(
+			<AcpSection
+				initialCatalog={[item("opencode", "OpenCode")]}
+				value={[{ id: "opencode" }]}
+				onChange={vi.fn()}
+				onRefreshProviders={vi.fn().mockResolvedValue(undefined)}
+			/>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Verify OpenCode ACP" }),
+		);
+		await screen.findByText("installed OpenCode 1.2.3");
+		expect(screen.getByText("OpenCode login")).toBeTruthy();
+		fireEvent.click(
+			screen.getByRole("button", { name: "Refresh models & modes" }),
+		);
+		await screen.findByText("Models and modes refreshed for this workspace.");
+
+		fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+
+		await screen.findByText("OpenCode CLI not found");
+		expect(screen.queryByText("installed OpenCode 1.2.3")).toBeNull();
+		expect(screen.queryByText("OpenCode login")).toBeNull();
+		expect(
+			screen.queryByText("Models and modes refreshed for this workspace."),
+		).toBeNull();
 	});
 
 	it("surfaces a failed option refresh and releases the operation lock", async () => {
@@ -125,7 +203,9 @@ describe("AcpSection", () => {
 			/>,
 		);
 
-		fireEvent.click(screen.getByRole("button", { name: "Refresh options" }));
+		fireEvent.click(
+			screen.getByRole("button", { name: "Refresh models & modes" }),
+		);
 
 		expect(
 			await screen.findByText(
@@ -136,10 +216,84 @@ describe("AcpSection", () => {
 			expect(
 				(
 					screen.getByRole("button", {
-						name: "Refresh options",
+						name: "Refresh models & modes",
 					}) as HTMLButtonElement
 				).disabled,
 			).toBe(false),
 		);
+	});
+
+	it("reports a successful provider-scoped OpenCode option refresh", async () => {
+		const refresh = vi.fn().mockResolvedValue(undefined);
+		render(
+			<AcpSection
+				initialCatalog={[item("opencode", "OpenCode")]}
+				value={[{ id: "opencode" }]}
+				onChange={vi.fn()}
+				onRefreshProviders={refresh}
+			/>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Refresh models & modes" }),
+		);
+
+		await screen.findByText("Models and modes refreshed for this workspace.");
+		expect(refresh).toHaveBeenCalledWith("acp:opencode");
+	});
+
+	it("does not inspect or refresh before an edited runtime configuration is saved", () => {
+		const refresh = vi.fn();
+		serverFns.authenticate.mockResolvedValue({
+			authMethods: [],
+			agentInfo: { name: "OpenCode", version: "1.2.3" },
+		});
+		render(
+			<AcpSection
+				initialCatalog={[item("opencode", "OpenCode")]}
+				value={[{ id: "opencode", executable: "/new/opencode" }]}
+				savedValue={[{ id: "opencode", executable: "/old/opencode" }]}
+				onChange={vi.fn()}
+				onRefreshProviders={refresh}
+			/>,
+		);
+
+		const waiting = screen.getAllByRole("button", {
+			name: "Waiting for saved configuration…",
+		});
+		expect(waiting).toHaveLength(2);
+		for (const button of waiting) {
+			expect((button as HTMLButtonElement).disabled).toBe(true);
+			fireEvent.click(button);
+		}
+		expect(serverFns.authenticate).not.toHaveBeenCalled();
+		expect(refresh).not.toHaveBeenCalled();
+	});
+
+	it("unlocks live actions after persistence even if catalog refresh fails", () => {
+		render(
+			<AcpSection
+				initialCatalog={[{ ...item("opencode", "OpenCode"), enabled: false }]}
+				value={[{ id: "opencode" }]}
+				savedValue={[{ id: "opencode" }]}
+				onChange={vi.fn()}
+				onRefreshProviders={vi.fn()}
+			/>,
+		);
+
+		expect(
+			(
+				screen.getByRole("button", {
+					name: "Verify OpenCode ACP",
+				}) as HTMLButtonElement
+			).disabled,
+		).toBe(false);
+		expect(
+			(
+				screen.getByRole("button", {
+					name: "Refresh models & modes",
+				}) as HTMLButtonElement
+			).disabled,
+		).toBe(false);
 	});
 });

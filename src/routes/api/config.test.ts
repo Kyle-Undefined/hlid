@@ -69,6 +69,7 @@ describe("POST /api/config — handlePostConfig", () => {
 		expect(writeConfig).toHaveBeenCalledWith(config);
 		expect(dbFetch).toHaveBeenCalledWith("/voice/sync", { method: "POST" });
 		expect(dbFetch).toHaveBeenCalledWith("/cliproxy/sync", { method: "POST" });
+		expect(dbFetch).not.toHaveBeenCalledWith("/acp/sync", { method: "POST" });
 	});
 
 	it("keeps an existing CLIProxy key out of GET responses and preserves it on save", async () => {
@@ -178,6 +179,76 @@ describe("POST /api/config — handlePostConfig", () => {
 
 		finishRuntimeSync(new Response());
 		expect((await pending).status).toBe(200);
+	});
+
+	it("waits for ACP runtime synchronization when an agent is enabled", async () => {
+		let finishRuntimeSync: (response: Response) => void = () => {};
+		const runtimeSync = new Promise<Response>((resolve) => {
+			finishRuntimeSync = resolve;
+		});
+		vi.mocked(dbFetch).mockImplementation((path) =>
+			path === "/acp/sync" ? runtimeSync : Promise.resolve(new Response()),
+		);
+		const next = HlidConfigSchema.parse({
+			acp_agents: [{ id: "opencode" }],
+		});
+		let settled = false;
+
+		const pending = handlePostConfig(post(next)).then((response) => {
+			settled = true;
+			return response;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(settled).toBe(false);
+
+		finishRuntimeSync(new Response());
+		expect(await (await pending).json()).toEqual({
+			ok: true,
+			runtime_synced: true,
+		});
+	});
+
+	it("synchronizes an enabled ACP runtime when its discovery workspace changes", async () => {
+		const current = HlidConfigSchema.parse({
+			vault: { path: "/old-vault" },
+			acp_agents: [{ id: "opencode" }],
+		});
+		mockLoadConfig.mockReturnValue(current);
+		vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as never);
+		const next = structuredClone(current);
+		next.vault.path = "/new-vault";
+
+		const response = await handlePostConfig(post(next));
+
+		expect(response.status).toBe(200);
+		expect(dbFetch).toHaveBeenCalledWith("/acp/sync", { method: "POST" });
+		expect(await response.json()).toEqual({
+			ok: true,
+			runtime_synced: true,
+		});
+	});
+
+	it("reports ACP synchronization failures without rolling back the saved config", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		vi.mocked(dbFetch).mockImplementation((path) =>
+			path === "/acp/sync"
+				? Promise.reject(new Error("provider registry unavailable"))
+				: Promise.resolve(new Response()),
+		);
+		const next = HlidConfigSchema.parse({
+			acp_agents: [{ id: "opencode" }],
+		});
+
+		const response = await handlePostConfig(post(next));
+
+		expect(await response.json()).toEqual({
+			ok: true,
+			runtime_synced: false,
+			warning:
+				"ACP runtime synchronization failed: provider registry unavailable.",
+		});
+		expect(writeConfig).toHaveBeenCalledWith(next);
+		warn.mockRestore();
 	});
 
 	it.each([

@@ -28,10 +28,12 @@ function renderCard(
 	overrides?: Partial<{
 		item: AcpCatalogItem;
 		configured: AcpAgentConfig | undefined;
-		busy: boolean;
+		operation: "inspect" | "refresh" | null;
 		disabled: boolean;
 		authMethods: AcpAuthMethod[] | undefined;
 		agentInfo: AcpAgentInfo | null | undefined;
+		optionsRefreshed: boolean;
+		configurationCurrent: boolean;
 		onToggle: () => void;
 		onUpdateOverride: (patch: Partial<AcpAgentConfig>) => void;
 		onInspect: (methodId?: string) => void;
@@ -41,10 +43,12 @@ function renderCard(
 	const props = {
 		item: makeItem(),
 		configured: undefined,
-		busy: false,
+		operation: null,
 		disabled: false,
 		authMethods: undefined,
 		agentInfo: undefined,
+		optionsRefreshed: false,
+		configurationCurrent: true,
 		onToggle: vi.fn(),
 		onUpdateOverride: vi.fn(),
 		onInspect: vi.fn(),
@@ -81,6 +85,24 @@ describe("AcpAgentCard", () => {
 		expect(onRefreshOptions).toHaveBeenCalledOnce();
 	});
 
+	it("waits for persisted runtime configuration before allowing live actions", () => {
+		const { onInspect, onRefreshOptions } = renderCard({
+			configured: { id: "gemini", executable: "/new/gemini" } as AcpAgentConfig,
+			configurationCurrent: false,
+		});
+		const waiting = screen.getAllByRole("button", {
+			name: "Waiting for saved configuration…",
+		});
+
+		expect(waiting).toHaveLength(2);
+		for (const button of waiting) {
+			expect((button as HTMLButtonElement).disabled).toBe(true);
+			fireEvent.click(button);
+		}
+		expect(onInspect).not.toHaveBeenCalled();
+		expect(onRefreshOptions).not.toHaveBeenCalled();
+	});
+
 	it("shows the negotiated installed agent identity after inspection", () => {
 		renderCard({
 			configured: { id: "gemini" } as AcpAgentConfig,
@@ -113,7 +135,7 @@ describe("AcpAgentCard", () => {
 	it("presents advertised auth methods as optional credential management", () => {
 		const { onInspect } = renderCard({
 			configured: { id: "gemini" } as AcpAgentConfig,
-			busy: true,
+			operation: "inspect",
 			authMethods: [
 				{ id: "oauth", name: "OAuth login" },
 				{
@@ -150,5 +172,73 @@ describe("AcpAgentCard", () => {
 			screen.getAllByRole("button", { name: "Add or replace credentials" })[0],
 		);
 		expect(onInspect).toHaveBeenCalledWith("oauth");
+	});
+
+	it("presents OpenCode as a featured CLI-backed ACP integration", () => {
+		renderCard({
+			item: makeItem({
+				id: "opencode",
+				providerId: "acp:opencode",
+				name: "OpenCode",
+				command: "opencode",
+				args: ["acp"],
+				resolvedExecutable: "C:\\nvm4w\\nodejs\\opencode.cmd",
+			}),
+			configured: { id: "opencode" } as AcpAgentConfig,
+			agentInfo: { name: "OpenCode", version: "1.18.15" },
+			optionsRefreshed: true,
+		});
+
+		expect(screen.getByText("Featured integration")).toBeTruthy();
+		expect(screen.getByText("OpenCode ACP initialized")).toBeTruthy();
+		expect(screen.getByText("C:\\nvm4w\\nodejs\\opencode.cmd")).toBeTruthy();
+		expect(screen.getByText("opencode acp")).toBeTruthy();
+		expect(screen.getByText("installed OpenCode 1.18.15")).toBeTruthy();
+		expect(
+			screen.getByRole("button", { name: "Verify OpenCode ACP" }),
+		).toBeTruthy();
+		expect(
+			screen.getByRole("button", { name: "Refresh models & modes" }),
+		).toBeTruthy();
+		expect(
+			screen.getByText("Models and modes refreshed for this workspace."),
+		).toBeTruthy();
+		expect(screen.getByText("Available through ACP")).toBeTruthy();
+		expect(screen.getByText("Connection boundary")).toBeTruthy();
+	});
+
+	it("explains that OpenCode Desktop does not replace the required CLI", () => {
+		renderCard({
+			item: makeItem({
+				id: "opencode",
+				providerId: "acp:opencode",
+				name: "OpenCode",
+				available: false,
+				unavailableReason: "opencode is not installed",
+				installGuidance: "Install OpenCode and place it on PATH",
+			}),
+		});
+
+		expect(screen.getByText("OpenCode CLI not found")).toBeTruthy();
+		expect(
+			screen.getByText(
+				"OpenCode Desktop and the OpenCode CLI are separate installs. Hlid needs the CLI in the same environment where Hlid runs.",
+			),
+		).toBeTruthy();
+		expect(screen.getByText("opencode is not installed")).toBeTruthy();
+	});
+
+	it("does not mistake OpenCode credential actions for signed-out status", () => {
+		renderCard({
+			item: makeItem({ id: "opencode", name: "OpenCode" }),
+			configured: { id: "opencode" } as AcpAgentConfig,
+			authMethods: [{ id: "login", name: "OpenCode login" }],
+		});
+
+		expect(
+			screen.getByText(
+				"OpenCode advertises these credential actions; it does not mean you are signed out. Use them only to add or replace credentials.",
+			),
+		).toBeTruthy();
 	});
 });

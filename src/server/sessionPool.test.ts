@@ -1308,12 +1308,12 @@ describe("SessionPool runtime refresh", () => {
 		expect(mockInstances[1]?.syncConfig).toHaveBeenCalledWith(next);
 	});
 
-	it("retires removed providers across every live session", () => {
+	it("retires removed providers across every live session", async () => {
 		const pool = makePool();
 		pool.create("/a", "A");
 		pool.create("/b", "B");
 
-		pool.retireProviderSessions(["cliproxy-codex", "cliproxy:codex"]);
+		await pool.retireProviderSessions(["cliproxy-codex", "cliproxy:codex"]);
 
 		for (const instance of mockInstances) {
 			expect(instance.retireProviderSessions).toHaveBeenCalledOnce();
@@ -1321,5 +1321,19 @@ describe("SessionPool runtime refresh", () => {
 				new Set(["cliproxy-codex", "cliproxy:codex"]),
 			);
 		}
+	});
+
+	it("preserves provider selection while replacing a runtime", async () => {
+		const pool = makePool();
+		pool.create("/a", "A");
+
+		await pool.retireProviderSessions(["acp:opencode"], {
+			preserveSelection: true,
+		});
+
+		expect(mockInstances[0]?.retireProviderSessions).toHaveBeenCalledWith(
+			new Set(["acp:opencode"]),
+			{ preserveSelection: true },
+		);
 	});
 });

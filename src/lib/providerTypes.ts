@@ -55,6 +55,23 @@ export type ProviderInfo = {
 	};
 	/** Effort/thinking levels. Absent if the provider has no such concept. */
 	effortLevels?: Array<{ value: string; label: string; desc?: string }>;
+	/**
+	 * Options and active values reported by one live provider session. These
+	 * refine the cached catalog for Raven only and must not be persisted as
+	 * provider-global metadata.
+	 */
+	liveSessionConfig?: {
+		activeModel?: string;
+		activeEffort?: string;
+		modes?: Array<{
+			value: string;
+			label: string;
+			desc?: string;
+			isDefault?: boolean;
+		}>;
+		activeMode?: string;
+		planModeValue?: string;
+	};
 	/** Permission gate modes the provider honours. */
 	permissionModes?: Array<{ value: string; label: string; desc?: string }>;
 	/** Provider-native named permission profiles available for this workspace. */

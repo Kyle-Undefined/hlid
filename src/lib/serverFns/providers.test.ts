@@ -48,6 +48,17 @@ describe("providerCatalogPath", () => {
 			}),
 		).toBe("/providers?host_capabilities=1&provider_capabilities=1");
 	});
+
+	it("scopes cached model reads to the active discovery workspace", () => {
+		expect(
+			providerCatalogPath({
+				preferCachedModels: true,
+				discoveryCwd: "C:\\Users\\Kyle\\project",
+			}),
+		).toBe(
+			"/providers?cached_models=1&capability_cwd=C%3A%5CUsers%5CKyle%5Cproject",
+		);
+	});
 });
 
 describe("providerUsageIds", () => {

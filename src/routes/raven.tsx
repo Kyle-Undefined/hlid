@@ -121,6 +121,7 @@ import {
 	modelComparisonKey,
 } from "#/lib/formatters";
 import type { HlidContextReceiptTarget } from "#/lib/hlidContext";
+import { applyLiveProviderConfig } from "#/lib/liveProviderConfig";
 import { loaderValueOrFallback } from "#/lib/loaderFallback";
 import { mapMcpServer } from "#/lib/mcp";
 import { configuredObsidianCapture } from "#/lib/obsidianCapture";
@@ -182,6 +183,7 @@ import {
 	type McpControlOperation,
 	type McpControlResultMessage,
 	type McpStatusMessage,
+	type ProviderConfigOptionsMessage,
 	type RateLimitMessage,
 	type SessionControlRejectedMessage,
 	type SlashCommandsMessage,
@@ -254,6 +256,19 @@ function interactiveModeForAgent(
 	);
 }
 
+function ravenProviderDiscoveryCwd(
+	config: RavenConfig,
+	agentPath: string | undefined,
+): string | undefined {
+	if (!agentPath) return config.vault.path || undefined;
+	const configured = (config.agents ?? []).find((candidate) =>
+		sameAgentDisplayPath(candidate.path, agentPath),
+	);
+	return configured?.mode === "context"
+		? config.vault.path || undefined
+		: agentPath;
+}
+
 function configuredRavenAgentPath(
 	candidate: string | null | undefined,
 	configuredAgents: readonly AgentDisplayCandidate[],
@@ -322,7 +337,6 @@ async function loadRavenRoute(session?: string, agent?: string) {
 		config,
 		agentList,
 		vaultSkills,
-		providers,
 		voiceInfo,
 		explicitSessionSelection,
 		explicitSessionRow,
@@ -331,7 +345,6 @@ async function loadRavenRoute(session?: string, agent?: string) {
 		getConfig(),
 		optionalRavenLoaderValue(getAgentListFn(), []),
 		optionalRavenLoaderValue(getCockpitSkillsFn(), []),
-		optionalRavenLoaderValue(loadRavenProviders(), []),
 		optionalRavenLoaderValue(getVoiceInfoFn(), {
 			status: { state: "unavailable", model: "" },
 			models: [],
@@ -391,6 +404,10 @@ async function loadRavenRoute(session?: string, agent?: string) {
 		delegationDepth = savedRow?.delegation_depth ?? null;
 		delegationControlOwned = savedRow?.delegation_control_owned === 1;
 	}
+	const providers = await optionalRavenLoaderValue(
+		loadRavenProviders(ravenProviderDiscoveryCwd(config, agentSkillContext)),
+		[],
+	);
 	const interactiveMode = interactiveModeForAgent(config, agentSkillContext);
 	resolvedSessionId = resolveTerminalSession(
 		resolvedSessionId,
@@ -805,6 +822,8 @@ function useRavenChatRuntime({
 		useState<WorkflowDeleteResultMessage | null>(null);
 	const [workflowSourceResult, setWorkflowSourceResult] =
 		useState<WorkflowSourceResultMessage | null>(null);
+	const [providerConfigOptions, setProviderConfigOptions] =
+		useState<ProviderConfigOptionsMessage | null>(null);
 	const [messages, dispatch] = useReducer(reducer, []);
 	const pendingIdRef = useRef<string | null>(null);
 	const lastAssistantIdRef = useRef<string | null>(null);
@@ -963,6 +982,22 @@ function useRavenChatRuntime({
 		},
 		[agentCwd, expectedProviderId],
 	);
+	const handleProviderConfigOptionsMessage = useCallback(
+		function handleProviderConfigOptionsMessage(
+			message: ProviderConfigOptionsMessage,
+		) {
+			if (
+				canonicalSessionId(message.session_id) !==
+				canonicalSessionId(sessionIdRef.current)
+			)
+				return;
+			if ((message.agent_cwd ?? "") !== (agentCwd ?? "")) return;
+			if (expectedProviderId && message.provider_id !== expectedProviderId)
+				return;
+			setProviderConfigOptions(message);
+		},
+		[agentCwd, expectedProviderId, sessionIdRef],
+	);
 	const handleRuntimeMetadataMessage = useCallback(
 		function handleRuntimeMetadataMessage(
 			message: Parameters<typeof handleWsMessage>[0],
@@ -979,10 +1014,15 @@ function useRavenChatRuntime({
 				handleWorkflowCatalogMessage(message);
 				return true;
 			}
+			if (message.type === "provider_config_options") {
+				handleProviderConfigOptionsMessage(message);
+				return true;
+			}
 			return false;
 		},
 		[
 			handleMcpStatusMessage,
+			handleProviderConfigOptionsMessage,
 			handleSlashCommandsMessage,
 			handleWorkflowCatalogMessage,
 		],
@@ -1225,6 +1265,7 @@ function useRavenChatRuntime({
 		setWorkflowManagerOpen(false);
 		setWorkflowCatalog({ workflows: [], locations: [] });
 		setWorkflowCatalogProviderId(null);
+		setProviderConfigOptions(null);
 		setWorkflowSaveResult(null);
 		setWorkflowDeleteResult(null);
 		setGoal(null);
@@ -1237,6 +1278,11 @@ function useRavenChatRuntime({
 
 	useEffect(() => {
 		if (connection.wsStatus !== "connected") return;
+		connection.send({
+			type: "probe_provider_config",
+			session_id: sessionIdRef.current,
+			...(agentCwd ? { agent_cwd: agentCwd } : {}),
+		});
 		connection.send({
 			type: "probe_mcp",
 			session_id: sessionIdRef.current,
@@ -1292,6 +1338,7 @@ function useRavenChatRuntime({
 		setWorkflowDeleteResult,
 		workflowSourceResult,
 		setWorkflowSourceResult,
+		providerConfigOptions,
 		refreshWorkflows,
 		mcpServers:
 			!expectedProviderId || mcpSnapshot.providerId === expectedProviderId
@@ -2382,10 +2429,26 @@ function deriveRavenComposerState({
 		selection.model ??
 		(providerUsesConfiguredDefaults ? configuredSelection.model : undefined) ??
 		model;
-	const selectedEffort =
+	const provider = providers.find(
+		(candidate) => candidate.id === activeProviderId,
+	);
+	const desiredEffort =
 		selection.effort ??
 		(providerUsesConfiguredDefaults ? configuredSelection.effort : null) ??
 		null;
+	const liveEfforts = effortOptionsFor(provider, selectedModel ?? "", planMode);
+	const liveConfigApplies =
+		provider?.liveSessionConfig?.activeModel === undefined ||
+		!selectedModel ||
+		provider.liveSessionConfig.activeModel === selectedModel;
+	const selectedEffort =
+		liveConfigApplies &&
+		provider?.liveSessionConfig?.activeEffort &&
+		liveEfforts.length > 0 &&
+		(!desiredEffort ||
+			!liveEfforts.some((candidate) => candidate.value === desiredEffort))
+			? provider.liveSessionConfig.activeEffort
+			: desiredEffort;
 	const selectedPermissionMode =
 		selection.permissionMode ??
 		(providerUsesConfiguredDefaults
@@ -2402,9 +2465,6 @@ function deriveRavenComposerState({
 		activeProviderId !== configuredProviderId ||
 		runtimeModelMismatch ||
 		actualSelectionMismatch;
-	const provider = providers.find(
-		(candidate) => candidate.id === activeProviderId,
-	);
 	const permissionOptions = sessionPermissionOptionsFor(provider, {
 		model: selectedModel,
 		policyEnforced: config.umbod?.enabled === true,
@@ -2476,6 +2536,9 @@ function deriveRavenComposerState({
 			: reviewerOptions,
 		approvalsReviewerUnavailableReason,
 		effortOptions: effortOptionsFor(provider, selectedModel ?? "", planMode),
+		providerModeOptions: provider?.liveSessionConfig?.modes ?? [],
+		activeProviderMode: provider?.liveSessionConfig?.activeMode ?? null,
+		providerPlanModeValue: provider?.liveSessionConfig?.planModeValue ?? null,
 	};
 }
 
@@ -2503,7 +2566,12 @@ export function ChatPage() {
 		voiceInfo: initialVoiceInfo,
 	} = Route.useLoaderData();
 	const [agentList, setAgentList] = useState(initialAgentList);
+	const [providerCatalog, setProviderCatalog] = useState(initialProviders);
 	const [providers, setProviders] = useState(initialProviders);
+	const initialProviderDiscoveryCwd = ravenProviderDiscoveryCwd(
+		config,
+		initialAgentSkillContext,
+	);
 	useEffect(() => {
 		setAgentList(initialAgentList);
 		if (initialAgentList.length > 0) return;
@@ -2521,13 +2589,13 @@ export function ChatPage() {
 		};
 	}, [initialAgentList]);
 	useEffect(() => {
-		setProviders(initialProviders);
+		setProviderCatalog(initialProviders);
 		if (initialProviders.length > 0) return;
 		let cancelled = false;
-		void loadRavenProviders().then(
+		void loadRavenProviders(initialProviderDiscoveryCwd).then(
 			(next) => {
 				if (!cancelled && Array.isArray(next) && next.length > 0) {
-					setProviders(next);
+					setProviderCatalog(next);
 				}
 			},
 			() => {},
@@ -2535,7 +2603,7 @@ export function ChatPage() {
 		return () => {
 			cancelled = true;
 		};
-	}, [initialProviders]);
+	}, [initialProviderDiscoveryCwd, initialProviders]);
 	const ravenSearch = Route.useSearch();
 	const navigate = useNavigate();
 	const sessionsDataRevision = useSyncExternalStore(
@@ -2927,6 +2995,21 @@ export function ChatPage() {
 	const upload = useFileUpload({ agentCwd: agentSkillContext, sessionId });
 	const { pendingAttachments, uploadingCount } = upload;
 	const [planMode, setPlanMode] = useState(false);
+	useEffect(() => {
+		const live = runtime.providerConfigOptions;
+		setProviders(
+			live
+				? applyLiveProviderConfig(providerCatalog, live.provider_id, live)
+				: providerCatalog,
+		);
+		if (live?.activeMode && live.planModeValue) {
+			setPlanMode(live.activeMode === live.planModeValue);
+		}
+	}, [providerCatalog, runtime.providerConfigOptions]);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: provider-backed Plan belongs to one Raven context
+	useEffect(() => {
+		setPlanMode(false);
+	}, [agentSkillContext, existingSessionId, activeProviderId]);
 	const [planHtml, setPlanHtml] = useState(config.ui.html_plans ?? false);
 	const [, refreshTerminalState] = useReducer(
 		(revision: number) => revision + 1,
@@ -3075,6 +3158,9 @@ export function ChatPage() {
 		approvalsReviewerOptions,
 		approvalsReviewerUnavailableReason,
 		effortOptions,
+		providerModeOptions,
+		activeProviderMode,
+		providerPlanModeValue,
 	} = deriveRavenComposerState({
 		config,
 		providers,
@@ -3227,6 +3313,9 @@ export function ChatPage() {
 		approvalsReviewerOptions,
 		approvalsReviewerUnavailableReason,
 		effortOptions,
+		providerModeOptions,
+		activeProviderMode,
+		providerPlanModeValue,
 		canSend,
 		canQueue,
 		delegationSteering: delegationControlOwned,
@@ -4154,9 +4243,8 @@ interface BadgeOption {
 }
 
 /**
- * One labelled option list inside the model badge popup (model / effort /
- * permission). All three groups share markup and selection behaviour; only
- * the label, options, and what "select" means differ.
+ * One labelled option list inside the session settings popup. Model, effort,
+ * provider mode, permission, and reviewer controls share this compact markup.
  */
 function OptionGroup({
 	label,
@@ -4229,6 +4317,8 @@ function ChatModelBadge({
 	approvalsReviewerOptions,
 	approvalsReviewerUnavailableReason,
 	effortOptions,
+	providerModeOptions,
+	activeProviderMode,
 }: ChatComposerProps) {
 	const {
 		wsStatus,
@@ -4251,6 +4341,9 @@ function ChatModelBadge({
 	const permissionBadge = permissionModeBadgeLabel(displayedPermissionMode);
 	const approvalsReviewerBadge =
 		displayedApprovalsReviewer === "auto_review" ? "auto-review" : null;
+	const providerModeBadge = providerModeOptions.find(
+		(option) => option.value === activeProviderMode,
+	)?.label;
 	// The primary badge is a control: it must show what the next turn will use.
 	// Provider-reported history remains visible below as a diagnostic.
 	const rawModelBadge = modelShort ?? actualModelShort;
@@ -4265,6 +4358,7 @@ function ChatModelBadge({
 		activeProviderLabel,
 		modelBadge,
 		displayedEffort,
+		providerModeBadge,
 		permissionBadge,
 		approvalsReviewerBadge,
 	].filter(Boolean);
@@ -4272,6 +4366,7 @@ function ChatModelBadge({
 		isCliProxyProvider(activeProviderId) ? "CLIProxy" : activeProviderLabel,
 		modelBadge,
 		displayedEffort,
+		providerModeBadge,
 		permissionBadge,
 		approvalsReviewerBadge,
 	].filter(Boolean);
@@ -4461,6 +4556,28 @@ function ChatModelBadge({
 								}}
 							/>
 							<OptionGroup
+								label="mode"
+								divider
+								disabled={wsStatus !== "connected" || liveActive}
+								options={providerModeOptions.map((mode) => ({
+									value: mode.value,
+									label: mode.label,
+									...(mode.desc !== undefined ? { title: mode.desc } : {}),
+									...(mode.isDefault !== undefined
+										? { isDefault: mode.isDefault }
+										: {}),
+								}))}
+								selectedValue={activeProviderMode}
+								onSelect={(value) => {
+									const delivered = send({
+										type: "set_provider_mode",
+										mode: value,
+										session_id: sessionId,
+									});
+									if (!delivered) return;
+								}}
+							/>
+							<OptionGroup
 								label="permission"
 								divider
 								disabled={wsStatus !== "connected" || liveActive}
@@ -4612,6 +4729,7 @@ function ChatInputNotices({
 	permissionOptions,
 	activeEffort,
 	selectSessionControls,
+	providerPlanModeValue,
 	activeSkills,
 	clearActiveSkill,
 	vaultPicker,
@@ -4822,6 +4940,19 @@ function ChatInputNotices({
 						type="button"
 						onClick={() => {
 							const enabling = !planMode;
+							if (providerPlanModeValue) {
+								const delivered = enabling
+									? send({
+											type: "set_provider_mode",
+											mode: providerPlanModeValue,
+											session_id: sessionId,
+										})
+									: send({
+											type: "restore_provider_mode",
+											session_id: sessionId,
+										});
+								if (!delivered) return;
+							}
 							if (enabling) {
 								const normalized = normalizeEffortForPlanMode(
 									activeProviderId,
@@ -4838,7 +4969,7 @@ function ChatInputNotices({
 									}
 								}
 							}
-							setPlanMode(enabling);
+							if (!providerPlanModeValue) setPlanMode(enabling);
 						}}
 						title={
 							activeProviderId === "codex"
@@ -5489,6 +5620,14 @@ interface ChatComposerProps {
 	>;
 	approvalsReviewerUnavailableReason: string | null;
 	effortOptions: ReturnType<typeof effortOptionsFor>;
+	providerModeOptions: Array<{
+		value: string;
+		label: string;
+		desc?: string;
+		isDefault?: boolean;
+	}>;
+	activeProviderMode: string | null;
+	providerPlanModeValue: string | null;
 	canSend: boolean;
 	canQueue: boolean;
 	delegationSteering: boolean;

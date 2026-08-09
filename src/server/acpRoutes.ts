@@ -11,6 +11,7 @@ type AcpRouteDependencies = {
 	};
 	loadConfig: () => HlidConfig;
 	inspectAgent?: typeof inspectAcpAgent;
+	syncRuntime?: () => Promise<unknown>;
 };
 
 async function authenticateAcpAgent(
@@ -63,15 +64,28 @@ export function createAcpRouteHandler(dependencies: AcpRouteDependencies) {
 	return async (url: URL, request: Request): Promise<Response | null> => {
 		if (url.pathname === "/acp/registry" && request.method === "GET") {
 			const refresh = url.searchParams.get("refresh") === "1";
+			const agents = await dependencies.registry.catalog(
+				dependencies.loadConfig(),
+				refresh,
+			);
+			if (refresh && dependencies.syncRuntime) {
+				await dependencies.syncRuntime();
+			}
 			return Response.json({
-				agents: await dependencies.registry.catalog(
-					dependencies.loadConfig(),
-					refresh,
-				),
+				agents,
 			});
 		}
 		if (url.pathname === "/acp/authenticate" && request.method === "POST") {
 			return authenticateAcpAgent(request, dependencies);
+		}
+		if (url.pathname === "/acp/sync" && request.method === "POST") {
+			if (!dependencies.syncRuntime) {
+				return Response.json(
+					{ error: "ACP runtime synchronization is unavailable" },
+					{ status: 503 },
+				);
+			}
+			return Response.json(await dependencies.syncRuntime());
 		}
 		return null;
 	};

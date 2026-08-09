@@ -344,6 +344,73 @@ describe("SessionManager — Umbod hook approval routing", () => {
 // ── restoreMcpStatus ──────────────────────────────────────────────────────────
 
 describe("SessionManager — session-scoped permission persistence", () => {
+	it("preserves provider permission scopes and context on the approval card", async () => {
+		vi.mocked(authorizeHlidTool).mockClear();
+		let decision: AgentToolDecision | undefined;
+		const provider: AgentProvider = {
+			providerId: "acp:test",
+			label: "ACP Test",
+			query(params): AgentSession {
+				const generator = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "acp-session-1" };
+					decision = await params.canUseTool(
+						"filesystem.edit",
+						{
+							file_path: "/vault/note.md",
+							locations: [{ path: "/vault/note.md", line: 7 }],
+							changes: [{ path: "/vault/note.md", diff: "-before\n+after" }],
+						},
+						{
+							toolUseID: "acp-permission-1",
+							signal: new AbortController().signal,
+							title: "Review proposed edit",
+							description: "Edit the selected note",
+							allowOnce: true,
+							allowSession: true,
+							allowAlways: true,
+						},
+					);
+					yield { type: "done", turns: 1, durationMs: 0 };
+				})();
+				return {
+					[Symbol.asyncIterator]: () => generator[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		};
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const turn = sm.runQuery("edit", (event) => emitted.push(event), {
+			sessionId: "sess-acp-permission",
+		});
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()).toHaveLength(1),
+		);
+		expect(emitted).toContainEqual(
+			expect.objectContaining({
+				type: "permission_request",
+				id: "acp-permission-1",
+				title: "Review proposed edit",
+				description: "Edit the selected note",
+				allowOnce: true,
+				allowSession: true,
+				allowAlways: true,
+				input: expect.objectContaining({
+					locations: [{ path: "/vault/note.md", line: 7 }],
+					changes: [{ path: "/vault/note.md", diff: "-before\n+after" }],
+				}),
+			}),
+		);
+		sm.handlePermissionResponse("acp-permission-1", true, "local");
+		await turn;
+		expect(decision).toMatchObject({
+			behavior: "allow",
+			saveScope: "local",
+		});
+		vi.mocked(authorizeHlidTool).mockClear();
+	});
+
 	it("routes Windows Computer Use through explicit app approval instead of Umbod", async () => {
 		let decision: AgentToolDecision | undefined;
 		const toolName =

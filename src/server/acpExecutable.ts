@@ -154,6 +154,24 @@ async function probePathCandidates(
 	);
 }
 
+function executablePathKey(candidate: string): string {
+	return process.platform === "win32" ? candidate.toLowerCase() : candidate;
+}
+
+function rememberIndexedCandidate(
+	index: Map<string, string[]>,
+	discovered: string,
+): void {
+	const key =
+		process.platform === "win32"
+			? discovered.split(/[\\/]/).at(-1)?.toLowerCase()
+			: discovered.split("/").at(-1);
+	if (!key) return;
+	const candidates = index.get(key) ?? [];
+	if (!candidates.includes(discovered)) candidates.push(discovered);
+	index.set(key, candidates);
+}
+
 /** Resolve an ACP executable without synchronous PATH filesystem work. */
 export async function findAcpExecutable(
 	command: string,
@@ -188,34 +206,45 @@ export async function findAcpExecutable(
 			);
 		}
 	}
-	const orderedIndexed = acpExecutablePathCandidates(
+	const orderedCandidates = acpExecutablePathCandidates(
 		command,
 		directories,
 		pathExt,
-	)
-		.map((candidate) =>
-			indexed.get(
-				process.platform === "win32" ? candidate.toLowerCase() : candidate,
-			),
-		)
+	);
+	const orderedIndexed = orderedCandidates
+		.map((candidate) => indexed.get(executablePathKey(candidate)))
 		.filter((candidate): candidate is string => Boolean(candidate));
+	let indexedWinner: string | null = null;
 	for (const candidate of orderedIndexed) {
-		if (await canAccess(candidate)) return candidate;
+		if (await canAccess(candidate)) {
+			indexedWinner = candidate;
+			break;
+		}
+	}
+	if (indexedWinner) {
+		const winnerIndex = orderedCandidates.findIndex(
+			(candidate) =>
+				executablePathKey(candidate) === executablePathKey(indexedWinner),
+		);
+		const newlyPossible = orderedCandidates
+			.slice(0, Math.max(0, winnerIndex))
+			.filter((candidate) => !indexed.has(executablePathKey(candidate)));
+		if (newlyPossible.length > 0) {
+			const accessible = await Promise.all(newlyPossible.map(canAccess));
+			const higherPriority = newlyPossible.find(
+				(_candidate, index) => accessible[index] === true,
+			);
+			if (higherPriority) {
+				rememberIndexedCandidate(index, higherPriority);
+				return higherPriority;
+			}
+		}
+		return indexedWinner;
 	}
 	// A miss must observe an executable installed after the directory index was
 	// created.
 	const discovered = await probePathCandidates(command, directories, pathExt);
-	if (discovered) {
-		const key =
-			process.platform === "win32"
-				? discovered.split(/[\\/]/).at(-1)?.toLowerCase()
-				: discovered.split("/").at(-1);
-		if (key) {
-			const candidates = index.get(key) ?? [];
-			if (!candidates.includes(discovered)) candidates.push(discovered);
-			index.set(key, candidates);
-		}
-	}
+	if (discovered) rememberIndexedCandidate(index, discovered);
 	return discovered;
 }
 

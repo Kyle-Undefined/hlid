@@ -549,12 +549,17 @@ export class SessionPool {
 		}
 	}
 
-	/** Retire live provider-native sessions after a runtime provider is removed. */
-	retireProviderSessions(providerIds: Iterable<string>): void {
+	/** Retire live provider-native sessions after a runtime is removed or replaced. */
+	async retireProviderSessions(
+		providerIds: Iterable<string>,
+		options?: { preserveSelection?: boolean },
+	): Promise<void> {
 		const retired = new Set(providerIds);
 		if (retired.size === 0) return;
-		for (const entry of this.entries.values()) {
-			entry.manager.retireProviderSessions(retired);
-		}
+		await Promise.all(
+			[...this.entries.values()].map((entry) =>
+				entry.manager.retireProviderSessions(retired, options),
+			),
+		);
 	}
 }

@@ -810,6 +810,49 @@ describe("chat WebSocket runtime schema", () => {
 			),
 		).toBeNull();
 	});
+
+	it("accepts live provider configuration probes and opaque session modes", () => {
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "probe_provider_config",
+					session_id: "session-1",
+					agent_cwd: "/tmp/project",
+				}),
+			),
+		).toEqual({
+			type: "probe_provider_config",
+			session_id: "session-1",
+			agent_cwd: "/tmp/project",
+		});
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "set_provider_mode",
+					mode: "review",
+					session_id: "session-1",
+				}),
+			),
+		).toEqual({
+			type: "set_provider_mode",
+			mode: "review",
+			session_id: "session-1",
+		});
+		expect(
+			parseClientMessage(JSON.stringify({ type: "set_provider_mode" })),
+		).toBeNull();
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "restore_provider_mode",
+					session_id: "session-1",
+				}),
+			),
+		).toEqual({
+			type: "restore_provider_mode",
+			session_id: "session-1",
+		});
+	});
 });
 
 describe("terminal WebSocket runtime schema", () => {

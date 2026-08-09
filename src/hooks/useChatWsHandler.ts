@@ -280,6 +280,13 @@ function dispatchImmediateMessage(
 				taskActivity: msg.taskActivity,
 			});
 			return true;
+		case "tool_progress_update":
+			dispatch({
+				type: "UPDATE_TOOL_PROGRESS",
+				toolUseId: msg.id,
+				progress: msg.progress,
+			});
+			return true;
 		case "status":
 			if (msg.state === "running") return false;
 			dispatch({

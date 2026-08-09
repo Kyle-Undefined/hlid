@@ -3,11 +3,13 @@ import type {
 	ProviderApprovalsReviewer,
 	ProviderGoalStatus,
 	ProviderSavedWorkflow,
+	ProviderSessionConfigSnapshot,
 	ProviderThreadGoal,
 	ProviderWorkflowSaveLocation,
 	ProviderWorkflowSaveScope,
 	SubagentSnapshot,
 	TaskActivity,
+	ToolProgressSnapshot,
 } from "./agentProvider";
 
 /** Maximum tool-result text carried inline in Raven transcript messages. */
@@ -115,6 +117,8 @@ export type ToolEventMessage = {
 	isError?: boolean;
 	subagent?: SubagentSnapshot;
 	taskActivity?: TaskActivity;
+	/** Latest bounded provider snapshot while this tool is still running. */
+	progress?: ToolProgressSnapshot;
 };
 
 export type ToolUpdateMessage = {
@@ -130,6 +134,15 @@ export type ToolActivityUpdateMessage = {
 	type: "tool_activity_update";
 	id: string;
 	taskActivity: TaskActivity;
+	realtime_utterance_id?: string;
+	realtime_session_id?: string;
+	transcript_seq?: number;
+};
+
+export type ToolProgressUpdateMessage = {
+	type: "tool_progress_update";
+	id: string;
+	progress: ToolProgressSnapshot;
 	realtime_utterance_id?: string;
 	realtime_session_id?: string;
 	transcript_seq?: number;
@@ -293,6 +306,8 @@ export type PermissionRequestMessage = {
 	policy?: PermissionPolicyContext;
 	/** False when a one-shot grant would immediately cause repetitive prompts. */
 	allowOnce?: boolean;
+	/** False when the provider cannot support chat-scoped one-shot grants. */
+	allowSession?: boolean;
 	/** False when permanent approval belongs in the policy manifest instead. */
 	allowAlways?: boolean;
 };
@@ -475,6 +490,14 @@ export type SlashCommandsMessage = {
 		aliases?: string[];
 		action?: "review" | "computer-use" | "goal" | "compact";
 	}>;
+};
+
+/** Live, session-scoped provider options after dependent configuration changes. */
+export type ProviderConfigOptionsMessage = ProviderSessionConfigSnapshot & {
+	type: "provider_config_options";
+	provider_id: string;
+	session_id: string;
+	agent_cwd?: string;
 };
 
 export type WorkflowCatalogMessage = {
@@ -1068,6 +1091,7 @@ export type ReplayBufferMessage =
 	| ToolEventMessage
 	| ToolUpdateMessage
 	| ToolActivityUpdateMessage
+	| ToolProgressUpdateMessage
 	| ToolResultMessage
 	| PermissionRequestMessage
 	| PermissionResolvedMessage
@@ -1088,6 +1112,7 @@ export type ServerMessage =
 	| ToolEventMessage
 	| ToolUpdateMessage
 	| ToolActivityUpdateMessage
+	| ToolProgressUpdateMessage
 	| ToolResultMessage
 	| DoneMessage
 	| RateLimitMessage
@@ -1115,6 +1140,7 @@ export type ServerMessage =
 	| PlanModeExitResolvedMessage
 	| LocalCommandOutputMessage
 	| SlashCommandsMessage
+	| ProviderConfigOptionsMessage
 	| WorkflowCatalogMessage
 	| WorkflowSaveResultMessage
 	| WorkflowDeleteResultMessage
@@ -1244,6 +1270,13 @@ export type ClientConnectionProbeMessage = {
 
 export type ClientProbeMcpMessage = {
 	type: "probe_mcp";
+	agent_cwd?: string;
+	session_id?: string;
+};
+
+/** Replay dependent options from an already-live provider session. */
+export type ClientProbeProviderConfigMessage = {
+	type: "probe_provider_config";
 	agent_cwd?: string;
 	session_id?: string;
 };
@@ -1441,6 +1474,19 @@ export type ClientSetEffortMessage = {
 	session_id?: string;
 };
 
+/** Select one opaque conversational mode advertised by the live provider. */
+export type ClientSetProviderModeMessage = {
+	type: "set_provider_mode";
+	mode: string;
+	session_id?: string;
+};
+
+/** Restore the provider mode that was active before entering Plan mode. */
+export type ClientRestoreProviderModeMessage = {
+	type: "restore_provider_mode";
+	session_id?: string;
+};
+
 /** Native control for one provider-owned workflow/background task. */
 export type ClientWorkflowControlMessage = {
 	type: "workflow_control";
@@ -1471,6 +1517,7 @@ export type ClientMessage =
 	| ClientSyncMessage
 	| ClientConnectionProbeMessage
 	| ClientProbeMcpMessage
+	| ClientProbeProviderConfigMessage
 	| ClientMcpControlMessage
 	| ClientFileRewindMessage
 	| ClientProbeSlashCommandsMessage
@@ -1491,5 +1538,7 @@ export type ClientMessage =
 	| ClientSetPermissionModeMessage
 	| ClientSetApprovalsReviewerMessage
 	| ClientSetEffortMessage
+	| ClientSetProviderModeMessage
+	| ClientRestoreProviderModeMessage
 	| ClientWorkflowControlMessage
 	| ClientBackgroundActivityControlMessage;

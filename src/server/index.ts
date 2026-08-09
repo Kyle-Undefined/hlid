@@ -21,9 +21,14 @@ import {
 	CLIPROXY_OPENCODE_PROVIDER_ID,
 } from "../lib/providerIds";
 import { loadToken, verifyToken } from "../lib/token";
-import { AcpProvider } from "./acpProvider";
 import { AcpRegistry } from "./acpRegistry";
 import { createAcpRouteHandler } from "./acpRoutes";
+import {
+	type AcpRuntimeSyncResult,
+	acpRuntimeFingerprint,
+	createConfiguredAcpProvider,
+	syncAcpRuntimeProviders,
+} from "./acpRuntime";
 import type { AgentProvider, McpServerStatus } from "./agentProvider";
 import { buildApiIndex } from "./apiIndex";
 import { handleAttachmentRoute } from "./attachmentRoutes";
@@ -272,6 +277,7 @@ const acpRegistry = new AcpRegistry();
 const handleAcpRoute = createAcpRouteHandler({
 	registry: acpRegistry,
 	loadConfig,
+	syncRuntime: () => syncAcpRuntime(),
 });
 const handleExtensionRoute = createExtensionRouteHandler({
 	loadConfig,
@@ -346,24 +352,12 @@ if (initialCliProxyConnection) {
 		providers.set(provider.providerId, provider);
 	}
 }
+const managedAcpFingerprints = new Map<string, string>();
 for (const item of acpCatalog.filter((candidate) => candidate.enabled)) {
-	const configured = (config.acp_agents ?? []).find(
-		(agent) => agent.id === item.id,
-	);
-	providers.set(
+	providers.set(item.providerId, createConfiguredAcpProvider(item, config));
+	managedAcpFingerprints.set(
 		item.providerId,
-		new AcpProvider({
-			id: item.providerId,
-			label: item.name,
-			command: item.command,
-			args: item.args,
-			env: { ...item.env, ...configured?.env },
-			initialAvailability: {
-				available: item.available,
-				...(item.unavailableReason ? { reason: item.unavailableReason } : {}),
-			},
-			discoveryCwd: config.vault.path || process.cwd(),
-		}),
+		acpRuntimeFingerprint(item, config),
 	);
 }
 for (const provider of providers.values()) {
@@ -406,7 +400,7 @@ providerCatalogSnapshot = createProviderCatalogSnapshot(
 		capabilitiesFor: providerCapabilityCatalog.capabilitiesFor,
 		cachedCapabilitiesFor: providerCapabilityCatalog.cachedCapabilitiesFor,
 	},
-	{ discoveryCwd: config.vault.path || process.cwd() },
+	{ discoveryCwd: () => loadConfig().vault.path || process.cwd() },
 );
 const handleProviderAppRoute = createProviderAppRouteHandler({
 	getProvider: (providerId) => providers.get(providerId),
@@ -932,6 +926,55 @@ async function handleConflictRoute(
 }
 
 let cliProxyRuntimeSyncTail: Promise<void> = Promise.resolve();
+let acpRuntimeSyncTail: Promise<AcpRuntimeSyncResult> = Promise.resolve({
+	added: [],
+	removed: [],
+	replaced: [],
+});
+
+async function applyAcpRuntimeConfig(): Promise<AcpRuntimeSyncResult> {
+	const latest = loadConfig();
+	const catalog = await acpRegistry.catalog(latest);
+	const result = await syncAcpRuntimeProviders({
+		config: latest,
+		catalog,
+		providers,
+		fingerprints: managedAcpFingerprints,
+		retireProviderSessions: (providerIds, options) =>
+			pool.retireProviderSessions(providerIds, options),
+		registerProvider: (provider, replaced) => {
+			modelCatalog.register(provider, { refreshIdentity: replaced });
+			providerCapabilityCatalog.register(provider, {
+				refreshIdentity: replaced,
+			});
+			db.registerProvider(
+				provider.providerId,
+				provider.label ?? provider.providerId,
+				provider.usageWindows ? [...provider.usageWindows] : [],
+			);
+		},
+	});
+	pool.syncConfig(latest);
+	if (
+		result.added.length > 0 ||
+		result.removed.length > 0 ||
+		result.replaced.length > 0
+	) {
+		providerCatalogSnapshot.invalidate();
+		bumpDataRevision("providers");
+	}
+	return result;
+}
+
+function syncAcpRuntime(): Promise<AcpRuntimeSyncResult> {
+	const pending = acpRuntimeSyncTail.then(() => applyAcpRuntimeConfig());
+	acpRuntimeSyncTail = pending.catch(() => ({
+		added: [],
+		removed: [],
+		replaced: [],
+	}));
+	return pending;
+}
 
 async function applyCliProxyRuntimeConfig(): Promise<void> {
 	const latest = loadConfig();
@@ -960,7 +1003,7 @@ async function applyCliProxyRuntimeConfig(): Promise<void> {
 		for (const providerId of retiredProviderIds) {
 			providers.delete(providerId);
 		}
-		pool.retireProviderSessions(retiredProviderIds);
+		await pool.retireProviderSessions(retiredProviderIds);
 		if (connection) {
 			for (const provider of cliProxyProviders(connection)) {
 				providers.set(provider.providerId, provider);

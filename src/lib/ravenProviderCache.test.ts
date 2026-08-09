@@ -64,6 +64,37 @@ describe("loadRavenProviders", () => {
 		expect(getProvidersFn).toHaveBeenCalledOnce();
 	});
 
+	it("isolates provider reads by normalized discovery workspace", async () => {
+		vi.mocked(getProvidersFn).mockImplementation((input) => {
+			const data = (input as { data?: { discoveryCwd?: string } }).data;
+			return Promise.resolve(provider(data?.discoveryCwd ?? "default"));
+		});
+
+		expect(await loadRavenProviders("C:\\Users\\Kyle\\One\\")).toEqual(
+			provider("C:\\Users\\Kyle\\One\\"),
+		);
+		expect(await loadRavenProviders("/workspace/two")).toEqual(
+			provider("/workspace/two"),
+		);
+		expect(await loadRavenProviders("c:\\users\\kyle\\one")).toEqual(
+			provider("C:\\Users\\Kyle\\One\\"),
+		);
+
+		expect(getProvidersFn).toHaveBeenCalledTimes(2);
+		expect(getProvidersFn).toHaveBeenNthCalledWith(1, {
+			data: {
+				preferCachedModels: true,
+				discoveryCwd: "C:\\Users\\Kyle\\One\\",
+			},
+		});
+		expect(getProvidersFn).toHaveBeenNthCalledWith(2, {
+			data: {
+				preferCachedModels: true,
+				discoveryCwd: "/workspace/two",
+			},
+		});
+	});
+
 	it("does not let an older revision overwrite or clear the newer read", async () => {
 		let resolveOld: ((value: ReturnType<typeof provider>) => void) | undefined;
 		let resolveNew: ((value: ReturnType<typeof provider>) => void) | undefined;

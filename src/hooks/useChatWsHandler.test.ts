@@ -774,6 +774,24 @@ describe("useChatWsHandler — immediate messages", () => {
 				},
 			},
 		],
+		[
+			{
+				type: "tool_progress_update",
+				id: "progress-1",
+				progress: {
+					status: "in_progress",
+					content: "4 of 10 files",
+				},
+			},
+			{
+				type: "UPDATE_TOOL_PROGRESS",
+				toolUseId: "progress-1",
+				progress: {
+					status: "in_progress",
+					content: "4 of 10 files",
+				},
+			},
+		],
 	])("maps $type to its reducer action", (message, action) => {
 		const { handler, dispatch } = renderHandler({ pendingId: "assistant-1" });
 		handler(message);
