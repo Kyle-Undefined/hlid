@@ -17,6 +17,7 @@
  * server's SIGINT/SIGTERM handlers.
  */
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { CURRENT_VERSION } from "../lib/version";
 import type {
 	CurrentTimeReadResponse,
 	ServerRequestResolvedNotification,
@@ -377,7 +378,11 @@ export class CodexAppServer {
 
 		this.ready = (async () => {
 			await this.request("initialize", {
-				clientInfo: { name: "hlid", title: "Hlid", version: "0.0.0" },
+				clientInfo: {
+					name: "hlid",
+					title: "Hlid",
+					version: CURRENT_VERSION,
+				},
 				capabilities: {
 					experimentalApi: true,
 					extensions: { "openai/form": {} },

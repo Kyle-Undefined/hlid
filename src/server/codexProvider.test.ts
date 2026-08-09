@@ -40,6 +40,7 @@ import { readFile } from "node:fs/promises";
 import { resolveCodexExecutable } from "../lib/codexPath";
 import { HLID_AGENT_TOOL_COUNT } from "../lib/hlidContext";
 import { runBoundedProcess } from "../lib/process";
+import { CURRENT_VERSION } from "../lib/version";
 import type {
 	AgentEvent,
 	AgentQueryParams,
@@ -1251,6 +1252,11 @@ describe("fetchCodexModels", () => {
 		const initialize = writes
 			.map((line) => JSON.parse(line))
 			.find((message) => message.method === "initialize");
+		expect(initialize?.params?.clientInfo).toEqual({
+			name: "hlid",
+			title: "Hlid",
+			version: CURRENT_VERSION,
+		});
 		expect(initialize?.params?.capabilities).toEqual({
 			experimentalApi: true,
 			extensions: { "openai/form": {} },
@@ -2367,6 +2373,7 @@ describe("CodexAgentSession — realtime backend readiness", () => {
 		expect(threadStartParams(writes)).toEqual([
 			expect.objectContaining({
 				cwd: "/tmp/codex-test",
+				serviceName: "hlid",
 				model: "gpt-5.4",
 				serviceTier: "priority",
 				ephemeral: true,
@@ -5584,6 +5591,7 @@ describe("CodexAgentSession — approval reviewer", () => {
 		await session.send("continue here");
 
 		expect(threadResumeParams(writes)).toHaveLength(1);
+		expect(threadResumeParams(writes)[0]).not.toHaveProperty("serviceName");
 		expect(onApprovalsReviewerChange).toHaveBeenCalledWith({
 			reviewer: "auto_review",
 			source: "thread_response",
@@ -5705,6 +5713,7 @@ describe("CodexAgentSession — approval reviewer", () => {
 		await session.send("review this approval");
 
 		expect(threadStartParams(writes)[0]?.approvalsReviewer).toBe("auto_review");
+		expect(threadStartParams(writes)[0]?.serviceName).toBe("hlid");
 		expect(turnStartParams(writes)[0]?.approvalsReviewer).toBe("auto_review");
 	});
 

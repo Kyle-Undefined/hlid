@@ -3491,6 +3491,7 @@ class CodexAgentSession implements AgentSession {
 				conn
 					.requestOptional("thread/start", {
 						cwd: launch.rpcCwd,
+						serviceName: "hlid",
 						...(this.params.model ? { model: this.params.model } : {}),
 						...(this.params.serviceTier
 							? { serviceTier: this.params.serviceTier }
@@ -3901,7 +3902,7 @@ class CodexAgentSession implements AgentSession {
 				: false;
 
 		const approvalsReviewerRequest = this.captureApprovalsReviewerRequest();
-		const threadParams: ThreadStartParams = {
+		const threadParams = {
 			cwd: launch.rpcCwd,
 			approvalsReviewer: approvalsReviewerRequest.sentReviewer,
 			...(this.delegatedWindowsWorker?.kind === "visualize"
@@ -3936,7 +3937,11 @@ class CodexAgentSession implements AgentSession {
 				this.delegatedWindowsWorker?.kind === "visualize"
 					? []
 					: hlidDynamicTools(computerUseAvailable, visualizeAvailable),
-		};
+		} satisfies ThreadStartParams;
+		const threadStartParams = {
+			...threadParams,
+			serviceName: "hlid",
+		} satisfies ThreadStartParams;
 		let rawResult: ThreadStartResponse | ThreadResumeResponse;
 		let replacedMissingRollout = false;
 		this.lastSentApprovalsReviewerContext = approvalsReviewerRequest;
@@ -3966,13 +3971,13 @@ class CodexAgentSession implements AgentSession {
 				replacedMissingRollout = true;
 				rawResult = (await this.request(
 					"thread/start",
-					threadParams,
+					threadStartParams,
 				)) as ThreadStartResponse;
 			}
 		} else {
 			rawResult = (await this.request(
 				"thread/start",
-				threadParams,
+				threadStartParams,
 			)) as ThreadStartResponse;
 		}
 		const result = asObj(rawResult);
