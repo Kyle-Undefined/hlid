@@ -262,6 +262,106 @@ describe("Vault Agent and Computer Use model/effort interplay", () => {
 		expect(screen.getByText("High (default)")).not.toBeNull();
 	});
 
+	it("offers only Codex permission profiles and disables disallowed choices", () => {
+		const onChange = vi.fn();
+		const codexProvider: ProviderInfo = {
+			...provider,
+			id: "codex",
+			label: "Codex",
+			permissionProfiles: [
+				{
+					id: "workspace-safe",
+					label: "Workspace safe",
+					description: "Writes only inside the selected workspace.",
+					allowed: true,
+				},
+				{
+					id: "host-admin",
+					label: "Host admin",
+					description: "Requires an unavailable host policy.",
+					allowed: false,
+				},
+			],
+		};
+		const { rerender } = render(
+			<ClaudeSection
+				claude={makeClaude({
+					vaultProvider: "codex",
+					permissionProfile: "workspace-safe",
+				})}
+				onChange={onChange}
+				providers={[codexProvider]}
+			/>,
+		);
+
+		const select = screen.getByLabelText(
+			"Permission profile",
+		) as HTMLSelectElement;
+		expect(select.value).toBe("workspace-safe");
+		expect(
+			screen.getByRole("option", { name: "Hlid sandbox policy" }),
+		).not.toBeNull();
+		expect(
+			screen.getByText(
+				"Profiles replace Codex sandbox settings, including Hlid-added writable roots; Hlid continues owning approval prompts and policy",
+			),
+		).not.toBeNull();
+		expect(screen.getByRole("group", { name: "APPROVALS" })).not.toBeNull();
+		expect(screen.queryByRole("group", { name: "PERMISSIONS" })).toBeNull();
+		expect(
+			(
+				screen.getByRole("option", {
+					name: "Host admin (unavailable)",
+				}) as HTMLOptionElement
+			).disabled,
+		).toBe(true);
+		expect(
+			screen.getByText("Writes only inside the selected workspace."),
+		).not.toBeNull();
+
+		fireEvent.change(select, { target: { value: "" } });
+		expect(onChange).toHaveBeenCalledWith({ permissionProfile: "" });
+
+		rerender(
+			<ClaudeSection
+				claude={makeClaude()}
+				onChange={onChange}
+				providers={[provider]}
+			/>,
+		);
+		expect(screen.queryByLabelText("Permission profile")).toBeNull();
+	});
+
+	it("keeps an unavailable configured Codex profile visible so it can be cleared", () => {
+		const onChange = vi.fn();
+		render(
+			<ClaudeSection
+				claude={makeClaude({
+					vaultProvider: "codex",
+					permissionProfile: "removed-profile",
+				})}
+				onChange={onChange}
+				providers={[{ ...provider, id: "codex", permissionProfiles: [] }]}
+			/>,
+		);
+
+		const configured = screen.getByRole("option", {
+			name: "removed-profile (configured, unavailable)",
+		}) as HTMLOptionElement;
+		expect(configured.selected).toBe(true);
+		expect(configured.disabled).toBe(true);
+		expect(
+			screen.getByText(
+				"This configured profile is not available for the current workspace.",
+			),
+		).not.toBeNull();
+
+		fireEvent.change(screen.getByLabelText("Permission profile"), {
+			target: { value: "" },
+		});
+		expect(onChange).toHaveBeenCalledWith({ permissionProfile: "" });
+	});
+
 	it("shows one resolved provider capability snapshot without changing provider controls", () => {
 		const withCapabilities: ProviderInfo = {
 			...provider,

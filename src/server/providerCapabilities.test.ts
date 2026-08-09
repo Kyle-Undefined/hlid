@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { discoverClaudeProviderCapabilities } from "./claudeCapabilityDiscovery";
 import type { ClaudeWarmupSnapshot } from "./claudeWarmup";
-import { discoverCodexProviderCapabilities } from "./codexCapabilityDiscovery";
+import {
+	discoverCodexProviderCapabilities,
+	readCodexPermissionProfiles,
+} from "./codexCapabilityDiscovery";
 import {
 	buildProviderCapabilitySnapshot,
 	isProviderCapabilityDiscovery,
@@ -196,6 +199,24 @@ describe("provider capability resolution", () => {
 				],
 			}),
 		).toBe(false);
+		expect(
+			isProviderCapabilityDiscovery({
+				observedAt: 1,
+				permissionProfiles: [
+					{ id: ":workspace", description: "Workspace", allowed: true },
+				],
+				evidence: [],
+			}),
+		).toBe(true);
+		expect(
+			isProviderCapabilityDiscovery({
+				observedAt: 1,
+				permissionProfiles: [
+					{ id: ":workspace", description: "x".repeat(501), allowed: true },
+				],
+				evidence: [],
+			}),
+		).toBe(false);
 	});
 });
 
@@ -222,7 +243,21 @@ describe("Codex capability discovery", () => {
 				};
 			}
 			if (method === "permissionProfile/list") {
-				return { data: [{ id: ":workspace", allowed: true }] };
+				return {
+					data: [
+						{
+							id: ":workspace",
+							description: "Workspace writes",
+							allowed: true,
+						},
+						{
+							id: "locked",
+							description: "Blocked by requirements",
+							allowed: false,
+						},
+					],
+					nextCursor: null,
+				};
 			}
 			if (method === "collaborationMode/list") {
 				return {
@@ -267,6 +302,18 @@ describe("Codex capability discovery", () => {
 			expect.anything(),
 		);
 		expect(discovery.context).toEqual({ cwd: "/work" });
+		expect(discovery.permissionProfiles).toEqual([
+			{
+				id: ":workspace",
+				description: "Workspace writes",
+				allowed: true,
+			},
+			{
+				id: "locked",
+				description: "Blocked by requirements",
+				allowed: false,
+			},
+		]);
 		expect(discovery.issues).toBeUndefined();
 		expect(
 			discovery.evidence.find((item) => item.label === "Unified exec"),
@@ -286,7 +333,14 @@ describe("Codex capability discovery", () => {
 		});
 		expect(
 			discovery.evidence.find((item) => item.id.includes("permission-profile")),
-		).toMatchObject({ integration: "not-integrated" });
+		).toMatchObject({ integration: "integrated", readiness: "ready" });
+		expect(
+			discovery.evidence.find((item) => item.id.endsWith(":locked")),
+		).toMatchObject({
+			integration: "integrated",
+			readiness: "unavailable",
+			reason: expect.stringContaining("do not allow"),
+		});
 		const collaborationModes = discovery.evidence.filter((item) =>
 			item.id.includes("collaboration-mode"),
 		);
@@ -333,6 +387,168 @@ describe("Codex capability discovery", () => {
 		expect(discovery.issues?.[0]).toContain(
 			"permissionProfile/list unavailable",
 		);
+	});
+
+	it("reads every permission profile page for the exact cwd", async () => {
+		const request = vi.fn(async (_method: string, params: unknown) => {
+			const cursor = (params as { cursor?: string }).cursor;
+			return cursor
+				? {
+						data: [
+							{
+								id: "locked",
+								description: "Not permitted here",
+								allowed: false,
+							},
+						],
+						nextCursor: null,
+					}
+				: {
+						data: [
+							{
+								id: ":workspace",
+								description: null,
+								allowed: true,
+							},
+						],
+						nextCursor: "page-2",
+					};
+		});
+
+		await expect(
+			readCodexPermissionProfiles({ cwd: "/actual/work", request }),
+		).resolves.toEqual([
+			{ id: ":workspace", description: null, allowed: true },
+			{
+				id: "locked",
+				description: "Not permitted here",
+				allowed: false,
+			},
+		]);
+		expect(request).toHaveBeenNthCalledWith(1, "permissionProfile/list", {
+			cwd: "/actual/work",
+			limit: 100,
+		});
+		expect(request).toHaveBeenNthCalledWith(2, "permissionProfile/list", {
+			cwd: "/actual/work",
+			limit: 100,
+			cursor: "page-2",
+		});
+	});
+
+	it.each([
+		[
+			"duplicate ids",
+			async () => ({
+				data: [
+					{ id: "same", description: null, allowed: true },
+					{ id: "same", description: null, allowed: true },
+				],
+				nextCursor: null,
+			}),
+			"duplicate profile same",
+		],
+		[
+			"malformed cursors",
+			async () => ({ data: [], nextCursor: 42 }),
+			"malformed nextCursor",
+		],
+		[
+			"malformed rows",
+			async () => ({
+				data: [{ id: "bad", description: null, allowed: "yes" }],
+				nextCursor: null,
+			}),
+			"malformed profile",
+		],
+		[
+			"missing page data",
+			async () => ({ data: "not-an-array", nextCursor: null }),
+			"returned no profile array",
+		],
+		[
+			"oversized pages",
+			async () => ({
+				data: Array.from({ length: 101 }, (_, index) => ({
+					id: `profile-${index}`,
+					description: null,
+					allowed: true,
+				})),
+				nextCursor: null,
+			}),
+			"more than 100 profiles",
+		],
+		[
+			"repeated cursors",
+			async () => ({ data: [], nextCursor: "same-page" }),
+			"repeated its pagination cursor",
+		],
+	] as const)("fails closed on %s", async (_label, request, message) => {
+		await expect(
+			readCodexPermissionProfiles({ cwd: "/work", request }),
+		).rejects.toThrow(message);
+	});
+
+	it("bounds the complete catalog and normalizes descriptions", async () => {
+		let page = 0;
+		const request = vi.fn(async () => {
+			page += 1;
+			return {
+				data: [
+					{
+						id: `profile-${page}`,
+						description: `  ${"x".repeat(600)}  `,
+						allowed: true,
+					},
+				],
+				nextCursor: `page-${page + 1}`,
+			};
+		});
+
+		await expect(
+			readCodexPermissionProfiles({ cwd: "/work", request }),
+		).rejects.toThrow("exceeded 10 pages");
+		expect(request).toHaveBeenCalledTimes(10);
+
+		const [normalized] = await readCodexPermissionProfiles({
+			cwd: "/work",
+			request: async () => ({
+				data: [
+					{
+						id: "profile",
+						description: `  ${"x".repeat(600)}  `,
+						allowed: true,
+					},
+				],
+				nextCursor: null,
+			}),
+		});
+		expect(normalized?.description).toHaveLength(500);
+		expect(normalized?.description?.startsWith("xx")).toBe(true);
+	});
+
+	it("keeps a maximum valid profile catalog persistable with other evidence", async () => {
+		const discovery = await discoverCodexProviderCapabilities({
+			providerId: "codex",
+			cwd: "/work",
+			request: async (method, rawParams) => {
+				if (method !== "permissionProfile/list") return { data: [] };
+				const cursor = (rawParams as { cursor?: string }).cursor;
+				const page = cursor ? Number(cursor.slice("page-".length)) : 0;
+				return {
+					data: Array.from({ length: 100 }, (_, index) => ({
+						id: `profile-${page * 100 + index}`,
+						description: null,
+						allowed: true,
+					})),
+					nextCursor: page < 9 ? `page-${page + 1}` : null,
+				};
+			},
+		});
+
+		expect(discovery.permissionProfiles).toHaveLength(1_000);
+		expect(discovery.evidence).toHaveLength(1_002);
+		expect(isProviderCapabilityDiscovery(discovery)).toBe(true);
 	});
 });
 

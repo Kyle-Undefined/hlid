@@ -67,6 +67,12 @@ export type ProviderCapabilityDiscovery = {
 	observedAt: number;
 	/** Effective provider-visible workspace used by workspace-scoped probes. */
 	context?: { cwd: string };
+	/** Cwd-scoped Codex permission-profile catalog, when the provider exposes it. */
+	permissionProfiles?: Array<{
+		id: string;
+		description?: string;
+		allowed: boolean;
+	}>;
 	evidence: ProviderCapabilityEvidence[];
 	issues?: string[];
 };

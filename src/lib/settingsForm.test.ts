@@ -22,6 +22,7 @@ describe("settings form conversion", () => {
 			},
 			codex: {
 				max_turns: 8,
+				permission_profile: "workspace-safe",
 				windows_computer_use: { model: "gpt-5.5", effort: "inherit" },
 			},
 			project_preview: { use_real_browser_profile: true },
@@ -39,6 +40,7 @@ describe("settings form conversion", () => {
 			peerInbox: true,
 		});
 		expect(forms.codex.maxTurns).toBe("8");
+		expect(forms.codex.permissionProfile).toBe("workspace-safe");
 		expect(forms.vault.saveToObsidianTemplate).toBe("Quick Capture");
 		expect(forms.vault.obsidianCommandAllowlist).toEqual([
 			"templater-obsidian:insert-templater",
@@ -55,6 +57,22 @@ describe("settings form conversion", () => {
 			planning: "",
 			done: "Done",
 		});
+	});
+
+	it("round-trips the optional Codex permission profile", () => {
+		const initial = HlidConfigSchema.parse({
+			codex: { permission_profile: "workspace-safe" },
+		});
+		const forms = createSettingsForms(initial);
+		expect(forms.codex.permissionProfile).toBe("workspace-safe");
+		expect(
+			buildSettingsConfig(initial, forms, false).codex.permission_profile,
+		).toBe("workspace-safe");
+
+		forms.codex = { ...forms.codex, permissionProfile: "" };
+		expect(
+			buildSettingsConfig(initial, forms, false).codex.permission_profile,
+		).toBeUndefined();
 	});
 
 	it("defaults the Claude peer inbox off and persists an explicit opt-in", () => {
@@ -226,12 +244,14 @@ describe("agent form routing", () => {
 				model: "gpt-5.5",
 				effort: "high",
 				maxTurns: "15",
+				permissionProfile: "workspace-safe",
 			},
 		);
 		expect(edited.codex).toMatchObject({
 			model: "gpt-5.5",
 			effort: "high",
 			maxTurns: "15",
+			permissionProfile: "workspace-safe",
 		});
 		expect(edited.claude.model).toBe(forms.claude.model);
 

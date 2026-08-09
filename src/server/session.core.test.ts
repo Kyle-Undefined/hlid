@@ -64,6 +64,7 @@ import {
 	makeProvider,
 	makeProviders,
 	makeSwitchableProvider,
+	routinePermissionContext,
 	testPromptContextManifest,
 } from "./session.test-utils";
 
@@ -395,6 +396,624 @@ describe("SessionManager — restoreMcpStatus", () => {
 // ── syncConfig ────────────────────────────────────────────────────────────────
 
 describe("SessionManager — syncConfig", () => {
+	function codexProfileConfig(permissionProfile?: string): HlidConfig {
+		const config = makeConfig("gpt-5.6-sol");
+		config.vault_provider = "codex";
+		config.codex.permission_profile = permissionProfile;
+		return config;
+	}
+
+	it.each([
+		["codex", true],
+		["acp:test", false],
+		["claude", false],
+	] as const)("scopes Codex permission profiles to the exact %s provider identity", async (providerId, expectsProfile) => {
+		const { provider, captured } = makeCaptureProvider(providerId);
+		const config = codexProfileConfig("workspace-safe");
+		config.vault_provider = providerId;
+		if (providerId === "acp:test") config.acp_agents = [{ id: "test" }];
+		const sm = new SessionManager(config, makeProviders(provider));
+
+		await sm.runQuery("hello", () => {}, {
+			sessionId: `permission-profile-${providerId}`,
+		});
+
+		if (expectsProfile) {
+			expect(captured.params?.codex).toEqual({
+				permissionProfile: "workspace-safe",
+			});
+		} else {
+			expect(captured.params).not.toHaveProperty("codex");
+		}
+	});
+
+	it("cold-resumes an idle Codex thread when its permission profile changes", async () => {
+		const queryParams: AgentQueryParams[] = [];
+		const cancels: Array<ReturnType<typeof vi.fn>> = [];
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(params): AgentSession {
+				queryParams.push(params);
+				const cancel = vi.fn();
+				cancels.push(cancel);
+				const events = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "codex-thread-1" };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => events[Symbol.asyncIterator](),
+					cancel,
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		};
+		const config = codexProfileConfig("workspace-safe");
+		const sm = new SessionManager(config, makeProviders(provider));
+
+		await sm.runQuery("first", () => {}, {
+			sessionId: "codex-profile-config-session",
+		});
+		expect(queryParams[0]?.codex).toEqual({
+			permissionProfile: "workspace-safe",
+		});
+
+		const changed = structuredClone(config);
+		changed.codex.permission_profile = "workspace-strict";
+		sm.syncConfig(changed);
+
+		expect(cancels[0]).toHaveBeenCalledOnce();
+		await sm.runQuery("second", () => {}, {
+			sessionId: "codex-profile-config-session",
+		});
+		expect(queryParams[1]).toMatchObject({
+			sessionId: "codex-thread-1",
+			codex: { permissionProfile: "workspace-strict" },
+		});
+	});
+
+	it("retires Codex between an active turn and an already-queued turn", async () => {
+		let releaseFirstTurn = () => {};
+		const firstTurnRelease = new Promise<void>((resolve) => {
+			releaseFirstTurn = resolve;
+		});
+		let markFirstTurnActive = () => {};
+		const firstTurnActive = new Promise<void>((resolve) => {
+			markFirstTurnActive = resolve;
+		});
+		const queryParams: AgentQueryParams[] = [];
+		const cancels: Array<ReturnType<typeof vi.fn>> = [];
+		const setPermissionProfile = vi.fn().mockResolvedValue(undefined);
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(params): AgentSession {
+				queryParams.push(params);
+				const queryIndex = queryParams.length;
+				const cancel = vi.fn();
+				cancels.push(cancel);
+				const events = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "codex-thread-1" };
+					if (queryIndex === 1) {
+						markFirstTurnActive();
+						await firstTurnRelease;
+					}
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => events[Symbol.asyncIterator](),
+					cancel,
+					send: vi.fn().mockResolvedValue(undefined),
+					setPermissionProfile,
+				};
+			},
+		};
+		const config = codexProfileConfig("workspace-safe");
+		const sm = new SessionManager(config, makeProviders(provider));
+		const firstTurn = sm.runQuery("first", () => {}, {
+			sessionId: "codex-profile-active-session",
+		});
+		await firstTurnActive;
+		const secondTurn = sm.runQuery("second", () => {}, {
+			sessionId: "codex-profile-active-session",
+		});
+
+		const changed = structuredClone(config);
+		changed.codex.permission_profile = "workspace-strict";
+		sm.syncConfig(changed);
+		expect(cancels[0]).not.toHaveBeenCalled();
+		expect(queryParams).toHaveLength(1);
+		expect(setPermissionProfile).toHaveBeenCalledWith("workspace-strict");
+
+		releaseFirstTurn();
+		await firstTurn;
+		await secondTurn;
+		expect(cancels[0]).toHaveBeenCalledOnce();
+		expect(queryParams[1]).toMatchObject({
+			sessionId: "codex-thread-1",
+			codex: { permissionProfile: "workspace-strict" },
+		});
+	});
+
+	it("defers a queued pre-change turn until Codex background work settles", async () => {
+		const running = {
+			providerId: "codex",
+			providerSessionId: "codex-thread-queued",
+			activityId: "subagent-queued",
+			kind: "agent" as const,
+			status: "running" as const,
+			startedAtMs: 100,
+			updatedAtMs: 100,
+			capabilities: { clean: true },
+		};
+		let observed = [running];
+		let releaseFirstTurn = () => {};
+		const firstTurnRelease = new Promise<void>((resolve) => {
+			releaseFirstTurn = resolve;
+		});
+		let markFirstTurnActive = () => {};
+		const firstTurnActive = new Promise<void>((resolve) => {
+			markFirstTurnActive = resolve;
+		});
+		const queryParams: AgentQueryParams[] = [];
+		const cancels: Array<ReturnType<typeof vi.fn>> = [];
+		const sends: Array<ReturnType<typeof vi.fn>> = [];
+		const listBackgroundActivities = vi.fn(async () => observed);
+		const controlBackgroundActivity = vi.fn(async () => {
+			observed = [];
+		});
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(params): AgentSession {
+				queryParams.push(params);
+				const queryIndex = queryParams.length;
+				const cancel = vi.fn();
+				const send = vi.fn().mockResolvedValue(undefined);
+				cancels.push(cancel);
+				sends.push(send);
+				const events = (async function* (): AsyncGenerator<AgentEvent> {
+					yield {
+						type: "session_start",
+						sessionId: "codex-thread-queued",
+					};
+					if (queryIndex === 1) {
+						markFirstTurnActive();
+						await firstTurnRelease;
+					}
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => events[Symbol.asyncIterator](),
+					cancel,
+					send,
+					listBackgroundActivities,
+					controlBackgroundActivity,
+				};
+			},
+		};
+		const config = codexProfileConfig("workspace-safe");
+		const sm = new SessionManager(config, makeProviders(provider));
+		const firstTurn = sm.runQuery("first", () => {}, {
+			sessionId: "codex-profile-queued-background",
+		});
+		await firstTurnActive;
+		const secondEvents: ServerMessage[] = [];
+		let secondSettled = false;
+		const secondTurn = sm
+			.runQuery("already queued", (event) => secondEvents.push(event), {
+				sessionId: "codex-profile-queued-background",
+				turnId: "queued-before-profile-change",
+			})
+			.finally(() => {
+				secondSettled = true;
+			});
+
+		const changed = structuredClone(config);
+		changed.codex.permission_profile = "workspace-strict";
+		sm.syncConfig(changed);
+		releaseFirstTurn();
+		await firstTurn;
+		await vi.waitFor(() => {
+			expect(listBackgroundActivities).toHaveBeenCalled();
+			expect(sm.getBackgroundActivities()).toEqual([running]);
+		});
+		await Promise.resolve();
+
+		expect(secondSettled).toBe(false);
+		expect(secondEvents.some((event) => event.type === "error")).toBe(false);
+		expect(queryParams).toHaveLength(1);
+		expect(sends[0]).toHaveBeenCalledOnce();
+		expect(cancels[0]).not.toHaveBeenCalled();
+		expect(dbMock.deletePendingSessionTurn).not.toHaveBeenCalledWith(
+			"queued-before-profile-change",
+		);
+
+		await sm.controlProviderBackgroundActivity({ action: "clean" });
+		await secondTurn;
+		expect(cancels[0]).toHaveBeenCalledOnce();
+		expect(queryParams[1]).toMatchObject({
+			sessionId: "codex-thread-queued",
+			codex: { permissionProfile: "workspace-strict" },
+		});
+		expect(sends[1]).toHaveBeenCalledOnce();
+		expect(secondEvents.some((event) => event.type === "error")).toBe(false);
+	});
+
+	it("does not replace a purpose-built Codex runtime with native background work", async () => {
+		const running = {
+			providerId: "codex",
+			providerSessionId: "codex-routine-thread",
+			activityId: "routine-subagent",
+			kind: "agent" as const,
+			status: "running" as const,
+			startedAtMs: 100,
+			updatedAtMs: 100,
+			capabilities: { clean: true },
+		};
+		let observed: (typeof running)[] = [];
+		const queryParams: AgentQueryParams[] = [];
+		const cancel = vi.fn();
+		const send = vi.fn().mockResolvedValue(undefined);
+		const listBackgroundActivities = vi.fn(async () => observed);
+		const controlBackgroundActivity = vi.fn(async () => {
+			observed = [];
+		});
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(params): AgentSession {
+				queryParams.push(params);
+				const events = (async function* (): AsyncGenerator<AgentEvent> {
+					yield {
+						type: "session_start",
+						sessionId: "codex-routine-thread",
+					};
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => events[Symbol.asyncIterator](),
+					cancel,
+					send,
+					listBackgroundActivities,
+					controlBackgroundActivity,
+				};
+			},
+		};
+		const config = codexProfileConfig("workspace-safe");
+		const sm = new SessionManager(config, makeProviders(provider));
+		await sm.runQuery("routine", () => {}, {
+			sessionId: "codex-purpose-built-background",
+			routineContext: routinePermissionContext("codex"),
+		});
+		expect(queryParams[0]).not.toHaveProperty("codex");
+		expect(sm.getBackgroundActivities()).toEqual([]);
+
+		// Native activity starts before the manager's next scheduled poll. The
+		// ordinary-turn boundary must refresh ownership instead of trusting [] here.
+		observed = [running];
+		const events: ServerMessage[] = [];
+		await sm.runQuery("ordinary", (event) => events.push(event), {
+			sessionId: "codex-purpose-built-background",
+		});
+
+		expect(events).toContainEqual({
+			type: "error",
+			message:
+				"Wait for the purpose-built Codex runtime's background activity to finish before starting an ordinary turn.",
+			turn_scoped: true,
+		});
+		expect(queryParams).toHaveLength(1);
+		expect(send).toHaveBeenCalledOnce();
+		expect(cancel).not.toHaveBeenCalled();
+		await sm.controlProviderBackgroundActivity({ action: "clean" });
+	});
+
+	it("defers a durable ordinary turn queued behind a background-owning Routine", async () => {
+		const running = {
+			providerId: "codex",
+			providerSessionId: "codex-routine-queued-thread",
+			activityId: "routine-queued-subagent",
+			kind: "agent" as const,
+			status: "running" as const,
+			startedAtMs: 100,
+			updatedAtMs: 100,
+			capabilities: { clean: true },
+		};
+		let observed = [running];
+		let releaseRoutine = () => {};
+		const routineRelease = new Promise<void>((resolve) => {
+			releaseRoutine = resolve;
+		});
+		let markRoutineActive = () => {};
+		const routineActive = new Promise<void>((resolve) => {
+			markRoutineActive = resolve;
+		});
+		const queryParams: AgentQueryParams[] = [];
+		const cancels: Array<ReturnType<typeof vi.fn>> = [];
+		const sends: Array<ReturnType<typeof vi.fn>> = [];
+		const listBackgroundActivities = vi.fn(async () => observed);
+		const controlBackgroundActivity = vi.fn(async () => {
+			observed = [];
+		});
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(params): AgentSession {
+				queryParams.push(params);
+				const queryIndex = queryParams.length;
+				const cancel = vi.fn();
+				const send = vi.fn().mockResolvedValue(undefined);
+				cancels.push(cancel);
+				sends.push(send);
+				const events = (async function* (): AsyncGenerator<AgentEvent> {
+					yield {
+						type: "session_start",
+						sessionId: "codex-routine-queued-thread",
+					};
+					if (queryIndex === 1) {
+						markRoutineActive();
+						await routineRelease;
+					}
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => events[Symbol.asyncIterator](),
+					cancel,
+					send,
+					listBackgroundActivities,
+					controlBackgroundActivity,
+				};
+			},
+		};
+		const config = codexProfileConfig("workspace-safe");
+		const sm = new SessionManager(config, makeProviders(provider));
+		const routineTurn = sm.runQuery("routine", () => {}, {
+			sessionId: "codex-routine-queued-background",
+			routineContext: routinePermissionContext("codex"),
+		});
+		await routineActive;
+		const queuedEvents: ServerMessage[] = [];
+		let queuedSettled = false;
+		const queuedTurn = sm
+			.runQuery("ordinary queued turn", (event) => queuedEvents.push(event), {
+				sessionId: "codex-routine-queued-background",
+				turnId: "queued-behind-purpose-built-routine",
+			})
+			.finally(() => {
+				queuedSettled = true;
+			});
+
+		releaseRoutine();
+		await routineTurn;
+		await vi.waitFor(() => {
+			expect(sm.getBackgroundActivities()).toEqual([running]);
+		});
+		await Promise.resolve();
+
+		expect(queuedSettled).toBe(false);
+		expect(queuedEvents.some((event) => event.type === "error")).toBe(false);
+		expect(queryParams).toHaveLength(1);
+		expect(queryParams[0]).not.toHaveProperty("codex");
+		expect(sends[0]).toHaveBeenCalledOnce();
+		expect(cancels[0]).not.toHaveBeenCalled();
+		expect(dbMock.deletePendingSessionTurn).not.toHaveBeenCalledWith(
+			"queued-behind-purpose-built-routine",
+		);
+
+		await sm.controlProviderBackgroundActivity({ action: "clean" });
+		await queuedTurn;
+		expect(cancels[0]).toHaveBeenCalledOnce();
+		expect(queryParams[1]).toMatchObject({
+			sessionId: "codex-routine-queued-thread",
+			codex: { permissionProfile: "workspace-safe" },
+		});
+		expect(sends[1]).toHaveBeenCalledOnce();
+		expect(queuedEvents.some((event) => event.type === "error")).toBe(false);
+	});
+
+	it("fails closed when authoritative Codex background refresh fails", async () => {
+		let refreshFails = false;
+		const queryParams: AgentQueryParams[] = [];
+		const cancels: Array<ReturnType<typeof vi.fn>> = [];
+		const sends: Array<ReturnType<typeof vi.fn>> = [];
+		const listBackgroundActivities = vi.fn(async () => {
+			if (refreshFails) throw new Error("native inventory unavailable");
+			return [];
+		});
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(params): AgentSession {
+				queryParams.push(params);
+				const cancel = vi.fn();
+				const send = vi.fn().mockResolvedValue(undefined);
+				cancels.push(cancel);
+				sends.push(send);
+				const events = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "codex-refresh-thread" };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => events[Symbol.asyncIterator](),
+					cancel,
+					send,
+					listBackgroundActivities,
+				};
+			},
+		};
+		const config = codexProfileConfig("workspace-safe");
+		const sm = new SessionManager(config, makeProviders(provider));
+		await sm.runQuery("first", () => {}, {
+			sessionId: "codex-authoritative-refresh-failure",
+		});
+
+		refreshFails = true;
+		const changed = structuredClone(config);
+		changed.codex.permission_profile = "workspace-strict";
+		sm.syncConfig(changed);
+		const blockedEvents: ServerMessage[] = [];
+		await sm.runQuery("blocked", (event) => blockedEvents.push(event), {
+			sessionId: "codex-authoritative-refresh-failure",
+		});
+		expect(blockedEvents).toContainEqual({
+			type: "error",
+			message:
+				"Codex background ownership could not be verified. Wait for its background activity to finish before changing runtimes.",
+			turn_scoped: true,
+		});
+		expect(queryParams).toHaveLength(1);
+		expect(sends[0]).toHaveBeenCalledOnce();
+		expect(cancels[0]).not.toHaveBeenCalled();
+
+		refreshFails = false;
+		await sm.runQuery("retry", () => {}, {
+			sessionId: "codex-authoritative-refresh-failure",
+		});
+		expect(cancels[0]).toHaveBeenCalledOnce();
+		expect(queryParams[1]).toMatchObject({
+			sessionId: "codex-refresh-thread",
+			codex: { permissionProfile: "workspace-strict" },
+		});
+		expect(sends[1]).toHaveBeenCalledOnce();
+	});
+
+	it("rejects stale-profile turns until provider background activity settles", async () => {
+		const running = {
+			providerId: "codex",
+			providerSessionId: "codex-thread-1",
+			activityId: "subagent-1",
+			kind: "agent" as const,
+			status: "running" as const,
+			startedAtMs: 100,
+			updatedAtMs: 100,
+			capabilities: { clean: true },
+		};
+		let observed = [running];
+		const queryParams: AgentQueryParams[] = [];
+		const cancels: Array<ReturnType<typeof vi.fn>> = [];
+		const sends: Array<ReturnType<typeof vi.fn>> = [];
+		const listBackgroundActivities = vi.fn(async () => observed);
+		const controlBackgroundActivity = vi.fn(async () => {
+			observed = [];
+		});
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(params): AgentSession {
+				queryParams.push(params);
+				const cancel = vi.fn();
+				const send = vi.fn().mockResolvedValue(undefined);
+				cancels.push(cancel);
+				sends.push(send);
+				const events = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "codex-thread-1" };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => events[Symbol.asyncIterator](),
+					cancel,
+					send,
+					listBackgroundActivities,
+					controlBackgroundActivity,
+				};
+			},
+		};
+		const config = codexProfileConfig("workspace-safe");
+		const sm = new SessionManager(config, makeProviders(provider));
+		await sm.runQuery("first", () => {}, {
+			sessionId: "codex-profile-background-session",
+		});
+		await vi.waitFor(() => {
+			expect(sm.getBackgroundActivities()).toEqual([running]);
+		});
+		const routineEvents: ServerMessage[] = [];
+		await sm.runQuery(
+			"purpose-built routine must not reuse the profile runtime",
+			(event) => routineEvents.push(event),
+			{
+				sessionId: "codex-profile-background-session",
+				routineContext: routinePermissionContext("codex"),
+			},
+		);
+		expect(routineEvents).toContainEqual({
+			type: "error",
+			message:
+				"Wait for Codex background activity to finish before starting this purpose-built runtime.",
+			turn_scoped: true,
+		});
+		expect(queryParams).toHaveLength(1);
+		expect(sends[0]).toHaveBeenCalledOnce();
+		expect(cancels[0]).not.toHaveBeenCalled();
+
+		const changed = structuredClone(config);
+		changed.codex.permission_profile = "workspace-strict";
+		sm.syncConfig(changed);
+		expect(cancels[0]).not.toHaveBeenCalled();
+		const blockedEvents: ServerMessage[] = [];
+		await sm.runQuery(
+			"must not use stale permissions",
+			(event) => blockedEvents.push(event),
+			{ sessionId: "codex-profile-background-session" },
+		);
+		expect(blockedEvents).toContainEqual({
+			type: "error",
+			message:
+				"Wait for Codex background activity to finish before starting a turn with the updated permission profile.",
+			turn_scoped: true,
+		});
+		expect(queryParams).toHaveLength(1);
+		expect(sends[0]).toHaveBeenCalledOnce();
+		expect(cancels[0]).not.toHaveBeenCalled();
+
+		await sm.controlProviderBackgroundActivity({ action: "clean" });
+		expect(cancels[0]).toHaveBeenCalledOnce();
+		expect(sm.getBackgroundActivities()).toEqual([]);
+		await sm.runQuery("second", () => {}, {
+			sessionId: "codex-profile-background-session",
+		});
+		expect(queryParams[1]).toMatchObject({
+			sessionId: "codex-thread-1",
+			codex: { permissionProfile: "workspace-strict" },
+		});
+		expect(sends[1]).toHaveBeenCalledOnce();
+	});
+
 	it("refreshes realtime identity without canonicalizing WSL agent paths", async () => {
 		const { provider, captured } = makeCaptureProvider("codex");
 		const base = makeConfig("gpt-5.6-sol");
@@ -959,6 +1578,32 @@ describe("SessionManager — provider background tasks", () => {
 });
 
 describe("SessionManager — provider background activity", () => {
+	it("cleans a Codex profile-transition waiter when its turn is aborted", async () => {
+		const sm = new SessionManager(
+			makeConfig(),
+			makeProviders(makeProvider("Bash")),
+		);
+		const internals = sm as unknown as {
+			backgroundActivityRevision: number;
+			backgroundActivityWaiters: Set<() => void>;
+			waitForBackgroundActivityRevision(
+				revision: number,
+				signal: AbortSignal,
+			): Promise<void>;
+		};
+		const controller = new AbortController();
+		const waiting = internals.waitForBackgroundActivityRevision(
+			internals.backgroundActivityRevision,
+			controller.signal,
+		);
+		expect(internals.backgroundActivityWaiters.size).toBe(1);
+
+		controller.abort();
+
+		await expect(waiting).rejects.toMatchObject({ name: "AbortError" });
+		expect(internals.backgroundActivityWaiters.size).toBe(0);
+	});
+
 	it("observes, persists, controls, and safely detaches live activity", async () => {
 		const running = {
 			providerId: "claude",

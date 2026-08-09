@@ -133,6 +133,21 @@ describe("writeConfig — persistence invariants", () => {
 		expect(reparsed).toEqual(config);
 	});
 
+	it("round-trips an optional Codex permission profile and omits the default", () => {
+		const configured = HlidConfigSchema.parse({
+			codex: { permission_profile: "workspace-safe" },
+		});
+		const serialized = serializeConfig(configured);
+		expect(serialized).toContain('permission_profile = "workspace-safe"');
+		expect(
+			HlidConfigSchema.parse(parse(serialized)).codex.permission_profile,
+		).toBe("workspace-safe");
+
+		expect(serializeConfig(HlidConfigSchema.parse({}))).not.toContain(
+			"permission_profile",
+		);
+	});
+
 	it("round-trips separate desktop and mobile custom palettes", () => {
 		const config = HlidConfigSchema.parse({
 			ui: {

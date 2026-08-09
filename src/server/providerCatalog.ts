@@ -574,6 +574,16 @@ export async function loadProviderCatalog(
 						discoveryCwd,
 					})
 				: undefined;
+			const permissionProfiles = options.includeProviderCapabilities
+				? capabilityDiscovery?.discovery.permissionProfiles?.map((profile) => ({
+						id: profile.id,
+						label: profile.id,
+						...(profile.description
+							? { description: profile.description }
+							: {}),
+						allowed: profile.allowed,
+					}))
+				: undefined;
 			return {
 				id: provider.providerId,
 				label: provider.label ?? provider.providerId,
@@ -606,6 +616,7 @@ export async function loadProviderCatalog(
 				forkCapability,
 				hostCapabilities,
 				...(capabilitySnapshot ? { capabilitySnapshot } : {}),
+				...(permissionProfiles ? { permissionProfiles } : {}),
 			};
 		}),
 	);
@@ -680,11 +691,13 @@ export function createProviderCatalogSnapshot(
 		} = {},
 	): ProviderInfo[] {
 		const refreshedAt = now();
+		let requestedProjection = value;
 		for (const withHost of [false, true]) {
 			if (withHost && !includeHostCapabilities) continue;
 			for (const withProvider of [false, true]) {
 				if (withProvider && !includeProviderCapabilities) continue;
 				const projected =
+					withProvider &&
 					withHost === includeHostCapabilities &&
 					withProvider === includeProviderCapabilities
 						? value
@@ -692,6 +705,7 @@ export function createProviderCatalogSnapshot(
 								const {
 									hostCapabilities,
 									capabilitySnapshot,
+									permissionProfiles,
 									...baseProvider
 								} = provider;
 								return {
@@ -700,9 +714,18 @@ export function createProviderCatalogSnapshot(
 									...(withProvider && capabilitySnapshot
 										? { capabilitySnapshot }
 										: {}),
+									...(withProvider && permissionProfiles
+										? { permissionProfiles }
+										: {}),
 								};
 							});
 				const projectedKey = keyFor(withHost, withProvider, discoveryCwd);
+				if (
+					withHost === includeHostCapabilities &&
+					withProvider === includeProviderCapabilities
+				) {
+					requestedProjection = projected;
+				}
 				if (
 					write.liveRefresh !== undefined &&
 					latestLiveRefresh.get(projectedKey) !== write.liveRefresh
@@ -729,7 +752,7 @@ export function createProviderCatalogSnapshot(
 				}
 			}
 		}
-		return value;
+		return requestedProjection;
 	}
 
 	function preserveLiveSnapshotFields(
@@ -752,6 +775,7 @@ export function createProviderCatalogSnapshot(
 				forkCapability: _forkCapability,
 				hostCapabilities: _hostCapabilities,
 				capabilitySnapshot: _capabilitySnapshot,
+				permissionProfiles: _permissionProfiles,
 				...cachedProvider
 			} = provider;
 			return {
@@ -773,6 +797,9 @@ export function createProviderCatalogSnapshot(
 					: {}),
 				...(prior.capabilitySnapshot
 					? { capabilitySnapshot: prior.capabilitySnapshot }
+					: {}),
+				...(prior.permissionProfiles
+					? { permissionProfiles: prior.permissionProfiles }
 					: {}),
 			};
 		});

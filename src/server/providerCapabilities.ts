@@ -16,6 +16,8 @@ import type { CatalogSource } from "./providerCatalog";
 
 const MAX_CAPABILITIES = 200;
 const MAX_ISSUES = 10;
+/** Full Codex profile evidence plus its other bounded discovery probes. */
+const MAX_DISCOVERY_EVIDENCE = 1_200;
 
 function bounded(value: string, max: number): string {
 	const normalized = value.trim();
@@ -391,7 +393,7 @@ export function isProviderCapabilityDiscovery(
 		Number.isFinite(record.observedAt) &&
 		record.observedAt >= 0 &&
 		Array.isArray(record.evidence) &&
-		record.evidence.length <= 1_000 &&
+		record.evidence.length <= MAX_DISCOVERY_EVIDENCE &&
 		record.evidence.every((item) => {
 			if (!item || typeof item !== "object") return false;
 			const evidence = item as Record<string, unknown>;
@@ -422,6 +424,22 @@ export function isProviderCapabilityDiscovery(
 				typeof (record.context as Record<string, unknown>).cwd === "string" &&
 				((record.context as Record<string, unknown>).cwd as string).length <=
 					4_096)) &&
+		(record.permissionProfiles === undefined ||
+			(Array.isArray(record.permissionProfiles) &&
+				record.permissionProfiles.length <= 1_000 &&
+				record.permissionProfiles.every((profile) => {
+					if (!profile || typeof profile !== "object") return false;
+					const item = profile as Record<string, unknown>;
+					return (
+						typeof item.id === "string" &&
+						item.id.length > 0 &&
+						item.id.length <= 500 &&
+						typeof item.allowed === "boolean" &&
+						(item.description === undefined ||
+							(typeof item.description === "string" &&
+								item.description.length <= 500))
+					);
+				}))) &&
 		(record.issues === undefined ||
 			(Array.isArray(record.issues) &&
 				record.issues.length <= 100 &&

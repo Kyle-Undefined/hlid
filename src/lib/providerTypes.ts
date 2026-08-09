@@ -5,6 +5,13 @@
  */
 import type { ProviderCapabilitySnapshot } from "./providerCapabilityTypes";
 
+export type ProviderPermissionProfile = {
+	id: string;
+	label: string;
+	description?: string;
+	allowed: boolean;
+};
+
 export type ProviderInfo = {
 	id: string;
 	label: string;
@@ -50,6 +57,8 @@ export type ProviderInfo = {
 	effortLevels?: Array<{ value: string; label: string; desc?: string }>;
 	/** Permission gate modes the provider honours. */
 	permissionModes?: Array<{ value: string; label: string; desc?: string }>;
+	/** Provider-native named permission profiles available for this workspace. */
+	permissionProfiles?: ProviderPermissionProfile[];
 	/** Raven/delegation-only modes that must not leak into persistent config. */
 	sessionPermissionModes?: Array<{
 		value: string;

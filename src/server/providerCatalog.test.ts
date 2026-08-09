@@ -1075,6 +1075,13 @@ describe("loadProviderCatalog", () => {
 	it("only discovers provider evidence for an explicit refresh", async () => {
 		const discoverCapabilities = vi.fn().mockResolvedValue({
 			observedAt: 100,
+			permissionProfiles: [
+				{
+					id: "workspace-safe",
+					description: "Writes only inside the workspace.",
+					allowed: true,
+				},
+			],
 			evidence: [
 				{
 					id: "codex:experimental-feature:apps",
@@ -1096,6 +1103,9 @@ describe("loadProviderCatalog", () => {
 
 		expect(
 			(await loadProviderCatalog([provider], catalog))[0]?.capabilitySnapshot,
+		).toBeUndefined();
+		expect(
+			(await loadProviderCatalog([provider], catalog))[0]?.permissionProfiles,
 		).toBeUndefined();
 		expect(discoverCapabilities).not.toHaveBeenCalled();
 
@@ -1126,6 +1136,14 @@ describe("loadProviderCatalog", () => {
 				}),
 			]),
 		});
+		expect(result[0]?.permissionProfiles).toEqual([
+			{
+				id: "workspace-safe",
+				label: "workspace-safe",
+				description: "Writes only inside the workspace.",
+				allowed: true,
+			},
+		]);
 	});
 
 	it("keeps an explicit uncached capability read scoped to that probe", async () => {
@@ -1352,6 +1370,105 @@ describe("createProviderCatalogSnapshot", () => {
 			cwd: "/work/two",
 		});
 		expect(repeated).toBe(first);
+		expect(load).toHaveBeenCalledTimes(2);
+	});
+
+	it("strips permission profiles from capability-free projections", async () => {
+		const load = vi.fn().mockResolvedValue([
+			{
+				id: "codex",
+				label: "Codex",
+				available: true,
+				models: [],
+				permissionProfiles: [
+					{
+						id: "workspace-safe",
+						label: "workspace-safe",
+						allowed: true,
+					},
+				],
+				capabilitySnapshot: {
+					contractVersion: 1 as const,
+					providerId: "codex",
+					status: "current" as const,
+					source: "live" as const,
+					revision: "permission-profile-test",
+					observedAt: 1,
+					capabilities: [],
+				},
+			},
+		]);
+		const snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "codex" })],
+			{ modelsFor: vi.fn(), cachedModelsFor: vi.fn() },
+			{ load },
+		);
+
+		const base = await snapshot.get();
+		const rich = await snapshot.get({
+			refresh: true,
+			includeProviderCapabilities: true,
+			discoveryCwd: "/work/project",
+		});
+
+		expect(rich[0]?.permissionProfiles).toHaveLength(1);
+		expect(base[0]?.permissionProfiles).toBeUndefined();
+		expect(base[0]?.capabilitySnapshot).toBeUndefined();
+		expect(load).toHaveBeenCalledTimes(2);
+	});
+
+	it("preserves permission profiles with last-known live capability fields", async () => {
+		const permissionProfiles = [
+			{
+				id: "workspace-safe",
+				label: "workspace-safe",
+				description: "Writes only inside the workspace.",
+				allowed: true,
+			},
+		];
+		const capabilitySnapshot = {
+			contractVersion: 1 as const,
+			providerId: "codex",
+			status: "current" as const,
+			source: "live" as const,
+			revision: "live-permission-profiles",
+			observedAt: 1,
+			capabilities: [],
+		};
+		const load = vi.fn((_providers, _catalog, options) =>
+			Promise.resolve([
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: options.refresh
+						? [{ value: "live", label: "Live" }]
+						: [{ value: "cached", label: "Cached" }],
+					...(options.refresh
+						? { permissionProfiles, capabilitySnapshot }
+						: {}),
+				},
+			]),
+		);
+		const snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "codex" })],
+			{ modelsFor: vi.fn(), cachedModelsFor: vi.fn() },
+			{ load },
+		);
+		const options = {
+			includeProviderCapabilities: true,
+			discoveryCwd: "/work/project",
+		};
+
+		await snapshot.get({ ...options, refresh: true });
+		snapshot.invalidateMetadata();
+		const rematerialized = await snapshot.get(options);
+
+		expect(rematerialized[0]?.models).toEqual([
+			{ value: "cached", label: "Cached" },
+		]);
+		expect(rematerialized[0]?.permissionProfiles).toEqual(permissionProfiles);
+		expect(rematerialized[0]?.capabilitySnapshot).toEqual(capabilitySnapshot);
 		expect(load).toHaveBeenCalledTimes(2);
 	});
 

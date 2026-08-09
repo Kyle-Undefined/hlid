@@ -3,9 +3,18 @@ import type {
 	ProviderCapabilityEvidence,
 	ProviderCapabilityMaturity,
 } from "../lib/providerCapabilityTypes";
+import type {
+	PermissionProfileListParams,
+	PermissionProfileListResponse,
+	PermissionProfileSummary,
+} from "./codexProtocol";
 import { providerCapabilityId } from "./providerCapabilities";
 
 type CapabilityRequest = (method: string, params: unknown) => Promise<unknown>;
+
+const PERMISSION_PROFILE_PAGE_SIZE = 100;
+const PERMISSION_PROFILE_MAX_PAGES = 10;
+const PERMISSION_PROFILE_MAX_TEXT_LENGTH = 500;
 
 function record(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object"
@@ -99,40 +108,109 @@ function experimentalEvidence(
 
 function permissionProfileEvidence(
 	providerId: string,
-	response: unknown,
+	profiles: readonly PermissionProfileSummary[],
 ): ProviderCapabilityEvidence[] {
-	return list(response, ["data", "profiles", "permissionProfiles"]).flatMap(
-		(value) => {
-			const item = record(value);
-			const id = textValue(item, ["id", "name", "profile"]);
-			if (!id) return [];
-			const allowed = booleanValue(item, [
-				"allowed",
-				"available",
-				"isAllowed",
-				"requirementsSatisfied",
-			]);
-			return [
-				{
-					id: providerCapabilityId(providerId, "permission-profile", id),
-					label: textValue(item, ["displayName", "name"]) ?? id,
-					scope: "workspace" as const,
-					support: "advertised" as const,
-					integration: "not-integrated" as const,
-					readiness:
-						allowed === false ? ("unavailable" as const) : ("gated" as const),
-					source: "provider-config" as const,
-					maturity: "beta" as const,
-					operations: ["select"],
-					...(allowed === false
-						? {
-								reason:
-									"The provider's effective requirements do not allow this profile.",
-							}
-						: {}),
-				},
-			];
-		},
+	return profiles.map((profile) => ({
+		id: providerCapabilityId(providerId, "permission-profile", profile.id),
+		label: profile.id,
+		scope: "workspace" as const,
+		support: "advertised" as const,
+		integration: "integrated" as const,
+		readiness: profile.allowed ? ("ready" as const) : ("unavailable" as const),
+		source: "provider-config" as const,
+		maturity: "beta" as const,
+		operations: ["select"],
+		...(!profile.allowed
+			? {
+					reason:
+						"The provider's effective requirements do not allow this profile.",
+				}
+			: {}),
+	}));
+}
+
+function parsePermissionProfile(value: unknown): PermissionProfileSummary {
+	const item = record(value);
+	const id = typeof item.id === "string" ? item.id.trim() : "";
+	if (
+		!id ||
+		id.length > PERMISSION_PROFILE_MAX_TEXT_LENGTH ||
+		typeof item.allowed !== "boolean"
+	) {
+		throw new Error("permissionProfile/list returned a malformed profile");
+	}
+	if (
+		item.description !== undefined &&
+		item.description !== null &&
+		typeof item.description !== "string"
+	) {
+		throw new Error(
+			`permissionProfile/list returned a malformed description for ${id}`,
+		);
+	}
+	const rawDescription =
+		typeof item.description === "string" && item.description.trim()
+			? item.description.trim()
+			: null;
+	const description = rawDescription
+		? rawDescription.slice(0, PERMISSION_PROFILE_MAX_TEXT_LENGTH)
+		: null;
+	return { id, description, allowed: item.allowed };
+}
+
+/** Read the complete cwd-scoped native catalog without silently truncating it. */
+export async function readCodexPermissionProfiles(input: {
+	cwd: string;
+	request: CapabilityRequest;
+}): Promise<PermissionProfileSummary[]> {
+	const profiles = new Map<string, PermissionProfileSummary>();
+	const seenCursors = new Set<string>();
+	let cursor: string | null = null;
+	for (let page = 0; page < PERMISSION_PROFILE_MAX_PAGES; page++) {
+		const params = {
+			cwd: input.cwd,
+			limit: PERMISSION_PROFILE_PAGE_SIZE,
+			...(cursor ? { cursor } : {}),
+		} satisfies PermissionProfileListParams;
+		const raw = record(await input.request("permissionProfile/list", params));
+		if (!Array.isArray(raw.data)) {
+			throw new Error("permissionProfile/list returned no profile array");
+		}
+		if (raw.data.length > PERMISSION_PROFILE_PAGE_SIZE) {
+			throw new Error(
+				`permissionProfile/list returned more than ${PERMISSION_PROFILE_PAGE_SIZE} profiles in one page`,
+			);
+		}
+		const response = raw as PermissionProfileListResponse;
+		for (const value of response.data) {
+			const profile = parsePermissionProfile(value);
+			if (profiles.has(profile.id)) {
+				throw new Error(
+					`permissionProfile/list returned duplicate profile ${profile.id}`,
+				);
+			}
+			profiles.set(profile.id, profile);
+		}
+		if (
+			raw.nextCursor !== undefined &&
+			raw.nextCursor !== null &&
+			typeof raw.nextCursor !== "string"
+		) {
+			throw new Error("permissionProfile/list returned a malformed nextCursor");
+		}
+		const nextCursor =
+			typeof raw.nextCursor === "string" && raw.nextCursor
+				? raw.nextCursor
+				: null;
+		if (!nextCursor) return [...profiles.values()];
+		if (seenCursors.has(nextCursor)) {
+			throw new Error("permissionProfile/list repeated its pagination cursor");
+		}
+		seenCursors.add(nextCursor);
+		cursor = nextCursor;
+	}
+	throw new Error(
+		`permissionProfile/list exceeded ${PERMISSION_PROFILE_MAX_PAGES} pages`,
 	);
 }
 
@@ -237,30 +315,45 @@ export async function discoverCodexProviderCapabilities(input: {
 	cwd: string;
 	request: CapabilityRequest;
 }): Promise<ProviderCapabilityDiscovery> {
-	const probes = [
+	type Probe = {
+		method: string;
+		load: () => Promise<unknown>;
+		map: (
+			providerId: string,
+			response: unknown,
+		) => ProviderCapabilityEvidence[];
+		allowNextCursor?: boolean;
+	};
+	const probes: Probe[] = [
 		{
 			method: "experimentalFeature/list",
-			params: { limit: 100 },
+			load: () => input.request("experimentalFeature/list", { limit: 100 }),
 			map: experimentalEvidence,
 		},
 		{
 			method: "permissionProfile/list",
-			params: { cwd: input.cwd, limit: 100 },
-			map: permissionProfileEvidence,
+			load: () =>
+				readCodexPermissionProfiles({ cwd: input.cwd, request: input.request }),
+			map: (providerId, response) =>
+				permissionProfileEvidence(
+					providerId,
+					response as PermissionProfileSummary[],
+				),
 		},
 		{
 			method: "collaborationMode/list",
-			params: {},
+			load: () => input.request("collaborationMode/list", {}),
 			map: collaborationModeEvidence,
 		},
 		{
 			method: "hooks/list",
-			params: { cwds: [input.cwd] },
+			load: () => input.request("hooks/list", { cwds: [input.cwd] }),
 			map: hookEvidence,
 		},
 		{
 			method: "mcpServerStatus/list",
-			params: { limit: 100, detail: "full" },
+			load: () =>
+				input.request("mcpServerStatus/list", { limit: 100, detail: "full" }),
 			map: connectorHealthEvidence,
 			allowNextCursor: true,
 		},
@@ -268,11 +361,10 @@ export async function discoverCodexProviderCapabilities(input: {
 	// Remote app inventory has its own bounded Apps/Connectors route. Keeping
 	// app/list and app/installed out of this general snapshot prevents a slow
 	// plugin registry sync from delaying unrelated provider capability reads.
-	const settled = await Promise.allSettled(
-		probes.map((probe) => input.request(probe.method, probe.params)),
-	);
+	const settled = await Promise.allSettled(probes.map((probe) => probe.load()));
 	const evidence: ProviderCapabilityEvidence[] = [];
 	const issues: string[] = [];
+	let permissionProfiles: ProviderCapabilityDiscovery["permissionProfiles"];
 	for (const [index, result] of settled.entries()) {
 		const probe = probes[index];
 		if (!probe) continue;
@@ -281,6 +373,15 @@ export async function discoverCodexProviderCapabilities(input: {
 			continue;
 		}
 		evidence.push(...probe.map(input.providerId, result.value));
+		if (probe.method === "permissionProfile/list") {
+			permissionProfiles = (result.value as PermissionProfileSummary[]).map(
+				(profile) => ({
+					id: profile.id,
+					...(profile.description ? { description: profile.description } : {}),
+					allowed: profile.allowed,
+				}),
+			);
+		}
 		if (record(result.value).nextCursor && !("allowNextCursor" in probe)) {
 			issues.push(`${probe.method} returned a truncated first page.`);
 		}
@@ -288,6 +389,7 @@ export async function discoverCodexProviderCapabilities(input: {
 	return {
 		observedAt: Date.now(),
 		context: { cwd: input.cwd },
+		...(permissionProfiles ? { permissionProfiles } : {}),
 		evidence,
 		...(issues.length ? { issues } : {}),
 	};

@@ -63,7 +63,10 @@ import {
 	type ThreadHandler,
 } from "./codexAppServer";
 import { type CodexAppAuthAttempt, mapCodexAppCatalogPage } from "./codexApps";
-import { discoverCodexProviderCapabilities } from "./codexCapabilityDiscovery";
+import {
+	discoverCodexProviderCapabilities,
+	readCodexPermissionProfiles,
+} from "./codexCapabilityDiscovery";
 import type {
 	AppsInstalledParams,
 	AppsInstalledResponse,
@@ -92,6 +95,7 @@ import type {
 	ModelListParams,
 	ModelListResponse,
 	ModelReroutedNotification,
+	PermissionProfileSummary,
 	PermissionsRequestApprovalResponse,
 	RateLimitSnapshot,
 	RealtimeVoice,
@@ -2290,6 +2294,12 @@ class CodexAgentSession implements AgentSession {
 	>();
 	private backgroundActivityRead: Promise<ProviderBackgroundActivity[]> | null =
 		null;
+	/** Successfully validated explicit profile selections keyed by native cwd. */
+	private validatedPermissionProfiles = new Set<string>();
+	/** Explicit profile most recently sent at a native thread or turn boundary. */
+	private expectedActivePermissionProfile: string | null = null;
+	/** Terminal fail-closed state after Codex reports a different active profile. */
+	private permissionProfileFailure: Error | null = null;
 
 	private launch: CodexLaunchConfig | null = null;
 
@@ -2842,6 +2852,7 @@ class CodexAgentSession implements AgentSession {
 			await this.assertAudioInputSupported();
 		}
 		const cwd = this.launch?.rpcCwd ?? this.params.cwd;
+		const permissionProfile = await this.permissionProfileForBoundary(cwd);
 		const collaborationModel = this.params.model ?? this.resolvedModel;
 		const collaborationMode =
 			collaborationModel ||
@@ -2904,17 +2915,10 @@ class CodexAgentSession implements AgentSession {
 			...(this.delegatedWindowsWorker?.kind === "visualize" && cwd
 				? { runtimeWorkspaceRoots: [cwd] }
 				: {}),
-			...(this.params.model ? { model: this.params.model } : {}),
+			...this.commonBoundaryParams(permissionProfile),
 			...(this.params.effort ? { effort: this.params.effort } : {}),
-			...(this.params.serviceTier
-				? { serviceTier: this.params.serviceTier }
-				: {}),
-			...(this.params.permissionMode
+			...(this.params.permissionMode && !permissionProfile
 				? {
-						approvalPolicy:
-							this.delegatedWindowsWorker?.kind === "visualize"
-								? "never"
-								: effectiveApprovalPolicy(this.params),
 						sandboxPolicy:
 							this.delegatedWindowsWorker?.kind === "visualize" && cwd
 								? windowsVisualizeSandboxPolicy(cwd)
@@ -2931,6 +2935,7 @@ class CodexAgentSession implements AgentSession {
 		this.ordinaryQueryActive = true;
 		this.ordinaryTurnStartPending = true;
 		this.lastSentApprovalsReviewerContext = approvalsReviewerRequest;
+		this.expectedActivePermissionProfile = permissionProfile ?? null;
 		try {
 			const result = asObj(await this.request("turn/start", params));
 			const turn = asObj(result.turn);
@@ -3048,6 +3053,18 @@ class CodexAgentSession implements AgentSession {
 				: {}),
 		};
 		this.lastReportedApprovalsReviewer = null;
+	}
+
+	/**
+	 * Permission profiles are validated and sent at every native boundary. This
+	 * setter lets a plan that is already awaiting Hlid approval use the current
+	 * Forge selection for its provider-owned implementation turn.
+	 */
+	async setPermissionProfile(profile?: string): Promise<void> {
+		this.params = {
+			...this.params,
+			codex: profile ? { permissionProfile: profile } : undefined,
+		};
 	}
 
 	async setApprovalsReviewer(
@@ -3935,6 +3952,9 @@ class CodexAgentSession implements AgentSession {
 				});
 		}
 		await conn.ready;
+		const permissionProfile = await this.permissionProfileForBoundary(
+			launch.rpcCwd,
+		);
 		// The one-shot delegated worker validates the current plugin/runtime on a
 		// fresh transport. Do not bind tool availability to a long-lived snapshot.
 		const computerUseAvailable = this.canUseWindowsComputerUse();
@@ -3958,16 +3978,9 @@ class CodexAgentSession implements AgentSession {
 			...(this.delegatedWindowsWorker?.kind === "computer-use"
 				? { threadSource: "user" }
 				: {}),
-			...(this.params.model ? { model: this.params.model } : {}),
-			...(this.params.serviceTier
-				? { serviceTier: this.params.serviceTier }
-				: {}),
-			...(this.params.permissionMode
+			...this.commonBoundaryParams(permissionProfile),
+			...(this.params.permissionMode && !permissionProfile
 				? {
-						approvalPolicy:
-							this.delegatedWindowsWorker?.kind === "visualize"
-								? "never"
-								: effectiveApprovalPolicy(this.params),
 						sandbox:
 							this.delegatedWindowsWorker?.kind === "visualize"
 								? "workspace-write"
@@ -4022,6 +4035,14 @@ class CodexAgentSession implements AgentSession {
 				threadStartParams,
 			)) as ThreadStartResponse;
 		}
+		if (permissionProfile) {
+			this.assertActivePermissionProfile(
+				rawResult,
+				permissionProfile,
+				this.params.sessionId ? "resume" : "start",
+			);
+		}
+		this.expectedActivePermissionProfile = permissionProfile ?? null;
 		const result = asObj(rawResult);
 		const thread = asObj(result.thread);
 		if (typeof thread.id !== "string") {
@@ -4096,6 +4117,7 @@ class CodexAgentSession implements AgentSession {
 		this.ordinaryQueryActive = false;
 		this.ordinaryTurnStartPending = false;
 		this.ownedOrdinaryTurnIds.clear();
+		this.expectedActivePermissionProfile = null;
 		this.threadHandler = null;
 		this.attachedThreadIds.clear();
 
@@ -4208,13 +4230,129 @@ class CodexAgentSession implements AgentSession {
 	}
 
 	private request(method: string, params: unknown): Promise<unknown> {
+		if (this.permissionProfileFailure) throw this.permissionProfileFailure;
 		if (!this.conn) throw new Error("Codex app-server is not running");
 		return this.conn.request(method, params);
 	}
 
 	private requestOptional(method: string, params: unknown): Promise<unknown> {
+		if (this.permissionProfileFailure) throw this.permissionProfileFailure;
 		if (!this.conn) throw new Error("Codex app-server is not running");
 		return this.conn.requestOptional(method, params);
+	}
+
+	private commonBoundaryParams(permissionProfile: string | undefined) {
+		return {
+			...(this.params.model ? { model: this.params.model } : {}),
+			...(this.params.serviceTier
+				? { serviceTier: this.params.serviceTier }
+				: {}),
+			...(this.params.permissionMode
+				? {
+						approvalPolicy:
+							this.delegatedWindowsWorker?.kind === "visualize"
+								? ("never" as const)
+								: effectiveApprovalPolicy(this.params),
+						...(permissionProfile ? { permissions: permissionProfile } : {}),
+					}
+				: {}),
+		};
+	}
+
+	private configuredPermissionProfile(): string | undefined {
+		const selected = this.params.codex?.permissionProfile?.trim();
+		if (
+			!selected ||
+			this.params.providerId !== "codex" ||
+			this.delegatedWindowsWorker ||
+			this.params.permissionMode === "plan" ||
+			this.params.planHtmlPath ||
+			this.params.sandboxModeOverride ||
+			this.params.persistSession === false
+		) {
+			return undefined;
+		}
+		return selected;
+	}
+
+	private async permissionProfileForBoundary(
+		cwd: string,
+	): Promise<string | undefined> {
+		const selected = this.configuredPermissionProfile();
+		if (!selected) return undefined;
+		const validationKey = JSON.stringify([cwd, selected]);
+		if (this.validatedPermissionProfiles.has(validationKey)) return selected;
+		let profiles: PermissionProfileSummary[];
+		try {
+			profiles = await readCodexPermissionProfiles({
+				cwd,
+				request: (method, params) => {
+					if (!this.conn) throw new Error("Codex app-server is not running");
+					return this.conn.requestOptional(method, params, 5_000);
+				},
+			});
+		} catch (error) {
+			const detail = error instanceof Error ? error.message : String(error);
+			throw new Error(
+				`Codex permission profile "${selected}" could not be validated for ${cwd}: ${detail}`,
+			);
+		}
+		const profile = profiles.find((candidate) => candidate.id === selected);
+		if (!profile) {
+			throw new Error(
+				`Codex permission profile "${selected}" is not available for ${cwd}. Refresh Forge and select an available profile or use Hlid sandbox policy.`,
+			);
+		}
+		if (!profile.allowed) {
+			throw new Error(
+				`Codex permission profile "${selected}" is not allowed for ${cwd} by the effective Codex requirements. Select an allowed profile or use Hlid sandbox policy.`,
+			);
+		}
+		this.validatedPermissionProfiles.add(validationKey);
+		return selected;
+	}
+
+	private assertActivePermissionProfile(
+		response: ThreadStartResponse | ThreadResumeResponse,
+		expected: string,
+		boundary: "start" | "resume",
+	): void {
+		const active = asObj(response.activePermissionProfile);
+		if (active.id === expected) return;
+		throw new Error(
+			`Codex thread ${boundary} did not activate permission profile "${expected}"; provider reported ${this.describeActivePermissionProfile(active)}.`,
+		);
+	}
+
+	private describeActivePermissionProfile(value: unknown): string {
+		const id = asObj(value).id;
+		return typeof id === "string" && id.trim()
+			? `"${id}"`
+			: "no active profile";
+	}
+
+	private observeActivePermissionProfile(threadSettings: unknown): void {
+		const settings = asObj(threadSettings);
+		const expected = this.expectedActivePermissionProfile;
+		// Older app-servers can omit this newer field. Enforce only a profile Hlid
+		// explicitly sent at the current native boundary and an authoritative field
+		// the provider actually published.
+		if (
+			!expected ||
+			!Object.hasOwn(settings, "activePermissionProfile") ||
+			this.permissionProfileFailure
+		) {
+			return;
+		}
+		const active = settings.activePermissionProfile;
+		if (asObj(active).id === expected) return;
+
+		const error = new Error(
+			`Codex thread settings changed away from required permission profile "${expected}"; provider reported ${this.describeActivePermissionProfile(active)}. Hlid stopped this runtime before another turn. Start a new turn to resume with the selected profile, or choose an available profile in Forge.`,
+		);
+		this.permissionProfileFailure = error;
+		this.events.push({ type: "transport_error", message: error.message });
+		this.cancel();
 	}
 
 	private async resolveWindowsWorkerSettings(
@@ -6421,6 +6559,8 @@ class CodexAgentSession implements AgentSession {
 			case "thread/settings/updated": {
 				const notification = params as ThreadSettingsUpdatedNotification;
 				if (!childNotification && notification.threadId === this.threadId) {
+					this.observeActivePermissionProfile(notification.threadSettings);
+					if (this.permissionProfileFailure) break;
 					this.reportAuthoritativeApprovalsReviewer(
 						notification.threadSettings?.approvalsReviewer,
 						"thread_settings",

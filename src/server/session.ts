@@ -479,6 +479,10 @@ type RunQueryArgs = {
 	readonly effortReady?: Promise<void>;
 	/** Permission work already accepted when this turn entered the queue. */
 	readonly permissionModeReady?: Promise<void>;
+	/** Codex profile selection in effect when this turn entered the queue. */
+	readonly codexPermissionProfileGeneration?: number;
+	/** Accepted while a Codex Routine owned the active purpose-built runtime. */
+	readonly acceptedBehindCodexPurposeBuiltTurn?: boolean;
 	durableReady?: Promise<boolean>;
 };
 
@@ -514,6 +518,13 @@ class PermissionModeChangeSupersededError extends Error {
 			"Permission-mode change was superseded by a session or provider change.",
 		);
 		this.name = "PermissionModeChangeSupersededError";
+	}
+}
+
+class CodexPermissionProfileBackgroundBlockedError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "CodexPermissionProfileBackgroundBlockedError";
 	}
 }
 
@@ -897,6 +908,7 @@ function buildAgentQueryParams(options: {
 	onProviderInitiatedTurn?: AgentQueryParams["onProviderInitiatedTurn"];
 	claudeCrossSessionInbound?: AgentQueryParams["claudeCrossSessionInbound"];
 	claude?: AgentQueryParams["claude"];
+	codex?: AgentQueryParams["codex"];
 	canUseTool: CanUseTool;
 	beforeToolUse: AgentQueryParams["beforeToolUse"];
 	policyEnforced: boolean;
@@ -967,6 +979,7 @@ function buildAgentQueryParams(options: {
 		onProviderInitiatedTurn: options.onProviderInitiatedTurn,
 		claudeCrossSessionInbound: options.claudeCrossSessionInbound,
 		...(options.claude ? { claude: options.claude } : {}),
+		...(options.codex ? { codex: options.codex } : {}),
 		codexRealtimeEnabled: options.codexRealtimeEnabled,
 		settingSources: ["user", "project", "local"],
 		canUseTool: options.canUseTool,
@@ -1380,6 +1393,11 @@ export class SessionManager {
 	private claudeAgentProgressSummaries = false;
 	/** Retire only after the current turn and any SDK background subagents settle. */
 	private restartClaudeRuntimeForAgentProgressSummaries = false;
+	/** Explicit Codex profiles are construction-time state; retire without losing resume identity. */
+	private codexPermissionProfile: string | undefined;
+	private restartCodexRuntimeForPermissionProfile = false;
+	/** Distinguishes turns accepted before a construction-time profile change. */
+	private codexPermissionProfileGeneration = 0;
 	private vaultPath!: string;
 	private vaultName!: string;
 	private permissionMode!: PermissionMode;
@@ -1497,6 +1515,8 @@ export class SessionManager {
 	private realtimeAgentSession: AgentSession | null = null;
 	private backgroundActivities: ProviderBackgroundActivity[] = [];
 	private backgroundActivityChangeHandler: (() => void) | null = null;
+	private backgroundActivityRevision = 0;
+	private backgroundActivityWaiters = new Set<() => void>();
 	private backgroundActivityWriteTail: Promise<void> = Promise.resolve();
 	private backgroundActivityObserver: {
 		session: AgentSession;
@@ -1763,6 +1783,7 @@ export class SessionManager {
 		this.recapModel = configuredDefaults.recapModel;
 		this.claudeExecutable = resolveClaudeExecutable();
 		this.codexExecutable = codexConfig.executable;
+		this.codexPermissionProfile = codexConfig.permission_profile;
 		this.windowsComputerUse = codexConfig.windows_computer_use ?? {
 			model: "inherit",
 			effort: "medium",
@@ -1805,6 +1826,7 @@ export class SessionManager {
 		this.providerHandoffPending = false;
 		this.operatingBriefProviderKey = null;
 		this.restartClaudeRuntimeForAgentProgressSummaries = false;
+		this.restartCodexRuntimeForPermissionProfile = false;
 		this.messageSeq = 0;
 		this.sessionAllowedTools.clear();
 		db.clearCurrentSessionId().catch((e) =>
@@ -1908,6 +1930,22 @@ export class SessionManager {
 		);
 	}
 
+	private retireConstructionTimeRuntime(retiredSession: AgentSession): void {
+		this.agentSession = null;
+		this.agentSessionKey = null;
+		try {
+			this.stopBackgroundActivityObserver();
+		} catch {
+			// Runtime ownership is already retired; observer cleanup is best effort.
+		}
+		try {
+			retiredSession.cancel();
+		} catch {
+			// A throwing transport cannot restore construction-time settings.
+		}
+		this.resetEffectiveApprovalsReviewer();
+	}
+
 	private retireClaudeProgressSummaryRuntimeIfSafe(
 		options: { betweenTurns?: boolean } = {},
 	): boolean {
@@ -1924,20 +1962,8 @@ export class SessionManager {
 			return false;
 		}
 		const retiredSession = this.agentSession;
-		this.agentSession = null;
-		this.agentSessionKey = null;
 		this.restartClaudeRuntimeForAgentProgressSummaries = false;
-		try {
-			this.stopBackgroundActivityObserver();
-		} catch {
-			// Runtime ownership is already retired; observer cleanup is best effort.
-		}
-		try {
-			retiredSession.cancel();
-		} catch {
-			// A throwing transport cannot restore the stale construction-time option.
-		}
-		this.resetEffectiveApprovalsReviewer();
+		this.retireConstructionTimeRuntime(retiredSession);
 		return true;
 	}
 
@@ -1949,6 +1975,68 @@ export class SessionManager {
 		if (activeProviderId !== "claude" || !this.agentSession) return;
 		this.restartClaudeRuntimeForAgentProgressSummaries = true;
 		this.retireClaudeProgressSummaryRuntimeIfSafe();
+	}
+
+	private retireCodexPermissionProfileRuntimeIfSafe(
+		options: { betweenTurns?: boolean } = {},
+	): boolean {
+		if (!this.restartCodexRuntimeForPermissionProfile) return false;
+		const activeProviderId = this.agentSessionKey?.split("|", 1)[0];
+		if (activeProviderId !== "codex" || !this.agentSession) {
+			this.restartCodexRuntimeForPermissionProfile = false;
+			return false;
+		}
+		if (
+			(this.state === "running" && !options.betweenTurns) ||
+			this.hasRunningProviderBackgroundActivities()
+		) {
+			return false;
+		}
+		const retiredSession = this.agentSession;
+		this.restartCodexRuntimeForPermissionProfile = false;
+		this.retireConstructionTimeRuntime(retiredSession);
+		return true;
+	}
+
+	private async refreshAndRetireCodexPermissionProfileRuntimeIfSafe(
+		options: { betweenTurns?: boolean } = {},
+	): Promise<boolean> {
+		if (!this.restartCodexRuntimeForPermissionProfile) return false;
+		const session = this.agentSession;
+		if (!session?.listBackgroundActivities) {
+			return this.retireCodexPermissionProfileRuntimeIfSafe(options);
+		}
+		try {
+			await this.refreshOwnedProviderBackgroundActivities(session, "codex");
+		} catch {
+			// A profile transition must fail closed when native background ownership
+			// cannot be refreshed. The observer will retry without losing the runtime.
+			return false;
+		}
+		return this.retireCodexPermissionProfileRuntimeIfSafe(options);
+	}
+
+	private reconcileCodexPermissionProfile(
+		previousPermissionProfile: string | undefined,
+	): void {
+		if (previousPermissionProfile === this.codexPermissionProfile) return;
+		this.codexPermissionProfileGeneration += 1;
+		if (this.agentSessionKey?.endsWith("|codex-permissions:purpose-built")) {
+			return;
+		}
+		const activeProviderId = this.agentSessionKey?.split("|", 1)[0];
+		if (activeProviderId !== "codex" || !this.agentSession) return;
+		void this.agentSession
+			.setPermissionProfile?.(this.codexPermissionProfile)
+			.catch((error) =>
+				logDbError("reconcile Codex permission profile", error),
+			);
+		this.restartCodexRuntimeForPermissionProfile = true;
+		if (this.agentSession.listBackgroundActivities) {
+			void this.refreshAndRetireCodexPermissionProfileRuntimeIfSafe();
+		} else {
+			this.retireCodexPermissionProfileRuntimeIfSafe();
+		}
 	}
 
 	/**
@@ -1982,6 +2070,7 @@ export class SessionManager {
 			this.claudeAgentProgressSummaries;
 		const previousCodexRealtimeEnabled = this.codexRealtimeEnabled;
 		const previousCodexExecutable = this.codexExecutable;
+		const previousCodexPermissionProfile = this.codexPermissionProfile;
 		const previousApprovalReviewContext: ProviderApprovalReviewContext = {
 			policyEnforced: this.policyEnforced,
 			usageGateEnforced: this.usageGateEnforced,
@@ -2025,6 +2114,7 @@ export class SessionManager {
 			previousCodexRealtimeEnabled,
 			previousCodexExecutable,
 		);
+		this.reconcileCodexPermissionProfile(previousCodexPermissionProfile);
 		this.reconcileClaudePeerInbox(previousClaudePeerInbox);
 		this.reconcileClaudeAgentProgressSummaries(
 			previousClaudeAgentProgressSummaries,
@@ -2256,8 +2346,12 @@ export class SessionManager {
 	): void {
 		if (!this.backgroundActivitySnapshotChanged(next)) return;
 		this.backgroundActivities = next;
+		this.backgroundActivityRevision += 1;
+		for (const notify of this.backgroundActivityWaiters) notify();
+		this.backgroundActivityWaiters.clear();
 		this.backgroundActivityChangeHandler?.();
 		this.retireClaudeProgressSummaryRuntimeIfSafe();
+		this.retireCodexPermissionProfileRuntimeIfSafe();
 		const sessionId = this.currentSessionId;
 		if (!persist || !sessionId) return;
 		const snapshot = next.map((activity) => ({
@@ -2297,14 +2391,56 @@ export class SessionManager {
 		) {
 			return;
 		}
-		const observed = await session.listBackgroundActivities();
-		if (
-			this.agentSession !== session ||
-			this.backgroundActivityObserver !== observer
-		) {
+		await this.refreshOwnedProviderBackgroundActivities(session, providerId);
+	}
+
+	private async refreshOwnedProviderBackgroundActivities(
+		session: AgentSession,
+		providerId: string,
+	): Promise<void> {
+		if (this.agentSession !== session || !session.listBackgroundActivities) {
 			return;
 		}
+		const observed = await session.listBackgroundActivities();
+		if (this.agentSession !== session) return;
+		const observer = this.backgroundActivityObserver;
+		if (observer?.session === session && observer.providerId !== providerId)
+			return;
 		this.replaceBackgroundActivities(this.mergedBackgroundActivities(observed));
+	}
+
+	private waitForBackgroundActivityRevision(
+		revision: number,
+		signal: AbortSignal | undefined,
+	): Promise<void> {
+		if (revision !== this.backgroundActivityRevision) return Promise.resolve();
+		return new Promise<void>((resolve, reject) => {
+			let settled = false;
+			const cleanup = () => {
+				this.backgroundActivityWaiters.delete(onChange);
+				signal?.removeEventListener("abort", onAbort);
+			};
+			const onChange = () => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				resolve();
+			};
+			const onAbort = () => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				const error = new Error(
+					"Aborted while waiting for Codex background activity",
+				);
+				error.name = "AbortError";
+				reject(error);
+			};
+			this.backgroundActivityWaiters.add(onChange);
+			signal?.addEventListener("abort", onAbort, { once: true });
+			if (revision !== this.backgroundActivityRevision) onChange();
+			else if (signal?.aborted) onAbort();
+		});
 	}
 
 	private scheduleBackgroundActivityPoll(
@@ -4397,6 +4533,22 @@ export class SessionManager {
 		if (!isCodexRuntimeProvider(provider.providerId)) {
 			throw new Error("/goal is only available for Codex sessions.");
 		}
+		const ordinaryGoalTarget = this.codexPermissionProfileRuntimeTarget({
+			providerId: provider.providerId,
+			sessionId: options.sessionId,
+			forceOrdinaryCodexRuntime: true,
+		});
+		const activeRuntimeKeyMismatch = Boolean(
+			this.agentSession && this.agentSessionKey !== ordinaryGoalTarget.key,
+		);
+		if ((this.isDraining || this.isRunning()) && activeRuntimeKeyMismatch) {
+			if (control.action === "get") {
+				return { providerId: provider.providerId, goal: this.currentGoal };
+			}
+			throw new Error(
+				"Wait for the current turn to finish before changing the Codex goal.",
+			);
+		}
 		if (
 			control.action !== "set" &&
 			!resumeProviderSessionId &&
@@ -4441,6 +4593,13 @@ export class SessionManager {
 		}
 		let continuationLaunched = false;
 		try {
+			await this.prepareCodexPermissionProfileRuntimeForTurn({
+				provider,
+				sessionId: options.sessionId,
+				acceptedProfileGeneration: this.codexPermissionProfileGeneration,
+				acceptedBehindPurposeBuiltTurn: false,
+				signal: this.abortController?.signal,
+			});
 			const agentSession = this.getOrCreateAgentSession({
 				provider,
 				sessionId: options.sessionId,
@@ -4618,6 +4777,12 @@ export class SessionManager {
 			wrapperCommand: "codex",
 			safeAttachments: [],
 		});
+		if (control.mode === "live") {
+			await this.prepareCodexPurposeBuiltRuntimeTransition({
+				providerId: context.provider.providerId,
+				sessionId: context.persistenceSessionId,
+			});
+		}
 		const agentSession =
 			control.mode === "live"
 				? this.getOrCreateAgentSession({
@@ -4631,6 +4796,7 @@ export class SessionManager {
 						planMode: false,
 						emit: options.emit,
 						reconcileApprovalsReviewer: false,
+						useCodexPermissionProfile: false,
 					})
 				: this.createDetachedRealtimeAgentSession({
 						provider: context.provider,
@@ -8827,6 +8993,12 @@ export class SessionManager {
 	): Promise<void> {
 		this.assertRealtimeIdle("sending a message");
 		const inputOrigin = normalizeAgentInputOrigin(options.inputOrigin);
+		const activeTurnArgs = this.currentTurnArgs;
+		const acceptedBehindCodexPurposeBuiltTurn = Boolean(
+			activeTurnArgs?.options.routineContext &&
+				this.resolveProvider(activeTurnArgs.options.agentCwd).providerId ===
+					"codex",
+		);
 		const args: RunQueryArgs = {
 			userMessage,
 			emit,
@@ -8834,6 +9006,8 @@ export class SessionManager {
 			inputOrigin,
 			effortReady: this.effortChangeTail,
 			permissionModeReady: this.capturePermissionAcceptanceBarrier(),
+			codexPermissionProfileGeneration: this.codexPermissionProfileGeneration,
+			acceptedBehindCodexPurposeBuiltTurn,
 		};
 		if (isDurableInteractiveTurn(args)) {
 			args.durableReady = this.persistDurableTurn(args);
@@ -8936,6 +9110,7 @@ export class SessionManager {
 				inputOrigin: normalizeAgentInputOrigin(payload.inputOrigin),
 				effortReady: this.effortChangeTail,
 				permissionModeReady: this.capturePermissionAcceptanceBarrier(),
+				codexPermissionProfileGeneration: this.codexPermissionProfileGeneration,
 				options: {
 					...payload.options,
 					sessionId: row.session_id,
@@ -9285,6 +9460,7 @@ export class SessionManager {
 			userMessage: instruction,
 			emit,
 			inputOrigin: capturedInputOrigin,
+			codexPermissionProfileGeneration: this.codexPermissionProfileGeneration,
 			options: {
 				sessionId,
 				attachments: [],
@@ -9443,6 +9619,11 @@ export class SessionManager {
 					this.retireClaudeProgressSummaryRuntimeIfSafe({
 						betweenTurns: true,
 					});
+					if (this.restartCodexRuntimeForPermissionProfile) {
+						await this.refreshAndRetireCodexPermissionProfileRuntimeIfSafe({
+							betweenTurns: true,
+						});
+					}
 					continue;
 				}
 				const next = this.turnQueue.shift();
@@ -9473,6 +9654,11 @@ export class SessionManager {
 					this.retireClaudeProgressSummaryRuntimeIfSafe({
 						betweenTurns: true,
 					});
+					if (this.restartCodexRuntimeForPermissionProfile) {
+						await this.refreshAndRetireCodexPermissionProfileRuntimeIfSafe({
+							betweenTurns: true,
+						});
+					}
 				}
 			}
 		} finally {
@@ -9491,6 +9677,9 @@ export class SessionManager {
 			// runOneTurn catch; preserve that. Otherwise return to idle.
 			if (this.state === "running") this.state = "idle";
 			this.retireClaudeProgressSummaryRuntimeIfSafe();
+			if (this.restartCodexRuntimeForPermissionProfile) {
+				await this.refreshAndRetireCodexPermissionProfileRuntimeIfSafe();
+			}
 			// An idle/error session is not sleeping. The status message clears the
 			// client banner; clear the replay copy as the matching server invariant.
 			this.sleepState = null;
@@ -10608,6 +10797,170 @@ export class SessionManager {
 		);
 	}
 
+	private codexPermissionProfileRuntimeTarget(options: {
+		providerId: string;
+		sessionId: string | undefined;
+		useCodexPermissionProfile?: boolean;
+		forceOrdinaryCodexRuntime?: boolean;
+	}): {
+		eligible: boolean;
+		permissionProfile: string | undefined;
+		purposeBuilt: boolean;
+		key: string;
+	} {
+		const eligible =
+			options.providerId === "codex" &&
+			(options.useCodexPermissionProfile ?? true) &&
+			(options.forceOrdinaryCodexRuntime || !this.activeRoutineContext);
+		const permissionProfile = eligible
+			? this.codexPermissionProfile
+			: undefined;
+		const purposeBuilt = options.providerId === "codex" && !eligible;
+		const suffix =
+			options.providerId === "codex"
+				? `|codex-permissions:${
+						purposeBuilt
+							? "purpose-built"
+							: permissionProfile
+								? `selected:${encodeURIComponent(permissionProfile)}`
+								: "hlid-sandbox"
+					}`
+				: "";
+		return {
+			eligible,
+			permissionProfile,
+			purposeBuilt,
+			key: `${options.providerId}|${options.sessionId ?? "ephemeral"}|${this.agentCwd ?? ""}${suffix}`,
+		};
+	}
+
+	private async prepareCodexPermissionProfileRuntimeForTurn(options: {
+		provider: AgentProvider;
+		sessionId: string | undefined;
+		acceptedProfileGeneration: number;
+		acceptedBehindPurposeBuiltTurn: boolean;
+		signal: AbortSignal | undefined;
+	}): Promise<void> {
+		if (
+			options.provider.providerId !== "codex" ||
+			!this.agentSession ||
+			!this.agentSessionKey?.startsWith("codex|")
+		) {
+			return;
+		}
+		const session = this.agentSession;
+		const target = this.codexPermissionProfileRuntimeTarget({
+			providerId: options.provider.providerId,
+			sessionId: options.sessionId,
+		});
+		const keyMismatch = this.agentSessionKey !== target.key;
+		const activePurposeBuilt = this.agentSessionKey.endsWith(
+			"|codex-permissions:purpose-built",
+		);
+		const profileReplacement =
+			this.restartCodexRuntimeForPermissionProfile &&
+			target.eligible &&
+			keyMismatch;
+		const purposeBoundaryReplacement =
+			keyMismatch && (target.purposeBuilt || activePurposeBuilt);
+		if (!profileReplacement && !purposeBoundaryReplacement) {
+			if (
+				this.restartCodexRuntimeForPermissionProfile &&
+				target.eligible &&
+				!keyMismatch
+			) {
+				this.restartCodexRuntimeForPermissionProfile = false;
+			}
+			return;
+		}
+
+		await this.refreshCodexBackgroundOwnershipForRuntimeTransition(session);
+		if (this.agentSession !== session) return;
+		if (!this.hasRunningProviderBackgroundActivities()) {
+			if (profileReplacement) {
+				this.retireCodexPermissionProfileRuntimeIfSafe({ betweenTurns: true });
+			}
+			return;
+		}
+
+		const acceptedBeforeProfileChange =
+			profileReplacement &&
+			options.acceptedProfileGeneration < this.codexPermissionProfileGeneration;
+		const acceptedBeforePurposeBuiltTurnSettled =
+			purposeBoundaryReplacement &&
+			activePurposeBuilt &&
+			target.eligible &&
+			options.acceptedBehindPurposeBuiltTurn;
+		if (
+			(acceptedBeforeProfileChange || acceptedBeforePurposeBuiltTurnSettled) &&
+			session.listBackgroundActivities
+		) {
+			while (
+				this.agentSession === session &&
+				this.hasRunningProviderBackgroundActivities()
+			) {
+				const revision = this.backgroundActivityRevision;
+				await this.waitForBackgroundActivityRevision(revision, options.signal);
+				if (this.agentSession !== session) return;
+				await this.refreshCodexBackgroundOwnershipForRuntimeTransition(session);
+			}
+			if (this.agentSession === session) {
+				this.retireCodexPermissionProfileRuntimeIfSafe({ betweenTurns: true });
+			}
+			return;
+		}
+
+		throw new CodexPermissionProfileBackgroundBlockedError(
+			target.purposeBuilt
+				? "Wait for Codex background activity to finish before starting this purpose-built runtime."
+				: activePurposeBuilt
+					? "Wait for the purpose-built Codex runtime's background activity to finish before starting an ordinary turn."
+					: "Wait for Codex background activity to finish before starting a turn with the updated permission profile.",
+		);
+	}
+
+	private async refreshCodexBackgroundOwnershipForRuntimeTransition(
+		session: AgentSession,
+	): Promise<void> {
+		if (!session.listBackgroundActivities) return;
+		try {
+			await this.refreshOwnedProviderBackgroundActivities(session, "codex");
+		} catch {
+			throw new CodexPermissionProfileBackgroundBlockedError(
+				"Codex background ownership could not be verified. Wait for its background activity to finish before changing runtimes.",
+			);
+		}
+	}
+
+	private async prepareCodexPurposeBuiltRuntimeTransition(options: {
+		providerId: string;
+		sessionId: string | undefined;
+	}): Promise<void> {
+		if (
+			options.providerId !== "codex" ||
+			!this.agentSession ||
+			!this.agentSessionKey?.startsWith("codex|")
+		) {
+			return;
+		}
+		const target = this.codexPermissionProfileRuntimeTarget({
+			...options,
+			useCodexPermissionProfile: false,
+		});
+		if (this.agentSessionKey === target.key) return;
+
+		const session = this.agentSession;
+		await this.refreshCodexBackgroundOwnershipForRuntimeTransition(session);
+		if (
+			this.agentSession === session &&
+			this.hasRunningProviderBackgroundActivities()
+		) {
+			throw new CodexPermissionProfileBackgroundBlockedError(
+				"Wait for Codex background activity to finish before starting this purpose-built runtime.",
+			);
+		}
+	}
+
 	private getOrCreateAgentSession(options: {
 		provider: AgentProvider;
 		sessionId: string | undefined;
@@ -10624,6 +10977,8 @@ export class SessionManager {
 		observeBackgroundActivities?: boolean;
 		/** Realtime startup must not reconcile ordinary thread preferences. */
 		reconcileApprovalsReviewer?: boolean;
+		/** Purpose-built runtimes retain Hlid's legacy sandbox envelope. */
+		useCodexPermissionProfile?: boolean;
 	}): AgentSession {
 		const {
 			provider,
@@ -10639,8 +10994,55 @@ export class SessionManager {
 			ownershipGeneration = this.providerOwnershipGeneration,
 			observeBackgroundActivities = true,
 			reconcileApprovalsReviewer = true,
+			useCodexPermissionProfile = true,
 		} = options;
-		const desiredKey = `${provider.providerId}|${sessionId ?? "ephemeral"}|${this.agentCwd ?? ""}`;
+		const codexTarget = this.codexPermissionProfileRuntimeTarget({
+			providerId: provider.providerId,
+			sessionId,
+			useCodexPermissionProfile,
+		});
+		const codexPermissionProfileEligible = codexTarget.eligible;
+		const codexPermissionProfile = codexTarget.permissionProfile;
+		const desiredKey = codexTarget.key;
+		const targetIsPurposeBuiltCodex = codexTarget.purposeBuilt;
+		const hasRunningBackgroundActivity =
+			this.hasRunningProviderBackgroundActivities();
+		const activeIsPurposeBuiltCodex =
+			this.agentSessionKey?.startsWith("codex|") === true &&
+			this.agentSessionKey.endsWith("|codex-permissions:purpose-built");
+		if (
+			targetIsPurposeBuiltCodex &&
+			this.agentSession &&
+			this.agentSessionKey !== desiredKey &&
+			hasRunningBackgroundActivity
+		) {
+			throw new CodexPermissionProfileBackgroundBlockedError(
+				"Wait for Codex background activity to finish before starting this purpose-built runtime.",
+			);
+		}
+		if (
+			codexPermissionProfileEligible &&
+			activeIsPurposeBuiltCodex &&
+			this.agentSession &&
+			this.agentSessionKey !== desiredKey &&
+			hasRunningBackgroundActivity
+		) {
+			throw new CodexPermissionProfileBackgroundBlockedError(
+				"Wait for the purpose-built Codex runtime's background activity to finish before starting an ordinary turn.",
+			);
+		}
+		if (
+			this.restartCodexRuntimeForPermissionProfile &&
+			provider.providerId === "codex" &&
+			codexPermissionProfileEligible &&
+			this.agentSession &&
+			this.agentSessionKey !== desiredKey &&
+			hasRunningBackgroundActivity
+		) {
+			throw new CodexPermissionProfileBackgroundBlockedError(
+				"Wait for Codex background activity to finish before starting a turn with the updated permission profile.",
+			);
+		}
 		if (sessionId) this.sessionEmit = emit;
 		if (
 			this.agentSession &&
@@ -10687,6 +11089,9 @@ export class SessionManager {
 						agentProgressSummaries: this.claudeAgentProgressSummaries,
 					}
 				: undefined;
+		const codex = codexPermissionProfile
+			? { permissionProfile: codexPermissionProfile }
+			: undefined;
 		const session = provider.query(
 			buildAgentQueryParams({
 				activeCwd,
@@ -10738,6 +11143,7 @@ export class SessionManager {
 						: undefined,
 				claudeCrossSessionInbound: peerInboxEnabled ? "hold" : "refuse",
 				claude,
+				codex,
 				policyEnforced: this.policyEnforced,
 				usageGateEnforced: this.usageGateEnforced,
 				codexRealtimeEnabled: this.codexRealtimeEnabled,
@@ -11224,6 +11630,17 @@ export class SessionManager {
 				});
 			}
 
+			await this.prepareCodexPermissionProfileRuntimeForTurn({
+				provider: currentProvider,
+				sessionId,
+				acceptedProfileGeneration:
+					args.codexPermissionProfileGeneration ??
+					this.codexPermissionProfileGeneration,
+				acceptedBehindPurposeBuiltTurn:
+					args.acceptedBehindCodexPurposeBuiltTurn ?? false,
+				signal: this.abortController?.signal,
+			});
+
 			const agentSession = this.getOrCreateAgentSession({
 				provider: currentProvider,
 				sessionId,
@@ -11387,14 +11804,20 @@ export class SessionManager {
 					...(turnId !== undefined ? { turn_id: turnId } : {}),
 				});
 			}
-			// Slice B: tear down the AgentSession on error — its iterator may
-			// be in an inconsistent state. Explicit aborts also retire the stream,
-			// but settle as idle instead of fabricating a child-session error.
-			this.stopBackgroundActivityObserver();
-			this.agentSession?.cancel();
-			this.agentSession = null;
-			this.agentSessionKey = null;
-			this.restartAgentSessionForEffort = false;
+			const preserveCodexBackgroundRuntime =
+				err instanceof CodexPermissionProfileBackgroundBlockedError &&
+				this.agentSession !== null &&
+				this.agentSessionKey?.startsWith("codex|") === true;
+			if (!preserveCodexBackgroundRuntime) {
+				// Slice B: tear down an AgentSession whose iterator may be inconsistent.
+				// The profile-change guard runs before provider input and keeps the old
+				// runtime solely so its already-running background work can settle.
+				this.stopBackgroundActivityObserver();
+				this.agentSession?.cancel();
+				this.agentSession = null;
+				this.agentSessionKey = null;
+				this.restartAgentSessionForEffort = false;
+			}
 		} finally {
 			// Persist any remaining assistant text (the success path clears it).
 			let incompleteAssistantSeq: number | null = null;

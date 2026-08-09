@@ -172,6 +172,8 @@ const CodexSchema = z.object({
 	permission_mode: z
 		.enum(["default", "acceptEdits", "bypassPermissions", "plan"])
 		.default("default"),
+	/** Optional Codex-native named sandbox profile. Hlid still owns approvals. */
+	permission_profile: z.string().trim().min(1).max(500).optional(),
 	turn_recaps: z.boolean().default(true),
 	recap_model: z.string().optional(),
 	executable: z.string().optional(),

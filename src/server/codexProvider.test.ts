@@ -1630,6 +1630,10 @@ function makeFakeSessionProc(
 		uniqueThreadIds?: boolean;
 		missingRolloutOnResume?: boolean;
 		threadModel?: string | null;
+		permissionProfiles?: ReadonlyArray<Record<string, unknown>>;
+		permissionProfileError?: string;
+		/** Override activePermissionProfile on thread/start and thread/resume. */
+		activePermissionProfile?: unknown;
 		/** Override the authoritative reviewer returned by thread/start. */
 		threadStartApprovalsReviewer?: unknown;
 		/** Override the authoritative reviewer returned by thread/resume. */
@@ -1741,6 +1745,14 @@ function makeFakeSessionProc(
 					)
 						? opts[reviewerOverrideKey]
 						: (msg.params?.approvalsReviewer ?? "user");
+					const activePermissionProfile = Object.hasOwn(
+						opts,
+						"activePermissionProfile",
+					)
+						? opts.activePermissionProfile
+						: typeof msg.params?.permissions === "string"
+							? { id: msg.params.permissions, extends: null }
+							: null;
 					const respond = () =>
 						stdout.emit(
 							"data",
@@ -1749,6 +1761,7 @@ function makeFakeSessionProc(
 									id: msg.id,
 									result: {
 										approvalsReviewer: responseApprovalsReviewer,
+										activePermissionProfile,
 										thread: {
 											id: opts.threadId
 												? opts.threadId
@@ -2031,9 +2044,28 @@ function makeFakeSessionProc(
 							})}\n`,
 						),
 					);
+				} else if (msg.method === "permissionProfile/list") {
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify(
+								opts.permissionProfileError
+									? {
+											id: msg.id,
+											error: { message: opts.permissionProfileError },
+										}
+									: {
+											id: msg.id,
+											result: {
+												data: opts.permissionProfiles ?? [],
+												nextCursor: null,
+											},
+										},
+							)}\n`,
+						),
+					);
 				} else if (
 					msg.method === "experimentalFeature/list" ||
-					msg.method === "permissionProfile/list" ||
 					msg.method === "collaborationMode/list" ||
 					msg.method === "hooks/list"
 				) {
@@ -3277,7 +3309,11 @@ function configureVisualizeBridgeProcesses(): {
 	vi.mocked(resolveCodexExecutable).mockReturnValue("C:\\bin\\codex.exe");
 	const skillPath =
 		"C:\\Users\\test\\.codex\\plugins\\cache\\openai-bundled\\visualize\\1.0.16\\skills\\visualize\\SKILL.md";
-	const parent = makeFakeSessionProc();
+	const parent = makeFakeSessionProc({
+		permissionProfiles: [
+			{ id: ":workspace", description: null, allowed: true },
+		],
+	});
 	const readinessProbe = makeFakeSessionProc({
 		skills: [
 			{
@@ -3578,6 +3614,8 @@ describe("CodexAgentSession — commands", () => {
 
 			const session = new CodexProvider().query(
 				baseCodexParams({
+					providerId: "codex",
+					codex: { permissionProfile: ":workspace" },
 					executable: "C:\\bin\\codex-wsl.cmd",
 					hostSessionId: "hlid-session-1",
 					approvalsReviewer: "auto_review",
@@ -3619,6 +3657,12 @@ describe("CodexAgentSession — commands", () => {
 				sandbox: "workspace-write",
 				dynamicTools: [],
 			});
+			expect(writeMethods(child.writes)).not.toContain(
+				"permissionProfile/list",
+			);
+			expect(threadStartParams(child.writes)[0]).not.toHaveProperty(
+				"permissions",
+			);
 			expect(turnStartParams(child.writes)[0]).toMatchObject({
 				input: [
 					{
@@ -4439,6 +4483,9 @@ describe("CodexAgentSession — commands", () => {
 		try {
 			const parent = makeFakeSessionProc({
 				skills: [{ name: "computer-use:computer-use" }],
+				permissionProfiles: [
+					{ id: ":workspace", description: null, allowed: true },
+				],
 			});
 			const child = makeFakeSessionProc({
 				skills: [{ name: "computer-use:computer-use" }],
@@ -4451,7 +4498,11 @@ describe("CodexAgentSession — commands", () => {
 				.fn()
 				.mockResolvedValue({ behavior: "allow", saveScope: "session" });
 			const session = new CodexProvider().query(
-				baseCodexParams({ canUseTool }),
+				baseCodexParams({
+					canUseTool,
+					providerId: "codex",
+					codex: { permissionProfile: ":workspace" },
+				}),
 			);
 			const events = session[Symbol.asyncIterator]();
 			await session.send("delegate to Computer Use");
@@ -4485,6 +4536,13 @@ describe("CodexAgentSession — commands", () => {
 				ephemeral: true,
 				threadSource: "user",
 			});
+			expect(writeMethods(child.writes)).not.toContain(
+				"permissionProfile/list",
+			);
+			expect(threadStartParams(child.writes)[0]).toHaveProperty("sandbox");
+			expect(threadStartParams(child.writes)[0]).not.toHaveProperty(
+				"permissions",
+			);
 
 			child.proc.stdout.emit(
 				"data",
@@ -5808,6 +5866,320 @@ describe("CodexAgentSession — shared transport recovery", () => {
 		expect(warn).toHaveBeenCalledWith(
 			expect.stringContaining("starting a fresh thread"),
 		);
+	});
+});
+
+describe("CodexAgentSession — permission profiles", () => {
+	beforeEach(() => {
+		__resetCodexAppServersForTesting();
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+	});
+
+	function selectedProfileParams(
+		overrides: Partial<AgentQueryParams> = {},
+	): AgentQueryParams {
+		return baseCodexParams({
+			providerId: "codex",
+			approvalsReviewer: "user",
+			additionalDirectories: ["/extra/root"],
+			codex: { permissionProfile: ":workspace" },
+			...overrides,
+		});
+	}
+
+	it("validates for the native cwd and replaces legacy sandbox fields on start and turn", async () => {
+		const { proc, writes } = makeFakeSessionProc({
+			permissionProfiles: [
+				{
+					id: ":workspace",
+					description: "Workspace writes",
+					allowed: true,
+				},
+			],
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const session = new CodexProvider().query(selectedProfileParams());
+
+		await session.send("use the selected profile");
+
+		const messages = writes.map(
+			(value) =>
+				JSON.parse(value) as {
+					method?: string;
+					params?: Record<string, unknown>;
+				},
+		);
+		const profileRead = messages.find(
+			(message) => message.method === "permissionProfile/list",
+		);
+		expect(profileRead?.params).toEqual({
+			cwd: "/tmp/codex-test",
+			limit: 100,
+		});
+		expect(
+			messages.indexOf(profileRead as (typeof messages)[number]),
+		).toBeLessThan(
+			messages.findIndex((message) => message.method === "thread/start"),
+		);
+		const [thread] = threadStartParams(writes);
+		expect(thread).toMatchObject({
+			permissions: ":workspace",
+			approvalPolicy: "on-request",
+			approvalsReviewer: "user",
+		});
+		expect(thread).not.toHaveProperty("sandbox");
+		const [turn] = turnStartParams(writes);
+		expect(turn).toMatchObject({
+			permissions: ":workspace",
+			approvalPolicy: "on-request",
+			approvalsReviewer: "user",
+		});
+		expect(turn).not.toHaveProperty("sandboxPolicy");
+		expect(
+			messages.filter((message) => message.method === "permissionProfile/list"),
+		).toHaveLength(1);
+	});
+
+	it("sends and verifies the selected profile when resuming", async () => {
+		const { proc, writes } = makeFakeSessionProc({
+			permissionProfiles: [
+				{ id: ":workspace", description: null, allowed: true },
+			],
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const session = new CodexProvider().query(
+			selectedProfileParams({ sessionId: "existing-thread" }),
+		);
+
+		await session.send("resume with the selected profile");
+
+		const [resume] = threadResumeParams(writes);
+		expect(resume).toMatchObject({
+			threadId: "existing-thread",
+			permissions: ":workspace",
+			approvalPolicy: "on-request",
+		});
+		expect(resume).not.toHaveProperty("sandbox");
+		expect(turnStartParams(writes)[0]).toMatchObject({
+			permissions: ":workspace",
+		});
+	});
+
+	it.each([
+		["unavailable", {}, "is not available for /tmp/codex-test"],
+		[
+			"disallowed",
+			{
+				permissionProfiles: [
+					{ id: ":workspace", description: null, allowed: false },
+				],
+			},
+			"is not allowed for /tmp/codex-test",
+		],
+		[
+			"undiscoverable",
+			{ permissionProfileError: "method unavailable" },
+			"could not be validated for /tmp/codex-test: method unavailable",
+		],
+	] as const)("fails actionably before thread creation when the profile is %s", async (_label, options, message) => {
+		const { proc, writes } = makeFakeSessionProc(options);
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const session = new CodexProvider().query(selectedProfileParams());
+
+		await expect(session.send("must fail closed")).rejects.toThrow(message);
+		expect(threadStartParams(writes)).toHaveLength(0);
+		expect(threadResumeParams(writes)).toHaveLength(0);
+	});
+
+	it.each([
+		["start", undefined, null],
+		["start", undefined, { id: "another", extends: null }],
+		["resume", "existing-thread", null],
+		["resume", "existing-thread", { id: "another", extends: null }],
+	] as const)("rejects a %s response whose active profile is not the requested profile", async (boundary, sessionId, activePermissionProfile) => {
+		const { proc } = makeFakeSessionProc({
+			permissionProfiles: [
+				{ id: ":workspace", description: null, allowed: true },
+			],
+			activePermissionProfile,
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const session = new CodexProvider().query(
+			selectedProfileParams({ sessionId }),
+		);
+
+		await expect(session.send("verify native authority")).rejects.toThrow(
+			`Codex thread ${boundary} did not activate permission profile ":workspace"`,
+		);
+	});
+
+	it.each([
+		["no active profile", null],
+		["another profile", { id: "another", extends: null }],
+	] as const)("fails closed when thread settings report %s", async (_label, activePermissionProfile) => {
+		const { proc, writes } = makeFakeSessionProc({
+			permissionProfiles: [
+				{ id: ":workspace", description: null, allowed: true },
+			],
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const session = new CodexProvider().query(selectedProfileParams());
+		const events = session[Symbol.asyncIterator]();
+
+		await session.send("start with the selected profile");
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "session_start",
+			sessionId: "thread-1",
+		});
+		emitSessionNotification(proc, "thread/settings/updated", {
+			threadId: "thread-1",
+			threadSettings: { activePermissionProfile },
+		});
+
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "transport_error",
+			message: expect.stringContaining(
+				'changed away from required permission profile ":workspace"',
+			),
+		});
+		await expect(session.send("must not continue silently")).rejects.toThrow(
+			"Hlid stopped this runtime before another turn",
+		);
+		expect(turnStartParams(writes)).toHaveLength(1);
+	});
+
+	it("continues when authoritative settings retain the selected profile", async () => {
+		const { proc, writes } = makeFakeSessionProc({
+			permissionProfiles: [
+				{ id: ":workspace", description: null, allowed: true },
+			],
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const session = new CodexProvider().query(selectedProfileParams());
+
+		await session.send("start with the selected profile");
+		emitSessionNotification(proc, "thread/settings/updated", {
+			threadId: "thread-1",
+			threadSettings: {
+				activePermissionProfile: { id: ":workspace", extends: null },
+			},
+		});
+		await session.send("continue with the selected profile");
+
+		expect(turnStartParams(writes)).toHaveLength(2);
+	});
+
+	it("does not enforce profile settings for a purpose-built sandbox session", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const session = new CodexProvider().query(
+			selectedProfileParams({ permissionMode: "plan" }),
+		);
+
+		await session.send("plan without the global profile");
+		emitSessionNotification(proc, "thread/settings/updated", {
+			threadId: "thread-1",
+			threadSettings: {
+				activePermissionProfile: { id: "provider-default", extends: null },
+			},
+		});
+		await session.send("continue the purpose-built plan");
+
+		expect(turnStartParams(writes)).toHaveLength(2);
+	});
+
+	it("uses a profile changed while plan approval is pending for implementation", async () => {
+		const { proc, writes } = makeFakeSessionProc({
+			permissionProfiles: [
+				{ id: ":workspace", description: null, allowed: true },
+				{ id: ":strict", description: null, allowed: true },
+			],
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		let approvePlan = (_decision: { behavior: "allow" }) => {};
+		const planDecision = new Promise<{ behavior: "allow" }>((resolve) => {
+			approvePlan = resolve;
+		});
+		const canUseTool = vi.fn(async (name: string) =>
+			name === "ExitPlanMode" ? planDecision : ({ behavior: "allow" } as const),
+		);
+		const session = new CodexProvider().query(
+			selectedProfileParams({ permissionMode: "plan", canUseTool }),
+		);
+		const events = session[Symbol.asyncIterator]();
+
+		await session.send("make a plan");
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "session_start",
+			sessionId: "thread-1",
+		});
+		emitSessionNotification(proc, "turn/started", {
+			threadId: "thread-1",
+			turn: { id: "plan-turn" },
+		});
+		emitSessionNotification(proc, "item/completed", {
+			threadId: "thread-1",
+			item: {
+				id: "plan-item",
+				type: "plan",
+				text: "## Plan\n\nImplement safely.",
+			},
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "plan-turn", status: "completed" },
+		});
+		await vi.waitFor(() => {
+			expect(canUseTool).toHaveBeenCalledWith(
+				"ExitPlanMode",
+				{ plan: "## Plan\n\nImplement safely." },
+				expect.any(Object),
+			);
+		});
+
+		await session.setPermissionProfile?.(":strict");
+		approvePlan({ behavior: "allow" });
+		await vi.waitFor(() => expect(turnStartParams(writes)).toHaveLength(2));
+
+		const [planningTurn, implementationTurn] = turnStartParams(writes);
+		expect(planningTurn).toHaveProperty("sandboxPolicy");
+		expect(planningTurn).not.toHaveProperty("permissions");
+		expect(implementationTurn).toMatchObject({ permissions: ":strict" });
+		expect(implementationTurn).not.toHaveProperty("sandboxPolicy");
+		expect(
+			writes
+				.map((line) => JSON.parse(line) as { method?: string })
+				.filter((message) => message.method === "permissionProfile/list"),
+		).toHaveLength(1);
+		expect(
+			turnStartParams(writes).some(
+				(params) => params.permissions === ":workspace",
+			),
+		).toBe(false);
+		session.cancel();
+	});
+
+	it.each([
+		["plain plan", { permissionMode: "plan" }],
+		[
+			"HTML plan",
+			{ permissionMode: "plan", planHtmlPath: "/tmp/codex-test/plan.html" },
+		],
+		["read-only containment", { sandboxModeOverride: "read-only" }],
+		["ephemeral recap or probe", { persistSession: false }],
+		["non-Codex provider namespace", { providerId: "acp:codex" }],
+	] as const)("does not leak the global profile into %s", async (_label, override) => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const session = new CodexProvider().query(selectedProfileParams(override));
+
+		await session.send("use the purpose-built sandbox");
+
+		expect(writeMethods(writes)).not.toContain("permissionProfile/list");
+		expect(threadStartParams(writes)[0]).toHaveProperty("sandbox");
+		expect(threadStartParams(writes)[0]).not.toHaveProperty("permissions");
+		expect(turnStartParams(writes)[0]).toHaveProperty("sandboxPolicy");
+		expect(turnStartParams(writes)[0]).not.toHaveProperty("permissions");
 	});
 });
 

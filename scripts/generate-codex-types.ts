@@ -135,6 +135,10 @@ const SEEDS: Array<[name: string, relPath: string]> = [
 	["Model", "v2/Model.ts"],
 	["ModelListParams", "v2/ModelListParams.ts"],
 	["ModelListResponse", "v2/ModelListResponse.ts"],
+	["PermissionProfileListParams", "v2/PermissionProfileListParams.ts"],
+	["PermissionProfileListResponse", "v2/PermissionProfileListResponse.ts"],
+	["PermissionProfileSummary", "v2/PermissionProfileSummary.ts"],
+	["ActivePermissionProfile", "v2/ActivePermissionProfile.ts"],
 	[
 		"CommandExecutionRequestApprovalParams",
 		"v2/CommandExecutionRequestApprovalParams.ts",

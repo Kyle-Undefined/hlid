@@ -818,6 +818,11 @@ export type AgentQueryParams = {
 	claude?: {
 		agentProgressSummaries: boolean;
 	};
+	/** Native Codex initialization options for an ordinary streaming chat. */
+	codex?: {
+		/** Explicit cwd-scoped sandbox profile selected in Forge. */
+		permissionProfile?: string;
+	};
 	/** Explicitly enable Codex's under-development realtime conversation RPCs. */
 	codexRealtimeEnabled?: boolean;
 };
@@ -970,6 +975,11 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	 * permission mode mid-session.
 	 */
 	setPermissionMode?(mode: string): Promise<void>;
+	/**
+	 * Replace the provider-native permission profile used by subsequent turns.
+	 * Hlid still owns approval policy and per-tool review independently.
+	 */
+	setPermissionProfile?(profile?: string): Promise<void>;
 	/** Switch the provider-native approval reviewer for subsequent turns. */
 	setApprovalsReviewer?(reviewer: ProviderApprovalsReviewer): Promise<void>;
 	/** Update live Hlid enforcement without replacing the selected reviewer. */

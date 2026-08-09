@@ -17,6 +17,7 @@ export type CodexForm = {
 	effort: HlidConfig["codex"]["effort"];
 	maxTurns: string;
 	permissionMode: HlidConfig["codex"]["permission_mode"];
+	permissionProfile: string;
 	turnRecaps: boolean;
 	recapModel: string;
 	windowsComputerUseModel: string;
@@ -140,6 +141,9 @@ export function applyAgentFormPatch(
 								patch.permissionMode as CodexForm["permissionMode"],
 						}
 					: {}),
+				...(patch.permissionProfile !== undefined
+					? { permissionProfile: patch.permissionProfile }
+					: {}),
 				...(patch.turnRecaps !== undefined
 					? { turnRecaps: patch.turnRecaps }
 					: {}),
@@ -203,6 +207,7 @@ function createCodexForm(initial: HlidConfig): CodexForm {
 		effort: initial.codex.effort,
 		maxTurns: optionalNumber(initial.codex.max_turns),
 		permissionMode: initial.codex.permission_mode,
+		permissionProfile: initial.codex.permission_profile ?? "",
 		turnRecaps: initial.codex.turn_recaps ?? true,
 		recapModel: initial.codex.recap_model ?? "",
 		windowsComputerUseModel:
@@ -394,6 +399,7 @@ export function buildSettingsConfig(
 			effort: forms.codex.effort,
 			max_turns: parsedMaxTurns(forms.codex.maxTurns),
 			permission_mode: forms.codex.permissionMode,
+			permission_profile: forms.codex.permissionProfile || undefined,
 			turn_recaps: forms.codex.turnRecaps,
 			recap_model: forms.codex.recapModel || undefined,
 			executable: initial.codex.executable,

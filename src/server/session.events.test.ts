@@ -65,6 +65,7 @@ import {
 	makeProvider,
 	makeProviders,
 	makeSwitchableProvider,
+	routinePermissionContext,
 	waitFor,
 } from "./session.test-utils";
 
@@ -243,6 +244,14 @@ describe("SessionManager — native Codex goals", () => {
 			});
 		});
 		expect(send).toHaveBeenCalledOnce();
+		await sm.controlGoal(
+			{ action: "pause" },
+			{
+				sessionId: "goal-session",
+				emit: (message) => emitted.push(message),
+			},
+		);
+		expect(controlGoal).toHaveBeenNthCalledWith(2, { action: "pause" });
 
 		releaseContinuation();
 		await waitFor(() => expect(sm.getStatus().state).toBe("idle"));
@@ -292,6 +301,300 @@ describe("SessionManager — native Codex goals", () => {
 			),
 		).rejects.toThrow("Start the goal by submitting it from Raven.");
 		expect(dbMock.createSession).not.toHaveBeenCalled();
+	});
+
+	it("serves cached goal state without replacing an active Routine runtime", async () => {
+		let releaseRoutine = () => {};
+		const routineRelease = new Promise<void>((resolve) => {
+			releaseRoutine = resolve;
+		});
+		let markRoutineActive = () => {};
+		const routineActive = new Promise<void>((resolve) => {
+			markRoutineActive = resolve;
+		});
+		const cancel = vi.fn();
+		const controlGoal = vi.fn();
+		const session: AgentSession = {
+			async *[Symbol.asyncIterator](): AsyncGenerator<AgentEvent> {
+				yield {
+					type: "session_start",
+					sessionId: "active-routine-goal-thread",
+				};
+				markRoutineActive();
+				await routineRelease;
+				yield {
+					type: "done",
+					cost: 0,
+					turns: 1,
+					durationMs: 0,
+					usage: { inputTokens: 10, outputTokens: 5 },
+				};
+			},
+			cancel,
+			send: vi.fn().mockResolvedValue(undefined),
+			controlGoal,
+			listBackgroundActivities: vi.fn().mockResolvedValue([]),
+		};
+		const query = vi.fn(() => session);
+		const provider: AgentProvider = { providerId: "codex", query };
+		const base = makeConfig("gpt-5.6-sol");
+		const sm = new SessionManager(
+			{
+				...base,
+				vault_provider: "codex",
+				codex: {
+					...base.codex,
+					permission_profile: "workspace-safe",
+				},
+			} as HlidConfig,
+			makeProviders(provider),
+		);
+		const turn = sm.runQuery("routine", vi.fn(), {
+			sessionId: "active-routine-goal",
+			routineContext: routinePermissionContext("codex"),
+		});
+		await routineActive;
+
+		await expect(
+			sm.controlGoal(
+				{ action: "get" },
+				{ sessionId: "active-routine-goal", emit: vi.fn() },
+			),
+		).resolves.toEqual({ providerId: "codex", goal: null });
+		expect(query).toHaveBeenCalledOnce();
+		expect(controlGoal).not.toHaveBeenCalled();
+		expect(cancel).not.toHaveBeenCalled();
+
+		releaseRoutine();
+		await turn;
+	});
+
+	it("does not replace an active ordinary runtime after its profile changes", async () => {
+		let releaseTurn = () => {};
+		const turnRelease = new Promise<void>((resolve) => {
+			releaseTurn = resolve;
+		});
+		let markTurnActive = () => {};
+		const turnActive = new Promise<void>((resolve) => {
+			markTurnActive = resolve;
+		});
+		const cancel = vi.fn();
+		const controlGoal = vi.fn();
+		const setPermissionProfile = vi.fn().mockResolvedValue(undefined);
+		const session: AgentSession = {
+			async *[Symbol.asyncIterator](): AsyncGenerator<AgentEvent> {
+				yield {
+					type: "session_start",
+					sessionId: "active-profile-goal-thread",
+				};
+				markTurnActive();
+				await turnRelease;
+				yield {
+					type: "done",
+					cost: 0,
+					turns: 1,
+					durationMs: 0,
+					usage: { inputTokens: 10, outputTokens: 5 },
+				};
+			},
+			cancel,
+			send: vi.fn().mockResolvedValue(undefined),
+			controlGoal,
+			setPermissionProfile,
+			listBackgroundActivities: vi.fn().mockResolvedValue([]),
+		};
+		const query = vi.fn(() => session);
+		const provider: AgentProvider = { providerId: "codex", query };
+		const base = makeConfig("gpt-5.6-sol");
+		const config = {
+			...base,
+			vault_provider: "codex",
+			codex: {
+				...base.codex,
+				permission_profile: "workspace-safe",
+			},
+		} as HlidConfig;
+		const sm = new SessionManager(config, makeProviders(provider));
+		const turn = sm.runQuery("ordinary", vi.fn(), {
+			sessionId: "active-profile-goal",
+		});
+		await turnActive;
+		const changed = structuredClone(config);
+		changed.codex.permission_profile = "workspace-strict";
+		sm.syncConfig(changed);
+		expect(setPermissionProfile).toHaveBeenCalledWith("workspace-strict");
+
+		await expect(
+			sm.controlGoal(
+				{ action: "get" },
+				{ sessionId: "active-profile-goal", emit: vi.fn() },
+			),
+		).resolves.toEqual({ providerId: "codex", goal: null });
+		await expect(
+			sm.controlGoal(
+				{ action: "set", objective: "Do not interrupt the active turn" },
+				{ sessionId: "active-profile-goal", emit: vi.fn() },
+			),
+		).rejects.toThrow(
+			"Wait for the current turn to finish before changing the Codex goal.",
+		);
+		expect(query).toHaveBeenCalledOnce();
+		expect(controlGoal).not.toHaveBeenCalled();
+		expect(cancel).not.toHaveBeenCalled();
+
+		releaseTurn();
+		await turn;
+	});
+
+	it("authoritatively blocks goal control from replacing a purpose-built background runtime", async () => {
+		const running = {
+			providerId: "codex",
+			providerSessionId: "goal-purpose-built-thread",
+			activityId: "goal-purpose-built-subagent",
+			kind: "agent" as const,
+			status: "running" as const,
+			startedAtMs: 100,
+			updatedAtMs: 100,
+			capabilities: { clean: true },
+		};
+		let observed: (typeof running)[] = [];
+		const cancel = vi.fn();
+		const controlGoal = vi.fn();
+		const listBackgroundActivities = vi.fn(async () => observed);
+		const session: AgentSession = {
+			async *[Symbol.asyncIterator](): AsyncGenerator<AgentEvent> {
+				yield {
+					type: "session_start",
+					sessionId: "goal-purpose-built-thread",
+				};
+				yield {
+					type: "done",
+					cost: 0,
+					turns: 1,
+					durationMs: 0,
+					usage: { inputTokens: 10, outputTokens: 5 },
+				};
+			},
+			cancel,
+			send: vi.fn().mockResolvedValue(undefined),
+			controlGoal,
+			listBackgroundActivities,
+		};
+		const query = vi.fn(() => session);
+		const provider: AgentProvider = { providerId: "codex", query };
+		const base = makeConfig("gpt-5.6-sol");
+		const sm = new SessionManager(
+			{
+				...base,
+				vault_provider: "codex",
+				codex: {
+					...base.codex,
+					permission_profile: "workspace-safe",
+				},
+			} as HlidConfig,
+			makeProviders(provider),
+		);
+
+		await sm.runQuery("routine", vi.fn(), {
+			sessionId: "goal-purpose-built-background",
+			routineContext: routinePermissionContext("codex"),
+		});
+		expect(sm.getBackgroundActivities()).toEqual([]);
+		observed = [running];
+
+		await expect(
+			sm.controlGoal(
+				{ action: "get" },
+				{ sessionId: "goal-purpose-built-background", emit: vi.fn() },
+			),
+		).rejects.toThrow(
+			"Wait for the purpose-built Codex runtime's background activity to finish before starting an ordinary turn.",
+		);
+		expect(query).toHaveBeenCalledOnce();
+		expect(listBackgroundActivities.mock.calls.length).toBeGreaterThanOrEqual(
+			2,
+		);
+		expect(controlGoal).not.toHaveBeenCalled();
+		expect(cancel).not.toHaveBeenCalled();
+		sm.abort();
+	});
+
+	it("authoritatively blocks goal control from using a stale changed profile", async () => {
+		const running = {
+			providerId: "codex",
+			providerSessionId: "goal-profile-thread",
+			activityId: "goal-profile-subagent",
+			kind: "agent" as const,
+			status: "running" as const,
+			startedAtMs: 100,
+			updatedAtMs: 100,
+			capabilities: { clean: true },
+		};
+		let observation: "empty" | "fail" | "running" = "empty";
+		const cancel = vi.fn();
+		const controlGoal = vi.fn();
+		const listBackgroundActivities = vi.fn(async () => {
+			if (observation === "fail") throw new Error("inventory unavailable");
+			return observation === "running" ? [running] : [];
+		});
+		const session: AgentSession = {
+			async *[Symbol.asyncIterator](): AsyncGenerator<AgentEvent> {
+				yield { type: "session_start", sessionId: "goal-profile-thread" };
+				yield {
+					type: "done",
+					cost: 0,
+					turns: 1,
+					durationMs: 0,
+					usage: { inputTokens: 10, outputTokens: 5 },
+				};
+			},
+			cancel,
+			send: vi.fn().mockResolvedValue(undefined),
+			controlGoal,
+			listBackgroundActivities,
+			setPermissionProfile: vi.fn().mockResolvedValue(undefined),
+		};
+		const query = vi.fn(() => session);
+		const provider: AgentProvider = { providerId: "codex", query };
+		const base = makeConfig("gpt-5.6-sol");
+		const config = {
+			...base,
+			vault_provider: "codex",
+			codex: {
+				...base.codex,
+				permission_profile: "workspace-safe",
+			},
+		} as HlidConfig;
+		const sm = new SessionManager(config, makeProviders(provider));
+
+		await sm.runQuery("ordinary", vi.fn(), {
+			sessionId: "goal-changed-profile-background",
+		});
+		expect(sm.getBackgroundActivities()).toEqual([]);
+		observation = "fail";
+		const changed = structuredClone(config);
+		changed.codex.permission_profile = "workspace-strict";
+		sm.syncConfig(changed);
+		await vi.waitFor(() => {
+			expect(listBackgroundActivities.mock.calls.length).toBeGreaterThanOrEqual(
+				2,
+			);
+		});
+		await Promise.resolve();
+		observation = "running";
+
+		await expect(
+			sm.controlGoal(
+				{ action: "get" },
+				{ sessionId: "goal-changed-profile-background", emit: vi.fn() },
+			),
+		).rejects.toThrow(
+			"Wait for Codex background activity to finish before starting a turn with the updated permission profile.",
+		);
+		expect(query).toHaveBeenCalledOnce();
+		expect(controlGoal).not.toHaveBeenCalled();
+		expect(cancel).not.toHaveBeenCalled();
+		sm.abort();
 	});
 });
 
@@ -378,6 +681,203 @@ describe("SessionManager — native Codex realtime", () => {
 		);
 
 		expect(listBackgroundActivities).not.toHaveBeenCalled();
+		manager.abort();
+	});
+
+	it("keeps purpose-built Live sessions outside permission-profile replacement", async () => {
+		const queryParams: AgentQueryParams[] = [];
+		const cancel = vi.fn();
+		const stopRealtime = vi.fn().mockResolvedValue(undefined);
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(params): AgentSession {
+				queryParams.push(params);
+				return {
+					async *[Symbol.asyncIterator]() {},
+					cancel,
+					send: vi.fn().mockResolvedValue(undefined),
+					startRealtime: vi.fn().mockResolvedValue({
+						providerSessionId: "purpose-built-live-thread",
+					}),
+					stopRealtime,
+				};
+			},
+		};
+		const base = makeConfig("gpt-5.6-sol");
+		const config = {
+			...base,
+			vault_provider: "codex",
+			codex: {
+				...base.codex,
+				permission_profile: "workspace-safe",
+			},
+			voice: { ...base.voice, codex_live_mode: true },
+		} as HlidConfig;
+		const sm = new SessionManager(config, makeProviders(provider));
+
+		await sm.controlRealtime(
+			{ action: "start", mode: "live", sdp: "v=0\r\no=hlid" },
+			{ sessionId: "purpose-built-live", emit: vi.fn() },
+		);
+		expect(queryParams).toHaveLength(1);
+		expect(queryParams[0]).not.toHaveProperty("codex");
+
+		const changed = structuredClone(config);
+		changed.codex.permission_profile = "workspace-strict";
+		sm.syncConfig(changed);
+
+		expect(queryParams).toHaveLength(1);
+		expect(cancel).not.toHaveBeenCalled();
+		expect(stopRealtime).not.toHaveBeenCalled();
+
+		await sm.controlRealtime(
+			{ action: "stop" },
+			{ sessionId: "purpose-built-live", emit: vi.fn() },
+		);
+	});
+
+	it("authoritatively blocks Live when the cached profile-runtime activity is stale", async () => {
+		const running = {
+			providerId: "codex",
+			providerSessionId: "profile-thread",
+			activityId: "subagent-1",
+			kind: "agent" as const,
+			status: "running" as const,
+			startedAtMs: 100,
+			updatedAtMs: 100,
+			capabilities: { clean: true },
+		};
+		let observed: (typeof running)[] = [];
+		const cancel = vi.fn();
+		const startRealtime = vi.fn();
+		const listBackgroundActivities = vi.fn(async () => observed);
+		const ordinarySession: AgentSession = {
+			async *[Symbol.asyncIterator](): AsyncGenerator<AgentEvent> {
+				yield { type: "session_start", sessionId: "profile-thread" };
+				yield {
+					type: "done",
+					cost: 0,
+					turns: 1,
+					durationMs: 0,
+					usage: { inputTokens: 10, outputTokens: 5 },
+				};
+			},
+			cancel,
+			send: vi.fn().mockResolvedValue(undefined),
+			startRealtime,
+			listBackgroundActivities,
+		};
+		const query = vi
+			.fn<(params: AgentQueryParams) => AgentSession>()
+			.mockReturnValue(ordinarySession);
+		const provider: AgentProvider = { providerId: "codex", query };
+		const base = makeConfig("gpt-5.6-sol");
+		const manager = new SessionManager(
+			{
+				...base,
+				vault_provider: "codex",
+				codex: {
+					...base.codex,
+					permission_profile: "workspace-safe",
+				},
+				voice: { ...base.voice, codex_live_mode: true },
+			} as HlidConfig,
+			makeProviders(provider),
+		);
+
+		await manager.runQuery("Keep working", vi.fn(), {
+			sessionId: "profile-background-live",
+		});
+		expect(manager.getBackgroundActivities()).toEqual([]);
+		expect(query.mock.calls[0]?.[0]).toMatchObject({
+			codex: { permissionProfile: "workspace-safe" },
+		});
+
+		// Native activity begins after the manager's cached snapshot. Live must
+		// refresh the owning provider before it can replace the ordinary runtime.
+		observed = [running];
+		await expect(
+			manager.controlRealtime(
+				{ action: "start", mode: "live", sdp: "v=0\r\no=hlid" },
+				{ sessionId: "profile-background-live", emit: vi.fn() },
+			),
+		).rejects.toThrow(
+			"Wait for Codex background activity to finish before starting this purpose-built runtime.",
+		);
+		expect(query).toHaveBeenCalledOnce();
+		expect(listBackgroundActivities.mock.calls.length).toBeGreaterThanOrEqual(
+			2,
+		);
+		expect(manager.getBackgroundActivities()).toEqual([running]);
+		expect(startRealtime).not.toHaveBeenCalled();
+		expect(cancel).not.toHaveBeenCalled();
+
+		manager.abort();
+	});
+
+	it("fails Live closed when native background ownership cannot be refreshed", async () => {
+		let refreshFails = false;
+		const cancel = vi.fn();
+		const startRealtime = vi.fn();
+		const listBackgroundActivities = vi.fn(async () => {
+			if (refreshFails) throw new Error("native inventory unavailable");
+			return [];
+		});
+		const ordinarySession: AgentSession = {
+			async *[Symbol.asyncIterator](): AsyncGenerator<AgentEvent> {
+				yield { type: "session_start", sessionId: "profile-thread" };
+				yield {
+					type: "done",
+					cost: 0,
+					turns: 1,
+					durationMs: 0,
+					usage: { inputTokens: 10, outputTokens: 5 },
+				};
+			},
+			cancel,
+			send: vi.fn().mockResolvedValue(undefined),
+			startRealtime,
+			listBackgroundActivities,
+		};
+		const query = vi
+			.fn<(params: AgentQueryParams) => AgentSession>()
+			.mockReturnValue(ordinarySession);
+		const provider: AgentProvider = { providerId: "codex", query };
+		const base = makeConfig("gpt-5.6-sol");
+		const manager = new SessionManager(
+			{
+				...base,
+				vault_provider: "codex",
+				codex: {
+					...base.codex,
+					permission_profile: "workspace-safe",
+				},
+				voice: { ...base.voice, codex_live_mode: true },
+			} as HlidConfig,
+			makeProviders(provider),
+		);
+
+		await manager.runQuery("Keep working", vi.fn(), {
+			sessionId: "profile-background-live-refresh-failure",
+		});
+		expect(manager.getBackgroundActivities()).toEqual([]);
+		refreshFails = true;
+
+		await expect(
+			manager.controlRealtime(
+				{ action: "start", mode: "live", sdp: "v=0\r\no=hlid" },
+				{
+					sessionId: "profile-background-live-refresh-failure",
+					emit: vi.fn(),
+				},
+			),
+		).rejects.toThrow(
+			"Codex background ownership could not be verified. Wait for its background activity to finish before changing runtimes.",
+		);
+		expect(query).toHaveBeenCalledOnce();
+		expect(startRealtime).not.toHaveBeenCalled();
+		expect(cancel).not.toHaveBeenCalled();
+
 		manager.abort();
 	});
 

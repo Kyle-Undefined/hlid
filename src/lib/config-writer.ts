@@ -161,6 +161,7 @@ function serializeCodex(config: NonNullable<HlidConfig["codex"]>): string[] {
 		...optionalEntry("model", config.model),
 		`effort = ${tomlVal(config.effort)}`,
 		`permission_mode = ${tomlVal(config.permission_mode)}`,
+		...optionalEntry("permission_profile", config.permission_profile),
 		`turn_recaps = ${tomlVal(config.turn_recaps)}`,
 		...optionalEntry("max_turns", config.max_turns),
 		...optionalEntry("recap_model", config.recap_model),

@@ -107,7 +107,9 @@ describe("SessionManager — unattended Routine permissions", () => {
 					};
 				},
 			};
-			const sm = new SessionManager(makeConfig(), makeProviders(provider));
+			const config = makeConfig();
+			config.codex.permission_profile = "workspace-safe";
+			const sm = new SessionManager(config, makeProviders(provider));
 			const onGrantUsed = vi.fn();
 			const routine = routinePermissionContext(providerId, onGrantUsed);
 			const emitted: ServerMessage[] = [];
@@ -132,6 +134,7 @@ describe("SessionManager — unattended Routine permissions", () => {
 			if (providerId === "codex") {
 				expect(queryParams?.sandboxModeOverride).toBe("read-only");
 			}
+			expect(queryParams).not.toHaveProperty("codex");
 		});
 	}
 

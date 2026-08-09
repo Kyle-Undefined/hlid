@@ -12,6 +12,8 @@ export type ClaudeForm = {
 	effort: HlidConfig["claude"]["effort"];
 	maxTurns: string;
 	permissionMode: HlidConfig["claude"]["permission_mode"];
+	/** Codex-only named sandbox profile; empty uses Hlid's sandbox policy. */
+	permissionProfile?: string;
 	turnRecaps: boolean;
 	recapModel: string;
 	vaultProvider: string;
@@ -468,6 +470,67 @@ function RecapModelField({
 	);
 }
 
+function PermissionProfileField({
+	claude,
+	onChange,
+	provider,
+}: {
+	claude: ClaudeForm;
+	onChange: (patch: Partial<ClaudeForm>) => void;
+	provider: ProviderInfo;
+}) {
+	const configured = claude.permissionProfile ?? "";
+	const profiles = provider.permissionProfiles ?? [];
+	const selected = profiles.find((profile) => profile.id === configured);
+	const configuredIsUnadvertised = configured !== "" && selected === undefined;
+
+	return (
+		<Field
+			label="Permission profile"
+			hint="Profiles replace Codex sandbox settings, including Hlid-added writable roots; Hlid continues owning approval prompts and policy"
+		>
+			<div>
+				<select
+					aria-label="Permission profile"
+					value={configured}
+					onChange={(event) =>
+						onChange({ permissionProfile: event.target.value })
+					}
+					className={selectClass}
+				>
+					<option value="">Hlid sandbox policy</option>
+					{configuredIsUnadvertised && (
+						<option value={configured} disabled>
+							{configured} (configured, unavailable)
+						</option>
+					)}
+					{profiles.map((profile) => (
+						<option
+							key={profile.id}
+							value={profile.id}
+							disabled={!profile.allowed}
+							title={profile.description}
+						>
+							{profile.label}
+							{profile.allowed ? "" : " (unavailable)"}
+						</option>
+					))}
+				</select>
+				{selected?.description && (
+					<div className="text-xs text-muted-foreground mt-1 max-w-none sm:max-w-xs lg:max-w-sm">
+						{selected.description}
+					</div>
+				)}
+				{configuredIsUnadvertised && (
+					<div className="text-xs text-status-warning/80 mt-1 max-w-none sm:max-w-xs lg:max-w-sm">
+						This configured profile is not available for the current workspace.
+					</div>
+				)}
+			</div>
+		</Field>
+	);
+}
+
 export function ClaudeSection({
 	claude,
 	onChange,
@@ -553,7 +616,7 @@ export function ClaudeSection({
 					)}
 					{permissionOptions.length > 0 && (
 						<RadioCardGroup
-							legend="PERMISSIONS"
+							legend="APPROVALS"
 							name="permission"
 							options={permissionOptions}
 							value={claude.permissionMode}
@@ -563,6 +626,13 @@ export function ClaudeSection({
 										value as HlidConfig["claude"]["permission_mode"],
 								})
 							}
+						/>
+					)}
+					{activeProvider?.id === "codex" && (
+						<PermissionProfileField
+							claude={claude}
+							onChange={onChange}
+							provider={activeProvider}
 						/>
 					)}
 					{!claude.vaultProvider.startsWith("acp:") && (
