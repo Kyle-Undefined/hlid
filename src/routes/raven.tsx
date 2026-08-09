@@ -140,7 +140,11 @@ import {
 	isClaudeRuntimeProvider,
 	isCodexRuntimeProvider,
 } from "#/lib/providerRuntime";
-import { loadRavenProviders } from "#/lib/ravenProviderCache";
+import {
+	loadRavenProviders,
+	refreshRavenProvider,
+	refreshRavenProviderForSession,
+} from "#/lib/ravenProviderCache";
 import {
 	createAnimationFrameCoalescer,
 	isNearChatBottom,
@@ -380,6 +384,7 @@ async function loadRavenRoute(session?: string, agent?: string) {
 	let delegationParentLabel: string | null = null;
 	let delegationDepth: number | null = null;
 	let delegationControlOwned = false;
+	let sessionPersisted = false;
 	if (resolvedSessionId) {
 		const [savedSelection, savedRow] = await Promise.all([
 			resolvedSessionId === session
@@ -403,9 +408,28 @@ async function loadRavenRoute(session?: string, agent?: string) {
 		delegationParentLabel = savedRow?.delegation_parent_label ?? null;
 		delegationDepth = savedRow?.delegation_depth ?? null;
 		delegationControlOwned = savedRow?.delegation_control_owned === 1;
+		sessionPersisted = savedRow !== null;
 	}
+	const providerDiscoveryCwd = ravenProviderDiscoveryCwd(
+		config,
+		agentSkillContext,
+	);
+	const newSessionProviderId = resolveActiveProviderId(
+		configuredAgents,
+		agentSkillContext,
+		config.vault_provider,
+	);
 	const providers = await optionalRavenLoaderValue(
-		loadRavenProviders(ravenProviderDiscoveryCwd(config, agentSkillContext)),
+		resolvedSessionId &&
+			!sessionPersisted &&
+			typeof newSessionProviderId === "string" &&
+			newSessionProviderId.startsWith("acp:")
+			? refreshRavenProviderForSession(
+					resolvedSessionId,
+					newSessionProviderId,
+					providerDiscoveryCwd,
+				)
+			: loadRavenProviders(providerDiscoveryCwd),
 		[],
 	);
 	const interactiveMode = interactiveModeForAgent(config, agentSkillContext);
@@ -421,6 +445,7 @@ async function loadRavenRoute(session?: string, agent?: string) {
 		config,
 		existingSessionId: resolvedSessionId,
 		isExplicitSession: Boolean(session),
+		sessionPersisted,
 		providerUsages,
 		agentSkillContext,
 		sessionModel,
@@ -2425,13 +2450,36 @@ function deriveRavenComposerState({
 	};
 	const providerUsesConfiguredDefaults =
 		activeProviderId === configuredProviderId;
-	const selectedModel =
+	const desiredModel =
 		selection.model ??
 		(providerUsesConfiguredDefaults ? configuredSelection.model : undefined) ??
 		model;
 	const provider = providers.find(
 		(candidate) => candidate.id === activeProviderId,
 	);
+	const advertisedModels = modelOptions(provider);
+	const desiredModelAdvertised =
+		desiredModel !== undefined &&
+		desiredModel !== "" &&
+		advertisedModels.some(
+			(candidate) =>
+				candidate.value === desiredModel ||
+				(candidate.resolvedModel !== undefined &&
+					modelComparisonKey(candidate.resolvedModel) ===
+						modelComparisonKey(desiredModel)),
+		);
+	const currentAcpCatalog =
+		provider?.id.startsWith("acp:") &&
+		provider.modelCatalogRefresh?.status === "current";
+	const selectedModel =
+		desiredModel === "" && provider?.id.startsWith("acp:")
+			? ""
+			: !currentAcpCatalog ||
+					advertisedModels.length === 0 ||
+					desiredModelAdvertised
+				? desiredModel
+				: (advertisedModels.find((candidate) => candidate.isDefault)?.value ??
+					advertisedModels[0]?.value);
 	const desiredEffort =
 		selection.effort ??
 		(providerUsesConfiguredDefaults ? configuredSelection.effort : null) ??
@@ -2496,7 +2544,6 @@ function deriveRavenComposerState({
 	const configuredProvider = providers.find(
 		(candidate) => candidate.id === configuredProviderId,
 	);
-	const advertisedModels = modelOptions(provider);
 	const modelPickerOptions = provider?.id.startsWith("acp:")
 		? [
 				{
@@ -2547,6 +2594,7 @@ export function ChatPage() {
 		config,
 		existingSessionId,
 		isExplicitSession,
+		sessionPersisted: loadedSessionPersisted,
 		providerUsages: initialProviderUsages,
 		agentSkillContext: initialAgentSkillContext,
 		sessionModel: initialSessionModel,
@@ -2565,6 +2613,7 @@ export function ChatPage() {
 		providers: initialProviders,
 		voiceInfo: initialVoiceInfo,
 	} = Route.useLoaderData();
+	const sessionPersisted = loadedSessionPersisted ?? Boolean(existingSessionId);
 	const [agentList, setAgentList] = useState(initialAgentList);
 	const [providerCatalog, setProviderCatalog] = useState(initialProviders);
 	const [providers, setProviders] = useState(initialProviders);
@@ -2829,6 +2878,76 @@ export function ChatPage() {
 		configuredProviderId,
 		sessionSelection: effectiveSessionSelection,
 	} = providerIdentity;
+	const activeProviderDiscoveryCwd = ravenProviderDiscoveryCwd(
+		config,
+		agentSkillContext,
+	);
+	useEffect(() => {
+		if (sessionPersisted || !activeProviderId.startsWith("acp:")) return;
+		let cancelled = false;
+		void refreshRavenProviderForSession(
+			sessionId || "new",
+			activeProviderId,
+			activeProviderDiscoveryCwd,
+		).then(
+			(next) => {
+				if (!cancelled) setProviderCatalog(next);
+			},
+			() => {
+				// Keep the last safe catalog. Forge exposes provider refresh failures.
+			},
+		);
+		return () => {
+			cancelled = true;
+		};
+	}, [
+		activeProviderDiscoveryCwd,
+		activeProviderId,
+		sessionId,
+		sessionPersisted,
+	]);
+	const providerCatalogRefreshSequenceRef = useRef(0);
+	const providerCatalogRefreshContext = `${sessionId}\0${activeProviderDiscoveryCwd ?? ""}\0${activeProviderId}\0${configuredProviderId}\0${agentSkillContext ?? ""}`;
+	const providerCatalogRefreshContextRef = useRef(
+		providerCatalogRefreshContext,
+	);
+	providerCatalogRefreshContextRef.current = providerCatalogRefreshContext;
+	useEffect(
+		() => () => {
+			providerCatalogRefreshSequenceRef.current += 1;
+		},
+		[],
+	);
+	const refreshProviderCatalog = useCallback(
+		async (providerId: string): Promise<RavenProviders | null> => {
+			const sequence = providerCatalogRefreshSequenceRef.current + 1;
+			providerCatalogRefreshSequenceRef.current = sequence;
+			const context = providerCatalogRefreshContext;
+			const next = await (sessionPersisted
+				? refreshRavenProvider(providerId, activeProviderDiscoveryCwd)
+				: refreshRavenProviderForSession(
+						sessionId || "new",
+						providerId,
+						activeProviderDiscoveryCwd,
+					));
+			if (
+				providerCatalogRefreshSequenceRef.current !== sequence ||
+				providerCatalogRefreshContextRef.current !== context
+			) {
+				return null;
+			}
+			const target = next.find((candidate) => candidate.id === providerId);
+			if (target?.modelCatalogRefresh?.status !== "current") return null;
+			setProviderCatalog(next);
+			return next;
+		},
+		[
+			activeProviderDiscoveryCwd,
+			providerCatalogRefreshContext,
+			sessionId,
+			sessionPersisted,
+		],
+	);
 	const handleSessionControlRejected = useCallback(
 		(message: SessionControlRejectedMessage) => {
 			if (
@@ -3194,7 +3313,6 @@ export function ChatPage() {
 			? { approvalsReviewer: activeApprovalsReviewer }
 			: {}),
 	};
-
 	// ─── Handlers ─────────────────────────────────────────────────────────────
 
 	const {
@@ -3298,6 +3416,7 @@ export function ChatPage() {
 		activeApprovalsReviewer,
 		selectSessionControls,
 		selectSessionProvider,
+		refreshProviderCatalog,
 		actualModelShort,
 		modelMismatch,
 		actualSelectionMismatch,
@@ -4303,6 +4422,7 @@ function ChatModelBadge({
 	activeApprovalsReviewer,
 	selectSessionControls,
 	selectSessionProvider,
+	refreshProviderCatalog,
 	actualModelShort,
 	modelMismatch,
 	actualSelectionMismatch,
@@ -4320,6 +4440,13 @@ function ChatModelBadge({
 	providerModeOptions,
 	activeProviderMode,
 }: ChatComposerProps) {
+	const providerSelectionRequestRef = useRef(0);
+	useEffect(
+		() => () => {
+			providerSelectionRequestRef.current += 1;
+		},
+		[],
+	);
 	const {
 		wsStatus,
 		model,
@@ -4479,31 +4606,49 @@ function ChatModelBadge({
 									}))}
 								selectedValue={activeProviderId}
 								onSelect={(value) => {
-									const provider = providers.find(
-										(candidate) => candidate.id === value,
+									if (value === activeProviderId) return;
+									const request = providerSelectionRequestRef.current + 1;
+									providerSelectionRequestRef.current = request;
+									const selectProvider = (catalog: RavenProviders) => {
+										if (providerSelectionRequestRef.current !== request) return;
+										const provider = catalog.find(
+											(candidate) => candidate.id === value,
+										);
+										if (!provider || provider.id === activeProviderId) return;
+										const next = defaultSelectionForProvider(
+											provider,
+											configuredSelection,
+											config,
+										);
+										const delivered = send({
+											type: "set_provider",
+											provider: value,
+											session_id: sessionId,
+											...(next.model ? { model: next.model } : {}),
+											...(next.effort ? { effort: next.effort } : {}),
+											...(next.permissionMode
+												? { permission_mode: next.permissionMode }
+												: {}),
+											...(next.approvalsReviewer
+												? { approvals_reviewer: next.approvalsReviewer }
+												: {}),
+										});
+										if (!delivered) return;
+										selectSessionProvider(next);
+										wsStore.seedActualModel(null);
+									};
+									if (!value.startsWith("acp:")) {
+										selectProvider(providers);
+										return;
+									}
+									void refreshProviderCatalog(value).then(
+										(catalog) => {
+											if (catalog) selectProvider(catalog);
+										},
+										() => {
+											// Leave the current provider selected when live discovery fails.
+										},
 									);
-									if (!provider || provider.id === activeProviderId) return;
-									const next = defaultSelectionForProvider(
-										provider,
-										configuredSelection,
-										config,
-									);
-									const delivered = send({
-										type: "set_provider",
-										provider: value,
-										session_id: sessionId,
-										...(next.model ? { model: next.model } : {}),
-										...(next.effort ? { effort: next.effort } : {}),
-										...(next.permissionMode
-											? { permission_mode: next.permissionMode }
-											: {}),
-										...(next.approvalsReviewer
-											? { approvals_reviewer: next.approvalsReviewer }
-											: {}),
-									});
-									if (!delivered) return;
-									selectSessionProvider(next);
-									wsStore.seedActualModel(null);
 								}}
 							/>
 							<OptionGroup
@@ -5603,6 +5748,9 @@ interface ChatComposerProps {
 		selection: Partial<Omit<RavenSessionSelection, "providerId">>,
 	) => void;
 	selectSessionProvider: (selection: RavenSessionSelection) => void;
+	refreshProviderCatalog: (
+		providerId: string,
+	) => Promise<RavenProviders | null>;
 	actualModelShort: string | null;
 	modelMismatch: boolean;
 	actualSelectionMismatch: boolean;

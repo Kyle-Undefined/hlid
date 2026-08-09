@@ -321,7 +321,10 @@ vi.mock("#/lib/serverFns/voice", () => ({
 vi.mock("#/lib/serverFns/config");
 
 import { resetRavenTerminalsForTesting } from "#/hooks/ravenTerminalStore";
-import { resetRavenProviderCacheForTesting } from "#/lib/ravenProviderCache";
+import {
+	refreshRavenProvider,
+	resetRavenProviderCacheForTesting,
+} from "#/lib/ravenProviderCache";
 import { getAgentListFn } from "#/lib/serverFns/agents";
 import { getCockpitSkillsFn } from "#/lib/serverFns/cockpit";
 import { getConfig } from "#/lib/serverFns/config";
@@ -346,6 +349,9 @@ afterEach(cleanup);
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	vi.mocked(getProvidersFn)
+		.mockReset()
+		.mockResolvedValue([] as never);
 	state.send.mockReturnValue(true);
 	resetDataRevisionsForTesting();
 	resetRavenProviderCacheForTesting();
@@ -2293,6 +2299,46 @@ describe("Raven composed submission behavior", () => {
 		expect(screen.getAllByText("gpt-5.6-terra").length).toBeGreaterThan(0);
 	});
 
+	it("preserves a restored native model that is absent from the catalog", () => {
+		state.model = "custom-codex-model";
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				vault_provider: "codex",
+			},
+			existingSessionId: "saved-custom-model",
+			isExplicitSession: true,
+			sessionPersisted: true,
+			sessionModel: "custom-codex-model",
+			sessionProviderId: "codex",
+			providers: [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [{ value: "gpt-5.6-sol", label: "Sol" }],
+				},
+			],
+		};
+
+		render(<ChatPage />);
+		expect(
+			screen.getByRole("button", { name: /Codex.*custom-codex-model/i }),
+		).toBeTruthy();
+		fireEvent.change(screen.getByRole("combobox"), {
+			target: { value: "keep the restored model" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Send" }));
+		expect(state.send).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "chat",
+				provider: "codex",
+				model: "custom-codex-model",
+			}),
+		);
+	});
+
 	it("keeps the CLIProxy model badge compact on mobile", () => {
 		state.actualModel = "gpt-5.6-sol(high)";
 		state.model = "gpt-5.6-sol";
@@ -2351,6 +2397,7 @@ describe("Raven composed submission behavior", () => {
 	});
 
 	it("keeps model settings open while changing multiple options", () => {
+		state.model = "gpt-5.4";
 		state.loaderData = {
 			...state.loaderData,
 			config: {
@@ -2379,7 +2426,7 @@ describe("Raven composed submission behavior", () => {
 		};
 
 		render(<ChatPage />);
-		fireEvent.click(screen.getByRole("button", { name: /sonnet 4\.6/i }));
+		fireEvent.click(screen.getByRole("button", { name: /Codex.*gpt-5\.4/i }));
 
 		fireEvent.click(screen.getByRole("button", { name: "GPT-5.5" }));
 		expect(screen.getByRole("dialog", { name: "Model settings" })).toBeTruthy();
@@ -2402,7 +2449,7 @@ describe("Raven composed submission behavior", () => {
 	});
 
 	it("keeps an ACP provider usable when it advertises no model choices", () => {
-		state.model = "";
+		state.model = "stale";
 		state.effort = "";
 		state.loaderData = {
 			...state.loaderData,
@@ -2437,7 +2484,7 @@ describe("Raven composed submission behavior", () => {
 		});
 	});
 
-	it("preserves and can explicitly reset a configured ACP model without a catalog", () => {
+	it("preserves and can explicitly reset a configured ACP model without a catalog", async () => {
 		state.model = "";
 		state.effort = "";
 		state.loaderData = {
@@ -2463,6 +2510,22 @@ describe("Raven composed submission behavior", () => {
 				},
 			],
 		};
+		vi.mocked(getProvidersFn).mockResolvedValue([
+			{
+				id: "acp:opencode",
+				label: "OpenCode",
+				available: true,
+				models: [],
+				modelCatalogRefresh: { status: "current", source: "live" },
+				permissionModes: [{ value: "default", label: "Agent asks" }],
+			},
+			{
+				id: "claude",
+				label: "Claude",
+				available: true,
+				models: [{ value: "claude-sonnet-4-6", label: "Sonnet 4.6" }],
+			},
+		] as never);
 
 		render(<ChatPage />);
 		fireEvent.click(
@@ -2477,13 +2540,15 @@ describe("Raven composed submission behavior", () => {
 			);
 		}
 		fireEvent.click(screen.getByRole("button", { name: "OpenCode" }));
-		expect(state.send).toHaveBeenCalledWith({
-			type: "set_provider",
-			provider: "acp:opencode",
-			model: "anthropic/claude-sonnet-4-6",
-			permission_mode: "default",
-			session_id: expect.any(String),
-		});
+		await waitFor(() =>
+			expect(state.send).toHaveBeenCalledWith({
+				type: "set_provider",
+				provider: "acp:opencode",
+				model: "anthropic/claude-sonnet-4-6",
+				permission_mode: "default",
+				session_id: expect.any(String),
+			}),
+		);
 
 		fireEvent.click(screen.getByRole("button", { name: "Provider default" }));
 		expect(state.send).toHaveBeenCalledWith({
@@ -2492,6 +2557,382 @@ describe("Raven composed submission behavior", () => {
 		});
 		expect(
 			screen.getByRole("button", { name: /^OpenCode · ask$/i }),
+		).toBeTruthy();
+	});
+
+	it("replaces stale ACP models with a live catalog for a new session", async () => {
+		state.model = "stale";
+		state.effort = "";
+		const freshProviders = [
+			{
+				id: "acp:opencode",
+				label: "OpenCode",
+				available: true,
+				models: [{ value: "allowed", label: "Allowed", isDefault: true }],
+				modelCatalogRefresh: { status: "current", source: "live" },
+				permissionModes: [{ value: "default", label: "Ask" }],
+			},
+		];
+		vi.mocked(getProvidersFn).mockResolvedValue(freshProviders as never);
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				vault_provider: "acp:opencode",
+				acp_agents: [{ id: "opencode" }],
+			},
+			sessionPersisted: false,
+			providers: [
+				{
+					id: "acp:opencode",
+					label: "OpenCode",
+					available: true,
+					models: [{ value: "stale", label: "Stale", isDefault: true }],
+					permissionModes: [{ value: "default", label: "Ask" }],
+				},
+			],
+		};
+
+		render(<ChatPage />);
+
+		await waitFor(() =>
+			expect(getProvidersFn).toHaveBeenCalledWith({
+				data: {
+					refresh: true,
+					refreshProviderId: "acp:opencode",
+					discoveryCwd: "/vault",
+				},
+			}),
+		);
+		const badge = await screen.findByRole("button", {
+			name: /OpenCode.*Allowed.*Ask/i,
+		});
+		fireEvent.click(badge);
+		expect(screen.getByRole("button", { name: /Allowed/ })).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Stale" })).toBeNull();
+	});
+
+	it("refreshes an ACP provider before selecting its default model", async () => {
+		state.model = "claude-sonnet-4-6";
+		const freshProviders = [
+			{
+				id: "claude",
+				label: "Claude",
+				available: true,
+				models: [
+					{ value: "claude-sonnet-4-6", label: "Sonnet 4.6", isDefault: true },
+				],
+			},
+			{
+				id: "acp:opencode",
+				label: "OpenCode",
+				available: true,
+				models: [{ value: "allowed", label: "Allowed", isDefault: true }],
+				modelCatalogRefresh: { status: "current", source: "live" },
+				permissionModes: [{ value: "default", label: "Ask" }],
+			},
+		];
+		vi.mocked(getProvidersFn).mockResolvedValue(freshProviders as never);
+		state.loaderData = {
+			...state.loaderData,
+			sessionPersisted: false,
+			providers: [
+				freshProviders[0],
+				{
+					...freshProviders[1],
+					models: [{ value: "stale", label: "Stale", isDefault: true }],
+					modelCatalogRefresh: undefined,
+				},
+			],
+		};
+
+		render(<ChatPage />);
+		fireEvent.click(
+			screen.getByRole("button", { name: /Claude.*Sonnet 4\.6/i }),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "OpenCode" }));
+
+		expect(state.send).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "set_provider", model: "stale" }),
+		);
+		await waitFor(() =>
+			expect(state.send).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "set_provider",
+					provider: "acp:opencode",
+					model: "allowed",
+				}),
+			),
+		);
+		expect(state.send).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "set_provider", model: "stale" }),
+		);
+	});
+
+	it("does not select an ACP provider from a stale refresh result", async () => {
+		state.model = "claude-sonnet-4-6";
+		const initialProviders = [
+			{
+				id: "claude",
+				label: "Claude",
+				available: true,
+				models: [
+					{ value: "claude-sonnet-4-6", label: "Sonnet 4.6", isDefault: true },
+				],
+			},
+			{
+				id: "acp:opencode",
+				label: "OpenCode",
+				available: true,
+				models: [{ value: "stale", label: "Stale", isDefault: true }],
+				permissionModes: [{ value: "default", label: "Ask" }],
+			},
+		];
+		vi.mocked(getProvidersFn).mockResolvedValue([
+			initialProviders[0],
+			{
+				...initialProviders[1],
+				modelCatalogRefresh: { status: "stale", source: "persisted" },
+			},
+		] as never);
+		state.loaderData = {
+			...state.loaderData,
+			sessionPersisted: true,
+			providers: initialProviders,
+		};
+
+		render(<ChatPage />);
+		fireEvent.click(
+			screen.getByRole("button", { name: /Claude.*Sonnet 4\.6/i }),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "OpenCode" }));
+
+		await waitFor(() =>
+			expect(getProvidersFn).toHaveBeenCalledWith({
+				data: {
+					refresh: true,
+					refreshProviderId: "acp:opencode",
+					discoveryCwd: "/vault",
+				},
+			}),
+		);
+		await act(async () => {});
+		expect(state.send).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "set_provider",
+				provider: "acp:opencode",
+			}),
+		);
+	});
+
+	it("does not select an ACP provider when a later live refresh falls back", async () => {
+		state.model = "claude-sonnet-4-6";
+		const cachedProviders = [
+			{
+				id: "claude",
+				label: "Claude",
+				available: true,
+				models: [
+					{ value: "claude-sonnet-4-6", label: "Sonnet 4.6", isDefault: true },
+				],
+			},
+			{
+				id: "acp:opencode",
+				label: "OpenCode",
+				available: true,
+				models: [{ value: "stale", label: "Stale", isDefault: true }],
+				permissionModes: [{ value: "default", label: "Ask" }],
+			},
+		];
+		const currentProviders = [
+			cachedProviders[0],
+			{
+				...cachedProviders[1],
+				modelCatalogRefresh: { status: "current", source: "live" },
+			},
+		];
+		vi.mocked(getProvidersFn)
+			.mockResolvedValueOnce(currentProviders as never)
+			.mockRejectedValueOnce(new Error("live refresh failed"));
+		expect(await refreshRavenProvider("acp:opencode", "/vault")).toEqual(
+			currentProviders,
+		);
+		state.loaderData = {
+			...state.loaderData,
+			sessionPersisted: true,
+			providers: cachedProviders,
+		};
+
+		render(<ChatPage />);
+		fireEvent.click(
+			screen.getByRole("button", { name: /Claude.*Sonnet 4\.6/i }),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "OpenCode" }));
+
+		await waitFor(() => expect(getProvidersFn).toHaveBeenCalledTimes(2));
+		await act(async () => {});
+		expect(state.send).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "set_provider",
+				provider: "acp:opencode",
+			}),
+		);
+	});
+
+	it("drops an ACP selection refresh after the active workspace context changes", async () => {
+		state.model = "claude-sonnet-4-6";
+		let resolveRefresh:
+			| ((providers: Array<Record<string, unknown>>) => void)
+			| undefined;
+		vi.mocked(getProvidersFn).mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					resolveRefresh = resolve;
+				}) as never,
+		);
+		state.loaderData = {
+			...state.loaderData,
+			sessionPersisted: true,
+			config: {
+				...(state.loaderData.config as object),
+				agents: [
+					{ path: "/context-project", mode: "context", provider: "codex" },
+				],
+			},
+			agentList: [
+				{
+					path: "/context-project",
+					name: "Context project",
+					provider: "codex",
+				},
+			],
+			providers: [
+				{
+					id: "claude",
+					label: "Claude",
+					available: true,
+					models: [
+						{
+							value: "claude-sonnet-4-6",
+							label: "Sonnet 4.6",
+							isDefault: true,
+						},
+					],
+				},
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [{ value: "gpt-5.6-sol", label: "GPT-5.6-Sol" }],
+				},
+				{
+					id: "acp:opencode",
+					label: "OpenCode",
+					available: true,
+					models: [{ value: "stale", label: "Stale", isDefault: true }],
+				},
+			],
+		};
+
+		render(<ChatPage />);
+		fireEvent.click(
+			screen.getByRole("button", { name: /Claude.*Sonnet 4\.6/i }),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "OpenCode" }));
+		await waitFor(() => expect(getProvidersFn).toHaveBeenCalledOnce());
+
+		act(() => state.onAgentChange?.("/context-project"));
+		await act(async () => {
+			resolveRefresh?.(
+				(state.loaderData.providers as Array<Record<string, unknown>>).map(
+					(provider) =>
+						provider.id === "acp:opencode"
+							? {
+									...provider,
+									models: [
+										{
+											value: "allowed",
+											label: "Allowed",
+											isDefault: true,
+										},
+									],
+									modelCatalogRefresh: {
+										status: "current",
+										source: "live",
+									},
+								}
+							: provider,
+				),
+			);
+		});
+
+		expect(state.send).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "set_provider",
+				provider: "acp:opencode",
+			}),
+		);
+	});
+
+	it("refreshes the workspace ACP provider selected through AgentSelect", async () => {
+		state.model = "stale";
+		state.effort = "";
+		const freshProviders = [
+			{
+				id: "claude",
+				label: "Claude",
+				available: true,
+			},
+			{
+				id: "acp:opencode",
+				label: "OpenCode",
+				available: true,
+				models: [{ value: "allowed", label: "Allowed", isDefault: true }],
+				modelCatalogRefresh: { status: "current", source: "live" },
+				permissionModes: [{ value: "default", label: "Ask" }],
+			},
+		];
+		vi.mocked(getProvidersFn).mockResolvedValue(freshProviders as never);
+		state.loaderData = {
+			...state.loaderData,
+			sessionPersisted: false,
+			config: {
+				...(state.loaderData.config as object),
+				agents: [
+					{ path: "/open-project", mode: "cwd", provider: "acp:opencode" },
+				],
+			},
+			agentList: [
+				{
+					path: "/open-project",
+					name: "Open project",
+					provider: "acp:opencode",
+				},
+			],
+			providers: [
+				freshProviders[0],
+				{
+					...freshProviders[1],
+					models: [{ value: "stale", label: "Stale", isDefault: true }],
+					modelCatalogRefresh: undefined,
+				},
+			],
+		};
+
+		render(<ChatPage />);
+		act(() => state.onAgentChange?.("/open-project"));
+
+		await waitFor(() =>
+			expect(getProvidersFn).toHaveBeenCalledWith({
+				data: {
+					refresh: true,
+					refreshProviderId: "acp:opencode",
+					discoveryCwd: "/open-project",
+				},
+			}),
+		);
+		expect(
+			await screen.findByRole("button", { name: /OpenCode.*Allowed.*Ask/i }),
 		).toBeTruthy();
 	});
 
@@ -5058,6 +5499,53 @@ describe("raven route loader", () => {
 		expect(data.existingSessionId).toBe("s1");
 		expect(data.isExplicitSession).toBe(true);
 		expect(getLiveSessionsFn).not.toHaveBeenCalled();
+	});
+
+	it("live-refreshes the configured ACP provider for a rowless session", async () => {
+		vi.mocked(getConfig).mockResolvedValue(
+			makeLoaderConfig({
+				vault_provider: "acp:opencode",
+				acp_agents: [{ id: "opencode" }],
+			}) as never,
+		);
+		const filteredProviders = [
+			{
+				id: "acp:opencode",
+				label: "OpenCode",
+				available: true,
+				models: [{ value: "allowed", label: "Allowed" }],
+			},
+		];
+		vi.mocked(getProvidersFn).mockResolvedValue(filteredProviders as never);
+
+		const data = await route.loader({ deps: { session: "new-acp" } });
+
+		expect(data.sessionPersisted).toBe(false);
+		expect(data.providers).toEqual(filteredProviders);
+		expect(getProvidersFn).toHaveBeenCalledWith({
+			data: {
+				refresh: true,
+				refreshProviderId: "acp:opencode",
+				discoveryCwd: "/vault",
+			},
+		});
+	});
+
+	it("keeps cached provider navigation for a persisted ACP session", async () => {
+		vi.mocked(getConfig).mockResolvedValue(
+			makeLoaderConfig({
+				vault_provider: "acp:opencode",
+				acp_agents: [{ id: "opencode" }],
+			}) as never,
+		);
+		vi.mocked(getSessionRowFn).mockResolvedValue({ id: "saved-acp" } as never);
+
+		const data = await route.loader({ deps: { session: "saved-acp" } });
+
+		expect(data.sessionPersisted).toBe(true);
+		expect(getProvidersFn).toHaveBeenCalledWith({
+			data: { preferCachedModels: true, discoveryCwd: "/vault" },
+		});
 	});
 
 	it("discards an explicit route agent that is no longer configured", async () => {

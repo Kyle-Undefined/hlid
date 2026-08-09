@@ -7,6 +7,8 @@ import {
 import { getProvidersFn } from "#/lib/serverFns/providers";
 import {
 	loadRavenProviders,
+	refreshRavenProvider,
+	refreshRavenProviderForSession,
 	resetRavenProviderCacheForTesting,
 } from "./ravenProviderCache";
 
@@ -22,6 +24,26 @@ const provider = (model: string) => [
 		models: [{ value: model, label: model }],
 	},
 ];
+
+const refreshedProvider = (model: string, status: "current" | "stale") => [
+	{
+		...provider(model)[0],
+		modelCatalogRefresh: {
+			status,
+			source: status === "current" ? ("live" as const) : ("memory" as const),
+		},
+	},
+];
+
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+		resolve = resolvePromise;
+		reject = rejectPromise;
+	});
+	return { promise, resolve, reject };
+}
 
 beforeEach(() => {
 	vi.clearAllMocks();
@@ -121,6 +143,155 @@ describe("loadRavenProviders", () => {
 		expect(await oldRead).toEqual(provider("old"));
 
 		expect(await loadRavenProviders()).toEqual(provider("new"));
+		expect(getProvidersFn).toHaveBeenCalledTimes(2);
+	});
+
+	it("bypasses an unexpired cache with a provider-scoped live refresh", async () => {
+		vi.mocked(getProvidersFn)
+			.mockResolvedValueOnce(provider("cached"))
+			.mockResolvedValueOnce(provider("live"));
+
+		expect(await loadRavenProviders("/vault")).toEqual(provider("cached"));
+		expect(await refreshRavenProvider("acp:opencode", "/vault")).toEqual(
+			provider("live"),
+		);
+		expect(await loadRavenProviders("/vault")).toEqual(provider("live"));
+
+		expect(getProvidersFn).toHaveBeenCalledTimes(2);
+		expect(getProvidersFn).toHaveBeenNthCalledWith(2, {
+			data: {
+				refresh: true,
+				refreshProviderId: "acp:opencode",
+				discoveryCwd: "/vault",
+			},
+		});
+	});
+
+	it("joins a live refresh across a revision change, then rematerializes that revision", async () => {
+		const liveRefresh = deferred<ReturnType<typeof provider>>();
+		vi.mocked(getProvidersFn)
+			.mockImplementationOnce(() => liveRefresh.promise)
+			.mockResolvedValueOnce(provider("rematerialized"));
+
+		const refreshing = refreshRavenProvider("acp:opencode", "/vault");
+		replaceDataRevisions({ ...EMPTY_DATA_REVISIONS, providers: 1 });
+		const joined = loadRavenProviders("/vault");
+
+		expect(joined).toBe(refreshing);
+		liveRefresh.resolve(provider("fresh"));
+		expect(await refreshing).toEqual(provider("fresh"));
+		expect(await joined).toEqual(provider("fresh"));
+
+		// The live response started under revision 0, so it must not be cached as
+		// revision 1. The next ordinary read rematerializes the server snapshot.
+		expect(await loadRavenProviders("/vault")).toEqual(
+			provider("rematerialized"),
+		);
+		expect(getProvidersFn).toHaveBeenCalledTimes(2);
+		expect(getProvidersFn).toHaveBeenNthCalledWith(2, {
+			data: { preferCachedModels: true, discoveryCwd: "/vault" },
+		});
+	});
+
+	it("does not let an older ordinary success overwrite a live refresh", async () => {
+		const staleRead = deferred<ReturnType<typeof provider>>();
+		const liveRefresh = deferred<ReturnType<typeof provider>>();
+		vi.mocked(getProvidersFn)
+			.mockImplementationOnce(() => staleRead.promise)
+			.mockImplementationOnce(() => liveRefresh.promise);
+
+		const stale = loadRavenProviders("/vault");
+		const refreshing = refreshRavenProvider("acp:opencode", "/vault");
+		liveRefresh.resolve(provider("fresh"));
+		expect(await refreshing).toEqual(provider("fresh"));
+
+		staleRead.resolve(provider("stale"));
+		expect(await stale).toEqual(provider("stale"));
+		expect(await loadRavenProviders("/vault")).toEqual(provider("fresh"));
+		expect(getProvidersFn).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not let an older ordinary rejection delete a live refresh", async () => {
+		const staleRead = deferred<ReturnType<typeof provider>>();
+		const liveRefresh = deferred<ReturnType<typeof provider>>();
+		vi.mocked(getProvidersFn)
+			.mockImplementationOnce(() => staleRead.promise)
+			.mockImplementationOnce(() => liveRefresh.promise);
+
+		const stale = loadRavenProviders("/vault");
+		const staleRejection = expect(stale).rejects.toThrow("stale read failed");
+		const refreshing = refreshRavenProvider("acp:opencode", "/vault");
+		liveRefresh.resolve(provider("fresh"));
+		expect(await refreshing).toEqual(provider("fresh"));
+
+		staleRead.reject(new Error("stale read failed"));
+		await staleRejection;
+		expect(await loadRavenProviders("/vault")).toEqual(provider("fresh"));
+		expect(getProvidersFn).toHaveBeenCalledTimes(2);
+	});
+
+	it("preserves the prior safe catalog when live refresh fails", async () => {
+		vi.mocked(getProvidersFn)
+			.mockResolvedValueOnce(provider("cached"))
+			.mockRejectedValueOnce(new Error("live refresh failed"));
+
+		expect(await loadRavenProviders("/vault")).toEqual(provider("cached"));
+		const fallback = await refreshRavenProvider("acp:opencode", "/vault");
+		expect(fallback).toEqual([
+			expect.objectContaining({
+				id: "acp:opencode",
+				models: [{ value: "cached", label: "cached" }],
+				modelCatalogRefresh: {
+					status: "stale",
+					source: "memory",
+					reason: "Live refresh failed; using cached provider metadata.",
+				},
+			}),
+		]);
+		expect(await loadRavenProviders("/vault")).toEqual(fallback);
+		expect(getProvidersFn).toHaveBeenCalledTimes(2);
+	});
+
+	it("shares one current live refresh for the same unsaved session", async () => {
+		vi.mocked(getProvidersFn).mockResolvedValue(
+			refreshedProvider("allowed", "current"),
+		);
+
+		const first = refreshRavenProviderForSession(
+			"new-session",
+			"acp:opencode",
+			"/vault",
+		);
+		const second = refreshRavenProviderForSession(
+			"new-session",
+			"acp:opencode",
+			"/vault",
+		);
+
+		expect(second).toBe(first);
+		expect(await first).toEqual(refreshedProvider("allowed", "current"));
+		expect(getProvidersFn).toHaveBeenCalledOnce();
+	});
+
+	it("retries an unsaved session after a stale refresh result", async () => {
+		vi.mocked(getProvidersFn)
+			.mockResolvedValueOnce(refreshedProvider("stale", "stale"))
+			.mockResolvedValueOnce(refreshedProvider("allowed", "current"));
+
+		expect(
+			await refreshRavenProviderForSession(
+				"new-session",
+				"acp:opencode",
+				"/vault",
+			),
+		).toEqual(refreshedProvider("stale", "stale"));
+		expect(
+			await refreshRavenProviderForSession(
+				"new-session",
+				"acp:opencode",
+				"/vault",
+			),
+		).toEqual(refreshedProvider("allowed", "current"));
 		expect(getProvidersFn).toHaveBeenCalledTimes(2);
 	});
 });
