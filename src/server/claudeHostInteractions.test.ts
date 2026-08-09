@@ -56,7 +56,6 @@ describe("Claude host interactions", () => {
 				mode: "form",
 				displayName: "connect",
 				requestedSchema: {
-					type: "object",
 					required: ["name", "enabled"],
 					properties: {
 						name: { type: "string", title: "Name" },
@@ -375,5 +374,36 @@ describe("Claude host interactions", () => {
 			),
 		).resolves.toEqual({ action: "decline" });
 		expect(canUseTool).not.toHaveBeenCalled();
+	});
+
+	it("cancels an allowed MCP form when its answer is outside the native enum", async () => {
+		const canUseTool = vi.fn().mockResolvedValue({
+			behavior: "allow",
+			updatedInput: { answers: { Mode: "Future mode" } },
+		});
+		const handlers = createClaudeHostInteractionHandlers(params(canUseTool));
+
+		await expect(
+			handlers.onElicitation(
+				{
+					serverName: "test-mcp",
+					message: "Choose a mode",
+					mode: "form",
+					requestedSchema: {
+						type: "object",
+						required: ["mode"],
+						properties: {
+							mode: {
+								type: "string",
+								title: "Mode",
+								enum: ["safe"],
+							},
+						},
+					},
+				},
+				callbackOptions("control-invalid-enum"),
+			),
+		).resolves.toEqual({ action: "cancel" });
+		expect(canUseTool).toHaveBeenCalledOnce();
 	});
 });

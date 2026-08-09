@@ -385,7 +385,6 @@ export class CodexAppServer {
 				},
 				capabilities: {
 					experimentalApi: true,
-					extensions: { "openai/form": {} },
 				},
 			});
 			this.initialized = true;

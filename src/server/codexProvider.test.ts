@@ -82,6 +82,7 @@ import {
 import { executeHlidAgentToolRich } from "./hlidAgentTools";
 import { HLID_HELP_TOPICS } from "./hlidHelp";
 import { executeObsidianAgentTool } from "./obsidianAgentTools";
+import { ASK_USER_QUESTION_CANCEL_KEY } from "./protocol";
 import {
 	createWindowsVisualizeRenderInput,
 	extractWindowsVisualizeArtifact,
@@ -1259,7 +1260,6 @@ describe("fetchCodexModels", () => {
 		});
 		expect(initialize?.params?.capabilities).toEqual({
 			experimentalApi: true,
-			extensions: { "openai/form": {} },
 		});
 		expect(models).toEqual(mapCodexModels(MODEL_LIST_FIXTURE));
 		// The shared app-server stays alive for reuse — never killed per call.
@@ -4815,6 +4815,488 @@ describe("CodexAgentSession — steering", () => {
 		session.cancel();
 	});
 
+	it("routes standard MCP forms through Hlid in bypass mode with native provenance", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi.fn().mockResolvedValue({
+			behavior: "allow",
+			updatedInput: {
+				answers: {
+					Name: "Raven",
+					Retries: "3",
+					Enabled: "No",
+					Scopes: "Read, Write",
+				},
+			},
+		});
+		const session = new CodexProvider().query(
+			baseCodexParams({
+				permissionMode: "bypassPermissions",
+				canUseTool,
+			}),
+		);
+		await session.send("configure the connector");
+
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: "elicitation-form-1",
+					method: "mcpServer/elicitation/request",
+					params: {
+						threadId: "thread-1",
+						turnId: "turn-1",
+						serverName: "connector-mcp",
+						mode: "form",
+						message: "Configure the computer-use documentation",
+						requestedSchema: {
+							type: "object",
+							required: ["name", "retries", "enabled"],
+							properties: {
+								name: { type: "string", title: "Name" },
+								retries: {
+									type: "integer",
+									title: "Retries",
+									minimum: 1,
+									maximum: 5,
+								},
+								enabled: { type: "boolean", title: "Enabled" },
+								scopes: {
+									type: "array",
+									title: "Scopes",
+									items: {
+										anyOf: [
+											{ const: "read", title: "Read" },
+											{ const: "write", title: "Write" },
+										],
+									},
+								},
+							},
+						},
+						_meta: null,
+					},
+				})}\n`,
+			),
+		);
+
+		await vi.waitFor(() => {
+			expect(canUseTool).toHaveBeenCalledWith(
+				"AskUserQuestion",
+				{
+					questions: expect.arrayContaining([
+						expect.objectContaining({ question: "Name", freeText: true }),
+						expect.objectContaining({
+							question: "Retries",
+							inputType: "number",
+						}),
+						expect.objectContaining({
+							question: "Scopes",
+							multiSelect: true,
+							optional: true,
+						}),
+					]),
+				},
+				expect.objectContaining({
+					toolUseID: "codex-request:string:elicitation-form-1",
+					title: "Configure the computer-use documentation",
+					displayName: "connector-mcp",
+					interaction: {
+						provider_id: "codex",
+						kind: "mcp_elicitation",
+						source_name: "connector-mcp",
+						summary: "Configure the computer-use documentation",
+					},
+				}),
+			);
+			const response = writes
+				.map((line) => JSON.parse(line))
+				.find((message) => message.id === "elicitation-form-1");
+			expect(response?.result).toEqual({
+				action: "accept",
+				content: {
+					name: "Raven",
+					retries: 3,
+					enabled: false,
+					scopes: ["read", "write"],
+				},
+				_meta: null,
+			});
+		});
+		session.cancel();
+	});
+
+	it("routes safe MCP URL elicitation through the same native request card", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi.fn().mockResolvedValue({
+			behavior: "allow",
+			updatedInput: {
+				answers: {
+					"How should Hlid answer this browser-based request?":
+						"Continue after completing the browser step",
+				},
+			},
+		});
+		const session = new CodexProvider().query(baseCodexParams({ canUseTool }));
+		await session.send("authenticate the connector");
+
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 182,
+					method: "mcpServer/elicitation/request",
+					params: {
+						threadId: "thread-1",
+						turnId: "turn-1",
+						serverName: "oauth-mcp",
+						mode: "url",
+						message: "Authenticate the connector",
+						url: "https://example.test/oauth",
+						elicitationId: "oauth-1",
+						_meta: null,
+					},
+				})}\n`,
+			),
+		);
+
+		await vi.waitFor(() => {
+			expect(canUseTool).toHaveBeenCalledWith(
+				"AskUserQuestion",
+				expect.any(Object),
+				expect.objectContaining({
+					toolUseID: "codex-request:number:182",
+					interaction: {
+						provider_id: "codex",
+						kind: "mcp_elicitation",
+						source_name: "oauth-mcp",
+						summary: "Authenticate the connector",
+						url: "https://example.test/oauth",
+					},
+				}),
+			);
+			const response = writes
+				.map((line) => JSON.parse(line))
+				.find((message) => message.id === 182);
+			expect(response?.result).toEqual({
+				action: "accept",
+				content: null,
+				_meta: null,
+			});
+		});
+		session.cancel();
+	});
+
+	it.each([
+		{
+			label: "the explicit decline option",
+			answers: {
+				"How should Hlid answer this browser-based request?":
+					"Decline this request",
+			},
+			action: "decline",
+		},
+		{
+			label: "shared cancellation",
+			answers: { [ASK_USER_QUESTION_CANCEL_KEY]: "" },
+			action: "cancel",
+		},
+	])("maps $label for MCP URL elicitation", async ({ answers, action }) => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi.fn().mockResolvedValue({
+			behavior: "allow",
+			updatedInput: { answers },
+		});
+		const session = new CodexProvider().query(baseCodexParams({ canUseTool }));
+		await session.send("authenticate the connector");
+
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 1820,
+					method: "mcpServer/elicitation/request",
+					params: {
+						threadId: "thread-1",
+						turnId: "turn-1",
+						serverName: "oauth-mcp",
+						mode: "url",
+						message: "Authenticate the connector",
+						url: "https://example.test/oauth",
+						elicitationId: "oauth-1",
+					},
+				})}\n`,
+			),
+		);
+
+		await vi.waitFor(() => {
+			const response = writes
+				.map((line) => JSON.parse(line))
+				.find((message) => message.id === 1820);
+			expect(response?.result).toEqual({
+				action,
+				content: null,
+				_meta: null,
+			});
+		});
+		session.cancel();
+	});
+
+	it("declines unsupported or malformed MCP elicitations without opening a card", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi.fn();
+		const session = new CodexProvider().query(baseCodexParams({ canUseTool }));
+		await session.send("handle malformed requests");
+		const requests = [
+			{
+				id: 183,
+				params: {
+					threadId: "thread-1",
+					turnId: "turn-1",
+					serverName: "extended-mcp",
+					mode: "openai/form",
+					message: "Extended form",
+					requestedSchema: {},
+				},
+			},
+			{
+				id: 184,
+				params: {
+					threadId: "thread-1",
+					turnId: "turn-1",
+					serverName: "unsafe-mcp",
+					mode: "url",
+					message: "Open a local file",
+					url: "file:///tmp/token",
+				},
+			},
+			{
+				id: 185,
+				params: {
+					threadId: "thread-1",
+					turnId: "turn-1",
+					serverName: "nested-mcp",
+					mode: "form",
+					message: "Nested form",
+					requestedSchema: {
+						type: "object",
+						properties: { nested: { type: "object" } },
+					},
+				},
+			},
+			{
+				id: 186,
+				params: {
+					threadId: "thread-1",
+					turnId: "turn-1",
+					serverName: "future-mcp",
+					mode: "future",
+					message: "Future request",
+				},
+			},
+		];
+		for (const request of requests) {
+			proc.stdout.emit(
+				"data",
+				Buffer.from(
+					`${JSON.stringify({
+						id: request.id,
+						method: "mcpServer/elicitation/request",
+						params: request.params,
+					})}\n`,
+				),
+			);
+		}
+
+		await vi.waitFor(() => {
+			const responses = writes
+				.map((line) => JSON.parse(line))
+				.filter((message) => requests.some(({ id }) => id === message.id));
+			expect(responses).toHaveLength(requests.length);
+			expect(responses.map((response) => response.result)).toEqual(
+				requests.map(() => ({ action: "decline", content: null, _meta: null })),
+			);
+		});
+		expect(canUseTool).not.toHaveBeenCalled();
+		session.cancel();
+	});
+
+	it("maps denied, cancelled, and invalid allowed form interactions natively", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi
+			.fn()
+			.mockResolvedValueOnce({ behavior: "deny" })
+			.mockResolvedValueOnce({
+				behavior: "allow",
+				updatedInput: {
+					answers: { [ASK_USER_QUESTION_CANCEL_KEY]: "" },
+				},
+			})
+			.mockResolvedValueOnce({
+				behavior: "allow",
+				updatedInput: { answers: { Mode: "Future mode" } },
+			});
+		const session = new CodexProvider().query(baseCodexParams({ canUseTool }));
+		await session.send("choose a mode");
+		for (const id of [187, 188, 189]) {
+			proc.stdout.emit(
+				"data",
+				Buffer.from(
+					`${JSON.stringify({
+						id,
+						method: "mcpServer/elicitation/request",
+						params: {
+							threadId: "thread-1",
+							turnId: "turn-1",
+							serverName: "mode-mcp",
+							mode: "form",
+							message: "Choose a mode",
+							requestedSchema: {
+								type: "object",
+								required: ["mode"],
+								properties: {
+									mode: {
+										type: "string",
+										title: "Mode",
+										enum: ["safe"],
+									},
+								},
+							},
+						},
+					})}\n`,
+				),
+			);
+		}
+
+		await vi.waitFor(() => {
+			const responses = writes
+				.map((line) => JSON.parse(line))
+				.filter((message) => [187, 188, 189].includes(message.id));
+			expect(responses).toEqual([
+				{
+					id: 187,
+					result: { action: "decline", content: null, _meta: null },
+				},
+				{
+					id: 188,
+					result: { action: "cancel", content: null, _meta: null },
+				},
+				{
+					id: 189,
+					result: { action: "cancel", content: null, _meta: null },
+				},
+			]);
+		});
+		session.cancel();
+	});
+
+	it("aborts only the matching pending MCP elicitation when Codex resolves it", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const pending = new Map<
+			string,
+			{
+				signal: AbortSignal;
+				resolve: (decision: {
+					behavior: "allow";
+					updatedInput: { answers: { Value: string } };
+				}) => void;
+			}
+		>();
+		const canUseTool = vi.fn(
+			(
+				_toolName: string,
+				_input: unknown,
+				meta: { toolUseID: string; signal: AbortSignal },
+			) =>
+				new Promise<{
+					behavior: "allow";
+					updatedInput: { answers: { Value: string } };
+				}>((resolve) => {
+					pending.set(meta.toolUseID, { signal: meta.signal, resolve });
+				}),
+		);
+		const session = new CodexProvider().query(baseCodexParams({ canUseTool }));
+		await session.send("collect both values");
+		for (const requestId of ["elicitation-a", "elicitation-b"]) {
+			proc.stdout.emit(
+				"data",
+				Buffer.from(
+					`${JSON.stringify({
+						id: requestId,
+						method: "mcpServer/elicitation/request",
+						params: {
+							threadId: "thread-1",
+							turnId: "turn-1",
+							serverName: "value-mcp",
+							mode: "form",
+							message: "Provide a value",
+							requestedSchema: {
+								type: "object",
+								required: ["value"],
+								properties: {
+									value: { type: "string", title: "Value" },
+								},
+							},
+						},
+					})}\n`,
+				),
+			);
+		}
+
+		await vi.waitFor(() => expect(canUseTool).toHaveBeenCalledTimes(2));
+		expect([...pending.keys()]).toEqual([
+			"codex-request:string:elicitation-a",
+			"codex-request:string:elicitation-b",
+		]);
+		emitSessionNotification(proc, "serverRequest/resolved", {
+			threadId: "thread-1",
+			requestId: "elicitation-a",
+		});
+		expect(
+			pending.get("codex-request:string:elicitation-a")?.signal.aborted,
+		).toBe(true);
+		expect(
+			pending.get("codex-request:string:elicitation-b")?.signal.aborted,
+		).toBe(false);
+
+		pending.get("codex-request:string:elicitation-a")?.resolve({
+			behavior: "allow",
+			updatedInput: { answers: { Value: "A" } },
+		});
+		pending.get("codex-request:string:elicitation-b")?.resolve({
+			behavior: "allow",
+			updatedInput: { answers: { Value: "B" } },
+		});
+		await vi.waitFor(() => {
+			const responses = writes
+				.map((line) => JSON.parse(line))
+				.filter((message) =>
+					["elicitation-a", "elicitation-b"].includes(message.id),
+				);
+			expect(responses).toEqual([
+				{
+					id: "elicitation-b",
+					result: {
+						action: "accept",
+						content: { value: "B" },
+						_meta: null,
+					},
+				},
+			]);
+		});
+		session.cancel();
+	});
+
 	it.each([
 		true,
 		false,
@@ -7747,6 +8229,7 @@ describe("CodexAgentSession — notifications", () => {
 					appName: "Docker Desktop",
 				}),
 				expect.objectContaining({
+					toolUseID: "codex-request:number:81",
 					title: "Allow Codex to use Docker Desktop?",
 					displayName: "Windows Computer Use · Docker Desktop",
 				}),

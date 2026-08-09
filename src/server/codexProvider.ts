@@ -30,6 +30,7 @@ import type {
 	AgentProvider,
 	AgentQueryParams,
 	AgentSession,
+	AgentToolDecision,
 	ForkSessionParams,
 	ForkSessionResult,
 	McpServerStatus,
@@ -159,6 +160,15 @@ import {
 	OBSIDIAN_AGENT_NAMESPACE_DESCRIPTION,
 	OBSIDIAN_AGENT_TOOL_SPECS,
 } from "./obsidianAgentTools";
+import {
+	parseProviderElicitationFields,
+	providerElicitationContent,
+	providerElicitationDecisionAnswers,
+	providerElicitationQuestions,
+	providerElicitationSelectedAnswer,
+	providerElicitationWasCancelled,
+	safeProviderElicitationUrl,
+} from "./providerElicitation";
 import { codexPlanActivity } from "./taskActivity";
 import {
 	createWindowsVisualizeRenderInput,
@@ -268,6 +278,15 @@ function serverRequestToolUseId(
 	if (typeof params.approvalId === "string" && params.approvalId) {
 		return params.approvalId;
 	}
+	return (
+		nativeServerRequestToolUseId(requestId) ??
+		String(params.itemId ?? "approval")
+	);
+}
+
+function nativeServerRequestToolUseId(
+	requestId: ServerRequestContext["requestId"] | undefined,
+): string | null {
 	// JSON-RPC string and numeric ids occupy distinct namespaces. Preserve that
 	// distinction so two live native requests can never share one Hlid card.
 	if (typeof requestId === "string" && requestId) {
@@ -276,7 +295,7 @@ function serverRequestToolUseId(
 	if (typeof requestId === "number" && Number.isFinite(requestId)) {
 		return `codex-request:number:${requestId}`;
 	}
-	return String(params.itemId ?? "approval");
+	return null;
 }
 
 const CODEX_MCP_STATUS_PAGE_SIZE = 100;
@@ -364,6 +383,11 @@ const WINDOWS_COMPUTER_USE_NAMESPACE = HLID_AGENT_NAMESPACE;
 const WINDOWS_COMPUTER_USE_TOOL = HLID_WINDOWS_COMPUTER_USE_TOOL;
 const WINDOWS_VISUALIZE_NAMESPACE = HLID_AGENT_NAMESPACE;
 const WINDOWS_VISUALIZE_TOOL = HLID_CREATE_VISUALIZATION_TOOL;
+const CODEX_ELICITATION_URL_QUESTION =
+	"How should Hlid answer this browser-based request?";
+const CODEX_ELICITATION_URL_CONTINUE =
+	"Continue after completing the browser step";
+const CODEX_ELICITATION_URL_DECLINE = "Decline this request";
 const DEFAULT_WINDOWS_COMPUTER_USE_MODEL = "gpt-5.4";
 const DEFAULT_WINDOWS_COMPUTER_USE_EFFORT = "medium";
 const CODEX_CHILD_SETTLE_TIMEOUT_MS = 10 * 60_000;
@@ -1476,6 +1500,24 @@ export function computerUseApprovalDetails(rawParams: unknown): {
 		displayName: displayName ?? appId ?? "a Windows app",
 		...(riskLevel ? { riskLevel } : {}),
 	};
+}
+
+function isComputerUseElicitation(rawParams: unknown): boolean {
+	const params = asObj(rawParams);
+	const meta = asObj(params._meta);
+	const connectorId = meta.connector_id ?? meta.connectorId;
+	if (
+		typeof connectorId === "string" &&
+		["computer-use", "computer_use", "computeruse"].includes(
+			connectorId.toLowerCase(),
+		)
+	) {
+		return true;
+	}
+	const nested = meta.computerUse ?? meta.computer_use;
+	return (
+		nested !== null && typeof nested === "object" && !Array.isArray(nested)
+	);
 }
 
 function textFromUnknown(value: unknown): string {
@@ -4845,70 +4887,165 @@ class CodexAgentSession implements AgentSession {
 	private async handleMcpElicitation(
 		params: Record<string, unknown>,
 		signal: AbortSignal,
+		requestId: ServerRequestContext["requestId"],
 	): Promise<McpServerElicitationRequestResponse> {
-		if (params.mode === "url") {
+		const isComputerUse =
+			this.delegatedWindowsWorker?.kind === "computer-use" ||
+			isComputerUseElicitation(params);
+		if (isComputerUse) {
+			if (typeof this.params.canUseTool !== "function") {
+				return { action: "decline", content: null, _meta: null };
+			}
+			const details = computerUseApprovalDetails(params);
+			const serverName = String(params.serverName ?? "MCP server");
+			const appKey = details.appId ?? details.displayName;
+			const task =
+				this.delegatedWindowsWorker?.kind === "computer-use"
+					? this.delegatedWindowsWorker.task
+					: undefined;
+			const decision = await this.params.canUseTool(
+				`hlid.windows_computer_use:${appKey}`,
+				{
+					...(task ? { task } : {}),
+					appId: details.appId,
+					appName: details.displayName,
+					riskLevel: details.riskLevel,
+					serverName,
+					message: params.message,
+				},
+				{
+					toolUseID:
+						nativeServerRequestToolUseId(requestId) ??
+						`codex-elicitation-${String(params.threadId ?? "thread")}-${++this.elicitationSequence}`,
+					signal,
+					title: `Allow Codex to use ${details.displayName}?`,
+					displayName: `Windows Computer Use · ${details.displayName}`,
+					description: [
+						task ? `Desktop task: ${task}` : undefined,
+						typeof params.message === "string" ? params.message : undefined,
+					]
+						.filter(Boolean)
+						.join("\n\n"),
+				},
+			);
+			if (decision.behavior !== "allow") {
+				return { action: "decline", content: null, _meta: null };
+			}
+			return {
+				action: "accept",
+				content: null,
+				_meta:
+					decision.saveScope === "local"
+						? { persist: "always" }
+						: decision.saveScope === "session"
+							? { persist: "session" }
+							: null,
+			};
+		}
+
+		if (signal.aborted) {
 			return { action: "cancel", content: null, _meta: null };
 		}
-		const serialized = JSON.stringify(params).toLowerCase();
+		if (params.mode === "openai/form") {
+			return { action: "decline", content: null, _meta: null };
+		}
+		const serverName =
+			typeof params.serverName === "string" ? params.serverName.trim() : "";
+		const message =
+			typeof params.message === "string" ? params.message.trim() : "";
 		if (
-			this.delegatedWindowsWorker?.kind !== "computer-use" &&
-			!String(params.serverName ?? "")
-				.toLowerCase()
-				.includes("computer-use") &&
-			!serialized.includes("computeruse") &&
-			!serialized.includes("computer-use") &&
-			!serialized.includes("computer_use")
+			!serverName ||
+			!message ||
+			typeof this.params.canUseTool !== "function"
 		) {
-			// Hlid does not yet render arbitrary MCP form fields. Never turn an
-			// unrelated elicitation into a blanket approval with empty content.
+			return { action: "decline", content: null, _meta: null };
+		}
+		const toolUseID =
+			nativeServerRequestToolUseId(requestId) ??
+			`codex-elicitation-${String(params.threadId ?? "thread")}-${++this.elicitationSequence}`;
+		const ask = (
+			questions: ReturnType<typeof providerElicitationQuestions>,
+			url?: string,
+		) =>
+			this.params
+				.canUseTool(
+					"AskUserQuestion",
+					{ questions },
+					{
+						toolUseID,
+						signal,
+						title: message,
+						displayName: serverName,
+						interaction: {
+							provider_id: "codex",
+							kind: "mcp_elicitation",
+							source_name: serverName,
+							summary: message,
+							...(url ? { url } : {}),
+						},
+					},
+				)
+				.catch(() => null);
+		const decisionState = (decision: AgentToolDecision | null) => {
+			const answers = providerElicitationDecisionAnswers(decision);
+			const action =
+				signal.aborted || providerElicitationWasCancelled(answers)
+					? ("cancel" as const)
+					: decision?.behavior !== "allow"
+						? ("decline" as const)
+						: null;
+			return { answers, action };
+		};
+
+		if (params.mode === "url") {
+			const url = safeProviderElicitationUrl(params.url);
+			if (!url) return { action: "decline", content: null, _meta: null };
+			const decision = await ask(
+				[
+					{
+						question: CODEX_ELICITATION_URL_QUESTION,
+						options: [
+							CODEX_ELICITATION_URL_CONTINUE,
+							CODEX_ELICITATION_URL_DECLINE,
+						],
+						multiSelect: false,
+					},
+				],
+				url,
+			);
+			const state = decisionState(decision);
+			if (state.action) {
+				return { action: state.action, content: null, _meta: null };
+			}
+			const answer = providerElicitationSelectedAnswer(
+				state.answers?.[CODEX_ELICITATION_URL_QUESTION],
+			);
+			if (answer === CODEX_ELICITATION_URL_CONTINUE) {
+				return { action: "accept", content: null, _meta: null };
+			}
+			if (answer === CODEX_ELICITATION_URL_DECLINE) {
+				return { action: "decline", content: null, _meta: null };
+			}
 			return { action: "cancel", content: null, _meta: null };
 		}
-		if (typeof this.params.canUseTool !== "function") {
+
+		if (params.mode !== "form") {
 			return { action: "decline", content: null, _meta: null };
 		}
-		const details = computerUseApprovalDetails(params);
-		const serverName = String(params.serverName ?? "MCP server");
-		const appKey = details.appId ?? details.displayName;
-		const task =
-			this.delegatedWindowsWorker?.kind === "computer-use"
-				? this.delegatedWindowsWorker.task
-				: undefined;
-		const decision = await this.params.canUseTool(
-			`hlid.windows_computer_use:${appKey}`,
-			{
-				...(task ? { task } : {}),
-				appId: details.appId,
-				appName: details.displayName,
-				riskLevel: details.riskLevel,
-				serverName,
-				message: params.message,
-			},
-			{
-				toolUseID: `codex-elicitation-${String(params.threadId ?? "thread")}-${++this.elicitationSequence}`,
-				signal,
-				title: `Allow Codex to use ${details.displayName}?`,
-				displayName: `Windows Computer Use · ${details.displayName}`,
-				description: [
-					task ? `Desktop task: ${task}` : undefined,
-					typeof params.message === "string" ? params.message : undefined,
-				]
-					.filter(Boolean)
-					.join("\n\n"),
-			},
-		);
-		if (decision.behavior !== "allow") {
-			return { action: "decline", content: null, _meta: null };
+		const fields = parseProviderElicitationFields(params.requestedSchema);
+		if (!fields) return { action: "decline", content: null, _meta: null };
+		const decision = await ask(providerElicitationQuestions(fields));
+		const state = decisionState(decision);
+		if (state.action) {
+			return { action: state.action, content: null, _meta: null };
 		}
-		return {
-			action: "accept",
-			content: null,
-			_meta:
-				decision.saveScope === "local"
-					? { persist: "always" }
-					: decision.saveScope === "session"
-						? { persist: "session" }
-						: null,
-		};
+		if (!state.answers) {
+			return { action: "cancel", content: null, _meta: null };
+		}
+		const content = providerElicitationContent(fields, state.answers);
+		return content
+			? { action: "accept", content, _meta: null }
+			: { action: "cancel", content: null, _meta: null };
 	}
 
 	private async handleServerRequest(
@@ -4954,9 +5091,9 @@ class CodexAgentSession implements AgentSession {
 			return this.handleDynamicToolCall(params, signal);
 		}
 		if (method === "mcpServer/elicitation/request") {
-			// Computer Use app access must always flow through Hlid, even when the
-			// surrounding Codex session uses bypassPermissions.
-			return this.handleMcpElicitation(params, signal);
+			// MCP elicitations are provider-owned blocking input and must always flow
+			// through Hlid, even when the surrounding session bypasses tool approvals.
+			return this.handleMcpElicitation(params, signal, context.requestId);
 		}
 		if (
 			!this.params.policyEnforced &&
