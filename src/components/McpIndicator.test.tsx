@@ -53,6 +53,57 @@ describe("McpIndicator", () => {
 		expect(screen.getAllByText(/codex ·/i)).toHaveLength(2);
 	});
 
+	it("describes an unreported provider status without showing it as pending", () => {
+		const { container } = render(
+			<McpIndicator
+				servers={[
+					{
+						name: "hlid",
+						displayName: "hlid",
+						source: "global",
+						providerId: "acp:opencode",
+						status: "unknown",
+					},
+				]}
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "MCP server status" }));
+
+		expect(screen.getByText("status not reported")).toBeTruthy();
+		expect(screen.queryByText("pending")).toBeNull();
+		expect(container.querySelector(".animate-pulse")).toBeNull();
+	});
+
+	it("keeps a mixed connected and unreported aggregate neutral", () => {
+		const { container } = render(
+			<McpIndicator
+				servers={[
+					{
+						name: "hlid_obsidian",
+						displayName: "Hlid Obsidian",
+						source: "global",
+						providerId: "acp:opencode",
+						status: "connected",
+					},
+					{
+						name: "hlid",
+						displayName: "Hlid",
+						source: "global",
+						providerId: "acp:opencode",
+						status: "unknown",
+					},
+				]}
+			/>,
+		);
+		const button = screen.getByRole("button", { name: "MCP server status" });
+		const aggregateDot = container.querySelector("button .rounded-full");
+
+		expect(button.textContent).toContain("1/2");
+		expect(aggregateDot?.className).toContain("bg-muted-foreground/35");
+		expect(aggregateDot?.className).not.toContain("bg-status-success");
+		expect(aggregateDot?.className).not.toContain("animate-pulse");
+	});
+
 	it("anchors left on mobile and right on desktop when requested", () => {
 		render(<McpIndicator servers={[]} align="mobile-left" />);
 		fireEvent.click(screen.getByRole("button", { name: "MCP server status" }));

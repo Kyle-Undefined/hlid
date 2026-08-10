@@ -3138,6 +3138,69 @@ describe("SessionManager — recap model resolution", () => {
 	});
 });
 
+describe("SessionManager — provider-specific recap settings", () => {
+	function recapTriggerProvider(providerId: string): AgentProvider {
+		return { ...makeRecapTriggerProvider(), providerId };
+	}
+
+	it("honors disabled recaps after switching to an ACP provider", async () => {
+		const config = makeConfig();
+		config.claude.turn_recaps = true;
+		config.acp_agents = [
+			{
+				id: "opencode",
+				turn_recaps: false,
+			},
+		];
+		const sm = new SessionManager(
+			config,
+			new Map([
+				["claude", recapTriggerProvider("claude")],
+				["acp:opencode", recapTriggerProvider("acp:opencode")],
+			]),
+		);
+
+		await sm.setProvider("acp:opencode");
+		vi.mocked(generateTurnRecap).mockClear();
+		await sm.runQuery("use OpenCode", () => {}, {
+			sessionId: "recap-switch-disabled",
+		});
+
+		expect(generateTurnRecap).not.toHaveBeenCalled();
+	});
+
+	it("honors enabled recaps and their model after switching providers", async () => {
+		const config = makeConfig();
+		config.claude.turn_recaps = false;
+		config.acp_agents = [
+			{
+				id: "opencode",
+				turn_recaps: true,
+				recap_model: "opencode/recap-model",
+			},
+		];
+		const sm = new SessionManager(
+			config,
+			new Map([
+				["claude", recapTriggerProvider("claude")],
+				["acp:opencode", recapTriggerProvider("acp:opencode")],
+			]),
+		);
+
+		await sm.setProvider("acp:opencode");
+		vi.mocked(generateTurnRecap).mockClear();
+		await sm.runQuery("use OpenCode", () => {}, {
+			sessionId: "recap-switch-enabled",
+		});
+
+		expect(generateTurnRecap).toHaveBeenCalledOnce();
+		expect(vi.mocked(generateTurnRecap).mock.calls[0]?.[0]).toMatchObject({
+			recapModel: "opencode/recap-model",
+			provider: expect.objectContaining({ providerId: "acp:opencode" }),
+		});
+	});
+});
+
 describe("SessionManager — per-agent recap model", () => {
 	const AGENT_PATH = "/tmp/test-agent-recap";
 

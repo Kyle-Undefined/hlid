@@ -398,7 +398,13 @@ export type McpStatusMessage = {
 	operations?: McpControlOperation[];
 	servers: Array<{
 		name: string;
-		status: "connected" | "failed" | "needs-auth" | "pending" | "disabled";
+		status:
+			| "connected"
+			| "failed"
+			| "needs-auth"
+			| "pending"
+			| "disabled"
+			| "unknown";
 		/** Provider owning this server when the message is a Cockpit inventory. */
 		provider_id?: string;
 		scope?: string;

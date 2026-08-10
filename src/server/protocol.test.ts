@@ -84,6 +84,7 @@ describe("mapMcpServer", () => {
 			"needs-auth",
 			"pending",
 			"disabled",
+			"unknown",
 		] as const;
 		for (const status of statuses) {
 			expect(mapMcpServer({ name: "s", status }).status).toBe(status);

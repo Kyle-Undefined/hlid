@@ -666,17 +666,18 @@ function eventsFromUpdate(
 			return text == null ? [] : [{ type: "text_delta", text }];
 		}
 		case "agent_thought_chunk": {
-			const text = textFromContent(update.content);
-			return text == null ? [] : [{ type: "summary", text }];
+			// AcpSession groups these into a prompt-scoped Reasoning lifecycle before
+			// generic update mapping so they never masquerade as turn recaps.
+			return [];
 		}
 		case "tool_call":
 		case "tool_call_update": {
-			if (terminalToolCalls?.has(update.toolCallId)) return [];
 			const toolCall = mergeToolCallUpdate(
 				toolCalls?.get(update.toolCallId),
 				update,
 			);
 			toolCalls?.set(update.toolCallId, toolCall);
+			if (terminalToolCalls?.has(update.toolCallId)) return [];
 			const events: AgentEvent[] = [];
 			if (!startedToolCalls?.has(update.toolCallId)) {
 				startedToolCalls?.add(update.toolCallId);
@@ -946,6 +947,33 @@ function supportsMcpTransport(
 			return capabilities?.acp === true;
 	}
 }
+
+type InternalMcpNamespace =
+	| typeof HLID_AGENT_NAMESPACE
+	| typeof OBSIDIAN_AGENT_NAMESPACE;
+
+const INTERNAL_MCP_TOOL_OWNERS = new Map<string, InternalMcpNamespace>();
+
+function registerInternalMcpToolOwners(
+	namespace: InternalMcpNamespace,
+	tools: ReadonlyArray<{ name: string }>,
+): void {
+	for (const tool of tools) {
+		for (const name of [
+			`${namespace}_${tool.name}`,
+			`${namespace}.${tool.name}`,
+			`mcp__${namespace}__${tool.name}`,
+		]) {
+			INTERNAL_MCP_TOOL_OWNERS.set(name, namespace);
+		}
+	}
+}
+
+registerInternalMcpToolOwners(HLID_AGENT_NAMESPACE, HLID_AGENT_TOOL_SPECS);
+registerInternalMcpToolOwners(
+	OBSIDIAN_AGENT_NAMESPACE,
+	OBSIDIAN_AGENT_TOOL_SPECS,
+);
 
 function selectOptions(option: SessionConfigOption): ProviderModelInfo[] {
 	return acpSelectValues(option).values.map((item) => ({
@@ -1246,6 +1274,13 @@ class AcpSession implements AgentSession {
 	private htmlPlanReady = false;
 	private nativePlanText = "";
 	private lastAgentMessageId: string | null = null;
+	private thoughtPromptSeq = 0;
+	private thoughtToolSeq = 0;
+	private anonymousThoughtKey: string | null = null;
+	private readonly thoughtGroups = new Map<
+		string,
+		{ toolId: string; text: string }
+	>();
 	private planEventSeq = 0;
 	private elicitationSeq = 0;
 	private latestCostUsd: number | null = null;
@@ -1341,6 +1376,93 @@ class AcpSession implements AgentSession {
 		this.pendingToolProgress.clear();
 		this.toolProgressFingerprints.clear();
 		this.toolProgressEmittedAt.clear();
+	}
+
+	private resetObservableMcpStatuses(publish = false): void {
+		let changed = false;
+		this.mcpStatuses = this.mcpStatuses.map((status) => {
+			if (status.status !== "connected" && status.status !== "unknown") {
+				return status;
+			}
+			changed = true;
+			return { ...status, status: "pending" };
+		});
+		if (changed && publish) {
+			this.events.push({ type: "mcp_status", servers: this.mcpStatuses });
+		}
+	}
+
+	private markMcpSetupComplete(): void {
+		this.mcpStatuses = this.mcpStatuses.map((status) =>
+			status.status === "pending" ? { ...status, status: "unknown" } : status,
+		);
+	}
+
+	private observeInternalMcpToolName(toolName: string): void {
+		const namespace = INTERNAL_MCP_TOOL_OWNERS.get(toolName);
+		if (!namespace) return;
+		let changed = false;
+		this.mcpStatuses = this.mcpStatuses.map((status) => {
+			if (
+				status.name !== namespace ||
+				status.scope !== "provider" ||
+				(status.status !== "pending" && status.status !== "unknown")
+			) {
+				return status;
+			}
+			changed = true;
+			return { ...status, status: "connected" };
+		});
+		if (changed) {
+			this.events.push({ type: "mcp_status", servers: this.mcpStatuses });
+		}
+	}
+
+	private beginThoughtPrompt(): void {
+		this.thoughtGroups.clear();
+		this.thoughtPromptSeq += 1;
+		this.anonymousThoughtKey = `prompt:${this.thoughtPromptSeq}:anonymous`;
+	}
+
+	private handleThoughtChunk(
+		update: Extract<SessionUpdate, { sessionUpdate: "agent_thought_chunk" }>,
+	): void {
+		const text = textFromContent(update.content);
+		if (!text || !this.anonymousThoughtKey) return;
+		const groupKey = update.messageId
+			? `prompt:${this.thoughtPromptSeq}:message:${update.messageId}`
+			: this.anonymousThoughtKey;
+		const existing = this.thoughtGroups.get(groupKey);
+		if (existing) {
+			existing.text += text;
+			return;
+		}
+		const toolId = `acp-reasoning-${this.thoughtPromptSeq}-${++this.thoughtToolSeq}`;
+		this.thoughtGroups.set(groupKey, { toolId, text });
+		this.events.push({
+			type: "tool_start",
+			toolId,
+			name: "Reasoning",
+			input: {},
+		});
+	}
+
+	private flushThoughts(isError = false): void {
+		for (const thought of this.thoughtGroups.values()) {
+			this.pushMappedEvent({
+				type: "tool_result",
+				toolId: thought.toolId,
+				content: thought.text,
+				...(isError ? { isError: true } : {}),
+			});
+		}
+		this.thoughtGroups.clear();
+		this.anonymousThoughtKey = null;
+	}
+
+	private clearThoughts(): void {
+		this.thoughtGroups.clear();
+		this.anonymousThoughtKey = null;
 	}
 
 	private negotiatedMcpServers(
@@ -1618,7 +1740,9 @@ class AcpSession implements AgentSession {
 	private resetAfterRuntimeStop(
 		previousSessionId: string | null,
 		canReconnect: boolean,
+		publishMcpStatus = false,
 	): void {
+		this.resetObservableMcpStatuses(publishMcpStatus);
 		if (canReconnect && previousSessionId) {
 			this.params.sessionId = previousSessionId;
 			this.allowInterruptedResumeFallback = true;
@@ -1646,6 +1770,13 @@ class AcpSession implements AgentSession {
 		if (active) {
 			await waitForPromptSettlement(active, this.timeouts.terminateGraceMs);
 			if (this.activePrompt === active) this.activePrompt = null;
+		}
+		this.resetAfterRuntimeStop(
+			previousSessionId,
+			canReconnect,
+			Boolean(active),
+		);
+		if (active) {
 			this.events.push({
 				type: "done",
 				turns: 0,
@@ -1653,7 +1784,6 @@ class AcpSession implements AgentSession {
 				stopReason: "cancelled",
 			});
 		}
-		this.resetAfterRuntimeStop(previousSessionId, canReconnect);
 	}
 
 	private beginRuntimeRetirement(
@@ -1672,6 +1802,7 @@ class AcpSession implements AgentSession {
 
 		// Invalidate callbacks and config responses synchronously. Process cleanup is
 		// asynchronous, but no late message may repopulate this runtime meanwhile.
+		this.flushThoughts(true);
 		this.runtimeGeneration += 1;
 		const pending = this.retireRuntimeAfterControlFailure(error).finally(() => {
 			if (this.runtimeRetirement === pending) this.runtimeRetirement = null;
@@ -1876,6 +2007,7 @@ class AcpSession implements AgentSession {
 	}
 
 	private clearRuntimeState(): void {
+		this.resetObservableMcpStatuses();
 		this.runtimeGeneration += 1;
 		this.connection = null;
 		this.process = null;
@@ -1898,6 +2030,7 @@ class AcpSession implements AgentSession {
 		this.startedToolCalls.clear();
 		this.terminalToolCalls.clear();
 		this.clearToolProgress();
+		this.clearThoughts();
 		this.lastAgentMessageId = null;
 	}
 
@@ -1971,6 +2104,7 @@ class AcpSession implements AgentSession {
 				scope: "provider",
 			});
 		}
+		this.resetObservableMcpStatuses();
 		const started = await startAcpProcess({
 			provider: this.options,
 			cwd: this.params.cwd,
@@ -1986,6 +2120,8 @@ class AcpSession implements AgentSession {
 				!this.cancelled &&
 				!this.expectedProcessExits.has(child)
 			) {
+				this.flushThoughts(true);
+				this.resetObservableMcpStatuses(true);
 				this.events.end(appendAcpStderr(error, this.stderr()));
 			}
 		});
@@ -1996,6 +2132,8 @@ class AcpSession implements AgentSession {
 				!this.expectedProcessExits.has(child) &&
 				code !== 0
 			) {
+				this.flushThoughts(true);
+				this.resetObservableMcpStatuses(true);
 				this.events.end(
 					appendAcpStderr(
 						new Error(`ACP agent exited with code ${code}`),
@@ -2093,6 +2231,10 @@ class AcpSession implements AgentSession {
 					}
 					return;
 				}
+				if (update.sessionUpdate === "agent_thought_chunk") {
+					this.handleThoughtChunk(update);
+					return;
+				}
 				if (update.sessionUpdate === "agent_message_chunk") {
 					if (
 						update.messageId &&
@@ -2157,8 +2299,15 @@ class AcpSession implements AgentSession {
 						this.approvedHtmlPlanToolIds.delete(update.toolCallId);
 					}
 				}
-				for (const event of events) {
-					this.pushMappedEvent(event);
+				for (const event of events) this.pushMappedEvent(event);
+				if (
+					update.sessionUpdate === "tool_call" ||
+					update.sessionUpdate === "tool_call_update"
+				) {
+					const toolName = this.toolCalls.get(update.toolCallId)?.name;
+					if (typeof toolName === "string") {
+						this.observeInternalMcpToolName(toolName);
+					}
 				}
 			},
 		};
@@ -2272,6 +2421,7 @@ class AcpSession implements AgentSession {
 		if (!this.sessionId) {
 			throw new Error("ACP session initialization returned no session id");
 		}
+		this.markMcpSetupComplete();
 		this.modes = modes ?? null;
 		this.configOptions = configOptions ?? [];
 		await this.enforceProviderDefaultModelVisibility();
@@ -2338,6 +2488,8 @@ class AcpSession implements AgentSession {
 				(error) => {
 					active.settled = true;
 					if (!active.suppressError && !this.cancelled) {
+						this.flushThoughts(true);
+						this.resetObservableMcpStatuses(true);
 						this.events.end(appendAcpStderr(error, this.stderr()));
 					}
 				},
@@ -2374,14 +2526,22 @@ class AcpSession implements AgentSession {
 		this.startedToolCalls.clear();
 		this.terminalToolCalls.clear();
 		this.clearToolProgress();
+		this.beginThoughtPrompt();
 		this.turnStartCostUsd = costStartUsd;
-		const response = await identity.connection.prompt({
-			sessionId: identity.sessionId,
-			prompt: [{ type: "text", text: message }],
-		});
+		let response: Awaited<ReturnType<ClientSideConnection["prompt"]>>;
+		try {
+			response = await identity.connection.prompt({
+				sessionId: identity.sessionId,
+				prompt: [{ type: "text", text: message }],
+			});
+		} catch (error) {
+			if (this.runtimeIdentityIsCurrent(identity)) this.flushThoughts(true);
+			throw error;
+		}
 		if (!this.runtimeIdentityIsCurrent(identity)) {
 			throw this.modelVisibilityFault ?? new AcpRuntimeSupersededError();
 		}
+		this.flushThoughts(response.stopReason === "cancelled");
 		this.turns += 1;
 		if (response.usage) {
 			queryUsage.inputTokens += response.usage.inputTokens;
@@ -2486,6 +2646,13 @@ class AcpSession implements AgentSession {
 	async cancelAndWait(): Promise<void> {
 		const initializing = this.initPromise;
 		if (!this.cancelled) {
+			const publishMcpStatus = Boolean(
+				this.activePrompt &&
+					!this.activePrompt.settled &&
+					this.activePrompt.controlsLocked,
+			);
+			this.flushThoughts(true);
+			this.resetObservableMcpStatuses(publishMcpStatus);
 			this.cancelled = true;
 			this.clearToolProgress();
 			this.runtimeAbortController.abort(new Error("ACP session cancelled"));
@@ -2534,7 +2701,8 @@ class AcpSession implements AgentSession {
 		);
 		await this.stopOwnedProcess(true);
 		await waitForPromptSettlement(active, this.timeouts.terminateGraceMs);
-		this.resetAfterRuntimeStop(previousSessionId, canReconnect);
+		this.flushThoughts(true);
+		this.resetAfterRuntimeStop(previousSessionId, canReconnect, true);
 		if (this.activePrompt === active) this.activePrompt = null;
 		this.events.push({
 			type: "done",
@@ -2561,6 +2729,7 @@ class AcpSession implements AgentSession {
 			}
 		}
 		await this.stopOwnedProcess();
+		this.resetObservableMcpStatuses();
 		this.events.end();
 	}
 

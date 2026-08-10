@@ -9,9 +9,9 @@ const STATUS_ORDER: Record<McpServerEntry["status"], number> = {
 	failed: 0,
 	"needs-auth": 1,
 	pending: 2,
-	connected: 3,
-	disabled: 4,
-	unknown: 5,
+	unknown: 3,
+	connected: 4,
+	disabled: 5,
 };
 
 function dotClass(status: McpServerEntry["status"]): string {
@@ -27,6 +27,10 @@ function dotClass(status: McpServerEntry["status"]): string {
 		default:
 			return "bg-muted-foreground/35";
 	}
+}
+
+function statusLabel(status: McpServerEntry["status"]): string {
+	return status === "unknown" ? "status not reported" : status;
 }
 
 function aggregateStatus(servers: McpServerEntry[]): McpServerEntry["status"] {
@@ -237,7 +241,7 @@ export function McpIndicator({
 													{server.displayName}
 												</span>
 												<span className="text-[8px] tracking-widest uppercase text-muted-foreground/40">
-													{server.status}
+													{statusLabel(server.status)}
 												</span>
 											</div>
 											<div className="pl-3.5 mt-1 text-[8px] tracking-wider text-muted-foreground/35">

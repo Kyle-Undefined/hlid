@@ -1489,8 +1489,11 @@ export class SessionManager {
 	private configuredAgentCwd: string | undefined;
 	private agentMode: "cwd" | "context" = "cwd";
 	private allowedAgentRealPaths: string[] = [];
-	private turnRecaps!: boolean;
-	private recapModel!: string;
+	/** Provider-owned recap defaults, resolved against the provider that ran the turn. */
+	private providerRecapSettings = new Map<
+		string,
+		{ turnRecaps: boolean; recapModel: string }
+	>();
 	// Slice A: re-entrant runQuery. Concurrent calls (typed-while-running) are
 	// queued FIFO and drained serially. State stays "running" until the queue
 	// fully drains.
@@ -1769,6 +1772,23 @@ export class SessionManager {
 			this.configuredAgentCwd,
 			agentMaps,
 		);
+		this.providerRecapSettings = new Map(
+			[...this.providers.values()].map((provider) => {
+				const defaults = sessionDefaultsFromSelection(
+					config,
+					undefined,
+					provider.providerId,
+					undefined,
+				);
+				return [
+					provider.providerId,
+					{
+						turnRecaps: defaults.turnRecaps,
+						recapModel: defaults.recapModel,
+					},
+				];
+			}),
+		);
 		if (
 			configuredDefaults.agentCwd &&
 			!parseWslUncSyntax(configuredDefaults.agentCwd) &&
@@ -1793,8 +1813,6 @@ export class SessionManager {
 			config.claude.agent_progress_summaries ?? false;
 		if (!preserveSessionOverrides || this.permissionModeOverride === null)
 			this.permissionMode = configuredDefaults.permissionMode;
-		this.turnRecaps = configuredDefaults.turnRecaps;
-		this.recapModel = configuredDefaults.recapModel;
 		this.claudeExecutable = resolveClaudeExecutable();
 		this.codexExecutable = codexConfig.executable;
 		this.codexPermissionProfile = codexConfig.permission_profile;
@@ -11574,7 +11592,17 @@ export class SessionManager {
 	}): void {
 		const { turn, sessionId, userMessage, emit, provider, agentSettings } =
 			options;
-		if (!turn.hadToolEvents || !this.turnRecaps || !turn.lastAssistantText)
+		const recapSettings = this.providerRecapSettings.get(
+			provider.providerId,
+		) ?? {
+			turnRecaps: true,
+			recapModel: "",
+		};
+		if (
+			!turn.hadToolEvents ||
+			!recapSettings.turnRecaps ||
+			!turn.lastAssistantText
+		)
 			return;
 		const executable = isClaudeRuntimeProvider(provider.providerId)
 			? this.claudeExecutable
@@ -11590,7 +11618,7 @@ export class SessionManager {
 			executable,
 			sdkSummary: turn.sdkSummary,
 			provider,
-			recapModel: agentSettings?.recapModel ?? this.recapModel,
+			recapModel: agentSettings?.recapModel ?? recapSettings.recapModel,
 			agentCwd: this.agentCwd ?? null,
 		}).catch(() => {});
 	}

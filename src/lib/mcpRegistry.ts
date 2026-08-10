@@ -8,7 +8,13 @@ export type McpRegistrySource =
 export type McpRegistryEntry = {
 	name: string;
 	providerId: string;
-	status: "connected" | "failed" | "needs-auth" | "pending" | "disabled";
+	status:
+		| "connected"
+		| "failed"
+		| "needs-auth"
+		| "pending"
+		| "disabled"
+		| "unknown";
 	scope: "vault" | "agent" | "provider" | "managed";
 	source: McpRegistrySource;
 	error?: string;

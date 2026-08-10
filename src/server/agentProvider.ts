@@ -36,7 +36,13 @@ export type ProviderContextUsage = {
 /** Normalized MCP server status — compatible with protocol.ts mapMcpServer input. */
 export type McpServerStatus = {
 	name: string;
-	status: "connected" | "failed" | "needs-auth" | "pending" | "disabled";
+	status:
+		| "connected"
+		| "failed"
+		| "needs-auth"
+		| "pending"
+		| "disabled"
+		| "unknown";
 	scope?: string;
 	error?: string;
 	/** Claude-native tighten-only override for this live MCP server. */

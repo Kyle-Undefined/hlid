@@ -2214,6 +2214,54 @@ describe("SessionManager — deferred MCP discovery", () => {
 			vi.useRealTimers();
 		}
 	});
+
+	it("stops deferred polling when a provider cannot report MCP status", async () => {
+		vi.useFakeTimers();
+		try {
+			const mcpServerStatus = vi
+				.fn<() => Promise<McpServerStatus[]>>()
+				.mockResolvedValueOnce([])
+				.mockResolvedValueOnce([
+					{ name: "hlid", status: "unknown" as const, scope: "provider" },
+				])
+				.mockResolvedValue([
+					{ name: "hlid", status: "connected" as const, scope: "provider" },
+				]);
+			const provider: AgentProvider = {
+				providerId: "acp:opencode",
+				probeRequiresTurn: true,
+				query(): AgentSession {
+					const gen = (async function* (): AsyncGenerator<AgentEvent> {
+						yield { type: "session_start", sessionId: "acp-mcp-unreported" };
+						yield {
+							type: "done",
+							cost: 0,
+							turns: 1,
+							durationMs: 0,
+							usage: { inputTokens: 1, outputTokens: 1 },
+						};
+					})();
+					return {
+						[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+						cancel: vi.fn(),
+						send: vi.fn().mockResolvedValue(undefined),
+						mcpServerStatus,
+					};
+				},
+			};
+			const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+			await sm.runQuery("hello", vi.fn(), {
+				sessionId: "sess-mcp-unreported",
+			});
+			await vi.advanceTimersByTimeAsync(10_000);
+
+			expect(mcpServerStatus).toHaveBeenCalledTimes(2);
+			expect(sm.getLastMcpStatus("acp:opencode")?.[0].status).toBe("unknown");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
 
 describe("SessionManager — provider-native MCP controls", () => {

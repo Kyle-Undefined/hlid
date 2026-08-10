@@ -117,6 +117,15 @@ const validateSessionInputs = (params) => {
 		);
 	}
 };
+const notifyThought = (client, sessionId, text, messageId = "thought-a") =>
+	client.notify(methods.client.session.update, {
+		sessionId,
+		update: {
+			sessionUpdate: "agent_thought_chunk",
+			messageId,
+			content: { type: "text", text },
+		},
+	});
 const stream = ndJsonStream(
 	Writable.toWeb(process.stdout),
 	Readable.toWeb(process.stdin),
@@ -217,6 +226,12 @@ agent({ name: "hlid-fake-agent" })
 					content: { type: "text", text: "historical answer" },
 				},
 			});
+			await notifyThought(
+				client,
+				params.sessionId,
+				"historical private analysis",
+				"historical-thought",
+			);
 			await client.notify(methods.client.session.update, {
 				sessionId: params.sessionId,
 				update: {
@@ -345,6 +360,14 @@ agent({ name: "hlid-fake-agent" })
 		}
 		const text =
 			params.prompt.find((block) => block.type === "text")?.text ?? "";
+		if (text === "thought-transport-error") {
+			await notifyThought(
+				client,
+				params.sessionId,
+				"partial transport thought",
+			);
+			process.exit(2);
+		}
 		if (text === "transport-error") process.exit(2);
 		if (text === "slow") {
 			while (!sessions.get(params.sessionId)?.cancelled) {
@@ -353,6 +376,16 @@ agent({ name: "hlid-fake-agent" })
 			return { stopReason: "cancelled" };
 		}
 		if (text === "ignore-cancel") {
+			const session = sessions.get(params.sessionId);
+			if (session) session.ignoreCancel = true;
+			await never();
+		}
+		if (text === "thought-ignore-cancel") {
+			await notifyThought(
+				client,
+				params.sessionId,
+				"partial cancelled thought",
+			);
 			const session = sessions.get(params.sessionId);
 			if (session) session.ignoreCancel = true;
 			await never();
@@ -371,8 +404,16 @@ agent({ name: "hlid-fake-agent" })
 		}
 		if (
 			text === "exclude-model-active" ||
+			text === "thought-exclude-model-active" ||
 			text === "missing-model-notification"
 		) {
+			if (text === "thought-exclude-model-active") {
+				await notifyThought(
+					client,
+					params.sessionId,
+					"partial retired thought",
+				);
+			}
 			const session = sessions.get(params.sessionId);
 			if (session) session.model = "fake-fast";
 			const options = configOptions(session);
@@ -438,6 +479,55 @@ agent({ name: "hlid-fake-agent" })
 			});
 			return { stopReason: "end_turn" };
 		}
+		const internalMcpToolName =
+			text === "use-hlid-mcp"
+				? "hlid_hlid_help"
+				: text === "use-obsidian-mcp"
+					? "hlid_obsidian_vault_info"
+					: text === "use-similar-mcp-name"
+						? "hlid_obsidian_not_a_real_tool"
+						: null;
+		if (internalMcpToolName) {
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "tool_call",
+					toolCallId: `internal-mcp-${text}`,
+					title: "Internal MCP tool",
+					name: internalMcpToolName,
+					kind: "other",
+					status: "completed",
+					rawInput: {},
+					rawOutput: "ok",
+				},
+			});
+			return { stopReason: "end_turn" };
+		}
+		if (text === "use-obsidian-mcp-late-name") {
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "tool_call",
+					toolCallId: "internal-mcp-late-name",
+					title: "Internal MCP tool",
+					name: null,
+					kind: "other",
+					status: "pending",
+					rawInput: {},
+				},
+			});
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "tool_call_update",
+					toolCallId: "internal-mcp-late-name",
+					name: "hlid_obsidian_vault_info",
+					status: "completed",
+					rawOutput: "ok",
+				},
+			});
+			return { stopReason: "end_turn" };
+		}
 		if (text === "report-session-inputs") {
 			const session = sessions.get(params.sessionId);
 			await client.notify(methods.client.session.update, {
@@ -470,6 +560,26 @@ agent({ name: "hlid-fake-agent" })
 					},
 				});
 			}
+			return { stopReason: "end_turn" };
+		}
+		if (text === "thought-chunk") {
+			for (const chunk of ["private provider ", "analysis"]) {
+				await client.notify(methods.client.session.update, {
+					sessionId: params.sessionId,
+					update: {
+						sessionUpdate: "agent_thought_chunk",
+						messageId: "thought-a",
+						content: { type: "text", text: chunk },
+					},
+				});
+			}
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "agent_message_chunk",
+					content: { type: "text", text: "visible answer" },
+				},
+			});
 			return { stopReason: "end_turn" };
 		}
 		if (text === "elicit") {

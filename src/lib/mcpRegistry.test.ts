@@ -52,6 +52,20 @@ describe("mergeMcpRegistry", () => {
 		expect(row.scope).toBe("agent");
 	});
 
+	it("preserves a runtime provider that cannot report connection status", () => {
+		const [row] = mergeMcpRegistry([
+			configured,
+			{
+				...configured,
+				status: "unknown",
+				scope: "provider",
+				source: "runtime",
+			},
+		]);
+		expect(row.status).toBe("unknown");
+		expect(row.scope).toBe("agent");
+	});
+
 	it("keeps an explicitly disabled scoped server disabled", () => {
 		const [row] = mergeMcpRegistry([
 			{ ...configured, status: "disabled" },

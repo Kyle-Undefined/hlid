@@ -1,4 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -87,6 +93,24 @@ async function run(
 		if (event.type === "done") break;
 	}
 	return { events, session };
+}
+
+function reasoningStarts(
+	events: AgentEvent[],
+): Array<Extract<AgentEvent, { type: "tool_start" }>> {
+	return events.filter(
+		(event): event is Extract<AgentEvent, { type: "tool_start" }> =>
+			event.type === "tool_start" && event.name === "Reasoning",
+	);
+}
+
+function reasoningResults(
+	events: AgentEvent[],
+): Array<Extract<AgentEvent, { type: "tool_result" }>> {
+	return events.filter(
+		(event): event is Extract<AgentEvent, { type: "tool_result" }> =>
+			event.type === "tool_result" && event.toolId.startsWith("acp-reasoning-"),
+	);
 }
 
 describe("AcpProvider — interface compliance", () => {
@@ -461,6 +485,65 @@ describe("AcpProvider — event mapping", () => {
 			{ type: "text_delta", text: "hello " },
 			{ type: "text_delta", text: "world" },
 		]);
+		session.cancel();
+	});
+
+	it("aggregates provider thought chunks into one Reasoning lifecycle", async () => {
+		const { events, session } = await run("thought-chunk");
+		expect(events.filter((event) => event.type === "summary")).toEqual([]);
+		const reasoning = events.filter(
+			(event) =>
+				(event.type === "tool_start" && event.name === "Reasoning") ||
+				(event.type === "tool_result" &&
+					event.toolId.startsWith("acp-reasoning-")),
+		);
+		expect(reasoning).toEqual([
+			expect.objectContaining({
+				type: "tool_start",
+				name: "Reasoning",
+			}),
+			expect.objectContaining({
+				type: "tool_result",
+				content: "private provider analysis",
+			}),
+		]);
+		const [reasoningStart, reasoningResult] = reasoning;
+		expect(reasoningStart?.type).toBe("tool_start");
+		expect(reasoningResult?.type).toBe("tool_result");
+		if (
+			reasoningStart?.type !== "tool_start" ||
+			reasoningResult?.type !== "tool_result"
+		) {
+			throw new Error("Expected one complete Reasoning tool lifecycle");
+		}
+		expect(reasoningStart.toolId).toBe(reasoningResult.toolId);
+		expect(events.filter((event) => event.type === "text_delta")).toEqual([
+			{ type: "text_delta", text: "visible answer" },
+		]);
+		session.cancel();
+	});
+
+	it("keeps Reasoning lifecycles prompt-scoped across a reused session", async () => {
+		const session = makeProvider().query(params());
+		const toolIds: string[] = [];
+		for (let prompt = 0; prompt < 2; prompt += 1) {
+			await session.send("thought-chunk");
+			const events: AgentEvent[] = [];
+			for await (const event of session) {
+				events.push(event);
+				if (event.type === "done") break;
+			}
+			const starts = reasoningStarts(events);
+			const results = reasoningResults(events);
+			expect(starts).toHaveLength(1);
+			expect(results).toHaveLength(1);
+			expect(results[0]).toMatchObject({
+				toolId: starts[0]?.toolId,
+				content: "private provider analysis",
+			});
+			toolIds.push(starts[0]?.toolId ?? "");
+		}
+		expect(new Set(toolIds).size).toBe(2);
 		session.cancel();
 	});
 
@@ -987,6 +1070,8 @@ describe("AcpProvider — session lifecycle", () => {
 		expect(events).not.toContainEqual(
 			expect.objectContaining({ toolId: "historical-tool" }),
 		);
+		expect(reasoningStarts(events)).toEqual([]);
+		expect(reasoningResults(events)).toEqual([]);
 		expect(events).toContainEqual({ type: "text_delta", text: "hello " });
 		session.cancel();
 	});
@@ -1021,6 +1106,43 @@ describe("AcpProvider — session lifecycle", () => {
 		expect(await session[Symbol.asyncIterator]().next()).toEqual({
 			done: true,
 			value: undefined,
+		});
+	});
+
+	it("settles active Reasoning before hard session cancellation", async () => {
+		const session = makeProvider({ timeouts: processTestTimeouts }).query(
+			params(),
+		);
+		await session.send("thought-ignore-cancel");
+		const iterator = session[Symbol.asyncIterator]();
+		expect((await iterator.next()).value).toMatchObject({
+			type: "session_start",
+		});
+		const start = (await iterator.next()).value;
+		expect(start).toMatchObject({ type: "tool_start", name: "Reasoning" });
+		if (!start || start.type !== "tool_start") {
+			throw new Error("Expected an active Reasoning lifecycle");
+		}
+
+		await session.cancelAndWait?.();
+		const tail: AgentEvent[] = [];
+		for (;;) {
+			const next = await iterator.next();
+			if (next.done) break;
+			tail.push(next.value);
+		}
+		expect(reasoningResults(tail)).toEqual([
+			expect.objectContaining({
+				toolId: start.toolId,
+				content: "partial cancelled thought",
+				isError: true,
+			}),
+		]);
+		expect(tail).toContainEqual({
+			type: "mcp_status",
+			servers: expect.arrayContaining([
+				{ name: "hlid", status: "pending", scope: "provider" },
+			]),
 		});
 	});
 
@@ -1089,7 +1211,12 @@ describe("AcpProvider — session lifecycle", () => {
 		]);
 		expect(early).toBe("waiting");
 		await session.interrupt?.();
-		expect((await pending).value).toMatchObject({
+		let terminal = await pending;
+		while (!terminal.done && terminal.value.type !== "done") {
+			terminal = await iterator.next();
+		}
+		if (terminal.done) throw new Error("Expected a cancelled turn result");
+		expect(terminal.value).toMatchObject({
 			type: "done",
 			stopReason: "cancelled",
 		});
@@ -1106,7 +1233,12 @@ describe("AcpProvider — session lifecycle", () => {
 			type: "session_start",
 		});
 		await session.interrupt?.();
-		expect((await iterator.next()).value).toMatchObject({
+		let terminal = await iterator.next();
+		while (!terminal.done && terminal.value.type !== "done") {
+			terminal = await iterator.next();
+		}
+		if (terminal.done) throw new Error("Expected a cancelled turn result");
+		expect(terminal.value).toMatchObject({
 			type: "done",
 			stopReason: "cancelled",
 		});
@@ -1118,6 +1250,72 @@ describe("AcpProvider — session lifecycle", () => {
 			if (event.type === "done") break;
 		}
 		expect(resumed).toContainEqual({ type: "text_delta", text: "code" });
+		session.cancel();
+	});
+
+	it("settles Reasoning and MCP state before replacing an interrupted runtime", async () => {
+		const session = behaviorProvider("reject-load", processTestTimeouts).query(
+			params(),
+		);
+		await session.send("use-hlid-mcp");
+		for await (const event of session) {
+			if (event.type === "done") break;
+		}
+		expect(await session.mcpServerStatus?.()).toContainEqual({
+			name: "hlid",
+			status: "connected",
+			scope: "provider",
+		});
+
+		await session.send("thought-ignore-cancel");
+		const iterator = session[Symbol.asyncIterator]();
+		const start = (await iterator.next()).value;
+		expect(start).toMatchObject({ type: "tool_start", name: "Reasoning" });
+		if (!start || start.type !== "tool_start") {
+			throw new Error("Expected an active Reasoning lifecycle");
+		}
+
+		await session.interrupt?.();
+		const interrupted: AgentEvent[] = [];
+		for (;;) {
+			const next = await iterator.next();
+			if (next.done) break;
+			interrupted.push(next.value);
+			if (next.value.type === "done") break;
+		}
+		expect(reasoningResults(interrupted)).toEqual([
+			expect.objectContaining({
+				toolId: start.toolId,
+				content: "partial cancelled thought",
+				isError: true,
+			}),
+		]);
+		expect(interrupted).toContainEqual({
+			type: "mcp_status",
+			servers: expect.arrayContaining([
+				{ name: "hlid", status: "pending", scope: "provider" },
+			]),
+		});
+		expect(await session.mcpServerStatus?.()).toContainEqual({
+			name: "hlid",
+			status: "pending",
+			scope: "provider",
+		});
+
+		await session.send("report-mode");
+		const recovered: AgentEvent[] = [];
+		for await (const event of session) {
+			recovered.push(event);
+			if (event.type === "done") break;
+		}
+		expect(reasoningStarts(recovered)).toEqual([]);
+		expect(reasoningResults(recovered)).toEqual([]);
+		expect(recovered).toContainEqual({ type: "text_delta", text: "code" });
+		expect(await session.mcpServerStatus?.()).toContainEqual({
+			name: "hlid",
+			status: "unknown",
+			scope: "provider",
+		});
 		session.cancel();
 	});
 
@@ -1285,7 +1483,7 @@ describe("AcpProvider — MCP status", () => {
 		session.cancel();
 	});
 
-	it("passes project MCP declarations to ACP and exposes honest configured status", async () => {
+	it("moves supported project MCP declarations out of pending after setup", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "hlid-acp-mcp-"));
 		try {
 			writeFileSync(
@@ -1294,13 +1492,20 @@ describe("AcpProvider — MCP status", () => {
 					mcpServers: {
 						local: { command: "bun", args: ["server.ts"], env: { TOKEN: "x" } },
 						remote: { type: "http", url: "https://example.com/mcp" },
+						disabled: { command: "bun", args: ["disabled.ts"] },
 					},
 				}),
+			);
+			mkdirSync(join(cwd, ".claude"));
+			writeFileSync(
+				join(cwd, ".claude", "settings.local.json"),
+				JSON.stringify({ disabledMcpjsonServers: ["disabled"] }),
 			);
 			const session = makeProvider().query(params("allow", { cwd }));
 			expect(await session.mcpServerStatus?.()).toEqual([
 				{ name: "local", status: "pending", scope: "project" },
 				{ name: "remote", status: "pending", scope: "project" },
+				{ name: "disabled", status: "disabled", scope: "project" },
 			]);
 			await session.send("report-mcp");
 			const events: AgentEvent[] = [];
@@ -1309,6 +1514,13 @@ describe("AcpProvider — MCP status", () => {
 				if (event.type === "done") break;
 			}
 			expect(events).toContainEqual({ type: "text_delta", text: "3" });
+			expect(await session.mcpServerStatus?.()).toEqual(
+				expect.arrayContaining([
+					{ name: "local", status: "unknown", scope: "project" },
+					{ name: "remote", status: "unknown", scope: "project" },
+					{ name: "disabled", status: "disabled", scope: "project" },
+				]),
+			);
 			session.cancel();
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
@@ -1321,12 +1533,12 @@ describe("AcpProvider — MCP status", () => {
 		expect(events).toContainEqual({ type: "text_delta", text: "2" });
 		expect(await session.mcpServerStatus?.()).toContainEqual({
 			name: "hlid",
-			status: "pending",
+			status: "unknown",
 			scope: "provider",
 		});
 		expect(await session.mcpServerStatus?.()).toContainEqual({
 			name: "hlid_obsidian",
-			status: "pending",
+			status: "unknown",
 			scope: "provider",
 		});
 		session.cancel();
@@ -1340,7 +1552,73 @@ describe("AcpProvider — MCP status", () => {
 		expect(events).toContainEqual({ type: "text_delta", text: "1" });
 		expect(await session.mcpServerStatus?.()).toContainEqual({
 			name: "hlid",
-			status: "pending",
+			status: "unknown",
+			scope: "provider",
+		});
+		session.cancel();
+	});
+
+	it("promotes an internal Hlid MCP only after an exact tool start", async () => {
+		const { events, session } = await run("use-hlid-mcp");
+		expect(events).toContainEqual({
+			type: "mcp_status",
+			servers: expect.arrayContaining([
+				{ name: "hlid", status: "connected", scope: "provider" },
+			]),
+		});
+		expect(await session.mcpServerStatus?.()).toContainEqual({
+			name: "hlid",
+			status: "connected",
+			scope: "provider",
+		});
+		session.cancel();
+	});
+
+	it("keeps other internal MCPs unreported when one is proven connected", async () => {
+		getObsidianCliStatus.mockResolvedValueOnce({ installed: true });
+		const { events, session } = await run("use-obsidian-mcp");
+		expect(events).toContainEqual({
+			type: "mcp_status",
+			servers: expect.arrayContaining([
+				{
+					name: "hlid_obsidian",
+					status: "connected",
+					scope: "provider",
+				},
+				{ name: "hlid", status: "unknown", scope: "provider" },
+			]),
+		});
+		session.cancel();
+	});
+
+	it("promotes an internal MCP when its exact tool name arrives on a later update", async () => {
+		getObsidianCliStatus.mockResolvedValueOnce({ installed: true });
+		const { events, session } = await run("use-obsidian-mcp-late-name");
+		expect(events).toContainEqual({
+			type: "mcp_status",
+			servers: expect.arrayContaining([
+				{
+					name: "hlid_obsidian",
+					status: "connected",
+					scope: "provider",
+				},
+			]),
+		});
+		expect(await session.mcpServerStatus?.()).toContainEqual({
+			name: "hlid_obsidian",
+			status: "connected",
+			scope: "provider",
+		});
+		session.cancel();
+	});
+
+	it("does not infer MCP connectivity from a similar tool name", async () => {
+		getObsidianCliStatus.mockResolvedValueOnce({ installed: true });
+		const { events, session } = await run("use-similar-mcp-name");
+		expect(events.filter((event) => event.type === "mcp_status")).toEqual([]);
+		expect(await session.mcpServerStatus?.()).toContainEqual({
+			name: "hlid_obsidian",
+			status: "unknown",
 			scope: "provider",
 		});
 		session.cancel();
@@ -1382,7 +1660,7 @@ describe("AcpProvider — MCP status", () => {
 				});
 				expect(await session.mcpServerStatus?.()).toEqual(
 					expect.arrayContaining([
-						expect.objectContaining({ name: "local", status: "pending" }),
+						expect.objectContaining({ name: "local", status: "unknown" }),
 						expect.objectContaining({
 							name: "http",
 							status: "failed",
@@ -1434,6 +1712,12 @@ describe("AcpProvider — MCP status", () => {
 					mcpTransports: ["stdio", "http", "sse"],
 				}),
 			});
+			expect(await session.mcpServerStatus?.()).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ name: "http", status: "unknown" }),
+					expect.objectContaining({ name: "sse", status: "unknown" }),
+				]),
+			);
 			session.cancel();
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
@@ -1515,6 +1799,39 @@ describe("AcpProvider — model catalog", () => {
 			expect.objectContaining({ type: "done", stopReason: "cancelled" }),
 		);
 		expect(session.sessionConfig?.()).toBeNull();
+		session.cancel();
+	});
+
+	it("settles active Reasoning before a model-fault runtime retirement", async () => {
+		const provider = makeProvider({
+			timeouts: processTestTimeouts,
+			modelFilter: { mode: "only", models: ["fake-smart"] },
+		});
+		const session = provider.query(params());
+
+		await session.send("thought-exclude-model-active");
+		const events: AgentEvent[] = [];
+		for await (const event of session) {
+			events.push(event);
+			if (event.type === "done") break;
+		}
+		const starts = reasoningStarts(events);
+		const results = reasoningResults(events);
+		expect(starts).toHaveLength(1);
+		expect(results).toEqual([
+			expect.objectContaining({
+				toolId: starts[0]?.toolId,
+				content: "partial retired thought",
+				isError: true,
+			}),
+		]);
+		expect(events.indexOf(results[0])).toBeLessThan(
+			events.findIndex((event) => event.type === "done"),
+		);
+		expect(events).not.toContainEqual({
+			type: "text_delta",
+			text: "post-fault-output",
+		});
 		session.cancel();
 	});
 
@@ -1845,6 +2162,32 @@ describe("AcpProvider — native session forking", () => {
 });
 
 describe("AcpProvider — error handling", () => {
+	it("settles active Reasoning before surfacing a prompt transport error", async () => {
+		const session = makeProvider().query(params());
+		await session.send("thought-transport-error");
+		const events: AgentEvent[] = [];
+		let observedError: unknown;
+		try {
+			for await (const event of session) events.push(event);
+		} catch (error) {
+			observedError = error;
+		}
+		const starts = reasoningStarts(events);
+		expect(starts).toHaveLength(1);
+		expect(reasoningResults(events)).toEqual([
+			expect.objectContaining({
+				toolId: starts[0]?.toolId,
+				content: "partial transport thought",
+				isError: true,
+			}),
+		]);
+		expect(observedError).toBeInstanceOf(Error);
+		expect(String(observedError)).toMatch(
+			/ACP (connection closed|agent exited)/,
+		);
+		session.cancel();
+	});
+
 	it.each([
 		[
 			"initialize",
