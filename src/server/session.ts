@@ -11131,8 +11131,22 @@ export class SessionManager {
 			eligible,
 			permissionProfile,
 			purposeBuilt,
-			key: `${options.providerId}|${options.sessionId ?? "ephemeral"}|${this.agentCwd ?? ""}${suffix}`,
+			key: `${options.providerId}|${options.sessionId ?? "ephemeral"}|${this.agentSessionContextKey()}${suffix}`,
 		};
+	}
+
+	/**
+	 * Keep the vault singleton and an explicit copy of its path on one provider
+	 * runtime. A new chat can clear and then restore that path across its first
+	 * restore/config-sync boundary without changing the process cwd. Preserve a
+	 * distinct identity when a configured agent there changes runtime behavior.
+	 */
+	private agentSessionContextKey(): string {
+		if (!this.agentCwd) return "";
+		const agentKey = declaredPathKey(this.agentCwd);
+		if (agentKey !== declaredPathKey(this.vaultPath)) return agentKey;
+		const agentSettings = this.agentSettingsMap.get(agentMapKey(this.agentCwd));
+		return this.agentMode === "cwd" && !agentSettings ? "" : agentKey;
 	}
 
 	private async prepareCodexPermissionProfileRuntimeForTurn(options: {

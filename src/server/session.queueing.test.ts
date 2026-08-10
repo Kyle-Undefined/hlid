@@ -1711,6 +1711,64 @@ describe("SessionManager — Slice B AgentSession reuse", () => {
 		ctl.closeStream();
 	});
 
+	it("reuses the provider runtime when config sync restores the vault path", async () => {
+		const config = makeConfig();
+		const ctl = makeLongLivedProvider();
+		try {
+			const sm = new SessionManager(
+				config,
+				makeProviders(ctl.provider),
+				config.vault.path,
+			);
+
+			await sm.runQuery("first", () => {}, {
+				sessionId: "sess-vault-alias",
+			});
+			expect(sm.getAgentCwd()).toBeUndefined();
+			sm.syncConfig(config);
+			expect(sm.getAgentCwd()).toBe(config.vault.path);
+			await sm.runQuery("second", () => {}, {
+				sessionId: "sess-vault-alias",
+			});
+
+			expect(ctl.getQueryCallCount()).toBe(1);
+		} finally {
+			ctl.closeStream();
+		}
+	});
+
+	it("rebuilds the provider runtime when the restored vault path has agent settings", async () => {
+		const config = makeConfig();
+		config.agents = [
+			{
+				path: config.vault.path,
+				mode: "cwd",
+				provider: "claude",
+				model: "agent-specific-model",
+			},
+		];
+		const ctl = makeLongLivedProvider();
+		try {
+			const sm = new SessionManager(
+				config,
+				makeProviders(ctl.provider),
+				config.vault.path,
+			);
+
+			await sm.runQuery("first", () => {}, {
+				sessionId: "sess-vault-agent",
+			});
+			sm.syncConfig(config);
+			await sm.runQuery("second", () => {}, {
+				sessionId: "sess-vault-agent",
+			});
+
+			expect(ctl.getQueryCallCount()).toBe(2);
+		} finally {
+			ctl.closeStream();
+		}
+	});
+
 	it("switching to a different sessionId rebuilds the AgentSession", async () => {
 		const ctl = makeLongLivedProvider();
 		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
