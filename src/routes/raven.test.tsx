@@ -658,6 +658,16 @@ function configureProviderRejectionSession(): void {
 	};
 }
 
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+		resolve = resolvePromise;
+		reject = rejectPromise;
+	});
+	return { promise, resolve, reject };
+}
+
 describe("Raven hydration", () => {
 	it("hydrates cached live-session snapshots without entering a render loop", async () => {
 		state.loaderData = {
@@ -2484,7 +2494,7 @@ describe("Raven composed submission behavior", () => {
 		});
 	});
 
-	it("preserves and can explicitly reset a configured ACP model without a catalog", async () => {
+	it("switches back to an ACP provider on its durable default sentinel", async () => {
 		state.model = "";
 		state.effort = "";
 		state.loaderData = {
@@ -2530,7 +2540,7 @@ describe("Raven composed submission behavior", () => {
 		render(<ChatPage />);
 		fireEvent.click(
 			screen.getByRole("button", {
-				name: /OpenCode.*anthropic\/sonnet-4-6/i,
+				name: /OpenCode.*ask/i,
 			}),
 		);
 		fireEvent.click(screen.getByRole("button", { name: "Claude" }));
@@ -2540,15 +2550,11 @@ describe("Raven composed submission behavior", () => {
 			);
 		}
 		fireEvent.click(screen.getByRole("button", { name: "OpenCode" }));
-		await waitFor(() =>
-			expect(state.send).toHaveBeenCalledWith({
-				type: "set_provider",
-				provider: "acp:opencode",
-				model: "anthropic/claude-sonnet-4-6",
-				permission_mode: "default",
-				session_id: expect.any(String),
-			}),
-		);
+		expect(state.send).toHaveBeenCalledWith({
+			type: "set_provider",
+			provider: "acp:opencode",
+			session_id: expect.any(String),
+		});
 
 		fireEvent.click(screen.getByRole("button", { name: "Provider default" }));
 		expect(state.send).toHaveBeenCalledWith({
@@ -2563,6 +2569,7 @@ describe("Raven composed submission behavior", () => {
 	it("replaces stale ACP models with a live catalog for a new session", async () => {
 		state.model = "stale";
 		state.effort = "";
+		const refresh = deferred<Array<Record<string, unknown>>>();
 		const freshProviders = [
 			{
 				id: "acp:opencode",
@@ -2573,7 +2580,9 @@ describe("Raven composed submission behavior", () => {
 				permissionModes: [{ value: "default", label: "Ask" }],
 			},
 		];
-		vi.mocked(getProvidersFn).mockResolvedValue(freshProviders as never);
+		vi.mocked(getProvidersFn).mockImplementation(
+			() => refresh.promise as never,
+		);
 		state.loaderData = {
 			...state.loaderData,
 			config: {
@@ -2604,16 +2613,36 @@ describe("Raven composed submission behavior", () => {
 				},
 			}),
 		);
+		const pendingBadge = screen.getByRole("button", { name: /OpenCode.*Ask/i });
+		fireEvent.click(pendingBadge);
+		expect(
+			screen.getByRole("button", { name: "Provider default" }),
+		).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Stale" })).toBeNull();
+		fireEvent.change(screen.getByRole("combobox"), {
+			target: { value: "use the provider default" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Send" }));
+		const pendingChat = state.send.mock.calls
+			.map(([message]) => message as { type?: string; model?: string })
+			.find((message) => message.type === "chat");
+		expect(pendingChat).toBeTruthy();
+		expect(pendingChat).not.toHaveProperty("model");
+
+		await act(async () => refresh.resolve(freshProviders));
 		const badge = await screen.findByRole("button", {
 			name: /OpenCode.*Allowed.*Ask/i,
 		});
-		fireEvent.click(badge);
+		if (!screen.queryByRole("button", { name: /Allowed/ })) {
+			fireEvent.click(badge);
+		}
 		expect(screen.getByRole("button", { name: /Allowed/ })).toBeTruthy();
 		expect(screen.queryByRole("button", { name: "Stale" })).toBeNull();
 	});
 
-	it("refreshes an ACP provider before selecting its default model", async () => {
+	it("switches to ACP immediately on provider default while models refresh", async () => {
 		state.model = "claude-sonnet-4-6";
+		const refresh = deferred<Array<Record<string, unknown>>>();
 		const freshProviders = [
 			{
 				id: "claude",
@@ -2632,7 +2661,9 @@ describe("Raven composed submission behavior", () => {
 				permissionModes: [{ value: "default", label: "Ask" }],
 			},
 		];
-		vi.mocked(getProvidersFn).mockResolvedValue(freshProviders as never);
+		vi.mocked(getProvidersFn).mockImplementation(
+			() => refresh.promise as never,
+		);
 		state.loaderData = {
 			...state.loaderData,
 			sessionPersisted: false,
@@ -2652,24 +2683,157 @@ describe("Raven composed submission behavior", () => {
 		);
 		fireEvent.click(screen.getByRole("button", { name: "OpenCode" }));
 
+		expect(state.send).toHaveBeenCalledWith({
+			type: "set_provider",
+			provider: "acp:opencode",
+			session_id: expect.any(String),
+		});
 		expect(state.send).not.toHaveBeenCalledWith(
-			expect.objectContaining({ type: "set_provider", model: "stale" }),
+			expect.objectContaining({
+				type: "set_provider",
+				model: expect.anything(),
+			}),
 		);
-		await waitFor(() =>
-			expect(state.send).toHaveBeenCalledWith(
-				expect.objectContaining({
-					type: "set_provider",
-					provider: "acp:opencode",
-					model: "allowed",
-				}),
+		expect(
+			screen.getByRole("button", { name: "Provider default" }),
+		).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Stale" })).toBeNull();
+
+		await act(async () => refresh.resolve(freshProviders));
+		expect(await screen.findByRole("button", { name: /Allowed/ })).toBeTruthy();
+		expect(
+			state.send.mock.calls.filter(
+				([message]) => (message as { type?: string }).type === "set_provider",
 			),
-		);
+		).toHaveLength(1);
 		expect(state.send).not.toHaveBeenCalledWith(
-			expect.objectContaining({ type: "set_provider", model: "stale" }),
+			expect.objectContaining({ type: "set_model" }),
 		);
+		expect(
+			screen.getByRole("button", { name: "Provider default" }).className,
+		).toContain("text-primary");
 	});
 
-	it("does not select an ACP provider from a stale refresh result", async () => {
+	it("preserves a restored ACP selection while explicit options refresh", async () => {
+		state.model = "fake-smart";
+		state.effort = "medium";
+		const refresh = deferred<Array<Record<string, unknown>>>();
+		vi.mocked(getProvidersFn).mockImplementation(
+			() => refresh.promise as never,
+		);
+		const provider = {
+			id: "acp:opencode",
+			label: "OpenCode",
+			available: true,
+			models: [
+				{ value: "fake-fast", label: "Fast" },
+				{ value: "fake-smart", label: "Smart" },
+			],
+			effortLevels: [{ value: "medium", label: "Medium" }],
+			permissionModes: [{ value: "default", label: "Ask" }],
+		};
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				vault_provider: "acp:opencode",
+				acp_agents: [{ id: "opencode" }],
+			},
+			existingSessionId: "saved-acp",
+			isExplicitSession: true,
+			sessionPersisted: true,
+			sessionModel: "fake-smart",
+			sessionProviderId: "acp:opencode",
+			sessionEffort: "medium",
+			sessionPermissionMode: "default",
+			providers: [provider],
+		};
+
+		render(<ChatPage />);
+		const badge = screen.getByRole("button", {
+			name: /OpenCode.*Smart.*Medium.*Ask/i,
+		});
+		fireEvent.click(badge);
+		expect(
+			screen.getByRole("button", { name: "Provider default" }),
+		).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Smart" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Fast" })).toBeNull();
+
+		await act(async () =>
+			refresh.resolve([
+				{
+					...provider,
+					modelCatalogRefresh: { status: "current", source: "live" },
+				},
+			]),
+		);
+		expect(await screen.findByRole("button", { name: "Smart" })).toBeTruthy();
+	});
+
+	it("does not let a late ACP refresh undo a newer provider selection", async () => {
+		state.model = "claude-sonnet-4-6";
+		const refresh = deferred<Array<Record<string, unknown>>>();
+		const providers = [
+			{
+				id: "claude",
+				label: "Claude",
+				available: true,
+				models: [
+					{
+						value: "claude-sonnet-4-6",
+						label: "Sonnet 4.6",
+						isDefault: true,
+					},
+				],
+			},
+			{
+				id: "acp:opencode",
+				label: "OpenCode",
+				available: true,
+				models: [{ value: "stale", label: "Stale", isDefault: true }],
+			},
+		];
+		vi.mocked(getProvidersFn).mockImplementation(
+			() => refresh.promise as never,
+		);
+		state.loaderData = {
+			...state.loaderData,
+			providers,
+		};
+
+		render(<ChatPage />);
+		fireEvent.click(
+			screen.getByRole("button", { name: /Claude.*Sonnet 4\.6/i }),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "OpenCode" }));
+		fireEvent.click(screen.getByRole("button", { name: "Claude" }));
+
+		await act(async () =>
+			refresh.resolve([
+				providers[0] as Record<string, unknown>,
+				{
+					...providers[1],
+					models: [{ value: "allowed", label: "Allowed", isDefault: true }],
+					modelCatalogRefresh: { status: "current", source: "live" },
+				},
+			]),
+		);
+
+		expect(
+			screen.getByRole("button", { name: /Claude.*Sonnet 4\.6/i }),
+		).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Allowed" })).toBeNull();
+		const providerChanges = state.send.mock.calls
+			.map(([message]) => message as { type?: string; provider?: string })
+			.filter((message) => message.type === "set_provider");
+		expect(providerChanges.map((message) => message.provider)).toEqual([
+			"acp:opencode",
+			"claude",
+		]);
+	});
+
+	it("keeps ACP selected on provider default when refresh returns stale", async () => {
 		state.model = "claude-sonnet-4-6";
 		const initialProviders = [
 			{
@@ -2717,15 +2881,18 @@ describe("Raven composed submission behavior", () => {
 			}),
 		);
 		await act(async () => {});
-		expect(state.send).not.toHaveBeenCalledWith(
-			expect.objectContaining({
-				type: "set_provider",
-				provider: "acp:opencode",
-			}),
-		);
+		expect(state.send).toHaveBeenCalledWith({
+			type: "set_provider",
+			provider: "acp:opencode",
+			session_id: expect.any(String),
+		});
+		expect(
+			screen.getByRole("button", { name: "Provider default" }),
+		).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Stale" })).toBeNull();
 	});
 
-	it("does not select an ACP provider when a later live refresh falls back", async () => {
+	it("keeps ACP selected on provider default when live refresh fails", async () => {
 		state.model = "claude-sonnet-4-6";
 		const cachedProviders = [
 			{
@@ -2771,12 +2938,15 @@ describe("Raven composed submission behavior", () => {
 
 		await waitFor(() => expect(getProvidersFn).toHaveBeenCalledTimes(2));
 		await act(async () => {});
-		expect(state.send).not.toHaveBeenCalledWith(
-			expect.objectContaining({
-				type: "set_provider",
-				provider: "acp:opencode",
-			}),
-		);
+		expect(state.send).toHaveBeenCalledWith({
+			type: "set_provider",
+			provider: "acp:opencode",
+			session_id: expect.any(String),
+		});
+		expect(
+			screen.getByRole("button", { name: "Provider default" }),
+		).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Stale" })).toBeNull();
 	});
 
 	it("drops an ACP selection refresh after the active workspace context changes", async () => {
@@ -2866,12 +3036,15 @@ describe("Raven composed submission behavior", () => {
 			);
 		});
 
-		expect(state.send).not.toHaveBeenCalledWith(
-			expect.objectContaining({
-				type: "set_provider",
-				provider: "acp:opencode",
-			}),
-		);
+		expect(
+			state.send.mock.calls.filter(
+				([message]) =>
+					(message as { type?: string; provider?: string }).type ===
+						"set_provider" &&
+					(message as { provider?: string }).provider === "acp:opencode",
+			),
+		).toHaveLength(1);
+		expect(screen.queryByRole("button", { name: "Allowed" })).toBeNull();
 	});
 
 	it("refreshes the workspace ACP provider selected through AgentSelect", async () => {
@@ -3134,6 +3307,12 @@ describe("Raven composed submission behavior", () => {
 			).not.toContain("text-primary"),
 		);
 
+		vi.mocked(getProvidersFn).mockResolvedValue([
+			{
+				...(initialProviders as Array<Record<string, unknown>>)[0],
+				modelCatalogRefresh: { status: "current", source: "live" },
+			},
+		] as never);
 		state.loaderData = {
 			...state.loaderData,
 			existingSessionId: "other-session",
@@ -5501,7 +5680,7 @@ describe("raven route loader", () => {
 		expect(getLiveSessionsFn).not.toHaveBeenCalled();
 	});
 
-	it("live-refreshes the configured ACP provider for a rowless session", async () => {
+	it("uses the process-free provider snapshot for a rowless ACP session", async () => {
 		vi.mocked(getConfig).mockResolvedValue(
 			makeLoaderConfig({
 				vault_provider: "acp:opencode",
@@ -5523,12 +5702,39 @@ describe("raven route loader", () => {
 		expect(data.sessionPersisted).toBe(false);
 		expect(data.providers).toEqual(filteredProviders);
 		expect(getProvidersFn).toHaveBeenCalledWith({
-			data: {
-				refresh: true,
-				refreshProviderId: "acp:opencode",
-				discoveryCwd: "/vault",
-			},
+			data: { preferCachedModels: true, discoveryCwd: "/vault" },
 		});
+	});
+
+	it("does not join an overlapping ACP refresh during route navigation", async () => {
+		const liveRefresh = deferred<Array<Record<string, unknown>>>();
+		const navigationRead = deferred<Array<Record<string, unknown>>>();
+		vi.mocked(getProvidersFn)
+			.mockImplementationOnce(() => liveRefresh.promise as never)
+			.mockImplementationOnce(() => navigationRead.promise as never);
+		const refreshing = refreshRavenProvider("acp:opencode", "/vault");
+
+		const loading = route.loader({ deps: { session: "overlap-session" } });
+		await waitFor(() => expect(getProvidersFn).toHaveBeenCalledTimes(2));
+		expect(getProvidersFn).toHaveBeenNthCalledWith(2, {
+			data: { preferCachedModels: true, discoveryCwd: "/vault" },
+		});
+
+		const cachedProviders = [
+			{ id: "acp:opencode", label: "OpenCode", available: true },
+		];
+		navigationRead.resolve(cachedProviders);
+		const data = await loading;
+		expect(data.providers).toEqual(cachedProviders);
+
+		liveRefresh.resolve([
+			{
+				...cachedProviders[0],
+				models: [{ value: "allowed", label: "Allowed" }],
+				modelCatalogRefresh: { status: "current", source: "live" },
+			},
+		]);
+		await refreshing;
 	});
 
 	it("keeps cached provider navigation for a persisted ACP session", async () => {

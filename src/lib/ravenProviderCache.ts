@@ -31,6 +31,7 @@ type RavenSessionRefresh = {
 };
 
 const catalogReads = new Map<string, RavenProviderRead>();
+const navigationReads = new Map<string, RavenProviderRead>();
 const catalogRefreshes = new Map<string, RavenProviderRefresh>();
 const catalogCaches = new Map<string, RavenProviderCacheEntry>();
 const catalogGenerations = new Map<string, number>();
@@ -178,6 +179,58 @@ export function loadRavenProviders(
 }
 
 /**
+ * Read the process-free provider snapshot for route navigation without joining
+ * an in-flight live refresh. Agent selection can start ACP discovery before the
+ * next route loader reaches its provider read; joining that promise would put
+ * the transient provider process back on Raven's pending-navigation path.
+ *
+ * A still-valid prior snapshot is safe to return immediately. When no prior
+ * snapshot is available, share a separate cached-model read that never writes
+ * into the live-refresh cache, so a late navigation response cannot overwrite
+ * newer live metadata.
+ */
+export function loadRavenProvidersForNavigation(
+	discoveryCwd?: string,
+): Promise<RavenProviders> {
+	const now = Date.now();
+	const revision = getDataRevisionSnapshot().providers;
+	const key = workspaceKey(discoveryCwd);
+	const generation = currentGeneration(key);
+	const catalogRefresh = catalogRefreshes.get(key);
+	if (catalogRefresh?.generation !== generation) {
+		return loadRavenProviders(discoveryCwd);
+	}
+
+	const prior = catalogCaches.get(key);
+	if (
+		prior !== undefined &&
+		prior.revision >= revision &&
+		now < prior.expiresAt
+	) {
+		return Promise.resolve(prior.value);
+	}
+
+	const existing = navigationReads.get(key);
+	if (existing?.revision === revision && existing.generation === generation) {
+		return existing.promise;
+	}
+
+	const entry = { revision, generation } as RavenProviderRead;
+	entry.promise = Promise.resolve(
+		getProvidersFn({
+			data: {
+				preferCachedModels: true,
+				...(discoveryCwd ? { discoveryCwd } : {}),
+			},
+		}),
+	).finally(() => {
+		if (navigationReads.get(key) === entry) navigationReads.delete(key);
+	});
+	rememberBounded(navigationReads, key, entry);
+	return entry.promise;
+}
+
+/**
  * Force one provider's workspace-scoped catalog to be rediscovered. New Raven
  * sessions use this for ACP providers so an external agent config or executable
  * update cannot remain hidden behind the navigation cache. Older cached reads
@@ -275,10 +328,10 @@ export function refreshRavenProvider(
 }
 
 /**
- * Refresh an ACP catalog at most once for one unsaved Raven session, provider,
- * and workspace. Route loaders and the mounted composer share this promise so
- * direct new-session links, agent changes, and client-generated sessions all
- * converge on the same live inspection.
+ * Refresh an ACP catalog at most once for one Raven session, provider, and
+ * workspace revision. Mounted composers share this promise across rerenders so
+ * new-session links, agent changes, restored chats, and client-generated
+ * sessions all converge on the same live inspection.
  */
 export function refreshRavenProviderForSession(
 	sessionId: string,
@@ -334,6 +387,7 @@ export function refreshRavenProviderForSession(
 /** @internal */
 export function resetRavenProviderCacheForTesting(): void {
 	catalogReads.clear();
+	navigationReads.clear();
 	catalogRefreshes.clear();
 	catalogCaches.clear();
 	catalogGenerations.clear();
