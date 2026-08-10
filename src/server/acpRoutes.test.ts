@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HlidConfigSchema } from "../config";
 import { createAcpRouteHandler } from "./acpRoutes";
+import { OpenCodeConfigOverlayError } from "./acpRuntime";
 
 const enabledAgent = {
 	id: "opencode",
@@ -20,11 +21,15 @@ const enabledAgent = {
 const catalog = vi.fn();
 const loadConfig = vi.fn();
 const inspectAgent = vi.fn();
+const inspectModels = vi.fn();
+const logModelDiscoveryFailure = vi.fn();
 const syncRuntime = vi.fn();
 const handle = createAcpRouteHandler({
 	registry: { catalog },
 	loadConfig,
 	inspectAgent,
+	inspectModels,
+	logModelDiscoveryFailure,
 	syncRuntime,
 });
 
@@ -50,6 +55,10 @@ beforeEach(() => {
 		authMethods: [{ id: "login", name: "Login" }],
 		agentInfo: { name: "OpenCode", version: "1" },
 	});
+	inspectModels.mockResolvedValue([
+		{ value: "opencode/model-a", label: "Model A", isDefault: true },
+		{ value: "opencode/model-b", label: "Model B" },
+	]);
 	syncRuntime.mockResolvedValue({
 		added: ["acp:opencode"],
 		removed: [],
@@ -58,6 +67,179 @@ beforeEach(() => {
 });
 
 describe("ACP internal HTTP routes", () => {
+	it("preflights model filters against the resolved registry environment", async () => {
+		const filteredConfig = HlidConfigSchema.parse({
+			acp_agents: [
+				{
+					id: "opencode",
+					model_filter: {
+						mode: "only",
+						models: ["opencode/model-a"],
+					},
+				},
+			],
+		});
+		catalog.mockResolvedValueOnce([
+			{
+				...enabledAgent,
+				env: { OPENCODE_CONFIG_CONTENT: "{" },
+			},
+		]);
+
+		const conflict = await handle(
+			new URL("http://localhost/acp/preflight"),
+			request("/acp/preflight", "POST", filteredConfig),
+		);
+
+		expect(conflict?.status).toBe(409);
+		expect(await conflict?.json()).toEqual({
+			error: expect.stringContaining("OPENCODE_CONFIG_CONTENT is invalid"),
+		});
+
+		catalog.mockResolvedValueOnce([enabledAgent]);
+		const accepted = await handle(
+			new URL("http://localhost/acp/preflight"),
+			request("/acp/preflight", "POST", filteredConfig),
+		);
+		expect(accepted?.status).toBe(200);
+		expect(await accepted?.json()).toEqual({ ok: true });
+	});
+
+	it("discovers the raw ACP model catalog without Hlid's visibility overlay", async () => {
+		const inlineConfig = '{"instructions":["existing.md"]}';
+		loadConfig.mockReturnValueOnce(
+			HlidConfigSchema.parse({
+				vault: { name: "Vault", path: "/vault" },
+				acp_agents: [
+					{
+						id: "opencode",
+						env: { OPENCODE_CONFIG_CONTENT: inlineConfig },
+						model_filter: {
+							mode: "only",
+							models: ["opencode/model-a"],
+						},
+					},
+				],
+			}),
+		);
+		catalog.mockResolvedValueOnce([
+			{
+				...enabledAgent,
+				env: { OPENCODE_CONFIG_CONTENT: inlineConfig },
+			},
+		]);
+
+		const response = await handle(
+			new URL("http://localhost/acp/models?id=opencode"),
+			request("/acp/models?id=opencode"),
+		);
+
+		expect(response?.status).toBe(200);
+		expect(loadConfig).toHaveBeenCalledOnce();
+		expect(inspectModels).toHaveBeenCalledWith(
+			expect.objectContaining({
+				id: "acp:opencode",
+				command: "opencode",
+				args: ["acp"],
+				env: { OPENCODE_CONFIG_CONTENT: inlineConfig },
+				discoveryCwd: "/vault",
+			}),
+			"/vault",
+		);
+		expect(await response?.json()).toEqual({
+			models: [
+				{
+					value: "opencode/model-a",
+					label: "Model A",
+					isDefault: true,
+				},
+				{ value: "opencode/model-b", label: "Model B" },
+			],
+		});
+	});
+
+	it("bounds raw model catalogs before serializing provider output", async () => {
+		inspectModels.mockResolvedValueOnce(
+			Array.from({ length: 2_001 }, (_, index) => ({
+				value: `opencode/model-${index}`,
+				label: `Model ${index}`,
+			})),
+		);
+
+		const tooMany = await handle(
+			new URL("http://localhost/acp/models?id=opencode"),
+			request("/acp/models?id=opencode"),
+		);
+		expect(tooMany?.status).toBe(502);
+		expect(await tooMany?.json()).toEqual({
+			error: "ACP model discovery failed",
+		});
+
+		inspectModels.mockResolvedValueOnce([
+			{ value: `opencode/${"x".repeat(512)}`, label: "Oversized" },
+		]);
+		const oversized = await handle(
+			new URL("http://localhost/acp/models?id=opencode"),
+			request("/acp/models?id=opencode"),
+		);
+		expect(oversized?.status).toBe(502);
+		expect(logModelDiscoveryFailure).toHaveBeenCalledTimes(2);
+	});
+
+	it("redacts provider diagnostics when raw model discovery fails", async () => {
+		const secret = "super-secret-config-value";
+		inspectModels.mockRejectedValueOnce(
+			new Error(`OPENCODE_CONFIG_CONTENT=${secret}`),
+		);
+
+		const response = await handle(
+			new URL("http://localhost/acp/models?id=opencode"),
+			request("/acp/models?id=opencode"),
+		);
+		const body = JSON.stringify(await response?.json());
+		const logs = JSON.stringify(logModelDiscoveryFailure.mock.calls);
+
+		expect(response?.status).toBe(502);
+		expect(body).toBe('{"error":"ACP model discovery failed"}');
+		expect(body).not.toContain(secret);
+		expect(logs).not.toContain(secret);
+		expect(logs).not.toContain("OPENCODE_CONFIG_CONTENT");
+	});
+
+	it("validates model discovery before starting an ACP inspection", async () => {
+		expect(
+			(
+				await handle(
+					new URL("http://localhost/acp/models"),
+					request("/acp/models"),
+				)
+			)?.status,
+		).toBe(400);
+
+		catalog.mockResolvedValueOnce([]);
+		expect(
+			(
+				await handle(
+					new URL("http://localhost/acp/models?id=missing"),
+					request("/acp/models?id=missing"),
+				)
+			)?.status,
+		).toBe(404);
+
+		catalog.mockResolvedValueOnce([
+			{ ...enabledAgent, available: false, unavailableReason: "not installed" },
+		]);
+		expect(
+			(
+				await handle(
+					new URL("http://localhost/acp/models?id=opencode"),
+					request("/acp/models?id=opencode"),
+				)
+			)?.status,
+		).toBe(409);
+		expect(inspectModels).not.toHaveBeenCalled();
+	});
+
 	it("lists the registry with an explicit refresh flag", async () => {
 		const response = await handle(
 			new URL("http://localhost/acp/registry?refresh=1"),
@@ -70,7 +252,9 @@ describe("ACP internal HTTP routes", () => {
 			true,
 		);
 		expect(syncRuntime).toHaveBeenCalledOnce();
-		expect(await response?.json()).toEqual({ agents: [enabledAgent] });
+		expect(await response?.json()).toEqual({
+			agents: [{ ...enabledAgent, env: {} }],
+		});
 	});
 
 	it("validates authentication requests before inspecting an agent", async () => {
@@ -132,6 +316,67 @@ describe("ACP internal HTTP routes", () => {
 		});
 	});
 
+	it("uses the effective OpenCode model filter during authentication", async () => {
+		loadConfig.mockReturnValueOnce(
+			HlidConfigSchema.parse({
+				acp_agents: [
+					{
+						id: "opencode",
+						env: {
+							OPENCODE_CONFIG_CONTENT: '{"instructions":["existing.md"]}',
+						},
+						model_filter: {
+							mode: "only",
+							models: ["opencode/model-a"],
+						},
+					},
+				],
+			}),
+		);
+
+		const response = await handle(
+			new URL("http://localhost/acp/authenticate"),
+			request("/acp/authenticate", "POST", { id: "opencode" }),
+		);
+
+		expect(response?.status).toBe(200);
+		const options = inspectAgent.mock.calls[0]?.[0];
+		const content = JSON.parse(options.env.OPENCODE_CONFIG_CONTENT);
+		expect(content).toMatchObject({
+			instructions: ["existing.md"],
+			enabled_providers: ["opencode"],
+			provider: { opencode: { whitelist: ["model-a"] } },
+		});
+	});
+
+	it("reports an OpenCode overlay conflict without inspecting the agent", async () => {
+		loadConfig.mockReturnValueOnce(
+			HlidConfigSchema.parse({
+				acp_agents: [
+					{
+						id: "opencode",
+						env: { OPENCODE_CONFIG_CONTENT: "{" },
+						model_filter: {
+							mode: "hide",
+							models: ["opencode/model-a"],
+						},
+					},
+				],
+			}),
+		);
+
+		const response = await handle(
+			new URL("http://localhost/acp/authenticate"),
+			request("/acp/authenticate", "POST", { id: "opencode" }),
+		);
+
+		expect(response?.status).toBe(409);
+		expect(await response?.json()).toEqual({
+			error: expect.stringContaining("OPENCODE_CONFIG_CONTENT is invalid"),
+		});
+		expect(inspectAgent).not.toHaveBeenCalled();
+	});
+
 	it("synchronizes enabled ACP providers without restarting Hlid", async () => {
 		const response = await handle(
 			new URL("http://localhost/acp/sync"),
@@ -144,6 +389,23 @@ describe("ACP internal HTTP routes", () => {
 			added: ["acp:opencode"],
 			removed: [],
 			replaced: [],
+		});
+	});
+
+	it("returns an actionable conflict from runtime synchronization", async () => {
+		syncRuntime.mockRejectedValueOnce(
+			new OpenCodeConfigOverlayError("the inline filter conflicts"),
+		);
+
+		const response = await handle(
+			new URL("http://localhost/acp/sync"),
+			request("/acp/sync", "POST"),
+		);
+
+		expect(response?.status).toBe(409);
+		expect(await response?.json()).toEqual({
+			error:
+				"Cannot apply Hlid's OpenCode model filter: the inline filter conflicts",
 		});
 	});
 

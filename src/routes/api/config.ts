@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { createFileRoute } from "@tanstack/react-router";
 import { HlidConfigSchema } from "#/config";
@@ -7,7 +8,23 @@ import { dbFetch } from "#/lib/dbClient";
 import { forbiddenResponse } from "#/lib/originGate";
 import { expandTilde } from "#/lib/paths";
 import { publicConfig, restoreConfigSecrets } from "#/lib/publicConfig";
+import {
+	OpenCodeConfigOverlayError,
+	preflightOpenCodeModelFilter,
+} from "#/server/acpRuntime";
 import { loadConfig } from "#/server/config";
+
+let pendingAcpRuntimeTarget: string | null = null;
+
+function acpRuntimeTarget(
+	config: ReturnType<typeof HlidConfigSchema.parse>,
+): string {
+	return createHash("sha256")
+		.update(config.vault.path)
+		.update("\0")
+		.update(acpRuntimeIdentity(config.acp_agents ?? []))
+		.digest("base64url");
+}
 
 export async function handleGetConfig(request: Request): Promise<Response> {
 	const forbidden = forbiddenResponse(request);
@@ -28,6 +45,13 @@ export async function handlePostConfig(request: Request): Promise<Response> {
 	} catch (error) {
 		const message = error instanceof Error ? error.message : "Invalid config";
 		return Response.json({ error: message }, { status: 400 });
+	}
+	const currentAcpRuntimeTarget = acpRuntimeTarget(current);
+	if (
+		pendingAcpRuntimeTarget &&
+		pendingAcpRuntimeTarget !== currentAcpRuntimeTarget
+	) {
+		pendingAcpRuntimeTarget = null;
 	}
 	if (config.vault.path) {
 		try {
@@ -59,6 +83,43 @@ export async function handlePostConfig(request: Request): Promise<Response> {
 		}
 	}
 	try {
+		preflightOpenCodeModelFilter(config);
+	} catch (error) {
+		if (error instanceof OpenCodeConfigOverlayError) {
+			return Response.json({ error: error.message }, { status: 400 });
+		}
+		throw error;
+	}
+	if (config.acp_agents?.some((agent) => agent.model_filter)) {
+		let response: Response;
+		try {
+			response = await dbFetch("/acp/preflight", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(config),
+			});
+		} catch {
+			return Response.json(
+				{ error: "Unable to validate the OpenCode runtime configuration" },
+				{ status: 503 },
+			);
+		}
+		if (!response.ok) {
+			const body = (await response.json().catch(() => null)) as {
+				error?: unknown;
+			} | null;
+			return Response.json(
+				{
+					error:
+						typeof body?.error === "string"
+							? body.error
+							: "The OpenCode runtime configuration is invalid",
+				},
+				{ status: 400 },
+			);
+		}
+	}
+	try {
 		writeConfig(config);
 	} catch {
 		return Response.json({ error: "Failed to write config" }, { status: 500 });
@@ -69,18 +130,26 @@ export async function handlePostConfig(request: Request): Promise<Response> {
 		current.codex.executable !== config.codex.executable;
 	const currentAcpAgents = current.acp_agents ?? [];
 	const nextAcpAgents = config.acp_agents ?? [];
+	const nextAcpRuntimeTarget = acpRuntimeTarget(config);
 	const acpRuntimeIdentityChanged =
 		acpRuntimeIdentity(currentAcpAgents) !==
 			acpRuntimeIdentity(nextAcpAgents) ||
 		(current.vault.path !== config.vault.path &&
 			(currentAcpAgents.length > 0 || nextAcpAgents.length > 0));
+	const acpRuntimeSyncRequired =
+		acpRuntimeIdentityChanged ||
+		pendingAcpRuntimeTarget === nextAcpRuntimeTarget;
 	const codexRuntimeSync = dbFetch("/cliproxy/sync", { method: "POST" });
-	const acpRuntimeSync = acpRuntimeIdentityChanged
+	const acpRuntimeSync = acpRuntimeSyncRequired
 		? dbFetch("/acp/sync", { method: "POST" })
 		: null;
-	if (!codexRuntimeIdentityChanged && !acpRuntimeIdentityChanged) {
+	if (!codexRuntimeIdentityChanged && !acpRuntimeSyncRequired) {
 		void codexRuntimeSync.catch(() => {});
-		return Response.json({ ok: true });
+		return Response.json({
+			ok: true,
+			runtime_synced: true,
+			acp_runtime_synced: true,
+		});
 	}
 	// Realtime launch flags and the executable are process identity. Wait for the
 	// runtime transition, while keeping the already-persisted config save truthful
@@ -89,20 +158,29 @@ export async function handlePostConfig(request: Request): Promise<Response> {
 	const waitForRuntime = async (
 		label: string,
 		request: Promise<Response>,
-	): Promise<void> => {
+	): Promise<boolean> => {
 		try {
 			const response = await request;
 			if (!response.ok) {
+				const body = (await response
+					.clone()
+					.json()
+					.catch(() => null)) as { error?: unknown } | null;
+				const detail = typeof body?.error === "string" ? `: ${body.error}` : "";
+				const suffix = detail.endsWith(".") ? "" : ".";
 				runtimeWarnings.push(
-					`${label} runtime synchronization returned ${response.status}.`,
+					`${label} runtime synchronization returned ${response.status}${detail}${suffix}`,
 				);
+				return false;
 			}
+			return true;
 		} catch (error) {
 			runtimeWarnings.push(
 				`${label} runtime synchronization failed: ${
 					error instanceof Error ? error.message : String(error)
 				}.`,
 			);
+			return false;
 		}
 	};
 	if (codexRuntimeIdentityChanged) {
@@ -110,8 +188,13 @@ export async function handlePostConfig(request: Request): Promise<Response> {
 	} else {
 		void codexRuntimeSync.catch(() => {});
 	}
-	if (acpRuntimeIdentityChanged) {
-		await waitForRuntime("ACP", acpRuntimeSync as Promise<Response>);
+	let acpRuntimeSynced = true;
+	if (acpRuntimeSyncRequired) {
+		acpRuntimeSynced = await waitForRuntime(
+			"ACP",
+			acpRuntimeSync as Promise<Response>,
+		);
+		pendingAcpRuntimeTarget = acpRuntimeSynced ? null : nextAcpRuntimeTarget;
 	}
 	const runtimeWarning = runtimeWarnings.join(" ") || undefined;
 	if (runtimeWarning) {
@@ -119,10 +202,15 @@ export async function handlePostConfig(request: Request): Promise<Response> {
 		return Response.json({
 			ok: true,
 			runtime_synced: false,
+			acp_runtime_synced: acpRuntimeSynced,
 			warning: runtimeWarning,
 		});
 	}
-	return Response.json({ ok: true, runtime_synced: true });
+	return Response.json({
+		ok: true,
+		runtime_synced: true,
+		acp_runtime_synced: true,
+	});
 }
 
 export const Route = createFileRoute("/api/config")({

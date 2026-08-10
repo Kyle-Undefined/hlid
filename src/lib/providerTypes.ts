@@ -52,6 +52,8 @@ export type ProviderInfo = {
 		status: "current" | "stale" | "unavailable";
 		source: "live" | "memory" | "persisted" | "fallback";
 		reason?: string;
+		/** Server provider revision that produced this explicit refresh result. */
+		revision?: number;
 	};
 	/** Effort/thinking levels. Absent if the provider has no such concept. */
 	effortLevels?: Array<{ value: string; label: string; desc?: string }>;

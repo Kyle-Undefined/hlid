@@ -374,6 +374,38 @@ function serverConfig(
 	};
 }
 
+function modelExcludedByFilter(
+	model: string | undefined,
+	filter: NonNullable<
+		NonNullable<HlidConfig["acp_agents"]>[number]["model_filter"]
+	>,
+): boolean {
+	if (!model) return false;
+	const selected = filter.models.includes(model);
+	return filter.mode === "hide" ? selected : !selected;
+}
+
+function reconcileOpenCodeAgentDefaults(
+	agents: HlidConfig["agents"],
+	acpAgents: NonNullable<HlidConfig["acp_agents"]>,
+): HlidConfig["agents"] {
+	const filter = acpAgents.find(
+		(agent) => agent.id === "opencode",
+	)?.model_filter;
+	if (!filter) return agents;
+	return agents.map((agent) => {
+		if (agent.provider !== "acp:opencode") return agent;
+		const model = modelExcludedByFilter(agent.model, filter)
+			? undefined
+			: agent.model;
+		const recapModel = modelExcludedByFilter(agent.recap_model, filter)
+			? undefined
+			: agent.recap_model;
+		if (model === agent.model && recapModel === agent.recap_model) return agent;
+		return { ...agent, model, recap_model: recapModel };
+	});
+}
+
 export function buildSettingsConfig(
 	initial: HlidConfig,
 	forms: SettingsForms,
@@ -441,7 +473,10 @@ export function buildSettingsConfig(
 		project_preview: {
 			use_real_browser_profile: forms.projectPreview.useRealBrowserProfile,
 		},
-		agents: initial.agents ?? [],
+		agents: reconcileOpenCodeAgentDefaults(
+			initial.agents ?? [],
+			forms.acpAgents,
+		),
 		acp_agents: forms.acpAgents,
 	};
 }

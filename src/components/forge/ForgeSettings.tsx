@@ -33,6 +33,7 @@ import type {
 	SettingsInitial,
 } from "#/hooks/useSettingsForm";
 import { CLIPROXY_CODEX_PROVIDER_ID } from "#/lib/providerIds";
+import type { ProviderInfo } from "#/lib/providerTypes";
 import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
 import { includesSearchText } from "#/lib/search";
 import { applyThemeToDocument, effectiveTheme } from "#/lib/theme";
@@ -215,11 +216,13 @@ function AcpCatalogPage({
 	initial,
 	onBack,
 	onRefreshProviders,
+	onDiscoverAcpModels,
 }: {
 	state: SettingsFormState;
 	initial: SettingsInitial;
 	onBack: () => void;
 	onRefreshProviders: (providerId: string) => void | Promise<void>;
+	onDiscoverAcpModels?: (id: string) => Promise<ProviderInfo["models"]>;
 }) {
 	return (
 		<>
@@ -238,8 +241,18 @@ function AcpCatalogPage({
 				initialCatalog={initial.acpCatalog}
 				value={state.acpAgents}
 				savedValue={state.persistedAcpAgents}
+				workspaceConfigurationCurrent={
+					!state.acpRuntimePending &&
+					state.vault.path === state.persistedVaultPath
+				}
+				providers={initial.providers}
 				onChange={state.setAcpAgents}
 				onRefreshProviders={onRefreshProviders}
+				onDiscoverModels={
+					onDiscoverAcpModels
+						? (item) => onDiscoverAcpModels(item.id)
+						: undefined
+				}
 			/>
 		</>
 	);
@@ -674,6 +687,7 @@ function CategoryContent({
 	developerView,
 	onDeveloperView,
 	onRefreshProviders,
+	onDiscoverAcpModels,
 }: {
 	category: Category;
 	state: SettingsFormState;
@@ -691,6 +705,7 @@ function CategoryContent({
 	developerView: DeveloperView;
 	onDeveloperView: (view: DeveloperView) => void;
 	onRefreshProviders: (providerId: string) => void | Promise<void>;
+	onDiscoverAcpModels?: (id: string) => Promise<ProviderInfo["models"]>;
 }) {
 	if (category === "integrations" && showApps)
 		return (
@@ -707,6 +722,7 @@ function CategoryContent({
 				initial={initial}
 				onBack={() => onShowCatalog(false)}
 				onRefreshProviders={onRefreshProviders}
+				onDiscoverAcpModels={onDiscoverAcpModels}
 			/>
 		);
 	if (category === "integrations" && showUmbod)
@@ -802,6 +818,15 @@ function SaveStatus({
 							Restart required
 						</button>
 					)}
+					{state.acpRuntimePending && (
+						<button
+							type="button"
+							onClick={() => void state.save()}
+							className="shrink-0 border border-status-warning/40 px-1.5 py-0.5 hover:bg-status-warning/10"
+						>
+							Retry ACP sync
+						</button>
+					)}
 					<span className="min-w-0 break-words [overflow-wrap:anywhere]">
 						{state.savedMsg === "restart" ? "Changes saved. " : "Saved. "}
 						{state.warning}
@@ -859,12 +884,14 @@ export function ForgeSettings({
 	inventoryStatus = "ready",
 	onRetryInventory = () => {},
 	onRefreshProviderOptions = onRetryInventory,
+	onDiscoverAcpModels,
 }: {
 	initial: SettingsInitial;
 	state: SettingsFormState;
 	inventoryStatus?: "loading" | "ready" | "unavailable";
 	onRetryInventory?: () => void | Promise<void>;
 	onRefreshProviderOptions?: (providerId: string) => void | Promise<void>;
+	onDiscoverAcpModels?: (id: string) => Promise<ProviderInfo["models"]>;
 }) {
 	const [category, setCategory] = useState<Category>("overview");
 	const [search, setSearch] = useState("");
@@ -1019,6 +1046,7 @@ export function ForgeSettings({
 								developerView={developerView}
 								onDeveloperView={setDeveloperView}
 								onRefreshProviders={onRefreshProviderOptions}
+								onDiscoverAcpModels={onDiscoverAcpModels}
 							/>
 						)}
 					</div>

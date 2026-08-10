@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { dbFetch, dbJson, requireDbOk } from "#/lib/dbClient";
-import { loadAcpRegistry } from "./acp";
+import { discoverAcpModels, loadAcpRegistry } from "./acp";
 
 vi.mock("#/lib/dbClient", () => ({
 	dbFetch: vi.fn(),
@@ -45,5 +45,44 @@ describe("ACP registry server function", () => {
 		vi.mocked(requireDbOk).mockResolvedValue(response);
 
 		await expect(loadAcpRegistry(true)).rejects.toThrow("invalid catalog");
+	});
+
+	it("discovers the raw ACP model catalog through a bounded live read", async () => {
+		const response = Response.json({
+			models: [{ value: "opencode/gpt-5.6-sol", label: "GPT-5.6 Sol" }],
+		});
+		vi.mocked(dbFetch).mockResolvedValue(response);
+		vi.mocked(requireDbOk).mockResolvedValue(response);
+
+		await expect(discoverAcpModels("opencode")).resolves.toEqual([
+			{ value: "opencode/gpt-5.6-sol", label: "GPT-5.6 Sol" },
+		]);
+		expect(dbFetch).toHaveBeenCalledWith(
+			"/acp/models?id=opencode",
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
+		);
+		expect(requireDbOk).toHaveBeenCalledWith(response, "discover ACP models");
+	});
+
+	it("rejects an invalid raw ACP model response", async () => {
+		const response = Response.json({ models: null });
+		vi.mocked(dbFetch).mockResolvedValue(response);
+		vi.mocked(requireDbOk).mockResolvedValue(response);
+
+		await expect(discoverAcpModels("opencode")).rejects.toThrow(
+			"invalid catalog",
+		);
+	});
+
+	it("rejects malformed entries in a raw ACP model response", async () => {
+		const response = Response.json({
+			models: [{ value: 42, label: "Broken" }],
+		});
+		vi.mocked(dbFetch).mockResolvedValue(response);
+		vi.mocked(requireDbOk).mockResolvedValue(response);
+
+		await expect(discoverAcpModels("opencode")).rejects.toThrow(
+			"invalid catalog",
+		);
 	});
 });

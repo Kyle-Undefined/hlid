@@ -137,6 +137,8 @@ describe("buildApiIndex", () => {
 			["GET", "/skills/managed/content?id="],
 			["POST", "/skills/refresh"],
 			["GET", "/voice?refresh=1"],
+			["POST", "/acp/preflight"],
+			["GET", "/acp/models?id=opencode"],
 			["POST", "/voice/sync"],
 			["POST", "/voice/download"],
 			["POST", "/voice/download/cancel"],

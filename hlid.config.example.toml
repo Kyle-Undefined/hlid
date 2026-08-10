@@ -76,6 +76,9 @@ effort = "medium"
 # id = "opencode"
 # executable = "opencode"
 # args = ["acp"]
+# Forge can manage this without editing OpenCode's own files. "hide" removes
+# listed models; "only" exposes only the listed full provider/model IDs to Hlid.
+# model_filter = { mode = "only", models = ["opencode/gpt-5.6-sol"] }
 #
 # [[acp_agents]]
 # id = "pi-acp"

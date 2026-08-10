@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { HlidConfig } from "#/config";
 import { acpRuntimeIdentity } from "#/lib/acpRuntimeIdentity";
+import type { ProviderInfo } from "#/lib/providerTypes";
 import { includesSearchText } from "#/lib/search";
 import {
 	type AcpAgentInfo,
@@ -16,14 +17,20 @@ export function AcpSection({
 	initialCatalog,
 	value,
 	savedValue = value,
+	workspaceConfigurationCurrent = true,
+	providers = [],
 	onChange,
 	onRefreshProviders,
+	onDiscoverModels,
 }: {
 	initialCatalog: AcpCatalogItem[];
 	value: NonNullable<HlidConfig["acp_agents"]>;
 	savedValue?: NonNullable<HlidConfig["acp_agents"]>;
+	workspaceConfigurationCurrent?: boolean;
+	providers?: ProviderInfo[];
 	onChange: (value: NonNullable<HlidConfig["acp_agents"]>) => void;
 	onRefreshProviders?: (providerId: string) => void | Promise<void>;
+	onDiscoverModels?: (item: AcpCatalogItem) => Promise<ProviderInfo["models"]>;
 }) {
 	const [catalog, setCatalog] = useState(initialCatalog);
 	const [search, setSearch] = useState("");
@@ -196,6 +203,7 @@ export function AcpSection({
 					(candidate) => candidate.id === item.id,
 				);
 				const configurationCurrent =
+					workspaceConfigurationCurrent &&
 					Boolean(savedConfigured) &&
 					acpRuntimeIdentity(configured ? [configured] : []) ===
 						acpRuntimeIdentity(savedConfigured ? [savedConfigured] : []);
@@ -213,6 +221,13 @@ export function AcpSection({
 							disabled={busy !== null}
 							authMethods={auth[item.id]}
 							agentInfo={agentInfo[item.id]}
+							models={
+								providers.find((provider) => provider.id === item.providerId)
+									?.models
+							}
+							onDiscoverModels={
+								onDiscoverModels ? () => onDiscoverModels(item) : undefined
+							}
 							optionsRefreshed={optionsRefreshed[item.id] ?? false}
 							configurationCurrent={configurationCurrent}
 							onToggle={() => toggle(item)}

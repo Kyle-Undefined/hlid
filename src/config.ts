@@ -396,24 +396,108 @@ export const AgentSchema = z.object({
 	interactive_mode: z.boolean().optional(),
 });
 
-const AcpAgentSchema = z.object({
-	id: z.string().min(1),
-	executable: z.string().optional(),
-	args: z.array(z.string()).optional(),
-	env: z.record(z.string(), z.string()).optional(),
-	/** Vault-chat defaults for this ACP provider. Empty/absent values defer to the agent. */
-	model: z.string().optional(),
-	effort: z.string().optional(),
-	permission_mode: z
-		.enum(["default", "acceptEdits", "bypassPermissions", "plan"])
-		.optional(),
-	turn_recaps: z.boolean().optional(),
-	recap_model: z.string().optional(),
-});
+const PROTOTYPE_SPECIAL_ACP_MODEL_PROVIDER_IDS = new Set([
+	"__proto__",
+	"constructor",
+	"prototype",
+]);
+
+const AcpModelIdSchema = z
+	.string()
+	.trim()
+	.min(3)
+	.max(256)
+	.refine(
+		(value) => {
+			const separator = value.indexOf("/");
+			return separator > 0 && separator < value.length - 1;
+		},
+		{ message: "ACP model IDs must include a provider and model" },
+	)
+	.refine(
+		(value) => {
+			const separator = value.indexOf("/");
+			if (separator <= 0) return true;
+			return !PROTOTYPE_SPECIAL_ACP_MODEL_PROVIDER_IDS.has(
+				value.slice(0, separator),
+			);
+		},
+		{
+			message: "ACP model IDs cannot use a prototype-special provider ID",
+		},
+	);
+
+export const AcpModelFilterSchema = z
+	.discriminatedUnion("mode", [
+		z.object({
+			mode: z.literal("hide"),
+			models: z.array(AcpModelIdSchema).min(1).max(256),
+		}),
+		z.object({
+			mode: z.literal("only"),
+			models: z.array(AcpModelIdSchema).min(1).max(256),
+		}),
+	])
+	.superRefine((filter, context) => {
+		if (new Set(filter.models).size !== filter.models.length) {
+			context.addIssue({
+				code: "custom",
+				path: ["models"],
+				message: "ACP model filters cannot contain duplicate model IDs",
+			});
+		}
+	});
+
+const AcpAgentSchema = z
+	.object({
+		id: z.string().min(1),
+		executable: z.string().optional(),
+		args: z.array(z.string()).optional(),
+		env: z.record(z.string(), z.string()).optional(),
+		/** Hlid-only OpenCode model visibility. Absence leaves native config alone. */
+		model_filter: AcpModelFilterSchema.optional(),
+		/** Vault-chat defaults for this ACP provider. Empty/absent values defer to the agent. */
+		model: z.string().optional(),
+		effort: z.string().optional(),
+		permission_mode: z
+			.enum(["default", "acceptEdits", "bypassPermissions", "plan"])
+			.optional(),
+		turn_recaps: z.boolean().optional(),
+		recap_model: z.string().optional(),
+	})
+	.superRefine((agent, context) => {
+		if (agent.model_filter && agent.id !== "opencode") {
+			context.addIssue({
+				code: "custom",
+				path: ["model_filter"],
+				message: "model_filter is supported only for the OpenCode ACP agent",
+			});
+		}
+		if (agent.model_filter) {
+			for (const [key, label] of [
+				["model", "default model"],
+				["recap_model", "recap model"],
+			] as const) {
+				const model = agent[key];
+				if (!model) continue;
+				const included = agent.model_filter.models.includes(model);
+				if (agent.model_filter.mode === "hide" ? included : !included) {
+					context.addIssue({
+						code: "custom",
+						path: [key],
+						message:
+							agent.model_filter.mode === "hide"
+								? `The configured ${label} cannot be hidden`
+								: `The configured ${label} must be included in the filter`,
+					});
+				}
+			}
+		}
+	});
 
 export type Agent = z.infer<typeof AgentSchema>;
 
-export const HlidConfigSchema = z.object({
+const HlidConfigBaseSchema = z.object({
 	vault: VaultSchema.default(() => ({
 		name: "Vault",
 		path: "",
@@ -469,5 +553,46 @@ export const HlidConfigSchema = z.object({
 	acp_agents: z.array(AcpAgentSchema).optional(),
 	vault_provider: z.string().default("claude"),
 });
+
+export const HlidConfigSchema = HlidConfigBaseSchema.superRefine(
+	(config, context) => {
+		const seenAcpAgents = new Set<string>();
+		config.acp_agents?.forEach((agent, index) => {
+			if (seenAcpAgents.has(agent.id)) {
+				context.addIssue({
+					code: "custom",
+					path: ["acp_agents", index, "id"],
+					message: `ACP agent ${JSON.stringify(agent.id)} is configured more than once`,
+				});
+			}
+			seenAcpAgents.add(agent.id);
+		});
+		const filter = config.acp_agents?.find(
+			(agent) => agent.id === "opencode",
+		)?.model_filter;
+		if (!filter) return;
+		config.agents.forEach((agent, index) => {
+			if (agent.provider !== "acp:opencode") return;
+			for (const [key, label] of [
+				["model", "model"],
+				["recap_model", "recap model"],
+			] as const) {
+				const model = agent[key];
+				if (!model) continue;
+				const included = filter.models.includes(model);
+				if (filter.mode === "hide" ? included : !included) {
+					context.addIssue({
+						code: "custom",
+						path: ["agents", index, key],
+						message:
+							filter.mode === "hide"
+								? `The OpenCode agent ${label} cannot be hidden`
+								: `The OpenCode agent ${label} must be included in the filter`,
+					});
+				}
+			}
+		});
+	},
+);
 
 export type HlidConfig = z.infer<typeof HlidConfigSchema>;

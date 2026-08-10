@@ -5,6 +5,10 @@ import { resolve as resolvePath } from "node:path";
 import type { ToolCall } from "@umbod/core";
 import type { HlidConfig } from "../config";
 import * as db from "../db";
+import {
+	type AcpModelVisibilityFilter,
+	openCodeModelVisible,
+} from "../lib/acpModelFilter";
 import { resolveClaudeExecutable } from "../lib/claudePath";
 import {
 	estimateContextTokens,
@@ -1354,6 +1358,7 @@ export class SessionManager {
 	private providerOverride: string | null = null;
 	private agentProviderMap: Map<string, string> = new Map();
 	private agentSettingsMap: Map<string, AgentSettings> = new Map();
+	private openCodeModelFilter: AcpModelVisibilityFilter | null = null;
 	private state: SessionState = "idle";
 	private abortController: AbortController | null = null;
 	private model!: string;
@@ -1753,6 +1758,9 @@ export class SessionManager {
 			config.vault.obsidian_command_allowlist ?? [],
 		);
 		this.vaultProviderId = config.vault_provider ?? "claude";
+		this.openCodeModelFilter =
+			config.acp_agents?.find((agent) => agent.id === "opencode")
+				?.model_filter ?? null;
 		const agentMaps = buildAgentMaps(config);
 		this.agentProviderMap = agentMaps.providers;
 		this.agentSettingsMap = agentMaps.settings;
@@ -2071,6 +2079,9 @@ export class SessionManager {
 	// Returns true if an effective status field changed (so callers can broadcast it).
 	syncConfig(config: HlidConfig): boolean {
 		const previous = this.getStatus();
+		const previousOpenCodeModelFilter = JSON.stringify(
+			this.openCodeModelFilter,
+		);
 		const previousClaudePeerInbox = this.claudePeerInbox;
 		const previousClaudeAgentProgressSummaries =
 			this.claudeAgentProgressSummaries;
@@ -2093,6 +2104,55 @@ export class SessionManager {
 			this.approvalsReviewerOverride = null;
 		}
 		this.applyConfig(config, !providerChanged);
+		const selectedProviderId = this.getProviderId();
+		const openCodeFilterChanged =
+			previousOpenCodeModelFilter !== JSON.stringify(this.openCodeModelFilter);
+		const excludedModelSelected =
+			this.modelOverride !== null &&
+			!openCodeModelVisible(
+				selectedProviderId,
+				this.modelOverride.value,
+				this.openCodeModelFilter,
+			);
+		if (excludedModelSelected) {
+			this.modelOverride = { value: undefined };
+			this.model = "";
+			this.modelGeneration += 1;
+			this.effortOverride = null;
+			this.serviceTierOverride = null;
+			this.restartAgentSessionForEffort = false;
+		}
+		if (selectedProviderId === "acp:opencode" && openCodeFilterChanged) {
+			this.providerSessionId = null;
+			this.historyResumeMode = "none";
+			this.providerHandoffPending =
+				this.currentSessionId !== null && this.messageSeq > 0;
+		}
+		if (
+			this.currentSessionId &&
+			selectedProviderId === "acp:opencode" &&
+			(excludedModelSelected || openCodeFilterChanged)
+		) {
+			const sessionId = this.currentSessionId;
+			const sessionControlGeneration = this.sessionControlGeneration;
+			const modelGeneration = this.modelGeneration;
+			const ownsReset = () =>
+				this.currentSessionId === sessionId &&
+				this.sessionControlGeneration === sessionControlGeneration &&
+				this.modelGeneration === modelGeneration &&
+				this.getProviderId() === "acp:opencode";
+			void this.enqueueProviderOwnershipWrite(async () => {
+				if (excludedModelSelected) {
+					await db.setSessionModel(sessionId, "", { guard: ownsReset });
+					await db.setSessionEffort(sessionId, null, { guard: ownsReset });
+				}
+				if (openCodeFilterChanged && ownsReset()) {
+					await db.setSessionProviderSession(sessionId, "acp:opencode", null);
+				}
+			}).catch((error) =>
+				logDbError("reset filtered OpenCode session selection", error),
+			);
+		}
 		this.enforcePermissionPolicyTransition();
 		if (
 			(previousApprovalReviewContext.policyEnforced !== this.policyEnforced ||
@@ -2558,9 +2618,33 @@ export class SessionManager {
 	}
 
 	private selectedModelFor(agentSettings?: AgentSettings): string {
-		return this.modelOverride !== null
-			? (this.modelOverride.value ?? "")
-			: (agentSettings?.model ?? this.model);
+		const selected =
+			this.modelOverride !== null
+				? (this.modelOverride.value ?? "")
+				: (agentSettings?.model ?? this.model);
+		return openCodeModelVisible(
+			this.getProviderId(),
+			selected,
+			this.openCodeModelFilter,
+		)
+			? selected
+			: "";
+	}
+
+	private modelOverrideForProvider(
+		providerId: string,
+	): { value: string | undefined } | null {
+		if (
+			this.modelOverride === null ||
+			openCodeModelVisible(
+				providerId,
+				this.modelOverride.value,
+				this.openCodeModelFilter,
+			)
+		) {
+			return this.modelOverride;
+		}
+		return { value: undefined };
 	}
 
 	private desiredPermissionMode(): PermissionMode {
@@ -2685,6 +2769,17 @@ export class SessionManager {
 	setModel(model?: string): Promise<void> {
 		try {
 			this.assertRealtimeIdle("changing the model");
+			if (
+				!openCodeModelVisible(
+					this.getProviderId(),
+					model,
+					this.openCodeModelFilter,
+				)
+			) {
+				throw new Error(
+					`Model ${JSON.stringify(model)} is excluded by Hlid's OpenCode model visibility`,
+				);
+			}
 		} catch (error) {
 			return Promise.reject(error);
 		}
@@ -2916,6 +3011,17 @@ export class SessionManager {
 		const nextProvider = this.providers.get(providerId);
 		if (!nextProvider) {
 			throw new Error(`Unknown or unavailable provider: ${providerId}`);
+		}
+		if (
+			!openCodeModelVisible(
+				providerId,
+				selection.model,
+				this.openCodeModelFilter,
+			)
+		) {
+			throw new Error(
+				`Model ${JSON.stringify(selection.model)} is excluded by Hlid's OpenCode model visibility`,
+			);
 		}
 		const currentProviderId =
 			this.providerSessionProviderId ??
@@ -6486,17 +6592,58 @@ export class SessionManager {
 			this.agentCwd = savedAgentCwd;
 			this.agentMode = resolveAgentMode(savedAgentCwd);
 		}
+		const restoredProviderId =
+			savedProviderId ?? this.resolveProvider(this.agentCwd).providerId;
+		const discardFilteredOpenCodeResume =
+			restoredProviderId === "acp:opencode" &&
+			this.openCodeModelFilter !== null;
+		if (discardFilteredOpenCodeResume) {
+			this.providerSessionId = null;
+			this.providerSessionProviderId = restoredProviderId;
+			this.historyResumeMode = "none";
+			this.providerHandoffPending = prior.length > 0;
+		}
+		const savedModelExcluded =
+			savedModel !== null &&
+			!openCodeModelVisible(
+				restoredProviderId,
+				savedModel,
+				this.openCodeModelFilter,
+			);
+		const restoredSavedModel = savedModelExcluded ? "" : savedModel;
 		// Resume with the chat's saved selection, not today's configured
 		// vault/Einherjar model.
-		if (savedModel !== null && this.modelOverride === null) {
-			this.model = savedModel;
+		if (restoredSavedModel !== null && this.modelOverride === null) {
+			this.model = restoredSavedModel;
 			this.modelOverride = {
-				value: savedModel === "" ? undefined : savedModel,
+				value: restoredSavedModel === "" ? undefined : restoredSavedModel,
 			};
 		}
-		if (savedSession?.selected_effort && this.effortOverride === null) {
+		if (
+			!savedModelExcluded &&
+			savedSession?.selected_effort &&
+			this.effortOverride === null
+		) {
 			this.effort = savedSession.selected_effort;
 			this.effortOverride = savedSession.selected_effort;
+		}
+		if (discardFilteredOpenCodeResume || savedModelExcluded) {
+			const ownsRestore = () =>
+				this.sessionControlGeneration === restoreGeneration &&
+				this.currentSessionId === sessionId &&
+				this.providerOwnershipGeneration === restoreProviderOwnershipGeneration;
+			try {
+				if (savedModelExcluded) {
+					await db.setSessionModel(sessionId, "", { guard: ownsRestore });
+					await db.setSessionEffort(sessionId, null, { guard: ownsRestore });
+				}
+				if (discardFilteredOpenCodeResume && ownsRestore()) {
+					await db.setSessionProviderSession(sessionId, "acp:opencode", null);
+				}
+			} catch (error) {
+				logDbError("reset restored filtered OpenCode session", error);
+			}
+			if (!ownsRestore()) throw new PermissionModeChangeSupersededError();
 		}
 		if (
 			savedSession?.selected_permission_mode &&
@@ -6528,7 +6675,7 @@ export class SessionManager {
 							restoredProvider,
 							savedPermissionMode,
 							this.permissionModeValidationContext(
-								savedModel ?? "",
+								restoredSavedModel ?? "",
 								savedPermissionMode === "auto",
 							),
 						);
@@ -10926,7 +11073,7 @@ export class SessionManager {
 				extraDirs: new Set(),
 				signal: undefined,
 				agentSettings,
-				modelOverride: this.modelOverride,
+				modelOverride: this.modelOverrideForProvider(provider.providerId),
 				effortOverride: this.effortOverride,
 				serviceTierOverride: this.serviceTierOverride,
 				defaultModel: this.agentCwd ? undefined : this.model,
@@ -11258,7 +11405,7 @@ export class SessionManager {
 				extraDirs,
 				signal: this.abortController?.signal,
 				agentSettings,
-				modelOverride: this.modelOverride,
+				modelOverride: this.modelOverrideForProvider(provider.providerId),
 				effortOverride: this.effortOverride,
 				serviceTierOverride: this.serviceTierOverride,
 				defaultModel: this.agentCwd ? undefined : this.model,

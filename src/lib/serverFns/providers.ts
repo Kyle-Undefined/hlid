@@ -29,6 +29,28 @@ const LIVE_PROVIDER_READ_BUDGET = {
 	retryTimeoutMs: false,
 } as const;
 
+export function withProviderCatalogRevision(
+	providers: ProviderInfo[],
+	providerId: string | undefined,
+	revisionHeader: string | null,
+): ProviderInfo[] {
+	const revision = Number.parseInt(revisionHeader ?? "", 10);
+	if (!providerId || !Number.isSafeInteger(revision) || revision < 0) {
+		return providers;
+	}
+	return providers.map((provider) =>
+		provider.id === providerId && provider.modelCatalogRefresh
+			? {
+					...provider,
+					modelCatalogRefresh: {
+						...provider.modelCatalogRefresh,
+						revision,
+					},
+				}
+			: provider,
+	);
+}
+
 export function providerCatalogPath(
 	data: z.infer<typeof providerCatalogQuerySchema>,
 ): string {
@@ -66,7 +88,11 @@ export const getProvidersFn = createServerFn({ method: "GET" })
 					"refresh provider catalog returned an invalid response",
 				);
 			}
-			return payload.providers as ProviderInfo[];
+			return withProviderCatalogRevision(
+				payload.providers as ProviderInfo[],
+				data.refreshProviderId,
+				response.headers.get("x-hlid-providers-revision"),
+			);
 		}
 		return dbJson<{ providers: ProviderInfo[] }>(
 			path,

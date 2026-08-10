@@ -32,14 +32,24 @@ async function responseError(response: Response): Promise<string> {
 	}
 }
 
-async function responseWarning(response: Response): Promise<string | null> {
+async function responseResult(response: Response): Promise<{
+	warning: string | null;
+	acpRuntimeSynced: boolean;
+}> {
 	try {
-		const body = (await response.json()) as { warning?: unknown };
-		return typeof body.warning === "string" && body.warning.trim()
-			? body.warning.trim()
-			: null;
+		const body = (await response.json()) as {
+			warning?: unknown;
+			acp_runtime_synced?: unknown;
+		};
+		return {
+			warning:
+				typeof body.warning === "string" && body.warning.trim()
+					? body.warning.trim()
+					: null,
+			acpRuntimeSynced: body.acp_runtime_synced !== false,
+		};
 	} catch {
-		return null;
+		return { warning: null, acpRuntimeSynced: true };
 	}
 }
 
@@ -50,6 +60,9 @@ export function useSettingsForm(
 	const initialFormsRef = useRef(createSettingsForms(initial));
 	const initialForms = initialFormsRef.current;
 	const [vault, setVault] = useState(initialForms.vault);
+	const [persistedVaultPath, setPersistedVaultPath] = useState(
+		initialForms.vault.path,
+	);
 	const [claude, setClaude] = useState(initialForms.claude);
 	const [codex, setCodex] = useState(initialForms.codex);
 	const [cliproxy, setCliProxy] = useState(initialForms.cliproxy);
@@ -71,6 +84,7 @@ export function useSettingsForm(
 	const [savedMsg, setSavedMsg] = useState<"saved" | "restart" | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [warning, setWarning] = useState<string | null>(null);
+	const [acpRuntimePending, setAcpRuntimePending] = useState(false);
 	const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const mountedRef = useRef(true);
@@ -79,12 +93,14 @@ export function useSettingsForm(
 	const queuedSaveRef = useRef(false);
 	const revisionRef = useRef(0);
 	const restartRequiredRef = useRef(false);
+	const acpRuntimePendingRef = useRef(false);
 	const initialRef = useRef(initial);
 	const saveRef = useRef<((requiresRestart?: boolean) => Promise<void>) | null>(
 		null,
 	);
 	initialRef.current = initial;
 	useEffect(() => {
+		if (acpRuntimePendingRef.current) return;
 		setPersistedAcpAgents(initial.acp_agents ?? []);
 	}, [initial.acp_agents]);
 	const currentForms = {
@@ -135,14 +151,19 @@ export function useSettingsForm(
 				body: JSON.stringify(config),
 			});
 			if (!response.ok) throw new Error(await responseError(response));
-			const runtimeWarning = await responseWarning(response);
+			const runtimeResult = await responseResult(response);
 			if (!mountedRef.current) return;
 			if (revision === revisionRef.current) {
 				dirtyRef.current = false;
 				setDirty(false);
 			}
-			setPersistedAcpAgents(forms.acpAgents);
-			setWarning(runtimeWarning);
+			acpRuntimePendingRef.current = !runtimeResult.acpRuntimeSynced;
+			setAcpRuntimePending(!runtimeResult.acpRuntimeSynced);
+			if (runtimeResult.acpRuntimeSynced) {
+				setPersistedAcpAgents(forms.acpAgents);
+				setPersistedVaultPath(forms.vault.path);
+			}
+			setWarning(runtimeResult.warning);
 			setSavedMsg(requiresRestart ? "restart" : "saved");
 			if (!requiresRestart) {
 				savedTimerRef.current = setTimeout(() => setSavedMsg(null), 3000);
@@ -245,6 +266,7 @@ export function useSettingsForm(
 
 	return {
 		vault,
+		persistedVaultPath,
 		setVault,
 		claude,
 		codex,
@@ -272,6 +294,7 @@ export function useSettingsForm(
 		savedMsg,
 		error,
 		warning,
+		acpRuntimePending,
 		save,
 	};
 }

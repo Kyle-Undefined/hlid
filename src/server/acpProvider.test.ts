@@ -1045,6 +1045,28 @@ describe("AcpProvider — session lifecycle", () => {
 		session.cancel();
 	});
 
+	it("rejects session controls while an ACP prompt is active", async () => {
+		const session = makeProvider().query(params());
+		await session.send("slow");
+		const iterator = session[Symbol.asyncIterator]();
+		expect((await iterator.next()).value).toMatchObject({
+			type: "session_start",
+		});
+
+		await expect(session.setModel?.("fake-smart")).rejects.toThrow(
+			"session controls are unavailable during an active prompt",
+		);
+		await expect(session.setEffort?.("high")).rejects.toThrow(
+			"session controls are unavailable during an active prompt",
+		);
+		await session.interrupt?.();
+		expect((await iterator.next()).value).toMatchObject({
+			type: "done",
+			stopReason: "cancelled",
+		});
+		session.cancel();
+	});
+
 	it("does not apply startup phase budgets as a total prompt timeout", async () => {
 		const session = behaviorProvider("", {
 			...processTestTimeouts,
@@ -1434,6 +1456,235 @@ describe("AcpProvider — model catalog", () => {
 			expect.objectContaining({ value: "fake-smart", label: "Fake Smart" }),
 		]);
 		expect(models[1]).not.toHaveProperty("efforts");
+	});
+
+	it("enforces Hlid model visibility on metadata and live ACP sessions", async () => {
+		const provider = makeProvider({
+			modelFilter: { mode: "only", models: ["fake-smart"] },
+		});
+
+		await expect(provider.listModels()).resolves.toEqual([
+			expect.objectContaining({ value: "fake-smart", label: "Fake Smart" }),
+		]);
+		expect(() =>
+			provider.query(params("allow", { model: "fake-fast" })),
+		).toThrow("excluded by Hlid's ACP model visibility");
+
+		const onSessionConfigChange = vi.fn();
+		const session = provider.query(params("allow", { onSessionConfigChange }));
+		await session.send("report-config");
+		const events: AgentEvent[] = [];
+		for await (const event of session) {
+			events.push(event);
+			if (event.type === "done") break;
+		}
+		expect(events).toContainEqual({
+			type: "text_delta",
+			text: "fake-smart/medium",
+		});
+		expect(session.sessionConfig?.()).toEqual(
+			expect.objectContaining({
+				models: [expect.objectContaining({ value: "fake-smart" })],
+				activeModel: "fake-smart",
+			}),
+		);
+		expect(onSessionConfigChange).toHaveBeenLastCalledWith(
+			expect.objectContaining({ activeModel: "fake-smart" }),
+		);
+		await expect(session.setModel?.("fake-fast")).rejects.toThrow(
+			"excluded by Hlid's ACP model visibility",
+		);
+		session.cancel();
+	});
+
+	it("retires an active runtime when a live config update activates an excluded model", async () => {
+		const provider = makeProvider({
+			env: { HLID_FAKE_ACP_BEHAVIOR: "excluded-model-notification" },
+			timeouts: processTestTimeouts,
+			modelFilter: { mode: "only", models: ["fake-smart"] },
+		});
+		const session = provider.query(params());
+
+		await session.send("exclude-model-notification");
+		const events: AgentEvent[] = [];
+		for await (const event of session) {
+			events.push(event);
+			if (event.type === "done") break;
+		}
+		expect(events).toContainEqual(
+			expect.objectContaining({ type: "done", stopReason: "cancelled" }),
+		);
+		expect(session.sessionConfig?.()).toBeNull();
+		session.cancel();
+	});
+
+	it("latches a model visibility fault during an active prompt and suppresses later output", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "hlid-acp-model-fault-"));
+		const promptMarker = join(cwd, "prompt.log");
+		try {
+			const provider = makeProvider({
+				env: {
+					HLID_FAKE_ACP_BEHAVIOR: "excluded-model-notification-active",
+					HLID_FAKE_ACP_PROMPT_MARKER: promptMarker,
+				},
+				timeouts: processTestTimeouts,
+				modelFilter: { mode: "only", models: ["fake-smart"] },
+			});
+			const session = provider.query(params());
+
+			await session.send("exclude-model-active");
+			await expect(session.send("must-not-prompt")).rejects.toThrow(
+				/active prompt|visibility|retiring/i,
+			);
+			const events: AgentEvent[] = [];
+			for await (const event of session) {
+				events.push(event);
+				if (event.type === "done") break;
+			}
+
+			expect(events).toContainEqual(
+				expect.objectContaining({ type: "done", stopReason: "cancelled" }),
+			);
+			expect(events).not.toContainEqual({
+				type: "text_delta",
+				text: "post-fault-output",
+			});
+			expect(
+				readFileSync(promptMarker, "utf8").trim().split("\n"),
+			).toHaveLength(1);
+			expect(session.sessionConfig?.()).toBeNull();
+			session.cancel();
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("retires when a config notification omits the model required by visibility", async () => {
+		const provider = makeProvider({
+			env: { HLID_FAKE_ACP_BEHAVIOR: "missing-model-notification" },
+			timeouts: processTestTimeouts,
+			modelFilter: { mode: "only", models: ["fake-smart"] },
+		});
+		const session = provider.query(params());
+
+		await session.send("missing-model-notification");
+		const events: AgentEvent[] = [];
+		for await (const event of session) {
+			events.push(event);
+			if (event.type === "done") break;
+		}
+		expect(events).toContainEqual(
+			expect.objectContaining({ type: "done", stopReason: "cancelled" }),
+		);
+		expect(session.sessionConfig?.()).toBeNull();
+		session.cancel();
+	});
+
+	it("does not let an in-flight config response clear an excluded-model notification", async () => {
+		const provider = makeProvider({
+			env: { HLID_FAKE_ACP_BEHAVIOR: "excluded-notification-during-config" },
+			timeouts: processTestTimeouts,
+			modelFilter: { mode: "only", models: ["fake-fast"] },
+		});
+		const session = provider.query(params());
+		await session.send("report-config");
+		for await (const event of session) {
+			if (event.type === "done") break;
+		}
+
+		await expect(session.setModel?.("fake-fast")).rejects.toThrow();
+		expect(session.sessionConfig?.()).toBeNull();
+
+		await session.send("report-config");
+		const recovered: AgentEvent[] = [];
+		for await (const event of session) {
+			recovered.push(event);
+			if (event.type === "done") break;
+		}
+		expect(recovered).toContainEqual({
+			type: "text_delta",
+			text: "fake-fast/medium",
+		});
+		expect(session.sessionConfig?.()).toEqual(
+			expect.objectContaining({ activeModel: "fake-fast" }),
+		);
+		session.cancel();
+	});
+
+	it("retires the runtime when an allowed model selection activates an excluded model", async () => {
+		const provider = makeProvider({
+			env: { HLID_FAKE_ACP_BEHAVIOR: "misreport-model-selection" },
+			timeouts: processTestTimeouts,
+			modelFilter: { mode: "only", models: ["fake-fast"] },
+		});
+		const session = provider.query(params());
+
+		await session.send("report-config");
+		for await (const event of session) {
+			if (event.type === "done") break;
+		}
+
+		await expect(session.setModel?.("fake-fast")).rejects.toThrow(
+			'ACP agent activated model "fake-smart" excluded by Hlid\'s ACP model visibility',
+		);
+		expect(session.sessionConfig?.()).toBeNull();
+		session.cancel();
+	});
+
+	it("retires the runtime when a model response omits its active model", async () => {
+		const provider = makeProvider({
+			env: { HLID_FAKE_ACP_BEHAVIOR: "missing-model-selection" },
+			timeouts: processTestTimeouts,
+			modelFilter: {
+				mode: "only",
+				models: ["fake-fast", "fake-smart"],
+			},
+		});
+		const session = provider.query(params());
+		await session.send("report-config");
+		for await (const event of session) {
+			if (event.type === "done") break;
+		}
+
+		await expect(session.setModel?.("fake-smart")).rejects.toThrow(
+			/did not return a selectable model|does not advertise a selectable model/,
+		);
+		expect(session.sessionConfig?.()).toBeNull();
+		session.cancel();
+	});
+
+	it("retires the runtime when a model response activates a different allowed model", async () => {
+		const provider = makeProvider({
+			env: { HLID_FAKE_ACP_BEHAVIOR: "misreport-allowed-model-selection" },
+			timeouts: processTestTimeouts,
+			modelFilter: {
+				mode: "only",
+				models: ["fake-fast", "fake-smart"],
+			},
+		});
+		const session = provider.query(params());
+		await session.send("report-config");
+		for await (const event of session) {
+			if (event.type === "done") break;
+		}
+
+		await expect(session.setModel?.("fake-smart")).rejects.toThrow(
+			'activated model "fake-fast" after Hlid requested "fake-smart"',
+		);
+		expect(session.sessionConfig?.()).toBeNull();
+		session.cancel();
+	});
+
+	it("fails closed when the ACP agent advertises no allowed model", async () => {
+		const provider = makeProvider({
+			modelFilter: { mode: "only", models: ["not-advertised"] },
+		});
+		const session = provider.query(params());
+
+		await expect(session.send("report-config")).rejects.toThrow(
+			"does not advertise any model allowed by Hlid's ACP model visibility",
+		);
+		session.cancel();
 	});
 
 	it("publishes dependent model, effort, and mode options for the live session", async () => {

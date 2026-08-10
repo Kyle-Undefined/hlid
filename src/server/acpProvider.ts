@@ -21,6 +21,10 @@ import {
 	type ToolCallContent,
 	type ToolCallUpdate,
 } from "@agentclientprotocol/sdk";
+import {
+	type AcpModelVisibilityFilter,
+	acpModelVisible,
+} from "../lib/acpModelFilter";
 import { describeHlidToolLoading } from "../lib/hlidContext";
 import { legacyProjectMcpAdapter } from "../lib/mcpConfig";
 import { replacementUnifiedDiff } from "../lib/unifiedDiff";
@@ -378,6 +382,8 @@ export type AcpProviderOptions = {
 		| (() => Record<string, string> | Promise<Record<string, string>>);
 	/** Translate Hlid's persisted model id into the ACP agent's config value. */
 	requestModel?: (model: string) => string;
+	/** Hlid-owned visibility enforced after the ACP agent advertises models. */
+	modelFilter?: AcpModelVisibilityFilter;
 	/** Workspace used for provider-owned metadata sessions. */
 	discoveryCwd?: string;
 	/** Opaque runtime/config identity used to isolate persisted provider metadata. */
@@ -1008,6 +1014,7 @@ function implementationValue(
 function sessionConfigSnapshot(
 	options: SessionConfigOption[],
 	modes: SessionModeState | null,
+	modelFilter?: AcpModelVisibilityFilter,
 ): ProviderSessionConfigSnapshot {
 	const model = configOption(options, "model", /model/i);
 	const thought = configOption(
@@ -1015,7 +1022,11 @@ function sessionConfigSnapshot(
 		"thought_level",
 		/thought|reason|effort/i,
 	);
-	const activeModel = model?.type === "select" ? model.currentValue : undefined;
+	const advertisedActiveModel =
+		model?.type === "select" ? model.currentValue : undefined;
+	const activeModel = acpModelVisible(advertisedActiveModel, modelFilter)
+		? advertisedActiveModel
+		: undefined;
 	const effortLevels = thought
 		? selectOptions(thought).map((effort) => ({
 				value: effort.value,
@@ -1027,12 +1038,14 @@ function sessionConfigSnapshot(
 			}))
 		: undefined;
 	const models = model
-		? selectOptions(model).map((entry) => ({
-				...entry,
-				...(entry.value === activeModel && effortLevels?.length
-					? { efforts: effortLevels }
-					: {}),
-			}))
+		? selectOptions(model)
+				.filter((entry) => acpModelVisible(entry.value, modelFilter))
+				.map((entry) => ({
+					...entry,
+					...(entry.value === activeModel && effortLevels?.length
+						? { efforts: effortLevels }
+						: {}),
+				}))
 		: undefined;
 	const stableMode = modeConfigOption(options);
 	const availableModes = stableMode
@@ -1153,8 +1166,22 @@ type ActiveAcpPrompt = {
 	promise: Promise<void>;
 	startedAt: number;
 	settled: boolean;
+	controlsLocked: boolean;
 	suppressError: boolean;
 };
+
+type AcpRuntimeIdentity = {
+	generation: number;
+	connection: ClientSideConnection;
+	sessionId: string;
+};
+
+class AcpRuntimeSupersededError extends Error {
+	constructor() {
+		super("ACP runtime changed while applying session configuration");
+		this.name = "AcpRuntimeSupersededError";
+	}
+}
 
 type AcpMetadataInspection = {
 	initialized: InitializeResponse;
@@ -1176,6 +1203,9 @@ class AcpSession implements AgentSession {
 	private stderr: () => string = () => "";
 	private connection: ClientSideConnection | null = null;
 	private sessionId: string | null = null;
+	private runtimeGeneration = 0;
+	private runtimeRetirement: Promise<void> | null = null;
+	private modelVisibilityFault: Error | null = null;
 	private initPromise: Promise<void> | null = null;
 	private cleanupPromise: Promise<void> | null = null;
 	private cleanupChild: ChildProcessWithoutNullStreams | null = null;
@@ -1192,6 +1222,8 @@ class AcpSession implements AgentSession {
 	private loadingSessionReplay = false;
 	private modes: SessionModeState | null = null;
 	private configOptions: SessionConfigOption[] = [];
+	private liveControlTail: Promise<void> = Promise.resolve();
+	private liveControlsPending = 0;
 	private initialConfigValues = new Map<string, string>();
 	private configNotificationsReady = false;
 	private lastConfigSnapshot = "";
@@ -1388,25 +1420,176 @@ class AcpSession implements AgentSession {
 		value: string,
 		phase: string,
 		timeoutMs = this.timeouts.configMs,
+		expectedActiveModel?: string,
 	): Promise<void> {
 		if (option.type !== "select" || !this.connection || !this.sessionId) return;
+		const identity: AcpRuntimeIdentity = {
+			generation: this.runtimeGeneration,
+			connection: this.connection,
+			sessionId: this.sessionId,
+		};
 		const response = await this.runPhase(phase, timeoutMs, () =>
-			this.connection?.setSessionConfigOption({
-				sessionId: this.sessionId ?? "",
+			identity.connection.setSessionConfigOption({
+				sessionId: identity.sessionId,
 				configId: option.id,
 				value,
 			}),
 		);
-		if (response) {
-			this.configOptions = response.configOptions;
-			this.publishSessionConfig();
+		if (!this.runtimeIdentityIsCurrent(identity)) {
+			throw new AcpRuntimeSupersededError();
+		}
+		if (!response) {
+			const error = new Error(
+				"ACP agent returned no session configuration snapshot",
+			);
+			void this.beginRuntimeRetirement(
+				error,
+				identity.generation,
+				Boolean(this.options.modelFilter),
+			).catch(() => {});
+			throw error;
+		}
+		try {
+			this.adoptConfigOptions(response.configOptions, expectedActiveModel);
+		} catch (error) {
+			void this.beginRuntimeRetirement(
+				error,
+				identity.generation,
+				Boolean(this.options.modelFilter),
+			).catch(() => {});
+			throw error;
 		}
 	}
 
+	private runtimeIdentityIsCurrent(identity: AcpRuntimeIdentity): boolean {
+		return (
+			identity.generation === this.runtimeGeneration &&
+			identity.connection === this.connection &&
+			identity.sessionId === this.sessionId
+		);
+	}
+
+	private activeModelVisible(option: SessionConfigOption): boolean {
+		return (
+			option.type === "select" &&
+			selectOptions(option).some(
+				(entry) =>
+					entry.value === option.currentValue &&
+					acpModelVisible(entry.value, this.options.modelFilter),
+			)
+		);
+	}
+
+	private assertActiveModelVisible(
+		options = this.configOptions,
+		expectedActiveModel?: string,
+	): void {
+		if (!this.options.modelFilter && expectedActiveModel === undefined) return;
+		const model = configOption(options, "model", /model/i);
+		if (!model || model.type !== "select") {
+			throw new Error(
+				expectedActiveModel === undefined
+					? "ACP agent does not advertise a selectable model required by Hlid's ACP model visibility"
+					: "ACP agent did not return a selectable model after Hlid requested a model change",
+			);
+		}
+		if (this.options.modelFilter && !this.activeModelVisible(model)) {
+			throw new Error(
+				`ACP agent activated model ${JSON.stringify(model.currentValue)} excluded by Hlid's ACP model visibility`,
+			);
+		}
+		if (
+			expectedActiveModel !== undefined &&
+			model.currentValue !== expectedActiveModel
+		) {
+			throw new Error(
+				`ACP agent activated model ${JSON.stringify(model.currentValue)} after Hlid requested ${JSON.stringify(expectedActiveModel)}`,
+			);
+		}
+	}
+
+	private adoptConfigOptions(
+		options: SessionConfigOption[],
+		expectedActiveModel?: string,
+	): void {
+		this.assertActiveModelVisible(options, expectedActiveModel);
+		this.configOptions = options;
+		this.publishSessionConfig();
+	}
+
+	private adoptConfigNotification(
+		options: SessionConfigOption[],
+		observedGeneration: number,
+	): boolean {
+		if (
+			observedGeneration !== this.runtimeGeneration ||
+			this.modelVisibilityFault
+		) {
+			return false;
+		}
+		try {
+			this.adoptConfigOptions(options);
+			return true;
+		} catch (error) {
+			void this.beginRuntimeRetirement(error, observedGeneration, true).catch(
+				(retirementError) => {
+					if (!this.cancelled) {
+						console.error(
+							"[acp] model visibility fault retirement failed:",
+							retirementError,
+						);
+					}
+				},
+			);
+			return false;
+		}
+	}
+
+	private async enforceProviderDefaultModelVisibility(): Promise<void> {
+		const modelFilter = this.options.modelFilter;
+		if (!modelFilter) return;
+		const model = configOption(this.configOptions, "model", /model/i);
+		if (!model || model.type !== "select") {
+			throw new Error(
+				"ACP agent does not advertise a selectable model required by Hlid's ACP model visibility",
+			);
+		}
+		if (this.activeModelVisible(model)) return;
+
+		const visibleModels = selectOptions(model).filter((entry) =>
+			acpModelVisible(entry.value, modelFilter),
+		);
+		const fallback =
+			visibleModels.find((entry) => entry.value === this.params.model) ??
+			visibleModels[0];
+		if (!fallback) {
+			throw new Error(
+				"ACP agent does not advertise any model allowed by Hlid's ACP model visibility",
+			);
+		}
+		await this.applyConfigOption(
+			model,
+			fallback.value,
+			"model visibility enforcement",
+			this.timeouts.configMs,
+			fallback.value,
+		);
+		this.assertActiveModelVisible();
+	}
+
 	private publishSessionConfig(): void {
-		if (!this.configNotificationsReady || !this.params.onSessionConfigChange)
+		if (
+			!this.configNotificationsReady ||
+			this.modelVisibilityFault ||
+			this.runtimeRetirement ||
+			!this.params.onSessionConfigChange
+		)
 			return;
-		const snapshot = sessionConfigSnapshot(this.configOptions, this.modes);
+		const snapshot = sessionConfigSnapshot(
+			this.configOptions,
+			this.modes,
+			this.options.modelFilter,
+		);
 		const serialized = JSON.stringify(snapshot);
 		if (serialized === this.lastConfigSnapshot) return;
 		this.lastConfigSnapshot = serialized;
@@ -1473,13 +1656,81 @@ class AcpSession implements AgentSession {
 		this.resetAfterRuntimeStop(previousSessionId, canReconnect);
 	}
 
-	private async runLiveControl(run: () => Promise<void>): Promise<void> {
-		try {
-			await run();
-		} catch (error) {
-			await this.retireRuntimeAfterControlFailure(error);
-			throw error;
+	private beginRuntimeRetirement(
+		error: unknown,
+		observedGeneration: number,
+		modelVisibilityFault = false,
+	): Promise<void> {
+		if (this.runtimeRetirement) return this.runtimeRetirement;
+		if (observedGeneration !== this.runtimeGeneration) {
+			return Promise.resolve();
 		}
+		if (modelVisibilityFault && !this.modelVisibilityFault) {
+			this.modelVisibilityFault =
+				error instanceof Error ? error : new Error(errorText(error));
+		}
+
+		// Invalidate callbacks and config responses synchronously. Process cleanup is
+		// asynchronous, but no late message may repopulate this runtime meanwhile.
+		this.runtimeGeneration += 1;
+		const pending = this.retireRuntimeAfterControlFailure(error).finally(() => {
+			if (this.runtimeRetirement === pending) this.runtimeRetirement = null;
+		});
+		this.runtimeRetirement = pending;
+		return pending;
+	}
+
+	private assertPromptAdmission(): void {
+		if (this.modelVisibilityFault) throw this.modelVisibilityFault;
+		if (this.runtimeRetirement) {
+			throw new Error(
+				"ACP runtime is retiring after a session control failure",
+			);
+		}
+		if (this.liveControlsPending > 0) {
+			throw new Error("ACP session configuration is still in progress");
+		}
+	}
+
+	private assertControlAdmission(): void {
+		if (this.modelVisibilityFault) throw this.modelVisibilityFault;
+		if (this.runtimeRetirement) {
+			throw new Error(
+				"ACP runtime is retiring after a session control failure",
+			);
+		}
+		if (
+			this.activePrompt &&
+			!this.activePrompt.settled &&
+			this.activePrompt.controlsLocked
+		) {
+			throw new Error(
+				"ACP session controls are unavailable during an active prompt",
+			);
+		}
+	}
+
+	private runLiveControl(run: () => Promise<void>): Promise<void> {
+		this.assertControlAdmission();
+		const generation = this.runtimeGeneration;
+		this.liveControlsPending += 1;
+		const execute = this.liveControlTail.then(async () => {
+			this.assertControlAdmission();
+			if (generation !== this.runtimeGeneration) {
+				throw new AcpRuntimeSupersededError();
+			}
+			try {
+				await run();
+			} catch (error) {
+				if (error instanceof AcpRuntimeSupersededError) throw error;
+				await this.beginRuntimeRetirement(error, generation);
+				throw error;
+			}
+		});
+		this.liveControlTail = execute.catch(() => {});
+		return execute.finally(() => {
+			this.liveControlsPending -= 1;
+		});
 	}
 
 	private async setConfigValue(
@@ -1488,19 +1739,33 @@ class AcpSession implements AgentSession {
 		resetToInitial = false,
 	): Promise<void> {
 		if (!this.connection || !this.sessionId) return;
+		if (value === undefined && !resetToInitial) return;
 		const option = configOption(
 			this.configOptions,
 			category,
 			category === "model" ? /model/i : /thought|reason|effort/i,
 		);
-		if (!option || option.type !== "select") return;
-		if (value === undefined && !resetToInitial) return;
+		if (!option || option.type !== "select") {
+			if (category === "model") {
+				throw new Error(
+					"ACP agent does not advertise selectable model control",
+				);
+			}
+			return;
+		}
 		const resolvedValue = value ?? this.initialConfigValues.get(option.id);
-		if (resolvedValue === undefined) return;
+		if (resolvedValue === undefined) {
+			if (category === "model") {
+				throw new Error("ACP session has no initial model to restore");
+			}
+			return;
+		}
 		await this.applyConfigOption(
 			option,
 			resolvedValue,
 			`${category === "model" ? "model" : "thought-level"} configuration`,
+			this.timeouts.configMs,
+			category === "model" ? resolvedValue : undefined,
 		);
 	}
 
@@ -1611,6 +1876,7 @@ class AcpSession implements AgentSession {
 	}
 
 	private clearRuntimeState(): void {
+		this.runtimeGeneration += 1;
 		this.connection = null;
 		this.process = null;
 		this.sessionId = null;
@@ -1622,6 +1888,7 @@ class AcpSession implements AgentSession {
 		this.loadingSessionReplay = false;
 		this.modes = null;
 		this.configOptions = [];
+		this.modelVisibilityFault = null;
 		this.initialConfigValues.clear();
 		this.configNotificationsReady = false;
 		this.lastConfigSnapshot = "";
@@ -1651,6 +1918,7 @@ class AcpSession implements AgentSession {
 	}
 
 	private async initializeRuntime(): Promise<void> {
+		const runtimeGeneration = ++this.runtimeGeneration;
 		const [providerEnv, obsidianStatus] = await this.runPhase(
 			"startup preparation",
 			this.timeouts.preparationMs,
@@ -1796,7 +2064,19 @@ class AcpSession implements AgentSession {
 					throw error;
 				}
 			},
-			sessionUpdate: ({ update }) => {
+			sessionUpdate: ({ sessionId: updateSessionId, update }) => {
+				if (
+					this.cancelled ||
+					runtimeGeneration !== this.runtimeGeneration ||
+					this.modelVisibilityFault ||
+					(this.sessionId !== null && updateSessionId !== this.sessionId)
+				) {
+					return;
+				}
+				if (update.sessionUpdate === "config_option_update") {
+					this.adoptConfigNotification(update.configOptions, runtimeGeneration);
+					return;
+				}
 				if (this.loadingSessionReplay) {
 					if (update.sessionUpdate === "available_commands_update") {
 						this.commands = update.availableCommands.map((command) => ({
@@ -1836,10 +2116,6 @@ class AcpSession implements AgentSession {
 				}
 				if (update.sessionUpdate === "current_mode_update" && this.modes) {
 					this.modes = { ...this.modes, currentModeId: update.currentModeId };
-					this.publishSessionConfig();
-				}
-				if (update.sessionUpdate === "config_option_update") {
-					this.configOptions = update.configOptions;
 					this.publishSessionConfig();
 				}
 				if (update.sessionUpdate === "plan") {
@@ -1998,6 +2274,7 @@ class AcpSession implements AgentSession {
 		}
 		this.modes = modes ?? null;
 		this.configOptions = configOptions ?? [];
+		await this.enforceProviderDefaultModelVisibility();
 		this.initialConfigValues.clear();
 		for (const option of this.configOptions) {
 			if (option.type === "select") {
@@ -2022,11 +2299,12 @@ class AcpSession implements AgentSession {
 				this.modes.availableModes.filter((mode) => mode.id !== planningModeId),
 			);
 		}
+		const requestedModel = this.params.model || undefined;
 		await this.setConfigValue(
 			"model",
-			this.params.model && this.options.requestModel
-				? this.options.requestModel(this.params.model)
-				: this.params.model,
+			requestedModel && this.options.requestModel
+				? this.options.requestModel(requestedModel)
+				: requestedModel,
 		);
 		await this.setConfigValue("thought_level", this.params.effort);
 		await this.syncPermissionMode(this.params.permissionMode ?? "default");
@@ -2036,7 +2314,9 @@ class AcpSession implements AgentSession {
 	}
 
 	async send(message: string): Promise<void> {
+		this.assertPromptAdmission();
 		await this.initialize();
+		this.assertPromptAdmission();
 		if (this.cancelled || !this.connection || !this.sessionId) return;
 		if (this.activePrompt && !this.activePrompt.settled) {
 			throw new Error("ACP session already has an active prompt");
@@ -2045,6 +2325,7 @@ class AcpSession implements AgentSession {
 			promise: Promise.resolve(),
 			startedAt: Date.now(),
 			settled: false,
+			controlsLocked: true,
 			suppressError: false,
 		};
 		active.promise = this.runPrompt(message);
@@ -2080,6 +2361,11 @@ class AcpSession implements AgentSession {
 		},
 	): Promise<void> {
 		if (!this.connection || !this.sessionId) return;
+		const identity: AcpRuntimeIdentity = {
+			generation: this.runtimeGeneration,
+			connection: this.connection,
+			sessionId: this.sessionId,
+		};
 		this.approvedHtmlPlanToolIds.clear();
 		this.htmlPlanReady = false;
 		this.nativePlanText = "";
@@ -2089,10 +2375,13 @@ class AcpSession implements AgentSession {
 		this.terminalToolCalls.clear();
 		this.clearToolProgress();
 		this.turnStartCostUsd = costStartUsd;
-		const response = await this.connection.prompt({
-			sessionId: this.sessionId,
+		const response = await identity.connection.prompt({
+			sessionId: identity.sessionId,
 			prompt: [{ type: "text", text: message }],
 		});
+		if (!this.runtimeIdentityIsCurrent(identity)) {
+			throw this.modelVisibilityFault ?? new AcpRuntimeSupersededError();
+		}
 		this.turns += 1;
 		if (response.usage) {
 			queryUsage.inputTokens += response.usage.inputTokens;
@@ -2160,6 +2449,7 @@ class AcpSession implements AgentSession {
 				return;
 			}
 		}
+		if (this.activePrompt) this.activePrompt.controlsLocked = false;
 		this.events.push({
 			type: "done",
 			...(this.latestCostUsd != null &&
@@ -2288,8 +2578,14 @@ class AcpSession implements AgentSession {
 	}
 
 	sessionConfig(): ProviderSessionConfigSnapshot | null {
-		return this.configNotificationsReady
-			? sessionConfigSnapshot(this.configOptions, this.modes)
+		return this.configNotificationsReady &&
+			!this.modelVisibilityFault &&
+			!this.runtimeRetirement
+			? sessionConfigSnapshot(
+					this.configOptions,
+					this.modes,
+					this.options.modelFilter,
+				)
 			: null;
 	}
 
@@ -2300,29 +2596,51 @@ class AcpSession implements AgentSession {
 			mode === "bypassPermissions" ||
 			mode === "plan"
 		) {
-			this.params.permissionMode = mode;
-			await this.runLiveControl(() => this.syncPermissionMode(mode));
+			this.assertControlAdmission();
+			if (!this.connection || !this.sessionId) {
+				this.params.permissionMode = mode;
+				return;
+			}
+			await this.runLiveControl(async () => {
+				await this.syncPermissionMode(mode);
+				this.params.permissionMode = mode;
+			});
 		}
 	}
 
 	async setModel(model?: string): Promise<void> {
-		this.params.model = model;
-		await this.runLiveControl(() =>
-			this.setConfigValue(
+		if (!acpModelVisible(model, this.options.modelFilter)) {
+			throw new Error(
+				`Model ${JSON.stringify(model)} is excluded by Hlid's ACP model visibility`,
+			);
+		}
+		this.assertControlAdmission();
+		if (!this.connection || !this.sessionId) {
+			this.params.model = model;
+			return;
+		}
+		await this.runLiveControl(async () => {
+			await this.setConfigValue(
 				"model",
 				model && this.options.requestModel
 					? this.options.requestModel(model)
 					: model,
 				true,
-			),
-		);
+			);
+			this.params.model = model;
+		});
 	}
 
 	async setEffort(effort: string): Promise<void> {
-		this.params.effort = effort;
-		await this.runLiveControl(() =>
-			this.setConfigValue("thought_level", effort),
-		);
+		this.assertControlAdmission();
+		if (!this.connection || !this.sessionId) {
+			this.params.effort = effort;
+			return;
+		}
+		await this.runLiveControl(async () => {
+			await this.setConfigValue("thought_level", effort);
+			this.params.effort = effort;
+		});
 	}
 
 	private async applyAdvertisedSessionMode(mode: string): Promise<void> {
@@ -2563,7 +2881,10 @@ export class AcpProvider implements AgentProvider {
 
 	async listModels(context?: { cwd: string }): Promise<ProviderModelInfo[]> {
 		const { configOptions: options } = await this.inspectMetadata(context?.cwd);
-		return sessionConfigSnapshot(options, null).models ?? [];
+		return (
+			sessionConfigSnapshot(options, null, this.options.modelFilter).models ??
+			[]
+		);
 	}
 
 	// fallow-ignore-next-line unused-class-member -- Invoked through AgentProvider by explicit capability discovery.
@@ -2665,6 +2986,11 @@ export class AcpProvider implements AgentProvider {
 	}
 
 	query(params: AgentQueryParams): AgentSession {
+		if (!acpModelVisible(params.model, this.options.modelFilter)) {
+			throw new Error(
+				`Model ${JSON.stringify(params.model)} is excluded by Hlid's ACP model visibility`,
+			);
+		}
 		return new AcpSession(this.options, params);
 	}
 }

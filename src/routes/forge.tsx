@@ -5,7 +5,7 @@ import { ForgeSettings } from "#/components/forge/ForgeSettings";
 import { useSettingsForm } from "#/hooks/useSettingsForm";
 import { optionalLoaderValue } from "#/lib/loaderFallback";
 import type { ProviderInfo } from "#/lib/providerTypes";
-import { getAcpRegistryFn } from "#/lib/serverFns/acp";
+import { discoverAcpModelsFn, getAcpRegistryFn } from "#/lib/serverFns/acp";
 import {
 	getCliProxyInfoFn,
 	refreshCliProxyInfoFn,
@@ -241,6 +241,10 @@ function SettingsPage() {
 		const error = providerOptionRefreshError(providerId, providers);
 		if (error) throw error;
 	}, []);
+	const discoverAcpModels = useCallback(
+		(id: string) => discoverAcpModelsFn({ data: { id } }),
+		[],
+	);
 
 	useEffect(() => {
 		setInventory({
@@ -274,6 +278,7 @@ function SettingsPage() {
 			inventoryStatus={inventoryStatus}
 			onRetryInventory={() => refreshInventory(true)}
 			onRefreshProviderOptions={refreshProviderOptions}
+			onDiscoverAcpModels={discoverAcpModels}
 		/>
 	);
 }

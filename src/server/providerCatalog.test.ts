@@ -1962,6 +1962,137 @@ describe("createProviderCatalogSnapshot", () => {
 		expect(load).toHaveBeenCalledTimes(2);
 	});
 
+	it("retries a versioned live refresh invalidated by a runtime replacement", async () => {
+		let resolveFirst: ((value: ProviderInfo[]) => void) | undefined;
+		const load = vi
+			.fn()
+			.mockImplementationOnce(
+				() =>
+					new Promise<ProviderInfo[]>((resolve) => {
+						resolveFirst = resolve;
+					}),
+			)
+			.mockResolvedValueOnce([
+				{
+					id: "acp:test",
+					label: "ACP Test",
+					available: true,
+					models: [{ value: "new", label: "New" }],
+				},
+			]);
+		const snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "acp:test" })],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+
+		const versioned = snapshot.getVersioned({ refresh: true });
+		snapshot.invalidate();
+		resolveFirst?.([
+			{
+				id: "acp:test",
+				label: "ACP Test",
+				available: true,
+				models: [{ value: "old", label: "Old" }],
+			},
+		]);
+
+		const result = await versioned;
+		expect(result.providers).toEqual([
+			expect.objectContaining({
+				models: [{ value: "new", label: "New" }],
+			}),
+		]);
+		expect(snapshot.isCurrentVersion(result.version)).toBe(true);
+		expect(load).toHaveBeenCalledTimes(2);
+	});
+
+	it("retries a targeted live refresh after another provider changes metadata", async () => {
+		let resolveFirst: ((value: ProviderInfo[]) => void) | undefined;
+		const load = vi
+			.fn()
+			.mockImplementationOnce(
+				() =>
+					new Promise<ProviderInfo[]>((resolve) => {
+						resolveFirst = resolve;
+					}),
+			)
+			.mockResolvedValueOnce([
+				{
+					id: "acp:a",
+					label: "ACP A",
+					available: true,
+					models: [{ value: "a/new", label: "A New" }],
+				},
+			]);
+		const snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "acp:a" })],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+
+		const versioned = snapshot.getVersioned({
+			refresh: true,
+			refreshProviderId: "acp:a",
+		});
+		snapshot.invalidateMetadata("acp:b");
+		resolveFirst?.([
+			{
+				id: "acp:a",
+				label: "ACP A",
+				available: true,
+				models: [{ value: "a/old", label: "A Old" }],
+			},
+		]);
+
+		const result = await versioned;
+		expect(result.providers[0]?.models).toEqual([
+			{ value: "a/new", label: "A New" },
+		]);
+		expect(snapshot.isCurrentVersion(result.version)).toBe(true);
+		expect(load).toHaveBeenCalledTimes(2);
+	});
+
+	it("keeps a targeted live refresh across its own metadata publication", async () => {
+		let snapshot!: ReturnType<typeof createProviderCatalogSnapshot>;
+		const load = vi.fn(async () => {
+			snapshot.invalidateMetadata("acp:a");
+			return [
+				{
+					id: "acp:a",
+					label: "ACP A",
+					available: true,
+					models: [{ value: "a/current", label: "A Current" }],
+				},
+			];
+		});
+		snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "acp:a" })],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+
+		const result = await snapshot.getVersioned({
+			refresh: true,
+			refreshProviderId: "acp:a",
+		});
+
+		expect(result.providers[0]?.models).toEqual([
+			{ value: "a/current", label: "A Current" },
+		]);
+		expect(snapshot.isCurrentVersion(result.version)).toBe(true);
+		expect(load).toHaveBeenCalledOnce();
+	});
+
 	it("does not let an older base refresh overwrite a newer rich projection", async () => {
 		let resolveBase: ((value: ProviderInfo[]) => void) | undefined;
 		let resolveRich: ((value: ProviderInfo[]) => void) | undefined;

@@ -21,7 +21,16 @@ vi.mock("#/components/forge/UpdatesSection", () => ({
 }));
 
 vi.mock("#/components/forge/AcpSection", () => ({
-	AcpSection: () => <div>ACP catalog content</div>,
+	AcpSection: ({
+		workspaceConfigurationCurrent,
+	}: {
+		workspaceConfigurationCurrent?: boolean;
+	}) => (
+		<div>
+			ACP catalog content ·{" "}
+			{workspaceConfigurationCurrent ? "runtime current" : "runtime pending"}
+		</div>
+	),
 }));
 vi.mock("#/components/forge/ApiSection", () => ({
 	ApiSection: () => <div>API reference content</div>,
@@ -215,6 +224,36 @@ describe("ForgeSettings search", () => {
 		expect(screen.queryByRole("button", { name: "Retry save" })).toBeNull();
 	});
 
+	it("offers an ACP runtime retry after the config was persisted with a sync warning", () => {
+		const save = vi.fn();
+		render(
+			<ForgeSettings
+				initial={{} as never}
+				state={
+					{
+						saving: false,
+						dirty: false,
+						error: null,
+						warning:
+							"ACP runtime synchronization failed: provider registry unavailable.",
+						acpRuntimePending: true,
+						savedMsg: "saved",
+						save,
+						ui: {
+							theme: "tan",
+							mobileTheme: "same",
+							customTheme: TAN_THEME,
+							mobileCustomTheme: TAN_THEME,
+						},
+					} as never
+				}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "Retry ACP sync" }));
+		expect(save).toHaveBeenCalledOnce();
+	});
+
 	it("wraps long header statuses without hiding recovery actions", () => {
 		const error =
 			"Could not save a configuration path with anextremelylongunbrokentokenfromthebackend";
@@ -255,7 +294,7 @@ describe("ForgeSettings search", () => {
 	});
 });
 
-function renderSettings() {
+function renderSettings(stateOverrides: Record<string, unknown> = {}) {
 	return render(
 		<ForgeSettings
 			initial={
@@ -273,11 +312,14 @@ function renderSettings() {
 					saving: false,
 					dirty: false,
 					error: null,
+					warning: null,
+					acpRuntimePending: false,
 					savedMsg: null,
 					save: vi.fn(),
 					claude: { vaultProvider: "claude" },
 					codex: {},
 					vault: { path: "/tmp/vault" },
+					persistedVaultPath: "/tmp/vault",
 					vocab: {},
 					autoSleep: {},
 					projectPreview: {},
@@ -290,6 +332,7 @@ function renderSettings() {
 					},
 					voice: {},
 					acpAgents: [],
+					persistedAcpAgents: [],
 					umbod: {},
 					changeClaude: vi.fn(),
 					setVault: vi.fn(),
@@ -301,6 +344,7 @@ function renderSettings() {
 					setVoice: vi.fn(),
 					setAcpAgents: vi.fn(),
 					setUmbod: vi.fn(),
+					...stateOverrides,
 				} as never
 			}
 		/>,
@@ -381,6 +425,19 @@ describe("ForgeSettings category navigation", () => {
 		expect(screen.getByRole("heading", { name: "Umbod" })).toBeTruthy();
 		fireEvent.click(screen.getByRole("button", { name: "← Integrations" }));
 		expect(screen.getByRole("heading", { name: "Integrations" })).toBeTruthy();
+	});
+
+	it("keeps the ACP catalog live controls gated while runtime sync is pending", () => {
+		renderSettings({ acpRuntimePending: true });
+		fireEvent.change(
+			screen.getByRole("combobox", { name: "Filtered Forge category" }),
+			{ target: { value: "integrations" } },
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Open integrations" }));
+
+		expect(
+			screen.getByText(/ACP catalog content · runtime pending/),
+		).toBeTruthy();
 	});
 
 	it("switches between developer event, API, and pricing views", () => {

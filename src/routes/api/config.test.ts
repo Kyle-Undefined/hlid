@@ -90,6 +90,32 @@ describe("POST /api/config — handlePostConfig", () => {
 		expect(writeConfig).toHaveBeenCalledWith(current);
 	});
 
+	it("keeps ACP environment values out of GET responses and preserves them on save", async () => {
+		const current = HlidConfigSchema.parse({
+			acp_agents: [
+				{
+					id: "opencode",
+					env: {
+						OPENCODE_CONFIG_CONTENT: '{"provider":{"opencode":{}}}',
+						TOKEN: "external-secret",
+					},
+				},
+			],
+		});
+		mockLoadConfig.mockReturnValue(current);
+
+		const getResponse = await handleGetConfig(get());
+		const publicValue = (await getResponse.json()) as typeof current;
+		expect(publicValue.acp_agents?.[0]?.env).toEqual({
+			OPENCODE_CONFIG_CONTENT: "__HLID_SECRET_SET__",
+			TOKEN: "__HLID_SECRET_SET__",
+		});
+
+		const postResponse = await handlePostConfig(post(publicValue));
+		expect(postResponse.status).toBe(200);
+		expect(writeConfig).toHaveBeenCalledWith(current);
+	});
+
 	it("waits for runtime synchronization when Codex Live changes", async () => {
 		let finishRuntimeSync: (response: Response) => void = () => {};
 		const runtimeSync = new Promise<Response>((resolve) => {
@@ -116,6 +142,7 @@ describe("POST /api/config — handlePostConfig", () => {
 		expect(await response.json()).toEqual({
 			ok: true,
 			runtime_synced: true,
+			acp_runtime_synced: true,
 		});
 	});
 
@@ -147,6 +174,7 @@ describe("POST /api/config — handlePostConfig", () => {
 		expect(await response.json()).toEqual({
 			ok: true,
 			runtime_synced: false,
+			acp_runtime_synced: true,
 			warning,
 		});
 		expect(writeConfig).toHaveBeenCalledWith(next);
@@ -205,6 +233,7 @@ describe("POST /api/config — handlePostConfig", () => {
 		expect(await (await pending).json()).toEqual({
 			ok: true,
 			runtime_synced: true,
+			acp_runtime_synced: true,
 		});
 	});
 
@@ -225,6 +254,7 @@ describe("POST /api/config — handlePostConfig", () => {
 		expect(await response.json()).toEqual({
 			ok: true,
 			runtime_synced: true,
+			acp_runtime_synced: true,
 		});
 	});
 
@@ -244,11 +274,145 @@ describe("POST /api/config — handlePostConfig", () => {
 		expect(await response.json()).toEqual({
 			ok: true,
 			runtime_synced: false,
+			acp_runtime_synced: false,
 			warning:
 				"ACP runtime synchronization failed: provider registry unavailable.",
 		});
 		expect(writeConfig).toHaveBeenCalledWith(next);
 		warn.mockRestore();
+	});
+
+	it("retries ACP synchronization for an identical persisted config after a transient failure", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const current = HlidConfigSchema.parse({});
+		const next = HlidConfigSchema.parse({
+			acp_agents: [{ id: "opencode" }],
+		});
+		mockLoadConfig.mockReturnValueOnce(current).mockReturnValue(next);
+		let acpSyncAttempts = 0;
+		vi.mocked(dbFetch).mockImplementation((path) => {
+			if (path !== "/acp/sync") return Promise.resolve(new Response());
+			acpSyncAttempts += 1;
+			return acpSyncAttempts === 1
+				? Promise.reject(new Error("provider registry unavailable"))
+				: Promise.resolve(new Response());
+		});
+
+		const first = await handlePostConfig(post(next));
+		expect(await first.json()).toMatchObject({
+			ok: true,
+			runtime_synced: false,
+			acp_runtime_synced: false,
+		});
+
+		const retry = await handlePostConfig(post(next));
+
+		expect(await retry.json()).toEqual({
+			ok: true,
+			runtime_synced: true,
+			acp_runtime_synced: true,
+		});
+		expect(acpSyncAttempts).toBe(2);
+		expect(writeConfig).toHaveBeenCalledTimes(2);
+		warn.mockRestore();
+	});
+
+	it("includes an actionable ACP overlay error in the runtime warning", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		vi.mocked(dbFetch).mockImplementation((path) =>
+			path === "/acp/sync"
+				? Promise.resolve(
+						Response.json(
+							{
+								error:
+									"Cannot apply Hlid's OpenCode model filter: inline config conflict",
+							},
+							{ status: 409 },
+						),
+					)
+				: Promise.resolve(new Response()),
+		);
+		const next = HlidConfigSchema.parse({
+			acp_agents: [
+				{
+					id: "opencode",
+					model_filter: { mode: "hide", models: ["opencode/model-a"] },
+				},
+			],
+		});
+
+		const response = await handlePostConfig(post(next));
+
+		expect(await response.json()).toEqual({
+			ok: true,
+			runtime_synced: false,
+			acp_runtime_synced: false,
+			warning:
+				"ACP runtime synchronization returned 409: Cannot apply Hlid's OpenCode model filter: inline config conflict.",
+		});
+		expect(writeConfig).toHaveBeenCalledWith(next);
+		warn.mockRestore();
+	});
+
+	it("preflights the OpenCode overlay before writing config", async () => {
+		const next = HlidConfigSchema.parse({
+			acp_agents: [
+				{
+					id: "opencode",
+					env: {
+						OPENCODE_CONFIG_CONTENT: '{"secret":"must-not-leak",',
+					},
+					model_filter: { mode: "hide", models: ["opencode/model-a"] },
+				},
+			],
+		});
+
+		const response = await handlePostConfig(post(next));
+		const body = (await response.json()) as { error: string };
+
+		expect(response.status).toBe(400);
+		expect(body.error).toContain("OPENCODE_CONFIG_CONTENT is invalid");
+		expect(body.error).not.toContain("must-not-leak");
+		expect(writeConfig).not.toHaveBeenCalled();
+		expect(dbFetch).not.toHaveBeenCalled();
+	});
+
+	it("preflights the resolved ACP environment before writing config", async () => {
+		vi.mocked(dbFetch).mockImplementation((path) =>
+			path === "/acp/preflight"
+				? Promise.resolve(
+						Response.json(
+							{
+								error:
+									"Cannot apply Hlid's OpenCode model filter: registry inline config is invalid.",
+							},
+							{ status: 409 },
+						),
+					)
+				: Promise.resolve(new Response()),
+		);
+		const next = HlidConfigSchema.parse({
+			acp_agents: [
+				{
+					id: "opencode",
+					model_filter: { mode: "hide", models: ["opencode/model-a"] },
+				},
+			],
+		});
+
+		const response = await handlePostConfig(post(next));
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({
+			error:
+				"Cannot apply Hlid's OpenCode model filter: registry inline config is invalid.",
+		});
+		expect(writeConfig).not.toHaveBeenCalled();
+		expect(dbFetch).toHaveBeenCalledWith("/acp/preflight", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(next),
+		});
 	});
 
 	it.each([

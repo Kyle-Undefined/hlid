@@ -291,7 +291,12 @@ agent({ name: "hlid-fake-agent" })
 		if (behavior === "hang-config") await stall("config option");
 		const session = sessions.get(params.sessionId);
 		if (session && params.configId === "model") {
-			session.model = params.value;
+			session.model =
+				behavior === "misreport-model-selection"
+					? "fake-smart"
+					: behavior === "misreport-allowed-model-selection"
+						? "fake-fast"
+						: params.value;
 			if (dependentConfigBehavior && params.value === "fake-smart") {
 				session.effort = "high";
 			}
@@ -307,13 +312,37 @@ agent({ name: "hlid-fake-agent" })
 				},
 			});
 		}
-		return { configOptions: configOptions(session) };
+		if (
+			behavior === "excluded-notification-during-config" &&
+			session &&
+			params.configId === "model"
+		) {
+			session.model = "fake-smart";
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "config_option_update",
+					configOptions: configOptions(session),
+				},
+			});
+			session.model = params.value;
+		}
+		const responseOptions = configOptions(session);
+		return {
+			configOptions:
+				behavior === "missing-model-selection" && params.configId === "model"
+					? responseOptions.filter((option) => option.id !== "model")
+					: responseOptions,
+		};
 	})
 	.onNotification("session/cancel", ({ params }) => {
 		const session = sessions.get(params.sessionId);
 		if (session && !session.ignoreCancel) session.cancelled = true;
 	})
 	.onRequest("session/prompt", async ({ params, client }) => {
+		if (process.env.HLID_FAKE_ACP_PROMPT_MARKER) {
+			appendFileSync(process.env.HLID_FAKE_ACP_PROMPT_MARKER, "prompt\n");
+		}
 		const text =
 			params.prompt.find((block) => block.type === "text")?.text ?? "";
 		if (text === "transport-error") process.exit(2);
@@ -327,6 +356,47 @@ agent({ name: "hlid-fake-agent" })
 			const session = sessions.get(params.sessionId);
 			if (session) session.ignoreCancel = true;
 			await never();
+		}
+		if (text === "exclude-model-notification") {
+			const session = sessions.get(params.sessionId);
+			if (session) session.model = "fake-fast";
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "config_option_update",
+					configOptions: configOptions(session),
+				},
+			});
+			return { stopReason: "end_turn" };
+		}
+		if (
+			text === "exclude-model-active" ||
+			text === "missing-model-notification"
+		) {
+			const session = sessions.get(params.sessionId);
+			if (session) session.model = "fake-fast";
+			const options = configOptions(session);
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "config_option_update",
+					configOptions:
+						text === "missing-model-notification"
+							? options.filter((option) => option.id !== "model")
+							: options,
+				},
+			});
+			for (let index = 0; index < 5; index += 1) {
+				await new Promise((resolve) => setTimeout(resolve, 10));
+				await client.notify(methods.client.session.update, {
+					sessionId: params.sessionId,
+					update: {
+						sessionUpdate: "agent_message_chunk",
+						content: { type: "text", text: "post-fault-output" },
+					},
+				});
+			}
+			return { stopReason: "end_turn" };
 		}
 		if (text === "report-mode") {
 			await client.notify(methods.client.session.update, {

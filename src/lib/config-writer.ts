@@ -20,7 +20,7 @@ function tomlVal(value: unknown): string {
 	return JSON.stringify(value);
 }
 
-function tomlInlineTable(value: Record<string, string>): string {
+function tomlInlineTable(value: Record<string, unknown>): string {
 	return `{ ${Object.entries(value)
 		.map(([key, item]) => `${JSON.stringify(key)} = ${tomlVal(item)}`)
 		.join(", ")} }`;
@@ -270,6 +270,9 @@ function serializeAcpAgent(
 		...optionalEntry("executable", agent.executable),
 		...optionalEntry("args", agent.args),
 		...(agent.env ? [`env = ${tomlInlineTable(agent.env)}`] : []),
+		...(agent.model_filter
+			? [`model_filter = ${tomlInlineTable(agent.model_filter)}`]
+			: []),
 		...optionalEntry("model", agent.model),
 		...optionalEntry("effort", agent.effort),
 		...optionalEntry("permission_mode", agent.permission_mode),

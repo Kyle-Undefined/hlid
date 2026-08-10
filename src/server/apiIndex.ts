@@ -95,6 +95,18 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		desc: 'Inspect or authenticate an enabled ACP agent. Body: {"id": string, "methodId"?: string}.',
 	},
 	{
+		method: "POST",
+		path: "/acp/preflight",
+		server: "api",
+		desc: "Validate a draft Hlid config against resolved ACP invocation environments before Forge persists it.",
+	},
+	{
+		method: "GET",
+		path: "/acp/models?id=opencode",
+		server: "api",
+		desc: "Inspect an enabled ACP agent's live model catalog without Hlid's OpenCode model-visibility overlay. Used on demand by Forge so filtered-out models remain editable.",
+	},
+	{
 		method: "GET",
 		path: "/account",
 		server: "api",
@@ -529,13 +541,13 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		method: "GET",
 		path: "/api/config",
 		server: "ui",
-		desc: "Read the validated public Hlid config projection. An existing CLIProxy API key is replaced with the __HLID_SECRET_SET__ sentinel.",
+		desc: "Read the validated public Hlid config projection. Existing CLIProxy credentials and ACP environment values are replaced with the __HLID_SECRET_SET__ sentinel.",
 	},
 	{
 		method: "POST",
 		path: "/api/config",
 		server: "ui",
-		desc: "Validate and replace the complete Hlid config, not a partial patch. The secret sentinel preserves the existing CLIProxy key; voice and CLIProxy synchronize immediately, while other changes may require a session reload or restart.",
+		desc: "Validate and replace the complete Hlid config, not a partial patch. Secret sentinels preserve existing CLIProxy and ACP environment values; voice, CLIProxy, and changed ACP runtimes synchronize immediately, while other changes may require a session reload or restart.",
 	},
 	{
 		method: "GET",

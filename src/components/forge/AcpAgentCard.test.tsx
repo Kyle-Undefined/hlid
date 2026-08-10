@@ -1,12 +1,22 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
 	AcpAgentInfo,
 	AcpAuthMethod,
 	AcpCatalogItem,
 } from "#/lib/serverFns/acp";
-import { AcpAgentCard, type AcpAgentConfig } from "./AcpAgentCard";
+import {
+	AcpAgentCard,
+	type AcpAgentConfig,
+	type AcpModelOption,
+} from "./AcpAgentCard";
 
 afterEach(cleanup);
 
@@ -32,12 +42,16 @@ function renderCard(
 		disabled: boolean;
 		authMethods: AcpAuthMethod[] | undefined;
 		agentInfo: AcpAgentInfo | null | undefined;
+		models: AcpModelOption[] | undefined;
 		optionsRefreshed: boolean;
 		configurationCurrent: boolean;
 		onToggle: () => void;
 		onUpdateOverride: (patch: Partial<AcpAgentConfig>) => void;
 		onInspect: (methodId?: string) => void;
 		onRefreshOptions: () => void;
+		onDiscoverModels:
+			| (() => Promise<Array<{ value: string; label: string }> | undefined>)
+			| undefined;
 	}>,
 ) {
 	const props = {
@@ -47,16 +61,22 @@ function renderCard(
 		disabled: false,
 		authMethods: undefined,
 		agentInfo: undefined,
+		models: undefined,
 		optionsRefreshed: false,
 		configurationCurrent: true,
 		onToggle: vi.fn(),
 		onUpdateOverride: vi.fn(),
 		onInspect: vi.fn(),
 		onRefreshOptions: vi.fn(),
+		onDiscoverModels: undefined,
 		...overrides,
 	};
-	render(<AcpAgentCard {...props} />);
-	return props;
+	const rendered = render(<AcpAgentCard {...props} />);
+	return {
+		...props,
+		rerenderCard: (next: Partial<typeof props>): void =>
+			rendered.rerender(<AcpAgentCard {...props} {...next} />),
+	};
 }
 
 describe("AcpAgentCard", () => {
@@ -101,6 +121,29 @@ describe("AcpAgentCard", () => {
 		}
 		expect(onInspect).not.toHaveBeenCalled();
 		expect(onRefreshOptions).not.toHaveBeenCalled();
+	});
+
+	it("keeps staged OpenCode filters editable while live discovery waits for save", () => {
+		const discover = vi.fn().mockResolvedValue([]);
+		renderCard({
+			item: makeItem({ id: "opencode", name: "OpenCode" }),
+			configured: { id: "opencode" } as AcpAgentConfig,
+			configurationCurrent: false,
+			onDiscoverModels: discover,
+		});
+
+		const refresh = screen.getByRole("button", {
+			name: "Refresh full model list",
+		}) as HTMLButtonElement;
+		const onlySelected = screen.getByRole("radio", {
+			name: /Only selected/i,
+		}) as HTMLInputElement;
+		expect(refresh.disabled).toBe(true);
+		expect(onlySelected.disabled).toBe(false);
+		fireEvent.click(onlySelected);
+		expect(onlySelected.checked).toBe(true);
+		fireEvent.click(refresh);
+		expect(discover).not.toHaveBeenCalled();
 	});
 
 	it("shows the negotiated installed agent identity after inspection", () => {
@@ -205,6 +248,438 @@ describe("AcpAgentCard", () => {
 		).toBeTruthy();
 		expect(screen.getByText("Available through ACP")).toBeTruthy();
 		expect(screen.getByText("Connection boundary")).toBeTruthy();
+		expect(screen.getByText("Model visibility")).toBeTruthy();
+		expect(
+			screen.getByText(
+				"Applies only to OpenCode ACP sessions launched from this Hlid integration. Standalone OpenCode and CLIProxy keep their own model configuration. Defaults excluded by the filter reset to OpenCode's provider default.",
+			),
+		).toBeTruthy();
+	});
+
+	it("stages OpenCode model selections until one apply action", () => {
+		const { onUpdateOverride } = renderCard({
+			item: makeItem({ id: "opencode", name: "OpenCode" }),
+			configured: { id: "opencode" } as AcpAgentConfig,
+			models: [
+				{
+					value: "anthropic/claude-sonnet-4-6",
+					label: "Claude Sonnet 4.6",
+				},
+				{ value: "openai/gpt-5.4", label: "GPT-5.4" },
+			],
+		});
+
+		fireEvent.click(screen.getByRole("radio", { name: /Hide selected/i }));
+		fireEvent.click(
+			screen.getByRole("checkbox", { name: /Claude Sonnet 4\.6/i }),
+		);
+		expect(onUpdateOverride).not.toHaveBeenCalled();
+		expect(
+			screen.getByText("Changes are staged until you apply them."),
+		).toBeTruthy();
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Apply model visibility" }),
+		);
+		expect(onUpdateOverride).toHaveBeenCalledOnce();
+		expect(onUpdateOverride).toHaveBeenCalledWith({
+			model_filter: {
+				mode: "hide",
+				models: ["anthropic/claude-sonnet-4-6"],
+			},
+		});
+	});
+
+	it("treats an empty hide selection as Use all without persisting", () => {
+		const { onUpdateOverride } = renderCard({
+			item: makeItem({ id: "opencode", name: "OpenCode" }),
+			configured: { id: "opencode" } as AcpAgentConfig,
+			models: [{ value: "openai/gpt-5.4", label: "GPT-5.4" }],
+		});
+
+		fireEvent.click(screen.getByRole("radio", { name: /Hide selected/i }));
+		expect(
+			screen.getByText(
+				"Choose at least one model before applying Hide selected.",
+			),
+		).toBeTruthy();
+		const apply = screen.getByRole("button", {
+			name: "Apply model visibility",
+		}) as HTMLButtonElement;
+		expect(apply.disabled).toBe(true);
+		fireEvent.click(apply);
+		expect(onUpdateOverride).not.toHaveBeenCalled();
+	});
+
+	it("rejects hiding every currently known OpenCode model", () => {
+		const { onUpdateOverride } = renderCard({
+			item: makeItem({ id: "opencode", name: "OpenCode" }),
+			configured: { id: "opencode" } as AcpAgentConfig,
+			models: [
+				{
+					value: "anthropic/claude-sonnet-4-6",
+					label: "Claude Sonnet 4.6",
+				},
+				{ value: "openai/gpt-5.4", label: "GPT-5.4" },
+			],
+		});
+
+		fireEvent.click(screen.getByRole("radio", { name: /Hide selected/i }));
+		fireEvent.click(
+			screen.getByRole("checkbox", { name: /Claude Sonnet 4\.6/i }),
+		);
+		fireEvent.click(screen.getByRole("checkbox", { name: /GPT-5\.4/i }));
+
+		expect(
+			screen.getByText(
+				"Hide selected cannot hide every currently known model. Disable OpenCode instead.",
+			),
+		).toBeTruthy();
+		const apply = screen.getByRole("button", {
+			name: "Apply model visibility",
+		}) as HTMLButtonElement;
+		expect(apply.disabled).toBe(true);
+		fireEvent.click(apply);
+		expect(onUpdateOverride).not.toHaveBeenCalled();
+	});
+
+	it("allows replacing a narrowed allowlist with a hide filter", () => {
+		const { onUpdateOverride } = renderCard({
+			item: makeItem({ id: "opencode", name: "OpenCode" }),
+			configured: {
+				id: "opencode",
+				model_filter: {
+					mode: "only",
+					models: ["openai/gpt-5.4"],
+				},
+			} as AcpAgentConfig,
+			models: [{ value: "openai/gpt-5.4", label: "GPT-5.4" }],
+		});
+
+		fireEvent.click(screen.getByRole("radio", { name: /Hide selected/i }));
+		expect(
+			screen.queryByText(/cannot hide every currently known model/i),
+		).toBeNull();
+		fireEvent.click(
+			screen.getByRole("button", { name: "Apply model visibility" }),
+		);
+
+		expect(onUpdateOverride).toHaveBeenCalledWith({
+			model_filter: {
+				mode: "hide",
+				models: ["openai/gpt-5.4"],
+			},
+		});
+	});
+
+	it("can replace a narrowed catalog with a separately discovered full model list", async () => {
+		const discover = vi.fn().mockResolvedValue([
+			{
+				value: "anthropic/claude-sonnet-4-6",
+				label: "Claude Sonnet 4.6",
+			},
+			{ value: "openai/gpt-5.4", label: "GPT-5.4" },
+		]);
+		renderCard({
+			item: makeItem({ id: "opencode", name: "OpenCode" }),
+			configured: {
+				id: "opencode",
+				model_filter: {
+					mode: "only",
+					models: ["openai/gpt-5.4"],
+				},
+			} as AcpAgentConfig,
+			models: [{ value: "openai/gpt-5.4", label: "GPT-5.4" }],
+			onDiscoverModels: discover,
+		});
+
+		expect(screen.queryByText("Claude Sonnet 4.6")).toBeNull();
+		fireEvent.click(
+			screen.getByRole("button", { name: "Refresh full model list" }),
+		);
+
+		expect(await screen.findByText("Claude Sonnet 4.6")).toBeTruthy();
+		expect(
+			screen.getByText("Full OpenCode model list refreshed."),
+		).toBeTruthy();
+		expect(discover).toHaveBeenCalledOnce();
+	});
+
+	it("keeps the last model list when full discovery fails", async () => {
+		renderCard({
+			item: makeItem({ id: "opencode", name: "OpenCode" }),
+			configured: {
+				id: "opencode",
+				model_filter: {
+					mode: "hide",
+					models: ["openai/gpt-5.4"],
+				},
+			} as AcpAgentConfig,
+			models: [{ value: "openai/gpt-5.4", label: "GPT-5.4" }],
+			onDiscoverModels: vi
+				.fn()
+				.mockRejectedValue(new Error("Unfiltered discovery timed out")),
+		});
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Refresh full model list" }),
+		);
+
+		expect(
+			await screen.findByText(
+				"Unfiltered discovery timed out. Showing the last available model list.",
+			),
+		).toBeTruthy();
+		expect(screen.getByRole("checkbox", { name: /GPT-5\.4/i })).toBeTruthy();
+	});
+
+	it("ignores a full-model response after the runtime configuration changes", async () => {
+		let resolveDiscovery: ((models: AcpModelOption[]) => void) | undefined;
+		const discover = vi.fn(
+			() =>
+				new Promise<AcpModelOption[]>((resolve) => {
+					resolveDiscovery = resolve;
+				}),
+		);
+		const { rerenderCard } = renderCard({
+			item: makeItem({ id: "opencode", name: "OpenCode" }),
+			configured: { id: "opencode" } as AcpAgentConfig,
+			models: [{ value: "openai/gpt-5.4", label: "GPT-5.4" }],
+			onDiscoverModels: discover,
+		});
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Refresh full model list" }),
+		);
+		rerenderCard({ configurationCurrent: false });
+		await act(async () => {
+			resolveDiscovery?.([
+				{
+					value: "anthropic/claude-sonnet-4-6",
+					label: "Claude Sonnet 4.6",
+				},
+			]);
+		});
+
+		expect(discover).toHaveBeenCalledOnce();
+		expect(screen.queryByText("Claude Sonnet 4.6")).toBeNull();
+		expect(
+			screen.queryByText("Full OpenCode model list refreshed."),
+		).toBeNull();
+	});
+
+	it("ignores a full-model response after the registry invocation changes", async () => {
+		let resolveDiscovery: ((models: AcpModelOption[]) => void) | undefined;
+		const discover = vi.fn(
+			() =>
+				new Promise<AcpModelOption[]>((resolve) => {
+					resolveDiscovery = resolve;
+				}),
+		);
+		const original = makeItem({
+			id: "opencode",
+			name: "OpenCode",
+			command: "opencode",
+			args: ["acp"],
+		});
+		const { rerenderCard } = renderCard({
+			item: original,
+			configured: { id: "opencode" } as AcpAgentConfig,
+			onDiscoverModels: discover,
+		});
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Refresh full model list" }),
+		);
+		rerenderCard({ item: { ...original, args: ["acp", "--new"] } });
+		await act(async () => {
+			resolveDiscovery?.([
+				{
+					value: "anthropic/claude-sonnet-4-6",
+					label: "Claude Sonnet 4.6",
+				},
+			]);
+		});
+
+		expect(discover).toHaveBeenCalledOnce();
+		expect(screen.queryByText("Claude Sonnet 4.6")).toBeNull();
+		expect(
+			screen.queryByText("Full OpenCode model list refreshed."),
+		).toBeNull();
+	});
+
+	it("caps model-filter selections at the schema limit", () => {
+		const selectedModels = Array.from(
+			{ length: 256 },
+			(_, index) => `provider/model-${index}`,
+		);
+		renderCard({
+			item: makeItem({ id: "opencode", name: "OpenCode" }),
+			configured: {
+				id: "opencode",
+				model_filter: { mode: "only", models: selectedModels },
+			} as AcpAgentConfig,
+			models: [{ value: "provider/new-model", label: "New model" }],
+		});
+
+		const newModel = screen.getByRole("checkbox", {
+			name: /New model/i,
+		}) as HTMLInputElement;
+		expect(newModel.disabled).toBe(true);
+		expect(
+			screen.getByText(
+				"You can select up to 256 models. Clear one before selecting another.",
+			),
+		).toBeTruthy();
+
+		fireEvent.click(
+			screen.getByRole("checkbox", { name: /provider\/model-0/i }),
+		);
+		expect(newModel.disabled).toBe(false);
+	}, 15_000);
+
+	it("rejects an empty OpenCode allowlist", () => {
+		const { onUpdateOverride } = renderCard({
+			item: makeItem({ id: "opencode", name: "OpenCode" }),
+			configured: { id: "opencode" } as AcpAgentConfig,
+			models: [{ value: "openai/gpt-5.4", label: "GPT-5.4" }],
+		});
+
+		fireEvent.click(screen.getByRole("radio", { name: /Only selected/i }));
+		expect(
+			screen.getByText(
+				"Choose at least one model before applying Only selected.",
+			),
+		).toBeTruthy();
+		const apply = screen.getByRole("button", {
+			name: "Apply model visibility",
+		}) as HTMLButtonElement;
+		expect(apply.disabled).toBe(true);
+		fireEvent.click(apply);
+		expect(onUpdateOverride).not.toHaveBeenCalled();
+	});
+
+	it("preserves saved models missing from the current OpenCode catalog", () => {
+		renderCard({
+			item: makeItem({ id: "opencode", name: "OpenCode" }),
+			configured: {
+				id: "opencode",
+				model_filter: {
+					mode: "only",
+					models: ["retired/provider-model"],
+				},
+			} as AcpAgentConfig,
+			models: [{ value: "openai/gpt-5.4", label: "GPT-5.4" }],
+		});
+
+		expect(
+			(
+				screen.getByRole("checkbox", {
+					name: /retired\/provider-model/i,
+				}) as HTMLInputElement
+			).checked,
+		).toBe(true);
+		expect(
+			screen.getByText("Saved, but not currently advertised by OpenCode"),
+		).toBeTruthy();
+	});
+
+	it("keeps an unavailable saved model reversible while edits are staged", () => {
+		renderCard({
+			item: makeItem({ id: "opencode", name: "OpenCode" }),
+			configured: {
+				id: "opencode",
+				model_filter: {
+					mode: "only",
+					models: ["retired/provider-model"],
+				},
+			} as AcpAgentConfig,
+			models: [{ value: "openai/gpt-5.4", label: "GPT-5.4" }],
+		});
+
+		const retired = screen.getByRole("checkbox", {
+			name: /retired\/provider-model/i,
+		}) as HTMLInputElement;
+		fireEvent.click(retired);
+		expect(retired.checked).toBe(false);
+		expect(
+			screen.getByRole("checkbox", { name: /retired\/provider-model/i }),
+		).toBeTruthy();
+		fireEvent.click(retired);
+		expect(retired.checked).toBe(true);
+	});
+
+	it("clears OpenCode defaults excluded by an applied allowlist", () => {
+		const { onUpdateOverride } = renderCard({
+			item: makeItem({ id: "opencode", name: "OpenCode" }),
+			configured: {
+				id: "opencode",
+				model: "anthropic/claude-sonnet-4-6",
+				recap_model: "anthropic/claude-sonnet-4-6",
+			} as AcpAgentConfig,
+			models: [
+				{
+					value: "anthropic/claude-sonnet-4-6",
+					label: "Claude Sonnet 4.6",
+				},
+				{ value: "openai/gpt-5.4", label: "GPT-5.4" },
+			],
+		});
+
+		fireEvent.click(screen.getByRole("radio", { name: /Only selected/i }));
+		fireEvent.click(screen.getByRole("checkbox", { name: /GPT-5\.4/i }));
+		fireEvent.click(
+			screen.getByRole("button", { name: "Apply model visibility" }),
+		);
+
+		expect(onUpdateOverride).toHaveBeenCalledWith({
+			model_filter: {
+				mode: "only",
+				models: ["openai/gpt-5.4"],
+			},
+			model: undefined,
+			recap_model: undefined,
+		});
+	});
+
+	it("clears an OpenCode default selected for hiding", () => {
+		const { onUpdateOverride } = renderCard({
+			item: makeItem({ id: "opencode", name: "OpenCode" }),
+			configured: {
+				id: "opencode",
+				model: "openai/gpt-5.4",
+			} as AcpAgentConfig,
+			models: [
+				{ value: "openai/gpt-5.4", label: "GPT-5.4" },
+				{
+					value: "anthropic/claude-sonnet-4-6",
+					label: "Claude Sonnet 4.6",
+				},
+			],
+		});
+
+		fireEvent.click(screen.getByRole("radio", { name: /Hide selected/i }));
+		fireEvent.click(screen.getByRole("checkbox", { name: /GPT-5\.4/i }));
+		fireEvent.click(
+			screen.getByRole("button", { name: "Apply model visibility" }),
+		);
+
+		expect(onUpdateOverride).toHaveBeenCalledWith({
+			model_filter: {
+				mode: "hide",
+				models: ["openai/gpt-5.4"],
+			},
+			model: undefined,
+		});
+	});
+
+	it("does not show OpenCode model visibility for another ACP agent", () => {
+		renderCard({
+			configured: { id: "gemini" } as AcpAgentConfig,
+			models: [{ value: "gemini/2.5-pro", label: "Gemini 2.5 Pro" }],
+		});
+
+		expect(screen.queryByText("Model visibility")).toBeNull();
 	});
 
 	it("explains that OpenCode Desktop does not replace the required CLI", () => {

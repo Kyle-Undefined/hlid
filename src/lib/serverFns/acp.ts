@@ -1,7 +1,9 @@
 /** ACP agent registry and authentication server fns. */
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import { AcpModelCatalogSchema } from "#/lib/acpModelCatalog";
 import { dbFetch, dbJson, requireDbOk } from "#/lib/dbClient";
+import type { ProviderInfo } from "#/lib/providerTypes";
 import { optionalRefreshSchema, withRefreshQuery } from "#/lib/serverFnSchemas";
 
 export type AcpCatalogItem = {
@@ -39,7 +41,7 @@ export type AcpAgentInfo = {
 };
 
 const ACP_REGISTRY_REFRESH_TIMEOUT_MS = 15_000;
-
+const ACP_MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
 export async function loadAcpRegistry(
 	refresh = false,
 ): Promise<AcpCatalogItem[]> {
@@ -63,6 +65,26 @@ export async function loadAcpRegistry(
 export const getAcpRegistryFn = createServerFn({ method: "GET" })
 	.validator((raw) => optionalRefreshSchema.parse(raw))
 	.handler(({ data }) => loadAcpRegistry(data?.refresh));
+
+/** Live model inspection without Hlid's OpenCode visibility overlay. */
+export async function discoverAcpModels(
+	id: string,
+): Promise<NonNullable<ProviderInfo["models"]>> {
+	const response = await dbFetch(`/acp/models?id=${encodeURIComponent(id)}`, {
+		signal: AbortSignal.timeout(ACP_MODEL_DISCOVERY_TIMEOUT_MS),
+	});
+	await requireDbOk(response, "discover ACP models");
+	const payload = (await response.json()) as { models?: unknown };
+	const parsed = AcpModelCatalogSchema.safeParse(payload.models);
+	if (!parsed.success) {
+		throw new Error("ACP model discovery returned an invalid catalog");
+	}
+	return parsed.data as NonNullable<ProviderInfo["models"]>;
+}
+
+export const discoverAcpModelsFn = createServerFn({ method: "GET" })
+	.validator((raw) => z.object({ id: z.string().min(1).max(128) }).parse(raw))
+	.handler(({ data }) => discoverAcpModels(data.id));
 
 export const authenticateAcpFn = createServerFn({ method: "POST" })
 	.validator((raw) =>

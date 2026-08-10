@@ -28,4 +28,38 @@ describe("acpRuntimeIdentity", () => {
 			]),
 		).toBe(acpRuntimeIdentity([{ id: "opencode" }]));
 	});
+
+	it("includes model filters but ignores their selection order", () => {
+		const first = acpRuntimeIdentity([
+			{
+				id: "opencode",
+				model_filter: {
+					mode: "only",
+					models: ["opencode/model-b", "opencode/model-a"],
+				},
+			},
+		]);
+		const reordered = acpRuntimeIdentity([
+			{
+				id: "opencode",
+				model_filter: {
+					mode: "only",
+					models: ["opencode/model-a", "opencode/model-b"],
+				},
+			},
+		]);
+
+		expect(first).toBe(reordered);
+		expect(first).not.toBe(
+			acpRuntimeIdentity([
+				{
+					id: "opencode",
+					model_filter: {
+						mode: "hide",
+						models: ["opencode/model-a", "opencode/model-b"],
+					},
+				},
+			]),
+		);
+	});
 });

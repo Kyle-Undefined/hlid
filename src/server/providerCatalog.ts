@@ -723,10 +723,22 @@ type ProviderCatalogLoadOptions = NonNullable<
 	Parameters<typeof loadProviderCatalog>[2]
 >;
 
+type ProviderCatalogVersion = {
+	generation: number;
+	metadataVersion: number | string | null;
+	metadataExclusion?: string;
+};
+
 export type ProviderCatalogSnapshot = {
 	get(options?: ProviderCatalogLoadOptions): Promise<ProviderInfo[]>;
+	/** Resolve against one runtime generation, retrying an invalidated read. */
+	getVersioned(options?: ProviderCatalogLoadOptions): Promise<{
+		providers: ProviderInfo[];
+		version: ProviderCatalogVersion;
+	}>;
+	isCurrentVersion(version: ProviderCatalogVersion): boolean;
 	/** Invalidate derived metadata without superseding the live read producing it. */
-	invalidateMetadata(): void;
+	invalidateMetadata(providerId?: string): void;
 	invalidate(): void;
 };
 
@@ -758,6 +770,8 @@ export function createProviderCatalogSnapshot(
 	const inflight = new Map<string, Promise<ProviderInfo[]>>();
 	let generation = 0;
 	let metadataGeneration = 0;
+	let unscopedMetadataGeneration = 0;
+	const providerMetadataGenerations = new Map<string, number>();
 	let nextLiveRefresh = 0;
 	let nextCachedRefresh = 0;
 	const latestLiveRefresh = new Map<string, number>();
@@ -778,6 +792,36 @@ export function createProviderCatalogSnapshot(
 			? options.discoveryCwd()
 			: options.discoveryCwd) ??
 		process.cwd();
+	const metadataVersionExcept = (providerId: string): string =>
+		JSON.stringify({
+			unscoped: unscopedMetadataGeneration,
+			providers: [...providerMetadataGenerations]
+				.filter(([candidate]) => candidate !== providerId)
+				.sort(([a], [b]) => a.localeCompare(b)),
+		});
+	const versionFor = (
+		loadOptions: ProviderCatalogLoadOptions,
+	): ProviderCatalogVersion => ({
+		generation,
+		...(loadOptions.refresh
+			? loadOptions.refreshProviderId
+				? {
+						metadataVersion: metadataVersionExcept(
+							loadOptions.refreshProviderId,
+						),
+						metadataExclusion: loadOptions.refreshProviderId,
+					}
+				: { metadataVersion: null }
+			: { metadataVersion: metadataGeneration }),
+	});
+	const versionIsCurrent = (version: ProviderCatalogVersion): boolean => {
+		if (version.generation !== generation) return false;
+		if (version.metadataVersion === null) return true;
+		return version.metadataExclusion
+			? version.metadataVersion ===
+					metadataVersionExcept(version.metadataExclusion)
+			: version.metadataVersion === metadataGeneration;
+	};
 
 	function store(
 		includeHostCapabilities: boolean,
@@ -1017,39 +1061,64 @@ export function createProviderCatalogSnapshot(
 		return pending;
 	}
 
+	const getSnapshot = (
+		loadOptions: ProviderCatalogLoadOptions = {},
+	): Promise<ProviderInfo[]> => {
+		if (loadOptions.refresh) return refresh(loadOptions);
+		const includeHostCapabilities =
+			loadOptions.includeHostCapabilities === true;
+		const includeProviderCapabilities =
+			loadOptions.includeProviderCapabilities === true;
+		const discoveryCwd = effectiveDiscoveryCwd(loadOptions);
+		const snapshot = snapshots.get(
+			keyFor(
+				includeHostCapabilities,
+				includeProviderCapabilities,
+				discoveryCwd,
+			),
+		);
+		const cachedOptions = {
+			...loadOptions,
+			refresh: false,
+			preferCachedModels: true,
+		};
+		if (!snapshot) return refresh(cachedOptions);
+		if (now() - snapshot.refreshedAt >= ttlMs) {
+			void refresh(cachedOptions).catch(() => {});
+		}
+		return Promise.resolve(snapshot.value);
+	};
+
 	return {
-		get(loadOptions = {}) {
-			if (loadOptions.refresh) return refresh(loadOptions);
-			const includeHostCapabilities =
-				loadOptions.includeHostCapabilities === true;
-			const includeProviderCapabilities =
-				loadOptions.includeProviderCapabilities === true;
-			const discoveryCwd = effectiveDiscoveryCwd(loadOptions);
-			const snapshot = snapshots.get(
-				keyFor(
-					includeHostCapabilities,
-					includeProviderCapabilities,
-					discoveryCwd,
-				),
-			);
-			const cachedOptions = {
-				...loadOptions,
-				refresh: false,
-				preferCachedModels: true,
-			};
-			if (!snapshot) return refresh(cachedOptions);
-			if (now() - snapshot.refreshedAt >= ttlMs) {
-				void refresh(cachedOptions).catch(() => {});
+		get: getSnapshot,
+		async getVersioned(loadOptions = {}) {
+			for (let attempt = 0; attempt < 3; attempt += 1) {
+				const version = versionFor(loadOptions);
+				const providers = await getSnapshot(loadOptions);
+				if (versionIsCurrent(version)) return { providers, version };
 			}
-			return Promise.resolve(snapshot.value);
+			throw new Error("Provider catalog changed repeatedly during refresh");
 		},
-		invalidateMetadata() {
+		isCurrentVersion(version) {
+			return versionIsCurrent(version);
+		},
+		invalidateMetadata(providerId) {
 			metadataGeneration += 1;
+			if (providerId) {
+				providerMetadataGenerations.set(
+					providerId,
+					(providerMetadataGenerations.get(providerId) ?? 0) + 1,
+				);
+			} else {
+				unscopedMetadataGeneration += 1;
+			}
 			snapshots.clear();
 		},
 		invalidate() {
 			generation += 1;
 			metadataGeneration += 1;
+			unscopedMetadataGeneration += 1;
+			providerMetadataGenerations.clear();
 			snapshots.clear();
 			latestLiveRefresh.clear();
 			latestCachedRefresh.clear();

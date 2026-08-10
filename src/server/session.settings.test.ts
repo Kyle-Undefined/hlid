@@ -432,6 +432,64 @@ describe("SessionManager — setModel", () => {
 		expect(sm.getStatus().model).toBe("claude-fable-5");
 	});
 
+	it("drops a filtered OpenCode model and native resume when restoring a chat", async () => {
+		const { provider, captured } = makeCaptureProvider("acp:opencode");
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "filtered-opencode-session",
+			label: "Filtered OpenCode",
+			selected_effort: "high",
+		} as never);
+		vi.mocked(dbMock.getSessionMessages).mockResolvedValueOnce([
+			{ role: "user", text: "prior" },
+		] as never);
+		vi.mocked(dbMock.getSessionModel).mockResolvedValueOnce(
+			"opencode/model-hidden",
+		);
+		vi.mocked(dbMock.getSessionProviderId).mockResolvedValueOnce(
+			"acp:opencode",
+		);
+		vi.mocked(dbMock.getSessionProviderSession).mockResolvedValueOnce(
+			"native-before-filter",
+		);
+		const config = makeConfig("");
+		config.vault_provider = "acp:opencode";
+		config.acp_agents = [
+			{
+				id: "opencode",
+				model_filter: {
+					mode: "hide",
+					models: ["opencode/model-hidden"],
+				},
+			},
+		];
+		const sm = new SessionManager(config, makeProviders(provider));
+
+		await sm.runQuery("continue", () => {}, {
+			sessionId: "filtered-opencode-session",
+		});
+
+		expect(captured.params?.model).toBeUndefined();
+		expect(captured.params?.effort).not.toBe("high");
+		expect(captured.params?.sessionId).toBeUndefined();
+		expect(captured.params?.historyResumeMode).toBe("none");
+		expect(sm.getStatus().model).toBe("");
+		expect(dbMock.setSessionModel).toHaveBeenCalledWith(
+			"filtered-opencode-session",
+			"",
+			expect.objectContaining({ guard: expect.any(Function) }),
+		);
+		expect(dbMock.setSessionEffort).toHaveBeenCalledWith(
+			"filtered-opencode-session",
+			null,
+			expect.objectContaining({ guard: expect.any(Function) }),
+		);
+		expect(dbMock.setSessionProviderSession).toHaveBeenCalledWith(
+			"filtered-opencode-session",
+			"acp:opencode",
+			null,
+		);
+	});
+
 	it("does not replace the globally focused session for a background turn", async () => {
 		const { provider } = makeCaptureProvider("claude");
 		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
@@ -1102,6 +1160,50 @@ describe("SessionManager — setProvider", () => {
 			sessionId: "replace-opencode-chat",
 		});
 		expect(replacement.getSession()).toBeDefined();
+	});
+
+	it("resets a newly filtered model while preserving the OpenCode provider", async () => {
+		const capture = makeCaptureProvider("acp:opencode");
+		const config = makeConfig("");
+		config.vault_provider = "acp:opencode";
+		config.acp_agents = [{ id: "opencode" }];
+		const sm = new SessionManager(config, makeProviders(capture.provider));
+		await sm.setModel("opencode/model-hidden");
+		await sm.runQuery("first", () => {}, {
+			sessionId: "replace-filtered-opencode",
+		});
+
+		await sm.retireProviderSessions(new Set(["acp:opencode"]), {
+			preserveSelection: true,
+		});
+		const filteredConfig = {
+			...config,
+			acp_agents: [
+				{
+					id: "opencode",
+					model_filter: {
+						mode: "hide" as const,
+						models: ["opencode/model-hidden"],
+					},
+				},
+			],
+		};
+		expect(sm.syncConfig(filteredConfig)).toBe(true);
+
+		expect(sm.getProviderId()).toBe("acp:opencode");
+		expect(sm.getStatus().model).toBe("");
+		await sm.runQuery("second", () => {}, {
+			sessionId: "replace-filtered-opencode",
+		});
+		expect(capture.captured.params?.model).toBeUndefined();
+		expect(capture.captured.params?.sessionId).toBeUndefined();
+		await vi.waitFor(() =>
+			expect(dbMock.setSessionModel).toHaveBeenCalledWith(
+				"replace-filtered-opencode",
+				"",
+				expect.objectContaining({ guard: expect.any(Function) }),
+			),
+		);
 	});
 
 	it("waits for owned ACP cleanup before completing runtime retirement", async () => {

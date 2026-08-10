@@ -27,7 +27,10 @@ vi.mock("#/components/forge/ForgeSettings", () => ({
 	},
 }));
 vi.mock("#/hooks/useSettingsForm", () => ({ useSettingsForm: vi.fn() }));
-vi.mock("#/lib/serverFns/acp", () => ({ getAcpRegistryFn: vi.fn() }));
+vi.mock("#/lib/serverFns/acp", () => ({
+	discoverAcpModelsFn: vi.fn(),
+	getAcpRegistryFn: vi.fn(),
+}));
 vi.mock("#/lib/serverFns/cliproxy", () => ({
 	getCliProxyInfoFn: vi.fn().mockResolvedValue({
 		state: "ready",
@@ -45,7 +48,7 @@ vi.mock("#/lib/serverFns/providers", () => ({
 }));
 vi.mock("#/lib/serverFns/voice", () => ({ getVoiceInfoFn: vi.fn() }));
 
-import { getAcpRegistryFn } from "#/lib/serverFns/acp";
+import { discoverAcpModelsFn, getAcpRegistryFn } from "#/lib/serverFns/acp";
 import { getConfig } from "#/lib/serverFns/config";
 import { getAccountInfoFn, getProvidersFn } from "#/lib/serverFns/providers";
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
@@ -67,6 +70,7 @@ beforeEach(() => {
 		models: [],
 	} as never);
 	vi.mocked(getAcpRegistryFn).mockResolvedValue([] as never);
+	vi.mocked(discoverAcpModelsFn).mockResolvedValue([] as never);
 	routeState.loaderData = null;
 });
 
@@ -112,6 +116,40 @@ describe("forge route loader", () => {
 });
 
 describe("forge inventory refresh", () => {
+	it("wires on-demand ACP model discovery without adding it to navigation", async () => {
+		routeState.loaderData = {
+			server: { port: 3000 },
+			cwd: "C:\\workspace",
+			providers: [],
+			accountInfo: null,
+			voiceInfo: { status: { state: "ready", model: "base" }, models: [] },
+			cliProxyInfo: {
+				state: "ready",
+				managed: false,
+				authenticated: false,
+				oauth: "idle",
+				accounts: {},
+			},
+			acpCatalog: [],
+			inventoryStatus: "ready",
+		};
+		vi.mocked(discoverAcpModelsFn).mockResolvedValue([
+			{ value: "opencode/allowed", label: "Allowed" },
+		] as never);
+
+		const Component = route.component;
+		render(<Component />);
+		const discover = routeState.forgeSettings.mock.lastCall?.[0]
+			.onDiscoverAcpModels as (id: string) => Promise<unknown>;
+
+		await expect(discover("opencode")).resolves.toEqual([
+			{ value: "opencode/allowed", label: "Allowed" },
+		]);
+		expect(discoverAcpModelsFn).toHaveBeenCalledWith({
+			data: { id: "opencode" },
+		});
+	});
+
 	it("does not claim modes refreshed when ACP capability inspection fell back", () => {
 		const error = providerOptionRefreshError("acp:opencode", [
 			{

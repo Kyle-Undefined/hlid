@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { providerCatalogPath, providerUsageIds } from "./providers";
+import {
+	providerCatalogPath,
+	providerUsageIds,
+	withProviderCatalogRevision,
+} from "./providers";
 
 describe("providerCatalogPath", () => {
 	it("keeps normal route loaders free of host capability probes", () => {
@@ -58,6 +62,40 @@ describe("providerCatalogPath", () => {
 		).toBe(
 			"/providers?cached_models=1&capability_cwd=C%3A%5CUsers%5CKyle%5Cproject",
 		);
+	});
+});
+
+describe("withProviderCatalogRevision", () => {
+	it("stamps only the explicitly refreshed provider with the server revision", () => {
+		const providers = [
+			{
+				id: "acp:opencode",
+				label: "OpenCode",
+				available: true,
+				modelCatalogRefresh: {
+					status: "current" as const,
+					source: "live" as const,
+				},
+			},
+			{ id: "claude", label: "Claude", available: true },
+		];
+
+		expect(
+			withProviderCatalogRevision(providers, "acp:opencode", "17"),
+		).toEqual([
+			{
+				...providers[0],
+				modelCatalogRefresh: {
+					status: "current",
+					source: "live",
+					revision: 17,
+				},
+			},
+			providers[1],
+		]);
+		expect(
+			withProviderCatalogRevision(providers, "acp:opencode", "invalid"),
+		).toBe(providers);
 	});
 });
 

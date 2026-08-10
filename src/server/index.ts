@@ -372,8 +372,8 @@ for (const provider of providers.values()) {
 // would retain a roughly 100 MB helper process before anyone selects Codex.
 let providerCatalogSnapshot: ProviderCatalogSnapshot;
 let providerMetadataRevisionInProgress = false;
-const publishProviderMetadataRevision = () => {
-	providerCatalogSnapshot.invalidateMetadata();
+const publishProviderMetadataRevision = (providerId: string) => {
+	providerCatalogSnapshot.invalidateMetadata(providerId);
 	providerMetadataRevisionInProgress = true;
 	try {
 		bumpDataRevision("providers");
@@ -381,14 +381,14 @@ const publishProviderMetadataRevision = () => {
 		providerMetadataRevisionInProgress = false;
 	}
 };
-const modelCatalog = createModelCatalog(providers, () => {
-	publishProviderMetadataRevision();
+const modelCatalog = createModelCatalog(providers, (providerId) => {
+	publishProviderMetadataRevision(providerId);
 });
 const providerCapabilityCatalog = createProviderCapabilityCatalog(
 	providers,
 	config.vault.path || process.cwd(),
-	() => {
-		publishProviderMetadataRevision();
+	(providerId) => {
+		publishProviderMetadataRevision(providerId);
 	},
 );
 providerCatalogSnapshot = createProviderCatalogSnapshot(
@@ -817,8 +817,28 @@ async function handleProviderRoute(url: URL, req: Request) {
 			{ status: 400 },
 		);
 	}
-	const list = await providerCatalogSnapshot.get(requestOptions);
-	return Response.json({ providers: list });
+	try {
+		for (let attempt = 0; attempt < 3; attempt += 1) {
+			const result = await providerCatalogSnapshot.getVersioned(requestOptions);
+			if (!providerCatalogSnapshot.isCurrentVersion(result.version)) continue;
+			const revision = getDataRevisions().providers;
+			if (!providerCatalogSnapshot.isCurrentVersion(result.version)) continue;
+			return Response.json(
+				{ providers: result.providers },
+				{
+					headers: {
+						"x-hlid-providers-revision": String(revision),
+					},
+				},
+			);
+		}
+	} catch {
+		// Fall through to the same bounded failure returned after a late invalidation.
+	}
+	return Response.json(
+		{ error: "Provider catalog changed repeatedly during refresh" },
+		{ status: 503 },
+	);
 }
 
 async function downloadVoiceModel(req: Request): Promise<Response> {

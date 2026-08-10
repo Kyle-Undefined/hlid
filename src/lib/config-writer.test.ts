@@ -120,6 +120,10 @@ describe("writeConfig — persistence invariants", () => {
 					executable: "/opt/opencode",
 					args: ["acp"],
 					env: { API_URL: "https://example.test:8443/path" },
+					model_filter: {
+						mode: "only",
+						models: ["anthropic/claude-sonnet-4-6", "openai/gpt-5.6-luna"],
+					},
 					model: "anthropic/claude-sonnet-4-6",
 					effort: "high",
 					permission_mode: "default",
@@ -131,6 +135,66 @@ describe("writeConfig — persistence invariants", () => {
 
 		const reparsed = HlidConfigSchema.parse(parse(serializeConfig(config)));
 		expect(reparsed).toEqual(config);
+	});
+
+	it("validates bounded OpenCode filters and every persisted model override", () => {
+		expect(
+			HlidConfigSchema.safeParse({
+				acp_agents: [
+					{ id: "opencode", env: { TOKEN: "first" } },
+					{ id: "opencode", env: { TOKEN: "second" } },
+				],
+			}).success,
+		).toBe(false);
+		for (const modelFilter of [
+			{ mode: "hide", models: [] },
+			{
+				mode: "only",
+				models: ["opencode/model-a", "opencode/model-a"],
+			},
+			{ mode: "hide", models: ["__proto__/model-a"] },
+			{ mode: "hide", models: ["constructor/model-a"] },
+			{ mode: "hide", models: ["prototype/model-a"] },
+		] as const) {
+			expect(
+				HlidConfigSchema.safeParse({
+					acp_agents: [{ id: "opencode", model_filter: modelFilter }],
+				}).success,
+			).toBe(false);
+		}
+
+		const result = HlidConfigSchema.safeParse({
+			acp_agents: [
+				{
+					id: "opencode",
+					model: "opencode/model-hidden",
+					recap_model: "opencode/recap-hidden",
+					model_filter: {
+						mode: "hide",
+						models: ["opencode/model-hidden", "opencode/recap-hidden"],
+					},
+				},
+			],
+			agents: [
+				{
+					path: "/agent",
+					provider: "acp:opencode",
+					model: "opencode/model-hidden",
+					recap_model: "opencode/recap-hidden",
+				},
+			],
+		});
+
+		expect(result.success).toBe(false);
+		if (result.success) return;
+		expect(result.error.issues.map((issue) => issue.path)).toEqual(
+			expect.arrayContaining([
+				["acp_agents", 0, "model"],
+				["acp_agents", 0, "recap_model"],
+				["agents", 0, "model"],
+				["agents", 0, "recap_model"],
+			]),
+		);
 	});
 
 	it("round-trips an optional Codex permission profile and omits the default", () => {

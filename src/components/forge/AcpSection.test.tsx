@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import {
+	act,
 	cleanup,
 	fireEvent,
 	render,
@@ -242,6 +243,103 @@ describe("AcpSection", () => {
 		expect(refresh).toHaveBeenCalledWith("acp:opencode");
 	});
 
+	it("uses the Forge provider catalog for OpenCode model visibility", () => {
+		render(
+			<AcpSection
+				initialCatalog={[item("opencode", "OpenCode")]}
+				value={[{ id: "opencode" }]}
+				providers={[
+					{
+						id: "acp:opencode",
+						label: "OpenCode",
+						available: true,
+						models: [
+							{
+								value: "anthropic/claude-sonnet-4-6",
+								label: "Claude Sonnet 4.6",
+							},
+						],
+					},
+				]}
+				onChange={vi.fn()}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("radio", { name: /Hide selected/i }));
+		expect(
+			screen.getByRole("checkbox", { name: /Claude Sonnet 4\.6/i }),
+		).toBeTruthy();
+	});
+
+	it("adapts full model discovery to the OpenCode catalog item", async () => {
+		const discover = vi
+			.fn()
+			.mockResolvedValue([{ value: "openai/gpt-5.4", label: "GPT-5.4" }]);
+		render(
+			<AcpSection
+				initialCatalog={[item("opencode", "OpenCode")]}
+				value={[{ id: "opencode" }]}
+				onChange={vi.fn()}
+				onDiscoverModels={discover}
+			/>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Refresh full model list" }),
+		);
+		await screen.findByText("Full OpenCode model list refreshed.");
+		expect(discover).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "opencode", providerId: "acp:opencode" }),
+		);
+	});
+
+	it("invalidates full-model discovery when a same-ID invocation changes", async () => {
+		let resolveDiscovery:
+			| ((models: Array<{ value: string; label: string }>) => void)
+			| undefined;
+		const discover = vi.fn(
+			() =>
+				new Promise<Array<{ value: string; label: string }>>((resolve) => {
+					resolveDiscovery = resolve;
+				}),
+		);
+		const original = item("opencode", "OpenCode");
+		const view = render(
+			<AcpSection
+				initialCatalog={[original]}
+				value={[{ id: "opencode" }]}
+				onChange={vi.fn()}
+				onDiscoverModels={discover}
+			/>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Refresh full model list" }),
+		);
+		view.rerender(
+			<AcpSection
+				initialCatalog={[{ ...original, args: ["acp", "--new"] }]}
+				value={[{ id: "opencode" }]}
+				onChange={vi.fn()}
+				onDiscoverModels={discover}
+			/>,
+		);
+		await waitFor(() =>
+			expect(screen.getByText("opencode acp --new")).toBeTruthy(),
+		);
+		await act(async () => {
+			resolveDiscovery?.([
+				{ value: "anthropic/claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+			]);
+		});
+
+		expect(discover).toHaveBeenCalledWith(original);
+		expect(screen.queryByText("Claude Sonnet 4.6")).toBeNull();
+		expect(
+			screen.queryByText("Full OpenCode model list refreshed."),
+		).toBeNull();
+	});
+
 	it("does not inspect or refresh before an edited runtime configuration is saved", () => {
 		const refresh = vi.fn();
 		serverFns.authenticate.mockResolvedValue({
@@ -268,6 +366,43 @@ describe("AcpSection", () => {
 		}
 		expect(serverFns.authenticate).not.toHaveBeenCalled();
 		expect(refresh).not.toHaveBeenCalled();
+	});
+
+	it("does not run live actions or discover models while runtime configuration is pending", () => {
+		const refreshOptions = vi.fn();
+		const discover = vi.fn().mockResolvedValue([]);
+		serverFns.authenticate.mockResolvedValue({
+			authMethods: [],
+			agentInfo: { name: "OpenCode", version: "1.2.3" },
+		});
+		render(
+			<AcpSection
+				initialCatalog={[item("opencode", "OpenCode")]}
+				value={[{ id: "opencode" }]}
+				savedValue={[{ id: "opencode" }]}
+				workspaceConfigurationCurrent={false}
+				onChange={vi.fn()}
+				onRefreshProviders={refreshOptions}
+				onDiscoverModels={discover}
+			/>,
+		);
+
+		const discoverModels = screen.getByRole("button", {
+			name: "Refresh full model list",
+		}) as HTMLButtonElement;
+		const inspect = screen.getAllByRole("button", {
+			name: "Waiting for saved configuration…",
+		});
+		expect(inspect).toHaveLength(2);
+		expect(discoverModels.disabled).toBe(true);
+		fireEvent.click(discoverModels);
+		for (const button of inspect) {
+			expect((button as HTMLButtonElement).disabled).toBe(true);
+			fireEvent.click(button);
+		}
+		expect(discover).not.toHaveBeenCalled();
+		expect(serverFns.authenticate).not.toHaveBeenCalled();
+		expect(refreshOptions).not.toHaveBeenCalled();
 	});
 
 	it("unlocks live actions after persistence even if catalog refresh fails", () => {

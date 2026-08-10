@@ -75,6 +75,52 @@ describe("settings form conversion", () => {
 		).toBeUndefined();
 	});
 
+	it("resets OpenCode agent defaults excluded by a staged model filter", () => {
+		const initial = HlidConfigSchema.parse({
+			agents: [
+				{
+					path: "/hidden",
+					provider: "acp:opencode",
+					model: "opencode/model-hidden",
+					recap_model: "opencode/recap-hidden",
+				},
+				{
+					path: "/allowed",
+					provider: "acp:opencode",
+					model: "opencode/model-allowed",
+				},
+				{
+					path: "/native",
+					provider: "claude",
+					model: "custom-model",
+				},
+			],
+		});
+		const forms = createSettingsForms(initial);
+		forms.acpAgents = [
+			{
+				id: "opencode",
+				model_filter: {
+					mode: "hide",
+					models: ["opencode/model-hidden", "opencode/recap-hidden"],
+				},
+			},
+		];
+
+		const config = buildSettingsConfig(initial, forms, false);
+
+		expect(config.agents).toEqual([
+			{
+				...initial.agents[0],
+				model: undefined,
+				recap_model: undefined,
+			},
+			initial.agents[1],
+			initial.agents[2],
+		]);
+		expect(HlidConfigSchema.safeParse(config).success).toBe(true);
+	});
+
 	it("defaults the Claude peer inbox off and persists an explicit opt-in", () => {
 		const initial = HlidConfigSchema.parse({});
 		expect(initial.claude.peer_inbox).toBe(false);

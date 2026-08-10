@@ -1,14 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
-import { HlidConfigSchema } from "../config";
+import { type HlidConfig, HlidConfigSchema } from "../config";
 import type { AcpCatalogItem } from "./acpRegistry";
 import {
 	acpRuntimeFingerprint,
 	createConfiguredAcpProvider,
+	effectiveAcpEnvironment,
+	OpenCodeConfigOverlayError,
+	preflightOpenCodeModelFilter,
 	syncAcpRuntimeProviders,
 } from "./acpRuntime";
 import type { AgentProvider } from "./agentProvider";
 
-function config(agents: Array<{ id: string; executable?: string }> = []) {
+function config(
+	agents: NonNullable<HlidConfig["acp_agents"]> = [],
+): HlidConfig {
 	return HlidConfigSchema.parse({
 		vault: { name: "Vault", path: "/workspace" },
 		acp_agents: agents,
@@ -37,6 +42,209 @@ function item(
 }
 
 describe("ACP runtime synchronization", () => {
+	it("merges a hide filter into JSONC without discarding existing config", () => {
+		const runtimeConfig = config([
+			{
+				id: "opencode",
+				env: {
+					TOKEN: "configured",
+					OPENCODE_CONFIG_CONTENT: `{
+						// Existing inline settings remain effective.
+						"instructions": ["AGENTS.md"],
+						"provider": {
+							"opencode": {
+								"options": { "timeout": 1000 },
+								"whitelist": ["model-a", "model-b"],
+								"blacklist": ["model-old"],
+							},
+						},
+					}`,
+				},
+				model_filter: {
+					mode: "hide",
+					models: [
+						"opencode/model-z",
+						"opencode/model-a",
+						"openrouter/google/gemini-2.5-pro",
+					],
+				},
+			},
+		]);
+
+		const environment = effectiveAcpEnvironment(
+			item("opencode", { env: { BASE: "registry" } }),
+			runtimeConfig,
+			{},
+			"linux",
+		);
+		const content = JSON.parse(environment.OPENCODE_CONFIG_CONTENT);
+
+		expect(environment).toMatchObject({
+			BASE: "registry",
+			TOKEN: "configured",
+		});
+		expect(content.instructions).toEqual(["AGENTS.md"]);
+		expect(content.provider.opencode).toEqual({
+			options: { timeout: 1000 },
+			whitelist: ["model-a", "model-b"],
+			blacklist: ["model-a", "model-old", "model-z"],
+		});
+		expect(content.provider.openrouter.blacklist).toEqual([
+			"google/gemini-2.5-pro",
+		]);
+	});
+
+	it("intersects an only filter with existing provider restrictions", () => {
+		const runtimeConfig = config([
+			{
+				id: "opencode",
+				env: {
+					OPENCODE_CONFIG_CONTENT: JSON.stringify({
+						enabled_providers: ["opencode", "anthropic", "other"],
+						disabled_providers: ["anthropic"],
+						provider: {
+							opencode: {
+								whitelist: ["gpt", "not-selected"],
+								blacklist: ["blocked"],
+							},
+						},
+					}),
+				},
+				model_filter: {
+					mode: "only",
+					models: ["opencode/gpt", "opencode/blocked", "anthropic/claude"],
+				},
+			},
+		]);
+
+		const environment = effectiveAcpEnvironment(
+			item("opencode"),
+			runtimeConfig,
+			{},
+			"linux",
+		);
+		const content = JSON.parse(environment.OPENCODE_CONFIG_CONTENT);
+
+		expect(content.enabled_providers).toEqual(["anthropic", "opencode"]);
+		expect(content.disabled_providers).toEqual(["anthropic"]);
+		expect(content.provider.opencode).toEqual({
+			whitelist: ["gpt"],
+			blacklist: ["blocked"],
+		});
+		expect(content.provider.anthropic.whitelist).toEqual(["claude"]);
+	});
+
+	it("rejects an only filter when inline restrictions exclude every selection", () => {
+		const runtimeConfig = config([
+			{
+				id: "opencode",
+				env: {
+					OPENCODE_CONFIG_CONTENT: JSON.stringify({
+						disabled_providers: ["opencode"],
+						secret: "must-not-leak",
+					}),
+				},
+				model_filter: { mode: "only", models: ["opencode/gpt"] },
+			},
+		]);
+
+		expect(() =>
+			effectiveAcpEnvironment(item("opencode"), runtimeConfig, {}, "linux"),
+		).toThrowError(
+			expect.objectContaining({
+				message: expect.not.stringContaining("must-not-leak"),
+			}),
+		);
+	});
+
+	it("rejects prototype-special provider IDs at the runtime boundary", () => {
+		for (const providerId of ["__proto__", "constructor", "prototype"]) {
+			const runtimeConfig = {
+				...config(),
+				acp_agents: [
+					{
+						id: "opencode",
+						model_filter: {
+							mode: "hide" as const,
+							models: [`${providerId}/model-a`],
+						},
+					},
+				],
+			} as HlidConfig;
+
+			expect(() =>
+				effectiveAcpEnvironment(item("opencode"), runtimeConfig, {}, "linux"),
+			).toThrow(`provider ID ${JSON.stringify(providerId)} is reserved`);
+		}
+	});
+
+	it("normalizes case-insensitive OpenCode config keys on Windows", () => {
+		const runtimeConfig = config([
+			{
+				id: "opencode",
+				env: {
+					opencode_config_content: '{"instructions":["configured.md"]}',
+				},
+				model_filter: { mode: "hide", models: ["opencode/model-a"] },
+			},
+		]);
+
+		const environment = effectiveAcpEnvironment(
+			item("opencode", {
+				env: { OPENCODE_CONFIG_CONTENT: '{"instructions":["registry.md"]}' },
+			}),
+			runtimeConfig,
+			{ OpEnCoDe_CoNfIg_CoNtEnT: '{"instructions":["inherited.md"]}' },
+			"win32",
+		);
+
+		expect(
+			Object.keys(environment).filter(
+				(key) => key.toUpperCase() === "OPENCODE_CONFIG_CONTENT",
+			),
+		).toEqual(["OPENCODE_CONFIG_CONTENT"]);
+		expect(
+			JSON.parse(environment.OPENCODE_CONFIG_CONTENT).instructions,
+		).toEqual(["configured.md"]);
+	});
+
+	it("preflights invalid inline content without echoing it", () => {
+		const runtimeConfig = config([
+			{
+				id: "opencode",
+				env: { OPENCODE_CONFIG_CONTENT: '{"secret":"do-not-echo",' },
+				model_filter: { mode: "hide", models: ["opencode/model-a"] },
+			},
+		]);
+
+		let thrown: unknown;
+		try {
+			preflightOpenCodeModelFilter(runtimeConfig, {}, "linux");
+		} catch (error) {
+			thrown = error;
+		}
+		expect(thrown).toBeInstanceOf(OpenCodeConfigOverlayError);
+		expect((thrown as Error).message).not.toContain("do-not-echo");
+	});
+
+	it("bounds the serialized runtime overlay below the Windows env limit", () => {
+		const models = Array.from(
+			{ length: 130 },
+			(_, index) =>
+				`opencode/model-${String(index).padStart(3, "0")}-${"x".repeat(180)}`,
+		);
+		const runtimeConfig = config([
+			{
+				id: "opencode",
+				model_filter: { mode: "only", models },
+			},
+		]);
+
+		expect(() =>
+			preflightOpenCodeModelFilter(runtimeConfig, {}, "win32"),
+		).toThrow("at or below 24,000 characters");
+	});
+
 	it("creates a provider from the resolved catalog invocation", () => {
 		const provider = createConfiguredAcpProvider(
 			item("opencode", { command: "opencode.cmd" }),
@@ -51,6 +259,24 @@ describe("ACP runtime synchronization", () => {
 				config([{ id: "opencode", executable: "opencode.cmd" }]),
 			),
 		);
+	});
+
+	it("marks a manually persisted invalid filter unavailable without crashing startup", () => {
+		const provider = createConfiguredAcpProvider(
+			item("opencode"),
+			config([
+				{
+					id: "opencode",
+					env: { OPENCODE_CONFIG_CONTENT: "{" },
+					model_filter: { mode: "hide", models: ["opencode/model-a"] },
+				},
+			]),
+		);
+
+		expect(provider.cachedAvailability()).toEqual({
+			available: false,
+			reason: expect.stringContaining("OPENCODE_CONFIG_CONTENT is invalid"),
+		});
 	});
 
 	it("adds, replaces, and removes only managed ACP providers", async () => {
@@ -137,6 +363,41 @@ describe("ACP runtime synchronization", () => {
 		).toEqual({ added: [], removed: [], replaced: [] });
 		expect(providers.get(provider.providerId)).toBe(provider);
 		expect(register).not.toHaveBeenCalled();
+	});
+
+	it("preflights a replacement before retiring the live provider", async () => {
+		const activeConfig = config([{ id: "opencode" }]);
+		const activeItem = item("opencode");
+		const provider = createConfiguredAcpProvider(activeItem, activeConfig);
+		const providers = new Map<string, AgentProvider>([
+			[provider.providerId, provider],
+		]);
+		const fingerprints = new Map([
+			[provider.providerId, acpRuntimeFingerprint(activeItem, activeConfig)],
+		]);
+		const retire = vi.fn();
+
+		await expect(
+			syncAcpRuntimeProviders({
+				config: config([
+					{
+						id: "opencode",
+						env: { OPENCODE_CONFIG_CONTENT: "{" },
+						model_filter: {
+							mode: "hide",
+							models: ["opencode/model-a"],
+						},
+					},
+				]),
+				catalog: [activeItem],
+				providers,
+				fingerprints,
+				retireProviderSessions: retire,
+				registerProvider: vi.fn(),
+			}),
+		).rejects.toBeInstanceOf(OpenCodeConfigOverlayError);
+		expect(providers.get(provider.providerId)).toBe(provider);
+		expect(retire).not.toHaveBeenCalled();
 	});
 
 	it("does not replace a live provider only because registry availability changed", async () => {

@@ -25,12 +25,17 @@ const provider = (model: string) => [
 	},
 ];
 
-const refreshedProvider = (model: string, status: "current" | "stale") => [
+const refreshedProvider = (
+	model: string,
+	status: "current" | "stale",
+	revision?: number,
+) => [
 	{
 		...provider(model)[0],
 		modelCatalogRefresh: {
 			status,
 			source: status === "current" ? ("live" as const) : ("memory" as const),
+			...(revision === undefined ? {} : { revision }),
 		},
 	},
 ];
@@ -179,8 +184,19 @@ describe("loadRavenProviders", () => {
 
 		expect(joined).toBe(refreshing);
 		liveRefresh.resolve(provider("fresh"));
-		expect(await refreshing).toEqual(provider("fresh"));
-		expect(await joined).toEqual(provider("fresh"));
+		const stale = await refreshing;
+		expect(stale).toEqual([
+			expect.objectContaining({
+				models: [{ value: "fresh", label: "fresh" }],
+				modelCatalogRefresh: {
+					status: "stale",
+					source: "fallback",
+					reason:
+						"Provider configuration changed during live refresh; retry for current metadata.",
+				},
+			}),
+		]);
+		expect(await joined).toEqual(stale);
 
 		// The live response started under revision 0, so it must not be cached as
 		// revision 1. The next ordinary read rematerializes the server snapshot.
@@ -271,6 +287,103 @@ describe("loadRavenProviders", () => {
 		expect(second).toBe(first);
 		expect(await first).toEqual(refreshedProvider("allowed", "current"));
 		expect(getProvidersFn).toHaveBeenCalledOnce();
+	});
+
+	it("refreshes the same unsaved session after the provider revision changes", async () => {
+		vi.mocked(getProvidersFn)
+			.mockResolvedValueOnce(refreshedProvider("old", "current"))
+			.mockResolvedValueOnce(refreshedProvider("new", "current"));
+
+		expect(
+			await refreshRavenProviderForSession(
+				"new-session",
+				"acp:opencode",
+				"/vault",
+			),
+		).toEqual(refreshedProvider("old", "current"));
+
+		replaceDataRevisions({ ...EMPTY_DATA_REVISIONS, providers: 1 });
+
+		expect(
+			await refreshRavenProviderForSession(
+				"new-session",
+				"acp:opencode",
+				"/vault",
+			),
+		).toEqual(refreshedProvider("new", "current"));
+		expect(getProvidersFn).toHaveBeenCalledTimes(2);
+	});
+
+	it("memoizes the server revision produced by a live refresh, then retries after a later revision", async () => {
+		const oldRefresh = deferred<ReturnType<typeof refreshedProvider>>();
+		vi.mocked(getProvidersFn)
+			.mockImplementationOnce(() => oldRefresh.promise)
+			.mockResolvedValueOnce(refreshedProvider("new", "current", 2));
+
+		const first = refreshRavenProviderForSession(
+			"new-session",
+			"acp:opencode",
+			"/vault",
+		);
+		replaceDataRevisions({ ...EMPTY_DATA_REVISIONS, providers: 1 });
+		const joined = refreshRavenProviderForSession(
+			"new-session",
+			"acp:opencode",
+			"/vault",
+		);
+
+		expect(joined).toBe(first);
+		oldRefresh.resolve(refreshedProvider("old", "current", 1));
+		expect(await joined).toEqual(refreshedProvider("old", "current", 1));
+
+		const memoized = refreshRavenProviderForSession(
+			"new-session",
+			"acp:opencode",
+			"/vault",
+		);
+		expect(memoized).toBe(first);
+		expect(await memoized).toEqual(refreshedProvider("old", "current", 1));
+		expect(getProvidersFn).toHaveBeenCalledOnce();
+
+		replaceDataRevisions({ ...EMPTY_DATA_REVISIONS, providers: 2 });
+		expect(
+			await refreshRavenProviderForSession(
+				"new-session",
+				"acp:opencode",
+				"/vault",
+			),
+		).toEqual(refreshedProvider("new", "current", 2));
+		expect(getProvidersFn).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not memoize a response older than an external in-flight revision", async () => {
+		const oldRefresh = deferred<ReturnType<typeof refreshedProvider>>();
+		vi.mocked(getProvidersFn)
+			.mockImplementationOnce(() => oldRefresh.promise)
+			.mockResolvedValueOnce(refreshedProvider("new", "current", 1));
+
+		const first = refreshRavenProviderForSession(
+			"new-session",
+			"acp:opencode",
+			"/vault",
+		);
+		replaceDataRevisions({ ...EMPTY_DATA_REVISIONS, providers: 1 });
+		oldRefresh.resolve(refreshedProvider("old", "current", 0));
+		expect(await first).toEqual([
+			expect.objectContaining({
+				models: [{ value: "old", label: "old" }],
+				modelCatalogRefresh: expect.objectContaining({ status: "stale" }),
+			}),
+		]);
+
+		expect(
+			await refreshRavenProviderForSession(
+				"new-session",
+				"acp:opencode",
+				"/vault",
+			),
+		).toEqual(refreshedProvider("new", "current", 1));
+		expect(getProvidersFn).toHaveBeenCalledTimes(2);
 	});
 
 	it("retries an unsaved session after a stale refresh result", async () => {

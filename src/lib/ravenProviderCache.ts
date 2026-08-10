@@ -24,11 +24,17 @@ type RavenProviderRefresh = RavenProviderRead & {
 	providerId: string;
 };
 
+type RavenSessionRefresh = {
+	revision: number;
+	settled: boolean;
+	promise: Promise<RavenProviders>;
+};
+
 const catalogReads = new Map<string, RavenProviderRead>();
 const catalogRefreshes = new Map<string, RavenProviderRefresh>();
 const catalogCaches = new Map<string, RavenProviderCacheEntry>();
 const catalogGenerations = new Map<string, number>();
-const sessionRefreshes = new Map<string, Promise<RavenProviders>>();
+const sessionRefreshes = new Map<string, RavenSessionRefresh>();
 
 function workspaceKey(discoveryCwd: string | undefined): string {
 	const cwd = discoveryCwd?.trim();
@@ -76,6 +82,8 @@ function providerRefreshStatus(
 function staleProviderRefresh(
 	value: RavenProviders,
 	providerId: string,
+	reason = "Live refresh failed; using cached provider metadata.",
+	source: "memory" | "fallback" = "memory",
 ): RavenProviders {
 	return value.map((provider) =>
 		provider.id === providerId
@@ -83,8 +91,8 @@ function staleProviderRefresh(
 					...provider,
 					modelCatalogRefresh: {
 						status: "stale",
-						source: "memory",
-						reason: "Live refresh failed; using cached provider metadata.",
+						source,
+						reason,
 					},
 				}
 			: provider,
@@ -110,7 +118,7 @@ export function loadRavenProviders(
 	const catalogCache = catalogCaches.get(key);
 	if (
 		catalogCache !== undefined &&
-		catalogCache.revision === revision &&
+		catalogCache.revision >= revision &&
 		catalogCache.generation === generation &&
 		now < catalogCache.expiresAt
 	) {
@@ -201,16 +209,31 @@ export function refreshRavenProvider(
 	)
 		.then(
 			(value) => {
-				const refreshStatus = providerRefreshStatus(value, providerId)?.status;
+				const refresh = providerRefreshStatus(value, providerId);
+				const refreshStatus = refresh?.status;
+				const responseRevision = refresh?.revision;
+				const currentRevision = getDataRevisionSnapshot().providers;
+				const resultCoversCurrentRevision =
+					responseRevision !== undefined
+						? currentRevision <= responseRevision
+						: currentRevision === revision;
+				const effectiveValue = resultCoversCurrentRevision
+					? value
+					: staleProviderRefresh(
+							value,
+							providerId,
+							"Provider configuration changed during live refresh; retry for current metadata.",
+							"fallback",
+						);
 				if (
-					getDataRevisionSnapshot().providers === revision &&
+					resultCoversCurrentRevision &&
 					currentGeneration(key) === generation &&
 					catalogRefreshes.get(key) === entry
 				) {
 					rememberBounded(catalogCaches, key, {
-						revision,
+						revision: responseRevision ?? revision,
 						generation,
-						value,
+						value: effectiveValue,
 						expiresAt:
 							Date.now() +
 							(refreshStatus === "stale" || refreshStatus === "unavailable"
@@ -218,11 +241,12 @@ export function refreshRavenProvider(
 								: cacheLifetime(value)),
 					});
 				}
-				return value;
+				return effectiveValue;
 			},
 			(error) => {
 				if (
-					previous?.revision === revision &&
+					previous !== undefined &&
+					previous.revision >= revision &&
 					currentGeneration(key) === generation &&
 					catalogRefreshes.get(key) === entry
 				) {
@@ -261,23 +285,47 @@ export function refreshRavenProviderForSession(
 	providerId: string,
 	discoveryCwd?: string,
 ): Promise<RavenProviders> {
-	const key = `${workspaceKey(discoveryCwd)}\0${providerId}\0${sessionId}`;
+	const workspace = workspaceKey(discoveryCwd);
+	const key = `${workspace}\0${providerId}\0${sessionId}`;
+	const revision = getDataRevisionSnapshot().providers;
 	const existing = sessionRefreshes.get(key);
-	if (existing) return existing;
+	if (existing && (!existing.settled || existing.revision >= revision)) {
+		return existing.promise;
+	}
+	if (existing) sessionRefreshes.delete(key);
 
 	const refresh = refreshRavenProvider(providerId, discoveryCwd);
-	rememberBounded(sessionRefreshes, key, refresh);
+	const entry: RavenSessionRefresh = {
+		revision,
+		settled: false,
+		promise: refresh,
+	};
+	rememberBounded(sessionRefreshes, key, entry);
 	void refresh.then(
 		(value) => {
-			if (
-				providerRefreshStatus(value, providerId)?.status !== "current" &&
-				sessionRefreshes.get(key) === refresh
-			) {
+			entry.settled = true;
+			if (sessionRefreshes.get(key) !== entry) return;
+			const refreshStatus = providerRefreshStatus(value, providerId);
+			if (refreshStatus?.status !== "current") {
 				sessionRefreshes.delete(key);
+				return;
 			}
+			const currentRevision = getDataRevisionSnapshot().providers;
+			if (refreshStatus.revision === undefined) {
+				// Older servers cannot distinguish their own discovery bump from an
+				// external runtime change. Fail safe and retry when the client moved.
+				if (currentRevision !== entry.revision) sessionRefreshes.delete(key);
+				return;
+			}
+			if (currentRevision > refreshStatus.revision) {
+				sessionRefreshes.delete(key);
+				return;
+			}
+			entry.revision = refreshStatus.revision;
 		},
 		() => {
-			if (sessionRefreshes.get(key) === refresh) sessionRefreshes.delete(key);
+			entry.settled = true;
+			if (sessionRefreshes.get(key) === entry) sessionRefreshes.delete(key);
 		},
 	);
 	return refresh;

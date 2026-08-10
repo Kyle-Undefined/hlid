@@ -232,6 +232,28 @@ describe("useSettingsForm autosave", () => {
 		expect(result.current.savedMsg).toBe("saved");
 	});
 
+	it("tracks the persisted ACP discovery workspace after a successful save", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(Response.json({ ok: true })),
+		);
+		const initial = initialSettings();
+		initial.vault.path = "/old-vault";
+		const { result } = renderHook(() =>
+			useSettingsForm(initial, vi.fn().mockResolvedValue(undefined)),
+		);
+
+		act(() =>
+			result.current.setVault({ ...result.current.vault, path: "/new-vault" }),
+		);
+		expect(result.current.persistedVaultPath).toBe("/old-vault");
+
+		await advance(800);
+
+		expect(result.current.persistedVaultPath).toBe("/new-vault");
+		expect(result.current.error).toBeNull();
+	});
+
 	it("records a newly enabled ACP agent when the follow-up refresh fails", async () => {
 		vi.stubGlobal(
 			"fetch",
@@ -275,6 +297,77 @@ describe("useSettingsForm autosave", () => {
 		expect(result.current.warning).toBe(
 			"Codex runtime synchronization returned 503.",
 		);
+	});
+
+	it("keeps ACP runtime identity and workspace pending until an identical retry synchronizes", async () => {
+		const warning =
+			"ACP runtime synchronization failed: provider registry unavailable.";
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(
+				Response.json({
+					ok: true,
+					runtime_synced: false,
+					acp_runtime_synced: false,
+					warning,
+				}),
+			)
+			.mockResolvedValueOnce(
+				Response.json({
+					ok: true,
+					runtime_synced: true,
+					acp_runtime_synced: true,
+				}),
+			);
+		vi.stubGlobal("fetch", fetchMock);
+		const initial = initialSettings();
+		initial.vault.path = "/old-vault";
+		initial.acp_agents = [{ id: "opencode" }];
+		const onSaved = vi.fn().mockResolvedValue(undefined);
+		const { result, rerender } = renderHook(
+			({ settings }: { settings: SettingsInitial }) =>
+				useSettingsForm(settings, onSaved),
+			{ initialProps: { settings: initial } },
+		);
+
+		act(() => {
+			result.current.setVault({
+				...result.current.vault,
+				path: "/new-vault",
+			});
+			result.current.setAcpAgents([
+				{ id: "opencode", executable: "C:\\tools\\opencode.cmd" },
+			]);
+		});
+		await advance(800);
+
+		expect(result.current.dirty).toBe(false);
+		expect(result.current.warning).toBe(warning);
+		expect(result.current.acpRuntimePending).toBe(true);
+		expect(result.current.persistedVaultPath).toBe("/old-vault");
+		expect(result.current.persistedAcpAgents).toEqual([{ id: "opencode" }]);
+		rerender({
+			settings: {
+				...initial,
+				vault: { ...initial.vault, path: "/new-vault" },
+				acp_agents: [{ id: "opencode", executable: "C:\\tools\\opencode.cmd" }],
+			},
+		});
+		expect(result.current.persistedAcpAgents).toEqual([{ id: "opencode" }]);
+
+		await act(async () => result.current.save());
+
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(fetchMock.mock.calls[1][1].body).toBe(
+			fetchMock.mock.calls[0][1].body,
+		);
+		expect(result.current.acpRuntimePending).toBe(false);
+		expect(result.current.persistedVaultPath).toBe("/new-vault");
+		expect(result.current.persistedAcpAgents).toEqual([
+			{ id: "opencode", executable: "C:\\tools\\opencode.cmd" },
+		]);
+		expect(result.current.warning).toBeNull();
+		expect(onSaved).toHaveBeenCalledTimes(2);
 	});
 
 	it("uses a stable fallback for invalid error bodies and network failures", async () => {
