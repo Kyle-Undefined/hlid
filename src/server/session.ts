@@ -6679,6 +6679,11 @@ export class SessionManager {
 		this.providerSessionId = savedProviderSessionId;
 		this.providerSessionProviderId = savedProviderId;
 		this.historyResumeMode = savedSession?.history_resume_mode ?? "none";
+		// Detached provider changes persist the selected provider without reviving a
+		// runtime. If that change retired the previous native thread, the next live
+		// manager must hand the existing Hlid transcript to the fresh provider.
+		this.providerHandoffPending =
+			prior.length > 0 && savedProviderSessionId === null;
 		if (
 			this.providerOverride &&
 			savedProviderId &&

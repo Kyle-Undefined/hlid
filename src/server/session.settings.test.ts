@@ -560,6 +560,56 @@ describe("SessionManager — setModel", () => {
 		expect(captured.params?.historyResumeMode).toBe("session-store");
 	});
 
+	it("hands off a detached transcript when its provider has no native resume id", async () => {
+		const send = vi.fn().mockResolvedValue(undefined);
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query: (): AgentSession => {
+				const events = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "fresh-codex-thread" };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 2 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => events[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send,
+				};
+			},
+		};
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "detached-round-trip",
+			label: "Detached round trip",
+		} as never);
+		vi.mocked(dbMock.getSessionMessages)
+			.mockResolvedValueOnce([
+				{ role: "user", text: "prior request", seq: 0 },
+			] as never)
+			.mockResolvedValueOnce([
+				{ role: "user", text: "prior request", seq: 0 },
+				{ role: "assistant", text: "prior answer", seq: 1 },
+			] as never);
+		vi.mocked(dbMock.getSessionProviderId).mockResolvedValueOnce("codex");
+		vi.mocked(dbMock.getSessionProviderSession).mockResolvedValueOnce(null);
+		const config = { ...makeConfig("gpt-5.6-sol"), vault_provider: "codex" };
+		const sm = new SessionManager(config, makeProviders(provider));
+
+		await sm.runQuery("continue", () => {}, {
+			sessionId: "detached-round-trip",
+		});
+
+		expect(send).toHaveBeenCalledOnce();
+		expect(send.mock.calls[0]?.[0]).toContain("<hlid_provider_handoff>");
+		expect(send.mock.calls[0]?.[0]).toContain("USER: prior request");
+		expect(send.mock.calls[0]?.[0]).toContain("ASSISTANT: prior answer");
+		expect(send.mock.calls[0]?.[0]).toContain("test prompt");
+	});
+
 	it("restores saved effort and permission instead of current config defaults", async () => {
 		const { provider, captured } = makeCaptureProvider("claude");
 		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
