@@ -154,10 +154,19 @@ vi.mock("#/components/PrivacyMask", () => ({
 	PrivacyMask: ({
 		children,
 		inline,
+		className,
 	}: {
 		children: React.ReactNode;
 		inline?: boolean;
-	}) => (inline ? <span data-privacy-mask="true">{children}</span> : children),
+		className?: string;
+	}) =>
+		inline ? (
+			<span className={className} data-privacy-mask="true">
+				{children}
+			</span>
+		) : (
+			children
+		),
 }));
 vi.mock("#/components/TerminalView", () => ({
 	TerminalView: (props: {
@@ -1673,26 +1682,48 @@ describe("Raven composed submission behavior", () => {
 		).toBeTruthy();
 	});
 
-	it("aligns the agent and model badges to the same top edge", () => {
+	it("stacks the workspace and model badges on mobile while preserving desktop edge alignment", () => {
 		state.loaderData = {
 			...state.loaderData,
 			agentSkillContext: "/project",
 			config: {
 				...(state.loaderData.config as Record<string, unknown>),
-				agents: [{ path: "/project", name: "Hlid", provider: "claude" }],
+				agents: [
+					{
+						path: "/project",
+						name: "Hlid Mobile Release Investigator",
+						provider: "claude",
+					},
+				],
 			},
 		};
 		render(<ChatPage />);
 
-		const agentBadge = screen.getByRole("button", { name: "Hlid" });
+		const workspaceBadge = screen.getByRole("button", {
+			name: "Hlid Mobile Release Investigator",
+		});
 		const modelBadge = document.querySelector<HTMLButtonElement>(
 			'button[aria-haspopup="dialog"]',
 		);
 
-		expect(agentBadge.className).toContain("block");
+		expect(workspaceBadge.className).toContain("max-w-full");
+		expect(workspaceBadge.querySelector(".truncate")).toBeTruthy();
 		expect(modelBadge?.className).toContain("block");
-		expect(agentBadge.parentElement?.className).toContain("-top-5");
-		expect(modelBadge?.parentElement?.className).toContain("-top-5");
+		expect(modelBadge?.className).toContain("w-full");
+		expect(workspaceBadge.parentElement?.className).toContain("relative");
+		expect(workspaceBadge.parentElement?.className).toContain("mt-1");
+		expect(workspaceBadge.parentElement?.className).toContain("md:absolute");
+		expect(workspaceBadge.parentElement?.className).toContain("md:left-3");
+		expect(modelBadge?.className).toContain("min-h-7");
+		expect(modelBadge?.parentElement?.className).toContain("relative");
+		expect(modelBadge?.parentElement?.className).toContain("mt-px");
+		expect(modelBadge?.parentElement?.className).toContain("mb-1");
+		expect(modelBadge?.parentElement?.className).toContain("md:absolute");
+		expect(modelBadge?.parentElement?.className).toContain("md:right-3");
+		expect(
+			workspaceBadge.compareDocumentPosition(modelBadge as HTMLButtonElement) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
 	});
 
 	it("keeps the desktop Enter shortcut hint off mobile and coarse pointers", () => {
@@ -2397,9 +2428,10 @@ describe("Raven composed submission behavior", () => {
 			name: /Claude Code.*CLIProxy.*gpt-5\.6-sol.*high.*bypass/i,
 		});
 		expect(badge.className).toContain("max-w-full");
-		expect(badge.parentElement?.className).toContain(
-			"max-w-[calc(100vw-1.5rem)]",
-		);
+		expect(badge.className).toContain("w-full");
+		expect(badge.parentElement?.className).toContain("relative");
+		expect(badge.parentElement?.className).toContain("md:max-w");
+		expect(badge.firstElementChild?.className).toContain("truncate");
 		expect(
 			screen.getByText("CLIProxy · gpt-5.6-sol · high · bypass"),
 		).toBeTruthy();

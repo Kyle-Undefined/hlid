@@ -4300,7 +4300,7 @@ function RavenMessagePane({
 					>
 						<div
 							ref={transcriptContentRef}
-							className="min-h-full flex flex-col justify-end px-5 pt-2 pb-7 min-w-0"
+							className="min-h-full flex flex-col justify-end px-5 pt-2 pb-2 min-w-0 md:pb-7"
 						>
 							{messages.length === 0 ? (
 								<div className="flex-1 flex flex-col items-center justify-center gap-3">
@@ -4509,7 +4509,7 @@ function ChatModelBadge({
 			{activeProviderLabel && (
 				<div
 					ref={modelBadgeRef}
-					className="absolute -top-5 right-3 z-10 max-w-[calc(100vw-1.5rem)]"
+					className="relative z-10 mx-3 mt-px mb-1 min-w-0 md:absolute md:-top-5 md:right-3 md:mx-0 md:my-0 md:max-w-[calc(100vw-1.5rem)]"
 				>
 					<button
 						type="button"
@@ -4526,7 +4526,7 @@ function ChatModelBadge({
 								? "Stop Raven Live to change the session model"
 								: undefined
 						}
-						className={`block max-w-full text-[9px] tracking-widest px-2 py-0.5 uppercase bg-background border cursor-pointer transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+						className={`block min-h-7 w-full max-w-full px-2 py-1 text-[10px] tracking-widest uppercase bg-background border cursor-pointer transition-colors disabled:cursor-not-allowed disabled:opacity-40 md:min-h-0 md:w-auto md:py-0.5 md:text-[9px] ${
 							modelMismatch
 								? "text-status-warning/80 border-status-warning/60"
 								: "text-muted-foreground/50 border-border/70 hover:text-foreground/70 hover:border-primary/40"
@@ -5845,12 +5845,12 @@ function ChatComposer(props: ChatComposerProps) {
 				/>
 			) : null}
 			{!props.delegationSteering && agentSkillContext && (
-				<div className="absolute -top-5 left-3 z-10">
+				<div className="relative z-10 mx-3 mt-1 flex min-w-0 md:absolute md:-top-5 md:left-3 md:mx-0 md:mt-0 md:block">
 					<button
 						type="button"
-						className="block text-[9px] tracking-widest px-2 py-0.5 uppercase bg-background border border-primary/30 text-primary/60 cursor-default"
+						className="block min-w-0 max-w-full px-2 py-0.5 text-[10px] tracking-widest uppercase bg-background border border-primary/30 text-primary/60 cursor-default md:text-[9px]"
 					>
-						<PrivacyMask inline>
+						<PrivacyMask inline className="block truncate whitespace-nowrap">
 							{agentDisplayName(agentSkillContext, [
 								...agentList,
 								...(config.agents ?? []),
