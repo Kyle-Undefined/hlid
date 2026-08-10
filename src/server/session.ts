@@ -89,7 +89,11 @@ import type {
 } from "./agentProvider";
 import { ProviderPermissionModeRejectedError } from "./agentProvider";
 import { ingestGeneratedImage, ingestPlanHtml } from "./attachments";
-import { prewarmClaudeCli, waitForClaudeWarmupSnapshot } from "./claudeWarmup";
+import {
+	type ClaudeWarmupSnapshot,
+	prewarmClaudeCli,
+	waitForClaudeWarmupSnapshot,
+} from "./claudeWarmup";
 import { loadConfig } from "./config";
 import { bumpDataRevision } from "./dataRevision";
 import { resolveExecutionContext } from "./executionContext";
@@ -4372,6 +4376,101 @@ export class SessionManager {
 		});
 	}
 
+	private async publishLiveProviderSnapshot<T>(options: {
+		targetsLiveScope: boolean;
+		isLiveScopeCurrent: () => boolean;
+		expectedProviderId: string;
+		read: (session: AgentSession) => T | Promise<T> | undefined;
+		publish: (value: T) => void;
+	}): Promise<"published" | "unavailable" | "superseded"> {
+		if (!options.targetsLiveScope) return "unavailable";
+		if (!options.isLiveScopeCurrent()) return "superseded";
+		const session = this.agentSession;
+		const sessionKey = this.agentSessionKey;
+		if (!session) return "unavailable";
+		if (!this.agentSessionMatchesProbeScope(options.expectedProviderId)) {
+			return "unavailable";
+		}
+		const pending = options.read(session);
+		if (pending === undefined) return "unavailable";
+		const value = await pending;
+		if (
+			this.agentSession !== session ||
+			this.agentSessionKey !== sessionKey ||
+			!this.agentSessionMatchesProbeScope(options.expectedProviderId) ||
+			!options.isLiveScopeCurrent()
+		) {
+			return "superseded";
+		}
+		options.publish(value);
+		return "published";
+	}
+
+	private agentSessionMatchesProbeScope(providerId: string): boolean {
+		if (!this.agentSessionKey) return false;
+		const baseKey = `${providerId}|${this.currentSessionId ?? "ephemeral"}|${this.agentSessionContextKey()}`;
+		return (
+			this.agentSessionKey === baseKey ||
+			(providerId === "codex" &&
+				this.agentSessionKey.startsWith(`${baseKey}|codex-permissions:`))
+		);
+	}
+
+	private probeTargetsLiveProvider(
+		scope: ProviderProbeScope,
+		provider: AgentProvider,
+	): boolean {
+		const current = this.resolveProbeContext(scope);
+		return current.targetsLiveScope && current.provider === provider;
+	}
+
+	private async probeProviderSessionMetadata<T>(options: {
+		activeAgentCwd?: string;
+		agentCwd?: string;
+		provider: AgentProvider;
+		targetsLiveScope: boolean;
+		isLiveScopeCurrent: () => boolean;
+		read: (session: AgentSession) => T | Promise<T> | undefined;
+		fromClaudeWarmup: (snapshot: ClaudeWarmupSnapshot) => T;
+		empty: T;
+		publish: (value: T) => void;
+	}): Promise<void> {
+		const publishLiveSession = () =>
+			this.publishLiveProviderSnapshot({
+				targetsLiveScope: options.targetsLiveScope,
+				isLiveScopeCurrent: options.isLiveScopeCurrent,
+				expectedProviderId: options.provider.providerId,
+				read: options.read,
+				publish: options.publish,
+			});
+		const publishCurrent = (value: T) => {
+			if (!options.targetsLiveScope || options.isLiveScopeCurrent()) {
+				options.publish(value);
+			}
+		};
+		if ((await publishLiveSession()) !== "unavailable") return;
+		if (options.provider.probeRequiresTurn) {
+			const cached = isClaudeRuntimeProvider(options.provider.providerId)
+				? await waitForClaudeWarmupSnapshot(
+						options.activeAgentCwd ?? this.vaultPath,
+					)
+				: null;
+			if ((await publishLiveSession()) !== "unavailable") return;
+			publishCurrent(cached ? options.fromClaudeWarmup(cached) : options.empty);
+			return;
+		}
+		await this.runProbe(
+			async (session) => {
+				const pending = options.read(session);
+				const value = pending === undefined ? options.empty : await pending;
+				if ((await publishLiveSession()) !== "unavailable") return;
+				publishCurrent(value);
+			},
+			options.agentCwd,
+			options.provider,
+		);
+	}
+
 	async probeMcpStatus(
 		emit: (msg: ServerMessage) => void,
 		scope: ProviderProbeScope = {},
@@ -4395,25 +4494,17 @@ export class SessionManager {
 				servers: statuses.map(mapMcpServer),
 			});
 		};
-		if (provider.probeRequiresTurn) {
-			if (targetsLiveScope && this.agentSession?.mcpServerStatus) {
-				publish(await this.agentSession.mcpServerStatus());
-				return;
-			}
-			const cached = isClaudeRuntimeProvider(providerId)
-				? await waitForClaudeWarmupSnapshot(activeAgentCwd ?? this.vaultPath)
-				: null;
-			publish(cached?.mcpServers ?? []);
-			return;
-		}
-		await this.runProbe(
-			async (session) => {
-				const statuses = (await session.mcpServerStatus?.()) ?? [];
-				publish(statuses);
-			},
-			scope.agentCwd,
+		await this.probeProviderSessionMetadata<McpServerStatus[]>({
+			activeAgentCwd,
+			agentCwd: scope.agentCwd,
 			provider,
-		);
+			targetsLiveScope,
+			isLiveScopeCurrent: () => this.probeTargetsLiveProvider(scope, provider),
+			read: (session) => session.mcpServerStatus?.(),
+			fromClaudeWarmup: (snapshot) => snapshot.mcpServers,
+			empty: [],
+			publish,
+		});
 	}
 
 	async probeSlashCommands(
@@ -4430,25 +4521,17 @@ export class SessionManager {
 				...(scope.sessionId ? { session_id: scope.sessionId } : {}),
 				commands,
 			});
-		if (provider.probeRequiresTurn) {
-			if (targetsLiveScope && this.agentSession?.supportedCommands) {
-				publish(await this.agentSession.supportedCommands());
-				return;
-			}
-			const cached = isClaudeRuntimeProvider(providerId)
-				? await waitForClaudeWarmupSnapshot(activeAgentCwd ?? this.vaultPath)
-				: null;
-			publish(cached?.commands ?? []);
-			return;
-		}
-		await this.runProbe(
-			async (session) => {
-				const commands = (await session.supportedCommands?.()) ?? [];
-				publish(commands);
-			},
-			scope.agentCwd,
+		await this.probeProviderSessionMetadata<SlashCommand[]>({
+			activeAgentCwd,
+			agentCwd: scope.agentCwd,
 			provider,
-		);
+			targetsLiveScope,
+			isLiveScopeCurrent: () => this.probeTargetsLiveProvider(scope, provider),
+			read: (session) => session.supportedCommands?.(),
+			fromClaudeWarmup: (snapshot) => snapshot.commands,
+			empty: [],
+			publish,
+		});
 	}
 
 	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket probe_workflows dispatch in wsHandlers.

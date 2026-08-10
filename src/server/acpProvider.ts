@@ -2304,9 +2304,9 @@ class AcpSession implements AgentSession {
 					update.sessionUpdate === "tool_call" ||
 					update.sessionUpdate === "tool_call_update"
 				) {
-					const toolName = this.toolCalls.get(update.toolCallId)?.name;
-					if (typeof toolName === "string") {
-						this.observeInternalMcpToolName(toolName);
+					const toolCall = this.toolCalls.get(update.toolCallId);
+					if (toolCall) {
+						this.observeInternalMcpToolName(acpToolName(toolCall));
 					}
 				}
 			},

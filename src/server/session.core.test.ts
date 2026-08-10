@@ -2634,6 +2634,215 @@ describe("SessionManager — applyProviderMcpServers", () => {
 // ── probeSlashCommands ────────────────────────────────────────────────────────
 
 describe("SessionManager — probeSlashCommands", () => {
+	it("prefers the current live session for MCP and command probes", async () => {
+		let statuses: McpServerStatus[] = [
+			{ name: "hlid_obsidian", status: "unknown", scope: "provider" },
+		];
+		let commands = [
+			{ name: "old", description: "Old command", argumentHint: "" },
+		];
+		const query = vi.fn((): AgentSession => {
+			const gen = (async function* (): AsyncGenerator<AgentEvent> {
+				yield { type: "session_start", sessionId: "live-provider-session" };
+				yield {
+					type: "done",
+					cost: 0,
+					turns: 1,
+					durationMs: 0,
+					usage: { inputTokens: 1, outputTokens: 1 },
+				};
+			})();
+			return {
+				[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+				cancel: vi.fn(),
+				send: vi.fn().mockResolvedValue(undefined),
+				mcpServerStatus: () => Promise.resolve(statuses),
+				supportedCommands: () => Promise.resolve(commands),
+			};
+		});
+		const provider: AgentProvider = { providerId: "claude", query };
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery("hello", vi.fn(), { sessionId: "live-probe-session" });
+		statuses = [
+			{ name: "hlid_obsidian", status: "connected", scope: "provider" },
+		];
+		commands = [
+			{ name: "review", description: "Review changes", argumentHint: "" },
+		];
+		const emitted: ServerMessage[] = [];
+
+		await sm.probeMcpStatus((message) => emitted.push(message), {
+			sessionId: "live-probe-session",
+		});
+		await sm.probeSlashCommands((message) => emitted.push(message), {
+			sessionId: "live-probe-session",
+		});
+
+		expect(query).toHaveBeenCalledTimes(1);
+		expect(sm.getLastMcpStatus()).toEqual(statuses);
+		expect(emitted).toContainEqual(
+			expect.objectContaining({
+				type: "mcp_status",
+				servers: [
+					expect.objectContaining({
+						name: "hlid_obsidian",
+						status: "connected",
+					}),
+				],
+			}),
+		);
+		expect(emitted).toContainEqual(
+			expect.objectContaining({
+				type: "slash_commands",
+				commands,
+			}),
+		);
+	});
+
+	it("does not let an older cold probe replace a newly live MCP snapshot", async () => {
+		let signalColdStarted!: () => void;
+		let resolveColdStatus!: (statuses: McpServerStatus[]) => void;
+		const coldStarted = new Promise<void>((resolve) => {
+			signalColdStarted = resolve;
+		});
+		const coldStatus = new Promise<McpServerStatus[]>((resolve) => {
+			resolveColdStatus = resolve;
+		});
+		const connected: McpServerStatus[] = [
+			{ name: "hlid_obsidian", status: "connected", scope: "provider" },
+		];
+		const query = vi.fn((params: AgentQueryParams): AgentSession => {
+			if (!params.hostSessionId) {
+				return {
+					async *[Symbol.asyncIterator]() {},
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => {
+						signalColdStarted();
+						return coldStatus;
+					},
+				};
+			}
+			const gen = (async function* (): AsyncGenerator<AgentEvent> {
+				yield { type: "session_start", sessionId: "new-live-provider-session" };
+				yield {
+					type: "done",
+					cost: 0,
+					turns: 1,
+					durationMs: 0,
+					usage: { inputTokens: 1, outputTokens: 1 },
+				};
+			})();
+			return {
+				[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+				cancel: vi.fn(),
+				send: vi.fn().mockResolvedValue(undefined),
+				mcpServerStatus: () => Promise.resolve(connected),
+			};
+		});
+		const provider: AgentProvider = { providerId: "claude", query };
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const probeMessages: ServerMessage[] = [];
+
+		const probe = sm.probeMcpStatus((message) => probeMessages.push(message));
+		await coldStarted;
+		await sm.runQuery("hello", vi.fn(), { sessionId: "new-live-session" });
+		resolveColdStatus([
+			{ name: "hlid_obsidian", status: "unknown", scope: "provider" },
+		]);
+		await probe;
+
+		expect(query).toHaveBeenCalledTimes(2);
+		expect(sm.getLastMcpStatus()).toEqual(connected);
+		expect(probeMessages).toContainEqual(
+			expect.objectContaining({
+				type: "mcp_status",
+				servers: [
+					expect.objectContaining({
+						name: "hlid_obsidian",
+						status: "connected",
+					}),
+				],
+			}),
+		);
+		expect(
+			probeMessages.some(
+				(message) =>
+					message.type === "mcp_status" &&
+					message.servers.some((server) => server.status === "unknown"),
+			),
+		).toBe(false);
+	});
+
+	it("discards a cold probe after its provider is no longer current", async () => {
+		let signalColdStarted!: () => void;
+		let resolveColdStatus!: (statuses: McpServerStatus[]) => void;
+		const coldStarted = new Promise<void>((resolve) => {
+			signalColdStarted = resolve;
+		});
+		const coldStatus = new Promise<McpServerStatus[]>((resolve) => {
+			resolveColdStatus = resolve;
+		});
+		const claudeQuery = vi.fn(
+			(): AgentSession => ({
+				async *[Symbol.asyncIterator]() {},
+				cancel: vi.fn(),
+				send: vi.fn().mockResolvedValue(undefined),
+				mcpServerStatus: () => {
+					signalColdStarted();
+					return coldStatus;
+				},
+			}),
+		);
+		const codexConnected: McpServerStatus[] = [
+			{ name: "codex-mcp", status: "connected", scope: "provider" },
+		];
+		const codexQuery = vi.fn((): AgentSession => {
+			const gen = (async function* (): AsyncGenerator<AgentEvent> {
+				yield { type: "session_start", sessionId: "codex-live-session" };
+				yield {
+					type: "done",
+					cost: 0,
+					turns: 1,
+					durationMs: 0,
+					usage: { inputTokens: 1, outputTokens: 1 },
+				};
+			})();
+			return {
+				[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+				cancel: vi.fn(),
+				send: vi.fn().mockResolvedValue(undefined),
+				mcpServerStatus: () => Promise.resolve(codexConnected),
+			};
+		});
+		const sm = new SessionManager(
+			makeConfig(),
+			new Map([
+				["claude", { providerId: "claude", query: claudeQuery }],
+				["codex", { providerId: "codex", query: codexQuery }],
+			]),
+		);
+		const probeMessages: ServerMessage[] = [];
+
+		const probe = sm.probeMcpStatus((message) => probeMessages.push(message));
+		await coldStarted;
+		await sm.setProvider("codex", { model: "gpt-5.5" });
+		await sm.runQuery("hello", vi.fn(), {
+			sessionId: "provider-switch-session",
+		});
+		resolveColdStatus([
+			{ name: "old-mcp", status: "unknown", scope: "provider" },
+		]);
+		await probe;
+
+		expect(claudeQuery).toHaveBeenCalledTimes(1);
+		expect(codexQuery).toHaveBeenCalledTimes(1);
+		expect(probeMessages).toEqual([]);
+		expect(sm.getLastMcpStatus("claude")).toBeNull();
+		expect(sm.getLastMcpStatus("codex")).toEqual(codexConnected);
+	});
+
 	it("serializes simultaneous MCP and command probes without dropping either", async () => {
 		const query = vi.fn(
 			(): AgentSession => ({

@@ -1612,7 +1612,34 @@ describe("AcpProvider — MCP status", () => {
 		session.cancel();
 	});
 
-	it("does not infer MCP connectivity from a similar tool name", async () => {
+	it("promotes an internal MCP from OpenCode's title-only tool update", async () => {
+		getObsidianCliStatus.mockResolvedValueOnce({ installed: true });
+		const { events, session } = await run("use-obsidian-mcp-title-only");
+		expect(events).toContainEqual({
+			type: "mcp_status",
+			servers: expect.arrayContaining([
+				{
+					name: "hlid_obsidian",
+					status: "connected",
+					scope: "provider",
+				},
+			]),
+		});
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "tool_start",
+				name: "hlid_obsidian_vault_info",
+			}),
+		);
+		expect(await session.mcpServerStatus?.()).toContainEqual({
+			name: "hlid_obsidian",
+			status: "connected",
+			scope: "provider",
+		});
+		session.cancel();
+	});
+
+	it("does not let a matching title override an unrelated tool name", async () => {
 		getObsidianCliStatus.mockResolvedValueOnce({ installed: true });
 		const { events, session } = await run("use-similar-mcp-name");
 		expect(events.filter((event) => event.type === "mcp_status")).toEqual([]);

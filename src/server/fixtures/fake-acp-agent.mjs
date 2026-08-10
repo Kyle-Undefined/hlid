@@ -493,7 +493,10 @@ agent({ name: "hlid-fake-agent" })
 				update: {
 					sessionUpdate: "tool_call",
 					toolCallId: `internal-mcp-${text}`,
-					title: "Internal MCP tool",
+					title:
+						text === "use-similar-mcp-name"
+							? "hlid_obsidian_vault_info"
+							: "Internal MCP tool",
 					name: internalMcpToolName,
 					kind: "other",
 					status: "completed",
@@ -522,6 +525,29 @@ agent({ name: "hlid-fake-agent" })
 					sessionUpdate: "tool_call_update",
 					toolCallId: "internal-mcp-late-name",
 					name: "hlid_obsidian_vault_info",
+					status: "completed",
+					rawOutput: "ok",
+				},
+			});
+			return { stopReason: "end_turn" };
+		}
+		if (text === "use-obsidian-mcp-title-only") {
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "tool_call",
+					toolCallId: "internal-mcp-title-only",
+					title: "hlid_obsidian_vault_info",
+					kind: "other",
+					status: "pending",
+					rawInput: {},
+				},
+			});
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "tool_call_update",
+					toolCallId: "internal-mcp-title-only",
 					status: "completed",
 					rawOutput: "ok",
 				},
