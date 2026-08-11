@@ -5,6 +5,7 @@ import {
 	render,
 	screen,
 	waitFor,
+	within,
 } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -628,6 +629,287 @@ describe("ForgeSettings category navigation", () => {
 		expect(screen.getByRole("heading", { name: "Umbod" })).toBeTruthy();
 		fireEvent.click(screen.getByRole("button", { name: "← Integrations" }));
 		expect(screen.getByRole("heading", { name: "Integrations" })).toBeTruthy();
+	});
+
+	it("keeps Custom theme and ACP section chips on their category landings", async () => {
+		renderSettings();
+		const selector = screen.getByRole("combobox", { name: "Forge category" });
+		const rail = screen.getByLabelText("Forge categories");
+		const railButton = (label: string) =>
+			Array.from(rail.querySelectorAll("button")).find(
+				(button) => button.textContent === label,
+			);
+
+		fireEvent.change(selector, { target: { value: "experience" } });
+		fireEvent.click(screen.getByRole("button", { name: "Custom theme" }));
+		expect(screen.getByRole("heading", { name: "Experience" })).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "← Experience" })).toBeNull();
+		await waitFor(() =>
+			expect(document.activeElement?.id).toBe("forge-section-custom-theme"),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Open theme editor" }));
+		expect(screen.getByRole("button", { name: "← Experience" })).toBeTruthy();
+		expect(railButton("Experience")?.getAttribute("aria-current")).toBe("page");
+		fireEvent.click(screen.getByRole("button", { name: "← Experience" }));
+		await waitFor(() =>
+			expect(document.activeElement?.id).toBe("forge-section-custom-theme"),
+		);
+
+		fireEvent.change(selector, { target: { value: "integrations" } });
+		fireEvent.click(
+			screen.getByRole("button", { name: "OpenCode and ACP agents" }),
+		);
+		expect(screen.getByRole("heading", { name: "Integrations" })).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "← Integrations" })).toBeNull();
+		await waitFor(() =>
+			expect(document.activeElement?.id).toBe("forge-section-opencode-acp"),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Open integrations" }));
+		expect(screen.getByRole("button", { name: "← Integrations" })).toBeTruthy();
+		expect(railButton("Integrations")?.getAttribute("aria-current")).toBe(
+			"page",
+		);
+		fireEvent.click(screen.getByRole("button", { name: "← Integrations" }));
+		await waitFor(() =>
+			expect(document.activeElement?.id).toBe("forge-section-opencode-acp"),
+		);
+		expect(railButton("Integrations")?.getAttribute("aria-current")).toBe(
+			"page",
+		);
+	});
+
+	it.each([
+		["Apps and Connectors", "forge-section-apps-connectors", "Open Apps"],
+		["Umbod policy and activity", "forge-section-umbod", "Open Umbod"],
+	])("keeps the %s section chip on its on-page landing", async (chipLabel, landingId, openLabel) => {
+		renderSettings();
+		fireEvent.change(screen.getByRole("combobox", { name: "Forge category" }), {
+			target: { value: "integrations" },
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: chipLabel }));
+		expect(screen.queryByRole("button", { name: "← Integrations" })).toBeNull();
+		await waitFor(() => expect(document.activeElement?.id).toBe(landingId));
+
+		fireEvent.click(screen.getByRole("button", { name: openLabel }));
+		expect(screen.getByRole("button", { name: "← Integrations" })).toBeTruthy();
+	});
+
+	it.each([
+		[
+			"Apps",
+			{
+				category: "integrations" as const,
+				section: "apps-connectors",
+				view: "apps" as const,
+			},
+			"Integrations",
+			"Apps and Connectors",
+			"Apps and Connectors",
+		],
+		[
+			"Umbod",
+			{
+				category: "integrations" as const,
+				section: "umbod",
+				view: "umbod" as const,
+			},
+			"Integrations",
+			"Umbod policy and activity",
+			"Umbod",
+		],
+		[
+			"ACP",
+			{
+				category: "integrations" as const,
+				section: "opencode-acp",
+				view: "acp" as const,
+			},
+			"Integrations",
+			"OpenCode and ACP agents",
+			"OpenCode and ACP integrations",
+		],
+		[
+			"theme",
+			{
+				category: "experience" as const,
+				section: "custom-theme",
+				view: "theme" as const,
+			},
+			"Experience",
+			"Custom theme",
+			"Custom Theme",
+		],
+	])("retains the %s nested view's category and section navigation context", (_label, navigation, categoryLabel, sectionLabel, nestedHeading) => {
+		renderSettings({}, { navigation });
+
+		expect(
+			screen.getByRole("heading", { level: 1, name: categoryLabel }),
+		).toBeTruthy();
+		const sectionNavigation = screen.getByRole("navigation", {
+			name: `${categoryLabel} settings`,
+		});
+		expect(
+			within(sectionNavigation)
+				.getByRole("button", { name: sectionLabel })
+				.getAttribute("aria-current"),
+		).toBe("location");
+		expect(
+			screen.getByRole("heading", { level: 2, name: nestedHeading }),
+		).toBeTruthy();
+	});
+
+	it.each([
+		[
+			"theme",
+			{
+				category: "experience" as const,
+				section: "custom-theme",
+				view: "theme" as const,
+			},
+			"forge-view-theme",
+		],
+		[
+			"ACP",
+			{
+				category: "integrations" as const,
+				section: "opencode-acp",
+				view: "acp" as const,
+			},
+			"forge-view-acp",
+		],
+	])("focuses a direct %s editor deep link", async (_label, navigation, id) => {
+		renderSettings({}, { navigation });
+		await waitFor(() => expect(document.activeElement?.id).toBe(id));
+	});
+
+	it("keeps ACP alignment inside the Forge scroller without shifting the app shell", async () => {
+		const { container } = renderSettings(
+			{},
+			{
+				navigation: {
+					category: "integrations",
+					section: "opencode-acp",
+					view: "acp",
+				},
+			},
+		);
+		const scroller = container.querySelector<HTMLElement>(
+			'[data-scroll-restoration-id="forge-settings"]',
+		);
+		const target = document.getElementById("forge-view-acp");
+		expect(scroller).not.toBeNull();
+		expect(target).not.toBeNull();
+		if (!scroller || !target) return;
+
+		const scrollIntoView = vi.fn(() => {
+			// Models Android moving an overflow-hidden ancestor when a delayed
+			// destination alignment asks the browser to scroll every ancestor.
+			container.scrollTop = 136;
+		});
+		Object.defineProperty(target, "scrollIntoView", {
+			configurable: true,
+			value: scrollIntoView,
+		});
+		const scrollTo = vi.fn();
+		Object.defineProperty(scroller, "scrollTo", {
+			configurable: true,
+			value: scrollTo,
+		});
+		scroller.scrollTop = 40;
+		container.scrollTop = 136;
+		vi.spyOn(scroller, "getBoundingClientRect").mockReturnValue({
+			top: 100,
+		} as DOMRect);
+		vi.spyOn(target, "getBoundingClientRect").mockReturnValue({
+			top: 360,
+		} as DOMRect);
+
+		await waitFor(() => expect(document.activeElement).toBe(target));
+		await new Promise((resolve) => window.setTimeout(resolve, 250));
+
+		expect(scrollIntoView).not.toHaveBeenCalled();
+		expect(scrollTo).toHaveBeenCalledWith({ top: 300 });
+		expect(container.scrollTop).toBe(0);
+	});
+
+	it.each([
+		[
+			{
+				category: "integrations" as const,
+				section: "apps-connectors",
+				view: "apps" as const,
+			},
+			"← Integrations",
+			{ category: "integrations", section: "apps-connectors" },
+		],
+		[
+			{
+				category: "integrations" as const,
+				section: "umbod",
+				view: "umbod" as const,
+			},
+			"← Integrations",
+			{ category: "integrations", section: "umbod" },
+		],
+		[
+			{
+				category: "experience" as const,
+				section: "custom-theme",
+				view: "theme" as const,
+			},
+			"← Experience",
+			{ category: "experience", section: "custom-theme" },
+		],
+		[
+			{
+				category: "integrations" as const,
+				section: "opencode-acp",
+				view: "acp" as const,
+			},
+			"← Integrations",
+			{ category: "integrations", section: "opencode-acp" },
+		],
+	])("replaces the nested editor entry when using inline Back", (navigation, backLabel, landing) => {
+		const onNavigationChange = vi.fn();
+		renderSettings({}, { navigation, onNavigationChange });
+		fireEvent.click(screen.getByRole("button", { name: backLabel }));
+		expect(onNavigationChange).toHaveBeenCalledWith(landing, {
+			replace: true,
+		});
+	});
+
+	it.each([
+		[
+			{ category: "integrations" as const, section: "apps-connectors" },
+			"Open Apps",
+			"apps",
+		],
+		[
+			{ category: "integrations" as const, section: "umbod" },
+			"Open Umbod",
+			"umbod",
+		],
+		[
+			{ category: "integrations" as const, section: "opencode-acp" },
+			"Open integrations",
+			"acp",
+		],
+		[
+			{ category: "experience" as const, section: "custom-theme" },
+			"Open theme editor",
+			"theme",
+		],
+	])("replaces an existing %s landing when opening its nested view", (navigation, openLabel, view) => {
+		const onNavigationChange = vi.fn();
+		renderSettings({}, { navigation, onNavigationChange });
+
+		fireEvent.click(screen.getByRole("button", { name: openLabel }));
+
+		expect(onNavigationChange).toHaveBeenCalledWith(
+			{ ...navigation, view },
+			{ replace: true },
+		);
 	});
 
 	it("keeps the ACP catalog live controls gated while runtime sync is pending", () => {

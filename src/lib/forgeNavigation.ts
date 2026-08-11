@@ -32,6 +32,11 @@ export interface ForgeNavigationState {
 	target?: ForgeThemeTarget;
 }
 
+/** Browser-history intent for a Forge navigation transition. */
+export interface ForgeNavigationOptions {
+	replace?: boolean;
+}
+
 export type ForgeRouteSearch = Partial<ForgeNavigationState>;
 
 export interface ForgeSectionDefinition {
@@ -208,7 +213,6 @@ export const FORGE_CATEGORIES: readonly ForgeCategoryDefinition[] = [
 				id: "custom-theme",
 				label: "Custom theme",
 				description: "Edit the desktop or mobile custom color palette.",
-				view: "theme",
 				keywords: ["palette", "colors", "appearance", "mobile"],
 			},
 			{
@@ -254,7 +258,6 @@ export const FORGE_CATEGORIES: readonly ForgeCategoryDefinition[] = [
 				id: "apps-connectors",
 				label: "Apps and Connectors",
 				description: "Provider-native apps, authentication, and MCP health.",
-				view: "apps",
 				keywords: ["catalog", "apps", "connectors", "authentication"],
 			},
 			{
@@ -273,14 +276,12 @@ export const FORGE_CATEGORIES: readonly ForgeCategoryDefinition[] = [
 				id: "umbod",
 				label: "Umbod policy and activity",
 				description: "Approval policy, generated hooks, activity, and calls.",
-				view: "umbod",
 				keywords: ["policy", "approval", "hooks", "activity", "calls"],
 			},
 			{
 				id: "opencode-acp",
 				label: "OpenCode and ACP agents",
 				description: "Configure OpenCode or another ACP integration.",
-				view: "acp",
 				keywords: ["agent client protocol", "external agents", "catalog"],
 			},
 		],
@@ -376,6 +377,15 @@ const ALLOWED_VIEWS: Record<ForgeCategoryId, readonly ForgeView[]> = {
 	developer: ["events", "api", "pricing"],
 	advanced: [],
 };
+const SECTION_BY_VIEW: Record<ForgeView, string> = {
+	events: "event-log",
+	api: "api-reference",
+	pricing: "pricing",
+	apps: "apps-connectors",
+	umbod: "umbod",
+	acp: "opencode-acp",
+	theme: "custom-theme",
+};
 
 const CATEGORY_BY_ID = new Map(
 	FORGE_CATEGORIES.map((category) => [category.id, category]),
@@ -435,14 +445,16 @@ export function parseForgeSearch<T extends ForgeSearchInput>(
 
 	const setting = settingFor(category, input.setting);
 	const requestedSection = sectionFor(category, input.section);
-	const section = setting
-		? sectionFor(category, setting.section)
-		: requestedSection;
 	const requestedView = isView(input.view) ? input.view : undefined;
 	const compatibleRequestedView =
 		!setting && requestedView && ALLOWED_VIEWS[category].includes(requestedView)
 			? requestedView
 			: undefined;
+	const section = setting
+		? sectionFor(category, setting.section)
+		: compatibleRequestedView
+			? sectionFor(category, SECTION_BY_VIEW[compatibleRequestedView])
+			: requestedSection;
 	const effectiveView =
 		setting?.view ?? compatibleRequestedView ?? section?.view;
 	const compatibleSection = section?.id;
@@ -486,7 +498,11 @@ export function serializeForgeNavigation(
 		return {};
 	const result: ForgeRouteSearch = { category: parsed.category };
 	if (parsed.setting) result.setting = parsed.setting;
-	else if (parsed.section) result.section = parsed.section;
+	else if (
+		parsed.section &&
+		!(parsed.category === "developer" && parsed.view === "events")
+	)
+		result.section = parsed.section;
 	if (parsed.view && parsed.view !== "events" && !parsed.setting)
 		result.view = parsed.view;
 	if (parsed.target && parsed.target !== "desktop")
@@ -588,7 +604,7 @@ const SETTING_DESTINATIONS: readonly SettingDefinition[] = [
 	},
 	{
 		id: "custom-theme",
-		label: "Custom Theme",
+		label: "Custom theme editor",
 		description: "Edit desktop and mobile palette colors.",
 		category: "experience",
 		section: "custom-theme",
@@ -640,7 +656,7 @@ const SETTING_DESTINATIONS: readonly SettingDefinition[] = [
 	},
 	{
 		id: "apps-connectors",
-		label: "Apps and Connectors",
+		label: "Apps and Connectors catalog",
 		description: "Open the provider-native apps catalog.",
 		category: "integrations",
 		section: "apps-connectors",
@@ -666,7 +682,7 @@ const SETTING_DESTINATIONS: readonly SettingDefinition[] = [
 	},
 	{
 		id: "opencode-acp",
-		label: "OpenCode and ACP agents",
+		label: "OpenCode and ACP catalog",
 		description: "Configure OpenCode or another Agent Client Protocol agent.",
 		category: "integrations",
 		section: "opencode-acp",
@@ -2129,10 +2145,8 @@ export function getForgeNavigationFocusId(
 		if (setting.view) return `forge-view-${setting.view}`;
 		return `forge-section-${setting.section}`;
 	}
-	if (parsed.view && sectionFor(parsed.category, parsed.section)?.view)
-		return `forge-view-${parsed.view}`;
-	if (parsed.section) return `forge-section-${parsed.section}`;
 	if (parsed.view) return `forge-view-${parsed.view}`;
+	if (parsed.section) return `forge-section-${parsed.section}`;
 	return `forge-category-${parsed.category}`;
 }
 

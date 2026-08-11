@@ -41,6 +41,7 @@ import type {
 import {
 	FORGE_CATEGORIES,
 	type ForgeCategoryId,
+	type ForgeNavigationOptions,
 	type ForgeNavigationState,
 	type ForgeSearchDestination,
 	type ForgeThemeTarget,
@@ -53,7 +54,11 @@ import {
 } from "#/lib/forgeNavigation";
 import { CLIPROXY_CODEX_PROVIDER_ID } from "#/lib/providerIds";
 import type { ProviderInfo } from "#/lib/providerTypes";
-import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
+import {
+	ROUTE_SCROLL_RESTORATION_IDS,
+	resetScrollAncestors,
+	resetWindowScroll,
+} from "#/lib/scrollContainers";
 import { normalizeSearchText } from "#/lib/search";
 import { applyThemeToDocument, effectiveTheme } from "#/lib/theme";
 
@@ -134,6 +139,28 @@ function findRenderedSettingTarget(
 		}
 	}
 	return fallbackId ? document.getElementById(fallbackId) : null;
+}
+
+function alignTargetWithinForgeScroller(
+	target: HTMLElement,
+	scroller: HTMLElement,
+): void {
+	// Element.scrollIntoView() is allowed to move every scrollable ancestor.
+	// Android will even scroll overflow-hidden app-shell wrappers, lifting the
+	// bottom navigation and leaving an equal blank gap below it. Move only the
+	// Forge content scroller, then clamp any focus-induced outer scroll.
+	const targetRect = target.getBoundingClientRect();
+	const scrollerRect = scroller.getBoundingClientRect();
+	const scrollMarginTop =
+		Number.parseFloat(window.getComputedStyle(target).scrollMarginTop) || 0;
+	const top = Math.max(
+		0,
+		scroller.scrollTop + targetRect.top - scrollerRect.top - scrollMarginTop,
+	);
+	if (typeof scroller.scrollTo === "function") scroller.scrollTo({ top });
+	else scroller.scrollTop = top;
+	resetWindowScroll();
+	resetScrollAncestors(scroller);
 }
 
 function CategoryIntro({
@@ -357,7 +384,7 @@ function AcpCatalogPage({
 			<NestedBackButton label="Integrations" onClick={onBack} />
 			<PageIntro
 				id="forge-view-acp"
-				headingLevel={1}
+				headingLevel={2}
 				title="OpenCode and ACP integrations"
 				description="Set up OpenCode through its supported ACP connection or discover another Agent Client Protocol integration."
 			/>
@@ -394,7 +421,7 @@ function UmbodPage({
 			<NestedBackButton label="Integrations" onClick={onBack} />
 			<PageIntro
 				id="forge-view-umbod"
-				headingLevel={1}
+				headingLevel={2}
 				title="Umbod"
 				description="Configure policy, generate hooks, and inspect tool-call decisions."
 			/>
@@ -419,7 +446,7 @@ function CustomThemePage({
 			<NestedBackButton label="Experience" onClick={onBack} />
 			<PageIntro
 				id="forge-view-theme"
-				headingLevel={1}
+				headingLevel={2}
 				title="Custom Theme"
 				description="Shape separate desktop and mobile palettes with a live system-wide preview. Changes save automatically."
 			/>
@@ -607,9 +634,17 @@ function ExperienceCategory({
 				onChange={(patch) => state.setUi((ui) => ({ ...ui, ...patch }))}
 				voiceHotkey={state.voice.enabled ? state.voice.hotkey : ""}
 			/>
-			<div className="flex min-w-0 flex-col items-start gap-3 border border-border bg-card p-4 @2xl:flex-row @2xl:items-center @2xl:justify-between">
+			<section
+				id="forge-section-custom-theme"
+				aria-labelledby="forge-section-custom-theme-title"
+				tabIndex={-1}
+				data-forge-section="forge-section-custom-theme"
+				className="scroll-mt-20 flex min-w-0 flex-col items-start gap-3 border border-border bg-card p-4 focus:outline-none focus-visible:ring-1 focus-visible:ring-primary/50 @2xl:flex-row @2xl:items-center @2xl:justify-between"
+			>
 				<div className="min-w-0">
-					<div className="text-sm">Custom theme</div>
+					<h2 id="forge-section-custom-theme-title" className="text-sm">
+						Custom theme
+					</h2>
 					<p className="mt-0.5 break-words text-xs text-muted-foreground">
 						Edit desktop and mobile palettes on their own live-preview screen.
 					</p>
@@ -621,7 +656,7 @@ function ExperienceCategory({
 				>
 					Open theme editor
 				</button>
-			</div>
+			</section>
 			<VoiceSection
 				voice={state.voice}
 				onChange={(patch) =>
@@ -662,9 +697,17 @@ function IntegrationsCategory({
 				navigation={navigation}
 				onNavigate={onNavigate}
 			/>
-			<div className="flex min-w-0 flex-col items-start gap-3 border border-border bg-card p-4 @2xl:flex-row @2xl:items-center @2xl:justify-between">
+			<section
+				id="forge-section-apps-connectors"
+				aria-labelledby="forge-section-apps-connectors-title"
+				tabIndex={-1}
+				data-forge-section="forge-section-apps-connectors"
+				className="scroll-mt-20 flex min-w-0 flex-col items-start gap-3 border border-border bg-card p-4 focus:outline-none focus-visible:ring-1 focus-visible:ring-primary/50 @2xl:flex-row @2xl:items-center @2xl:justify-between"
+			>
 				<div className="min-w-0">
-					<div className="text-sm">Apps and Connectors</div>
+					<h2 id="forge-section-apps-connectors-title" className="text-sm">
+						Apps and Connectors
+					</h2>
 					<p className="mt-0.5 break-words text-xs text-muted-foreground">
 						Inspect provider-native app readiness, authentication, and MCP
 						health separately from plugin packages.
@@ -677,15 +720,23 @@ function IntegrationsCategory({
 				>
 					Open Apps
 				</button>
-			</div>
+			</section>
 			<McpSection vaultPath={state.vault.path} />
 			<CliProxySection
 				config={initial.cliproxy}
 				initialInfo={initial.cliProxyInfo}
 			/>
-			<div className="flex min-w-0 flex-col items-start gap-3 border border-border bg-card p-4 @2xl:flex-row @2xl:items-center @2xl:justify-between">
+			<section
+				id="forge-section-umbod"
+				aria-labelledby="forge-section-umbod-title"
+				tabIndex={-1}
+				data-forge-section="forge-section-umbod"
+				className="scroll-mt-20 flex min-w-0 flex-col items-start gap-3 border border-border bg-card p-4 focus:outline-none focus-visible:ring-1 focus-visible:ring-primary/50 @2xl:flex-row @2xl:items-center @2xl:justify-between"
+			>
 				<div className="min-w-0">
-					<div className="text-sm">Umbod policy</div>
+					<h2 id="forge-section-umbod-title" className="text-sm">
+						Umbod policy
+					</h2>
 					<p className="mt-0.5 break-words text-xs text-muted-foreground">
 						Configure enforcement, generate hooks, and inspect tool calls.
 					</p>
@@ -697,10 +748,18 @@ function IntegrationsCategory({
 				>
 					Open Umbod
 				</button>
-			</div>
-			<div className="flex min-w-0 flex-col items-start gap-3 border border-border bg-card p-4 @2xl:flex-row @2xl:items-center @2xl:justify-between">
+			</section>
+			<section
+				id="forge-section-opencode-acp"
+				aria-labelledby="forge-section-opencode-acp-title"
+				tabIndex={-1}
+				data-forge-section="forge-section-opencode-acp"
+				className="scroll-mt-20 flex min-w-0 flex-col items-start gap-3 border border-border bg-card p-4 focus:outline-none focus-visible:ring-1 focus-visible:ring-primary/50 @2xl:flex-row @2xl:items-center @2xl:justify-between"
+			>
 				<div className="min-w-0">
-					<div className="text-sm">OpenCode and ACP agents</div>
+					<h2 id="forge-section-opencode-acp-title" className="text-sm">
+						OpenCode and ACP agents
+					</h2>
 					<p className="mt-0.5 break-words text-xs text-muted-foreground">
 						Set up the featured OpenCode connection or browse other Agent Client
 						Protocol integrations.
@@ -713,7 +772,7 @@ function IntegrationsCategory({
 				>
 					Open integrations
 				</button>
-			</div>
+			</section>
 		</>
 	);
 }
@@ -743,7 +802,7 @@ function ProviderAppsPage({
 			<NestedBackButton label="Integrations" onClick={onBack} />
 			<PageIntro
 				id="forge-view-apps"
-				headingLevel={1}
+				headingLevel={2}
 				title="Apps and Connectors"
 				description="Inspect provider-native app installation, configuration, authentication, usability, and MCP health."
 			/>
@@ -953,32 +1012,62 @@ function CategoryContent({
 }) {
 	if (category === "integrations" && showApps)
 		return (
-			<ProviderAppsPage
-				providers={initial.providers}
-				cwd={state.vault.path || initial.cwd}
-				onBack={() => onShowApps(false)}
-			/>
+			<>
+				<CategoryIntro
+					category="integrations"
+					navigation={navigation}
+					onNavigate={onNavigate}
+				/>
+				<ProviderAppsPage
+					providers={initial.providers}
+					cwd={state.vault.path || initial.cwd}
+					onBack={() => onShowApps(false)}
+				/>
+			</>
 		);
 	if (category === "integrations" && showCatalog)
 		return (
-			<AcpCatalogPage
-				state={state}
-				initial={initial}
-				onBack={() => onShowCatalog(false)}
-				onRefreshProviders={onRefreshProviders}
-				onDiscoverAcpModels={onDiscoverAcpModels}
-			/>
+			<>
+				<CategoryIntro
+					category="integrations"
+					navigation={navigation}
+					onNavigate={onNavigate}
+				/>
+				<AcpCatalogPage
+					state={state}
+					initial={initial}
+					onBack={() => onShowCatalog(false)}
+					onRefreshProviders={onRefreshProviders}
+					onDiscoverAcpModels={onDiscoverAcpModels}
+				/>
+			</>
 		);
 	if (category === "integrations" && showUmbod)
-		return <UmbodPage state={state} onBack={() => onShowUmbod(false)} />;
+		return (
+			<>
+				<CategoryIntro
+					category="integrations"
+					navigation={navigation}
+					onNavigate={onNavigate}
+				/>
+				<UmbodPage state={state} onBack={() => onShowUmbod(false)} />
+			</>
+		);
 	if (category === "experience" && showTheme)
 		return (
-			<CustomThemePage
-				state={state}
-				onBack={() => onShowTheme(false)}
-				target={themeTarget}
-				onTargetChange={onThemeTarget}
-			/>
+			<>
+				<CategoryIntro
+					category="experience"
+					navigation={navigation}
+					onNavigate={onNavigate}
+				/>
+				<CustomThemePage
+					state={state}
+					onBack={() => onShowTheme(false)}
+					target={themeTarget}
+					onTargetChange={onThemeTarget}
+				/>
+			</>
 		);
 	switch (category) {
 		case "overview":
@@ -1173,7 +1262,10 @@ export function ForgeSettings({
 	/** URL-backed navigation supplied by the Forge route. */
 	navigation?: ForgeNavigationState;
 	/** Receives category, section, setting, and nested-view navigation changes. */
-	onNavigationChange?: (navigation: ForgeNavigationState) => void;
+	onNavigationChange?: (
+		navigation: ForgeNavigationState,
+		options?: ForgeNavigationOptions,
+	) => void;
 }) {
 	const [localNavigation, setLocalNavigation] = useState<ForgeNavigationState>({
 		category: "overview",
@@ -1213,13 +1305,17 @@ export function ForgeSettings({
 	const searchResults = searchMatches.slice(0, SEARCH_RESULT_LIMIT);
 	const searchResultsTruncated = searchMatches.length > SEARCH_RESULT_LIMIT;
 
-	function navigate(next: ForgeNavigationState) {
+	function navigate(
+		next: ForgeNavigationState,
+		options?: ForgeNavigationOptions,
+	) {
 		const normalized = normalizeForgeNavigation(next);
 		if (!controlledNavigation) setLocalNavigation(normalized);
 		setFocusRequest((request) => request + 1);
 		// Queue every component-local update before handing navigation to the
 		// router. A route transition can synchronously replace this render tree.
-		onNavigationChange?.(normalized);
+		if (options) onNavigationChange?.(normalized, options);
+		else onNavigationChange?.(normalized);
 	}
 
 	function choose(next: Category) {
@@ -1263,12 +1359,13 @@ export function ForgeSettings({
 				focusNavigation,
 				navigationFocusId,
 			);
-			if (target) {
-				target.scrollIntoView?.({ block: "start" });
+			const scroller = scrollRef.current;
+			if (target && scroller) {
 				if (!focused) {
 					target.focus({ preventScroll: true });
 					focused = true;
 				}
+				alignTargetWithinForgeScroller(target, scroller);
 				return;
 			}
 			scrollRef.current?.scrollTo?.({ top: 0 });
@@ -1298,9 +1395,24 @@ export function ForgeSettings({
 		show: boolean,
 	) {
 		if (!show) {
-			navigate({
-				category: view === "theme" ? "experience" : "integrations",
-			});
+			const category = view === "theme" ? "experience" : "integrations";
+			const landingSection =
+				view === "theme"
+					? "custom-theme"
+					: view === "apps"
+						? "apps-connectors"
+						: view === "umbod"
+							? "umbod"
+							: view === "acp"
+								? "opencode-acp"
+								: undefined;
+			navigate(
+				{
+					category,
+					...(landingSection ? { section: landingSection } : {}),
+				},
+				{ replace: true },
+			);
 			return;
 		}
 		const section =
@@ -1311,11 +1423,19 @@ export function ForgeSettings({
 					: view === "theme"
 						? "custom-theme"
 						: "umbod";
-		navigate({
-			category: view === "theme" ? "experience" : "integrations",
-			section,
-			view,
-		});
+		const nestedCategory = view === "theme" ? "experience" : "integrations";
+		navigate(
+			{
+				category: nestedCategory,
+				section,
+				view,
+			},
+			navigation.category === nestedCategory &&
+				navigation.section === section &&
+				!navigation.view
+				? { replace: true }
+				: undefined,
+		);
 	}
 	useEffect(() => {
 		const media =

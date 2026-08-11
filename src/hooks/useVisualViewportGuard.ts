@@ -2,6 +2,7 @@ import { type RefObject, useEffect } from "react";
 import { resetShellScroll, resetWindowScroll } from "#/lib/scrollContainers";
 
 const APP_HEIGHT_VAR = "--app-height";
+const ROUTE_SCROLL_SETTLE_MS = 250;
 
 /**
  * Keeps the fixed app shell glued to the visible viewport on mobile.
@@ -18,16 +19,30 @@ const APP_HEIGHT_VAR = "--app-height";
  * - Pinch-zoom (scale > 1) is left alone so panning still works.
  */
 export function useVisualViewportGuard(
-	pathname: string,
+	routeKey: string,
 	shellRefs: Array<RefObject<HTMLElement | null>> = [],
 ): void {
 	// biome-ignore lint/correctness/useExhaustiveDependencies: route change is the clamp trigger
 	useEffect(() => {
-		resetWindowScroll();
-		resetShellScroll(shellRefs.map((ref) => ref.current));
-	}, [pathname]);
+		let settleFrame = 0;
+		let delayedClamp = 0;
+		const clamp = () => {
+			resetWindowScroll();
+			resetShellScroll(shellRefs.map((ref) => ref.current));
+		};
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: shellRefs holds stable ref objects; listeners must attach once
+		clamp();
+		settleFrame = requestAnimationFrame(clamp);
+		// Destination focus can land after the route commit (Forge waits 200ms).
+		// Clamp once more after it has had time to scroll persistent shell boxes.
+		delayedClamp = window.setTimeout(clamp, ROUTE_SCROLL_SETTLE_MS);
+		return () => {
+			cancelAnimationFrame(settleFrame);
+			window.clearTimeout(delayedClamp);
+		};
+	}, [routeKey]);
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: shellRefs holds stable ref objects; routeKey deliberately retriggers the immediate and settled measurements
 	useEffect(() => {
 		const visualViewport = window.visualViewport;
 		if (!visualViewport) return;
@@ -71,5 +86,5 @@ export function useVisualViewportGuard(
 			cancelAnimationFrame(settleFrame);
 			document.documentElement.style.removeProperty(APP_HEIGHT_VAR);
 		};
-	}, []);
+	}, [routeKey]);
 }

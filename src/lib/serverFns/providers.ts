@@ -10,6 +10,7 @@ const providerCatalogQuerySchema = z
 	.object({
 		refresh: z.boolean().optional(),
 		includeHostCapabilities: z.boolean().optional(),
+		waitForHostCapabilities: z.boolean().optional(),
 		includeProviderCapabilities: z.boolean().optional(),
 		preferCachedModels: z.boolean().optional(),
 		refreshProviderId: z.string().min(1).optional(),
@@ -57,6 +58,10 @@ export function providerCatalogPath(
 	const path = withRefreshQuery("/providers", data);
 	const params = new URLSearchParams();
 	if (data?.includeHostCapabilities) params.set("host_capabilities", "1");
+	if (data?.waitForHostCapabilities) {
+		params.set("host_capabilities", "1");
+		params.set("host_capabilities_wait", "1");
+	}
 	if (data?.includeProviderCapabilities)
 		params.set("provider_capabilities", "1");
 	if (data?.preferCachedModels) params.set("cached_models", "1");
@@ -73,7 +78,7 @@ export const getProvidersFn = createServerFn({ method: "GET" })
 	.validator((raw) => providerCatalogQuerySchema.parse(raw))
 	.handler(async ({ data }) => {
 		const path = providerCatalogPath(data);
-		if (data?.refresh) {
+		if (data?.refresh || data?.waitForHostCapabilities) {
 			const response = await requireDbOk(
 				await dbFetch(path, {
 					signal: AbortSignal.timeout(

@@ -60,6 +60,9 @@ import { providerOptionRefreshError, Route } from "./forge";
 
 type ForgeRoute = {
 	loader: () => Promise<Record<string, unknown>>;
+	loaderDeps: (input: { search: Record<string, unknown> }) => object;
+	staleTime: number;
+	gcTime: number;
 	component: ComponentType;
 };
 const route = Route as unknown as ForgeRoute;
@@ -80,6 +83,20 @@ beforeEach(() => {
 });
 
 describe("forge route loader", () => {
+	it("keeps URL-only navigation out of inventory loading and retains the loader seed", () => {
+		expect(
+			route.loaderDeps({
+				search: {
+					category: "integrations",
+					section: "opencode-acp",
+					view: "acp",
+				},
+			}),
+		).toEqual({});
+		expect(route.staleTime).toBe(Number.POSITIVE_INFINITY);
+		expect(route.gcTime).toBe(Number.POSITIVE_INFINITY);
+	});
+
 	it("uses cached provider models for navigation", async () => {
 		await route.loader();
 		expect(getProvidersFn).toHaveBeenCalledWith({
@@ -179,6 +196,83 @@ describe("forge inventory refresh", () => {
 				setting: "check-for-updates",
 			},
 			resetScroll: false,
+		});
+	});
+
+	it("round-trips ACP landing and editor history states without conflating them", () => {
+		routeState.loaderData = {
+			server: { port: 3000 },
+			cwd: "C:\\workspace",
+			providers: [],
+			accountInfo: null,
+			voiceInfo: { status: { state: "ready", model: "base" }, models: [] },
+			cliProxyInfo: {
+				state: "ready",
+				managed: false,
+				authenticated: false,
+				oauth: "idle",
+				accounts: {},
+			},
+			acpCatalog: [],
+			inventoryStatus: "ready",
+		};
+		routeState.search = {
+			category: "integrations",
+			section: "opencode-acp",
+		};
+
+		const Component = route.component;
+		const view = render(<Component />);
+		expect(routeState.forgeSettings.mock.lastCall?.[0].navigation).toEqual({
+			category: "integrations",
+			section: "opencode-acp",
+		});
+
+		const onNavigationChange = routeState.forgeSettings.mock.lastCall?.[0]
+			.onNavigationChange as (
+			navigation: Record<string, unknown>,
+			options?: { replace?: boolean },
+		) => void;
+		onNavigationChange({
+			category: "integrations",
+			section: "opencode-acp",
+			view: "acp",
+		});
+		expect(routeState.navigate).toHaveBeenLastCalledWith({
+			search: {
+				category: "integrations",
+				section: "opencode-acp",
+				view: "acp",
+			},
+			resetScroll: false,
+		});
+
+		onNavigationChange(
+			{
+				category: "integrations",
+				section: "opencode-acp",
+			},
+			{ replace: true },
+		);
+		expect(routeState.navigate).toHaveBeenLastCalledWith({
+			search: {
+				category: "integrations",
+				section: "opencode-acp",
+			},
+			resetScroll: false,
+			replace: true,
+		});
+
+		// Rehydrating the replaced URL models the inline Back transition. A later
+		// browser Back can now leave this landing instead of reopening the editor.
+		routeState.search = {
+			category: "integrations",
+			section: "opencode-acp",
+		};
+		view.rerender(<Component />);
+		expect(routeState.forgeSettings.mock.lastCall?.[0].navigation).toEqual({
+			category: "integrations",
+			section: "opencode-acp",
 		});
 	});
 
@@ -348,6 +442,355 @@ describe("forge inventory refresh", () => {
 				routeState.forgeSettings.mock.lastCall?.[0].initial.providers[0].models,
 			).toEqual([{ value: "cached", label: "Cached" }]),
 		);
+	});
+
+	it("recovers missing Computer Use readiness once without refreshing provider options", async () => {
+		routeState.loaderData = {
+			server: { port: 3000 },
+			cwd: "C:\\workspace",
+			providers: [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [{ value: "cached", label: "Cached" }],
+				},
+			],
+			accountInfo: null,
+			voiceInfo: { status: { state: "ready", model: "base" }, models: [] },
+			cliProxyInfo: {
+				state: "ready",
+				managed: false,
+				authenticated: false,
+				oauth: "idle",
+				accounts: {},
+			},
+			acpCatalog: [],
+			inventoryStatus: "ready",
+		};
+		vi.mocked(getProvidersFn).mockResolvedValue([
+			{
+				id: "codex",
+				label: "Codex",
+				available: true,
+				models: [{ value: "cached", label: "Cached" }],
+				hostCapabilities: {
+					windowsComputerUse: {
+						label: "Windows Computer Use",
+						available: true,
+					},
+				},
+			},
+		] as never);
+
+		const Component = route.component;
+		render(<Component />);
+
+		await waitFor(() =>
+			expect(
+				routeState.forgeSettings.mock.lastCall?.[0].initial.providers[0]
+					.hostCapabilities.windowsComputerUse.available,
+			).toBe(true),
+		);
+		expect(getProvidersFn).toHaveBeenCalledTimes(1);
+		expect(getProvidersFn).toHaveBeenCalledWith({
+			data: {
+				includeHostCapabilities: true,
+				waitForHostCapabilities: true,
+				preferCachedModels: true,
+			},
+		});
+	});
+
+	it("runs a fresh Computer Use recovery for an explicitly replaced loader seed", async () => {
+		const base = {
+			server: { port: 3000 },
+			cwd: "/workspace",
+			accountInfo: null,
+			voiceInfo: { status: { state: "ready", model: "base" }, models: [] },
+			cliProxyInfo: {
+				state: "ready",
+				managed: false,
+				authenticated: false,
+				oauth: "idle",
+				accounts: {},
+			},
+			acpCatalog: [],
+			inventoryStatus: "ready",
+		};
+		const cachedProviders = [
+			{
+				id: "codex",
+				label: "Codex",
+				available: true,
+				models: [{ value: "cached", label: "Cached" }],
+			},
+		];
+		routeState.loaderData = { ...base, providers: cachedProviders };
+		vi.mocked(getProvidersFn)
+			.mockResolvedValueOnce([
+				{
+					...cachedProviders[0],
+					hostCapabilities: {
+						windowsComputerUse: {
+							label: "Windows Computer Use",
+							available: false,
+							reason: "Hlid is not running on Windows",
+						},
+					},
+				},
+			] as never)
+			.mockResolvedValueOnce([
+				{
+					...cachedProviders[0],
+					hostCapabilities: {
+						windowsComputerUse: {
+							label: "Windows Computer Use",
+							available: true,
+						},
+					},
+				},
+			] as never);
+
+		const Component = route.component;
+		const view = render(<Component />);
+
+		await waitFor(() =>
+			expect(
+				routeState.forgeSettings.mock.lastCall?.[0].initial.providers[0]
+					.hostCapabilities.windowsComputerUse.reason,
+			).toBe("Hlid is not running on Windows"),
+		);
+
+		routeState.loaderData = {
+			...base,
+			providers: cachedProviders.map((provider) => ({ ...provider })),
+		};
+		view.rerender(<Component />);
+
+		await waitFor(() =>
+			expect(
+				routeState.forgeSettings.mock.lastCall?.[0].initial.providers[0]
+					.hostCapabilities.windowsComputerUse.available,
+			).toBe(true),
+		);
+		expect(getProvidersFn).toHaveBeenCalledTimes(2);
+	});
+
+	it("reuses recovered provisional inventory after leaving and returning", async () => {
+		const loaderSeed = {
+			server: { port: 3000 },
+			cwd: "C:\\workspace",
+			providers: [],
+			accountInfo: null,
+			voiceInfo: {
+				status: { state: "unavailable", model: "" },
+				models: [],
+			},
+			cliProxyInfo: {
+				state: "error",
+				managed: false,
+				authenticated: false,
+				oauth: "idle",
+				accounts: {},
+			},
+			acpCatalog: [],
+			inventoryStatus: "unavailable",
+		};
+		routeState.loaderData = loaderSeed;
+		vi.mocked(getProvidersFn).mockResolvedValue([
+			{
+				id: "codex",
+				label: "Codex",
+				available: true,
+				models: [{ value: "cached", label: "Cached" }],
+				hostCapabilities: {
+					windowsComputerUse: {
+						label: "Windows Computer Use",
+						available: true,
+					},
+				},
+			},
+		] as never);
+		vi.mocked(getVoiceInfoFn).mockResolvedValue({
+			status: { state: "ready", model: "base" },
+			models: [],
+		} as never);
+
+		const Component = route.component;
+		const firstVisit = render(<Component />);
+		await waitFor(() => {
+			expect(routeState.forgeSettings.mock.lastCall?.[0].inventoryStatus).toBe(
+				"ready",
+			);
+			expect(
+				routeState.forgeSettings.mock.lastCall?.[0].initial.providers[0].id,
+			).toBe("codex");
+		});
+		expect(getProvidersFn).toHaveBeenCalledTimes(1);
+		expect(getAcpRegistryFn).toHaveBeenCalledTimes(1);
+
+		firstVisit.unmount();
+		routeState.forgeSettings.mockClear();
+		render(<Component />);
+
+		expect(routeState.forgeSettings.mock.lastCall?.[0].inventoryStatus).toBe(
+			"ready",
+		);
+		expect(
+			routeState.forgeSettings.mock.lastCall?.[0].initial.providers[0].id,
+		).toBe("codex");
+		await act(async () => {});
+		expect(getProvidersFn).toHaveBeenCalledTimes(1);
+		expect(getAcpRegistryFn).toHaveBeenCalledTimes(1);
+	});
+
+	it("rejoins an in-flight provisional recovery after returning without rediscovery", async () => {
+		const loaderSeed = {
+			server: { port: 3000 },
+			cwd: "C:\\workspace",
+			providers: [],
+			accountInfo: null,
+			voiceInfo: {
+				status: { state: "unavailable", model: "" },
+				models: [],
+			},
+			cliProxyInfo: {
+				state: "error",
+				managed: false,
+				authenticated: false,
+				oauth: "idle",
+				accounts: {},
+			},
+			acpCatalog: [],
+			inventoryStatus: "unavailable",
+		};
+		routeState.loaderData = loaderSeed;
+		let resolveProviders: ((providers: unknown[]) => void) | undefined;
+		vi.mocked(getProvidersFn).mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					resolveProviders = resolve as (providers: unknown[]) => void;
+				}),
+		);
+
+		const Component = route.component;
+		const firstVisit = render(<Component />);
+		await waitFor(() =>
+			expect(routeState.forgeSettings.mock.lastCall?.[0].inventoryStatus).toBe(
+				"loading",
+			),
+		);
+		expect(getProvidersFn).toHaveBeenCalledTimes(1);
+
+		firstVisit.unmount();
+		routeState.forgeSettings.mockClear();
+		render(<Component />);
+		expect(routeState.forgeSettings.mock.lastCall?.[0].inventoryStatus).toBe(
+			"loading",
+		);
+		expect(getProvidersFn).toHaveBeenCalledTimes(1);
+
+		resolveProviders?.([
+			{
+				id: "codex",
+				label: "Codex",
+				available: true,
+				models: [],
+				hostCapabilities: {
+					windowsComputerUse: {
+						label: "Windows Computer Use",
+						available: true,
+					},
+				},
+			},
+		]);
+		await waitFor(() => {
+			expect(routeState.forgeSettings.mock.lastCall?.[0].inventoryStatus).toBe(
+				"ready",
+			);
+			expect(
+				routeState.forgeSettings.mock.lastCall?.[0].initial.providers[0].id,
+			).toBe("codex");
+		});
+		expect(getProvidersFn).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not let older automatic recovery overwrite explicit provider options", async () => {
+		routeState.loaderData = {
+			server: { port: 3000 },
+			cwd: "C:\\workspace",
+			providers: [],
+			accountInfo: null,
+			voiceInfo: {
+				status: { state: "unavailable", model: "" },
+				models: [],
+			},
+			cliProxyInfo: {
+				state: "error",
+				managed: false,
+				authenticated: false,
+				oauth: "idle",
+				accounts: {},
+			},
+			acpCatalog: [],
+			inventoryStatus: "unavailable",
+		};
+		let resolveAutomaticProviders: ((providers: unknown[]) => void) | undefined;
+		vi.mocked(getProvidersFn)
+			.mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						resolveAutomaticProviders = resolve as (
+							providers: unknown[],
+						) => void;
+					}),
+			)
+			.mockResolvedValueOnce([
+				{
+					id: "acp:opencode",
+					label: "OpenCode",
+					available: true,
+					models: [{ value: "fresh", label: "Fresh" }],
+					modelCatalogRefresh: { status: "current", source: "live" },
+				},
+			] as never);
+
+		const Component = route.component;
+		const firstVisit = render(<Component />);
+		await waitFor(() =>
+			expect(routeState.forgeSettings.mock.lastCall?.[0].inventoryStatus).toBe(
+				"loading",
+			),
+		);
+		firstVisit.unmount();
+		routeState.forgeSettings.mockClear();
+		render(<Component />);
+		expect(getProvidersFn).toHaveBeenCalledTimes(1);
+		const refresh = routeState.forgeSettings.mock.lastCall?.[0]
+			.onRefreshProviderOptions as (providerId: string) => Promise<void>;
+		await act(() => refresh("acp:opencode"));
+		expect(
+			routeState.forgeSettings.mock.lastCall?.[0].initial.providers[0].models,
+		).toEqual([{ value: "fresh", label: "Fresh" }]);
+
+		resolveAutomaticProviders?.([
+			{
+				id: "acp:opencode",
+				label: "OpenCode",
+				available: true,
+				models: [{ value: "old", label: "Old" }],
+			},
+		]);
+		await waitFor(() =>
+			expect(routeState.forgeSettings.mock.lastCall?.[0].inventoryStatus).toBe(
+				"ready",
+			),
+		);
+		expect(
+			routeState.forgeSettings.mock.lastCall?.[0].initial.providers[0].models,
+		).toEqual([{ value: "fresh", label: "Fresh" }]);
+		expect(getProvidersFn).toHaveBeenCalledTimes(2);
 	});
 
 	it("replaces a provisional capability after route revalidation", async () => {

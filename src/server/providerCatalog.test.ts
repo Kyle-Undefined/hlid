@@ -1143,6 +1143,53 @@ describe("loadProviderCatalog", () => {
 		expect(cachedCapabilitiesFor).toHaveBeenCalledOnce();
 	});
 
+	it("recovers host readiness without refreshing models or provider availability", async () => {
+		const check = vi.fn().mockResolvedValue({ available: true });
+		const hostCapabilities = vi.fn().mockResolvedValue({
+			windowsComputerUse: {
+				label: "Windows Computer Use",
+				available: true,
+			},
+		});
+		const provider = makeProvider({
+			providerId: "codex",
+			check,
+			hostCapabilities,
+		});
+		const modelsFor = vi
+			.fn()
+			.mockResolvedValue([{ value: "live", label: "Live" }]);
+		const cachedModelsFor = vi
+			.fn()
+			.mockResolvedValue([{ value: "cached", label: "Cached" }]);
+		const snapshot = createProviderCatalogSnapshot([provider], {
+			modelsFor,
+			cachedModelsFor,
+		});
+
+		const initial = await snapshot.get({ includeHostCapabilities: true });
+		expect(initial[0]?.hostCapabilities).toBeUndefined();
+
+		const recovered = await snapshot.get({
+			includeHostCapabilities: true,
+			awaitHostCapabilities: true,
+		});
+
+		expect(recovered[0]).toMatchObject({
+			models: [{ value: "cached", label: "Cached" }],
+			hostCapabilities: {
+				windowsComputerUse: {
+					label: "Windows Computer Use",
+					available: true,
+				},
+			},
+		});
+		expect(hostCapabilities).toHaveBeenCalledOnce();
+		expect(check).not.toHaveBeenCalled();
+		expect(modelsFor).not.toHaveBeenCalled();
+		expect(cachedModelsFor).toHaveBeenCalledTimes(2);
+	});
+
 	it("uses a provider's cached availability without probing it", async () => {
 		const check = vi.fn().mockResolvedValue({ available: true });
 		const provider = makeProvider({
@@ -2321,6 +2368,7 @@ describe("providerCatalogRequestOptions", () => {
 			preferCachedModels: true,
 			preferCachedProviderCapabilities: true,
 			includeHostCapabilities: false,
+			awaitHostCapabilities: false,
 			includeProviderCapabilities: false,
 		});
 	});
@@ -2335,6 +2383,7 @@ describe("providerCatalogRequestOptions", () => {
 			preferCachedModels: false,
 			preferCachedProviderCapabilities: true,
 			includeHostCapabilities: true,
+			awaitHostCapabilities: false,
 			includeProviderCapabilities: false,
 		});
 	});
@@ -2350,6 +2399,7 @@ describe("providerCatalogRequestOptions", () => {
 			preferCachedModels: false,
 			preferCachedProviderCapabilities: true,
 			includeHostCapabilities: false,
+			awaitHostCapabilities: false,
 			includeProviderCapabilities: false,
 		});
 	});
@@ -2364,6 +2414,7 @@ describe("providerCatalogRequestOptions", () => {
 			preferCachedModels: true,
 			preferCachedProviderCapabilities: true,
 			includeHostCapabilities: false,
+			awaitHostCapabilities: false,
 			includeProviderCapabilities: true,
 		});
 	});
@@ -2380,8 +2431,24 @@ describe("providerCatalogRequestOptions", () => {
 			preferCachedModels: true,
 			preferCachedProviderCapabilities: false,
 			includeHostCapabilities: false,
+			awaitHostCapabilities: false,
 			includeProviderCapabilities: true,
 			discoveryCwd: "/work/project",
+		});
+	});
+
+	it("requests a bounded host-readiness wait separately from full refresh", () => {
+		expect(
+			providerCatalogRequestOptions(
+				new URLSearchParams("host_capabilities=1&host_capabilities_wait=1"),
+			),
+		).toEqual({
+			refresh: false,
+			preferCachedModels: true,
+			preferCachedProviderCapabilities: true,
+			includeHostCapabilities: true,
+			awaitHostCapabilities: true,
+			includeProviderCapabilities: false,
 		});
 	});
 

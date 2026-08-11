@@ -476,11 +476,11 @@ describe("Vault Agent and Computer Use model/effort interplay", () => {
 		);
 
 		expect(
-			screen.getByRole("img", { name: "Computer Use status unavailable" }),
+			screen.getByRole("img", { name: "Computer Use status not verified" }),
 		).not.toBeNull();
 		expect(
 			screen.getByText(
-				"Capability status was not included in the current inventory. Preferences remain configurable.",
+				"Windows host readiness has not been verified yet. Preferences remain configurable.",
 			),
 		).not.toBeNull();
 		expect(screen.getByLabelText("Computer Use model")).not.toBeNull();

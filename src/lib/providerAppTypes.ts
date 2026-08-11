@@ -58,6 +58,8 @@ export type ProviderAppCatalogPage = {
 	contractVersion: typeof PROVIDER_APP_CONTRACT_VERSION;
 	providerId: string;
 	status: "current" | "partial" | "unavailable";
+	/** A provider refresh is running out of band; poll this same scope for the result. */
+	refreshing?: boolean;
 	observedAt: number;
 	scope: ProviderAppCatalogScope;
 	apps: ProviderAppInventoryItem[];
@@ -69,6 +71,8 @@ export type ProviderAppCatalogPage = {
 	nextCursor: string | null;
 	truncated: boolean;
 	issues?: string[];
+	/** Presentation severity for provider-scoped catalog issues. Defaults to warning. */
+	issueSeverity?: "info" | "warning";
 };
 
 export type ProviderAppCatalogRequest = {

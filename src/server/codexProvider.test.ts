@@ -1514,6 +1514,7 @@ describe("CodexProvider Apps and connector integration", () => {
 		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
 		vi.mocked(openInBrowser).mockReturnValue(true);
 	});
+	afterEach(() => vi.useRealTimers());
 
 	it("reads app, installed runtime, and MCP health without creating a thread", async () => {
 		const { proc, writes } = makeFakeSessionProc({
@@ -1576,6 +1577,72 @@ describe("CodexProvider Apps and connector integration", () => {
 		expect(writeMethods(writes)).not.toContain("thread/start");
 	});
 
+	it("bounds initial available-app discovery while keeping usable installed inventory clear", async () => {
+		vi.useFakeTimers();
+		const { proc, writes } = makeFakeSessionProc({
+			deferAppsList: true,
+			installedAppsResult: {
+				apps: [
+					{
+						id: "github",
+						runtimeName: "GitHub",
+						enabled: true,
+						callable: true,
+					},
+				],
+			},
+			mcpStatusResult: { data: [] },
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+
+		const loading = new CodexProvider().listApps?.({
+			cwd: "/work/project",
+			limit: 50,
+		});
+		if (!loading) throw new Error("Expected Codex Apps support");
+		await vi.advanceTimersByTimeAsync(0);
+		expect(writeMethods(writes)).toContain("app/list");
+
+		await vi.advanceTimersByTimeAsync(4_000);
+		await expect(loading).resolves.toMatchObject({
+			status: "partial",
+			issueSeverity: "info",
+			installedCount: 1,
+			usableCount: 1,
+			apps: [expect.objectContaining({ id: "github", usable: true })],
+			issues: [
+				"Available app discovery could not be checked in the active provider runtime. The provider still reports usable installed apps or connectors.",
+			],
+		});
+	});
+
+	it("keeps the unavailable app/list warning when no inventory was reported", async () => {
+		vi.useFakeTimers();
+		const { proc } = makeFakeSessionProc({
+			deferAppsList: true,
+			installedAppsResult: { apps: [] },
+			mcpStatusResult: { data: [] },
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+
+		const loading = new CodexProvider().listApps?.({
+			cwd: "/work/project",
+			limit: 50,
+		});
+		if (!loading) throw new Error("Expected Codex Apps support");
+		await vi.advanceTimersByTimeAsync(4_000);
+
+		await expect(loading).resolves.toMatchObject({
+			status: "partial",
+			installedCount: 0,
+			usableCount: 0,
+			apps: [],
+			connectors: [],
+			issues: ["app/list is unavailable in the active provider runtime."],
+		});
+		await expect(loading).resolves.not.toHaveProperty("issueSeverity");
+	});
+
 	it("opens app authorization on the host without returning the URL", async () => {
 		const { proc } = makeFakeSessionProc({
 			appsReadResult: {
@@ -1622,6 +1689,7 @@ function makeFakeSessionProc(
 		/** Reply to `mcpServerStatus/list` with a JSON-RPC error. */
 		mcpStatusError?: boolean;
 		appsListResult?: unknown;
+		deferAppsList?: boolean;
 		installedAppsResult?: unknown;
 		appsReadResult?: unknown;
 		mcpOauthResult?: unknown;
@@ -2089,6 +2157,7 @@ function makeFakeSessionProc(
 						),
 					);
 				} else if (msg.method === "app/list") {
+					if (opts.deferAppsList) return;
 					stdout.emit(
 						"data",
 						Buffer.from(

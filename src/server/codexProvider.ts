@@ -210,6 +210,8 @@ type OwnedSpeechRuntime = {
 
 const CODEX_REALTIME_STOP_CLOSE_GRACE_MS = 2_000;
 const CODEX_SPEECH_RELEASE_TIMEOUT_MS = 2_000;
+const CODEX_APP_LIST_INITIAL_TIMEOUT_MS = 4_000;
+const CODEX_APP_INVENTORY_REFRESH_TIMEOUT_MS = 15_000;
 const CODEX_SPEECH_REGISTRY_VERSION = "hlid-speech-v1";
 
 const CODEX_SPEECH_DEVELOPER_INSTRUCTIONS =
@@ -6901,20 +6903,30 @@ export class CodexProvider implements AgentProvider {
 		const installedParams: AppsInstalledParams = {
 			...(context.refresh ? { forceRefresh: true } : {}),
 		};
+		const appListTimeoutMs = context.refresh
+			? CODEX_APP_INVENTORY_REFRESH_TIMEOUT_MS
+			: CODEX_APP_LIST_INITIAL_TIMEOUT_MS;
 		const settled = await Promise.allSettled([
-			conn.requestOptional("app/list", appsParams, 15_000),
-			conn.requestOptional("app/installed", installedParams, 15_000),
+			conn.requestOptional("app/list", appsParams, appListTimeoutMs),
+			conn.requestOptional(
+				"app/installed",
+				installedParams,
+				CODEX_APP_INVENTORY_REFRESH_TIMEOUT_MS,
+			),
 			readCodexMcpServerStatuses(
 				(params, timeoutMs) =>
 					conn.requestOptional("mcpServerStatus/list", params, timeoutMs),
-				{ detail: "full", timeoutMs: 15_000 },
+				{
+					detail: "full",
+					timeoutMs: CODEX_APP_INVENTORY_REFRESH_TIMEOUT_MS,
+				},
 			),
 		]);
-		const issues: string[] = [];
+		const unavailableMethods: string[] = [];
 		const result = (index: number, method: string): unknown => {
 			const item = settled[index];
 			if (item?.status === "fulfilled") return item.value;
-			issues.push(`${method} is unavailable in the active provider runtime.`);
+			unavailableMethods.push(method);
 			return {};
 		};
 		const appsResponse = result(0, "app/list") as Partial<AppsListResponse>;
@@ -6926,7 +6938,7 @@ export class CodexProvider implements AgentProvider {
 			2,
 			"mcpServerStatus/list",
 		) as Partial<ListMcpServerStatusResponse>;
-		const page = mapCodexAppCatalogPage({
+		const mapped = mapCodexAppCatalogPage({
 			providerId: this.providerId,
 			cwd: launch.rpcCwd,
 			...(context.sessionId ? { sessionId: context.sessionId } : {}),
@@ -6935,8 +6947,38 @@ export class CodexProvider implements AgentProvider {
 			mcpResponse,
 			...(context.cursor ? { cursor: context.cursor } : {}),
 			authAttempts: this.appAuthAttempts,
-			issues,
 		});
+		const hasUsableInventory =
+			mapped.usableCount > 0 ||
+			mapped.connectors.some((connector) => connector.usable);
+		const hasAnyInventory =
+			mapped.installedCount > 0 ||
+			mapped.apps.length > 0 ||
+			mapped.connectors.length > 0;
+		const issues = unavailableMethods.map((method) => {
+			if (method !== "app/list") {
+				return `${method} is unavailable in the active provider runtime.`;
+			}
+			if (hasUsableInventory) {
+				return "Available app discovery could not be checked in the active provider runtime. The provider still reports usable installed apps or connectors.";
+			}
+			if (hasAnyInventory) {
+				return "Available app discovery could not be checked in the active provider runtime. Installed app or connector details were still reported.";
+			}
+			return "app/list is unavailable in the active provider runtime.";
+		});
+		const optionalDiscoveryOnly =
+			hasUsableInventory &&
+			unavailableMethods.length === 1 &&
+			unavailableMethods[0] === "app/list";
+		const page: ProviderAppCatalogPage = issues.length
+			? {
+					...mapped,
+					status: "partial",
+					issues,
+					...(optionalDiscoveryOnly ? { issueSeverity: "info" as const } : {}),
+				}
+			: mapped;
 		return settled.every((item) => item.status === "rejected")
 			? { ...page, status: "unavailable" }
 			: page;

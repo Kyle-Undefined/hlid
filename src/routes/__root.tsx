@@ -203,7 +203,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 	const shellRef = useRef<HTMLDivElement>(null);
 	const wrapperRef = useRef<HTMLDivElement>(null);
 	const { pullY, isRefreshing } = usePullToRefresh(wrapperRef);
-	useVisualViewportGuard(pathname, [shellRef, wrapperRef]);
+	useVisualViewportGuard(routeKey, [shellRef, wrapperRef]);
 	const ravenRoute = isRavenPath(pathname);
 
 	// The config is schema-validated and JSON-serialized by themeBootstrapScript.

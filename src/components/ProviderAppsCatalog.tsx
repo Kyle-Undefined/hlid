@@ -31,12 +31,32 @@ function mergeApps(
 	return [...byId.values()];
 }
 
+function stopCatalogRefreshAfterError(
+	catalog: ProviderAppCatalogPage | null,
+): ProviderAppCatalogPage | null {
+	if (!catalog?.refreshing) return catalog;
+	const { refreshing: _refreshing, ...settled } = catalog;
+	return {
+		...settled,
+		status: settled.observedAt === 0 ? "unavailable" : "partial",
+	};
+}
+
 function statusClass(ok: boolean | null): string {
 	return ok === true
 		? semanticStatusClass.success.text
 		: ok === false
 			? semanticStatusClass.warning.text
 			: "text-muted-foreground/50";
+}
+
+function catalogIssueClass(catalog: ProviderAppCatalogPage): string {
+	const hasUsableInventory =
+		catalog.usableCount > 0 ||
+		catalog.connectors.some((connector) => connector.usable);
+	return catalog.issueSeverity === "info" && hasUsableInventory
+		? "border-status-info/20 bg-status-info/5 text-status-info/80"
+		: "border-status-warning/20 text-status-warning/75";
 }
 
 function StateBadge({
@@ -214,6 +234,7 @@ export function ProviderAppsCatalog({
 		null,
 	);
 	const loadGeneration = useRef(0);
+	const refreshCursor = useRef<string | undefined>(undefined);
 
 	const load = useCallback(
 		async (options: { cursor?: string; refresh?: boolean } = {}) => {
@@ -235,6 +256,7 @@ export function ProviderAppsCatalog({
 					},
 				});
 				if (isCurrent()) {
+					refreshCursor.current = next.refreshing ? options.cursor : undefined;
 					setCatalog(next);
 					setLoadedApps((current) =>
 						more ? mergeApps(current, next.apps) : next.apps,
@@ -242,6 +264,8 @@ export function ProviderAppsCatalog({
 				}
 			} catch {
 				if (isCurrent()) {
+					refreshCursor.current = undefined;
+					setCatalog(stopCatalogRefreshAfterError);
 					setError("Provider app inventory is unavailable.");
 				}
 			} finally {
@@ -259,11 +283,21 @@ export function ProviderAppsCatalog({
 		setLoadedApps([]);
 		setPendingTarget(null);
 		setNotice(null);
+		refreshCursor.current = undefined;
 		void load();
 		return () => {
 			loadGeneration.current += 1;
 		};
 	}, [load]);
+
+	useEffect(() => {
+		if (!catalog?.refreshing) return;
+		const timer = setTimeout(() => {
+			const cursor = refreshCursor.current;
+			void load(cursor ? { cursor } : {});
+		}, 1_000);
+		return () => clearTimeout(timer);
+	}, [catalog, load]);
 
 	useEffect(() => {
 		if (!pendingTarget || !catalog) return;
@@ -359,12 +393,12 @@ export function ProviderAppsCatalog({
 						<span>{catalog?.missingAuthenticationCount ?? 0} need auth</span>
 						<button
 							type="button"
-							disabled={loading}
+							disabled={loading || catalog?.refreshing}
 							onClick={() => void load({ refresh: true })}
 							className="inline-flex items-center gap-1 text-[9px] tracking-widest uppercase hover:text-foreground disabled:opacity-40"
 						>
 							<RefreshCw
-								className={`h-3 w-3 ${loading ? "animate-spin" : ""}`}
+								className={`h-3 w-3 ${loading || catalog?.refreshing ? "animate-spin" : ""}`}
 							/>
 							refresh
 						</button>
@@ -410,7 +444,7 @@ export function ProviderAppsCatalog({
 				{catalog?.issues?.map((issue) => (
 					<div
 						key={issue}
-						className="border-t border-status-warning/20 px-4 py-2 text-[9px] text-status-warning/75"
+						className={`border-t px-4 py-2 text-[9px] ${catalogIssueClass(catalog)}`}
 					>
 						{issue}
 					</div>
@@ -418,7 +452,8 @@ export function ProviderAppsCatalog({
 			</div>
 
 			<div className="max-h-[55vh] overflow-y-auto border border-border bg-card divide-y divide-border">
-				{loading && !catalog ? (
+				{(loading && !catalog) ||
+				(catalog?.refreshing && catalog.observedAt === 0) ? (
 					<div className="px-4 py-8 text-center text-xs text-muted-foreground">
 						Loading provider Apps and connectors…
 					</div>

@@ -57,11 +57,22 @@ describe("Forge route search", () => {
 		expect(parseForgeSearch({ category: "bogus", view: "api" })).toEqual({});
 	});
 
-	it("infers a nested view from its canonical section and validates theme target", () => {
+	it("keeps section landings separate from explicit nested views", () => {
 		expect(
 			parseForgeSearch({
 				category: "experience",
 				section: "custom-theme",
+				target: "mobile",
+			}),
+		).toEqual({
+			category: "experience",
+			section: "custom-theme",
+		});
+		expect(
+			parseForgeSearch({
+				category: "experience",
+				section: "custom-theme",
+				view: "theme",
 				target: "mobile",
 			}),
 		).toEqual({
@@ -73,10 +84,43 @@ describe("Forge route search", () => {
 		expect(
 			parseForgeSearch({
 				category: "integrations",
+				section: "opencode-acp",
+			}),
+		).toEqual({ category: "integrations", section: "opencode-acp" });
+		for (const section of ["apps-connectors", "umbod"] as const) {
+			expect(parseForgeSearch({ category: "integrations", section })).toEqual({
+				category: "integrations",
+				section,
+			});
+		}
+		expect(
+			parseForgeSearch({
+				category: "integrations",
 				section: "mcp",
 				target: "desktop",
 			}),
 		).toEqual({ category: "integrations", section: "mcp" });
+	});
+
+	it("canonicalizes view-only and mismatched nested URLs to their section", () => {
+		expect(parseForgeSearch({ category: "experience", view: "theme" })).toEqual(
+			{
+				category: "experience",
+				section: "custom-theme",
+				view: "theme",
+			},
+		);
+		expect(
+			parseForgeSearch({
+				category: "integrations",
+				section: "mcp",
+				view: "apps",
+			}),
+		).toEqual({
+			category: "integrations",
+			section: "apps-connectors",
+			view: "apps",
+		});
 	});
 
 	it("normalizes to Overview and serializes compact defaults", () => {
@@ -105,7 +149,11 @@ describe("Forge route search", () => {
 				view: "theme",
 				target: "desktop",
 			}),
-		).toEqual({ category: "experience", view: "theme" });
+		).toEqual({
+			category: "experience",
+			section: "custom-theme",
+			view: "theme",
+		});
 	});
 
 	it("whitelists exact setting anchors in URL state", () => {
@@ -158,6 +206,20 @@ describe("Forge route search", () => {
 				section: "voice-input",
 			}),
 		).toBe("forge-section-voice-input");
+		expect(
+			getForgeNavigationFocusId({
+				category: "experience",
+				section: "custom-theme",
+				view: "theme",
+			}),
+		).toBe("forge-view-theme");
+		expect(
+			getForgeNavigationFocusId({
+				category: "integrations",
+				section: "opencode-acp",
+				view: "acp",
+			}),
+		).toBe("forge-view-acp");
 		expect(
 			getForgeNavigationFocusId({
 				category: "agents",
@@ -271,6 +333,50 @@ describe("Forge setting search", () => {
 	});
 
 	it.each([
+		[
+			"Custom theme",
+			"section:experience:custom-theme",
+			"Custom theme",
+			"setting:custom-theme",
+			"Custom theme editor",
+		],
+		[
+			"OpenCode and ACP agents",
+			"section:integrations:opencode-acp",
+			"OpenCode and ACP agents",
+			"setting:opencode-acp",
+			"OpenCode and ACP catalog",
+		],
+		[
+			"Apps and Connectors",
+			"section:integrations:apps-connectors",
+			"Apps and Connectors",
+			"setting:apps-connectors",
+			"Apps and Connectors catalog",
+		],
+	])("distinguishes the %s landing from its nested editor", (query, landingId, landingLabel, editorId, editorLabel) => {
+		const results = searchForgeDestinations(query);
+		expect(results.find((result) => result.id === landingId)).toMatchObject({
+			label: landingLabel,
+			navigation: expect.not.objectContaining({ view: expect.anything() }),
+		});
+		expect(results.find((result) => result.id === editorId)).toMatchObject({
+			label: editorLabel,
+			navigation: expect.objectContaining({
+				view:
+					editorId === "setting:custom-theme"
+						? "theme"
+						: editorId === "setting:apps-connectors"
+							? "apps"
+							: "acp",
+			}),
+		});
+		expect(new Set(results.map((result) => result.label)).size).toBe(
+			results.length,
+		);
+	});
+
+	it.each([
 		["Check for updates", "setting:check-for-updates", "overview", "updates"],
 		["Launch installer", "setting:launch-installer", "overview", "updates"],
 		["Memory folder", "setting:memory-folder", "workspace", "vault"],
@@ -355,12 +461,12 @@ describe("Forge setting search", () => {
 		);
 	});
 
-	it("publishes rendered view anchors for nested section destinations", () => {
+	it("publishes on-page anchors separately from nested view anchors", () => {
 		const expected = new Map([
-			["section:experience:custom-theme", "forge-view-theme"],
-			["section:integrations:apps-connectors", "forge-view-apps"],
-			["section:integrations:umbod", "forge-view-umbod"],
-			["section:integrations:opencode-acp", "forge-view-acp"],
+			["section:experience:custom-theme", "forge-section-custom-theme"],
+			["section:integrations:apps-connectors", "forge-section-apps-connectors"],
+			["section:integrations:umbod", "forge-section-umbod"],
+			["section:integrations:opencode-acp", "forge-section-opencode-acp"],
 			["section:developer:event-log", "forge-view-events"],
 			["section:developer:api-reference", "forge-view-api"],
 			["section:developer:pricing", "forge-view-pricing"],

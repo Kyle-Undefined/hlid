@@ -207,14 +207,14 @@ function WindowsComputerUseFields({
 							? "Computer Use ready"
 							: capability?.available === false
 								? "Computer Use unavailable"
-								: "Computer Use status unavailable"
+								: "Computer Use status not verified"
 					}
 				>
 					{capability?.available === true
 						? "ready"
 						: capability?.available === false
 							? (capability.reason ?? "unavailable")
-							: "Capability status was not included in the current inventory. Preferences remain configurable."}
+							: "Windows host readiness has not been verified yet. Preferences remain configurable."}
 				</StatusIndicator>
 			</div>
 			<Field label="Model">

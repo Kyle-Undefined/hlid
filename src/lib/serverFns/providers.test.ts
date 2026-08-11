@@ -29,6 +29,17 @@ describe("providerCatalogPath", () => {
 		).toBe("/providers?refresh=1&host_capabilities=1");
 	});
 
+	it("requests bounded host readiness without a full catalog refresh", () => {
+		expect(
+			providerCatalogPath({
+				waitForHostCapabilities: true,
+				preferCachedModels: true,
+			}),
+		).toBe(
+			"/providers?host_capabilities=1&host_capabilities_wait=1&cached_models=1",
+		);
+	});
+
 	it("scopes an explicit ACP option refresh to its provider", () => {
 		expect(
 			providerCatalogPath({

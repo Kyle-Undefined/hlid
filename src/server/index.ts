@@ -803,7 +803,8 @@ function handleCodexRoute(url: URL, req: Request): Response | null {
 async function handleProviderRoute(url: URL, req: Request) {
 	if (url.pathname !== "/providers" || req.method !== "GET") return null;
 	if (
-		url.searchParams.get("refresh") === "1" &&
+		(url.searchParams.get("refresh") === "1" ||
+			url.searchParams.get("host_capabilities_wait") === "1") &&
 		url.searchParams.get("host_capabilities") === "1"
 	) {
 		await refreshCodexHostCapabilities();

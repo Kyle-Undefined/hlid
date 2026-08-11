@@ -508,6 +508,8 @@ export async function loadProviderCatalog(
 		/** Limit explicit live discovery to one provider while returning the full catalog. */
 		refreshProviderId?: string;
 		includeHostCapabilities?: boolean;
+		/** Await host-only readiness without refreshing models or provider capabilities. */
+		awaitHostCapabilities?: boolean;
 		includeProviderCapabilities?: boolean;
 		preferCachedModels?: boolean;
 		preferCachedProviderCapabilities?: boolean;
@@ -527,6 +529,9 @@ export async function loadProviderCatalog(
 			const liveProviderCapabilityRead =
 				options.includeProviderCapabilities === true &&
 				options.preferCachedProviderCapabilities === false;
+			const liveHostCapabilityRead =
+				options.includeHostCapabilities === true &&
+				options.awaitHostCapabilities === true;
 			const cachedAvailability = provider.cachedAvailability?.();
 			const check: { available: boolean; reason?: string } | null =
 				(liveRefresh || liveProviderCapabilityRead) && provider.check
@@ -580,7 +585,7 @@ export async function loadProviderCatalog(
 									models: staticModels(provider),
 									source: "fallback" as const,
 								},
-					liveRefresh &&
+					(liveRefresh || liveHostCapabilityRead) &&
 					options.includeHostCapabilities &&
 					provider.hostCapabilities &&
 					providerAvailable
@@ -904,6 +909,7 @@ export function createProviderCatalogSnapshot(
 		value: ProviderInfo[],
 		previous: ProviderInfo[] | undefined,
 		shouldPreserve: (provider: ProviderInfo) => boolean = () => true,
+		preserveHostCapabilities = true,
 	): ProviderInfo[] {
 		if (!previous) return value;
 		const previousById = new Map(
@@ -937,9 +943,13 @@ export function createProviderCatalogSnapshot(
 					: provider.forkCapability
 						? { forkCapability: provider.forkCapability }
 						: {}),
-				...(prior.hostCapabilities
-					? { hostCapabilities: prior.hostCapabilities }
-					: {}),
+				...(preserveHostCapabilities
+					? prior.hostCapabilities
+						? { hostCapabilities: prior.hostCapabilities }
+						: {}
+					: provider.hostCapabilities
+						? { hostCapabilities: provider.hostCapabilities }
+						: {}),
 				...(prior.capabilitySnapshot
 					? { capabilitySnapshot: prior.capabilitySnapshot }
 					: {}),
@@ -969,7 +979,7 @@ export function createProviderCatalogSnapshot(
 			snapshots.get(snapshotKey)?.value ?? lastKnownLiveFields.get(snapshotKey);
 		const flightKey = `${refreshGeneration}:${refreshMetadataGeneration}:${snapshotKey}:${
 			loadOptions?.refresh ? "live" : "cached"
-		}:${
+		}:${loadOptions.awaitHostCapabilities ? "await-host" : "cached-host"}:${
 			loadOptions.preferCachedProviderCapabilities === false
 				? "await-provider"
 				: "cached-provider"
@@ -1036,7 +1046,12 @@ export function createProviderCatalogSnapshot(
 										(provider) => provider.id !== loadOptions.refreshProviderId,
 									)
 								: value
-							: preserveLiveSnapshotFields(value, previous),
+							: preserveLiveSnapshotFields(
+									value,
+									previous,
+									undefined,
+									!loadOptions.awaitHostCapabilities,
+								),
 						{
 							...(liveRefresh !== null ? { liveRefresh } : {}),
 							...(cachedRefresh !== null ? { cachedRefresh } : {}),
@@ -1064,7 +1079,9 @@ export function createProviderCatalogSnapshot(
 	const getSnapshot = (
 		loadOptions: ProviderCatalogLoadOptions = {},
 	): Promise<ProviderInfo[]> => {
-		if (loadOptions.refresh) return refresh(loadOptions);
+		if (loadOptions.refresh || loadOptions.awaitHostCapabilities) {
+			return refresh(loadOptions);
+		}
 		const includeHostCapabilities =
 			loadOptions.includeHostCapabilities === true;
 		const includeProviderCapabilities =
@@ -1142,6 +1159,7 @@ export function providerCatalogRequestOptions(searchParams: URLSearchParams): {
 	preferCachedModels: boolean;
 	preferCachedProviderCapabilities: boolean;
 	includeHostCapabilities: boolean;
+	awaitHostCapabilities: boolean;
 	includeProviderCapabilities: boolean;
 	refreshProviderId?: string;
 	discoveryCwd?: string;
@@ -1166,6 +1184,7 @@ export function providerCatalogRequestOptions(searchParams: URLSearchParams): {
 		preferCachedProviderCapabilities:
 			searchParams.get("provider_capabilities_wait") !== "1",
 		includeHostCapabilities: searchParams.get("host_capabilities") === "1",
+		awaitHostCapabilities: searchParams.get("host_capabilities_wait") === "1",
 		includeProviderCapabilities:
 			searchParams.get("provider_capabilities") === "1",
 		...(refresh && refreshProviderId ? { refreshProviderId } : {}),
