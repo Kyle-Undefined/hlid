@@ -70,7 +70,7 @@ export function VaultSection({
 		!templates.includes(vault.saveToObsidianTemplate);
 
 	return (
-		<Section title="Vault">
+		<Section title="Vault" id="forge-section-vault">
 			<div className="px-4 py-3 space-y-2">
 				<div id="vault-style-label" className="text-sm text-foreground">
 					Style
@@ -124,6 +124,7 @@ export function VaultSection({
 				<PathField value={vault.path} onChange={(v) => onChange({ path: v })} />
 			</Field>
 			<Field
+				id="forge-setting-save-to-obsidian-template"
 				label="Save to Obsidian Template"
 				hint="optional template for new notes saved to Inbox or Raw"
 			>

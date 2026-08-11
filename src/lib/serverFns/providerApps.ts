@@ -3,6 +3,11 @@ import { z } from "zod";
 import { dbFetch, dbJson, requireDbOk } from "#/lib/dbClient";
 import type { ProviderAppCatalogPage } from "#/lib/providerAppTypes";
 
+// Bun's UI request timeout is 10 seconds. Keep this soft-failure read below
+// that boundary so a slow provider catalog resolves to the unavailable state
+// instead of turning the whole server function request into an HTML 500 page.
+export const PROVIDER_APPS_READ_TIMEOUT_MS = 8_000;
+
 const providerAppQuerySchema = z.object({
 	providerId: z.string().min(1).max(240),
 	cwd: z.string().min(1).max(4_096).optional(),
@@ -58,7 +63,10 @@ export const getProviderAppsFn = createServerFn({ method: "GET" })
 		dbJson<ProviderAppCatalogPage>(
 			providerAppsPath(data),
 			unavailableCatalog(data.providerId, data.cwd),
-			{ initialTimeoutMs: 20_000, retryTimeoutMs: false },
+			{
+				initialTimeoutMs: PROVIDER_APPS_READ_TIMEOUT_MS,
+				retryTimeoutMs: false,
+			},
 		),
 	);
 

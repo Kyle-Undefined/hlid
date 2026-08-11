@@ -6,6 +6,7 @@ import {
 } from "./ExtensionMarketplaceView";
 import {
 	ExtensionSectionControls,
+	type ExtensionSectionView,
 	useExtensionSectionViewModel,
 } from "./ExtensionSectionControls";
 import { Section } from "./fields";
@@ -43,11 +44,41 @@ function ProviderInspectionErrors({
 	));
 }
 
-export function ExtensionsSection() {
+const MARKETPLACE_DESTINATIONS = new Set([
+	"extension-marketplace",
+	"search-extension-marketplaces",
+	"marketplace-environment",
+	"marketplace-category",
+	"add-marketplace-source",
+	"marketplace-source",
+	"marketplace-git-ref",
+	"marketplace-sparse-paths",
+	"update-marketplace-source",
+	"remove-marketplace-source",
+	"review-extension",
+	"install-extension",
+]);
+
+const MARKETPLACE_SOURCE_FORM_DESTINATIONS = new Set([
+	"add-marketplace-source",
+	"marketplace-source",
+	"marketplace-git-ref",
+	"marketplace-sparse-paths",
+]);
+
+export function ExtensionsSection({ destination }: { destination?: string }) {
 	const controller = useExtensionSectionController();
+	const requestedView: ExtensionSectionView =
+		destination && MARKETPLACE_DESTINATIONS.has(destination)
+			? "marketplace"
+			: "installed";
+	const requestedProvider =
+		destination === "marketplace-git-ref" ? "codex" : undefined;
 	const model = useExtensionSectionViewModel(
 		controller.inventory,
 		controller.clearReview,
+		requestedView,
+		requestedProvider,
 	);
 	const marketplaceSourceDraft = useMarketplaceSourceDraft(
 		model.providerEnvironments,
@@ -59,6 +90,7 @@ export function ExtensionsSection() {
 	return (
 		<Section
 			title="Provider Extensions"
+			id="forge-section-provider-extensions"
 			description="Review, install, and remove extensions, and manage marketplace sources through each CLI's native plugin registry. Claude and Codex remain separate systems."
 		>
 			<div className="px-4 py-3 space-y-3">
@@ -74,6 +106,10 @@ export function ExtensionsSection() {
 						environments={model.providerEnvironments}
 						mutation={controller.mutation}
 						draft={marketplaceSourceDraft}
+						openForDestination={Boolean(
+							destination &&
+								MARKETPLACE_SOURCE_FORM_DESTINATIONS.has(destination),
+						)}
 					/>
 				)}
 				<p className="text-xs text-muted-foreground">

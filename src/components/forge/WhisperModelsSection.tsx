@@ -67,7 +67,7 @@ function WhisperModelRow({
 							type="button"
 							disabled={selected}
 							onClick={onSelect}
-							className="px-2.5 py-1.5 text-[10px] tracking-widest border border-border hover:bg-accent disabled:text-primary uppercase"
+							className="min-h-11 px-2.5 py-1.5 text-[10px] tracking-widest border border-border hover:bg-accent disabled:text-primary uppercase @lg:min-h-0"
 						>
 							{selected ? "SELECTED" : "SELECT"}
 						</button>
@@ -83,7 +83,7 @@ function WhisperModelRow({
 										onBusyChange(null);
 									});
 							}}
-							className="px-2.5 py-1.5 text-[10px] tracking-widest text-destructive disabled:opacity-30 uppercase"
+							className="min-h-11 px-2.5 py-1.5 text-[10px] tracking-widest text-destructive disabled:opacity-30 uppercase @lg:min-h-0"
 						>
 							DELETE
 						</button>
@@ -92,7 +92,7 @@ function WhisperModelRow({
 					<button
 						type="button"
 						onClick={() => void cancelVoiceDownloadFn().then(refresh)}
-						className="px-2.5 py-1.5 text-[10px] tracking-widest border border-border uppercase"
+						className="min-h-11 px-2.5 py-1.5 text-[10px] tracking-widest border border-border uppercase @lg:min-h-0"
 					>
 						CANCEL
 					</button>
@@ -111,7 +111,7 @@ function WhisperModelRow({
 									onBusyChange(null);
 								});
 						}}
-						className="px-2.5 py-1.5 text-[10px] tracking-widest border border-border hover:bg-accent disabled:opacity-30 uppercase"
+						className="min-h-11 px-2.5 py-1.5 text-[10px] tracking-widest border border-border hover:bg-accent disabled:opacity-30 uppercase @lg:min-h-0"
 					>
 						DOWNLOAD
 					</button>

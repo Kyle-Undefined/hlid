@@ -14,7 +14,7 @@ export function VocabSection({
 	onChange: (patch: Partial<VocabForm>) => void;
 }) {
 	return (
-		<Section title="Status Vocabulary">
+		<Section title="Status Vocabulary" id="forge-section-status-vocabulary">
 			<VocabRow
 				label="Active"
 				value={vocab.active}

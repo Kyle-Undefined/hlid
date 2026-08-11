@@ -68,7 +68,7 @@ export function SecuritySection() {
 
 	return (
 		<div className="space-y-6">
-			<Section title="App Password">
+			<Section title="App Password" id="forge-section-app-password">
 				<Field label="Current Password">
 					<PasswordInput
 						value={currentPassword}
@@ -111,7 +111,7 @@ export function SecuritySection() {
 				)}
 			</Section>
 
-			<Section title="Trusted Devices">
+			<Section title="Trusted Devices" id="forge-section-trusted-devices">
 				<Field
 					label="This Device"
 					hint="Return this browser to the unlock screen without affecting other trusted devices."

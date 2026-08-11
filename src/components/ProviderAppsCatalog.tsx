@@ -4,6 +4,7 @@ import {
 	useCallback,
 	useEffect,
 	useMemo,
+	useRef,
 	useState,
 } from "react";
 import type {
@@ -212,9 +213,12 @@ export function ProviderAppsCatalog({
 	const [pendingTarget, setPendingTarget] = useState<PendingTarget | null>(
 		null,
 	);
+	const loadGeneration = useRef(0);
 
 	const load = useCallback(
 		async (options: { cursor?: string; refresh?: boolean } = {}) => {
+			const generation = ++loadGeneration.current;
+			const isCurrent = () => generation === loadGeneration.current;
 			const more = Boolean(options.cursor);
 			if (more) setLoadingMore(true);
 			else setLoading(true);
@@ -230,19 +234,21 @@ export function ProviderAppsCatalog({
 						...(options.refresh ? { refresh: true } : {}),
 					},
 				});
-				setCatalog(next);
-				setLoadedApps((current) =>
-					more ? mergeApps(current, next.apps) : next.apps,
-				);
-			} catch (cause) {
-				setError(
-					cause instanceof Error
-						? cause.message
-						: "Provider app inventory is unavailable.",
-				);
+				if (isCurrent()) {
+					setCatalog(next);
+					setLoadedApps((current) =>
+						more ? mergeApps(current, next.apps) : next.apps,
+					);
+				}
+			} catch {
+				if (isCurrent()) {
+					setError("Provider app inventory is unavailable.");
+				}
 			} finally {
-				setLoading(false);
-				setLoadingMore(false);
+				if (isCurrent()) {
+					setLoading(false);
+					setLoadingMore(false);
+				}
 			}
 		},
 		[cwd, providerId, sessionId],
@@ -254,6 +260,9 @@ export function ProviderAppsCatalog({
 		setPendingTarget(null);
 		setNotice(null);
 		void load();
+		return () => {
+			loadGeneration.current += 1;
+		};
 	}, [load]);
 
 	useEffect(() => {

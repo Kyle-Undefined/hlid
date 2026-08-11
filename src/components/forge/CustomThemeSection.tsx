@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { UiForm } from "#/components/forge/UiSection";
+import { normalizeSearchText } from "#/lib/search";
 import {
 	builtInThemePalette,
 	type CustomThemePalette,
@@ -93,13 +94,17 @@ function ColorControl({
 		else setDraft(value);
 	};
 	return (
-		<label className="flex items-center gap-3 border border-border bg-background/40 p-2">
+		<label
+			data-forge-setting-label={normalizeSearchText(`${label} color`)}
+			tabIndex={-1}
+			className="flex min-w-0 scroll-mt-4 items-center gap-2 border border-border bg-background/40 p-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40 @lg:gap-3"
+		>
 			<input
 				type="color"
 				value={value}
 				onChange={(event) => onChange(event.target.value)}
 				aria-label={`${label} color`}
-				className="h-8 w-10 shrink-0 border-0 bg-transparent p-0"
+				className="h-11 w-11 shrink-0 border-0 bg-transparent p-0 @lg:h-8 @lg:w-10"
 			/>
 			<span className="min-w-0 flex-1">
 				<span className="block text-xs text-foreground">{label}</span>
@@ -116,7 +121,7 @@ function ColorControl({
 					if (event.key === "Enter") event.currentTarget.blur();
 				}}
 				aria-label={`${label} hex`}
-				className="w-20 bg-input border border-border px-2 py-1 text-[10px] uppercase"
+				className="min-h-11 w-20 shrink-0 bg-input border border-border px-2 py-1 text-[10px] uppercase @lg:min-h-0"
 			/>
 		</label>
 	);
@@ -159,10 +164,12 @@ export function CustomThemeSection({
 
 	return (
 		<Section title="Custom palette">
-			<div className="p-4 space-y-5">
+			<div className="space-y-5 p-3 @sm:p-4">
 				<div className="flex flex-wrap items-center justify-between gap-3">
 					<div
-						className="inline-flex border border-border bg-card p-1"
+						data-forge-setting-label="custom theme target"
+						tabIndex={-1}
+						className="grid min-h-11 w-full grid-cols-2 border border-border bg-card p-1 @sm:inline-flex @sm:w-auto"
 						role="tablist"
 						aria-label="Custom theme target"
 					>
@@ -173,7 +180,7 @@ export function CustomThemeSection({
 								role="tab"
 								aria-selected={target === option}
 								onClick={() => onTargetChange(option)}
-								className={`px-3 py-1.5 text-[10px] tracking-widest uppercase ${
+								className={`min-h-11 px-3 py-1.5 text-[10px] tracking-widest uppercase @lg:min-h-0 ${
 									target === option
 										? "bg-primary/10 text-primary"
 										: "text-muted-foreground hover:bg-accent"
@@ -183,25 +190,28 @@ export function CustomThemeSection({
 							</button>
 						))}
 					</div>
-					<div className="flex flex-wrap gap-2">
+					<div className="flex w-full flex-wrap gap-2 @lg:w-auto">
 						<button
 							type="button"
 							onClick={copyActiveTheme}
-							className="border border-primary/50 px-2.5 py-1.5 text-[10px] uppercase tracking-wider text-primary hover:bg-primary/10"
+							data-forge-setting-label="copy active theme"
+							className="min-h-11 flex-1 border border-primary/50 px-2.5 py-1.5 text-[10px] uppercase tracking-wider text-primary hover:bg-primary/10 @lg:min-h-0 @lg:flex-none"
 						>
 							Copy active theme
 						</button>
 						<button
 							type="button"
 							onClick={() => updatePalette(builtInThemePalette("dark"))}
-							className="border border-border px-2.5 py-1.5 text-[10px] uppercase tracking-wider hover:bg-accent"
+							data-forge-setting-label="copy dark theme"
+							className="min-h-11 flex-1 border border-border px-2.5 py-1.5 text-[10px] uppercase tracking-wider hover:bg-accent @lg:min-h-0 @lg:flex-none"
 						>
 							Copy dark
 						</button>
 						<button
 							type="button"
 							onClick={() => updatePalette(builtInThemePalette("tan"))}
-							className="border border-border px-2.5 py-1.5 text-[10px] uppercase tracking-wider hover:bg-accent"
+							data-forge-setting-label="copy tan theme"
+							className="min-h-11 flex-1 border border-border px-2.5 py-1.5 text-[10px] uppercase tracking-wider hover:bg-accent @lg:min-h-0 @lg:flex-none"
 						>
 							Copy tan
 						</button>
@@ -209,7 +219,8 @@ export function CustomThemeSection({
 							<button
 								type="button"
 								onClick={() => updatePalette({ ...ui.customTheme })}
-								className="border border-border px-2.5 py-1.5 text-[10px] uppercase tracking-wider hover:bg-accent"
+								data-forge-setting-label="copy desktop custom theme"
+								className="min-h-11 flex-1 border border-border px-2.5 py-1.5 text-[10px] uppercase tracking-wider hover:bg-accent @lg:min-h-0 @lg:flex-none"
 							>
 								Copy desktop custom
 							</button>
@@ -217,7 +228,11 @@ export function CustomThemeSection({
 					</div>
 				</div>
 
-				<div className="flex min-w-0 flex-col items-start gap-3 border border-border bg-card p-3 @xl:flex-row @xl:items-center @xl:justify-between">
+				<div
+					data-forge-setting-label="native control style"
+					tabIndex={-1}
+					className="flex min-w-0 scroll-mt-4 flex-col items-start gap-3 border border-border bg-card p-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40 @xl:flex-row @xl:items-center @xl:justify-between"
+				>
 					<div className="min-w-0">
 						<div className="text-xs text-foreground">Native control style</div>
 						<div className="break-words text-[10px] text-muted-foreground">
@@ -233,7 +248,7 @@ export function CustomThemeSection({
 							})
 						}
 						aria-label="Native control style"
-						className="bg-input border border-border px-2 py-1.5 text-xs"
+						className="min-h-11 w-full bg-input border border-border px-2 py-1.5 text-xs @xl:min-h-0 @xl:w-auto"
 					>
 						<option value="dark">Dark</option>
 						<option value="light">Light</option>
@@ -245,7 +260,7 @@ export function CustomThemeSection({
 						<h3 className="text-[10px] tracking-widest uppercase text-muted-foreground">
 							{group.title}
 						</h3>
-						<div className="grid gap-2 sm:grid-cols-2">
+						<div className="grid gap-2 @lg:grid-cols-2">
 							{group.colors.map(([key, label]) => (
 								<ColorControl
 									key={key}

@@ -33,15 +33,28 @@ export function PageIntro({
 	title,
 	description,
 	count,
+	id,
+	headingLevel = 2,
 }: {
 	title: string;
 	description?: string;
 	count?: number;
+	/** Stable focusable anchor for direct navigation. */
+	id?: string;
+	/** Semantic heading level. Defaults to h2 for backward compatibility. */
+	headingLevel?: 1 | 2 | 3;
 }) {
+	const Heading = `h${headingLevel}` as "h1" | "h2" | "h3";
 	return (
 		<div className="space-y-1">
 			<div className="flex items-baseline gap-2">
-				<h2 className="text-lg font-medium">{title}</h2>
+				<Heading
+					id={id}
+					tabIndex={id ? -1 : undefined}
+					className="scroll-mt-20 text-lg font-medium focus:outline-none focus-visible:ring-1 focus-visible:ring-primary/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+				>
+					{title}
+				</Heading>
 				{count !== undefined && (
 					<span className="text-xs text-muted-foreground/60 tabular-nums">
 						{count}

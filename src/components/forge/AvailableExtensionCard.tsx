@@ -66,6 +66,7 @@ function AvailableInstallAction({
 				trigger={(open) => (
 					<button
 						type="button"
+						data-forge-setting-label="install extension"
 						disabled={mutation.blocked}
 						onClick={open}
 						className={`border px-3 py-1.5 text-[10px] tracking-widest uppercase disabled:opacity-40 ${
@@ -199,6 +200,7 @@ export function AvailableExtensionCard({
 					</div>
 					<button
 						type="button"
+						data-forge-setting-label="review extension"
 						onClick={onReview}
 						disabled={loading}
 						className="border border-border px-3 py-1.5 text-[10px] tracking-widest uppercase disabled:opacity-50"

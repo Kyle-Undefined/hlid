@@ -38,7 +38,7 @@ export function UiSection({
 	const hotkeyConflict =
 		Boolean(ui.liveSessionsHotkey) && ui.liveSessionsHotkey === voiceHotkey;
 	return (
-		<Section title="UI">
+		<Section title="UI" id="forge-section-ui">
 			<div className="px-4 py-3 space-y-2">
 				<div className="text-sm text-foreground">Theme</div>
 				<div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -176,6 +176,7 @@ export function UiSection({
 				</label>
 			</Field>
 			<Field
+				id="forge-setting-html-plans"
 				label="HTML plans"
 				hint="default for the per-session toggle; in plan mode the agent renders its plan as a styled page shown in a modal"
 			>

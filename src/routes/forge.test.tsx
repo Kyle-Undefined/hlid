@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const routeState = vi.hoisted(() => ({
 	loaderData: null as Record<string, unknown> | null,
+	search: {} as Record<string, unknown>,
+	navigate: vi.fn(),
 	forgeSettings: vi.fn(),
 }));
 
@@ -12,7 +14,9 @@ vi.mock("@tanstack/react-router", () => ({
 	createFileRoute: () => (options: Record<string, unknown>) => ({
 		...options,
 		useLoaderData: () => routeState.loaderData,
+		useSearch: () => routeState.search,
 	}),
+	useNavigate: () => routeState.navigate,
 	useRouter: () => ({ invalidate: vi.fn() }),
 }));
 
@@ -72,6 +76,7 @@ beforeEach(() => {
 	vi.mocked(getAcpRegistryFn).mockResolvedValue([] as never);
 	vi.mocked(discoverAcpModelsFn).mockResolvedValue([] as never);
 	routeState.loaderData = null;
+	routeState.search = {};
 });
 
 describe("forge route loader", () => {
@@ -116,6 +121,67 @@ describe("forge route loader", () => {
 });
 
 describe("forge inventory refresh", () => {
+	it("hydrates URL-backed Forge navigation and serializes destination changes", () => {
+		routeState.loaderData = {
+			server: { port: 3000 },
+			cwd: "C:\\workspace",
+			providers: [],
+			accountInfo: null,
+			voiceInfo: { status: { state: "ready", model: "base" }, models: [] },
+			cliProxyInfo: {
+				state: "ready",
+				managed: false,
+				authenticated: false,
+				oauth: "idle",
+				accounts: {},
+			},
+			acpCatalog: [],
+			inventoryStatus: "ready",
+		};
+		routeState.search = {
+			category: "developer",
+			setting: "pricing",
+		};
+
+		const Component = route.component;
+		render(<Component />);
+		expect(routeState.forgeSettings.mock.lastCall?.[0].navigation).toEqual({
+			category: "developer",
+			section: "pricing",
+			setting: "pricing",
+			view: "pricing",
+		});
+
+		const onNavigationChange = routeState.forgeSettings.mock.lastCall?.[0]
+			.onNavigationChange as (navigation: Record<string, unknown>) => void;
+		onNavigationChange({
+			category: "experience",
+			section: "voice-input",
+			setting: "recording-hotkey",
+		});
+
+		expect(routeState.navigate).toHaveBeenCalledWith({
+			search: {
+				category: "experience",
+				setting: "recording-hotkey",
+			},
+			resetScroll: false,
+		});
+
+		onNavigationChange({
+			category: "overview",
+			section: "updates",
+			setting: "check-for-updates",
+		});
+		expect(routeState.navigate).toHaveBeenLastCalledWith({
+			search: {
+				category: "overview",
+				setting: "check-for-updates",
+			},
+			resetScroll: false,
+		});
+	});
+
 	it("wires on-demand ACP model discovery without adding it to navigation", async () => {
 		routeState.loaderData = {
 			server: { port: 3000 },

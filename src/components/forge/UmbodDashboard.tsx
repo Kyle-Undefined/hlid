@@ -64,7 +64,7 @@ const EMPTY_FILTERS = {
 };
 
 const fieldClass =
-	"min-w-0 bg-secondary border border-border px-2 py-1.5 text-xs";
+	"min-h-11 w-full min-w-0 bg-secondary border border-border px-2 py-1.5 text-xs @lg:min-h-0";
 
 function chipClass(value: string): string {
 	if (value === "allow" || value === "active")
@@ -276,13 +276,13 @@ function FilterBar({
 	const set = (patch: Partial<CallFilters>) =>
 		setFilters((value) => ({ ...value, ...patch }));
 	return (
-		<div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
+		<div className="grid gap-2 @sm:grid-cols-2 @3xl:grid-cols-4 @4xl:grid-cols-7">
 			<input
 				aria-label="Search commands"
 				placeholder="Command contains…"
 				value={filters.search}
 				onChange={(event) => set({ search: event.target.value })}
-				className={`${fieldClass} lg:col-span-2`}
+				className={`${fieldClass} @3xl:col-span-2`}
 			/>
 			<FilterSelect
 				label="Filter tool"
@@ -330,7 +330,7 @@ function FilterBar({
 function CallDetail({ entry }: { entry: CallEntry }) {
 	return (
 		<div className="border-t border-border bg-secondary/40 p-3 space-y-3 text-xs">
-			<dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+			<dl className="grid gap-3 @sm:grid-cols-2 @3xl:grid-cols-4">
 				{[
 					["Agent", entry.agent],
 					["Project", entry.workingDirectory || "—"],
@@ -369,19 +369,19 @@ function CallRow({
 			<button
 				type="button"
 				onClick={onToggle}
-				className="grid w-full grid-cols-[5rem_minmax(0,1fr)] items-center gap-2 p-3 text-left text-xs md:grid-cols-[5rem_minmax(0,1fr)_6rem_5rem_10rem] hover:bg-accent/40"
+				className="grid min-h-11 w-full grid-cols-[5rem_minmax(0,1fr)] items-center gap-2 p-3 text-left text-xs hover:bg-accent/40 @lg:grid-cols-[5rem_minmax(0,1fr)_6rem_5rem_10rem]"
 			>
 				<span className="font-medium truncate">{entry.tool}</span>
 				<code className="truncate" title={entry.command}>
 					{entry.command}
 				</code>
-				<span className="hidden text-muted-foreground md:block">
+				<span className="hidden text-muted-foreground @lg:block">
 					{entry.classification}
 				</span>
-				<span className="hidden md:block">
+				<span className="hidden @lg:block">
 					<Chip value={entry.decision} />
 				</span>
-				<time className="hidden text-right text-muted-foreground md:block">
+				<time className="hidden text-right text-muted-foreground @lg:block">
 					{new Date(entry.timestamp).toLocaleString()}
 				</time>
 			</button>
@@ -400,12 +400,12 @@ function Pagination({
 	onPage: (page: number) => void;
 }) {
 	return (
-		<div className="flex items-center justify-between text-xs">
+		<div className="flex items-center justify-between gap-3 text-xs">
 			<button
 				type="button"
 				disabled={!calls || calls.page <= 1 || loading}
 				onClick={() => onPage((calls?.page ?? 1) - 1)}
-				className="disabled:opacity-40"
+				className="min-h-11 min-w-11 disabled:opacity-40 @lg:min-h-0 @lg:min-w-0"
 			>
 				Previous
 			</button>
@@ -416,7 +416,7 @@ function Pagination({
 				type="button"
 				disabled={!calls || calls.page >= calls.totalPages || loading}
 				onClick={() => onPage((calls?.page ?? 1) + 1)}
-				className="disabled:opacity-40"
+				className="min-h-11 min-w-11 disabled:opacity-40 @lg:min-h-0 @lg:min-w-0"
 			>
 				Next
 			</button>
@@ -465,8 +465,8 @@ function CallExplorer({ tools }: { tools?: ToolUsage }) {
 
 	return (
 		<div className="space-y-3">
-			<div className="flex items-center justify-between">
-				<div>
+			<div className="flex flex-wrap items-start justify-between gap-2">
+				<div className="min-w-0">
 					<h4 className="text-xs font-medium">Call explorer</h4>
 					<p className="text-[10px] text-muted-foreground">
 						Expand a call for policy context, project, session, and raw inputs.
@@ -480,7 +480,7 @@ function CallExplorer({ tools }: { tools?: ToolUsage }) {
 			<button
 				type="button"
 				onClick={() => setFilters(EMPTY_FILTERS)}
-				className="text-[9px] uppercase tracking-wider text-muted-foreground hover:text-foreground"
+				className="min-h-11 text-[9px] uppercase tracking-wider text-muted-foreground hover:text-foreground @lg:min-h-0"
 			>
 				Reset filters
 			</button>
@@ -536,7 +536,7 @@ export function UmbodDashboard({
 				</p>
 			)}
 
-			<div className="grid gap-3 lg:grid-cols-2">
+			<div className="grid gap-3 @2xl:grid-cols-2">
 				<ToolUsagePanel tools={tools} loading={loading} />
 				<RuleHealthPanel rules={rules} loading={loading} />
 			</div>

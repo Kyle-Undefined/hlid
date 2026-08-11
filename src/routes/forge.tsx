@@ -1,8 +1,18 @@
-import { createFileRoute, useRouter } from "@tanstack/react-router";
+import {
+	createFileRoute,
+	useNavigate,
+	useRouter,
+} from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ForgeSettings } from "#/components/forge/ForgeSettings";
 import { useSettingsForm } from "#/hooks/useSettingsForm";
+import {
+	type ForgeNavigationState,
+	forgeSearchFromNavigation,
+	normalizeForgeNavigation,
+	parseForgeSearch,
+} from "#/lib/forgeNavigation";
 import { optionalLoaderValue } from "#/lib/loaderFallback";
 import type { ProviderInfo } from "#/lib/providerTypes";
 import { discoverAcpModelsFn, getAcpRegistryFn } from "#/lib/serverFns/acp";
@@ -85,6 +95,7 @@ export function providerOptionRefreshError(
 }
 
 export const Route = createFileRoute("/forge")({
+	validateSearch: parseForgeSearch,
 	loader: async () => {
 		const [
 			config,
@@ -154,7 +165,10 @@ export const Route = createFileRoute("/forge")({
 
 function SettingsPage() {
 	const loaded = Route.useLoaderData();
+	const routeSearch = Route.useSearch();
+	const navigate = useNavigate({ from: "/forge" });
 	const router = useRouter();
+	const navigation = normalizeForgeNavigation(routeSearch);
 	const [inventory, setInventory] = useState(() => ({
 		providers: loaded.providers,
 		accountInfo: loaded.accountInfo,
@@ -245,6 +259,15 @@ function SettingsPage() {
 		(id: string) => discoverAcpModelsFn({ data: { id } }),
 		[],
 	);
+	const navigateForge = useCallback(
+		(next: ForgeNavigationState) => {
+			void navigate({
+				search: forgeSearchFromNavigation(next),
+				resetScroll: false,
+			});
+		},
+		[navigate],
+	);
 
 	useEffect(() => {
 		setInventory({
@@ -275,6 +298,8 @@ function SettingsPage() {
 		<ForgeSettings
 			initial={initial}
 			state={state}
+			navigation={navigation}
+			onNavigationChange={navigateForge}
 			inventoryStatus={inventoryStatus}
 			onRetryInventory={() => refreshInventory(true)}
 			onRefreshProviderOptions={refreshProviderOptions}

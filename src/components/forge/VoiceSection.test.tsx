@@ -212,6 +212,56 @@ describe("VoiceSection", () => {
 		});
 	});
 
+	it("keeps fixed-size voice controls within constrained Forge content", () => {
+		render(
+			<VoiceSection
+				voice={DEFAULT_VOICE_CONFIG}
+				onChange={vi.fn()}
+				initialInfo={baseInfo}
+			/>,
+		);
+
+		const microphoneAction = screen.getByLabelText("Microphone action");
+		expect(microphoneAction.className).toContain("w-full");
+		expect(microphoneAction.className).toContain("max-w-72");
+		expect(microphoneAction.className).toContain("min-h-11");
+
+		const vocabulary = screen.getByLabelText("Voice vocabulary hints");
+		expect(vocabulary.className).toContain("w-full");
+		expect(vocabulary.className).toContain("max-w-80");
+		expect(vocabulary.className).not.toContain("sm:w-80");
+
+		expect(screen.getByLabelText("Voice recording hotkey").className).toContain(
+			"min-h-11",
+		);
+		expect(
+			screen.getByRole("button", { name: "DOWNLOAD" }).className,
+		).toContain("min-h-11");
+	});
+
+	it("exposes stable section destinations for voice settings", () => {
+		render(
+			<VoiceSection
+				voice={DEFAULT_VOICE_CONFIG}
+				onChange={vi.fn()}
+				initialInfo={baseInfo}
+			/>,
+		);
+
+		expect(screen.getByRole("heading", { name: "Read aloud" }).id).toBe(
+			"forge-section-read-aloud",
+		);
+		expect(screen.getByRole("heading", { name: "Codex realtime" }).id).toBe(
+			"forge-section-realtime-voice",
+		);
+		expect(screen.getByRole("heading", { name: "Neural voice model" }).id).toBe(
+			"forge-section-voice-models",
+		);
+		expect(screen.getByRole("heading", { name: "Voice input" }).id).toBe(
+			"forge-section-voice-input",
+		);
+	});
+
 	it("shows the actual Vulkan device and a nonfatal CPU fallback reason", () => {
 		const info: VoiceInfo = {
 			...baseInfo,

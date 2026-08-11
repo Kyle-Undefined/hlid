@@ -53,6 +53,8 @@ function typeBadge(cfg: VaultMcpConfig): string {
 
 export interface McpServerManagerProps {
 	title: string;
+	/** Stable heading anchor when this manager is used as a Forge destination. */
+	id?: string;
 	/** null = vault scope; string = agent cwd to filter mcp_status messages */
 	agentCwd: string | null;
 	loadServers: () => Promise<{ servers: VaultMcpServer[] }>;
@@ -411,7 +413,13 @@ function ManagerFooter({
 }
 
 export function McpServerManager(props: McpServerManagerProps) {
-	const { title, showCloudServers = false, showProbe = false, footer } = props;
+	const {
+		title,
+		id,
+		showCloudServers = false,
+		showProbe = false,
+		footer,
+	} = props;
 	const [servers, setServers] = useState<VaultMcpServer[] | null>(null);
 	const [showAdd, setShowAdd] = useState(false);
 	const [opError, setOpError] = useState<string | null>(null);
@@ -433,7 +441,7 @@ export function McpServerManager(props: McpServerManagerProps) {
 	};
 
 	return (
-		<Section title={title}>
+		<Section title={title} id={id}>
 			{servers === null && (
 				<div className="px-4 py-3 text-xs text-muted-foreground/50">
 					loading…
@@ -510,10 +518,19 @@ export function McpServerManager(props: McpServerManagerProps) {
 // ─── Public wrappers ──────────────────────────────────────────────────────────
 
 export function McpSection({ vaultPath }: { vaultPath: string }) {
-	if (!vaultPath) return null;
+	if (!vaultPath) {
+		return (
+			<Section title="MCP" id="forge-section-mcp">
+				<div className="px-4 py-3 text-xs text-muted-foreground">
+					Configure a vault path in Storage to manage MCP servers.
+				</div>
+			</Section>
+		);
+	}
 	return (
 		<McpServerManager
 			title="MCP"
+			id="forge-section-mcp"
 			agentCwd={null}
 			loadServers={getVaultMcpFn}
 			writeServers={(servers) => writeVaultMcpFn({ data: { servers } })}

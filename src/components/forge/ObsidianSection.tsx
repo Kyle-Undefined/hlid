@@ -291,7 +291,7 @@ export function ObsidianSection({
 		useObsidianSectionState();
 
 	return (
-		<Section title="Obsidian desktop">
+		<Section title="Obsidian desktop" id="forge-section-obsidian-desktop">
 			<CliStatusField status={status} checking={checking} onRefresh={refresh} />
 			{status?.installed && (
 				<ConnectedObsidianFields

@@ -78,6 +78,12 @@ describe("UmbodDashboard", () => {
 		);
 
 		await screen.findByText("git push origin main");
+		const callRow = screen.getByText("git push origin main").closest("button");
+		expect(callRow?.className).toContain("@lg:grid-cols");
+		expect(callRow?.className).not.toContain("md:grid-cols");
+		expect(screen.getByLabelText("Search commands").className).toContain(
+			"min-h-11",
+		);
 		expect(screen.getAllByText("12")).toHaveLength(2);
 		expect(screen.getByText("Matched")).toBeTruthy();
 		expect(screen.getByText("Never matched")).toBeTruthy();

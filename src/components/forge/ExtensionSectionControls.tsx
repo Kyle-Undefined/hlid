@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { includesSearchText } from "#/lib/search";
 import type {
 	AvailableExtension,
@@ -70,12 +70,23 @@ function matchingAvailableExtensions(
 export function useExtensionSectionViewModel(
 	inventory: ExtensionInventory,
 	clearReview: () => void,
+	requestedView: ExtensionSectionView = "installed",
+	requestedProvider?: ExtensionProviderId,
 ) {
-	const [provider, setProvider] = useState<ExtensionProviderId>("claude");
-	const [view, setView] = useState<ExtensionSectionView>("installed");
+	const [provider, setProvider] = useState<ExtensionProviderId>(
+		requestedProvider ?? "claude",
+	);
+	const [view, setView] = useState<ExtensionSectionView>(requestedView);
 	const [search, setSearch] = useState("");
 	const [environment, setEnvironment] = useState("all");
 	const [category, setCategory] = useState("all");
+	useEffect(() => {
+		setView(requestedView);
+		if (requestedProvider) setProvider(requestedProvider);
+		setEnvironment("all");
+		setCategory("all");
+		clearReview();
+	}, [clearReview, requestedProvider, requestedView]);
 	const changeContext = useCallback(
 		(next: { provider?: ExtensionProviderId; view?: ExtensionSectionView }) => {
 			if (next.provider) setProvider(next.provider);
@@ -176,6 +187,8 @@ export function ExtensionSectionControls({
 		<>
 			<div className="flex min-w-0 flex-col gap-2 @4xl:flex-row @4xl:items-center">
 				<div
+					data-forge-setting-label="extension provider"
+					tabIndex={-1}
 					className="inline-flex self-start border border-border bg-secondary p-1"
 					role="tablist"
 					aria-label="Extension provider"
@@ -198,6 +211,12 @@ export function ExtensionSectionControls({
 					))}
 				</div>
 				<div
+					data-forge-setting-label={
+						model.view === "marketplace"
+							? "extension marketplace"
+							: "installed extensions"
+					}
+					tabIndex={-1}
 					className="inline-flex self-start border border-border bg-secondary p-1"
 					role="tablist"
 					aria-label="Extension view"
@@ -220,6 +239,7 @@ export function ExtensionSectionControls({
 					))}
 				</div>
 				<input
+					data-forge-setting-label={searchLabel.toLowerCase()}
 					value={model.search}
 					onChange={(event) => model.setSearch(event.target.value)}
 					placeholder={searchLabel}
@@ -227,6 +247,7 @@ export function ExtensionSectionControls({
 					className="min-w-0 flex-1 bg-input border border-border px-2.5 py-1.5 text-xs @4xl:min-w-40"
 				/>
 				<button
+					data-forge-setting-label="refresh extension inventory"
 					type="button"
 					onClick={onRefresh}
 					disabled={loading || mutationActive}
@@ -238,6 +259,7 @@ export function ExtensionSectionControls({
 			{model.view === "marketplace" && (
 				<div className="flex flex-col gap-2 sm:flex-row">
 					<select
+						data-forge-setting-label="marketplace environment"
 						value={model.environment}
 						onChange={(event) => model.setEnvironment(event.target.value)}
 						aria-label="Marketplace environment"
@@ -251,6 +273,7 @@ export function ExtensionSectionControls({
 						))}
 					</select>
 					<select
+						data-forge-setting-label="marketplace category"
 						value={model.category}
 						onChange={(event) => model.setCategory(event.target.value)}
 						aria-label="Marketplace category"

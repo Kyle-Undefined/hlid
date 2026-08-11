@@ -82,7 +82,7 @@ export function ReadAloudSection({
 	const microsoft = useMicrosoftVoiceInventory();
 	const preview = useNeuralVoicePreview();
 	return (
-		<Section title="Read aloud">
+		<Section title="Read aloud" id="forge-section-read-aloud">
 			<SpeechEngineField
 				preferences={preferences}
 				microsoft={microsoft.inventory}

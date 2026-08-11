@@ -18,6 +18,7 @@ import {
 } from "#/components/wizard/BrowseFieldParts";
 import { FileBrowser } from "#/components/wizard/FileBrowser";
 import { FolderBrowser } from "#/components/wizard/FolderBrowser";
+import { normalizeSearchText } from "#/lib/search";
 import { themeSurfaceClass } from "#/lib/themeClasses";
 
 export { useFieldControlProps } from "#/components/form/FieldControlContext";
@@ -56,10 +57,12 @@ function labelNativeControls(
 }
 
 export function Field({
+	id,
 	label,
 	hint,
 	children,
 }: {
+	id?: string;
 	label: string;
 	hint?: string;
 	children: ReactNode;
@@ -72,7 +75,12 @@ export function Field({
 		...(hintId ? { "aria-describedby": hintId } : {}),
 	};
 	return (
-		<div className="grid min-w-0 gap-2 px-4 py-3 @4xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] @4xl:items-center @4xl:gap-6">
+		<div
+			id={id}
+			data-forge-setting-label={normalizeSearchText(label)}
+			tabIndex={-1}
+			className="grid min-w-0 scroll-mt-4 gap-2 px-4 py-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40 @4xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] @4xl:items-center @4xl:gap-6"
+		>
 			<div className="min-w-0">
 				<div id={labelId} className="break-words text-sm text-foreground">
 					{label}
@@ -151,7 +159,11 @@ export function VocabRow({
 }) {
 	const inputId = useId();
 	return (
-		<div className="px-4 py-3 space-y-1.5">
+		<div
+			data-forge-setting-label={normalizeSearchText(label)}
+			tabIndex={-1}
+			className="scroll-mt-4 space-y-1.5 px-4 py-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/40"
+		>
 			<label
 				htmlFor={inputId}
 				className="block text-[9px] tracking-widest text-muted-foreground uppercase"

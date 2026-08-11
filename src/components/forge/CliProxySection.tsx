@@ -357,10 +357,19 @@ export function CliProxySection({
 		integrationConfig.enabled;
 
 	return (
-		<section className="border border-border bg-card p-4 space-y-4">
+		<section
+			aria-labelledby="forge-section-cli-proxy"
+			className="border border-border bg-card p-4 space-y-4"
+		>
 			<div className="flex flex-wrap items-start justify-between gap-3">
 				<div>
-					<h2 className="text-sm">CLIProxyAPI</h2>
+					<h2
+						id="forge-section-cli-proxy"
+						tabIndex={-1}
+						className="scroll-mt-20 text-sm"
+					>
+						CLIProxyAPI
+					</h2>
 					<p className="text-xs text-muted-foreground mt-0.5 max-w-2xl">
 						Route models from connected OAuth accounts through Claude Code,
 						Codex, or OpenCode while Hlid owns the proxy and lifecycle.

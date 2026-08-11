@@ -16,6 +16,11 @@ describe("Forge fields", () => {
 			</>,
 		);
 		const vault = screen.getByRole("textbox", { name: "Vault name" });
+		const vaultRow = vault.closest("[data-forge-setting-label]");
+		expect(vaultRow?.getAttribute("data-forge-setting-label")).toBe(
+			"vault name",
+		);
+		expect((vaultRow as HTMLElement | null)?.tabIndex).toBe(-1);
 		expect(vault.getAttribute("aria-describedby")).toBeTruthy();
 		expect(screen.getByText("Shown in the header").id).toBe(
 			vault.getAttribute("aria-describedby"),
@@ -51,5 +56,19 @@ describe("Forge fields", () => {
 		expect(control?.className).toContain("max-w-full");
 		expect(statusNode?.className).toContain("min-w-0");
 		expect(statusText.className).toContain("[overflow-wrap:anywhere]");
+	});
+
+	it("exposes stable focusable setting destinations when given an id", () => {
+		render(
+			<Field id="forge-setting-example" label="Example setting">
+				<TextInput value="" onChange={() => {}} />
+			</Field>,
+		);
+
+		const row = document.getElementById("forge-setting-example");
+		expect(row).toBeTruthy();
+		expect(row?.tabIndex).toBe(-1);
+		row?.focus();
+		expect(document.activeElement).toBe(row);
 	});
 });

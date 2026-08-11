@@ -11,7 +11,7 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { McpServerManager } from "./McpSection";
+import { McpSection, McpServerManager } from "./McpSection";
 import type { VaultMcpConfig, VaultMcpServer } from "./McpServerForm";
 
 // ── mocks ─────────────────────────────────────────────────────────────────────
@@ -262,5 +262,19 @@ describe("McpServerManager", () => {
 			// No remove button for cloud servers
 			expect(screen.queryByText("×")).toBeNull();
 		});
+	});
+});
+
+describe("McpSection", () => {
+	it("keeps the MCP destination available until a vault path is configured", () => {
+		render(<McpSection vaultPath="" />);
+
+		const heading = screen.getByRole("heading", { name: "MCP" });
+		expect(heading.id).toBe("forge-section-mcp");
+		expect(
+			screen.getByText(
+				"Configure a vault path in Storage to manage MCP servers.",
+			),
+		).not.toBeNull();
 	});
 });

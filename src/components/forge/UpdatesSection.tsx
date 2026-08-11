@@ -353,7 +353,7 @@ function UpdatesView({
 }) {
 	const busy = state.phase !== "idle" && state.phase !== "error";
 	return (
-		<Section title="Updates">
+		<Section title="Updates" id="forge-section-updates">
 			<VersionField
 				status={status}
 				fetchError={fetchError}

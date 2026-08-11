@@ -7,7 +7,8 @@ export type SectionRailItem = {
 
 /**
  * Shared narrow section rail for local page navigation (Forge, Vault).
- * Hidden below md — pages provide a <select> fallback in their header.
+ * Hidden below the configured breakpoint. Pages provide a <select> fallback
+ * in their header while the rail is hidden.
  */
 export function SectionRail({
 	items,
@@ -15,6 +16,7 @@ export function SectionRail({
 	onSelect,
 	label,
 	useAriaCurrent,
+	visibleFrom = "md",
 }: {
 	items: SectionRailItem[];
 	activeId: string;
@@ -22,7 +24,11 @@ export function SectionRail({
 	label: string;
 	/** true = URL-backed nav (aria-current="page"), false = local state (aria-pressed) */
 	useAriaCurrent?: boolean;
+	/** First breakpoint where the rail is visible. Defaults to md for existing pages. */
+	visibleFrom?: "md" | "lg";
 }) {
+	const visibilityClass =
+		visibleFrom === "lg" ? "hidden lg:flex" : "hidden md:flex";
 	const groups: string[] = [];
 	for (const item of items) {
 		const g = item.group ?? "";
@@ -30,7 +36,7 @@ export function SectionRail({
 	}
 	return (
 		<aside
-			className="hidden md:flex w-52 shrink-0 border-r border-border bg-card/30 p-3 flex-col gap-1 overflow-auto"
+			className={`${visibilityClass} w-52 shrink-0 border-r border-border bg-card/30 p-3 flex-col gap-1 overflow-auto`}
 			aria-label={label}
 		>
 			{groups.map((group, index) => (

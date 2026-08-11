@@ -424,6 +424,119 @@ describe("Vault Agent and Computer Use model/effort interplay", () => {
 		expect(screen.queryByText("Windows Computer Use")).toBeNull();
 	});
 
+	it("keeps the Computer Use destination available for a non-Codex provider", () => {
+		render(
+			<ComputerUseSection
+				claude={makeClaude({ vaultProvider: "claude" })}
+				onChange={vi.fn()}
+				providers={[provider]}
+			/>,
+		);
+
+		const heading = screen.getByRole("heading", { name: "Computer Use" });
+		expect(heading.id).toBe("forge-section-computer-use");
+		expect(
+			screen.getByText(
+				"Select Codex as the Vault Agent provider to configure Windows Computer Use preferences.",
+			),
+		).not.toBeNull();
+		expect(screen.queryByLabelText("Computer Use model")).toBeNull();
+	});
+
+	it("reports missing Codex inventory without claiming the host is unsupported", () => {
+		render(
+			<ComputerUseSection
+				claude={makeClaude({ vaultProvider: "codex" })}
+				onChange={vi.fn()}
+				providers={[]}
+			/>,
+		);
+
+		expect(
+			screen.getByText(
+				"Codex provider inventory is unavailable. Retry system inventory to configure Computer Use preferences.",
+			),
+		).not.toBeNull();
+		expect(screen.queryByText(/use a Windows host/i)).toBeNull();
+		expect(screen.queryByLabelText("Computer Use model")).toBeNull();
+	});
+
+	it("keeps preferences configurable when host capability evidence is absent", () => {
+		const codexProvider: ProviderInfo = {
+			...provider,
+			id: "codex",
+			label: "Codex",
+		};
+		render(
+			<ComputerUseSection
+				claude={makeClaude({ vaultProvider: "codex" })}
+				onChange={vi.fn()}
+				providers={[codexProvider]}
+			/>,
+		);
+
+		expect(
+			screen.getByRole("img", { name: "Computer Use status unavailable" }),
+		).not.toBeNull();
+		expect(
+			screen.getByText(
+				"Capability status was not included in the current inventory. Preferences remain configurable.",
+			),
+		).not.toBeNull();
+		expect(screen.getByLabelText("Computer Use model")).not.toBeNull();
+	});
+
+	it("shows an explicitly unavailable Codex provider without hiding preferences", () => {
+		const codexProvider: ProviderInfo = {
+			...provider,
+			id: "codex",
+			label: "Codex",
+			available: false,
+			unavailableReason: "Codex executable was not found",
+		};
+		render(
+			<ComputerUseSection
+				claude={makeClaude({ vaultProvider: "codex" })}
+				onChange={vi.fn()}
+				providers={[codexProvider]}
+			/>,
+		);
+
+		expect(
+			screen.getByRole("img", { name: "Computer Use unavailable" }),
+		).not.toBeNull();
+		expect(screen.getByText("Codex executable was not found")).not.toBeNull();
+		expect(screen.getByLabelText("Computer Use model")).not.toBeNull();
+	});
+
+	it("shows an explicit unsupported-host reason without hiding preferences", () => {
+		const codexProvider: ProviderInfo = {
+			...provider,
+			id: "codex",
+			label: "Codex",
+			hostCapabilities: {
+				windowsComputerUse: {
+					label: "Windows Computer Use",
+					available: false,
+					reason: "Hlid is not running on Windows",
+				},
+			},
+		};
+		render(
+			<ComputerUseSection
+				claude={makeClaude({ vaultProvider: "codex" })}
+				onChange={vi.fn()}
+				providers={[codexProvider]}
+			/>,
+		);
+
+		expect(
+			screen.getByRole("img", { name: "Computer Use unavailable" }),
+		).not.toBeNull();
+		expect(screen.getByText("Hlid is not running on Windows")).not.toBeNull();
+		expect(screen.getByLabelText("Computer Use model")).not.toBeNull();
+	});
+
 	it("shows Windows Computer Use host readiness for Codex", () => {
 		const codexProvider: ProviderInfo = {
 			...provider,

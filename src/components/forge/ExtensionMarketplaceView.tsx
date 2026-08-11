@@ -84,6 +84,7 @@ function MarketplaceCard({
 								trigger={(open) => (
 									<button
 										aria-label={`${updateLabel} ${marketplace.name}`}
+										data-forge-setting-label="update marketplace source"
 										type="button"
 										disabled={mutation.blocked}
 										onClick={open}
@@ -114,6 +115,7 @@ function MarketplaceCard({
 								trigger={(open) => (
 									<button
 										aria-label={`Remove ${marketplace.name}`}
+										data-forge-setting-label="remove marketplace source"
 										type="button"
 										disabled={mutation.blocked}
 										onClick={open}
@@ -258,12 +260,15 @@ export function MarketplaceSourceForm({
 	environments,
 	mutation,
 	draft,
+	openForDestination = false,
 }: {
 	provider: ExtensionProviderId;
 	environments: ProviderExtensionEnvironment[];
 	mutation: ExtensionMutationSurface;
 	draft: MarketplaceSourceDraft;
+	openForDestination?: boolean;
 }) {
+	const detailsRef = useRef<HTMLDetailsElement>(null);
 	const targetMutation = mutation.stateFor(
 		draft.environmentId,
 		draft.environmentId,
@@ -276,8 +281,17 @@ export function MarketplaceSourceForm({
 		draft.ref,
 		draft.sparse,
 	]);
+	useEffect(() => {
+		if (openForDestination && detailsRef.current)
+			detailsRef.current.open = true;
+	}, [openForDestination]);
 	return (
-		<details className="border border-border/70 bg-secondary/25">
+		<details
+			ref={detailsRef}
+			data-forge-setting-label="add marketplace source"
+			tabIndex={-1}
+			className="border border-border/70 bg-secondary/25"
+		>
 			<summary className="cursor-pointer px-3 py-2 text-[10px] tracking-widest uppercase">
 				Add marketplace source
 			</summary>
@@ -289,6 +303,7 @@ export function MarketplaceSourceForm({
 				</p>
 				<div className="grid gap-2 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)]">
 					<select
+						data-forge-setting-label="marketplace environment"
 						aria-label="New marketplace environment"
 						value={draft.environmentId}
 						onChange={(event) => draft.setEnvironmentId(event.target.value)}
@@ -301,6 +316,7 @@ export function MarketplaceSourceForm({
 						))}
 					</select>
 					<input
+						data-forge-setting-label="marketplace source"
 						aria-label="Marketplace source"
 						value={draft.source}
 						onChange={(event) => draft.setSource(event.target.value)}
@@ -311,6 +327,7 @@ export function MarketplaceSourceForm({
 				<div className="grid gap-2 sm:grid-cols-2">
 					{provider === "codex" && (
 						<input
+							data-forge-setting-label="marketplace git ref"
 							aria-label="Marketplace Git ref"
 							value={draft.ref}
 							onChange={(event) => draft.setRef(event.target.value)}
@@ -319,6 +336,7 @@ export function MarketplaceSourceForm({
 						/>
 					)}
 					<input
+						data-forge-setting-label="marketplace sparse paths"
 						aria-label="Marketplace sparse paths"
 						value={draft.sparse}
 						onChange={(event) => draft.setSparse(event.target.value)}

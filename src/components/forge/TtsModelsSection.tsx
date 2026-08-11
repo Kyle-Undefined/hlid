@@ -104,7 +104,7 @@ function InstalledModelActions(props: InstalledModelActionsProps) {
 						tts_voice: model.voices[0]?.id ?? "",
 					})
 				}
-				className="px-2.5 py-1.5 text-[10px] tracking-widest border border-border hover:bg-accent disabled:text-primary uppercase"
+				className="min-h-11 px-2.5 py-1.5 text-[10px] tracking-widest border border-border hover:bg-accent disabled:text-primary uppercase @lg:min-h-0"
 			>
 				{selected ? "SELECTED" : "SELECT"}
 			</button>
@@ -112,7 +112,7 @@ function InstalledModelActions(props: InstalledModelActionsProps) {
 				type="button"
 				disabled={info.status.loadedModel === model.id}
 				onClick={() => void remove()}
-				className="px-2.5 py-1.5 text-[10px] tracking-widest text-destructive disabled:opacity-30 uppercase"
+				className="min-h-11 px-2.5 py-1.5 text-[10px] tracking-widest text-destructive disabled:opacity-30 uppercase @lg:min-h-0"
 			>
 				DELETE
 			</button>
@@ -138,7 +138,7 @@ function DownloadModelAction(props: DownloadModelActionProps) {
 			type="button"
 			disabled={busy !== null}
 			onClick={() => void download()}
-			className="px-2.5 py-1.5 text-[10px] tracking-widest border border-border hover:bg-accent disabled:opacity-30 uppercase"
+			className="min-h-11 px-2.5 py-1.5 text-[10px] tracking-widest border border-border hover:bg-accent disabled:opacity-30 uppercase @lg:min-h-0"
 		>
 			DOWNLOAD
 		</button>
@@ -159,7 +159,7 @@ function TtsModelActions({
 		<button
 			type="button"
 			onClick={() => void cancelTtsDownloadFn().then(refresh)}
-			className="px-2.5 py-1.5 text-[10px] tracking-widest border border-border uppercase"
+			className="min-h-11 px-2.5 py-1.5 text-[10px] tracking-widest border border-border uppercase @lg:min-h-0"
 		>
 			CANCEL
 		</button>
@@ -201,7 +201,7 @@ export function TtsModelsSection({
 	onError: (message: string | null) => void;
 }) {
 	return (
-		<Section title="Neural voice model">
+		<Section title="Neural voice model" id="forge-section-voice-models">
 			{info.models.length === 0 && (
 				<div className="px-4 py-3 text-xs text-muted-foreground">
 					{info.status.error ||

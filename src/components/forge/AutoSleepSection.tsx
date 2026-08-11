@@ -47,6 +47,7 @@ export function AutoSleepSection({
 	return (
 		<Section
 			title="Auto-sleep on usage limit"
+			id="forge-section-auto-sleep"
 			description="Pause running sessions when the preferred usage window fills up, then resume automatically after it resets. Hlid uses weekly usage when a five-hour window is unavailable."
 		>
 			<Field

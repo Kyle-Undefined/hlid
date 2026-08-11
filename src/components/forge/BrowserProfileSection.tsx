@@ -11,6 +11,7 @@ export function BrowserProfileSection({
 	return (
 		<Section
 			title="Browser profile"
+			id="forge-section-browser-profile"
 			description="Choose whether agent-controlled Project Preview tabs use an isolated browser or your running Chromium profile."
 		>
 			<Field

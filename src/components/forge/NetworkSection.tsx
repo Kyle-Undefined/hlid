@@ -58,7 +58,7 @@ export function NetworkSection({
 	}
 
 	return (
-		<Section title="Network">
+		<Section title="Network" id="forge-section-network">
 			<Field label="Port">
 				<TextInput
 					value={server.port}
@@ -84,6 +84,7 @@ export function NetworkSection({
 				</label>
 			</Field>
 			<Field
+				id="forge-setting-allow-external-agents"
 				label="Allow External Agents"
 				hint="register agent directories outside the vault (e.g. native WSL or Windows project paths). filesystem browse is unrestricted when on; only enable on trusted machines."
 			>

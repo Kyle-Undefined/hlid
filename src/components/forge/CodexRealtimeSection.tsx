@@ -35,13 +35,14 @@ export function CodexRealtimeSection({
 	return (
 		<Section
 			title="Codex realtime"
+			id="forge-section-realtime-voice"
 			description="Shared preview setup for two separate actions: Codex dictation and Raven Live."
 		>
 			<Field
 				label="Developer Preview"
 				hint="enables Codex dictation and shows Raven Live in native Codex chats when the account and backend support it"
 			>
-				<label className="flex cursor-pointer items-center gap-2">
+				<label className="flex min-h-11 cursor-pointer items-center gap-2 @lg:min-h-0">
 					<input
 						type="checkbox"
 						checked={voice.codex_live_mode}
@@ -68,7 +69,7 @@ export function CodexRealtimeSection({
 						})
 					}
 					aria-label="Codex realtime voice"
-					className="w-48 border border-border bg-input px-2.5 py-1.5 font-mono text-xs text-foreground focus:border-primary/50 focus:outline-none sm:w-64"
+					className="min-h-11 w-full max-w-64 border border-border bg-input px-2.5 py-1.5 font-mono text-xs text-foreground focus:border-primary/50 focus:outline-none @lg:min-h-0"
 				>
 					{CODEX_VOICES.map((option) => (
 						<option key={option} value={option}>

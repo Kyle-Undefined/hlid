@@ -160,7 +160,7 @@ function WindowsComputerUseFields({
 	claude: ClaudeForm;
 	onChange: (patch: Partial<ClaudeForm>) => void;
 	provider: ProviderInfo;
-	capability: NonNullable<ProviderInfo["hostCapabilities"]>[string];
+	capability?: NonNullable<ProviderInfo["hostCapabilities"]>[string];
 }) {
 	const configuredModel = claude.windowsComputerUseModel ?? "inherit";
 	const configuredEffort = claude.windowsComputerUseEffort ?? "medium";
@@ -193,22 +193,28 @@ function WindowsComputerUseFields({
 		<>
 			<div className="flex min-w-0 flex-col gap-2 px-4 py-3 @2xl:flex-row @2xl:items-center @2xl:justify-between">
 				<div className="min-w-0">
-					<div className="text-sm text-foreground">{capability.label}</div>
+					<div className="text-sm text-foreground">
+						{capability?.label ?? "Windows Computer Use"}
+					</div>
 					<div className="text-xs text-muted-foreground mt-0.5">
 						Windows-native desktop worker
 					</div>
 				</div>
 				<StatusIndicator
-					ok={capability.available}
+					ok={capability?.available ?? null}
 					label={
-						capability.available
+						capability?.available === true
 							? "Computer Use ready"
-							: "Computer Use unavailable"
+							: capability?.available === false
+								? "Computer Use unavailable"
+								: "Computer Use status unavailable"
 					}
 				>
-					{capability.available
+					{capability?.available === true
 						? "ready"
-						: (capability.reason ?? "unavailable")}
+						: capability?.available === false
+							? (capability.reason ?? "unavailable")
+							: "Capability status was not included in the current inventory. Preferences remain configurable."}
 				</StatusIndicator>
 			</div>
 			<Field label="Model">
@@ -384,18 +390,20 @@ function RadioCardGroup({
 }
 
 function CheckboxField({
+	id,
 	label,
 	hint,
 	checked,
 	onChange,
 }: {
+	id?: string;
 	label: string;
 	hint: string;
 	checked: boolean;
 	onChange: (checked: boolean) => void;
 }) {
 	return (
-		<Field label={label} hint={hint}>
+		<Field id={id} label={label} hint={hint}>
 			<label className="flex items-center gap-2 cursor-pointer">
 				<input
 					type="checkbox"
@@ -557,7 +565,7 @@ export function ClaudeSection({
 		Boolean(activeProvider && !isClaude);
 
 	return (
-		<Section title="Vault Agent">
+		<Section title="Vault Agent" id="forge-section-vault-agent">
 			{accountInfo && (
 				<div className="break-words [overflow-wrap:anywhere] border-b border-border/50 px-4 py-2 text-xs text-muted-foreground">
 					Account: {accountInfo.email ?? "unknown"}
@@ -649,30 +657,32 @@ export function ClaudeSection({
 						onChange={onChange}
 						activeProvider={activeProvider}
 					/>
-					{isClaude && (
-						<>
-							<CheckboxField
-								label="AI subagent progress summaries"
-								hint="About every 30 seconds, Claude makes an extra model call for each running SDK subagent to write a short status. This adds token usage and may increase cost."
-								checked={claude.agentProgressSummaries}
-								onChange={(agentProgressSummaries) =>
-									onChange({ agentProgressSummaries })
-								}
-							/>
-							<CheckboxField
-								label="Interactive mode"
-								hint='to not go against your "programmatic" usage, if you desire'
-								checked={claude.interactiveMode}
-								onChange={(interactiveMode) => onChange({ interactiveMode })}
-							/>
-							<CheckboxField
-								label="Claude peer inbox"
-								hint="hold inbound cross-session messages for review in Raven before Claude can act; sender claims are not human authority"
-								checked={claude.peerInbox}
-								onChange={(peerInbox) => onChange({ peerInbox })}
-							/>
-						</>
-					)}
+				</>
+			)}
+			{isClaude && (
+				<>
+					<CheckboxField
+						label="AI subagent progress summaries"
+						hint="About every 30 seconds, Claude makes an extra model call for each running SDK subagent to write a short status. This adds token usage and may increase cost."
+						checked={claude.agentProgressSummaries}
+						onChange={(agentProgressSummaries) =>
+							onChange({ agentProgressSummaries })
+						}
+					/>
+					<CheckboxField
+						id="forge-setting-interactive-mode"
+						label="Interactive mode"
+						hint='to not go against your "programmatic" usage, if you desire'
+						checked={claude.interactiveMode}
+						onChange={(interactiveMode) => onChange({ interactiveMode })}
+					/>
+					<CheckboxField
+						id="forge-setting-claude-peer-inbox"
+						label="Claude peer inbox"
+						hint="hold inbound cross-session messages for review in Raven before Claude can act; sender claims are not human authority"
+						checked={claude.peerInbox}
+						onChange={(peerInbox) => onChange({ peerInbox })}
+					/>
 				</>
 			)}
 		</Section>
@@ -691,11 +701,38 @@ export function ComputerUseSection({
 	const provider = providers.find(
 		(candidate) => candidate.id === claude.vaultProvider,
 	);
-	const capability = provider?.hostCapabilities?.windowsComputerUse;
-	if (provider?.id !== "codex" || !capability) return null;
+	if (claude.vaultProvider !== "codex") {
+		return (
+			<Section title="Computer Use" id="forge-section-computer-use">
+				<div className="px-4 py-3 text-xs text-muted-foreground">
+					Select Codex as the Vault Agent provider to configure Windows Computer
+					Use preferences.
+				</div>
+			</Section>
+		);
+	}
+	if (!provider) {
+		return (
+			<Section title="Computer Use" id="forge-section-computer-use">
+				<div className="px-4 py-3 text-xs text-muted-foreground">
+					Codex provider inventory is unavailable. Retry system inventory to
+					configure Computer Use preferences.
+				</div>
+			</Section>
+		);
+	}
+	const capability =
+		provider.hostCapabilities?.windowsComputerUse ??
+		(provider.available === false
+			? {
+					label: "Windows Computer Use",
+					available: false,
+					reason: provider.unavailableReason ?? "Codex provider is unavailable",
+				}
+			: undefined);
 
 	return (
-		<Section title="Computer Use">
+		<Section title="Computer Use" id="forge-section-computer-use">
 			<WindowsComputerUseFields
 				claude={claude}
 				onChange={onChange}

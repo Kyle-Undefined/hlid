@@ -56,6 +56,7 @@ export function InstructionFilesSection({
 	return (
 		<Section
 			title="Agent Instructions"
+			id="forge-section-agent-instructions"
 			description="Edit vault and user-level instructions without leaving Hlið. Changes apply when a provider conversation starts or reloads."
 		>
 			{loading ? (

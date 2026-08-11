@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	authenticateProviderAppFn,
@@ -74,10 +80,29 @@ const catalog = {
 };
 
 afterEach(() => {
+	cleanup();
 	vi.clearAllMocks();
 });
 
 describe("ProviderAppsCatalog", () => {
+	it("keeps transport errors bounded and user-facing", async () => {
+		vi.mocked(getProviderAppsFn).mockRejectedValue(
+			new Error("<!doctype html><html>internal server error</html>"),
+		);
+		render(
+			<ProviderAppsCatalog
+				providerId="codex"
+				providerLabel="Codex"
+				cwd="/work/project"
+			/>,
+		);
+
+		expect(
+			await screen.findByText("Provider app inventory is unavailable."),
+		).toBeTruthy();
+		expect(screen.queryByText(/doctype html/i)).toBeNull();
+	});
+
 	it("distinguishes installed, available, and connector readiness", async () => {
 		vi.mocked(getProviderAppsFn).mockResolvedValue(catalog);
 		render(

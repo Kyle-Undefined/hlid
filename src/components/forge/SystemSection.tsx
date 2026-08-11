@@ -57,6 +57,7 @@ function ReclaimStorageAction({
 }) {
 	return (
 		<Field
+			id="forge-setting-reclaim-database-space"
 			label="Reclaim database space"
 			hint="fully rebuild SQLite after cleanup; Hlid pauses while this runs"
 		>
@@ -116,6 +117,7 @@ function RestartAction({
 }) {
 	return (
 		<Field
+			id="forge-setting-restart"
 			label="Restart"
 			hint="restart Hlið and apply pending configuration changes"
 		>
@@ -293,7 +295,10 @@ function InstallationAndStartup({
 	const install = autostart?.install;
 
 	return (
-		<Section title="Installation and startup">
+		<Section
+			title="Installation and startup"
+			id="forge-section-installation-startup"
+		>
 			{install && (
 				<Field label="Install location" hint={install.dir}>
 					<button
@@ -360,7 +365,7 @@ function StorageSummary({
 }) {
 	const { storage, busy, optimizeStorage } = maintenance;
 	return (
-		<Section title="Storage summary">
+		<Section title="Storage summary" id="forge-section-storage-summary">
 			<Field
 				label="Database"
 				hint={
@@ -422,6 +427,7 @@ function DangerZone({ maintenance }: { maintenance: SystemMaintenance }) {
 		<div id="lifecycle-controls" className="scroll-mt-20">
 			<Section
 				title="Danger zone"
+				id="forge-section-danger-zone"
 				description="Maintenance and lifecycle actions can interrupt active work."
 			>
 				<OptimizeStorageAction

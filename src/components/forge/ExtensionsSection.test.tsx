@@ -233,6 +233,54 @@ afterEach(() => {
 });
 
 describe("ExtensionsSection", () => {
+	it.each([
+		["marketplace-sparse-paths", "Claude", "Marketplace sparse paths"],
+		["marketplace-git-ref", "Codex", "Marketplace Git ref"],
+	] as const)("hydrates the %s marketplace destination on reload", async (destination, provider, fieldLabel) => {
+		mocks.getExtensionInventory.mockResolvedValue(inventory);
+		render(<ExtensionsSection destination={destination} />);
+
+		await waitFor(() =>
+			expect(
+				screen
+					.getByRole("tab", { name: "marketplace" })
+					.getAttribute("aria-selected"),
+			).toBe("true"),
+		);
+		expect(
+			screen.getByRole("tab", { name: provider }).getAttribute("aria-selected"),
+		).toBe("true");
+		const details = screen
+			.getByText("Add marketplace source")
+			.closest("details") as HTMLDetailsElement | null;
+		expect(details?.open).toBe(true);
+		expect(screen.getByLabelText(fieldLabel)).toBeTruthy();
+	});
+
+	it("switches an existing Extensions surface to a marketplace destination", async () => {
+		mocks.getExtensionInventory.mockResolvedValue(inventory);
+		const view = render(<ExtensionsSection />);
+		await waitFor(() =>
+			expect(
+				screen
+					.getByRole("tab", { name: "installed" })
+					.getAttribute("aria-selected"),
+			).toBe("true"),
+		);
+
+		view.rerender(
+			<ExtensionsSection destination="search-extension-marketplaces" />,
+		);
+		await waitFor(() =>
+			expect(
+				screen
+					.getByRole("tab", { name: "marketplace" })
+					.getAttribute("aria-selected"),
+			).toBe("true"),
+		);
+		expect(screen.getByLabelText("Search marketplaces")).toBeTruthy();
+	});
+
 	it("keeps the newest inventory when an older request resolves last", async () => {
 		const olderRequest = deferred<ExtensionInventory>();
 		const newerRequest = deferred<ExtensionInventory>();

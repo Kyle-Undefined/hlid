@@ -110,7 +110,7 @@ export function TailscaleFields({
 					</div>
 				</div>
 			)}
-			<Field label="TLS Cert Path">
+			<Field id="forge-setting-tls-cert-path" label="TLS Cert Path">
 				<FilePathField
 					value={server.tlsCertPath}
 					onChange={(v) => onChange({ tlsCertPath: v })}

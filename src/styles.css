@@ -474,3 +474,37 @@ html[data-theme-appearance="light"] .markdown-alert-caution .markdown-alert-titl
 .placeholder\:text-muted-foreground\/50::placeholder {
   color: color-mix(in oklab, var(--muted-foreground) 60%, transparent);
 }
+
+/* Forge is form-dense, so compact desktop controls need a larger touch target
+   whenever the viewport or pointing device is tablet/mobile sized. */
+@media (max-width: 1023px), (pointer: coarse) {
+  [data-forge-touch-surface] button {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+  }
+
+  [data-forge-touch-surface] summary {
+    min-height: 2.75rem;
+  }
+
+  [data-forge-touch-surface]
+    label:has(input[type="checkbox"], input[type="radio"]) {
+    min-height: 2.75rem;
+  }
+
+  [data-forge-touch-surface]
+    :is(
+      select,
+      textarea,
+      input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"])
+    ),
+  [data-forge-setting-label]
+    :is(
+      button,
+      select,
+      textarea,
+      input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"])
+    ) {
+    min-height: 2.75rem;
+  }
+}

@@ -14,7 +14,10 @@ export function SessionSection({
 	}
 
 	return (
-		<Section title={view === "privacy" ? "Privacy" : "Session lifecycle"}>
+		<Section
+			title={view === "privacy" ? "Privacy" : "Session lifecycle"}
+			id={`forge-section-${view === "privacy" ? "privacy" : "session-lifecycle"}`}
+		>
 			{view !== "privacy" && (
 				<Field
 					label="Reload session"
@@ -31,6 +34,7 @@ export function SessionSection({
 			)}
 			{view !== "advanced" && (
 				<Field
+					id="forge-setting-privacy-mode"
 					label="Privacy mode"
 					hint="blur personal data for demos (browser-local, not saved to config)"
 				>

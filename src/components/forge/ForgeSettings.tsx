@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import {
+	type KeyboardEvent,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { AcpSection } from "#/components/forge/AcpSection";
 import { ApiSection } from "#/components/forge/ApiSection";
 import { AutoSleepSection } from "#/components/forge/AutoSleepSection";
@@ -32,121 +38,243 @@ import type {
 	SettingsFormState,
 	SettingsInitial,
 } from "#/hooks/useSettingsForm";
+import {
+	FORGE_CATEGORIES,
+	type ForgeCategoryId,
+	type ForgeNavigationState,
+	type ForgeSearchDestination,
+	type ForgeThemeTarget,
+	type ForgeView,
+	getForgeCategory,
+	getForgeNavigationFocusId,
+	getForgeNavigationSettingLabel,
+	normalizeForgeNavigation,
+	searchForgeDestinations,
+} from "#/lib/forgeNavigation";
 import { CLIPROXY_CODEX_PROVIDER_ID } from "#/lib/providerIds";
 import type { ProviderInfo } from "#/lib/providerTypes";
 import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
-import { includesSearchText } from "#/lib/search";
+import { normalizeSearchText } from "#/lib/search";
 import { applyThemeToDocument, effectiveTheme } from "#/lib/theme";
 
-const CATEGORIES = [
-	{
-		id: "overview",
-		label: "Overview",
-		description: "Updates, installation, startup, and storage",
-		sections: ["Updates", "Installation and startup", "Storage summary"],
-		keywords: "version install location launch login database attachments",
-		group: "primary",
-	},
-	{
-		id: "workspace",
-		label: "Workspace",
-		description: "Vault identity, folders, and status vocabulary",
-		sections: ["Vault", "Obsidian desktop", "Status Vocabulary"],
-		keywords:
-			"vault identity path folder mappings statuses obsidian desktop cli active note daily backlinks",
-		group: "primary",
-	},
-	{
-		id: "agents",
-		label: "Agents",
-		description: "Provider, model, permissions, limits, and recaps",
-		sections: [
-			"Vault Agent",
-			"Agent Instructions",
-			"Browser profile",
-			"Computer Use",
-			"Auto-sleep on usage limit",
-		],
-		keywords:
-			"provider model effort permissions turns recaps account instructions agents md claude global wsl browser profile cookies storage preview computer use windows desktop auto sleep usage limit rate window resume",
-		group: "primary",
-	},
-	{
-		id: "access",
-		label: "Access",
-		description: "Network, TLS, passwords, and trusted devices",
-		sections: ["Network", "App Password", "Trusted Devices"],
-		keywords:
-			"port local network tailscale tls password trusted devices lock logout sign out",
-		group: "primary",
-	},
-	{
-		id: "experience",
-		label: "Experience",
-		description: "Themes, input, voice, and privacy",
-		sections: [
-			"UI",
-			"Custom theme",
-			"Custom palette",
-			"Read aloud",
-			"Codex realtime",
-			"Raven Live",
-			"Voice input",
-			"Whisper models",
-			"Privacy",
-		],
-		keywords:
-			"theme mobile enter skills plans read aloud speech speaker whisper microphone codex realtime raven live developer preview demo",
-		group: "primary",
-	},
-	{
-		id: "integrations",
-		label: "Integrations",
-		description: "OpenCode, MCP servers, and external agents",
-		sections: [
-			"Apps and Connectors",
-			"MCP",
-			"CLIProxyAPI",
-			"Umbod policy",
-			"Generate agent hooks",
-			"Umbod activity",
-			"Call explorer",
-			"OpenCode and ACP agents",
-		],
-		keywords:
-			"apps connectors mcp servers cliproxy codex claude code opencode oauth authentication external agents acp catalog integrations",
-		group: "secondary",
-	},
-	{
-		id: "extensions",
-		label: "Extensions",
-		description: "Installed Claude and Codex plugins and marketplaces",
-		sections: ["Provider Extensions"],
-		keywords:
-			"plugins extensions marketplaces claude codex manifests skills agents hooks mcp apps scripts trust",
-		group: "secondary",
-	},
-	{
-		id: "developer",
-		label: "Developer",
-		description: "Event log, API reference, and pricing catalog",
-		sections: ["Event Log", "API Reference", "Pricing"],
-		keywords:
-			"events logs api diagnostics endpoints pricing costs rates model aliases overrides",
-		group: "secondary",
-	},
-	{
-		id: "advanced",
-		label: "Advanced",
-		description: "Maintenance and session lifecycle",
-		sections: ["Danger zone", "Session lifecycle"],
-		keywords: "optimize database reload session shutdown danger",
-		group: "secondary",
-	},
-] as const;
-type Category = (typeof CATEGORIES)[number]["id"];
-type DeveloperView = "events" | "api" | "pricing";
-type ThemeTarget = "desktop" | "mobile";
+type Category = ForgeCategoryId;
+type DeveloperView = Extract<ForgeView, "events" | "api" | "pricing">;
+type ThemeTarget = ForgeThemeTarget;
+
+const SEARCH_RESULT_LIMIT = 12;
+const DEVELOPER_TABS = [
+	["events", "Event Log"],
+	["api", "API Reference"],
+	["pricing", "Pricing"],
+] as const satisfies ReadonlyArray<readonly [DeveloperView, string]>;
+
+const CLAUDE_ONLY_SEARCH_SETTINGS = new Set([
+	"subagent-progress-summaries",
+	"interactive-mode",
+	"claude-peer-inbox",
+]);
+
+function isSearchDestinationAvailable(
+	destination: ForgeSearchDestination,
+	vaultProvider: string,
+	voiceInputProvider: SettingsFormState["voice"]["input_provider"],
+) {
+	const setting = destination.navigation.setting;
+	if (!setting) return true;
+	if (CLAUDE_ONLY_SEARCH_SETTINGS.has(setting))
+		return vaultProvider === "claude";
+	if (setting === "whisper-threads") return voiceInputProvider === "local";
+	return true;
+}
+
+function findRenderedSettingTarget(
+	navigation: ForgeNavigationState,
+	fallbackId: string | undefined,
+): HTMLElement | null {
+	if (navigation.setting) {
+		const explicit = document.getElementById(
+			`forge-setting-${navigation.setting}`,
+		);
+		if (explicit) return explicit;
+
+		const label = getForgeNavigationSettingLabel(navigation);
+		const normalizedLabel = label ? normalizeSearchText(label) : "";
+		if (normalizedLabel) {
+			const candidates = Array.from(
+				document.querySelectorAll<HTMLElement>("[data-forge-setting-label]"),
+			);
+			const exact = candidates.find(
+				(candidate) => candidate.dataset.forgeSettingLabel === normalizedLabel,
+			);
+			if (exact) return exact;
+
+			const sectionRoot = navigation.section
+				? document.querySelector<HTMLElement>(
+						`[data-forge-section="forge-section-${navigation.section}"]`,
+					)
+				: null;
+			const scopedCandidates = sectionRoot
+				? candidates.filter((candidate) => sectionRoot.contains(candidate))
+				: candidates;
+			const suffixMatches = scopedCandidates
+				.filter((candidate) => {
+					const candidateLabel = candidate.dataset.forgeSettingLabel ?? "";
+					return (
+						candidateLabel.length >= 4 &&
+						(normalizedLabel.endsWith(` ${candidateLabel}`) ||
+							normalizedLabel.startsWith(`${candidateLabel} `))
+					);
+				})
+				.sort(
+					(left, right) =>
+						(right.dataset.forgeSettingLabel?.length ?? 0) -
+						(left.dataset.forgeSettingLabel?.length ?? 0),
+				);
+			if (suffixMatches.length > 0) return suffixMatches[0];
+		}
+	}
+	return fallbackId ? document.getElementById(fallbackId) : null;
+}
+
+function CategoryIntro({
+	category,
+	navigation,
+	onNavigate,
+	showSections = true,
+}: {
+	category: Category;
+	navigation: ForgeNavigationState;
+	onNavigate: (navigation: ForgeNavigationState) => void;
+	showSections?: boolean;
+}) {
+	const definition = getForgeCategory(category);
+	return (
+		<>
+			<PageIntro
+				id={`forge-category-${category}`}
+				headingLevel={1}
+				title={definition.label}
+				description={definition.description}
+			/>
+			{showSections && definition.sections.length > 1 && (
+				<nav aria-label={`${definition.label} settings`}>
+					<div className="flex flex-wrap gap-2">
+						{definition.sections.map((section) => {
+							const active =
+								navigation.section === section.id ||
+								(section.view !== undefined &&
+									navigation.view === section.view);
+							return (
+								<button
+									key={section.id}
+									type="button"
+									onClick={() =>
+										onNavigate({
+											category,
+											section: section.id,
+											...(section.view ? { view: section.view } : {}),
+										})
+									}
+									aria-current={active ? "location" : undefined}
+									className={`min-h-11 border px-3 py-2 text-left text-[10px] tracking-wider uppercase transition-colors lg:min-h-0 lg:py-1.5 ${
+										active
+											? "border-primary/40 bg-primary/10 text-primary"
+											: "border-border text-muted-foreground hover:bg-accent hover:text-foreground"
+									}`}
+								>
+									{section.label}
+								</button>
+							);
+						})}
+					</div>
+				</nav>
+			)}
+		</>
+	);
+}
+
+function NestedBackButton({
+	label,
+	onClick,
+}: {
+	label: string;
+	onClick: () => void;
+}) {
+	return (
+		<button
+			type="button"
+			onClick={onClick}
+			className="min-h-11 px-1 text-[10px] tracking-widest text-muted-foreground uppercase hover:text-foreground lg:min-h-0"
+		>
+			← {label}
+		</button>
+	);
+}
+
+function SettingsSearchResults({
+	query,
+	results,
+	truncated,
+	onChoose,
+	onClear,
+}: {
+	query: string;
+	results: ForgeSearchDestination[];
+	truncated: boolean;
+	onChoose: (destination: ForgeSearchDestination) => void;
+	onClear: () => void;
+}) {
+	return (
+		<section aria-labelledby="forge-search-results-title" className="space-y-4">
+			<div className="space-y-1">
+				<h1 id="forge-search-results-title" className="text-lg font-medium">
+					Search settings
+				</h1>
+				<p className="text-xs text-muted-foreground" aria-live="polite">
+					{truncated
+						? `Showing first ${results.length} results for “${query}”. Results are truncated. Narrow your search to refine the list.`
+						: results.length > 0
+							? `Showing ${results.length} ${results.length === 1 ? "result" : "results"} for “${query}”`
+							: `No settings found for “${query}”`}
+				</p>
+			</div>
+			{results.length > 0 ? (
+				<div className="grid gap-2">
+					{results.map((destination) => (
+						<button
+							key={destination.id}
+							type="button"
+							onClick={() => onChoose(destination)}
+							className="group min-h-16 border border-border bg-card px-4 py-3 text-left transition-colors hover:border-primary/40 hover:bg-accent focus-visible:border-primary/60 focus-visible:outline-none"
+						>
+							<span className="block text-sm text-foreground">
+								{destination.label}
+							</span>
+							<span className="mt-0.5 block text-[10px] tracking-wider text-primary/80 uppercase">
+								{destination.kind === "category"
+									? "Category"
+									: destination.breadcrumbs.slice(0, -1).join(" / ")}
+							</span>
+							<span className="mt-1 block text-xs text-muted-foreground">
+								{destination.description}
+							</span>
+						</button>
+					))}
+				</div>
+			) : (
+				<div className="border border-border bg-card p-6 text-center">
+					<button
+						type="button"
+						onClick={onClear}
+						className="min-h-11 border border-border px-3 py-2 text-[10px] tracking-widest uppercase hover:bg-accent"
+					>
+						Clear search
+					</button>
+				</div>
+			)}
+		</section>
+	);
+}
 
 function AgentSettings({
 	state,
@@ -226,14 +354,10 @@ function AcpCatalogPage({
 }) {
 	return (
 		<>
-			<button
-				type="button"
-				onClick={onBack}
-				className="text-[10px] tracking-widest uppercase text-muted-foreground hover:text-foreground"
-			>
-				← Integrations
-			</button>
+			<NestedBackButton label="Integrations" onClick={onBack} />
 			<PageIntro
+				id="forge-view-acp"
+				headingLevel={1}
 				title="OpenCode and ACP integrations"
 				description="Set up OpenCode through its supported ACP connection or discover another Agent Client Protocol integration."
 			/>
@@ -267,14 +391,10 @@ function UmbodPage({
 }) {
 	return (
 		<>
-			<button
-				type="button"
-				onClick={onBack}
-				className="text-[10px] tracking-widest uppercase text-muted-foreground hover:text-foreground"
-			>
-				← Integrations
-			</button>
+			<NestedBackButton label="Integrations" onClick={onBack} />
 			<PageIntro
+				id="forge-view-umbod"
+				headingLevel={1}
 				title="Umbod"
 				description="Configure policy, generate hooks, and inspect tool-call decisions."
 			/>
@@ -296,14 +416,10 @@ function CustomThemePage({
 }) {
 	return (
 		<>
-			<button
-				type="button"
-				onClick={onBack}
-				className="text-[10px] tracking-widest uppercase text-muted-foreground hover:text-foreground"
-			>
-				← Experience
-			</button>
+			<NestedBackButton label="Experience" onClick={onBack} />
 			<PageIntro
+				id="forge-view-theme"
+				headingLevel={1}
 				title="Custom Theme"
 				description="Shape separate desktop and mobile palettes with a live system-wide preview. Changes save automatically."
 			/>
@@ -317,25 +433,76 @@ function CustomThemePage({
 	);
 }
 
-function OverviewCategory() {
+function OverviewCategory({
+	navigation,
+	onNavigate,
+}: {
+	navigation: ForgeNavigationState;
+	onNavigate: (navigation: ForgeNavigationState) => void;
+}) {
 	return (
 		<>
-			<PageIntro
-				title="Overview"
-				description="Keep Hlið current and understand how this installation is running."
+			<CategoryIntro
+				category="overview"
+				navigation={navigation}
+				onNavigate={onNavigate}
 			/>
+			<section
+				aria-labelledby="forge-browse-settings-title"
+				className="space-y-2"
+			>
+				<div className="px-1">
+					<h2
+						id="forge-browse-settings-title"
+						className="text-[10px] tracking-widest text-muted-foreground uppercase"
+					>
+						Browse settings
+					</h2>
+					<p className="mt-1 text-xs text-muted-foreground">
+						Jump into a category or search for a setting by name.
+					</p>
+				</div>
+				<div className="grid grid-cols-2 gap-2 @3xl:grid-cols-4">
+					{FORGE_CATEGORIES.filter(
+						(category) => category.id !== "overview",
+					).map((category) => (
+						<button
+							key={category.id}
+							type="button"
+							onClick={() => onNavigate({ category: category.id })}
+							className="min-h-20 border border-border bg-card p-3 text-left transition-colors hover:border-primary/40 hover:bg-accent focus-visible:border-primary/60 focus-visible:outline-none"
+						>
+							<span className="block text-sm text-foreground">
+								{category.label}
+							</span>
+							<span className="mt-1 block text-xs text-muted-foreground">
+								{category.description}
+							</span>
+						</button>
+					))}
+				</div>
+			</section>
 			<UpdatesSection />
 			<SystemSection view="overview" />
 		</>
 	);
 }
 
-function WorkspaceCategory({ state }: { state: SettingsFormState }) {
+function WorkspaceCategory({
+	state,
+	navigation,
+	onNavigate,
+}: {
+	state: SettingsFormState;
+	navigation: ForgeNavigationState;
+	onNavigate: (navigation: ForgeNavigationState) => void;
+}) {
 	return (
 		<>
-			<PageIntro
-				title="Workspace"
-				description="Define the vault Hlið works in and the vocabulary it uses."
+			<CategoryIntro
+				category="workspace"
+				navigation={navigation}
+				onNavigate={onNavigate}
 			/>
 			<VaultSection
 				vault={state.vault}
@@ -361,15 +528,20 @@ function WorkspaceCategory({ state }: { state: SettingsFormState }) {
 function AgentsCategory({
 	state,
 	initial,
+	navigation,
+	onNavigate,
 }: {
 	state: SettingsFormState;
 	initial: SettingsInitial;
+	navigation: ForgeNavigationState;
+	onNavigate: (navigation: ForgeNavigationState) => void;
 }) {
 	return (
 		<>
-			<PageIntro
-				title="Agents"
-				description="Choose the default provider and control how agents work."
+			<CategoryIntro
+				category="agents"
+				navigation={navigation}
+				onNavigate={onNavigate}
 			/>
 			<AgentSettings state={state} initial={initial} />
 			<AutoSleepSection
@@ -385,15 +557,20 @@ function AgentsCategory({
 function AccessCategory({
 	state,
 	initial,
+	navigation,
+	onNavigate,
 }: {
 	state: SettingsFormState;
 	initial: SettingsInitial;
+	navigation: ForgeNavigationState;
+	onNavigate: (navigation: ForgeNavigationState) => void;
 }) {
 	return (
 		<>
-			<PageIntro
-				title="Access"
-				description="Control where Hlið is reachable and who can sign in."
+			<CategoryIntro
+				category="access"
+				navigation={navigation}
+				onNavigate={onNavigate}
 			/>
 			<NetworkSection
 				server={state.server}
@@ -409,16 +586,21 @@ function ExperienceCategory({
 	state,
 	initial,
 	onShowTheme,
+	navigation,
+	onNavigate,
 }: {
 	state: SettingsFormState;
 	initial: SettingsInitial;
 	onShowTheme: () => void;
+	navigation: ForgeNavigationState;
+	onNavigate: (navigation: ForgeNavigationState) => void;
 }) {
 	return (
 		<>
-			<PageIntro
-				title="Experience"
-				description="Tune appearance, input behavior, voice, and presentation privacy."
+			<CategoryIntro
+				category="experience"
+				navigation={navigation}
+				onNavigate={onNavigate}
 			/>
 			<UiSection
 				ui={state.ui}
@@ -435,7 +617,7 @@ function ExperienceCategory({
 				<button
 					type="button"
 					onClick={onShowTheme}
-					className="max-w-full shrink-0 whitespace-normal border border-border px-3 py-1.5 text-center text-[10px] tracking-widest uppercase hover:bg-accent"
+					className="min-h-11 max-w-full shrink-0 whitespace-normal border border-border px-3 py-1.5 text-center text-[10px] tracking-widest uppercase hover:bg-accent lg:min-h-0"
 				>
 					Open theme editor
 				</button>
@@ -462,18 +644,23 @@ function IntegrationsCategory({
 	onShowApps,
 	onShowUmbod,
 	onShowCatalog,
+	navigation,
+	onNavigate,
 }: {
 	state: SettingsFormState;
 	initial: SettingsInitial;
 	onShowApps: () => void;
 	onShowUmbod: () => void;
 	onShowCatalog: () => void;
+	navigation: ForgeNavigationState;
+	onNavigate: (navigation: ForgeNavigationState) => void;
 }) {
 	return (
 		<>
-			<PageIntro
-				title="Integrations"
-				description="Connect tools and agents without crowding core agent settings."
+			<CategoryIntro
+				category="integrations"
+				navigation={navigation}
+				onNavigate={onNavigate}
 			/>
 			<div className="flex min-w-0 flex-col items-start gap-3 border border-border bg-card p-4 @2xl:flex-row @2xl:items-center @2xl:justify-between">
 				<div className="min-w-0">
@@ -486,7 +673,7 @@ function IntegrationsCategory({
 				<button
 					type="button"
 					onClick={onShowApps}
-					className="max-w-full shrink-0 whitespace-normal border border-border px-3 py-1.5 text-center text-[10px] tracking-widest uppercase hover:bg-accent"
+					className="min-h-11 max-w-full shrink-0 whitespace-normal border border-border px-3 py-1.5 text-center text-[10px] tracking-widest uppercase hover:bg-accent lg:min-h-0"
 				>
 					Open Apps
 				</button>
@@ -506,7 +693,7 @@ function IntegrationsCategory({
 				<button
 					type="button"
 					onClick={onShowUmbod}
-					className="max-w-full shrink-0 whitespace-normal border border-border px-3 py-1.5 text-center text-[10px] tracking-widest uppercase hover:bg-accent"
+					className="min-h-11 max-w-full shrink-0 whitespace-normal border border-border px-3 py-1.5 text-center text-[10px] tracking-widest uppercase hover:bg-accent lg:min-h-0"
 				>
 					Open Umbod
 				</button>
@@ -522,7 +709,7 @@ function IntegrationsCategory({
 				<button
 					type="button"
 					onClick={onShowCatalog}
-					className="max-w-full shrink-0 whitespace-normal border border-border px-3 py-1.5 text-center text-[10px] tracking-widest uppercase hover:bg-accent"
+					className="min-h-11 max-w-full shrink-0 whitespace-normal border border-border px-3 py-1.5 text-center text-[10px] tracking-widest uppercase hover:bg-accent lg:min-h-0"
 				>
 					Open integrations
 				</button>
@@ -553,14 +740,10 @@ function ProviderAppsPage({
 	);
 	return (
 		<>
-			<button
-				type="button"
-				onClick={onBack}
-				className="text-[10px] tracking-widest uppercase text-muted-foreground hover:text-foreground"
-			>
-				← Integrations
-			</button>
+			<NestedBackButton label="Integrations" onClick={onBack} />
 			<PageIntro
+				id="forge-view-apps"
+				headingLevel={1}
 				title="Apps and Connectors"
 				description="Inspect provider-native app installation, configuration, authentication, usability, and MCP health."
 			/>
@@ -596,35 +779,70 @@ function ProviderAppsPage({
 function DeveloperCategory({
 	developerView,
 	onDeveloperView,
+	navigation,
+	onNavigate,
 }: {
 	developerView: DeveloperView;
 	onDeveloperView: (view: DeveloperView) => void;
+	navigation: ForgeNavigationState;
+	onNavigate: (navigation: ForgeNavigationState) => void;
 }) {
+	function handleTabKeyDown(
+		event: KeyboardEvent<HTMLButtonElement>,
+		view: DeveloperView,
+	) {
+		const currentIndex = DEVELOPER_TABS.findIndex(
+			([candidate]) => candidate === view,
+		);
+		let nextIndex: number;
+		switch (event.key) {
+			case "ArrowLeft":
+				nextIndex =
+					(currentIndex - 1 + DEVELOPER_TABS.length) % DEVELOPER_TABS.length;
+				break;
+			case "ArrowRight":
+				nextIndex = (currentIndex + 1) % DEVELOPER_TABS.length;
+				break;
+			case "Home":
+				nextIndex = 0;
+				break;
+			case "End":
+				nextIndex = DEVELOPER_TABS.length - 1;
+				break;
+			default:
+				return;
+		}
+		event.preventDefault();
+		const nextView = DEVELOPER_TABS[nextIndex][0];
+		onDeveloperView(nextView);
+		document.getElementById(`forge-tab-${nextView}`)?.focus();
+	}
+
 	return (
 		<>
-			<PageIntro
-				title="Developer"
-				description="Inspect runtime activity, the local API surface, and cost-estimation inputs."
+			<CategoryIntro
+				category="developer"
+				navigation={navigation}
+				onNavigate={onNavigate}
+				showSections={false}
 			/>
 			<div
 				className="inline-flex border border-border bg-card p-1"
 				role="tablist"
 				aria-label="Developer tools"
 			>
-				{(
-					[
-						["events", "Event Log"],
-						["api", "API Reference"],
-						["pricing", "Pricing"],
-					] as const
-				).map(([view, label]) => (
+				{DEVELOPER_TABS.map(([view, label]) => (
 					<button
 						key={view}
+						id={`forge-tab-${view}`}
 						type="button"
 						role="tab"
 						onClick={() => onDeveloperView(view)}
+						onKeyDown={(event) => handleTabKeyDown(event, view)}
 						aria-selected={developerView === view}
-						className={`px-3 py-1.5 text-[10px] tracking-widest uppercase transition-colors ${
+						aria-controls={`forge-view-${view}`}
+						tabIndex={developerView === view ? 0 : -1}
+						className={`min-h-11 px-3 py-2 text-[10px] tracking-widest uppercase transition-colors lg:min-h-0 lg:py-1.5 ${
 							developerView === view
 								? "bg-primary/10 text-primary"
 								: "text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -634,35 +852,57 @@ function DeveloperCategory({
 					</button>
 				))}
 			</div>
-			{developerView === "events" ? (
-				<EventLogSection />
-			) : developerView === "api" ? (
-				<ApiSection />
-			) : (
-				<PricingSection />
-			)}
+			<div
+				id={`forge-view-${developerView}`}
+				role="tabpanel"
+				tabIndex={-1}
+				aria-labelledby={`forge-tab-${developerView}`}
+				className="scroll-mt-20 focus-visible:outline-none"
+			>
+				{developerView === "events" ? (
+					<EventLogSection />
+				) : developerView === "api" ? (
+					<ApiSection />
+				) : (
+					<PricingSection />
+				)}
+			</div>
 		</>
 	);
 }
 
-function ExtensionsCategory() {
+function ExtensionsCategory({
+	navigation,
+	onNavigate,
+}: {
+	navigation: ForgeNavigationState;
+	onNavigate: (navigation: ForgeNavigationState) => void;
+}) {
 	return (
 		<>
-			<PageIntro
-				title="Extensions"
-				description="Inspect what each provider has installed and what capabilities those packages bring into agent sessions."
+			<CategoryIntro
+				category="extensions"
+				navigation={navigation}
+				onNavigate={onNavigate}
 			/>
-			<ExtensionsSection />
+			<ExtensionsSection destination={navigation.setting} />
 		</>
 	);
 }
 
-function AdvancedCategory() {
+function AdvancedCategory({
+	navigation,
+	onNavigate,
+}: {
+	navigation: ForgeNavigationState;
+	onNavigate: (navigation: ForgeNavigationState) => void;
+}) {
 	return (
 		<>
-			<PageIntro
-				title="Advanced"
-				description="Maintenance and lifecycle actions. Review destructive actions carefully."
+			<CategoryIntro
+				category="advanced"
+				navigation={navigation}
+				onNavigate={onNavigate}
 			/>
 			<SystemSection view="advanced" />
 			<SessionSection view="advanced" />
@@ -672,6 +912,8 @@ function AdvancedCategory() {
 
 function CategoryContent({
 	category,
+	navigation,
+	onNavigate,
 	state,
 	initial,
 	showCatalog,
@@ -690,6 +932,8 @@ function CategoryContent({
 	onDiscoverAcpModels,
 }: {
 	category: Category;
+	navigation: ForgeNavigationState;
+	onNavigate: (navigation: ForgeNavigationState) => void;
 	state: SettingsFormState;
 	initial: SettingsInitial;
 	showCatalog: boolean;
@@ -738,19 +982,43 @@ function CategoryContent({
 		);
 	switch (category) {
 		case "overview":
-			return <OverviewCategory />;
+			return (
+				<OverviewCategory navigation={navigation} onNavigate={onNavigate} />
+			);
 		case "workspace":
-			return <WorkspaceCategory state={state} />;
+			return (
+				<WorkspaceCategory
+					state={state}
+					navigation={navigation}
+					onNavigate={onNavigate}
+				/>
+			);
 		case "agents":
-			return <AgentsCategory state={state} initial={initial} />;
+			return (
+				<AgentsCategory
+					state={state}
+					initial={initial}
+					navigation={navigation}
+					onNavigate={onNavigate}
+				/>
+			);
 		case "access":
-			return <AccessCategory state={state} initial={initial} />;
+			return (
+				<AccessCategory
+					state={state}
+					initial={initial}
+					navigation={navigation}
+					onNavigate={onNavigate}
+				/>
+			);
 		case "experience":
 			return (
 				<ExperienceCategory
 					state={state}
 					initial={initial}
 					onShowTheme={() => onShowTheme(true)}
+					navigation={navigation}
+					onNavigate={onNavigate}
 				/>
 			);
 		case "integrations":
@@ -761,19 +1029,27 @@ function CategoryContent({
 					onShowApps={() => onShowApps(true)}
 					onShowUmbod={() => onShowUmbod(true)}
 					onShowCatalog={() => onShowCatalog(true)}
+					navigation={navigation}
+					onNavigate={onNavigate}
 				/>
 			);
 		case "extensions":
-			return <ExtensionsCategory />;
+			return (
+				<ExtensionsCategory navigation={navigation} onNavigate={onNavigate} />
+			);
 		case "developer":
 			return (
 				<DeveloperCategory
 					developerView={developerView}
 					onDeveloperView={onDeveloperView}
+					navigation={navigation}
+					onNavigate={onNavigate}
 				/>
 			);
 		case "advanced":
-			return <AdvancedCategory />;
+			return (
+				<AdvancedCategory navigation={navigation} onNavigate={onNavigate} />
+			);
 	}
 }
 
@@ -885,6 +1161,8 @@ export function ForgeSettings({
 	onRetryInventory = () => {},
 	onRefreshProviderOptions = onRetryInventory,
 	onDiscoverAcpModels,
+	navigation: controlledNavigation,
+	onNavigationChange,
 }: {
 	initial: SettingsInitial;
 	state: SettingsFormState;
@@ -892,41 +1170,152 @@ export function ForgeSettings({
 	onRetryInventory?: () => void | Promise<void>;
 	onRefreshProviderOptions?: (providerId: string) => void | Promise<void>;
 	onDiscoverAcpModels?: (id: string) => Promise<ProviderInfo["models"]>;
+	/** URL-backed navigation supplied by the Forge route. */
+	navigation?: ForgeNavigationState;
+	/** Receives category, section, setting, and nested-view navigation changes. */
+	onNavigationChange?: (navigation: ForgeNavigationState) => void;
 }) {
-	const [category, setCategory] = useState<Category>("overview");
+	const [localNavigation, setLocalNavigation] = useState<ForgeNavigationState>({
+		category: "overview",
+	});
 	const [search, setSearch] = useState("");
-	const [showCatalog, setShowCatalog] = useState(false);
-	const [showApps, setShowApps] = useState(false);
-	const [showUmbod, setShowUmbod] = useState(false);
-	const [showTheme, setShowTheme] = useState(false);
-	const [themeTarget, setThemeTarget] = useState<ThemeTarget>("desktop");
-	const [developerView, setDeveloperView] = useState<DeveloperView>("events");
-	const shown = useMemo(() => {
-		const q = search.trim();
-		return q
-			? CATEGORIES.filter((item) =>
-					includesSearchText(
-						`${item.label} ${item.description} ${item.sections.join(" ")} ${item.keywords}`,
-						q,
-					),
-				)
-			: CATEGORIES;
-	}, [search]);
-	useEffect(() => {
-		if (!search.trim() || shown.length === 0) return;
-		if (shown.some((item) => item.id === category)) return;
-		setCategory(shown[0].id);
-		setShowCatalog(false);
-		setShowApps(false);
-		setShowUmbod(false);
-		setShowTheme(false);
-	}, [category, search, shown]);
+	const [focusRequest, setFocusRequest] = useState(0);
+	const scrollRef = useRef<HTMLDivElement>(null);
+	const handledInitialFocus = useRef(false);
+	const navigation = controlledNavigation
+		? normalizeForgeNavigation(controlledNavigation)
+		: localNavigation;
+	const category = navigation.category;
+	const showCatalog = category === "integrations" && navigation.view === "acp";
+	const showApps = category === "integrations" && navigation.view === "apps";
+	const showUmbod = category === "integrations" && navigation.view === "umbod";
+	const showTheme = category === "experience" && navigation.view === "theme";
+	const themeTarget: ThemeTarget = navigation.target ?? "desktop";
+	const developerView: DeveloperView =
+		category === "developer" &&
+		(navigation.view === "api" || navigation.view === "pricing")
+			? navigation.view
+			: "events";
+	const searchQuery = search.trim();
+	const vaultProvider = state.claude?.vaultProvider ?? "";
+	const voiceInputProvider = state.voice?.input_provider;
+	const searchMatches = useMemo(() => {
+		return searchForgeDestinations(searchQuery, Number.MAX_SAFE_INTEGER)
+			.filter((destination) =>
+				isSearchDestinationAvailable(
+					destination,
+					vaultProvider,
+					voiceInputProvider,
+				),
+			)
+			.slice(0, SEARCH_RESULT_LIMIT + 1);
+	}, [searchQuery, vaultProvider, voiceInputProvider]);
+	const searchResults = searchMatches.slice(0, SEARCH_RESULT_LIMIT);
+	const searchResultsTruncated = searchMatches.length > SEARCH_RESULT_LIMIT;
+
+	function navigate(next: ForgeNavigationState) {
+		const normalized = normalizeForgeNavigation(next);
+		if (!controlledNavigation) setLocalNavigation(normalized);
+		setFocusRequest((request) => request + 1);
+		// Queue every component-local update before handing navigation to the
+		// router. A route transition can synchronously replace this render tree.
+		onNavigationChange?.(normalized);
+	}
+
 	function choose(next: Category) {
-		setCategory(next);
-		setShowCatalog(false);
-		setShowApps(false);
-		setShowUmbod(false);
-		setShowTheme(false);
+		setSearch("");
+		navigate({ category: next });
+	}
+
+	const navigationFocusId = getForgeNavigationFocusId(navigation);
+	const focusNavigation = useMemo<ForgeNavigationState>(
+		() => ({
+			category: navigation.category,
+			...(navigation.section ? { section: navigation.section } : {}),
+			...(navigation.setting ? { setting: navigation.setting } : {}),
+			...(navigation.view ? { view: navigation.view } : {}),
+			...(navigation.target ? { target: navigation.target } : {}),
+		}),
+		[
+			navigation.category,
+			navigation.section,
+			navigation.setting,
+			navigation.view,
+			navigation.target,
+		],
+	);
+	const isDefaultOverview =
+		navigation.category === "overview" &&
+		!navigation.section &&
+		!navigation.setting &&
+		!navigation.view;
+	const focusRequestKey = `${navigationFocusId ?? ""}:${navigation.setting ?? ""}:${focusRequest}`;
+	useEffect(() => {
+		// A repeated selection of the same destination still needs a fresh alignment.
+		void focusRequestKey;
+		if (!handledInitialFocus.current) {
+			handledInitialFocus.current = true;
+			if (isDefaultOverview) return;
+		}
+		let focused = false;
+		const focusDestination = () => {
+			const target = findRenderedSettingTarget(
+				focusNavigation,
+				navigationFocusId,
+			);
+			if (target) {
+				target.scrollIntoView?.({ block: "start" });
+				if (!focused) {
+					target.focus({ preventScroll: true });
+					focused = true;
+				}
+				return;
+			}
+			scrollRef.current?.scrollTo?.({ top: 0 });
+		};
+		let firstFrame: number | undefined;
+		let secondFrame: number | undefined;
+		if (typeof window.requestAnimationFrame === "function") {
+			firstFrame = window.requestAnimationFrame(() => {
+				secondFrame = window.requestAnimationFrame(focusDestination);
+			});
+		}
+		const settleTimeout = window.setTimeout(focusDestination, 200);
+		return () => {
+			if (firstFrame !== undefined) window.cancelAnimationFrame(firstFrame);
+			if (secondFrame !== undefined) window.cancelAnimationFrame(secondFrame);
+			window.clearTimeout(settleTimeout);
+		};
+	}, [focusRequestKey, isDefaultOverview, focusNavigation, navigationFocusId]);
+
+	function chooseSearchResult(destination: ForgeSearchDestination) {
+		setSearch("");
+		navigate(destination.navigation);
+	}
+
+	function setNestedView(
+		view: Extract<ForgeView, "apps" | "umbod" | "acp" | "theme">,
+		show: boolean,
+	) {
+		if (!show) {
+			navigate({
+				category: view === "theme" ? "experience" : "integrations",
+			});
+			return;
+		}
+		const section =
+			view === "apps"
+				? "apps-connectors"
+				: view === "acp"
+					? "opencode-acp"
+					: view === "theme"
+						? "custom-theme"
+						: "umbod";
+		navigate({
+			category: view === "theme" ? "experience" : "integrations",
+			section,
+			view,
+		});
 	}
 	useEffect(() => {
 		const media =
@@ -960,17 +1349,17 @@ export function ForgeSettings({
 		return () => media?.removeEventListener("change", apply);
 	}, [showTheme, state.ui, themeTarget]);
 	function showRestartControls() {
-		choose("advanced");
-		setTimeout(() => {
-			document
-				.getElementById("lifecycle-controls")
-				?.scrollIntoView({ behavior: "smooth", block: "start" });
-		}, 0);
+		setSearch("");
+		navigate({
+			category: "advanced",
+			section: "danger-zone",
+			setting: "restart",
+		});
 	}
 	return (
 		<div className="flex h-full min-h-0">
 			<SectionRail
-				items={shown.map((item) => ({
+				items={FORGE_CATEGORIES.map((item) => ({
 					id: item.id,
 					label: item.label,
 					group: item.group,
@@ -978,29 +1367,45 @@ export function ForgeSettings({
 				activeId={category}
 				onSelect={(id) => choose(id as Category)}
 				label="Forge categories"
+				useAriaCurrent
+				visibleFrom="lg"
 			/>
 			<div className="flex-1 min-w-0 flex flex-col">
 				<PageHeader eyebrow="Forge">
 					<select
-						value={shown.some((item) => item.id === category) ? category : ""}
+						value={category}
 						onChange={(e) => choose(e.target.value as Category)}
-						aria-label="Filtered Forge category"
-						className="min-w-0 flex-1 bg-input border border-border px-2 py-1.5 text-xs md:hidden"
+						aria-label="Forge category"
+						className="min-h-11 min-w-0 flex-1 border border-border bg-input px-2 py-2 text-xs lg:hidden"
 					>
-						{shown.length === 0 && <option value="">No matches</option>}
-						{shown.map((item) => (
+						{FORGE_CATEGORIES.map((item) => (
 							<option key={item.id} value={item.id}>
 								{item.label}
 							</option>
 						))}
 					</select>
-					<input
-						value={search}
-						onChange={(e) => setSearch(e.target.value)}
-						placeholder="Filter setting categories"
-						aria-label="Filter setting categories"
-						className="order-last w-full min-w-0 bg-input border border-border px-3 py-1.5 text-xs focus:outline-none focus:border-primary/50 md:order-none md:ml-auto md:w-auto md:max-w-sm md:flex-[1_1_16rem]"
-					/>
+					<div className="relative order-last w-full min-w-0 lg:order-none lg:ml-auto lg:w-auto lg:max-w-sm lg:flex-[1_1_16rem]">
+						<input
+							value={search}
+							onChange={(e) => setSearch(e.target.value)}
+							onKeyDown={(event) => {
+								if (event.key === "Escape") setSearch("");
+							}}
+							placeholder="Search settings"
+							aria-label="Search settings"
+							className="min-h-11 w-full min-w-0 border border-border bg-input px-3 py-2 pr-10 text-xs focus:border-primary/50 focus:outline-none lg:min-h-0 lg:py-1.5"
+						/>
+						{searchQuery && (
+							<button
+								type="button"
+								onClick={() => setSearch("")}
+								aria-label="Clear setting search"
+								className="absolute inset-y-0 right-0 min-w-10 px-2 text-sm text-muted-foreground hover:text-foreground"
+							>
+								×
+							</button>
+						)}
+					</div>
 					<InventoryStatus
 						status={inventoryStatus}
 						onRetry={onRetryInventory}
@@ -1008,43 +1413,44 @@ export function ForgeSettings({
 					<SaveStatus state={state} onRestartRequired={showRestartControls} />
 				</PageHeader>
 				<div
+					ref={scrollRef}
+					data-forge-touch-surface
 					data-scroll-restoration-id={
 						ROUTE_SCROLL_RESTORATION_IDS.forgeSettings
 					}
 					data-scroll-to-top="route"
 					className="flex-1 overflow-auto"
 				>
-					<div className="@container mx-auto max-w-[1000px] min-w-0 space-y-6 p-4 sm:p-6">
-						{shown.length === 0 ? (
-							<div className="border border-border bg-card p-6 text-center space-y-3">
-								<p className="text-sm text-muted-foreground">
-									No setting category matches “{search.trim()}”.
-								</p>
-								<button
-									type="button"
-									onClick={() => setSearch("")}
-									className="border border-border px-3 py-1.5 text-[10px] tracking-widest uppercase hover:bg-accent"
-								>
-									Clear filter
-								</button>
-							</div>
+					<div className="@container mx-auto max-w-[1000px] min-w-0 space-y-6 px-4 pt-4 pb-20 sm:px-6 sm:pt-6 md:pb-6">
+						{searchQuery ? (
+							<SettingsSearchResults
+								query={searchQuery}
+								results={searchResults}
+								truncated={searchResultsTruncated}
+								onChoose={chooseSearchResult}
+								onClear={() => setSearch("")}
+							/>
 						) : (
 							<CategoryContent
 								category={category}
+								navigation={navigation}
+								onNavigate={navigate}
 								state={state}
 								initial={initial}
 								showCatalog={showCatalog}
-								onShowCatalog={setShowCatalog}
+								onShowCatalog={(show) => setNestedView("acp", show)}
 								showApps={showApps}
-								onShowApps={setShowApps}
+								onShowApps={(show) => setNestedView("apps", show)}
 								showUmbod={showUmbod}
-								onShowUmbod={setShowUmbod}
+								onShowUmbod={(show) => setNestedView("umbod", show)}
 								showTheme={showTheme}
-								onShowTheme={setShowTheme}
+								onShowTheme={(show) => setNestedView("theme", show)}
 								themeTarget={themeTarget}
-								onThemeTarget={setThemeTarget}
+								onThemeTarget={(target) => navigate({ ...navigation, target })}
 								developerView={developerView}
-								onDeveloperView={setDeveloperView}
+								onDeveloperView={(view) =>
+									navigate({ category: "developer", view })
+								}
 								onRefreshProviders={onRefreshProviderOptions}
 								onDiscoverAcpModels={onDiscoverAcpModels}
 							/>

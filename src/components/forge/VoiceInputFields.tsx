@@ -86,12 +86,12 @@ export function VoiceInputFields({
 			? "Codex realtime dictation"
 			: "Codex audio input";
 	return (
-		<Section title="Voice input">
+		<Section title="Voice input" id="forge-section-voice-input">
 			<Field
 				label="Voice"
 				hint="enable microphone controls in Raven and Cockpit"
 			>
-				<label className="flex items-center gap-2 cursor-pointer">
+				<label className="flex min-h-11 items-center gap-2 cursor-pointer @lg:min-h-0">
 					<input
 						type="checkbox"
 						checked={voice.enabled}
@@ -115,7 +115,7 @@ export function VoiceInputFields({
 							})
 						}
 						aria-label="Microphone action"
-						className="w-56 max-w-full border border-border bg-input px-2.5 py-1.5 font-mono text-xs text-foreground focus:border-primary/50 focus:outline-none sm:w-72"
+						className="min-h-11 w-full max-w-72 border border-border bg-input px-2.5 py-1.5 font-mono text-xs text-foreground focus:border-primary/50 focus:outline-none @lg:min-h-0"
 					>
 						<option value="local">Dictate with Whisper</option>
 						<option
@@ -133,7 +133,7 @@ export function VoiceInputFields({
 						)}
 					</select>
 					{!codexDictation.available && codexDictation.reason && (
-						<span className="max-w-72 break-words text-[10px] text-muted-foreground [overflow-wrap:anywhere]">
+						<span className="max-w-full break-words text-[10px] text-muted-foreground [overflow-wrap:anywhere]">
 							{codexDictation.reason}
 						</span>
 					)}
@@ -175,7 +175,7 @@ export function VoiceInputFields({
 					<select
 						value={voice.language}
 						onChange={(e) => onChange({ language: e.target.value })}
-						className="w-32 sm:w-48 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
+						className="min-h-11 w-full max-w-48 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 @lg:min-h-0"
 					>
 						{LANGUAGES.map(([value, label]) => (
 							<option key={value} value={value}>
@@ -193,7 +193,7 @@ export function VoiceInputFields({
 					<select
 						value={voice.auto_send ? "send" : "review"}
 						onChange={(e) => onChange({ auto_send: e.target.value === "send" })}
-						className="w-32 sm:w-48 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
+						className="min-h-11 w-full max-w-48 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 @lg:min-h-0"
 					>
 						<option value="review">Review draft</option>
 						<option value="send">Send immediately</option>
@@ -214,13 +214,14 @@ export function VoiceInputFields({
 								})
 							}
 							aria-label="Whisper acceleration"
-							className="w-40 sm:w-52 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
+							className="min-h-11 w-full max-w-52 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 @lg:min-h-0"
 						>
 							<option value="auto">Auto · GPU when available</option>
 							<option value="cpu">CPU only</option>
 						</select>
 					</Field>
 					<Field
+						id="forge-setting-whisper-threads"
 						label="Whisper threads"
 						hint="controls CPU fallback and CPU-only performance; changing it reloads the voice model"
 					>
@@ -228,7 +229,7 @@ export function VoiceInputFields({
 							value={voice.threads}
 							onChange={(e) => onChange({ threads: Number(e.target.value) })}
 							aria-label="Whisper threads"
-							className="w-40 sm:w-52 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
+							className="min-h-11 w-full max-w-52 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 @lg:min-h-0"
 						>
 							{!THREAD_OPTIONS.some(([value]) => value === voice.threads) && (
 								<option value={voice.threads}>{voice.threads} · Custom</option>
@@ -253,12 +254,13 @@ export function VoiceInputFields({
 							rows={5}
 							maxLength={4_000}
 							aria-label="Voice vocabulary hints"
-							className="w-56 sm:w-80 resize-y bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50"
+							className="w-full max-w-80 resize-y bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50"
 						/>
 					</Field>
 				</>
 			)}
 			<Field
+				id="forge-setting-recording-hotkey"
 				label="Recording hotkey"
 				hint="desktop shortcut; press once to start and again to stop"
 			>
@@ -277,7 +279,7 @@ export function VoiceInputFields({
 						if (hotkey) onChange({ hotkey });
 					}}
 					aria-label="Voice recording hotkey"
-					className="w-40 sm:w-52 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50 cursor-pointer"
+					className="min-h-11 w-full max-w-52 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50 cursor-pointer @lg:min-h-0"
 				/>
 			</Field>
 		</Section>
