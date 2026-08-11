@@ -21,6 +21,19 @@ import {
 import type { ProviderInfo } from "../lib/providerTypes";
 import type { AgentToolPayload } from "./agentToolResult";
 import { loadConfig } from "./config";
+import {
+	executeInspectHlidContext,
+	executeInspectHlidDiagnostics,
+	executeInspectHlidLedger,
+	executeInspectHlidRoutine,
+	executeInspectHlidSession,
+	executeListHlidRoutines,
+	executePreviewHlidRoutineSchedule,
+	executeReadRelic,
+	executeSearchHlidSessions,
+	executeSearchRelics,
+	hlidInspectionSchemas,
+} from "./hlidAgentInspectionTools";
 import { buildHlidApiDiscoveryResponse } from "./hlidApiDiscovery";
 import {
 	cancelHlidAgentSchema,
@@ -42,7 +55,7 @@ import {
 
 export const HLID_AGENT_NAMESPACE = "hlid";
 export const HLID_AGENT_NAMESPACE_DESCRIPTION =
-	"Curated Hlid host capabilities. Discover the active operating contract and HTTP API, maintain Hlid storage, create durable Raven child sessions, publish deliverables to Relics, or run and inspect a session-scoped Project Preview.";
+	"Curated Hlid host capabilities. Discover the active operating contract and HTTP API; inspect sessions, Ledger, context, diagnostics, Routines, and Relics; maintain Hlid storage; create durable Raven child sessions; publish deliverables; or run and inspect a session-scoped Project Preview.";
 export const MAX_HLID_INLINE_RELIC_CHARS = 2_000_000;
 const STORAGE_CLEANUP_PREVIEW_TTL_MS = 10 * 60 * 1_000;
 const MAX_STORAGE_CLEANUP_PREVIEWS = 256;
@@ -51,6 +64,7 @@ type StorageCleanupPreviewReceipt = {
 	sessionId: string;
 	expiresAt: number;
 	preview: SessionCleanupPreview;
+	serverPreviewId: string;
 };
 
 const storageCleanupPreviews = new Map<string, StorageCleanupPreviewReceipt>();
@@ -104,6 +118,7 @@ export const hlidAgentSchemas = {
 		method: z.enum(["GET", "POST", "PATCH", "DELETE"]).optional(),
 		scope: z.enum(["data", "ui"]).optional(),
 		limit: z.number().int().min(1).max(50).optional(),
+		cursor: z.string().trim().min(1).max(2_048).optional(),
 	}),
 	inspect_hlid_storage: z.object({
 		cleanup_older_than_days: z.number().int().min(1).max(36_500).optional(),
@@ -119,6 +134,7 @@ export const hlidAgentSchemas = {
 	steer_hlid_agent: steerHlidAgentSchema,
 	cancel_hlid_agent: cancelHlidAgentSchema,
 	resume_hlid_agent: resumeHlidAgentSchema,
+	...hlidInspectionSchemas,
 	publish_relic: z.object({
 		source_path: z.string().trim().min(1).max(4_096).optional(),
 		filename: z.string().trim().min(1).max(255).optional(),
@@ -170,6 +186,7 @@ export const hlidAgentSchemas = {
 		path: previewPath,
 		viewport: previewViewport,
 	}),
+	restart_project_preview: previewTarget,
 	stop_project_preview: previewTarget,
 } as const;
 
@@ -256,7 +273,7 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 	{
 		name: "hlid_api",
 		description:
-			"Search Hlid's live, curated HTTP API catalog. Filter by text, method, or data/UI listener and receive a bounded result with exact live base URLs, full matching total, returned count, and truncation state. Use this for direct Hlid integration without loading the full API reference.",
+			"Search Hlid's live, curated HTTP API catalog with revision-bound pagination. Filter by text, method, or data/UI listener and receive bounded endpoint metadata, risk labels, exact host base URLs, totals, and nextCursor. This is discovery, not an authenticated provider bridge; prefer typed Hlid tools when available.",
 		readOnly: true,
 		deferLoading: true,
 		searchHint:
@@ -284,6 +301,11 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 					type: "number",
 					description:
 						"Maximum endpoints to return, from 1 to 50. Defaults to 20.",
+				},
+				cursor: {
+					type: "string",
+					description:
+						"Continue from nextCursor. The cursor retains filters and fails if the catalog revision changes.",
 				},
 			},
 			additionalProperties: false,
@@ -327,7 +349,7 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 	{
 		name: "cleanup_hlid_sessions",
 		description:
-			"Delete the eligible old sessions represented by a fresh preview_id from inspect_hlid_storage after reporting its deletion and preservation totals and receiving explicit user authorization. The preview is session-scoped, one-use, expires after ten minutes, and is rechecked immediately; changed impact is refused. Cleanup removes Hlid-owned linked Relics and preserves immutable Ledger usage totals while only detaching vault-owned files. Physical database reclaim remains Forge-only.",
+			"Delete the eligible old sessions represented by a fresh preview_id from inspect_hlid_storage after reporting its deletion and preservation totals and receiving explicit user authorization. Both the agent receipt and underlying HTTP receipt are one-use and short-lived; the server rechecks exact impact immediately and refuses changes. Cleanup removes Hlid-owned linked Relics and preserves immutable Ledger usage totals while only detaching vault-owned files. Physical database reclaim remains Forge-only.",
 		readOnly: false,
 		deferLoading: true,
 		searchHint:
@@ -580,6 +602,187 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 				},
 			},
 			required: ["id", "instruction"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "search_relics",
+		description:
+			"Search durable Hlid-generated Relics by filename, category, or MIME class. Results contain safe metadata only and use a keyset cursor. Session uploads, vault links, plans, and temporary visualizations are excluded.",
+		readOnly: true,
+		deferLoading: true,
+		searchHint:
+			"search find list view durable generated Hlid Relics reports media",
+		inputSchema: {
+			type: "object",
+			properties: {
+				query: { type: "string", description: "Optional filename search." },
+				category: { type: "string", enum: ["report", "media", "other"] },
+				type: { type: "string", enum: ["image", "pdf", "text", "other"] },
+				limit: { type: "number", description: "Maximum rows, 1-50." },
+				cursor: {
+					type: "string",
+					description: "Opaque next_cursor from a prior page.",
+				},
+			},
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "read_relic",
+		description:
+			"Read one exact durable Hlid-generated Relic after canonical-path, size, and SHA-256 validation. UTF-8 text and HTML are returned as untrusted source; PNG, JPEG, and WebP are returned as images. Unsupported binaries return safe metadata only.",
+		readOnly: true,
+		deferLoading: true,
+		searchHint: "read view inspect exact Hlid Relic report image content",
+		inputSchema: {
+			type: "object",
+			properties: { id: { type: "string", description: "Exact Relic UUID." } },
+			required: ["id"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "search_hlid_sessions",
+		description:
+			"Search bounded Raven session metadata without exposing workspace paths or provider runtime internals. Active and archived history are separate searches.",
+		readOnly: true,
+		deferLoading: true,
+		searchHint: "search list Raven Hlid sessions history transcript",
+		inputSchema: {
+			type: "object",
+			properties: {
+				query: { type: "string" },
+				provider: { type: "string" },
+				archived: { type: "boolean" },
+				limit: { type: "number" },
+				page: { type: "number" },
+			},
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "inspect_hlid_session",
+		description:
+			"Inspect safe metadata and a bounded page of visible messages from one exact Raven session. Hidden provider state, raw tool payloads, paths, attachments, and runtime identifiers are excluded.",
+		readOnly: true,
+		deferLoading: true,
+		searchHint: "inspect read Raven Hlid session transcript messages history",
+		inputSchema: {
+			type: "object",
+			properties: {
+				id: { type: "string" },
+				limit: { type: "number" },
+				before_seq: { type: "number" },
+				before_id: { type: "number" },
+			},
+			required: ["id"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "inspect_hlid_ledger",
+		description:
+			"Inspect bounded Hlid Ledger aggregates, trends, tool usage, models, and stop reasons. Workspace path facets and raw immutable usage rows are excluded.",
+		readOnly: true,
+		deferLoading: true,
+		searchHint:
+			"inspect Hlid Ledger usage cost tokens analytics provider model",
+		inputSchema: {
+			type: "object",
+			properties: {
+				range: {
+					type: "string",
+					enum: ["today", "7d", "30d", "90d", "all", "custom"],
+				},
+				provider: { type: "string" },
+				model: { type: "string" },
+				from: { type: "string" },
+				to: { type: "string" },
+			},
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "inspect_hlid_context",
+		description:
+			"Inspect the active Raven session's persisted Hlid context receipts without sending another provider prompt. Returns bounded provenance and size estimates, never the referenced content itself.",
+		readOnly: true,
+		deferLoading: true,
+		searchHint:
+			"inspect active current Hlid context receipt references handoff tools",
+		inputSchema: {
+			type: "object",
+			properties: { limit: { type: "number" }, before_seq: { type: "number" } },
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "inspect_hlid_diagnostics",
+		description:
+			"Inspect a bounded, redacted page of Hlid Event Log diagnostics. Paths, URLs, UUIDs, control characters, and stored detail payloads are omitted or redacted.",
+		readOnly: true,
+		deferLoading: true,
+		searchHint:
+			"inspect Hlid Event Log diagnostics errors warnings runtime MCP",
+		inputSchema: {
+			type: "object",
+			properties: {
+				level: { type: "string", enum: ["all", "error", "warn", "info"] },
+				query: { type: "string" },
+				limit: { type: "number" },
+			},
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "list_hlid_routines",
+		description:
+			"List safe Routine schedule, provider, authorization-summary, delivery, and last-run metadata. Prompts, paths, exact references, and grant constraints are excluded.",
+		readOnly: true,
+		deferLoading: true,
+		searchHint: "list inspect Hlid Routines scheduled automation Watch",
+		inputSchema: {
+			type: "object",
+			properties: {
+				include_archived: { type: "boolean" },
+				limit: { type: "number" },
+			},
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "inspect_hlid_routine",
+		description:
+			"Inspect one exact Routine's safe metadata and bounded run history. Prompts, paths, exact references, grant constraints, and delivery payloads are excluded.",
+		readOnly: true,
+		deferLoading: true,
+		searchHint: "inspect Hlid Routine run history status automation",
+		inputSchema: {
+			type: "object",
+			properties: { id: { type: "string" }, history_limit: { type: "number" } },
+			required: ["id"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "preview_hlid_routine_schedule",
+		description:
+			"Preview the next five occurrences of a proposed Routine schedule and timezone without creating or changing a Routine.",
+		readOnly: true,
+		deferLoading: true,
+		searchHint: "preview Hlid Routine schedule occurrences timezone automation",
+		inputSchema: {
+			type: "object",
+			properties: {
+				schedule: {
+					type: "object",
+					description: "Routine schedule definition.",
+				},
+				timezone: { type: "string" },
+				after: { type: "number" },
+			},
+			required: ["schedule", "timezone"],
 			additionalProperties: false,
 		},
 	},
@@ -847,6 +1050,20 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 					description: "Named viewport for the viewport action.",
 				},
 			},
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "restart_project_preview",
+		description:
+			"Restart the current session's existing Hlid-owned Project Preview with its recorded command, workspace, port, and trust boundary.",
+		readOnly: false,
+		deferLoading: true,
+		searchHint: "restart Project Preview dev server existing session",
+		approvalTitle: "Hlid restart Project Preview",
+		inputSchema: {
+			type: "object",
+			properties: { preview_id: { type: "string" } },
 			additionalProperties: false,
 		},
 	},
@@ -1346,7 +1563,10 @@ async function executeStartProjectPreview(
 }
 
 async function executeProjectPreviewReadOrStop(
-	toolName: "inspect_project_preview" | "stop_project_preview",
+	toolName:
+		| "inspect_project_preview"
+		| "restart_project_preview"
+		| "stop_project_preview",
 	input: unknown,
 	context: HlidAgentToolContext,
 ): Promise<string> {
@@ -1356,7 +1576,9 @@ async function executeProjectPreviewReadOrStop(
 	const schema =
 		toolName === "inspect_project_preview"
 			? hlidAgentSchemas.inspect_project_preview
-			: hlidAgentSchemas.stop_project_preview;
+			: toolName === "restart_project_preview"
+				? hlidAgentSchemas.restart_project_preview
+				: hlidAgentSchemas.stop_project_preview;
 	const parsed = schema.parse(input);
 	const previewId = parsed.preview_id;
 	const path = previewId
@@ -1367,16 +1589,21 @@ async function executeProjectPreviewReadOrStop(
 			? await dbFetch(
 					`${path}?session_id=${encodeURIComponent(context.sessionId)}`,
 				)
-			: await dbFetch(`${path}/stop`, {
-					method: "POST",
-					headers: { "content-type": "application/json" },
-					body: JSON.stringify({ session_id: context.sessionId }),
-				});
+			: await dbFetch(
+					`${path}/${toolName === "restart_project_preview" ? "restart" : "stop"}`,
+					{
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ session_id: context.sessionId }),
+					},
+				);
 	await requireDbOk(
 		response,
 		toolName === "inspect_project_preview"
 			? "Inspect Project Preview"
-			: "Stop Project Preview",
+			: toolName === "restart_project_preview"
+				? "Restart Project Preview"
+				: "Stop Project Preview",
 	);
 	return JSON.stringify(await response.json());
 }
@@ -1422,11 +1649,6 @@ function pruneStorageCleanupPreviews(now = Date.now()): void {
 	}
 }
 
-function cleanupPreviewSignature(preview: SessionCleanupPreview): string {
-	const { cutoff: _cutoff, ...stableImpact } = preview;
-	return JSON.stringify(stableImpact);
-}
-
 async function readHlidStorage(): Promise<Record<string, unknown>> {
 	const response = await dbFetch("/db/storage");
 	await requireDbOk(response, "Inspect Hlid storage");
@@ -1435,12 +1657,24 @@ async function readHlidStorage(): Promise<Record<string, unknown>> {
 
 async function readSessionCleanupPreview(
 	days: number,
-): Promise<SessionCleanupPreview> {
+): Promise<
+	SessionCleanupPreview & { preview_id: string; expires_at?: number }
+> {
 	const response = await dbFetch(
 		`/db/sessions/cleanup/preview?older_than_days=${days}`,
 	);
 	await requireDbOk(response, "Preview Hlid session cleanup");
-	return (await response.json()) as SessionCleanupPreview;
+	const preview = (await response.json()) as SessionCleanupPreview & {
+		preview_id?: string;
+		expires_at?: number;
+	};
+	if (!preview.preview_id) {
+		throw new Error("Hlid cleanup preview did not include a server receipt.");
+	}
+	return preview as SessionCleanupPreview & {
+		preview_id: string;
+		expires_at?: number;
+	};
 }
 
 async function executeInspectHlidStorage(
@@ -1460,20 +1694,26 @@ async function executeInspectHlidStorage(
 	const preview = await readSessionCleanupPreview(
 		parsed.cleanup_older_than_days,
 	);
+	const {
+		preview_id: serverPreviewId,
+		expires_at: _serverExpiresAt,
+		...previewImpact
+	} = preview;
 	const previewId = randomUUID();
 	const expiresAt = Date.now() + STORAGE_CLEANUP_PREVIEW_TTL_MS;
 	pruneStorageCleanupPreviews();
 	storageCleanupPreviews.set(previewId, {
 		sessionId: context.sessionId,
 		expiresAt,
-		preview,
+		preview: previewImpact,
+		serverPreviewId,
 	});
 	return JSON.stringify({
 		storage,
 		cleanup: {
+			...previewImpact,
 			preview_id: previewId,
 			expires_at: Math.floor(expiresAt / 1_000),
-			...preview,
 		},
 	});
 }
@@ -1508,26 +1748,17 @@ async function executeCleanupHlidSessions(
 		);
 	}
 
-	const currentPreview = await readSessionCleanupPreview(receipt.preview.days);
 	storageCleanupPreviews.delete(parsed.preview_id);
-	if (
-		cleanupPreviewSignature(currentPreview) !==
-		cleanupPreviewSignature(receipt.preview)
-	) {
-		throw new Error(
-			"Cleanup impact changed after preview. Inspect Hlid storage again and review the new totals.",
-		);
-	}
-
-	const response = await dbFetch(
-		`/db/sessions/cleanup?older_than_days=${receipt.preview.days}`,
-		{ method: "POST" },
-	);
+	const response = await dbFetch("/db/sessions/cleanup", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ preview_id: receipt.serverPreviewId }),
+	});
 	await requireDbOk(response, "Clean up Hlid sessions");
 	const cleanup = (await response.json()) as Record<string, unknown>;
 	const storage = await readHlidStorage();
 	return JSON.stringify({
-		preview: currentPreview,
+		preview: receipt.preview,
 		cleanup,
 		storage,
 		physical_reclaim: "forge-only",
@@ -1578,6 +1809,18 @@ const hlidAgentToolHandlers = {
 		executeDelegationTool("cancel_hlid_agent", input, context),
 	resume_hlid_agent: (input, context) =>
 		executeDelegationTool("resume_hlid_agent", input, context),
+	search_relics: executeSearchRelics,
+	read_relic: async (input) => (await executeReadRelic(input)).text,
+	search_hlid_sessions: executeSearchHlidSessions,
+	inspect_hlid_session: executeInspectHlidSession,
+	inspect_hlid_ledger: executeInspectHlidLedger,
+	inspect_hlid_context: (input, context) =>
+		executeInspectHlidContext(input, context.sessionId, dbFetch),
+	inspect_hlid_diagnostics: executeInspectHlidDiagnostics,
+	list_hlid_routines: executeListHlidRoutines,
+	inspect_hlid_routine: executeInspectHlidRoutine,
+	preview_hlid_routine_schedule: async (input) =>
+		executePreviewHlidRoutineSchedule(input),
 	publish_relic: executePublishRelic,
 	start_project_preview: executeStartProjectPreview,
 	inspect_project_preview: (input, context) =>
@@ -1600,6 +1843,8 @@ const hlidAgentToolHandlers = {
 		JSON.stringify(
 			captureMetadata(await requestProjectPreviewControl(input, context)),
 		),
+	restart_project_preview: (input, context) =>
+		executeProjectPreviewReadOrStop("restart_project_preview", input, context),
 	stop_project_preview: (input, context) =>
 		executeProjectPreviewReadOrStop("stop_project_preview", input, context),
 } satisfies Record<HlidAgentToolName, HlidAgentToolHandler>;
@@ -1620,6 +1865,9 @@ export async function executeHlidAgentToolRich(
 	input: unknown,
 	context: HlidAgentToolContext = {},
 ): Promise<AgentToolPayload> {
+	if (name === "read_relic") {
+		return executeReadRelic(input);
+	}
 	if (
 		name !== "capture_project_preview" &&
 		name !== "export_project_preview_capture" &&

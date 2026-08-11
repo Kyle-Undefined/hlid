@@ -9,6 +9,14 @@ export type HlidApiEndpoint = {
 	path: string;
 	server: HlidApiServer;
 	desc: string;
+	/** Stable catalog identity derived from method and path. */
+	id?: string;
+	/** Coarse task labels for precise discovery. */
+	tags?: string[];
+	/** Mutation risk, independent of authentication and approval policy. */
+	safety?: "observational" | "mutating" | "destructive";
+	/** Whether provider agents should prefer a curated typed Hlid tool. */
+	agent_access?: "direct-auth-required" | "typed-tool-preferred";
 };
 
 export type HlidApiIndex = {
@@ -35,7 +43,18 @@ function isEndpoint(value: unknown): value is HlidApiEndpoint {
 		HLID_API_SERVERS.some((server) => server === endpoint.server) &&
 		typeof endpoint.path === "string" &&
 		endpoint.path.startsWith("/") &&
-		typeof endpoint.desc === "string"
+		typeof endpoint.desc === "string" &&
+		(endpoint.id === undefined || typeof endpoint.id === "string") &&
+		(endpoint.tags === undefined ||
+			(Array.isArray(endpoint.tags) &&
+				endpoint.tags.every((tag) => typeof tag === "string"))) &&
+		(endpoint.safety === undefined ||
+			endpoint.safety === "observational" ||
+			endpoint.safety === "mutating" ||
+			endpoint.safety === "destructive") &&
+		(endpoint.agent_access === undefined ||
+			endpoint.agent_access === "direct-auth-required" ||
+			endpoint.agent_access === "typed-tool-preferred")
 	);
 }
 

@@ -1317,10 +1317,10 @@ function cleanupPreviewForIds(
 	return row ? { days, cutoff, ...row } : emptyCleanupPreview(days, cutoff);
 }
 
-export async function getSessionCleanupPreview(
+export async function getSessionCleanupPlan(
 	days: number,
 	excludedSessionIds: readonly string[] = [],
-): Promise<SessionCleanupPreview> {
+): Promise<{ preview: SessionCleanupPreview; sessionIds: string[] }> {
 	const db = await getDb();
 	const cutoff = Math.floor(Date.now() / 1000) - days * 86_400;
 	const ids = cleanupSessionIds(db, cutoff, excludedSessionIds);
@@ -1337,7 +1337,7 @@ export async function getSessionCleanupPreview(
 			preview[key] += part[key];
 		}
 	}
-	return preview;
+	return { preview, sessionIds: ids };
 }
 
 /**
@@ -1459,9 +1459,42 @@ export async function deleteSession(
 export async function deleteSessionsOlderThan(
 	days: number,
 	excludedSessionIds: readonly string[] = [],
+	expectedSessionIds?: readonly string[],
 ): Promise<{ count: number; ephemeralPaths: string[]; sessionIds: string[] }> {
 	const db = await getDb();
 	const cutoff = Math.floor(Date.now() / 1000) - days * 86400;
+	if (expectedSessionIds) {
+		const expected = [...expectedSessionIds];
+		const ephemeralPaths: string[] = [];
+		db.transaction(() => {
+			const current = cleanupSessionIds(db, cutoff, excludedSessionIds);
+			if (JSON.stringify(current) !== JSON.stringify(expected)) {
+				const error = new Error("Cleanup impact changed; preview again");
+				error.name = "SessionCleanupPlanChangedError";
+				throw error;
+			}
+			for (
+				let offset = 0;
+				offset < expected.length;
+				offset += SESSION_CLEANUP_BATCH_SIZE
+			) {
+				ephemeralPaths.push(
+					...cascadeDeleteSessionIds(
+						db,
+						expected.slice(offset, offset + SESSION_CLEANUP_BATCH_SIZE),
+					),
+				);
+			}
+		})();
+		if (expected.length > 0) {
+			markAnalyticsChanged(["stats", "activity"], "sessions_cleaned_up");
+		}
+		return {
+			count: expected.length,
+			ephemeralPaths,
+			sessionIds: expected,
+		};
+	}
 	const ids: string[] = [];
 	const ephemeralPaths: string[] = [];
 	while (true) {

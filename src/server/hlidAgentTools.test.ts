@@ -32,8 +32,10 @@ function storageStats(overrides: Record<string, number> = {}) {
 	};
 }
 
-function cleanupPreview(overrides: Record<string, number> = {}) {
+function cleanupPreview(overrides: Record<string, unknown> = {}) {
 	return {
+		preview_id: "019f0000-0000-7000-8000-000000000001",
+		expires_at: Math.floor(Date.now() / 1_000) + 600,
 		days: 30,
 		cutoff: 1_700_000_000,
 		sessions: 2,
@@ -148,12 +150,23 @@ describe("Hlid agent tools", () => {
 			"steer_hlid_agent",
 			"cancel_hlid_agent",
 			"resume_hlid_agent",
+			"search_relics",
+			"read_relic",
+			"search_hlid_sessions",
+			"inspect_hlid_session",
+			"inspect_hlid_ledger",
+			"inspect_hlid_context",
+			"inspect_hlid_diagnostics",
+			"list_hlid_routines",
+			"inspect_hlid_routine",
+			"preview_hlid_routine_schedule",
 			"publish_relic",
 			"start_project_preview",
 			"inspect_project_preview",
 			"capture_project_preview",
 			"export_project_preview_capture",
 			"control_project_preview",
+			"restart_project_preview",
 			"stop_project_preview",
 		]);
 		expect(specNames.some((name) => name.includes("reclaim"))).toBe(false);
@@ -669,7 +682,7 @@ describe("Hlid agent tools", () => {
 		);
 	});
 
-	it("cleans only after rechecking a fresh preview from the same session", async () => {
+	it("cleans only through the server receipt from the same session", async () => {
 		let storageReads = 0;
 		let previewReads = 0;
 		db.dbFetch.mockImplementation((path: string, init?: RequestInit) => {
@@ -691,10 +704,7 @@ describe("Hlid agent tools", () => {
 					),
 				);
 			}
-			if (
-				path === "/db/sessions/cleanup?older_than_days=30" &&
-				init?.method === "POST"
-			) {
+			if (path === "/db/sessions/cleanup" && init?.method === "POST") {
 				return Promise.resolve(Response.json({ deleted: 2 }));
 			}
 			throw new Error(`Unexpected path: ${path}`);
@@ -721,25 +731,33 @@ describe("Hlid agent tools", () => {
 			storage: { sessions: 8, databaseBytes: 900 },
 			physical_reclaim: "forge-only",
 		});
-		expect(previewReads).toBe(2);
+		expect(previewReads).toBe(1);
+		expect(db.dbFetch).toHaveBeenCalledWith("/db/sessions/cleanup", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				preview_id: "019f0000-0000-7000-8000-000000000001",
+			}),
+		});
 		expect(db.dbFetch).not.toHaveBeenCalledWith(
 			"/db/storage/reclaim",
 			expect.anything(),
 		);
 	});
 
-	it("refuses cleanup when the preview impact changed", async () => {
-		let previewReads = 0;
-		db.dbFetch.mockImplementation((path: string) => {
+	it("surfaces a server refusal when the preview impact changed", async () => {
+		db.dbFetch.mockImplementation((path: string, init?: RequestInit) => {
 			if (path === "/db/storage") {
 				return Promise.resolve(Response.json(storageStats()));
 			}
 			if (path === "/db/sessions/cleanup/preview?older_than_days=30") {
-				previewReads += 1;
+				return Promise.resolve(Response.json(cleanupPreview()));
+			}
+			if (path === "/db/sessions/cleanup" && init?.method === "POST") {
 				return Promise.resolve(
-					Response.json(
-						cleanupPreview({ sessions: previewReads === 1 ? 2 : 3 }),
-					),
+					new Response("Cleanup impact changed; preview again", {
+						status: 409,
+					}),
 				);
 			}
 			throw new Error(`Unexpected path: ${path}`);
@@ -751,6 +769,9 @@ describe("Hlid agent tools", () => {
 				{ sessionId: "session-1" },
 			),
 		);
+		db.requireDbOk.mockRejectedValueOnce(
+			new Error("Cleanup impact changed; preview again"),
+		);
 
 		await expect(
 			executeHlidAgentTool(
@@ -760,7 +781,7 @@ describe("Hlid agent tools", () => {
 			),
 		).rejects.toThrow("impact changed");
 		expect(db.dbFetch).not.toHaveBeenCalledWith(
-			"/db/sessions/cleanup?older_than_days=30",
+			"/db/storage/reclaim",
 			expect.anything(),
 		);
 	});
@@ -1213,7 +1234,7 @@ describe("Hlid agent tools", () => {
 		});
 	});
 
-	it("inspects and stops only the active session's preview", async () => {
+	it("inspects, restarts, and stops only the active session's preview", async () => {
 		const previewId = "7c0eea4d-f74e-45c8-8674-a535fbb4412b";
 		await executeHlidAgentTool(
 			"inspect_project_preview",
@@ -1222,6 +1243,18 @@ describe("Hlid agent tools", () => {
 		);
 		expect(db.dbFetch).toHaveBeenLastCalledWith(
 			`/api/project-previews/${previewId}?session_id=session-1`,
+		);
+		await executeHlidAgentTool(
+			"restart_project_preview",
+			{ preview_id: previewId },
+			{ sessionId: "session-1" },
+		);
+		expect(db.dbFetch).toHaveBeenLastCalledWith(
+			`/api/project-previews/${previewId}/restart`,
+			expect.objectContaining({
+				method: "POST",
+				body: JSON.stringify({ session_id: "session-1" }),
+			}),
 		);
 		await executeHlidAgentTool(
 			"stop_project_preview",

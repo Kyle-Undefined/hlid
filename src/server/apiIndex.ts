@@ -352,13 +352,7 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		method: "GET",
 		path: "/db/sessions/cleanup/preview?older_than_days=",
 		server: "api",
-		desc: "Preview the exact current impact of age-based session cleanup, including sessions, messages, tool events, estimated database bytes, managed attachments and Relics, detached vault links, and preserved usage-query totals. Excludes live sessions and protected delegation lineages.",
-	},
-	{
-		method: "POST",
-		path: "/db/sessions/cleanup?older_than_days=",
-		server: "api",
-		desc: 'Delete eligible active, non-imported sessions older than N days, excluding live sessions and protected delegation lineages. Preview with GET /db/sessions/cleanup/preview first. Accepts query older_than_days or body {"older_than_days": number}; defaults to 30 days.',
+		desc: "Preview the exact current impact of age-based session cleanup, including sessions, messages, tool events, estimated database bytes, managed attachments and Relics, detached vault links, and preserved usage-query totals. Excludes live sessions and protected delegation lineages. Returns a short-lived, one-use preview_id required by the non-cataloged cleanup mutation, which rechecks the exact impact before deleting.",
 	},
 	{
 		method: "GET",
@@ -422,9 +416,9 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 	},
 	{
 		method: "GET",
-		path: "/db/attachments?kind=&category=&retention=&session_id=&search=&type=&since=&until=&sort=&dir=&limit=&offset=",
+		path: "/db/attachments?kind=&category=&retention=&origin=&session_id=&search=&type=&since=&until=&sort=&dir=&limit=&offset=",
 		server: "api",
-		desc: "Paginated attachments with total count and bytes. Filters: kind (ephemeral|vault), category (upload|plan|report|visualization|other), retention (session|retained|linked), session ID, filename search, MIME class (image|pdf|text|other), and inclusive Unix-second since/until. Sort by created_at|size_bytes with asc|desc; limit is 1–500 (default 100) plus offset.",
+		desc: "Paginated safe attachment metadata with total count and bytes. Filters: kind (ephemeral|vault), category (upload|plan|report|media|visualization|other), retention (session|retained|linked), origin (upload|generated|imported|vault|legacy), session ID, filename search, MIME class (image|pdf|text|other), and inclusive Unix-second since/until. Sort by created_at|size_bytes with asc|desc; limit is 1–500 (default 100) plus offset. Filesystem paths, storage keys, hashes, and agent workspace paths are omitted.",
 	},
 	{
 		method: "POST",
@@ -647,6 +641,43 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		desc: 'Enable or disable one registered agent MCP server. Body: {"agentPath": string, "name": string, "disabled": boolean}.',
 	},
 ];
+
+function endpointTags(path: string): string[] {
+	const pathname = path.split("?", 1)[0];
+	const tags = pathname
+		.split("/")
+		.filter(Boolean)
+		.filter((segment) => segment !== "api" && segment !== "db")
+		.map((segment) => segment.replace(/[^a-zA-Z0-9_-]/g, ""))
+		.filter(Boolean);
+	return [...new Set(tags)].slice(0, 6);
+}
+
+function endpointSafety(
+	endpoint: Pick<ApiEndpoint, "method" | "path">,
+): NonNullable<ApiEndpoint["safety"]> {
+	if (endpoint.method === "GET") return "observational";
+	if (
+		endpoint.method === "DELETE" ||
+		/cleanup|reclaim|reset|uninstall/.test(endpoint.path)
+	) {
+		return "destructive";
+	}
+	return "mutating";
+}
+
+for (const endpoint of API_ENDPOINTS) {
+	const pathname = endpoint.path.split("?", 1)[0];
+	endpoint.id = `${endpoint.method.toLowerCase()}:${pathname}`;
+	endpoint.tags = endpointTags(endpoint.path);
+	endpoint.safety = endpointSafety(endpoint);
+	endpoint.agent_access =
+		/^\/(?:db\/(?:sessions|session|attachments|ledger|storage|logs)|api\/project-previews|hlid-agents|routines)/.test(
+			pathname,
+		)
+			? "typed-tool-preferred"
+			: "direct-auth-required";
+}
 
 /** Response body for GET /api-index. */
 export function buildApiIndex(apiPort: number, uiPort: number): HlidApiIndex {

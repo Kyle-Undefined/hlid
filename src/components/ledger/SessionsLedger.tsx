@@ -14,7 +14,7 @@ import {
 // fallow-ignore-next-line unused-export -- preserve the existing helper import surface for tests and downstream callers.
 export { sessionDisplayUsage } from "#/components/ledger/SessionsLedgerRow";
 
-import type { SessionCleanupPreview, SessionRow } from "#/db";
+import type { SessionCleanupReceipt, SessionRow } from "#/db";
 import { useIsDesktop } from "#/hooks/useIsDesktop";
 import type { LiveStats } from "#/hooks/wsLiveStatsStore";
 import type { LedgerAgentOption, SessionSortKey } from "#/lib/ledgerState";
@@ -36,8 +36,8 @@ type SessionsLedgerProps = {
 	onFork: (id: string) => void;
 	forkingIds?: Set<string>;
 	onNavigate: (id: string) => void;
-	onCleanup: (days: number) => void;
-	onPreviewCleanup?: (days: number) => Promise<SessionCleanupPreview>;
+	onCleanup: (days: number, previewId?: string) => void;
+	onPreviewCleanup?: (days: number) => Promise<SessionCleanupReceipt>;
 	activeSessionId?: string | null;
 	activeSession?: SessionRow | null;
 	sessionsStatus?: SessionStatusEntry[];

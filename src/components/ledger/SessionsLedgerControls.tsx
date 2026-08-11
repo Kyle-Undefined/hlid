@@ -8,7 +8,7 @@ import {
 import type { ComponentType, CSSProperties, RefObject } from "react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { SessionCleanupPreview } from "#/db";
+import type { SessionCleanupReceipt } from "#/db";
 import { useAnchoredPopover } from "#/hooks/useAnchoredPopover";
 import { fmtBytes } from "#/lib/formatters";
 import type { LedgerAgentOption, SessionSortKey } from "#/lib/ledgerState";
@@ -44,8 +44,8 @@ export type SessionsLedgerSecondaryActions = {
 	archived: boolean;
 	oldestStartedAt: number | null;
 	cleanupReferenceTime: number;
-	onCleanup: (days: number) => void;
-	onPreviewCleanup?: (days: number) => Promise<SessionCleanupPreview>;
+	onCleanup: (days: number, previewId?: string) => void;
+	onPreviewCleanup?: (days: number) => Promise<SessionCleanupReceipt>;
 	onExport?: (format: "csv" | "json") => void;
 	onImportClaude?: () => void;
 	claudeImportStatus?: string | null;
@@ -139,12 +139,12 @@ function CleanupControl({
 }: {
 	oldestStartedAt: number | null;
 	referenceTime: number;
-	onCleanup: (days: number) => void;
-	onPreviewCleanup?: (days: number) => Promise<SessionCleanupPreview>;
+	onCleanup: (days: number, previewId?: string) => void;
+	onPreviewCleanup?: (days: number) => Promise<SessionCleanupReceipt>;
 }) {
 	const [pending, setPending] = useState<{
 		days: number;
-		preview?: SessionCleanupPreview;
+		preview?: SessionCleanupReceipt;
 	} | null>(null);
 	const [loadingDays, setLoadingDays] = useState<number | null>(null);
 	const [previewError, setPreviewError] = useState<string | null>(null);
@@ -181,7 +181,8 @@ function CleanupControl({
 					<button
 						type="button"
 						onClick={() => {
-							onCleanup(days);
+							if (preview) onCleanup(days, preview.preview_id);
+							else onCleanup(days);
 							setPending(null);
 						}}
 						className="text-destructive/60 hover:text-destructive transition-colors"

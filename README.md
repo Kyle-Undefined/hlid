@@ -44,7 +44,8 @@ set up, `Hlið` is happy.
   embeds, attachments, or anything related.
 - Lets agents publish generated `HTML`, `PDFs`, images, and reports straight to
   `Relics` from a normal chat. The existing `Relics` previews stay as the viewer,
-  and publishing does not need an `HTML` plan turn.
+  and publishing does not need an `HTML` plan turn. Agents can also search safe
+  metadata for durable generated `Relics` and read one exact result when asked.
 - Keeps provider-generated images in the conversation and in `Relics`, with the
   prompt, dimensions, preview, and download together. On a supported `Windows`
   host, `Codex` can also hand an interactive visualization to a fresh native
@@ -73,7 +74,7 @@ set up, `Hlið` is happy.
 - Opens a real project shell in `Raven`. There is also an interactive
   `Claude CLI` mode for the times when the full terminal makes more sense than
   the structured chat `UI`. Agents can start a session-scoped `Project Preview`,
-  inspect and control it at desktop, tablet, or mobile sizes, catch browser
+  inspect, restart, and control it at desktop, tablet, or mobile sizes, catch browser
   errors, move through retained captures, save an approved capture, and work
   from annotated visual feedback.
 - Keeps linked vaults and workspaces, provider commands, permissions, scoped

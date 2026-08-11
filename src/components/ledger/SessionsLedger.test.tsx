@@ -1022,6 +1022,8 @@ describe("SessionsLedger header controls", () => {
 
 	it("previews cleanup impact before enabling confirmation", async () => {
 		const onPreviewCleanup = vi.fn().mockResolvedValue({
+			preview_id: "019f0000-0000-7000-8000-000000000001",
+			expires_at: Math.floor(Date.now() / 1_000) + 600,
 			days: 30,
 			cutoff: cleanupReferenceTime - 30 * 86_400,
 			sessions: 3,
@@ -1054,7 +1056,10 @@ describe("SessionsLedger header controls", () => {
 		expect(onPreviewCleanup).toHaveBeenCalledWith(30);
 		expect(props.onCleanup).not.toHaveBeenCalled();
 		fireEvent.click(screen.getByRole("button", { name: "confirm" }));
-		expect(props.onCleanup).toHaveBeenCalledWith(30);
+		expect(props.onCleanup).toHaveBeenCalledWith(
+			30,
+			"019f0000-0000-7000-8000-000000000001",
+		);
 	});
 
 	it("hides cleanup entirely when no sessions are old enough", () => {

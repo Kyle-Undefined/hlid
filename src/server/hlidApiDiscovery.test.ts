@@ -90,4 +90,41 @@ describe("Hlid API discovery", () => {
 		expect(result.returned).toBeLessThan(50);
 		expect(result.truncated).toBe(true);
 	});
+
+	it("continues through revision-bound cursor pages while retaining filters", () => {
+		const first = JSON.parse(
+			buildHlidApiDiscoveryResponse(index, {
+				query: "session",
+				limit: 1,
+			}),
+		);
+		const second = JSON.parse(
+			buildHlidApiDiscoveryResponse(index, {
+				cursor: first.nextCursor,
+				limit: 1,
+			}),
+		);
+
+		expect(first).toMatchObject({ returned: 1, truncated: true });
+		expect(second).toMatchObject({
+			returned: 1,
+			truncated: false,
+			endpoints: [{ method: "DELETE", path: "/db/session" }],
+		});
+		expect(second.revision).toBe(first.revision);
+	});
+
+	it("rejects cursors after the API catalog changes", () => {
+		const first = JSON.parse(
+			buildHlidApiDiscoveryResponse(index, { limit: 1 }),
+		);
+		const changed = {
+			...index,
+			endpoints: [...index.endpoints, { ...index.endpoints[0], path: "/new" }],
+		};
+
+		expect(() =>
+			buildHlidApiDiscoveryResponse(changed, { cursor: first.nextCursor }),
+		).toThrow("catalog changed");
+	});
 });

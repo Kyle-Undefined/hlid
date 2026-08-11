@@ -72,7 +72,7 @@ import {
 	getSessionAgentCwd,
 	getSessionById,
 	getSessionClaudeId,
-	getSessionCleanupPreview,
+	getSessionCleanupPlan,
 	getSessionLastQueryContext,
 	getSessionModel,
 	getSessionProviderId,
@@ -3493,7 +3493,7 @@ describe("sessions — deleteSessionsOlderThan", () => {
 			);
 		}
 
-		const preview = await getSessionCleanupPreview(5);
+		const { preview } = await getSessionCleanupPlan(5);
 
 		expect(preview).toMatchObject({
 			sessions: 1,
@@ -3508,6 +3508,27 @@ describe("sessions — deleteSessionsOlderThan", () => {
 			askUserQuestions: 1,
 		});
 		expect(preview.estimatedDatabaseBytes).toBeGreaterThan(0);
+	});
+
+	it("atomically refuses a cleanup plan when the exact candidates changed", async () => {
+		const oldTs = Math.floor(Date.now() / 1000) - 10 * 86_400;
+		db.run(
+			`INSERT INTO sessions (id, label, model, started_at)
+			 VALUES ('old-a', 'Old A', 'm', ?)`,
+			[oldTs],
+		);
+		const plan = await getSessionCleanupPlan(5);
+		db.run(
+			`INSERT INTO sessions (id, label, model, started_at)
+			 VALUES ('old-b', 'Old B', 'm', ?)`,
+			[oldTs],
+		);
+
+		await expect(
+			deleteSessionsOlderThan(5, [], plan.sessionIds),
+		).rejects.toMatchObject({ name: "SessionCleanupPlanChangedError" });
+		expect(await getSessionById("old-a")).not.toBeNull();
+		expect(await getSessionById("old-b")).not.toBeNull();
 	});
 
 	it("includes bounded provider permission evidence in cleanup byte estimates", async () => {
@@ -3534,7 +3555,7 @@ describe("sessions — deleteSessionsOlderThan", () => {
 			[oldTs],
 		);
 
-		const preview = await getSessionCleanupPreview(5);
+		const { preview } = await getSessionCleanupPlan(5);
 		const expectedPermissionBytes = [
 			"tool",
 			"Bash",

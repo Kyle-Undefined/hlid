@@ -36,7 +36,7 @@ import {
 	type StagedAgentSkill,
 	type StagedSkillInstallWarning,
 } from "#/components/relics/SkillManagerDialog";
-import type { AttachmentRow } from "#/db";
+import type { AttachmentPublicRow as AttachmentRow } from "#/db/types";
 import { useDialogFocus } from "#/hooks/useDialogFocus";
 import { useIsDesktop } from "#/hooks/useIsDesktop";
 import { type ServerMessage, useWs } from "#/hooks/useWs";

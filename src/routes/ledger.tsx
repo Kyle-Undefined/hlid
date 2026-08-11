@@ -25,7 +25,7 @@ import { PrivacyMask } from "#/components/PrivacyMask";
 import type {
 	LedgerAnalytics,
 	LedgerAnalyticsFilter,
-	SessionCleanupPreview,
+	SessionCleanupReceipt,
 	SessionRow,
 } from "#/db";
 import { useLedgerSessionMutations } from "#/hooks/useLedgerSessionMutations";
@@ -152,11 +152,15 @@ const pinSessionFn = createServerFn({ method: "POST" })
 	);
 
 const cleanupSessionsFn = createServerFn({ method: "POST" })
-	.validator((raw) => sessionCleanupSchema.parse(raw))
+	.validator((raw) =>
+		sessionCleanupSchema.extend({ preview_id: z.string().uuid() }).parse(raw),
+	)
 	.handler(async ({ data }) => {
 		const res = await requireDbOk(
-			await dbFetch(`/db/sessions/cleanup?older_than_days=${data.days}`, {
+			await dbFetch("/db/sessions/cleanup", {
 				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ preview_id: data.preview_id }),
 			}),
 			"clean up sessions",
 		);
@@ -170,7 +174,7 @@ const previewCleanupSessionsFn = createServerFn({ method: "GET" })
 			`/db/sessions/cleanup/preview?older_than_days=${data.days}`,
 		);
 		if (!res.ok) throw new Error(`Cleanup preview failed (${res.status})`);
-		return res.json() as Promise<SessionCleanupPreview>;
+		return res.json() as Promise<SessionCleanupReceipt>;
 	});
 
 type ProviderHistoryImportResult = {
@@ -545,8 +549,10 @@ function useLedgerMutations(
 					data: { id, archived: nextArchived },
 				});
 			},
-			cleanupSessions: async (days: number) => {
-				await cleanupSessionsFn({ data: { days } });
+			cleanupSessions: async (days: number, previewId?: string) => {
+				if (!previewId)
+					throw new Error("Cleanup preview expired. Preview again.");
+				await cleanupSessionsFn({ data: { days, preview_id: previewId } });
 			},
 			navigateToPage: (nextPage: number) => {
 				navigate({

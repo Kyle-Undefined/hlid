@@ -23,6 +23,22 @@ describe("buildApiIndex", () => {
 		expect(new Set(keys).size).toBe(keys.length);
 	});
 
+	it("adds stable identity, task tags, mutation risk, and agent access metadata", () => {
+		const sessions = endpoint(
+			"GET",
+			"/db/sessions?page=&size=&q=&agent=&model=&provider=&stop=&archived=&range=&from=&to=&sort=",
+		);
+		const deletion = endpoint("DELETE", "/db/session?id=");
+
+		expect(sessions).toMatchObject({
+			id: "get:/db/sessions",
+			safety: "observational",
+			agent_access: "typed-tool-preferred",
+		});
+		expect(sessions?.tags).toContain("sessions");
+		expect(deletion?.safety).toBe("destructive");
+	});
+
 	it("lists itself so agents can rediscover the catalog", () => {
 		expect(
 			API_ENDPOINTS.some((e) => e.path === "/api-index" && e.method === "GET"),
@@ -48,11 +64,13 @@ describe("buildApiIndex", () => {
 		expect(sessionUpdate?.desc).toContain('{"archived": boolean}');
 		expect(sessionUpdate?.desc).toContain("cannot be archived");
 
-		const cleanup = endpoint("POST", "/db/sessions/cleanup?older_than_days=");
-		expect(cleanup?.desc).toContain("active, non-imported sessions");
-		expect(cleanup?.desc).toContain("protected delegation lineages");
-		expect(cleanup?.desc).toContain("cleanup/preview");
-		expect(cleanup?.desc).toContain('{"older_than_days": number}');
+		expect(
+			API_ENDPOINTS.some(
+				(entry) =>
+					entry.method === "POST" &&
+					entry.path.startsWith("/db/sessions/cleanup"),
+			),
+		).toBe(false);
 		const cleanupPreview = endpoint(
 			"GET",
 			"/db/sessions/cleanup/preview?older_than_days=",
@@ -62,9 +80,12 @@ describe("buildApiIndex", () => {
 
 		const attachments = endpoint(
 			"GET",
-			"/db/attachments?kind=&category=&retention=&session_id=&search=&type=&since=&until=&sort=&dir=&limit=&offset=",
+			"/db/attachments?kind=&category=&retention=&origin=&session_id=&search=&type=&since=&until=&sort=&dir=&limit=&offset=",
 		);
 		expect(attachments?.desc).toContain("ephemeral|vault");
+		expect(attachments?.desc).toContain("media");
+		expect(attachments?.desc).toContain("origin");
+		expect(attachments?.desc).toContain("paths");
 		expect(attachments?.desc).toContain("limit is 1–500");
 
 		const analytics = endpoint(

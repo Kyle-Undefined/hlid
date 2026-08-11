@@ -86,6 +86,12 @@ export type SessionCleanupPreview = {
 	projectPreviewFeedback: number;
 };
 
+/** Opaque, short-lived HTTP receipt for one exact cleanup impact. */
+export type SessionCleanupReceipt = SessionCleanupPreview & {
+	preview_id: string;
+	expires_at: number;
+};
+
 export type MessageRow = {
 	id: number;
 	session_id: string;
@@ -268,6 +274,12 @@ export type AttachmentRow = {
 	image_optimized_at?: number | null;
 	original_size_bytes?: number | null;
 };
+
+/** Browser/API projection that never exposes Hlid or workspace filesystem data. */
+export type AttachmentPublicRow = Omit<
+	AttachmentRow,
+	"path" | "storage_key" | "sha256" | "agent_cwd"
+>;
 
 export type LogLevel = "error" | "warn" | "info";
 

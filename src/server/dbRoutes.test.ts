@@ -38,7 +38,7 @@ const {
 	mockCreateForkedSessionRow,
 	mockDeleteSession,
 	mockDeleteSessionsOlderThan,
-	mockGetSessionCleanupPreview,
+	mockGetSessionCleanupPlan,
 	mockDeleteProjectPreviewsForSessions,
 	mockGetStorageStats,
 	mockOptimizeStorage,
@@ -81,7 +81,7 @@ const {
 	mockCreateForkedSessionRow: vi.fn(),
 	mockDeleteSession: vi.fn(),
 	mockDeleteSessionsOlderThan: vi.fn(),
-	mockGetSessionCleanupPreview: vi.fn(),
+	mockGetSessionCleanupPlan: vi.fn(),
 	mockDeleteProjectPreviewsForSessions: vi.fn(),
 	mockGetStorageStats: vi.fn(),
 	mockOptimizeStorage: vi.fn(),
@@ -123,7 +123,7 @@ vi.mock("../db", () => ({
 	createForkedSessionRow: mockCreateForkedSessionRow,
 	deleteSession: mockDeleteSession,
 	deleteSessionsOlderThan: mockDeleteSessionsOlderThan,
-	getSessionCleanupPreview: mockGetSessionCleanupPreview,
+	getSessionCleanupPlan: mockGetSessionCleanupPlan,
 	deleteProjectPreviewsForSessions: mockDeleteProjectPreviewsForSessions,
 	getStorageStats: mockGetStorageStats,
 	optimizeStorage: mockOptimizeStorage,
@@ -604,12 +604,62 @@ describe("handleDbRoute — GET /db/attachments", () => {
 		"upload",
 		"plan",
 		"report",
+		"media",
 		"visualization",
 		"other",
 	] as const)("accepts the %s attachment category", (category) => {
 		expect(
 			parseAttachmentListFilter(makeUrl("/db/attachments", { category })),
 		).toMatchObject({ category });
+	});
+
+	it.each([
+		"upload",
+		"generated",
+		"imported",
+		"vault",
+		"legacy",
+	] as const)("accepts the %s attachment origin", (origin) => {
+		expect(
+			parseAttachmentListFilter(makeUrl("/db/attachments", { origin })),
+		).toMatchObject({ origin });
+	});
+
+	it("omits filesystem and integrity fields from the HTTP projection", async () => {
+		mockListAttachments.mockResolvedValue({
+			rows: [
+				{
+					id: "relic-1",
+					session_id: null,
+					message_seq: null,
+					kind: "ephemeral",
+					filename: "report.md",
+					path: "/private/report.md",
+					mime: "text/markdown",
+					size_bytes: 10,
+					sha256: "private-hash",
+					created_at: 100,
+					storage_key: "artifacts/relic-1/report.md",
+					agent_cwd: "/private/workspace",
+				},
+			],
+			total: 1,
+			total_bytes: 10,
+		});
+
+		const response = await handleDbRoute(
+			makeUrl("/db/attachments"),
+			makeRequest(),
+		);
+		const body = await response?.json();
+
+		expect(body.rows[0]).toEqual(
+			expect.objectContaining({ id: "relic-1", filename: "report.md" }),
+		);
+		expect(body.rows[0]).not.toHaveProperty("path");
+		expect(body.rows[0]).not.toHaveProperty("storage_key");
+		expect(body.rows[0]).not.toHaveProperty("sha256");
+		expect(body.rows[0]).not.toHaveProperty("agent_cwd");
 	});
 
 	it("accepts whitelisted sort columns and directions", () => {
@@ -2022,7 +2072,87 @@ describe("handleDbRoute — DELETE /db/session", () => {
 });
 
 describe("handleDbRoute — POST /db/sessions/cleanup", () => {
+	it("requires a short-lived preview receipt", async () => {
+		const response = await handleDbRoute(
+			makeUrl("/db/sessions/cleanup"),
+			makeRequest("POST", { older_than_days: 30 }),
+		);
+
+		expect(response?.status).toBe(400);
+		expect(await response?.text()).toMatch(/preview_id/);
+		expect(mockDeleteSessionsOlderThan).not.toHaveBeenCalled();
+	});
+
+	it("consumes the receipt and refuses changed exact candidates", async () => {
+		const preview = {
+			days: 30,
+			cutoff: 1_700_000_000,
+			sessions: 1,
+			messages: 2,
+			toolEvents: 0,
+			estimatedDatabaseBytes: 512,
+			usageQueriesPreserved: 1,
+			managedAttachments: 0,
+			managedAttachmentBytes: 0,
+			retainedRelics: 0,
+			retainedRelicBytes: 0,
+			vaultLinksDetached: 0,
+			planProposals: 0,
+			askUserQuestions: 0,
+			projectPreviewFeedback: 0,
+		};
+		mockGetSessionCleanupPlan
+			.mockResolvedValueOnce({ preview, sessionIds: ["old-a"] })
+			.mockResolvedValueOnce({
+				preview,
+				sessionIds: ["old-b"],
+			});
+		const previewResponse = await handleDbRoute(
+			makeUrl("/db/sessions/cleanup/preview", {
+				older_than_days: "30",
+			}),
+			makeRequest(),
+		);
+		const receipt = await previewResponse?.json();
+
+		const changed = await handleDbRoute(
+			makeUrl("/db/sessions/cleanup"),
+			makeRequest("POST", { preview_id: receipt.preview_id }),
+		);
+		const reused = await handleDbRoute(
+			makeUrl("/db/sessions/cleanup"),
+			makeRequest("POST", { preview_id: receipt.preview_id }),
+		);
+
+		expect(changed?.status).toBe(409);
+		expect(await changed?.text()).toMatch(/impact changed/i);
+		expect(reused?.status).toBe(409);
+		expect(await reused?.text()).toMatch(/missing or expired/i);
+		expect(mockDeleteSessionsOlderThan).not.toHaveBeenCalled();
+	});
+
 	it("atomically excludes every DB session claimed by a live pool or terminal", async () => {
+		const preview = {
+			days: 7,
+			cutoff: 1_700_000_000,
+			sessions: 1,
+			messages: 2,
+			toolEvents: 0,
+			estimatedDatabaseBytes: 512,
+			usageQueriesPreserved: 1,
+			managedAttachments: 0,
+			managedAttachmentBytes: 0,
+			retainedRelics: 0,
+			retainedRelicBytes: 0,
+			vaultLinksDetached: 0,
+			planProposals: 0,
+			askUserQuestions: 0,
+			projectPreviewFeedback: 0,
+		};
+		mockGetSessionCleanupPlan.mockResolvedValue({
+			preview,
+			sessionIds: ["unrelated-old-session"],
+		});
 		mockDeleteSessionsOlderThan.mockResolvedValueOnce({
 			count: 1,
 			ephemeralPaths: [],
@@ -2030,7 +2160,7 @@ describe("handleDbRoute — POST /db/sessions/cleanup", () => {
 		});
 		mockDeleteProjectPreviewsForSessions.mockResolvedValueOnce(undefined);
 		const pool = makePool({
-			getAllEntries: vi.fn().mockReturnValue(
+			getAllEntries: vi.fn().mockImplementation(() =>
 				[
 					{
 						claimedDbSessionId: "claimed-during-admission",
@@ -2072,9 +2202,18 @@ describe("handleDbRoute — POST /db/sessions/cleanup", () => {
 			]),
 		} as never;
 
+		const previewResponse = await handleDbRoute(
+			makeUrl("/db/sessions/cleanup/preview", {
+				older_than_days: "7",
+			}),
+			makeRequest(),
+			pool,
+			terminalPool,
+		);
+		const previewReceipt = await previewResponse?.json();
 		const response = await handleDbRoute(
 			makeUrl("/db/sessions/cleanup"),
-			makeRequest("POST", { older_than_days: 7 }),
+			makeRequest("POST", { preview_id: previewReceipt.preview_id }),
 			pool,
 			terminalPool,
 		);
@@ -2095,6 +2234,7 @@ describe("handleDbRoute — POST /db/sessions/cleanup", () => {
 		expect(mockDeleteSessionsOlderThan).toHaveBeenCalledWith(
 			7,
 			expect.arrayContaining(["claimed-during-admission"]),
+			["unrelated-old-session"],
 		);
 		expect(mockCloseProjectPreviewSession).toHaveBeenCalledWith(
 			"unrelated-old-session",
@@ -2125,7 +2265,10 @@ describe("handleDbRoute — GET /db/sessions/cleanup/preview", () => {
 			askUserQuestions: 0,
 			projectPreviewFeedback: 0,
 		};
-		mockGetSessionCleanupPreview.mockResolvedValueOnce(preview);
+		mockGetSessionCleanupPlan.mockResolvedValueOnce({
+			preview,
+			sessionIds: ["old-a", "old-b"],
+		});
 		const pool = makePool({
 			getAllEntries: vi.fn().mockReturnValue(
 				[
@@ -2146,8 +2289,12 @@ describe("handleDbRoute — GET /db/sessions/cleanup/preview", () => {
 		);
 
 		expect(response?.status).toBe(200);
-		expect(await response?.json()).toEqual(preview);
-		expect(mockGetSessionCleanupPreview).toHaveBeenCalledWith(30, [
+		expect(await response?.json()).toEqual({
+			...preview,
+			preview_id: expect.any(String),
+			expires_at: expect.any(Number),
+		});
+		expect(mockGetSessionCleanupPlan).toHaveBeenCalledWith(30, [
 			"claimed-session",
 		]);
 	});

@@ -59,6 +59,44 @@ interface DbRouteContext {
 
 type DbGetHandler = (context: DbRouteContext) => Response | Promise<Response>;
 
+const SESSION_CLEANUP_PREVIEW_TTL_MS = 10 * 60 * 1_000;
+const MAX_SESSION_CLEANUP_PREVIEWS = 256;
+const sessionCleanupPreviews = new Map<
+	string,
+	{ preview: db.SessionCleanupPreview; sessionIds: string[]; expiresAt: number }
+>();
+
+function pruneSessionCleanupPreviews(now = Date.now()): void {
+	for (const [id, receipt] of sessionCleanupPreviews) {
+		if (receipt.expiresAt <= now) sessionCleanupPreviews.delete(id);
+	}
+	while (sessionCleanupPreviews.size >= MAX_SESSION_CLEANUP_PREVIEWS) {
+		const oldest = sessionCleanupPreviews.keys().next().value;
+		if (typeof oldest !== "string") break;
+		sessionCleanupPreviews.delete(oldest);
+	}
+}
+
+function cleanupPreviewSignature(preview: db.SessionCleanupPreview): string {
+	const { cutoff: _cutoff, ...stableImpact } = preview;
+	return JSON.stringify(stableImpact);
+}
+
+function retainSessionCleanupPreview(
+	preview: db.SessionCleanupPreview,
+	sessionIds: string[],
+): db.SessionCleanupReceipt {
+	pruneSessionCleanupPreviews();
+	const previewId = uid();
+	const expiresAt = Date.now() + SESSION_CLEANUP_PREVIEW_TTL_MS;
+	sessionCleanupPreviews.set(previewId, { preview, sessionIds, expiresAt });
+	return {
+		...preview,
+		preview_id: previewId,
+		expires_at: Math.floor(expiresAt / 1_000),
+	};
+}
+
 const DB_GET_HANDLERS: Record<string, DbGetHandler> = {
 	"/db/sessions": ({ url }) => getSessions(url),
 	"/db/sessions/export": async () => Response.json(await db.getAllSessions()),
@@ -89,8 +127,10 @@ const DB_GET_HANDLERS: Record<string, DbGetHandler> = {
 	"/db/sessions/cleanup/preview": ({ url, pool, terminalPool }) => {
 		const days = clampInt(url.searchParams.get("older_than_days"), 30, 1);
 		return db
-			.getSessionCleanupPreview(days, getLiveDbSessionIds(pool, terminalPool))
-			.then((preview) => Response.json(preview));
+			.getSessionCleanupPlan(days, getLiveDbSessionIds(pool, terminalPool))
+			.then(({ preview, sessionIds }) =>
+				Response.json(retainSessionCleanupPreview(preview, sessionIds)),
+			);
 	},
 	"/db/live-sessions": ({ pool, terminalPool }) =>
 		Response.json(getLiveSessionsStatus(pool, terminalPool)),
@@ -588,6 +628,7 @@ export function parseAttachmentListFilter(url: URL): AttachmentListFilter {
 		categoryParam === "upload" ||
 		categoryParam === "plan" ||
 		categoryParam === "report" ||
+		categoryParam === "media" ||
 		categoryParam === "visualization" ||
 		categoryParam === "other"
 			? categoryParam
@@ -598,6 +639,15 @@ export function parseAttachmentListFilter(url: URL): AttachmentListFilter {
 		retentionParam === "retained" ||
 		retentionParam === "linked"
 			? retentionParam
+			: undefined;
+	const originParam = url.searchParams.get("origin");
+	const origin =
+		originParam === "upload" ||
+		originParam === "generated" ||
+		originParam === "imported" ||
+		originParam === "vault" ||
+		originParam === "legacy"
+			? originParam
 			: undefined;
 	const sessionId = url.searchParams.get("session_id") ?? undefined;
 	const search = url.searchParams.get("search") ?? undefined;
@@ -626,6 +676,7 @@ export function parseAttachmentListFilter(url: URL): AttachmentListFilter {
 		kind,
 		category,
 		retention,
+		origin,
 		sessionId,
 		search,
 		type,
@@ -640,7 +691,18 @@ export function parseAttachmentListFilter(url: URL): AttachmentListFilter {
 
 async function getAttachments(url: URL): Promise<Response> {
 	const result = await db.listAttachments(parseAttachmentListFilter(url));
-	return Response.json(result);
+	return Response.json({
+		...result,
+		rows: result.rows.map(
+			({
+				path: _path,
+				storage_key: _storage,
+				sha256: _sha,
+				agent_cwd: _cwd,
+				...row
+			}) => row,
+		),
+	});
 }
 
 async function getLogs(url: URL): Promise<Response> {
@@ -774,18 +836,56 @@ function getLiveDbSessionIds(
 }
 
 async function cleanupSessions({
-	url,
 	req,
 	pool,
 	terminalPool,
 }: DbRouteContext): Promise<Response> {
 	const body = await req.json().catch(() => null);
-	const fromBody = body?.older_than_days;
-	const fromQuery = url.searchParams.get("older_than_days");
-	const days = clampInt(fromBody != null ? String(fromBody) : fromQuery, 30, 1);
+	const previewId =
+		typeof body?.preview_id === "string" ? body.preview_id.trim() : "";
+	if (!previewId) {
+		return new Response("Missing cleanup preview_id", { status: 400 });
+	}
+	pruneSessionCleanupPreviews();
+	const receipt = sessionCleanupPreviews.get(previewId);
+	if (!receipt) {
+		return new Response("Cleanup preview is missing or expired", {
+			status: 409,
+		});
+	}
+	sessionCleanupPreviews.delete(previewId);
 	const excludedSessionIds = getLiveDbSessionIds(pool, terminalPool);
-	const { count, ephemeralPaths, sessionIds } =
-		await db.deleteSessionsOlderThan(days, excludedSessionIds);
+	const currentPlan = await db.getSessionCleanupPlan(
+		receipt.preview.days,
+		excludedSessionIds,
+	);
+	if (
+		cleanupPreviewSignature(currentPlan.preview) !==
+			cleanupPreviewSignature(receipt.preview) ||
+		JSON.stringify(currentPlan.sessionIds) !==
+			JSON.stringify(receipt.sessionIds)
+	) {
+		return new Response("Cleanup impact changed; preview again", {
+			status: 409,
+		});
+	}
+	let deletion: Awaited<ReturnType<typeof db.deleteSessionsOlderThan>>;
+	try {
+		deletion = await db.deleteSessionsOlderThan(
+			receipt.preview.days,
+			excludedSessionIds,
+			receipt.sessionIds,
+		);
+	} catch (error) {
+		if (
+			error instanceof Error &&
+			error.name === "SessionCleanupPlanChangedError"
+		) {
+			return new Response(error.message, { status: 409 });
+		}
+		throw error;
+	}
+	const { count, ephemeralPaths, sessionIds } = deletion;
 	await Promise.all(
 		sessionIds.map((sessionId) =>
 			projectPreviewManager.closeSession(sessionId, "session_deleted"),

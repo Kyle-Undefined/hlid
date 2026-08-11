@@ -591,9 +591,31 @@ function relicsCapability(state: ManifestState): Capability {
 	return {
 		id: "relics",
 		owner: "hlid",
-		availability: toolAvailability(state.tools, ["publish_relic"]),
+		availability: toolAvailability(state.tools, [
+			"publish_relic",
+			"search_relics",
+			"read_relic",
+		]),
 		summary:
-			"Agent-generated reports and durable deliverables can be published to Hlid Relics. Ordinary source files do not belong there.",
+			"Agents can publish, discover, and safely read durable Hlid-generated Relics. Ordinary source files do not belong there.",
+		modes: {
+			publish: {
+				owner: "hlid",
+				availability: toolAvailability(state.tools, ["publish_relic"]),
+				summary: "Publish a durable generated deliverable.",
+			},
+			discover: {
+				owner: "hlid",
+				availability: toolAvailability(state.tools, ["search_relics"]),
+				summary: "Search safe metadata for durable Hlid-generated Relics.",
+			},
+			read: {
+				owner: "hlid",
+				availability: toolAvailability(state.tools, ["read_relic"]),
+				summary:
+					"Read one exact durable Relic through a bounded validated adapter.",
+			},
+		},
 	};
 }
 
@@ -609,11 +631,12 @@ function projectPreviewCapability(state: ManifestState): Capability {
 						"capture_project_preview",
 						"export_project_preview_capture",
 						"control_project_preview",
+						"restart_project_preview",
 						"stop_project_preview",
 					])
 				: "conditional",
 		summary:
-			"Project Preview can run, present, inspect, capture a high-density PNG, export an approved capture into the active workspace, and interact with a session-scoped web project.",
+			"Project Preview can run, present, inspect, capture, export, interact with, restart, and stop a session-scoped web project.",
 	};
 }
 

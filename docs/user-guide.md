@@ -283,9 +283,17 @@ follow its routing, approval, audit, and accounting path.
 
 Agents check `hlid_help` to see which `Hlið` capabilities are available right now
 and how to use one without guessing. `hlid_api` gives them the exact current
-`HTTP` inventory. If a capability is not available, a similar provider feature
-does not magically stand in for it. Provider-native capabilities keep their own
-behavior.
+`HTTP` inventory through bounded, revision-bound pages. The returned host URLs
+still require network reachability and `Hlið` authentication, so an agent uses a
+typed `Hlið` tool when one exists. If a capability is not available, a similar
+provider feature does not magically stand in for it. Provider-native capabilities
+keep their own behavior.
+
+The typed host tools include bounded reads for generated `Relics`, visible Raven
+history, `Ledger` aggregates, the current session's context receipts, a redacted
+`Event Log`, and safe `Routine` metadata and run history. Agents can also preview
+a `Routine` schedule or restart an existing session `Project Preview`. These reads
+do not widen references or bypass the approval and authorization flows for changes.
 
 Structured provider actions stay out of the prompt text too. `/compact` tells a
 supported `Claude` or `Codex` runtime to compact its active conversation. `/mcp`
@@ -463,6 +471,12 @@ copies workspace files across the `Windows` or `WSL` boundary into managed stora
 links them to the chat, and returns a `URL` for the existing `Relics` viewer.
 General `HTML` reports do not need plan mode. `HTML` plan proposals still use their
 separate review workflow.
+
+An agent can also search durable files generated and retained by `Hlið`, then read
+one exact `Relic` by its ID. Search results omit filesystem paths, storage keys,
+hashes, and workspace paths. Text and `HTML` come back as untrusted source, while
+supported images use the provider's image result. Uploads, vault links, plans, and
+temporary visualizations are not silently added to a search.
 
 Use **Skills** to install a managed `Agent Skill` from a `GitHub` repository,
 repository `URL`, or `skills.sh` `URL`. `Hlið` finds the available packages, stages
