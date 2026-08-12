@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { HlidConfig } from "#/config";
 import { mutateAcpManagedInstallation } from "#/lib/acpManagedClient";
 import type { AcpManagedMutationAction } from "#/lib/acpManagedTypes";
@@ -116,18 +116,34 @@ export function AcpSection({
 	const [error, setError] = useState<string | null>(null);
 	const [catalogRefreshing, setCatalogRefreshing] = useState(false);
 	const operation = useRef<symbol | null>(null);
+	const resetCatalogAgentState = useCallback(
+		(nextCatalog: AcpCatalogItem[]): void => {
+			setSelectedTargets((current) => selectedTargetIds(nextCatalog, current));
+			setAuth({});
+			setAgentInfo({});
+			setOptionsRefreshed({});
+			setCanListSessions({});
+			setProviderSessions({});
+			setProviderSessionImports({});
+		},
+		[],
+	);
+	function resetAgentState(id: string, resetOptions: boolean): void {
+		setAuth((current) => ({ ...current, [id]: [] }));
+		setAgentInfo((current) => ({ ...current, [id]: null }));
+		if (resetOptions) {
+			setOptionsRefreshed((current) => ({ ...current, [id]: false }));
+		}
+		setCanListSessions((current) => ({ ...current, [id]: undefined }));
+		setProviderSessions((current) => ({ ...current, [id]: null }));
+		setProviderSessionImports((current) => ({ ...current, [id]: {} }));
+	}
 	useEffect(() => {
 		setCatalog(initialCatalog);
-		setSelectedTargets((current) => selectedTargetIds(initialCatalog, current));
-		setAuth({});
-		setAgentInfo({});
-		setOptionsRefreshed({});
-		setCanListSessions({});
-		setProviderSessions({});
-		setProviderSessionImports({});
+		resetCatalogAgentState(initialCatalog);
 		providerSessionCursors.current = {};
 		providerSessionPageCounts.current = {};
-	}, [initialCatalog]);
+	}, [initialCatalog, resetCatalogAgentState]);
 	const managedOperationActive = catalog.some((item) =>
 		item.targets.some((target) => Boolean(target.operation)),
 	);
@@ -173,18 +189,7 @@ export function AcpSection({
 		const canConfigureExternal =
 			selectedTarget?.provenance === "missing" && !selectedTarget.canInstall;
 		if (!enabled && !selectedTarget?.canEnable && !canConfigureExternal) return;
-		setAuth((current) => ({ ...current, [item.id]: [] }));
-		setAgentInfo((current) => ({ ...current, [item.id]: null }));
-		setOptionsRefreshed((current) => ({ ...current, [item.id]: false }));
-		setCanListSessions((current) => ({
-			...current,
-			[item.id]: undefined,
-		}));
-		setProviderSessions((current) => ({ ...current, [item.id]: null }));
-		setProviderSessionImports((current) => ({
-			...current,
-			[item.id]: {},
-		}));
+		resetAgentState(item.id, true);
 		onChange(
 			enabled
 				? value.filter((candidate) => candidate.id !== item.id)
@@ -241,12 +246,7 @@ export function AcpSection({
 		id: string,
 		patch: Partial<NonNullable<HlidConfig["acp_agents"]>[number]>,
 	): void {
-		setAuth((current) => ({ ...current, [id]: [] }));
-		setAgentInfo((current) => ({ ...current, [id]: null }));
-		setOptionsRefreshed((current) => ({ ...current, [id]: false }));
-		setCanListSessions((current) => ({ ...current, [id]: undefined }));
-		setProviderSessions((current) => ({ ...current, [id]: null }));
-		setProviderSessionImports((current) => ({ ...current, [id]: {} }));
+		resetAgentState(id, true);
 		onChange(
 			value.map((candidate) =>
 				candidate.id === id ? { ...candidate, ...patch } : candidate,
@@ -263,17 +263,7 @@ export function AcpSection({
 		operation.current = token;
 		setBusy({ id: item.id, type: "inspect" });
 		setError(null);
-		setAuth((current) => ({ ...current, [item.id]: [] }));
-		setAgentInfo((current) => ({ ...current, [item.id]: null }));
-		setCanListSessions((current) => ({
-			...current,
-			[item.id]: undefined,
-		}));
-		setProviderSessions((current) => ({ ...current, [item.id]: null }));
-		setProviderSessionImports((current) => ({
-			...current,
-			[item.id]: {},
-		}));
+		resetAgentState(item.id, false);
 		try {
 			const result = await authenticateAcpFn({
 				data: { id: item.id, methodId },
@@ -448,13 +438,7 @@ export function AcpSection({
 			const refreshed = await getAcpRegistryFn({ data: { refresh: true } });
 			setCatalog(refreshed);
 			onCatalogChange?.(refreshed);
-			setSelectedTargets((current) => selectedTargetIds(refreshed, current));
-			setAuth({});
-			setAgentInfo({});
-			setOptionsRefreshed({});
-			setCanListSessions({});
-			setProviderSessions({});
-			setProviderSessionImports({});
+			resetCatalogAgentState(refreshed);
 		} catch (cause) {
 			setError(
 				cause instanceof Error ? cause.message : "ACP catalog refresh failed",

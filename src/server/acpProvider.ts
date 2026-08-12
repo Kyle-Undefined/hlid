@@ -3559,6 +3559,20 @@ function canImportAcpProviderSessions(
 	);
 }
 
+async function initializeAcpSessionCatalogInspection(
+	inspection: AcpInspectionConnection,
+	initializeTimeoutMs: number,
+): Promise<InitializeResponse> {
+	const initialized = await initializeInspection(
+		inspection,
+		initializeTimeoutMs,
+	);
+	if (!initialized.agentCapabilities?.sessionCapabilities?.list) {
+		throw new AcpSessionListUnsupportedError();
+	}
+	return initialized;
+}
+
 /**
  * Read one provider-owned session metadata page for exactly one workspace.
  * This does not load, resume, fork, import, or inspect any session transcript.
@@ -3588,13 +3602,10 @@ export async function listAcpProviderSessions(
 			cwd,
 			deadline.signal,
 		);
-		const initialized = await initializeInspection(
+		const initialized = await initializeAcpSessionCatalogInspection(
 			inspection,
 			timeouts.initializeMs,
 		);
-		if (!initialized.agentCapabilities?.sessionCapabilities?.list) {
-			throw new AcpSessionListUnsupportedError();
-		}
 		return await readAcpProviderSessionPage(
 			inspection,
 			cwd,
@@ -3635,13 +3646,10 @@ export async function findAcpProviderSession(
 			cwd,
 			deadline.signal,
 		);
-		const initialized = await initializeInspection(
+		const initialized = await initializeAcpSessionCatalogInspection(
 			inspection,
 			timeouts.initializeMs,
 		);
-		if (!initialized.agentCapabilities?.sessionCapabilities?.list) {
-			throw new AcpSessionListUnsupportedError();
-		}
 		if (!canImportAcpProviderSessions(initialized)) {
 			throw new AcpSessionImportUnsupportedError();
 		}
