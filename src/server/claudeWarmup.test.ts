@@ -9,6 +9,8 @@ import {
 	waitForClaudeWarmupSnapshot,
 } from "./claudeWarmup";
 
+const readRuntimeVersion = vi.fn(async () => "2.1.228");
+
 function sdkQuery(options?: {
 	commands?: Array<{
 		name: string;
@@ -47,6 +49,7 @@ function sdkQuery(options?: {
 describe("Claude startup metadata cache", () => {
 	beforeEach(() => {
 		vi.mocked(query).mockReset();
+		readRuntimeVersion.mockReset().mockResolvedValue("2.1.228");
 	});
 
 	it("caches commands, skills, and MCP status without sending a chat turn", async () => {
@@ -70,8 +73,10 @@ describe("Claude startup metadata cache", () => {
 				executable: "/usr/bin/claude",
 				cwd: "/tmp/project",
 				additionalDirectories: ["/tmp/vault"],
+				readRuntimeVersion,
 			}),
 		).resolves.toBe(true);
+		expect(readRuntimeVersion).toHaveBeenCalledWith("/usr/bin/claude");
 
 		const call = vi.mocked(query).mock.calls[0]?.[0];
 		expect(call?.prompt).not.toEqual(expect.any(String));
@@ -105,10 +110,39 @@ describe("Claude startup metadata cache", () => {
 					{ name: "figma", status: "needs-auth" },
 				],
 				modelCount: 1,
+				runtimeVersion: "2.1.228",
 				controlMethods: expect.arrayContaining(["interrupt", "rewindFiles"]),
 				cwd: "/tmp/project",
 			}),
 		);
+	});
+
+	it("keeps discovery available when exact executable version inspection fails", async () => {
+		const sdk = sdkQuery({
+			commands: [{ name: "help", description: "Help" }],
+		});
+		readRuntimeVersion.mockRejectedValueOnce(
+			new Error("version command unavailable"),
+		);
+		vi.mocked(query).mockReturnValueOnce(sdk as never);
+
+		await expect(
+			prewarmClaudeCli({
+				executable: "/opt/claude/bin/claude",
+				cwd: "/tmp/runtime-version-unavailable",
+				readRuntimeVersion,
+			}),
+		).resolves.toBe(true);
+
+		expect(readRuntimeVersion).toHaveBeenCalledWith("/opt/claude/bin/claude");
+		expect(getClaudeWarmupSnapshot("/tmp/runtime-version-unavailable")).toEqual(
+			expect.objectContaining({
+				commands: [{ name: "help", description: "Help", argumentHint: "" }],
+			}),
+		);
+		expect(
+			getClaudeWarmupSnapshot("/tmp/runtime-version-unavailable"),
+		).not.toHaveProperty("runtimeVersion");
 	});
 
 	it("keeps independent metadata snapshots for separate provider scopes", async () => {
@@ -153,6 +187,7 @@ describe("Claude startup metadata cache", () => {
 			cwd: "/tmp/exact-auto-discovery",
 			additionalDirectories: ["/tmp/exact-auto-vault"],
 			env: baseEnv,
+			readRuntimeVersion,
 		});
 
 		const call = vi.mocked(query).mock.calls[0]?.[0];
@@ -212,6 +247,7 @@ describe("Claude startup metadata cache", () => {
 		await prewarmClaudeCli({
 			executable: "/usr/bin/claude",
 			cwd: "/tmp/auto-model-readiness",
+			readRuntimeVersion,
 		});
 
 		expect(sdk.getSettings).toHaveBeenCalledOnce();
@@ -247,6 +283,7 @@ describe("Claude startup metadata cache", () => {
 		await prewarmClaudeCli({
 			executable: "/usr/bin/claude",
 			cwd: "/tmp/auto-disabled-settings",
+			readRuntimeVersion,
 		});
 
 		expect(sdk.getSettings).toHaveBeenCalledOnce();
@@ -267,6 +304,7 @@ describe("Claude startup metadata cache", () => {
 		await prewarmClaudeCli({
 			executable: "/usr/bin/claude",
 			cwd: "/tmp/auto-unreadable-settings",
+			readRuntimeVersion,
 		});
 
 		expect(sdk.setModel).not.toHaveBeenCalled();
@@ -292,6 +330,7 @@ describe("Claude startup metadata cache", () => {
 			const warming = prewarmClaudeCli({
 				executable: "/usr/bin/claude",
 				cwd: "/tmp/auto-readiness-timeout",
+				readRuntimeVersion,
 			}).then((result) => {
 				settled = true;
 				return result;
@@ -402,6 +441,7 @@ describe("Claude startup metadata cache", () => {
 			const warming = prewarmClaudeCli({
 				executable: "/usr/bin/claude",
 				cwd: "/tmp/settled-mcp",
+				readRuntimeVersion,
 			});
 			await vi.advanceTimersByTimeAsync(500);
 			await warming;

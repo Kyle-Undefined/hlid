@@ -49,7 +49,7 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.3.0",
-    "@anthropic-ai/claude-agent-sdk": "0.3.226",
+    "@anthropic-ai/claude-agent-sdk": "0.3.228",
     "@anthropic-ai/sdk": "^0.115.0",
     "@js-temporal/polyfill": "0.5.1",
     "@modelcontextprotocol/sdk": "1.30.0",
@@ -119,7 +119,7 @@
     ]
   },
   "optionalDependencies": {
-    "@anthropic-ai/claude-agent-sdk-win32-x64": "0.3.226"
+    "@anthropic-ai/claude-agent-sdk-win32-x64": "0.3.228"
   },
   "overrides": {
     "body-parser": "2.3.0",

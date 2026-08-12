@@ -5614,6 +5614,228 @@ describe("ClaudeProvider — canUseTool pass-through", () => {
 	});
 });
 
+// ── Claude Agent SDK 0.3.228 compatibility ───────────────────────────────────
+
+describe("ClaudeProvider — Claude Agent SDK 0.3.228 compatibility", () => {
+	it("ignores additive goal and compaction frames without losing later events", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "system",
+					subtype: "init",
+					session_id: "sdk-compat-session",
+					tools: [],
+				},
+				{
+					type: "active_goal",
+					value: {
+						condition: "Keep working until the regression suite passes",
+						iterations: 1,
+						set_at: 1_786_512_000,
+						tokens_at_start: 42,
+					},
+					uuid: "goal-frame",
+					session_id: "sdk-compat-session",
+				},
+				{
+					type: "system",
+					subtype: "status",
+					status: "compacting",
+					permissionMode: "default",
+					uuid: "compact-start",
+					session_id: "sdk-compat-session",
+				},
+				{
+					type: "autocompact_state",
+					value: {
+						enabled: true,
+						effective_window: 200_000,
+						threshold: 160_000,
+						enforced: false,
+						source: "model-default",
+					},
+					uuid: "autocompact-frame",
+					session_id: "sdk-compat-session",
+				},
+				{
+					type: "system",
+					subtype: "status",
+					status: null,
+					permissionMode: "default",
+					compact_result: "success",
+					uuid: "compact-finish",
+					session_id: "sdk-compat-session",
+				},
+				{
+					type: "system",
+					subtype: "compact_boundary",
+					compact_metadata: {
+						trigger: "auto",
+						pre_tokens: 10_000,
+						post_tokens: 2_000,
+						duration_ms: 125,
+					},
+					uuid: "compact-boundary",
+					session_id: "sdk-compat-session",
+				},
+				{
+					type: "active_goal",
+					value: null,
+					uuid: "goal-clear-frame",
+					session_id: "sdk-compat-session",
+				},
+				{
+					type: "assistant",
+					uuid: "assistant-after-control",
+					session_id: "sdk-compat-session",
+					parent_tool_use_id: null,
+					message: {
+						model: "claude-sonnet-4-6",
+						content: [{ type: "text", text: "Still streaming." }],
+						usage: { input_tokens: 4, output_tokens: 2 },
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					session_id: "sdk-compat-session",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 25,
+					usage: { input_tokens: 4, output_tokens: 2 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+
+		expect(events).toContainEqual({
+			type: "session_start",
+			sessionId: "sdk-compat-session",
+		});
+		expect(events).toContainEqual({
+			type: "text_delta",
+			text: "Still streaming.",
+			providerFrame: {
+				providerUuid: "assistant-after-control",
+				providerSessionId: "sdk-compat-session",
+			},
+		});
+		expect(events.at(-1)).toMatchObject({ type: "done", turns: 1 });
+	});
+
+	it("ignores failed compaction details without losing completion", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "system",
+					subtype: "init",
+					session_id: "sdk-compact-failure",
+					tools: [],
+				},
+				{
+					type: "system",
+					subtype: "status",
+					status: null,
+					permissionMode: "default",
+					compact_result: "failed",
+					compact_error: "bounded provider compaction failure",
+					uuid: "compact-failed",
+					session_id: "sdk-compact-failure",
+				},
+				{
+					type: "result",
+					subtype: "success",
+					session_id: "sdk-compact-failure",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 5,
+					usage: { input_tokens: 1, output_tokens: 1 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events).toContainEqual({
+			type: "session_start",
+			sessionId: "sdk-compact-failure",
+		});
+		expect(events.at(-1)).toMatchObject({ type: "done", turns: 1 });
+	});
+
+	it("keeps Hlid canUseTool authoritative for an unread Write overwrite", async () => {
+		const filePath = "/tmp/test/existing.ts";
+		const writeInput = {
+			file_path: filePath,
+			content: "export const replacement = true;\n",
+		};
+		const canUseTool = vi.fn().mockResolvedValue({
+			behavior: "deny",
+			message: "Hlid denied the overwrite",
+		});
+		let capturedCanUseTool: CanUseTool | undefined;
+		// biome-ignore lint/suspicious/noExplicitAny: test mock captures SDK options
+		const captureWritePermission: any = ({
+			options,
+		}: {
+			options?: { canUseTool?: CanUseTool };
+		}) => {
+			capturedCanUseTool = options?.canUseTool;
+			return sdkGen([]);
+		};
+		vi.mocked(query).mockImplementationOnce(captureWritePermission);
+
+		const session = new ClaudeProvider().query(baseParams({ canUseTool }));
+		await session.send("replace the existing file");
+		const signal = new AbortController().signal;
+		const meta = {
+			toolUseID: "write-unread-file",
+			signal,
+			blockedPath: filePath,
+			decisionReason: "Existing file has not been read in this session",
+			suggestions: [{ type: "addRules", rules: [filePath] }],
+		};
+
+		await expect(
+			capturedCanUseTool?.("Write", writeInput, meta),
+		).resolves.toEqual({
+			behavior: "deny",
+			message: "Hlid denied the overwrite",
+		});
+		expect(capturedCanUseTool).toBe(canUseTool);
+		expect(canUseTool).toHaveBeenCalledWith("Write", writeInput, meta);
+		session.cancel();
+	});
+
+	it("supplies Hlid cross-session settings on a resumed SDK Query", async () => {
+		let capturedOptions: Record<string, unknown> | undefined;
+		vi.mocked(query).mockImplementationOnce(
+			({ options }: { options?: Record<string, unknown> }) => {
+				capturedOptions = options;
+				return sdkGen([]);
+			},
+		);
+
+		const session = new ClaudeProvider().query(
+			baseParams({
+				sessionId: "native-session-to-resume",
+				claudeCrossSessionInbound: "hold",
+				onProviderInitiatedTurn: vi.fn().mockResolvedValue(true),
+			}),
+		);
+		await session.send("continue");
+
+		expect(capturedOptions).toMatchObject({
+			resume: "native-session-to-resume",
+			settings: {
+				crossSessionInbound: "hold",
+				dialogExpiry: "never",
+			},
+		});
+		session.cancel();
+	});
+});
+
 // ── local_command_output ──────────────────────────────────────────────────────
 
 describe("ClaudeProvider — local_command_output", () => {

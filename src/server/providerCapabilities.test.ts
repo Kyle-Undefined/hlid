@@ -555,6 +555,7 @@ describe("Codex capability discovery", () => {
 describe("Claude capability discovery", () => {
 	it("maps runtime SDK controls to explicit integration states", () => {
 		const snapshot: ClaudeWarmupSnapshot = {
+			runtimeVersion: "2.1.228",
 			commands: [{ name: "review", description: "Review", argumentHint: "" }],
 			agents: [{ name: "reviewer" }],
 			mcpServers: [{ name: "github", status: "connected" }],
@@ -581,6 +582,15 @@ describe("Claude capability discovery", () => {
 
 		expect(discovery.observedAt).toBe(123);
 		expect(discovery.context).toEqual({ cwd: "/work/project" });
+		expect(
+			discovery.evidence.find((item) => item.id === "claude:runtime-version"),
+		).toMatchObject({
+			label: "Claude Code runtime 2.1.228",
+			integration: "integrated",
+			readiness: "ready",
+			source: "provider-runtime",
+			operations: ["inspect"],
+		});
 		expect(
 			discovery.evidence.find((item) => item.operations?.includes("interrupt")),
 		).toMatchObject({ integration: "integrated" });

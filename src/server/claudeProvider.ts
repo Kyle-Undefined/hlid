@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { posix, win32 } from "node:path";
 import type {
+	SDKActiveGoalMessage,
 	SDKControlGetUsageResponse,
 	SDKMessage,
 	SDKMessageOrigin,
@@ -402,12 +403,28 @@ type EventTranslation = {
 	hadText: boolean;
 };
 
+/**
+ * Runtime frames that Claude 2.1.228 forwards through Query but omits from the
+ * public SDKMessage iterator type. Keep them explicit at the transport boundary
+ * so an additive provider frame cannot silently break later event delivery.
+ */
+type ClaudeRuntimeOnlyMessage =
+	| SDKActiveGoalMessage
+	| {
+			type: "autocompact_state";
+			value?: unknown;
+			uuid?: string;
+			session_id?: string;
+	  };
+
+type ClaudeStreamMessage = SDKMessage | ClaudeRuntimeOnlyMessage;
+
 type ClaudeMessageWait =
-	| { kind: "message"; result: IteratorResult<SDKMessage> }
+	| { kind: "message"; result: IteratorResult<ClaudeStreamMessage> }
 	| { kind: "timeout" };
 
 async function waitForClaudeMessage(
-	promise: Promise<IteratorResult<SDKMessage>>,
+	promise: Promise<IteratorResult<ClaudeStreamMessage>>,
 	timeoutMs?: number,
 ): Promise<ClaudeMessageWait> {
 	if (timeoutMs === undefined) {
@@ -3988,8 +4005,10 @@ class ClaudeAgentSession implements AgentSession {
 		const sdkQuery = this.sdkQuery;
 		if (!sdkQuery) return;
 		let hadText = false;
-		const messages = sdkQuery[Symbol.asyncIterator]();
-		let nextMessage: Promise<IteratorResult<SDKMessage>> | null = null;
+		const messages = (sdkQuery as AsyncIterable<ClaudeStreamMessage>)[
+			Symbol.asyncIterator
+		]();
+		let nextMessage: Promise<IteratorResult<ClaudeStreamMessage>> | null = null;
 		type PendingClaudeResult = {
 			results: Array<Extract<SDKMessage, { type: "result" }>>;
 			done: Extract<AgentEvent, { type: "done" }>;
@@ -4078,6 +4097,14 @@ class ClaudeAgentSession implements AgentSession {
 				}
 				const message = next.value;
 				this.receivedAnyEvent = true;
+				if (
+					message.type === "active_goal" ||
+					message.type === "autocompact_state"
+				) {
+					// Claude goals and autocompaction retain provider-native semantics.
+					// Neither runtime-only frame has a supported Hlid control contract yet.
+					continue;
+				}
 				const rawProviderSessionId = exactClaudePermissionId(
 					(message as { session_id?: unknown }).session_id,
 				);

@@ -19,12 +19,15 @@ import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { declaredPathKey, expandTilde, parseWslUncSyntax } from "../lib/paths";
+import { runBoundedProcess } from "../lib/process";
 import type { McpServerStatus, SlashCommand } from "./agentProvider";
 import { probeClaudeAutoModeModels } from "./claudeAutoMode";
 import { claudeSdkEnv } from "./claudeEnvironment";
 import { buildHlidClaudeSettings } from "./claudeSettings";
 
 export type ClaudeWarmupSnapshot = {
+	/** Exact Claude Code runtime selected for this workspace at initialize. */
+	runtimeVersion?: string;
 	/** Slash commands / skills discovered by the CLI at initialize. */
 	commands: SlashCommand[];
 	/** Subagent definitions available to sessions started from this cwd. */
@@ -52,6 +55,8 @@ export type ClaudeWarmupOptions = {
 	additionalDirectories?: string[];
 	env?: Record<string, string | undefined>;
 	waitTimeoutMs?: number;
+	/** Test seam for the exact executable version probe. */
+	readRuntimeVersion?: (executable: string) => Promise<string | undefined>;
 };
 
 const snapshots = new Map<string, ClaudeWarmupSnapshot>();
@@ -60,6 +65,7 @@ let latestKey: string | null = null;
 const WARMUP_SCOPE_LIMIT = 64;
 const WARMUP_SCOPE_KEY_MAX_CHARS = 4_096;
 const DISCOVERY_TIMEOUT_MS = 30_000;
+const RUNTIME_VERSION_TIMEOUT_MS = 4_000;
 const AUTO_MODE_PROBE_TIMEOUT_MS = 10_000;
 const MCP_SETTLE_TIMEOUT_MS = 10_000;
 const MCP_POLL_INTERVAL_MS = 500;
@@ -123,6 +129,21 @@ function mapMcpStatus(status: string): McpServerStatus["status"] {
 
 function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function readClaudeRuntimeVersion(
+	executable: string,
+): Promise<string | undefined> {
+	const result = await runBoundedProcess(executable, ["--version"], {
+		timeoutMs: RUNTIME_VERSION_TIMEOUT_MS,
+		timeoutError: "Claude version probe timed out",
+		maxOutputChars: 256,
+	});
+	if (result.code !== 0) return undefined;
+	const version = result.output.match(
+		/\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/,
+	)?.[0];
+	return version && version.length <= 64 ? version : undefined;
 }
 
 /**
@@ -257,6 +278,11 @@ async function runWarmup(options: ClaudeWarmupOptions): Promise<void> {
 		behavior: "deny",
 		message: "warmup probe",
 	});
+	const runtimeVersionPromise = executable
+		? (options.readRuntimeVersion ?? readClaudeRuntimeVersion)(
+				executable,
+			).catch(() => undefined)
+		: Promise.resolve(undefined);
 	const q = query({
 		prompt: (async function* () {
 			// Never yields — the warm-up never sends a user turn.
@@ -289,6 +315,7 @@ async function runWarmup(options: ClaudeWarmupOptions): Promise<void> {
 		]).finally(() => {
 			if (timeout !== undefined) clearTimeout(timeout);
 		});
+		const runtimeVersion = await runtimeVersionPromise;
 		const mcp = await readSettledMcpStatus(q);
 		const autoModeModels = await readAutoModeModels(q, init.models ?? [], ac);
 		const autoModeModelIds = new Set(autoModeModels);
@@ -299,6 +326,7 @@ async function runWarmup(options: ClaudeWarmupOptions): Promise<void> {
 		}
 		const key = cacheKey(scopedCwd);
 		const snapshot: ClaudeWarmupSnapshot = {
+			...(runtimeVersion ? { runtimeVersion } : {}),
 			commands: (init.commands ?? []).map((c) => ({
 				name: c.name,
 				description: c.description,

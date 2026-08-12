@@ -39,6 +39,23 @@ function catalogEvidence(
 		(server) => server.status !== "connected" && server.status !== "disabled",
 	);
 	return [
+		...(snapshot.runtimeVersion
+			? [
+					{
+						id: providerCapabilityId(providerId, "runtime-version"),
+						label: `Claude Code runtime ${snapshot.runtimeVersion}`,
+						scope: "provider" as const,
+						support: "advertised" as const,
+						integration: "integrated" as const,
+						readiness: "ready" as const,
+						source: "provider-runtime" as const,
+						maturity: "stable" as const,
+						operations: ["inspect"],
+						reason:
+							"Reported by --version from the exact Claude executable selected for this workspace; discovery sends no user turn.",
+					},
+				]
+			: []),
 		{
 			id: providerCapabilityId(providerId, "command-catalog"),
 			label: `Command catalog (${snapshot.commands.length})`,
