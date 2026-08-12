@@ -108,6 +108,18 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 	},
 	{
 		method: "GET",
+		path: "/acp/sessions?id=opencode&cursor=",
+		server: "api",
+		desc: "List one bounded page of provider-native session metadata for an enabled ACP agent and the exact configured vault workspace. The optional cursor is opaque. This read does not load, resume, fork, import, or return conversation history.",
+	},
+	{
+		method: "POST",
+		path: "/acp/sessions/import",
+		server: "api",
+		desc: 'Explicitly create or reopen a Hlid entry with provider-native continuity after revalidating the session against the agent\'s current workspace-scoped catalog. Body: {"id": string, "providerSessionId": string}. Earlier transcript remains provider-owned and is not copied; this is never a fork.',
+	},
+	{
+		method: "GET",
 		path: "/account",
 		server: "api",
 		desc: "Account info (email/org/plan) from the first live session exposing it; null when none.",
@@ -517,7 +529,7 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		method: "POST",
 		path: "/api/updates",
 		server: "ui",
-		desc: 'Body: {"action": "check"|"download"|"apply"}, or {"action": "prepare_cli"|"apply_cli", "id": string}. CLI actions are restricted to local or authenticated Tailscale requests.',
+		desc: 'Body: {"action": "check"|"download"|"apply"}, {"action": "prepare_cli"|"apply_cli", "id": string}, or {"action": "heartbeat_cli"|"reconcile_cli", "id": string, "leaseId": string}. CLI actions are restricted to local or authenticated Tailscale requests.',
 	},
 	{
 		method: "GET",

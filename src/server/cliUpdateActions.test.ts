@@ -1,13 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const drainCliRuntime = vi.hoisted(() => vi.fn());
+const reconcileAcpCliRuntime = vi.hoisted(() => vi.fn());
+const releaseCliRuntimeLease = vi.hoisted(() => vi.fn());
 const runBoundedProcess = vi.hoisted(() => vi.fn());
 const getCliUpdateStatuses = vi.hoisted(() => vi.fn());
 const resolveCliUpdateAction = vi.hoisted(() => vi.fn());
 const loadConfig = vi.hoisted(() => vi.fn());
 const parseWslUnc = vi.hoisted(() => vi.fn());
 
-vi.mock("#/lib/cliUpdateRuntime", () => ({ drainCliRuntime }));
+vi.mock("#/lib/cliUpdateRuntime", () => ({
+	drainCliRuntime,
+	reconcileAcpCliRuntime,
+	releaseCliRuntimeLease,
+}));
 vi.mock("#/lib/paths", () => ({ parseWslUnc }));
 vi.mock("#/lib/process", () => ({ runBoundedProcess }));
 vi.mock("#/server/config", () => ({ loadConfig }));
@@ -20,6 +26,8 @@ import { applyCliUpdate, prepareCliUpdate } from "./cliUpdateActions";
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	reconcileAcpCliRuntime.mockResolvedValue(undefined);
+	releaseCliRuntimeLease.mockResolvedValue(undefined);
 	getCliUpdateStatuses.mockResolvedValue([
 		{
 			id: "codex",
@@ -27,7 +35,11 @@ beforeEach(() => {
 			available: true,
 		},
 	]);
-	drainCliRuntime.mockResolvedValue({ sessions: 2, appServers: 1 });
+	drainCliRuntime.mockResolvedValue({
+		sessions: 2,
+		appServers: 1,
+		leaseId: "lease-1",
+	});
 	loadConfig.mockReturnValue({
 		vault: { path: "C:\\Vault" },
 		agents: [
@@ -56,6 +68,7 @@ describe("CLI update actions", () => {
 		await expect(prepareCliUpdate("codex")).resolves.toEqual({
 			sessions: 2,
 			appServers: 1,
+			leaseId: "lease-1",
 			command: "sudo npm install --global @openai/codex@latest",
 			mode: "interactive",
 			terminalCwd: "C:\\Vault",
@@ -128,6 +141,89 @@ describe("CLI update actions", () => {
 			}),
 		);
 		expect(getCliUpdateStatuses).toHaveBeenLastCalledWith({ force: true });
+		expect(releaseCliRuntimeLease).toHaveBeenCalledWith("lease-1");
+	});
+
+	it("reconciles the owner runtime before rechecking an applied ACP update", async () => {
+		getCliUpdateStatuses.mockResolvedValue([
+			{
+				id: "acp:opencode",
+				label: "OpenCode (ACP)",
+				available: true,
+			},
+		]);
+		resolveCliUpdateAction.mockResolvedValue({
+			id: "acp:opencode",
+			displayCommand: "npm install --global opencode-ai@1.18.16",
+			command: "npm",
+			args: ["install", "--global", "opencode-ai@1.18.16"],
+			automatic: true,
+			requiresElevation: false,
+		});
+		runBoundedProcess.mockResolvedValue({ output: "updated", code: 0 });
+
+		await applyCliUpdate("acp:opencode");
+
+		expect(reconcileAcpCliRuntime).toHaveBeenCalledWith("lease-1");
+		expect(reconcileAcpCliRuntime.mock.invocationCallOrder[0]).toBeLessThan(
+			getCliUpdateStatuses.mock.invocationCallOrder.at(-1) ?? 0,
+		);
+	});
+
+	it("keeps the lease retryable when ACP runtime reconciliation fails", async () => {
+		getCliUpdateStatuses.mockResolvedValue([
+			{
+				id: "acp:opencode",
+				label: "OpenCode (ACP)",
+				available: true,
+			},
+		]);
+		resolveCliUpdateAction.mockResolvedValue({
+			id: "acp:opencode",
+			displayCommand: "npm install --global opencode-ai@1.18.16",
+			command: "npm",
+			args: ["install", "--global", "opencode-ai@1.18.16"],
+			automatic: true,
+			requiresElevation: false,
+		});
+		runBoundedProcess.mockResolvedValue({ output: "updated", code: 0 });
+		reconcileAcpCliRuntime.mockRejectedValue(
+			new Error("owner runtime refresh failed"),
+		);
+
+		await expect(applyCliUpdate("acp:opencode")).resolves.toEqual({
+			command: "npm install --global opencode-ai@1.18.16",
+			output: "updated",
+			drained: { sessions: 2, appServers: 1 },
+			reconcilePending: {
+				id: "acp:opencode",
+				leaseId: "lease-1",
+				error: "owner runtime refresh failed",
+			},
+		});
+		expect(releaseCliRuntimeLease).not.toHaveBeenCalled();
+		expect(getCliUpdateStatuses).toHaveBeenCalledTimes(1);
+	});
+
+	it("releases the update lease when the package-manager process fails", async () => {
+		resolveCliUpdateAction.mockResolvedValue({
+			id: "codex",
+			displayCommand: "npm update",
+			command: "npm",
+			args: ["update"],
+			automatic: true,
+			requiresElevation: false,
+		});
+		runBoundedProcess.mockResolvedValue({
+			output: "installer failed",
+			code: 1,
+		});
+
+		await expect(applyCliUpdate("codex")).rejects.toThrow(
+			"CLI update exited 1: installer failed",
+		);
+		expect(releaseCliRuntimeLease).toHaveBeenCalledWith("lease-1");
+		expect(getCliUpdateStatuses).toHaveBeenCalledTimes(1);
 	});
 
 	it("updates the desktop app without stopping provider sessions", async () => {

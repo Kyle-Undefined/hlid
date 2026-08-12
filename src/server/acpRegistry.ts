@@ -1,6 +1,8 @@
-import { basename } from "node:path";
+import { realpath, stat } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { z } from "zod";
 import type { HlidConfig } from "../config";
+import { declaredPathKey } from "../lib/paths";
 import { findAcpExecutable } from "./acpExecutable";
 import { bumpDataRevision } from "./dataRevision";
 import { type CachedList, createCachedList } from "./providerCatalog";
@@ -11,14 +13,14 @@ const ACP_REGISTRY_URL =
 const ACP_AVAILABILITY_TTL_MS = 60_000;
 const ACP_AVAILABILITY_PROBE_TIMEOUT_MS = 1_000;
 
-async function boundedExecutableProbe(
-	probe: Promise<string | null | undefined>,
+async function boundedExecutableProbe<T>(
+	probe: Promise<T | null | undefined>,
 	timeoutMs: number,
-): Promise<string | null> {
+): Promise<T | null> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	return Promise.race([
 		probe.then(
-			(value) => value || null,
+			(value) => value ?? null,
 			() => null,
 		),
 		new Promise<null>((resolve) => {
@@ -79,7 +81,79 @@ export type AcpCatalogItem = AcpRegistryAgent & {
 	args: string[];
 	env: Record<string, string>;
 	installGuidance: string;
+	/** Server-only evidence for the exact locally resolved runtime artifact. */
+	runtimeExecutableEvidence?: AcpRuntimeExecutableEvidence;
 };
+
+export type AcpRuntimeExecutableFileEvidence = {
+	pathKey: string;
+	size: string;
+	mtimeNs: string;
+};
+
+export type AcpRuntimeExecutableEvidence = {
+	launcher: AcpRuntimeExecutableFileEvidence;
+	/** Installed OpenCode package evidence when the launcher is a stable shim. */
+	packageManifest?: AcpRuntimeExecutableFileEvidence;
+};
+
+async function executableFileEvidence(
+	path: string,
+): Promise<AcpRuntimeExecutableFileEvidence | null> {
+	try {
+		const canonicalPath = await realpath(path);
+		const metadata = await stat(canonicalPath, { bigint: true });
+		if (!metadata.isFile()) return null;
+		return {
+			pathKey: declaredPathKey(canonicalPath),
+			size: metadata.size.toString(),
+			mtimeNs: metadata.mtimeNs.toString(),
+		};
+	} catch {
+		return null;
+	}
+}
+
+function openCodeManifestCandidates(
+	resolvedExecutable: string,
+	launcherPathKey: string,
+): string[] {
+	const candidates = [
+		join(
+			dirname(resolvedExecutable),
+			"node_modules",
+			"opencode-ai",
+			"package.json",
+		),
+	];
+	const normalized = launcherPathKey.replaceAll("\\", "/");
+	const packageRoot = normalized.match(
+		/^(.*\/node_modules\/opencode-ai)(?:\/|$)/i,
+	)?.[1];
+	if (packageRoot?.startsWith("native:")) {
+		candidates.unshift(
+			join(packageRoot.slice("native:".length), "package.json"),
+		);
+	}
+	return [...new Set(candidates)];
+}
+
+async function runtimeExecutableEvidence(
+	agentId: string,
+	resolvedExecutable: string,
+): Promise<AcpRuntimeExecutableEvidence | undefined> {
+	const launcher = await executableFileEvidence(resolvedExecutable);
+	if (!launcher) return undefined;
+	if (agentId !== "opencode") return { launcher };
+	for (const candidate of openCodeManifestCandidates(
+		resolvedExecutable,
+		launcher.pathKey,
+	)) {
+		const packageManifest = await executableFileEvidence(candidate);
+		if (packageManifest) return { launcher, packageManifest };
+	}
+	return { launcher };
+}
 
 const FALLBACK: z.infer<typeof RegistrySchema> = {
 	version: "offline",
@@ -237,8 +311,9 @@ export class AcpRegistry {
 	async catalog(
 		config: HlidConfig,
 		refresh = false,
+		refreshRuntimeEvidence = false,
 	): Promise<AcpCatalogItem[]> {
-		if (refresh) this.materializedCatalog = null;
+		if (refresh || refreshRuntimeEvidence) this.materializedCatalog = null;
 		const { value } = refresh
 			? await this.cache.get(true)
 			: await this.cache.getCached();
@@ -288,6 +363,19 @@ export class AcpRegistry {
 							: null,
 					),
 				);
+				const runtimeEvidence = await Promise.all(
+					resolvedExecutables.map((resolvedExecutable, index) =>
+						resolvedExecutable
+							? boundedExecutableProbe(
+									runtimeExecutableEvidence(
+										resolved[index]?.agent.id ?? "",
+										resolvedExecutable,
+									),
+									this.availabilityProbeTimeoutMs,
+								)
+							: undefined,
+					),
+				);
 				return resolved.map(({ agent, invocation, enabled }, index) => {
 					const resolvedExecutable = resolvedExecutables[index] ?? undefined;
 					const available = Boolean(resolvedExecutable);
@@ -297,6 +385,7 @@ export class AcpRegistry {
 						enabled,
 						available,
 						resolvedExecutable,
+						runtimeExecutableEvidence: runtimeEvidence[index] ?? undefined,
 						unavailableReason: available
 							? undefined
 							: invocation.command

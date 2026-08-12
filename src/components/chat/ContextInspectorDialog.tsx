@@ -444,7 +444,7 @@ function LastSentContext({
 						}
 					/>
 					<ContextMetric
-						label="Provider prompt"
+						label="Text prompt"
 						value={`${context.providerPromptChars.toLocaleString()} chars`}
 					/>
 					<ContextMetric
@@ -537,11 +537,39 @@ function LastSentContext({
 					>
 						<div className="space-y-2 text-[10px] text-muted-foreground/60">
 							<div className="flex justify-between gap-3">
-								<span>Visible turn input</span>
+								<span>Visible text prompt</span>
 								<span className="font-mono">
 									{context.providerPromptChars.toLocaleString()} chars
 								</span>
 							</div>
+							{context.structuredPrompt && (
+								<>
+									<div className="flex justify-between gap-3 border-t border-border/35 pt-2">
+										<span>Native ACP images</span>
+										<span className="text-right font-mono">
+											{formatCount(
+												context.structuredPrompt.imageCount,
+												"image",
+											)}{" "}
+											·{" "}
+											{context.structuredPrompt.imageDecodedBytes.toLocaleString()}{" "}
+											decoded bytes
+										</span>
+									</div>
+									<div className="flex justify-between gap-3">
+										<span>Embedded ACP resources</span>
+										<span className="text-right font-mono">
+											{formatCount(
+												context.structuredPrompt.embeddedResourceCount,
+												"resource",
+											)}{" "}
+											·{" "}
+											{context.structuredPrompt.embeddedResourceChars.toLocaleString()}{" "}
+											chars
+										</span>
+									</div>
+								</>
+							)}
 							<div className="flex justify-between gap-3">
 								<span>User message</span>
 								<span className="font-mono">

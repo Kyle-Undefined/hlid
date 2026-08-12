@@ -5,6 +5,8 @@ import {
 	HLID_AGENT_TOOL_COUNT,
 	HLID_OBSIDIAN_TOOL_COUNT,
 	type HlidPromptContextManifest,
+	parseHlidTurnContextManifest,
+	summarizeHlidStructuredPrompt,
 } from "../lib/hlidContext";
 import {
 	finalizeHlidTurnContextManifest,
@@ -27,6 +29,39 @@ const promptManifest: HlidPromptContextManifest = {
 };
 
 describe("Hlid context manifest", () => {
+	it("keeps legacy v1 receipts valid without a structured prompt summary", () => {
+		const legacy = {
+			...promptManifest,
+			recordedAt: 1_700_000_000_000,
+			delivery: "chat" as const,
+			providerId: "acp:legacy",
+			providerPromptChars: 15,
+			providerHandoffChars: 0,
+			toolLoading: [],
+		};
+
+		const parsed = parseHlidTurnContextManifest(JSON.stringify(legacy));
+		expect(parsed).toEqual(legacy);
+		expect(parsed?.structuredPrompt).toBeUndefined();
+	});
+
+	it("summarizes only accepted native ACP blocks", () => {
+		expect(
+			summarizeHlidStructuredPrompt([
+				{ type: "image", data: "AQID" },
+				{ type: "image", data: "AQI=" },
+				{ type: "resource", text: "selected" },
+				{ type: "resource", blob: "AQID" },
+			]),
+		).toEqual({
+			imageCount: 2,
+			imageDecodedBytes: 5,
+			embeddedResourceCount: 2,
+			embeddedResourceChars: "selected".length,
+		});
+		expect(summarizeHlidStructuredPrompt([])).toBeUndefined();
+	});
+
 	it("records exact loaded and deferred tool names without copying schemas", () => {
 		expect(
 			describeHlidToolLoading(

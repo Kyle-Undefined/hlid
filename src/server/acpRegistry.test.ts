@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { getSetting, saveSetting } = vi.hoisted(() => ({
 	getSetting: vi.fn(),
@@ -29,6 +32,15 @@ const registry = {
 		},
 	],
 };
+const temporaryDirectories: string[] = [];
+
+afterEach(async () => {
+	await Promise.all(
+		temporaryDirectories
+			.splice(0)
+			.map((path) => rm(path, { recursive: true, force: true })),
+	);
+});
 
 beforeEach(() => {
 	vi.clearAllMocks();
@@ -149,6 +161,75 @@ describe("AcpRegistry", () => {
 			}),
 		);
 		expect(which).toHaveBeenCalledTimes(registry.agents.length * 2);
+	});
+
+	it("refreshes local executable evidence without refreshing registry metadata", async () => {
+		const root = await mkdtemp(join(tmpdir(), "hlid-acp-evidence-"));
+		temporaryDirectories.push(root);
+		const launcher = join(root, "other-acp");
+		await writeFile(launcher, "one");
+		const fetcher = vi.fn(async () => registry);
+		const instance = new AcpRegistry(fetcher, undefined, {
+			which: (command) => (command === "other-acp" ? launcher : null),
+		});
+		const runtimeConfig = HlidConfigSchema.parse({
+			acp_agents: [{ id: "other" }],
+		});
+
+		const first = await instance.catalog(runtimeConfig, true);
+		const firstEvidence = first.find(
+			(entry) => entry.id === "other",
+		)?.runtimeExecutableEvidence;
+		await writeFile(launcher, "changed executable bytes");
+		const second = await instance.catalog(runtimeConfig, false, true);
+		const secondEvidence = second.find(
+			(entry) => entry.id === "other",
+		)?.runtimeExecutableEvidence;
+
+		expect(firstEvidence?.launcher.pathKey).toBe(
+			secondEvidence?.launcher.pathKey,
+		);
+		expect(firstEvidence?.launcher.size).not.toBe(
+			secondEvidence?.launcher.size,
+		);
+		expect(fetcher).toHaveBeenCalledOnce();
+	});
+
+	it("detects OpenCode package changes behind a stable launcher shim", async () => {
+		const root = await mkdtemp(join(tmpdir(), "hlid-opencode-evidence-"));
+		temporaryDirectories.push(root);
+		const launcher = join(root, "opencode");
+		const manifest = join(root, "node_modules", "opencode-ai", "package.json");
+		await mkdir(join(root, "node_modules", "opencode-ai"), { recursive: true });
+		await writeFile(launcher, "stable shim");
+		await writeFile(manifest, '{"version":"1.0.0"}');
+		const fetcher = vi.fn(async () => registry);
+		const instance = new AcpRegistry(fetcher, undefined, {
+			which: (command) => (command === "opencode-ai" ? launcher : null),
+		});
+		const runtimeConfig = HlidConfigSchema.parse({
+			acp_agents: [{ id: "opencode" }],
+		});
+
+		const first = await instance.catalog(runtimeConfig, true);
+		await writeFile(manifest, '{"version":"22.0.0","updated":true}');
+		const second = await instance.catalog(runtimeConfig, false, true);
+
+		expect(
+			first.find((entry) => entry.id === "opencode")?.runtimeExecutableEvidence
+				?.launcher,
+		).toEqual(
+			second.find((entry) => entry.id === "opencode")?.runtimeExecutableEvidence
+				?.launcher,
+		);
+		expect(
+			first.find((entry) => entry.id === "opencode")?.runtimeExecutableEvidence
+				?.packageManifest?.size,
+		).not.toBe(
+			second.find((entry) => entry.id === "opencode")?.runtimeExecutableEvidence
+				?.packageManifest?.size,
+		);
+		expect(fetcher).toHaveBeenCalledOnce();
 	});
 
 	it("bounds a nonresponsive executable availability resolver", async () => {

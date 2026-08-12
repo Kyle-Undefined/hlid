@@ -4,6 +4,8 @@ import { createPortal } from "react-dom";
 import { TerminalView } from "#/components/TerminalView";
 import { useDialogFocus } from "#/hooks/useDialogFocus";
 
+function ignoreAccidentalDismissal() {}
+
 export function CliUpdateTerminalModal({
 	label,
 	command,
@@ -19,8 +21,9 @@ export function CliUpdateTerminalModal({
 	initiallyCopied: boolean;
 	onClose: () => void;
 }) {
-	const { dialogRef, onDialogKeyDown } =
-		useDialogFocus<HTMLDivElement>(onClose);
+	const { dialogRef, onDialogKeyDown } = useDialogFocus<HTMLDivElement>(
+		ignoreAccidentalDismissal,
+	);
 	const [copied, setCopied] = useState(initiallyCopied);
 
 	async function copyCommand() {
@@ -33,12 +36,7 @@ export function CliUpdateTerminalModal({
 	}
 
 	return createPortal(
-		// biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled by the dialog
-		// biome-ignore lint/a11y/noStaticElementInteractions: standard modal backdrop
-		<div
-			className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex items-center justify-center p-3 md:p-6"
-			onClick={onClose}
-		>
+		<div className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex items-center justify-center p-3 md:p-6">
 			<div
 				ref={dialogRef}
 				tabIndex={-1}
@@ -61,7 +59,7 @@ export function CliUpdateTerminalModal({
 					<button
 						type="button"
 						onClick={onClose}
-						aria-label="Close update terminal"
+						aria-label="Finish update and refresh"
 						className="p-1 text-muted-foreground hover:text-foreground transition-colors"
 					>
 						<X className="h-4 w-4" />
@@ -92,8 +90,9 @@ export function CliUpdateTerminalModal({
 				</div>
 				<div className="border-t border-border px-4 py-2 text-[10px] text-muted-foreground">
 					Paste the copied command into this terminal. Interactive sudo prompts
-					stay here in Hlid; close this window when the update finishes, then
-					select CHECK.
+					stay here in Hlid. Use the close button only after the update
+					finishes; Hlid will then refresh the provider runtime and installed
+					versions.
 				</div>
 			</div>
 		</div>,

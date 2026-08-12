@@ -750,6 +750,56 @@ describe("SessionPool.closeAllAndWait", () => {
 	});
 });
 
+describe("SessionPool CLI update lease", () => {
+	it("blocks new sessions after drain until the exact lease is released", async () => {
+		const pool = makePool();
+		pool.create("/a", "A");
+		const leaseId = pool.beginCliUpdateLease();
+
+		await pool.closeAllAndWait();
+
+		expect(() => pool.create("/blocked", "Blocked")).toThrow(
+			"CLI update is in progress",
+		);
+		expect(pool.releaseCliUpdateLease("stale-lease")).toBe(false);
+		expect(() => pool.create("/still-blocked", "Blocked")).toThrow(
+			"CLI update is in progress",
+		);
+		expect(pool.releaseCliUpdateLease(leaseId)).toBe(true);
+		expect(pool.create("/ready", "Ready")).toBeTruthy();
+	});
+
+	it("recovers automatically after a bounded lease expires", () => {
+		const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+		const pool = makePool();
+		pool.beginCliUpdateLease(1_000);
+		expect(() => pool.create("/blocked", "Blocked")).toThrow(
+			"CLI update is in progress",
+		);
+
+		now.mockReturnValue(2_001);
+		expect(pool.create("/recovered", "Recovered")).toBeTruthy();
+	});
+
+	it("renews only the exact live lease with a bounded extension", () => {
+		const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+		const pool = makePool();
+		const leaseId = pool.beginCliUpdateLease(1_000);
+
+		now.mockReturnValue(1_500);
+		expect(pool.renewCliUpdateLease("stale-lease", 60 * 60 * 1_000)).toBe(
+			false,
+		);
+		expect(pool.renewCliUpdateLease(leaseId, 60 * 60 * 1_000)).toBe(true);
+
+		now.mockReturnValue(1_500 + 15 * 60 * 1_000 - 1);
+		expect(pool.ownsCliUpdateLease(leaseId)).toBe(true);
+		now.mockReturnValue(1_500 + 15 * 60 * 1_000);
+		expect(pool.ownsCliUpdateLease(leaseId)).toBe(false);
+		expect(pool.renewCliUpdateLease(leaseId)).toBe(false);
+	});
+});
+
 describe("SessionPool.restoreDurableTurns", () => {
 	it("recreates the owning session and restores recoverable rows", async () => {
 		const row = {

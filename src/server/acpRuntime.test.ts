@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { type HlidConfig, HlidConfigSchema } from "../config";
 import type { AcpCatalogItem } from "./acpRegistry";
 import {
@@ -40,6 +40,10 @@ function item(
 		...options,
 	};
 }
+
+afterEach(() => {
+	vi.unstubAllEnvs();
+});
 
 describe("ACP runtime synchronization", () => {
 	it("merges a hide filter into JSONC without discarding existing config", () => {
@@ -259,6 +263,57 @@ describe("ACP runtime synchronization", () => {
 				config([{ id: "opencode", executable: "opencode.cmd" }]),
 			),
 		);
+	});
+
+	it("keys continuity to local runtime evidence and stable roots, not registry labels", () => {
+		vi.stubEnv("XDG_CONFIG_HOME", "/runtime/config-one");
+		vi.stubEnv("OPENCODE_PURE", "TRUE");
+		const runtimeConfig = config([{ id: "opencode" }]);
+		const runtimeExecutableEvidence = {
+			launcher: {
+				pathKey: "native:/usr/bin/opencode",
+				size: "100",
+				mtimeNs: "1000",
+			},
+			packageManifest: {
+				pathKey: "native:/usr/lib/node_modules/opencode-ai/package.json",
+				size: "200",
+				mtimeNs: "2000",
+			},
+		};
+		const base = item("opencode", {
+			name: "Registry label one",
+			version: "registry-latest-one",
+			runtimeExecutableEvidence,
+		});
+		const identity = acpRuntimeFingerprint(base, runtimeConfig);
+
+		expect(
+			acpRuntimeFingerprint(
+				{ ...base, name: "Renamed by registry", version: "latest-two" },
+				runtimeConfig,
+			),
+		).toBe(identity);
+		expect(
+			acpRuntimeFingerprint(
+				{
+					...base,
+					runtimeExecutableEvidence: {
+						...runtimeExecutableEvidence,
+						packageManifest: {
+							...runtimeExecutableEvidence.packageManifest,
+							size: "201",
+						},
+					},
+				},
+				runtimeConfig,
+			),
+		).not.toBe(identity);
+		vi.stubEnv("XDG_CONFIG_HOME", "/runtime/config-two");
+		expect(acpRuntimeFingerprint(base, runtimeConfig)).not.toBe(identity);
+		vi.stubEnv("XDG_CONFIG_HOME", "/runtime/config-one");
+		vi.stubEnv("OPENCODE_PURE", "false");
+		expect(acpRuntimeFingerprint(base, runtimeConfig)).not.toBe(identity);
 	});
 
 	it("marks a manually persisted invalid filter unavailable without crashing startup", () => {

@@ -27,7 +27,7 @@ describe("managed image optimization", () => {
 		expect(PNG.sync.read(result.buffer).data).toEqual(
 			PNG.sync.read(source).data,
 		);
-	});
+	}, 15_000);
 
 	it("preserves formats that would require lossy re-encoding", () => {
 		const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);

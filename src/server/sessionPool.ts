@@ -36,6 +36,8 @@ export interface PoolEntry {
 }
 
 const DEFAULT_MAX_SIZE = 20;
+const DEFAULT_CLI_UPDATE_LEASE_MS = 15 * 60 * 1_000;
+const MAX_CLI_UPDATE_LEASE_EXTENSION_MS = 15 * 60 * 1_000;
 
 export class SessionPool {
 	private entries: Map<string, PoolEntry> = new Map();
@@ -55,6 +57,7 @@ export class SessionPool {
 	private statusChangeHandler: (() => void) | null = null;
 	private draining = false;
 	private drainPromise: Promise<void> | null = null;
+	private cliUpdateLease: { id: string; expiresAt: number } | null = null;
 	/** Session ID of the vault's lazy singleton entry, or null if not yet created. */
 	private _vaultSessionId: string | null = null;
 
@@ -81,6 +84,11 @@ export class SessionPool {
 		agentName: string,
 		useAgentDefaults = true,
 	): PoolEntry {
+		if (this.activeCliUpdateLease()) {
+			throw new Error(
+				"A CLI update is in progress. Try again when it finishes.",
+			);
+		}
 		if (this.draining) {
 			throw new Error("Session pool is draining provider processes.");
 		}
@@ -110,6 +118,58 @@ export class SessionPool {
 			this.statusChangeHandler?.();
 		});
 		return entry;
+	}
+
+	private activeCliUpdateLease(): { id: string; expiresAt: number } | null {
+		if (this.cliUpdateLease && this.cliUpdateLease.expiresAt <= Date.now()) {
+			this.cliUpdateLease = null;
+		}
+		return this.cliUpdateLease;
+	}
+
+	/** Hold new provider sessions closed across drain, installer, and reconcile. */
+	beginCliUpdateLease(ttlMs = DEFAULT_CLI_UPDATE_LEASE_MS): string {
+		if (this.activeCliUpdateLease()) {
+			throw new Error("A CLI update is already in progress.");
+		}
+		const id = randomUUID();
+		this.cliUpdateLease = {
+			id,
+			expiresAt: Date.now() + Math.max(1_000, ttlMs),
+		};
+		return id;
+	}
+
+	/** Release only the exact owner-issued lease; stale clients cannot unlock it. */
+	releaseCliUpdateLease(id: string): boolean {
+		const active = this.activeCliUpdateLease();
+		if (!active || active.id !== id) return false;
+		this.cliUpdateLease = null;
+		return true;
+	}
+
+	/** Validate the exact live owner lease without extending its expiry. */
+	ownsCliUpdateLease(id: string): boolean {
+		return this.activeCliUpdateLease()?.id === id;
+	}
+
+	/**
+	 * Extend only the exact live update lease. Each heartbeat is capped so a
+	 * malformed or stale client cannot pin provider startup arbitrarily far into
+	 * the future with one request.
+	 */
+	renewCliUpdateLease(
+		id: string,
+		ttlMs = DEFAULT_CLI_UPDATE_LEASE_MS,
+	): boolean {
+		const active = this.activeCliUpdateLease();
+		if (!active || active.id !== id) return false;
+		const extensionMs = Math.min(
+			MAX_CLI_UPDATE_LEASE_EXTENSION_MS,
+			Math.max(1_000, ttlMs),
+		);
+		active.expiresAt = Math.max(active.expiresAt, Date.now() + extensionMs);
+		return true;
 	}
 
 	/** Notify the host when provider work changes outside a visible chat turn. */

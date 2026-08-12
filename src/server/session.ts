@@ -16,6 +16,7 @@ import {
 	type HlidPromptContextManifest,
 	type HlidToolLoadingSummary,
 	type HlidTurnContextManifest,
+	summarizeHlidStructuredPrompt,
 } from "../lib/hlidContext";
 import {
 	declaredPathKey,
@@ -2706,6 +2707,7 @@ export class SessionManager {
 		providerId: string,
 		providerSessionId: string,
 		generation: number,
+		providerRuntimeIdentity: string | null = null,
 	): Promise<boolean> {
 		return this.enqueueProviderOwnershipWrite(async () => {
 			if (!this.ownsProviderGeneration(providerId, generation)) return false;
@@ -2713,6 +2715,7 @@ export class SessionManager {
 				sessionId,
 				providerId,
 				providerSessionId,
+				providerRuntimeIdentity,
 			);
 			return accepted && this.ownsProviderGeneration(providerId, generation);
 		});
@@ -6601,19 +6604,16 @@ export class SessionManager {
 		sessionId: string,
 		updateGlobalFocus = true,
 	): Promise<boolean> {
-		const restoreGeneration = ++this.sessionControlGeneration;
-		if (this.currentSessionId !== sessionId) {
-			this.providerHistoryWarningIds.clear();
-			this.effectivePermissionMode = null;
-		}
-		this.providerOwnershipGeneration += 1;
-		const restoreProviderOwnershipGeneration = this.providerOwnershipGeneration;
+		// Snapshot control ownership before any asynchronous reads. An incompatible
+		// import must fail without changing the currently open manager or stopping
+		// its provider observer.
+		const expectedSessionControlGeneration = this.sessionControlGeneration;
+		const expectedProviderOwnershipGeneration =
+			this.providerOwnershipGeneration;
 		const restorePermissionModeGeneration = this.permissionModeGeneration;
 		const restorePermissionModeControlGeneration =
 			this.permissionModeControlGeneration;
 		const restoreModelGeneration = this.modelGeneration;
-		this.resetEffectiveApprovalsReviewer();
-		this.clearSessionProvenance();
 		const [
 			savedSession,
 			prior,
@@ -6622,6 +6622,7 @@ export class SessionManager {
 			savedModel,
 			savedProviderId,
 			savedProviderSessionId,
+			savedProviderRuntimeIdentity,
 			savedBackgroundActivities,
 		] = await Promise.all([
 			db.getSessionById(sessionId),
@@ -6634,11 +6635,13 @@ export class SessionManager {
 			db.getSessionModel(sessionId),
 			db.getSessionProviderId(sessionId),
 			db.getSessionProviderSession(sessionId),
+			db.getSessionProviderRuntimeIdentity(sessionId),
 			db.listProviderBackgroundActivities(sessionId),
 		]);
 		if (
-			this.sessionControlGeneration !== restoreGeneration ||
-			this.providerOwnershipGeneration !== restoreProviderOwnershipGeneration ||
+			this.sessionControlGeneration !== expectedSessionControlGeneration ||
+			this.providerOwnershipGeneration !==
+				expectedProviderOwnershipGeneration ||
 			this.permissionModeGeneration !== restorePermissionModeGeneration ||
 			this.modelGeneration !== restoreModelGeneration ||
 			this.permissionModeControlGeneration !==
@@ -6654,6 +6657,46 @@ export class SessionManager {
 				"This imported provider history has accounting data only and cannot be resumed.",
 			);
 		}
+		const restoredProviderId =
+			savedProviderId ??
+			this.resolveProvider(savedAgentCwd ?? undefined).providerId;
+		const restoredProviderRuntimeIdentity =
+			this.providers.get(restoredProviderId)?.sessionContinuityIdentity ?? null;
+		const incompatibleAcpRuntime =
+			restoredProviderId.startsWith("acp:") &&
+			savedProviderSessionId !== null &&
+			(savedProviderRuntimeIdentity === null ||
+				savedProviderRuntimeIdentity !== restoredProviderRuntimeIdentity);
+		if (savedSession?.history_imported && incompatibleAcpRuntime) {
+			throw new Error(
+				"This provider-native import belongs to a different ACP executable or storage context. Restore that context or import the provider session again.",
+			);
+		}
+
+		// Compatibility is established. Claim the restore before stopping the old
+		// observer so queued writes from its provider generation cannot cross the
+		// session boundary.
+		const restoreGeneration = ++this.sessionControlGeneration;
+		this.providerOwnershipGeneration += 1;
+		const restoreProviderOwnershipGeneration = this.providerOwnershipGeneration;
+		this.stopBackgroundActivityObserver();
+		await this.backgroundActivityWriteTail;
+		if (
+			this.sessionControlGeneration !== restoreGeneration ||
+			this.providerOwnershipGeneration !== restoreProviderOwnershipGeneration ||
+			this.permissionModeGeneration !== restorePermissionModeGeneration ||
+			this.modelGeneration !== restoreModelGeneration ||
+			this.permissionModeControlGeneration !==
+				restorePermissionModeControlGeneration
+		) {
+			throw new PermissionModeChangeSupersededError();
+		}
+		if (this.currentSessionId !== sessionId) {
+			this.providerHistoryWarningIds.clear();
+			this.effectivePermissionMode = null;
+		}
+		this.resetEffectiveApprovalsReviewer();
+		this.clearSessionProvenance();
 		this.agentCwd = undefined;
 		this.agentMode = "cwd";
 		this.sessionAllowedTools.clear();
@@ -6698,12 +6741,7 @@ export class SessionManager {
 			this.agentCwd = savedAgentCwd;
 			this.agentMode = resolveAgentMode(savedAgentCwd);
 		}
-		const restoredProviderId =
-			savedProviderId ?? this.resolveProvider(this.agentCwd).providerId;
-		const discardFilteredOpenCodeResume =
-			restoredProviderId === "acp:opencode" &&
-			this.openCodeModelFilter !== null;
-		if (discardFilteredOpenCodeResume) {
+		if (incompatibleAcpRuntime) {
 			this.providerSessionId = null;
 			this.providerSessionProviderId = restoredProviderId;
 			this.historyResumeMode = "none";
@@ -6733,7 +6771,7 @@ export class SessionManager {
 			this.effort = savedSession.selected_effort;
 			this.effortOverride = savedSession.selected_effort;
 		}
-		if (discardFilteredOpenCodeResume || savedModelExcluded) {
+		if (incompatibleAcpRuntime || savedModelExcluded) {
 			const ownsRestore = () =>
 				this.sessionControlGeneration === restoreGeneration &&
 				this.currentSessionId === sessionId &&
@@ -6743,11 +6781,15 @@ export class SessionManager {
 					await db.setSessionModel(sessionId, "", { guard: ownsRestore });
 					await db.setSessionEffort(sessionId, null, { guard: ownsRestore });
 				}
-				if (discardFilteredOpenCodeResume && ownsRestore()) {
-					await db.setSessionProviderSession(sessionId, "acp:opencode", null);
+				if (incompatibleAcpRuntime && ownsRestore()) {
+					await db.setSessionProviderSession(
+						sessionId,
+						restoredProviderId,
+						null,
+					);
 				}
 			} catch (error) {
-				logDbError("reset restored filtered OpenCode session", error);
+				logDbError("reset incompatible restored ACP session", error);
 			}
 			if (!ownsRestore()) throw new PermissionModeChangeSupersededError();
 		}
@@ -6892,8 +6934,6 @@ export class SessionManager {
 		const savedSession = await db.getSessionById(sessionId);
 		if (!savedSession) return { restored: false };
 		const priorSelection = await db.getSessionSelection(sessionId);
-		this.stopBackgroundActivityObserver();
-		await this.backgroundActivityWriteTail;
 		const restored = await this.restoreSessionContext(sessionId, false);
 		const attempted = priorSelection?.permissionMode;
 		const authoritative = this.statusPermissionMode();
@@ -6926,13 +6966,6 @@ export class SessionManager {
 		userMessage: string,
 		updateGlobalFocus = true,
 	): Promise<void> {
-		if (sessionId && sessionId !== this.currentSessionId) {
-			// Stop the old session's observer while its session id still owns the
-			// in-memory snapshot. This prevents an in-flight provider poll from
-			// writing the old process inventory into the session being restored.
-			this.stopBackgroundActivityObserver();
-			await this.backgroundActivityWriteTail;
-		}
 		let sessionExists = Boolean(
 			sessionId && sessionId === this.currentSessionId,
 		);
@@ -7018,6 +7051,7 @@ export class SessionManager {
 						provider.providerId,
 						newId,
 						ownershipGeneration,
+						provider.sessionContinuityIdentity,
 					).catch((e) => {
 						logDbError("setSessionProviderSession", e);
 						return false;
@@ -11896,6 +11930,7 @@ export class SessionManager {
 				resourcePaths,
 				safeVaultReferences = [],
 				safeWorkspaceReferences = [],
+				structuredContent = [],
 				contextManifest,
 			} = await buildPromptAsync({
 				vaultPath: this.vaultPath,
@@ -11996,7 +12031,7 @@ export class SessionManager {
 					)
 				: contextManifest;
 			const toolLoading = await this.toolLoadingFor(currentProvider);
-			const turnContextManifest = finalizeHlidTurnContextManifest(
+			const finalizedTurnContextManifest = finalizeHlidTurnContextManifest(
 				deliveredContextManifest,
 				{
 					delivery: commandAction ? "provider-command" : "chat",
@@ -12013,6 +12048,14 @@ export class SessionManager {
 					...(toolLoading ? { toolLoading } : {}),
 				},
 			);
+			// Native ACP blocks are only candidates until the agent advertises its
+			// prompt capabilities. Persist the textual receipt first, then let the
+			// provider callback add only the blocks it actually retained.
+			const {
+				structuredPrompt: _candidateStructuredPrompt,
+				...turnContextManifest
+			} = finalizedTurnContextManifest;
+			const initialContextManifestJson = JSON.stringify(turnContextManifest);
 
 			// With `resume`, the CLI maintains conversation state on its end. We
 			// send only the new user turn — no transcript replay. The Hlid-owned
@@ -12192,6 +12235,35 @@ export class SessionManager {
 				await agentSession.send(providerPrompt, {
 					inputOrigin: args.inputOrigin,
 					...(audioPaths.length > 0 ? { audioPaths } : {}),
+					...(currentProvider.providerId.startsWith("acp:") &&
+					structuredContent.length > 0
+						? {
+								structuredContent,
+								onStructuredContentAccepted: async (acceptedContent) => {
+									const userSeq = turn.userSeq;
+									if (!sessionId || userSeq === null) return;
+									const structuredPrompt =
+										summarizeHlidStructuredPrompt(acceptedContent);
+									if (!structuredPrompt) return;
+									try {
+										await db.replaceUserMessageContextManifest(
+											sessionId,
+											userSeq,
+											initialContextManifestJson,
+											JSON.stringify({
+												...turnContextManifest,
+												structuredPrompt,
+											}),
+										);
+									} catch (error) {
+										logDbError(
+											"replace user structured prompt context receipt",
+											error,
+										);
+									}
+								},
+							}
+						: {}),
 				});
 				if (contextManifest.operatingBrief?.included) {
 					this.operatingBriefProviderKey = `${currentProvider.providerId}|${this.currentSessionId ?? "ephemeral"}`;

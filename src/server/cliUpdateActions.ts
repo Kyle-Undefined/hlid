@@ -1,6 +1,8 @@
 import {
 	type CliRuntimeDrainResult,
 	drainCliRuntime,
+	reconcileAcpCliRuntime,
+	releaseCliRuntimeLease,
 } from "#/lib/cliUpdateRuntime";
 import { parseWslUnc } from "#/lib/paths";
 import { runBoundedProcess } from "#/lib/process";
@@ -59,6 +61,7 @@ export type PreparedCliUpdate = CliRuntimeDrainResult & {
 	command: string;
 	mode: "automatic" | "interactive";
 	terminalCwd: string;
+	leaseId?: string;
 };
 
 function terminalCwdForUpdate(id: string): string {
@@ -83,12 +86,10 @@ function terminalCwdForUpdate(id: string): string {
 export async function prepareCliUpdate(id: string): Promise<PreparedCliUpdate> {
 	const action = await availableAction(id);
 	const terminalCwd = terminalCwdForUpdate(id);
-	const drained =
-		action.drainSessions === false
-			? EMPTY_DRAIN_RESULT
-			: await drainCliRuntime();
+	const drainLease =
+		action.drainSessions === false ? null : await drainCliRuntime();
 	return {
-		...drained,
+		...(drainLease ?? EMPTY_DRAIN_RESULT),
 		command: action.displayCommand,
 		mode: action.automatic ? "automatic" : "interactive",
 		terminalCwd,
@@ -99,6 +100,7 @@ export async function applyCliUpdate(id: string): Promise<{
 	command: string;
 	output: string;
 	drained: CliRuntimeDrainResult;
+	reconcilePending?: { id: string; leaseId: string; error: string };
 }> {
 	const action = await availableAction(id);
 	if (!action.automatic) {
@@ -108,11 +110,49 @@ export async function applyCliUpdate(id: string): Promise<{
 				: "This update must be run interactively",
 		);
 	}
-	const drained =
-		action.drainSessions === false
-			? EMPTY_DRAIN_RESULT
-			: await drainCliRuntime();
-	const output = await runUpdateProcess(action);
+	const drainLease =
+		action.drainSessions === false ? null : await drainCliRuntime();
+	const drained: CliRuntimeDrainResult = drainLease
+		? { sessions: drainLease.sessions, appServers: drainLease.appServers }
+		: EMPTY_DRAIN_RESULT;
+	let output: string;
+	try {
+		output = await runUpdateProcess(action);
+	} catch (error) {
+		if (drainLease) {
+			await releaseCliRuntimeLease(drainLease.leaseId).catch(() => {});
+		}
+		throw error;
+	}
+	if (drainLease) {
+		if (id.startsWith("acp:")) {
+			try {
+				await reconcileAcpCliRuntime(drainLease.leaseId);
+			} catch (error) {
+				return {
+					command: action.displayCommand,
+					output,
+					drained,
+					reconcilePending: {
+						id,
+						leaseId: drainLease.leaseId,
+						error: error instanceof Error ? error.message : String(error),
+					},
+				};
+			}
+		} else {
+			await releaseCliRuntimeLease(drainLease.leaseId);
+		}
+	}
 	await getCliUpdateStatuses({ force: true });
 	return { command: action.displayCommand, output, drained };
+}
+
+/** Finish an interactive update and release its owner-process quiescence lease. */
+export async function reconcileAppliedCliUpdate(
+	id: string,
+	leaseId: string,
+): Promise<void> {
+	if (id.startsWith("acp:")) await reconcileAcpCliRuntime(leaseId);
+	else await releaseCliRuntimeLease(leaseId);
 }

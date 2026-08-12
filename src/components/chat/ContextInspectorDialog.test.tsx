@@ -248,6 +248,44 @@ describe("ContextInspectorDialog", () => {
 		expect(within(metric as HTMLElement).queryByText("~0")).toBeNull();
 	});
 
+	it("separates textual prompt characters from native ACP blocks", async () => {
+		vi.mocked(getSessionContextFn).mockResolvedValue({
+			context_window: null,
+			last_context_used: null,
+			actual_model: null,
+			hlid_context: contextManifest({
+				providerId: "acp:opencode",
+				providerPromptChars: 321,
+				structuredPrompt: {
+					imageCount: 2,
+					imageDecodedBytes: 12_345,
+					embeddedResourceCount: 3,
+					embeddedResourceChars: 4_321,
+				},
+			}),
+		});
+		render(
+			<ContextInspectorDialog
+				sessionId="acp-session"
+				pending={{
+					skills: [],
+					attachments: [],
+					vaultReferences: [],
+					workspaceReferences: [],
+					planMode: false,
+				}}
+				onClose={vi.fn()}
+			/>,
+		);
+
+		const metric = (await screen.findByText("Text prompt")).parentElement;
+		expect(within(metric as HTMLElement).getByText("321 chars")).toBeTruthy();
+		fireEvent.click(screen.getByText("Provider context"));
+		expect(screen.getByText("Visible text prompt")).toBeTruthy();
+		expect(screen.getByText("2 images · 12,345 decoded bytes")).toBeTruthy();
+		expect(screen.getByText("3 resources · 4,321 chars")).toBeTruthy();
+	});
+
 	it("selects previous turn receipts and loads older pages without reusing current provider usage", async () => {
 		const latest = contextManifest({
 			recordedAt: new Date("2026-07-27T16:00:00Z").getTime(),

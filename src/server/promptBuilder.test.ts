@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	renameSync,
+	rmSync,
+	truncateSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -216,6 +223,7 @@ describe("buildPrompt — mixed context parity", async () => {
 					mime: "text/plain",
 				},
 			],
+			structuredContent: [],
 			contextManifest: {
 				contractVersion: 1,
 				userMessageChars: "/review mixed".length,
@@ -431,6 +439,200 @@ describe("buildPrompt — workspace references", async () => {
 			}),
 		]);
 		expect(result.resourcePaths).toContain(join(tmp, "feature.ts"));
+	});
+
+	it("builds structured content only from the exact previewed revisions", async () => {
+		const notePath = join(tmp, "Selected.md");
+		const sourcePath = join(tmp, "selected.ts");
+		const imagePath = join(tmp, "selected.png");
+		writeFileSync(notePath, "filesystem note copy");
+		writeFileSync(sourcePath, "export const selected = true;\n");
+		const imageBytes = Buffer.from([
+			0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		]);
+		writeFileSync(imagePath, imageBytes);
+		const sourceHash = createHash("sha256")
+			.update("export const selected = true;\n")
+			.digest("hex");
+		const imageHash = createHash("sha256").update(imageBytes).digest("hex");
+
+		const result = await buildPromptAsync(
+			base({
+				providerId: "acp:fake",
+				agentCwd: tmp,
+				allowedAgentRealPaths: [tmp],
+				vaultReferences: ["Selected.md"],
+				readVaultReference: async (path) =>
+					path === "Selected.md" ? "exact Obsidian selection" : "expanded",
+				workspaceReferences: [
+					{ relativePath: "selected.ts", sha256: sourceHash },
+					{ relativePath: "selected.png", sha256: imageHash },
+				],
+				attachments: [
+					{
+						id: "explicit-image",
+						path: imagePath,
+						filename: "selected.png",
+						mime: "image/png",
+						kind: "vault",
+					},
+				],
+			}),
+		);
+
+		expect(result.structuredContent).toEqual([
+			expect.objectContaining({
+				type: "image",
+				uri: "hlid://attachment/explicit-image",
+				mimeType: "image/png",
+			}),
+			expect.objectContaining({
+				type: "image",
+				uri: "hlid://workspace-reference/selected.png",
+				mimeType: "image/png",
+			}),
+			{
+				type: "resource",
+				uri: "hlid://vault-reference/Selected.md",
+				mimeType: "text/markdown",
+				text: "exact Obsidian selection",
+			},
+			{
+				type: "resource",
+				uri: "hlid://workspace-reference/selected.ts",
+				mimeType: "text/plain",
+				text: "export const selected = true;\n",
+			},
+		]);
+		// The initial receipt cannot claim native delivery before the ACP agent's
+		// prompt capabilities are negotiated.
+		expect(result.contextManifest.structuredPrompt).toBeUndefined();
+		expect(JSON.stringify(result.structuredContent)).not.toContain("expanded");
+	});
+
+	it("skips an oversized structured image before reading its contents", async () => {
+		const oversizedPath = join(tmp, "oversized.png");
+		writeFileSync(oversizedPath, "");
+		truncateSync(oversizedPath, 20 * 1024 * 1024 + 1);
+
+		const result = await buildPromptAsync(
+			base({
+				providerId: "acp:fake",
+				attachments: [
+					{
+						id: "oversized",
+						path: oversizedPath,
+						filename: "oversized.png",
+						mime: "image/png",
+						kind: "vault",
+					},
+				],
+			}),
+		);
+
+		expect(result.safeAttachments).toHaveLength(1);
+		expect(result.structuredContent).toEqual([]);
+		expect(result.contextManifest.structuredPrompt).toBeUndefined();
+	});
+
+	it("bounds aggregate structured image bytes while retaining smaller later images", async () => {
+		const firstPath = join(tmp, "first.png");
+		const secondPath = join(tmp, "second.png");
+		const thirdPath = join(tmp, "third.png");
+		writeFileSync(firstPath, "");
+		writeFileSync(secondPath, "");
+		writeFileSync(thirdPath, "x");
+		truncateSync(firstPath, 13 * 1024 * 1024);
+		truncateSync(secondPath, 12 * 1024 * 1024);
+
+		const result = await buildPromptAsync(
+			base({
+				providerId: "acp:fake",
+				attachments: [
+					{
+						id: "first",
+						path: firstPath,
+						filename: "first.png",
+						mime: "image/png",
+						kind: "vault",
+					},
+					{
+						id: "second",
+						path: secondPath,
+						filename: "second.png",
+						mime: "image/png",
+						kind: "vault",
+					},
+					{
+						id: "third",
+						path: thirdPath,
+						filename: "third.png",
+						mime: "image/png",
+						kind: "vault",
+					},
+				],
+			}),
+		);
+
+		expect(
+			result.structuredContent?.map((block) =>
+				block.type === "image" ? block.uri : null,
+			),
+		).toEqual(["hlid://attachment/first", "hlid://attachment/third"]);
+		expect(result.contextManifest.structuredPrompt).toBeUndefined();
+	});
+
+	it("bounds the number of native image blocks", async () => {
+		const attachments = Array.from({ length: 9 }, (_, index) => {
+			const path = join(tmp, `count-${index}.png`);
+			writeFileSync(path, String(index));
+			return {
+				id: `count-${index}`,
+				path,
+				filename: `count-${index}.png`,
+				mime: "image/png",
+				kind: "vault",
+			};
+		});
+
+		const result = await buildPromptAsync(
+			base({ providerId: "acp:fake", attachments }),
+		);
+
+		expect(
+			result.structuredContent?.filter((block) => block.type === "image"),
+		).toHaveLength(8);
+	});
+
+	it("rejects an attachment path replaced after authorization", async () => {
+		const imagePath = join(tmp, "selected.png");
+		const originalPath = join(tmp, "selected-original.png");
+		const notePath = join(tmp, "Selection.md");
+		writeFileSync(imagePath, "authorized image");
+		writeFileSync(notePath, "selection hook");
+
+		await expect(
+			buildPromptAsync(
+				base({
+					providerId: "acp:fake",
+					vaultReferences: ["Selection.md"],
+					readVaultReference: async () => {
+						renameSync(imagePath, originalPath);
+						writeFileSync(imagePath, "replacement image");
+						return "exact note selection";
+					},
+					attachments: [
+						{
+							id: "selected",
+							path: imagePath,
+							filename: "selected.png",
+							mime: "image/png",
+							kind: "vault",
+						},
+					],
+				}),
+			),
+		).rejects.toThrow("An attachment changed after selection.");
 	});
 });
 

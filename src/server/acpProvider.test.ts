@@ -25,9 +25,18 @@ import {
 import {
 	AcpProvider,
 	type AcpProviderOptions,
+	AcpSessionImportUnsupportedError,
+	AcpSessionListUnsupportedError,
+	findAcpProviderSession,
 	inspectAcpAgent,
+	listAcpProviderSessions,
 } from "./acpProvider";
-import type { AgentEvent, AgentQueryParams } from "./agentProvider";
+import type {
+	AgentEvent,
+	AgentQueryParams,
+	ProviderPromptContent,
+	SendOptions,
+} from "./agentProvider";
 
 const fixture = resolve("src/server/fixtures/fake-acp-agent.mjs");
 
@@ -95,6 +104,27 @@ async function run(
 	return { events, session };
 }
 
+async function promptBlockReport(
+	provider: AcpProvider,
+	structuredContent: ProviderPromptContent[],
+	onStructuredContentAccepted?: NonNullable<
+		SendOptions["onStructuredContentAccepted"]
+	>,
+): Promise<unknown[]> {
+	const session = provider.query(params());
+	await session.send("report-prompt-blocks", {
+		structuredContent,
+		...(onStructuredContentAccepted ? { onStructuredContentAccepted } : {}),
+	});
+	let response = "";
+	for await (const event of session) {
+		if (event.type === "text_delta") response += event.text;
+		if (event.type === "done") break;
+	}
+	session.cancel();
+	return JSON.parse(response) as unknown[];
+}
+
 function reasoningStarts(
 	events: AgentEvent[],
 ): Array<Extract<AgentEvent, { type: "tool_start" }>> {
@@ -114,6 +144,18 @@ function reasoningResults(
 }
 
 describe("AcpProvider — interface compliance", () => {
+	it("uses a digest rather than raw runtime configuration for session continuity", () => {
+		const provider = new AcpProvider({
+			id: "acp:test",
+			label: "Test",
+			command: process.execPath,
+			metadataCacheIdentity: '{"TOKEN":"provider-secret"}',
+		});
+
+		expect(provider.sessionContinuityIdentity).toMatch(/^[a-f0-9]{64}$/);
+		expect(provider.sessionContinuityIdentity).not.toContain("provider-secret");
+	});
+
 	it("implements AgentProvider interface (query returns AgentSession)", () => {
 		const session = makeProvider().query(params());
 		expect(session.send).toBeTypeOf("function");
@@ -170,6 +212,105 @@ describe("AcpProvider — interface compliance", () => {
 				"two words",
 			]),
 		).toBe('"C:\\Program Files (x86)\\agent.cmd" "acp" "two words"');
+	});
+});
+
+describe("AcpProvider — structured prompts", () => {
+	it("sends advertised image and embedded-context blocks without expansion", async () => {
+		const accepted = vi.fn();
+		const structuredContent: ProviderPromptContent[] = [
+			{
+				type: "image",
+				data: "AQID",
+				mimeType: "image/png",
+				uri: "hlid://attachment/selected-image",
+			},
+			{
+				type: "resource",
+				uri: "hlid://vault-reference/Projects%2FHlid.md",
+				mimeType: "text/markdown",
+				text: "Only the selected note",
+			},
+		];
+		const blocks = await promptBlockReport(
+			behaviorProvider("structured-prompts"),
+			structuredContent,
+			accepted,
+		);
+
+		expect(blocks).toEqual([
+			{ type: "text", text: "report-prompt-blocks" },
+			{
+				type: "image",
+				data: "AQID",
+				mimeType: "image/png",
+				uri: "hlid://attachment/selected-image",
+			},
+			{
+				type: "resource",
+				resource: {
+					uri: "hlid://vault-reference/Projects%2FHlid.md",
+					mimeType: "text/markdown",
+					text: "Only the selected note",
+				},
+			},
+		]);
+		expect(accepted).toHaveBeenCalledOnce();
+		expect(accepted).toHaveBeenCalledWith(structuredContent);
+	});
+
+	it("omits structured blocks the ACP agent did not advertise", async () => {
+		const accepted = vi.fn();
+		const blocks = await promptBlockReport(
+			makeProvider(),
+			[
+				{
+					type: "image",
+					data: "AQID",
+					mimeType: "image/png",
+				},
+				{
+					type: "resource",
+					uri: "hlid://workspace-reference/selected.txt",
+					text: "selected",
+				},
+			],
+			accepted,
+		);
+
+		expect(blocks).toEqual([{ type: "text", text: "report-prompt-blocks" }]);
+		expect(accepted).toHaveBeenCalledOnce();
+		expect(accepted).toHaveBeenCalledWith([]);
+	});
+
+	it("keeps prompt dispatch alive when the receipt callback fails", async () => {
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const blocks = await promptBlockReport(
+				behaviorProvider("structured-prompts"),
+				[
+					{
+						type: "image",
+						data: "AQID",
+						mimeType: "image/png",
+					},
+				],
+				async () => {
+					throw new Error("receipt database unavailable");
+				},
+			);
+
+			expect(blocks).toEqual([
+				{ type: "text", text: "report-prompt-blocks" },
+				{ type: "image", data: "AQID", mimeType: "image/png" },
+			]);
+			expect(error).toHaveBeenCalledWith(
+				"[acp] structured prompt receipt callback failed:",
+				expect.objectContaining({ message: "receipt database unavailable" }),
+			);
+		} finally {
+			error.mockRestore();
+		}
 	});
 });
 
@@ -2359,5 +2500,100 @@ describe("AcpProvider — error handling", () => {
 			name: "Fake login",
 		});
 		expect(initialized.agentInfo?.version).toBe("1.0.0");
+	});
+
+	it("lists only provider-native metadata from the exact requested workspace", async () => {
+		const provider = behaviorProvider("list-sessions");
+		const first = await listAcpProviderSessions(
+			provider.options,
+			process.cwd(),
+		);
+		expect(first).toEqual({
+			sessions: [
+				{
+					sessionId: "native-1",
+					title: "First provider session",
+					updatedAt: "2026-08-12T12:00:00.000Z",
+				},
+			],
+			canImportSessions: true,
+			nextCursor: "next-page",
+		});
+		await expect(
+			listAcpProviderSessions(provider.options, process.cwd(), "next-page"),
+		).resolves.toEqual({
+			sessions: [
+				{
+					sessionId: "native-2",
+					title: "Second provider session",
+					updatedAt: "2026-08-12T13:00:00.000Z",
+				},
+			],
+			canImportSessions: true,
+		});
+	});
+
+	it("keeps list-only provider sessions metadata-only and rejects import", async () => {
+		const provider = behaviorProvider("list-sessions-metadata-only");
+
+		await expect(
+			listAcpProviderSessions(provider.options, process.cwd()),
+		).resolves.toMatchObject({ canImportSessions: false });
+		await expect(
+			findAcpProviderSession(provider.options, process.cwd(), "native-1"),
+		).rejects.toBeInstanceOf(AcpSessionImportUnsupportedError);
+	});
+
+	it("capability-gates and bounds provider-native session listing", async () => {
+		await expect(
+			listAcpProviderSessions(makeProvider().options, process.cwd()),
+		).rejects.toBeInstanceOf(AcpSessionListUnsupportedError);
+		await expect(
+			listAcpProviderSessions(
+				behaviorProvider("list-sessions-oversized").options,
+				process.cwd(),
+			),
+		).rejects.toThrow("oversized session page");
+	});
+
+	it("finds an exact provider session across pages on one inspection process", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "hlid-acp-session-list-"));
+		const marker = join(directory, "initialize.log");
+		try {
+			const provider = makeProvider({
+				env: {
+					HLID_FAKE_ACP_BEHAVIOR: "list-sessions",
+					HLID_FAKE_ACP_INITIALIZE_MARKER: marker,
+				},
+				timeouts: processTestTimeouts,
+			});
+			await expect(
+				findAcpProviderSession(provider.options, process.cwd(), "native-2"),
+			).resolves.toEqual({
+				sessionId: "native-2",
+				title: "Second provider session",
+				updatedAt: "2026-08-12T13:00:00.000Z",
+			});
+			expect(readFileSync(marker, "utf8")).toBe("initialize\n");
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects repeated cursors and bounded endless provider catalogs", async () => {
+		await expect(
+			findAcpProviderSession(
+				behaviorProvider("list-sessions-repeated-cursor").options,
+				process.cwd(),
+				"missing",
+			),
+		).rejects.toThrow("repeated cursor");
+		await expect(
+			findAcpProviderSession(
+				behaviorProvider("list-sessions-endless").options,
+				process.cwd(),
+				"missing",
+			),
+		).rejects.toThrow("25-page validation limit");
 	});
 });

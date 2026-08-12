@@ -11,6 +11,8 @@ import { type LedgerStatsRange, ledgerRangeCondition } from "./ledgerAnalytics";
 import type { Db } from "./schema";
 import { getDb } from "./schema";
 import type {
+	ProviderNativeSessionImport,
+	ProviderNativeSessionImportResult,
 	QueryData,
 	SessionCleanupPreview,
 	SessionRow,
@@ -20,6 +22,15 @@ import type {
 
 const HISTORICAL_TOOL_ERROR_PREVIEW_CHARS = 4_096;
 const SESSION_CLEANUP_BATCH_SIZE = 25;
+type InternalSessionRow = SessionRow & {
+	provider_runtime_identity?: string | null;
+};
+
+function publicSessionRow(row: InternalSessionRow): SessionRow {
+	const { provider_runtime_identity: _runtimeIdentity, ...publicRow } = row;
+	return publicRow;
+}
+
 const SESSION_LAST_ACTIVITY_SQL = `MAX(
 	session.started_at,
 	COALESCE(session.ended_at, session.started_at),
@@ -81,20 +92,45 @@ export async function getSessionAgentCwd(
 	return row?.agent_cwd ?? null;
 }
 
-export async function setSessionModel(
-	sessionId: string,
-	model: string,
-	control?: {
-		guard?: () => boolean;
-		onCommitted?: () => void;
-	},
+type SessionModelUpdateControl = {
+	guard?: () => boolean;
+	onCommitted?: () => void;
+};
+
+async function commitSessionModelUpdate(
+	control: SessionModelUpdateControl | undefined,
+	update: (db: Db) => number,
 ): Promise<boolean> {
 	const db = await getDb();
 	let committed = false;
 	db.transaction(() => {
 		if (control?.guard && !control.guard()) return;
-		const result = db.run(
-			`UPDATE sessions
+		committed = update(db) === 1;
+	}).immediate();
+	if (!committed) return false;
+	try {
+		control?.onCommitted?.();
+	} catch {
+		// The SQLite commit is authoritative; owner callbacks are noexcept hints.
+	}
+	try {
+		markAnalyticsChanged(["stats", "activity"], "session_model");
+	} catch {
+		// Analytics invalidation must not reject a committed control change.
+	}
+	return true;
+}
+
+export async function setSessionModel(
+	sessionId: string,
+	model: string,
+	control?: SessionModelUpdateControl,
+): Promise<boolean> {
+	return commitSessionModelUpdate(
+		control,
+		(db) =>
+			db.run(
+				`UPDATE sessions
 			 SET actual_model = CASE
 			       WHEN COALESCE(selected_model, model, '') = ? THEN actual_model
 			       ELSE NULL
@@ -102,40 +138,22 @@ export async function setSessionModel(
 			     model = ?,
 			     selected_model = ?
 			 WHERE id = ?`,
-			[model, model, model, sessionId],
-		);
-		committed = result.changes === 1;
-	}).immediate();
-	if (committed) {
-		try {
-			control?.onCommitted?.();
-		} catch {
-			// The SQLite commit is authoritative; owner callbacks are noexcept hints.
-		}
-		try {
-			markAnalyticsChanged(["stats", "activity"], "session_model");
-		} catch {
-			// Analytics invalidation must not reject a committed control change.
-		}
-	}
-	return committed;
+				[model, model, model, sessionId],
+			).changes,
+	);
 }
 
 export async function setSessionModelAndPermissionMode(
 	sessionId: string,
 	model: string,
 	permissionMode: string,
-	control?: {
-		guard?: () => boolean;
-		onCommitted?: () => void;
-	},
+	control?: SessionModelUpdateControl,
 ): Promise<boolean> {
-	const db = await getDb();
-	let committed = false;
-	db.transaction(() => {
-		if (control?.guard && !control.guard()) return;
-		const result = db.run(
-			`UPDATE sessions
+	return commitSessionModelUpdate(
+		control,
+		(db) =>
+			db.run(
+				`UPDATE sessions
 			 SET actual_model = CASE
 			       WHEN COALESCE(selected_model, model, '') = ? THEN actual_model
 			       ELSE NULL
@@ -144,23 +162,9 @@ export async function setSessionModelAndPermissionMode(
 			     selected_model = ?,
 			     selected_permission_mode = ?
 			 WHERE id = ?`,
-			[model, model, model, permissionMode, sessionId],
-		);
-		committed = result.changes === 1;
-	}).immediate();
-	if (committed) {
-		try {
-			control?.onCommitted?.();
-		} catch {
-			// The SQLite commit is authoritative; owner callbacks are noexcept hints.
-		}
-		try {
-			markAnalyticsChanged(["stats", "activity"], "session_model");
-		} catch {
-			// Analytics invalidation must not reject a committed control change.
-		}
-	}
-	return committed;
+				[model, model, model, permissionMode, sessionId],
+			).changes,
+	);
 }
 
 export async function getSessionModel(
@@ -271,26 +275,61 @@ export async function getSessionClaudeId(
 /**
  * Persist provider-native continuity without transferring provider ownership.
  * Callers must establish provider_id first; a delayed retired-provider write is
- * rejected instead of reclaiming the session row.
+ * rejected instead of reclaiming the session row. Runtime identity must be an
+ * opaque provider-supplied digest, never raw executable/config data.
  */
 export async function setSessionProviderSession(
 	sessionId: string,
 	providerId: string,
 	providerSessionId: string | null,
+	providerRuntimeIdentity: string | null = null,
 ): Promise<boolean> {
 	const db = await getDb();
+	const runtimeIdentity =
+		providerSessionId !== null && providerRuntimeIdentity?.trim()
+			? providerRuntimeIdentity
+			: null;
 	const result = db.run(
 		`UPDATE sessions
 		 SET provider_session_id = ?,
+		     provider_runtime_identity = ?,
 		     claude_session_id = CASE WHEN ? = 'claude' THEN ? ELSE claude_session_id END
 		 WHERE id = ? AND provider_id = ?`,
-		[providerSessionId, providerId, providerSessionId, sessionId, providerId],
+		[
+			providerSessionId,
+			runtimeIdentity,
+			providerId,
+			providerSessionId,
+			sessionId,
+			providerId,
+		],
 	);
 	if (result.changes > 0) {
 		markAnalyticsChanged(["stats", "activity"], "session_provider_session");
 		return true;
 	}
 	return false;
+}
+
+export async function getSessionProviderRuntimeIdentity(
+	sessionId: string,
+	providerId?: string,
+): Promise<string | null> {
+	const db = await getDb();
+	const row = db
+		.query<
+			{
+				provider_id: string | null;
+				provider_runtime_identity: string | null;
+			},
+			[string]
+		>(
+			`SELECT provider_id, provider_runtime_identity
+			 FROM sessions WHERE id = ?`,
+		)
+		.get(sessionId);
+	if (!row || (providerId && row.provider_id !== providerId)) return null;
+	return row.provider_runtime_identity ?? null;
 }
 
 export async function getSessionProviderSession(
@@ -366,13 +405,17 @@ export async function setSessionProviderId(
 			       WHEN provider_id = ? THEN provider_session_id
 			       ELSE NULL
 			     END,
+			     provider_runtime_identity = CASE
+			       WHEN provider_id = ? THEN provider_runtime_identity
+			       ELSE NULL
+			     END,
 			     claude_session_id = CASE
 			       WHEN provider_id = ? THEN claude_session_id
 			       ELSE NULL
 			     END,
 			     provider_id = ?
 			 WHERE id = ?`,
-			[providerId, providerId, providerId, providerId, sessionId],
+			[providerId, providerId, providerId, providerId, providerId, sessionId],
 		);
 		if (previous?.provider_id !== providerId) {
 			deleteProviderTranscriptIfUnowned(db, previous);
@@ -423,6 +466,10 @@ export async function setSessionProviderSelection(
 			       WHEN provider_id = ? THEN provider_session_id
 			       ELSE NULL
 			     END,
+			     provider_runtime_identity = CASE
+			       WHEN provider_id = ? THEN provider_runtime_identity
+			       ELSE NULL
+			     END,
 			     claude_session_id = CASE
 			       WHEN provider_id = ? THEN claude_session_id
 			       ELSE NULL
@@ -437,6 +484,7 @@ export async function setSessionProviderSelection(
 			[
 				providerId,
 				selectedModel,
+				providerId,
 				providerId,
 				providerId,
 				providerId,
@@ -560,6 +608,113 @@ export async function createSession(
 }
 
 /**
+ * Atomically claim one provider-native session for an explicit Hlid import.
+ * A repeated import returns the current Hlid owner without modifying it.
+ */
+export async function createProviderNativeSessionImport(
+	input: ProviderNativeSessionImport,
+): Promise<ProviderNativeSessionImportResult> {
+	if (!input.id.trim()) throw new Error("Session id is required");
+	if (!input.providerId.trim()) throw new Error("Provider id is required");
+	if (!input.providerSessionId.trim()) {
+		throw new Error("Provider session id is required");
+	}
+	if (!input.providerRuntimeIdentity.trim()) {
+		throw new Error("Provider runtime identity is required");
+	}
+	if (!input.agentCwd.trim()) throw new Error("Agent cwd is required");
+
+	const db = await getDb();
+	const result = db
+		.transaction((): ProviderNativeSessionImportResult => {
+			const runtimeIdentity = input.providerRuntimeIdentity.trim();
+			const owner = db
+				.query<
+					{
+						id: string;
+						agent_cwd: string | null;
+						provider_runtime_identity: string | null;
+					},
+					[string, string]
+				>(
+					`SELECT id, agent_cwd, provider_runtime_identity FROM sessions
+					 WHERE provider_id = ? AND provider_session_id = ?
+					 ORDER BY started_at ASC, id ASC
+					 LIMIT 1`,
+				)
+				.get(input.providerId, input.providerSessionId);
+			if (owner) {
+				const rebound =
+					owner.provider_runtime_identity !== runtimeIdentity ||
+					owner.agent_cwd !== input.agentCwd;
+				if (!rebound) {
+					return { created: false, rebound: false, sessionId: owner.id };
+				}
+				// Import is the explicit, route-revalidated authority for rebinding a
+				// provider-owned session after its runtime or exact workspace changed.
+				// Preserve the user's Hlid label and all transcript/accounting state.
+				const updated = db.run(
+					`UPDATE sessions
+					 SET provider_runtime_identity = ?, agent_cwd = ?
+					 WHERE id = ? AND provider_id = ? AND provider_session_id = ?`,
+					[
+						runtimeIdentity,
+						input.agentCwd,
+						owner.id,
+						input.providerId,
+						input.providerSessionId,
+					],
+				);
+				return {
+					created: false,
+					rebound: updated.changes === 1,
+					sessionId: owner.id,
+				};
+			}
+
+			const idOwner = db
+				.query<{ id: string }, [string]>(`SELECT id FROM sessions WHERE id = ?`)
+				.get(input.id);
+			if (idOwner) {
+				throw new Error(`Session id already exists: ${input.id}`);
+			}
+
+			const model = input.model?.trim() ? input.model : null;
+			db.run(
+				`INSERT INTO sessions
+			 (id, label, model, selected_model, agent_cwd, provider_id,
+			  provider_session_id, provider_runtime_identity, started_at,
+			  history_imported, history_source, history_resume_mode)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), 1, 'acp-native', 'native')`,
+				[
+					input.id,
+					input.label,
+					model,
+					model,
+					input.agentCwd,
+					input.providerId,
+					input.providerSessionId,
+					runtimeIdentity,
+				],
+			);
+			db.run(`INSERT INTO session_search (session_id, text) VALUES (?, ?)`, [
+				input.id,
+				normalizeSearchText(input.label),
+			]);
+			return { created: true, rebound: false, sessionId: input.id };
+		})
+		.immediate();
+
+	if (result.created || result.rebound) {
+		markAnalyticsChanged(
+			["stats", "activity"],
+			result.created ? "session_created" : "provider_native_session_rebound",
+		);
+	}
+	return result;
+}
+
+/**
  * Create a new session row copying the durable selection (model/effort/
  * permission mode/approval reviewer/cwd/provider) from an existing source
  * session, pointing it at an already-forked native provider session id. Used
@@ -577,6 +732,10 @@ export async function createForkedSessionRow(
 ): Promise<void> {
 	const source = await getSessionById(sourceId);
 	if (!source) throw new Error("Source session not found");
+	const sourceRuntimeIdentity = await getSessionProviderRuntimeIdentity(
+		sourceId,
+		source.provider_id ?? "claude",
+	);
 	const label = source.label ? `${source.label} (fork)` : "Forked session";
 	await createSession(
 		newId,
@@ -598,6 +757,7 @@ export async function createForkedSessionRow(
 		newId,
 		source.provider_id ?? "claude",
 		newProviderSessionId,
+		sourceRuntimeIdentity,
 	);
 	const db = await getDb();
 	db.run(
@@ -948,14 +1108,15 @@ export async function getSessionsPaginated(
 	const { whereSql, params } = buildSessionFilter(opts);
 	const orderSql = SESSION_SORT_SQL[opts.sort ?? "recent"];
 	const sessions = db
-		.query<SessionRow, (string | number)[]>(
+		.query<InternalSessionRow, (string | number)[]>(
 			`SELECT sessions.*,
 			        ${sessionToolCallCountColumn("sessions")},
 			        ${sessionDelegationColumns("sessions")}
 			 FROM sessions ${whereSql}
 			 ORDER BY pinned DESC, ${orderSql} LIMIT ? OFFSET ?`,
 		)
-		.all(...params, pageSize, offset);
+		.all(...params, pageSize, offset)
+		.map(publicSessionRow);
 	const row = db
 		.query<{ total: number }, (string | number)[]>(
 			`SELECT COUNT(*) as total FROM sessions ${whereSql}`,
@@ -1005,14 +1166,15 @@ export async function getSessionsPaginated(
 export async function getAllSessions(): Promise<SessionRow[]> {
 	const db = await getDb();
 	return db
-		.query<SessionRow, []>(
+		.query<InternalSessionRow, []>(
 			`SELECT sessions.*,
 			        ${sessionToolCallCountColumn("sessions")},
 			        ${sessionDelegationColumns("sessions")}
 			 FROM sessions
 			 ORDER BY COALESCE(ended_at, started_at) DESC`,
 		)
-		.all();
+		.all()
+		.map(publicSessionRow);
 }
 
 /** Delete every Hlid-owned row/file link while preserving immutable ledgers. */
@@ -1586,24 +1748,23 @@ export async function setSessionArchived(
 
 export async function getSessionById(id: string): Promise<SessionRow | null> {
 	const db = await getDb();
-	return (
-		db
-			.query<SessionRow, [string]>(
-				`SELECT child.*, parent.label AS fork_parent_label,
+	const row = db
+		.query<InternalSessionRow, [string]>(
+			`SELECT child.*, parent.label AS fork_parent_label,
 				        ${sessionToolCallCountColumn("child")},
 				        ${sessionDelegationColumns("child")}
 				 FROM sessions child
 				 LEFT JOIN sessions parent ON parent.id = child.fork_parent_session_id
 				 WHERE child.id = ?`,
-			)
-			.get(id) ?? null
-	);
+		)
+		.get(id);
+	return row ? publicSessionRow(row) : null;
 }
 
 export async function getRecentSessions(limit = 14): Promise<SessionRow[]> {
 	const db = await getDb();
 	return db
-		.query<SessionRow, [number]>(
+		.query<InternalSessionRow, [number]>(
 			`SELECT child.*, parent.label AS fork_parent_label,
 			        ${sessionToolCallCountColumn("child")},
 			        ${sessionDelegationColumns("child")}
@@ -1614,5 +1775,6 @@ export async function getRecentSessions(limit = 14): Promise<SessionRow[]> {
 			  COALESCE(child.ended_at, child.started_at) DESC
 			 LIMIT ?`,
 		)
-		.all(limit);
+		.all(limit)
+		.map(publicSessionRow);
 }

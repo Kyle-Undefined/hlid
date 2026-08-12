@@ -1,4 +1,6 @@
-import { realpath } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import type { Stats } from "node:fs";
+import { open, readFile, realpath, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
 	type AgentInstructionFileName,
@@ -13,10 +15,12 @@ import {
 import {
 	isPathAccessibleFromRuntime,
 	pathStartsWith,
+	samePath,
 	toLogical,
 	toProviderRuntimePath,
 } from "../lib/paths";
 import type { WorkspaceReferenceRequest } from "../lib/vaultReferences";
+import type { ProviderPromptContent } from "./agentProvider";
 import { artifactsDirectory, managedSkillsDirectory } from "./libraryStore";
 import type { ChatAttachment } from "./protocol";
 import {
@@ -193,8 +197,252 @@ type AssembledPrompt = {
 	resourcePaths: string[];
 	safeVaultReferences: ResolvedVaultReference[];
 	safeWorkspaceReferences: ResolvedWorkspaceReference[];
+	structuredContent: ProviderPromptContent[];
 	contextManifest: HlidPromptContextManifest;
 };
+
+const MAX_STRUCTURED_IMAGE_BYTES = 20 * 1024 * 1024;
+const MAX_STRUCTURED_IMAGE_TOTAL_BYTES = 24 * 1024 * 1024;
+const MAX_STRUCTURED_IMAGE_COUNT = 8;
+const MAX_STRUCTURED_RESOURCE_CHARS = 16_000;
+const MAX_STRUCTURED_RESOURCE_TOTAL_CHARS = 64_000;
+
+type AuthorizedFileIdentity = Pick<
+	Stats,
+	"dev" | "ino" | "size" | "mtimeMs" | "ctimeMs"
+>;
+
+type AuthorizedAttachment = {
+	attachment: ChatAttachment;
+	canonicalPath: string;
+	identity: AuthorizedFileIdentity;
+};
+
+type StructuredImage = {
+	content: ProviderPromptContent;
+	bytes: number;
+};
+
+function fileIdentity(value: Stats): AuthorizedFileIdentity {
+	return {
+		dev: value.dev,
+		ino: value.ino,
+		size: value.size,
+		mtimeMs: value.mtimeMs,
+		ctimeMs: value.ctimeMs,
+	};
+}
+
+function sameFileIdentity(
+	left: AuthorizedFileIdentity,
+	right: AuthorizedFileIdentity,
+): boolean {
+	return (
+		left.dev === right.dev &&
+		left.ino === right.ino &&
+		left.size === right.size &&
+		left.mtimeMs === right.mtimeMs &&
+		left.ctimeMs === right.ctimeMs
+	);
+}
+
+function structuredUri(kind: string, value: string): string {
+	return `hlid://${kind}/${encodeURIComponent(value)}`;
+}
+
+async function imageContent(
+	path: string,
+	mimeType: string,
+	uri: string,
+	maxBytes: number,
+	expectedSha256?: string,
+	expectedIdentity?: AuthorizedFileIdentity,
+): Promise<StructuredImage | null> {
+	const handle = await open(path, "r").catch(() => null);
+	if (!handle) return null;
+	try {
+		const before = await handle.stat();
+		if (!before.isFile()) return null;
+		const beforeIdentity = fileIdentity(before);
+		if (
+			expectedIdentity &&
+			!sameFileIdentity(expectedIdentity, beforeIdentity)
+		) {
+			throw new Error("An attachment changed after selection.");
+		}
+		if (before.size > MAX_STRUCTURED_IMAGE_BYTES || before.size > maxBytes) {
+			return null;
+		}
+
+		// Confirm the opened handle still belongs to the exact canonical path that
+		// passed authorization. Reading from the handle after this point prevents a
+		// later path or symlink swap from changing the bytes supplied to the agent.
+		const canonicalNow = await realpath(path).catch(() => null);
+		const current = canonicalNow
+			? await stat(canonicalNow).catch(() => null)
+			: null;
+		if (
+			!canonicalNow ||
+			!samePath(canonicalNow, path) ||
+			!current ||
+			!sameFileIdentity(beforeIdentity, fileIdentity(current))
+		) {
+			throw new Error("An attachment changed after selection.");
+		}
+
+		const bytes = Buffer.allocUnsafe(before.size);
+		let offset = 0;
+		while (offset < bytes.length) {
+			const result = await handle.read(
+				bytes,
+				offset,
+				bytes.length - offset,
+				offset,
+			);
+			if (result.bytesRead === 0) {
+				throw new Error("An attachment changed while it was being read.");
+			}
+			offset += result.bytesRead;
+		}
+		const overflow = Buffer.allocUnsafe(1);
+		if ((await handle.read(overflow, 0, 1, offset)).bytesRead !== 0) {
+			throw new Error("An attachment changed while it was being read.");
+		}
+		const afterIdentity = fileIdentity(await handle.stat());
+		if (!sameFileIdentity(beforeIdentity, afterIdentity)) {
+			throw new Error("An attachment changed while it was being read.");
+		}
+		if (
+			expectedSha256 &&
+			createHash("sha256").update(bytes).digest("hex") !== expectedSha256
+		) {
+			throw new Error("A workspace reference changed after selection.");
+		}
+		return {
+			content: {
+				type: "image",
+				data: bytes.toString("base64"),
+				mimeType,
+				uri,
+			},
+			bytes: bytes.length,
+		};
+	} finally {
+		await handle.close();
+	}
+}
+
+async function exactWorkspaceText(
+	reference: ResolvedWorkspaceReference,
+): Promise<string> {
+	const bytes = await readFile(reference.path).catch(() => null);
+	if (!bytes) {
+		throw new Error(
+			`${reference.relativePath} is unavailable after selection.`,
+		);
+	}
+	if (createHash("sha256").update(bytes).digest("hex") !== reference.sha256) {
+		throw new Error(`${reference.relativePath} changed after selection.`);
+	}
+	try {
+		return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+	} catch {
+		throw new Error(`${reference.relativePath} is no longer UTF-8 text.`);
+	}
+}
+
+/**
+ * Build only from resources that passed the existing attachment/reference
+ * authorization pipeline. This function never follows links or discovers
+ * adjacent content.
+ */
+async function buildStructuredContent(
+	attachments: AuthorizedAttachment[],
+	vaultReferences: NativeVaultReference[],
+	workspaceReferences: ResolvedWorkspaceReference[],
+): Promise<ProviderPromptContent[]> {
+	const blocks: ProviderPromptContent[] = [];
+	let imageBytes = 0;
+	let imageCount = 0;
+	const addImage = async (
+		path: string,
+		mimeType: string,
+		uri: string,
+		expectedSha256?: string,
+		expectedIdentity?: AuthorizedFileIdentity,
+	): Promise<void> => {
+		if (
+			imageCount >= MAX_STRUCTURED_IMAGE_COUNT ||
+			imageBytes >= MAX_STRUCTURED_IMAGE_TOTAL_BYTES
+		) {
+			return;
+		}
+		const image = await imageContent(
+			path,
+			mimeType,
+			uri,
+			MAX_STRUCTURED_IMAGE_TOTAL_BYTES - imageBytes,
+			expectedSha256,
+			expectedIdentity,
+		);
+		if (!image) return;
+		blocks.push(image.content);
+		imageBytes += image.bytes;
+		imageCount += 1;
+	};
+
+	for (const { attachment, canonicalPath, identity } of attachments) {
+		if (!attachment.mime.startsWith("image/")) continue;
+		await addImage(
+			canonicalPath,
+			attachment.mime,
+			structuredUri("attachment", attachment.id),
+			undefined,
+			identity,
+		);
+	}
+	for (const reference of workspaceReferences) {
+		if (reference.previewKind !== "image") continue;
+		await addImage(
+			reference.path,
+			reference.mime,
+			structuredUri("workspace-reference", reference.relativePath),
+			reference.sha256,
+		);
+	}
+
+	let remaining = MAX_STRUCTURED_RESOURCE_TOTAL_CHARS;
+	for (const reference of vaultReferences) {
+		if (reference.content === undefined || remaining <= 0) continue;
+		const text = reference.content.slice(
+			0,
+			Math.min(MAX_STRUCTURED_RESOURCE_CHARS, remaining),
+		);
+		remaining -= text.length;
+		blocks.push({
+			type: "resource",
+			uri: structuredUri("vault-reference", reference.relativePath),
+			mimeType: "text/markdown",
+			text,
+		});
+	}
+	for (const reference of workspaceReferences) {
+		if (reference.previewKind !== "text" || remaining <= 0) continue;
+		const source = await exactWorkspaceText(reference);
+		const text = source.slice(
+			0,
+			Math.min(MAX_STRUCTURED_RESOURCE_CHARS, remaining),
+		);
+		remaining -= text.length;
+		blocks.push({
+			type: "resource",
+			uri: structuredUri("workspace-reference", reference.relativePath),
+			mimeType: reference.mime,
+			text,
+		});
+	}
+	return blocks;
+}
 
 function runtimePathFor(opts: BuildPromptOptions): RuntimePath {
 	return (path) =>
@@ -520,6 +768,7 @@ function assemblePrompt(
 	safeAttachments: ChatAttachment[],
 	safeVaultReferences: NativeVaultReference[],
 	safeWorkspaceReferences: ResolvedWorkspaceReference[],
+	structuredContent: ProviderPromptContent[],
 	instructionFile: AgentInstructionFileName | null,
 ): AssembledPrompt {
 	const resources: PromptResources = {
@@ -539,6 +788,7 @@ function assemblePrompt(
 		resourcePaths: buildResourcePaths(opts, resources),
 		safeVaultReferences,
 		safeWorkspaceReferences,
+		structuredContent,
 		contextManifest: buildContextManifest(
 			opts,
 			resources,
@@ -557,6 +807,7 @@ export async function buildPromptAsync(opts: BuildPromptOptions): Promise<{
 	resourcePaths: string[];
 	safeVaultReferences: ResolvedVaultReference[];
 	safeWorkspaceReferences: ResolvedWorkspaceReference[];
+	structuredContent?: ProviderPromptContent[];
 	contextManifest: HlidPromptContextManifest;
 }> {
 	const vaultRoot = resolve(opts.vaultPath);
@@ -579,7 +830,7 @@ export async function buildPromptAsync(opts: BuildPromptOptions): Promise<{
 			}),
 		)
 	).filter((value): value is string => value !== null);
-	const safeAttachments = (
+	const authorizedAttachments = (
 		await Promise.all(
 			(opts.attachments ?? []).map(async (attachment) => {
 				if (
@@ -592,16 +843,26 @@ export async function buildPromptAsync(opts: BuildPromptOptions): Promise<{
 					() => null,
 				);
 				if (!canonical) return null;
-				if (pathStartsWith(vaultRootReal, canonical)) return attachment;
-				if (pathStartsWith(artifactsDirectory(), canonical)) return attachment;
-				return opts.allowedAgentRealPaths.some((root) =>
-					pathStartsWith(root, canonical),
-				)
-					? attachment
-					: null;
+				const authorized =
+					pathStartsWith(vaultRootReal, canonical) ||
+					pathStartsWith(artifactsDirectory(), canonical) ||
+					opts.allowedAgentRealPaths.some((root) =>
+						pathStartsWith(root, canonical),
+					);
+				if (!authorized) return null;
+				const metadata = await stat(canonical).catch(() => null);
+				if (!metadata?.isFile()) return null;
+				return {
+					attachment,
+					canonicalPath: canonical,
+					identity: fileIdentity(metadata),
+				} satisfies AuthorizedAttachment;
 			}),
 		)
-	).filter((value): value is ChatAttachment => value !== null);
+	).filter((value): value is AuthorizedAttachment => value !== null);
+	const safeAttachments = authorizedAttachments.map(
+		({ attachment }) => attachment,
+	);
 	const safeVaultReferences = await resolveVaultReferences({
 		vaultPath: opts.vaultPath,
 		references: opts.vaultReferences,
@@ -626,12 +887,20 @@ export async function buildPromptAsync(opts: BuildPromptOptions): Promise<{
 		opts.claudeSessionId === null
 			? await findAgentInstructionFileAsync(opts.agentCwd, opts.providerId)
 			: null;
+	const structuredContent = opts.providerId.startsWith("acp:")
+		? await buildStructuredContent(
+				authorizedAttachments,
+				hydratedVaultReferences,
+				safeWorkspaceReferences,
+			)
+		: [];
 	return assemblePrompt(
 		opts,
 		safeSkillContexts,
 		safeAttachments,
 		hydratedVaultReferences,
 		safeWorkspaceReferences,
+		structuredContent,
 		instructionFile,
 	);
 }

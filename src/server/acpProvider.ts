@@ -1,4 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { win32 } from "node:path";
 import { Readable, Writable } from "node:stream";
 import {
@@ -48,7 +49,9 @@ import type {
 	McpServerStatus,
 	ProviderForkCapability,
 	ProviderModelInfo,
+	ProviderPromptContent,
 	ProviderSessionConfigSnapshot,
+	SendOptions,
 	SlashCommand,
 	ToolProgressSnapshot,
 } from "./agentProvider";
@@ -1246,6 +1249,8 @@ class AcpSession implements AgentSession {
 	private canCloseSession = false;
 	private canLoadSession = false;
 	private canResumeSession = false;
+	private acceptsImagePrompts = false;
+	private acceptsEmbeddedContext = false;
 	private allowInterruptedResumeFallback = false;
 	private loadingSessionReplay = false;
 	private modes: SessionModeState | null = null;
@@ -2017,6 +2022,8 @@ class AcpSession implements AgentSession {
 		this.canCloseSession = false;
 		this.canLoadSession = false;
 		this.canResumeSession = false;
+		this.acceptsImagePrompts = false;
+		this.acceptsEmbeddedContext = false;
 		this.loadingSessionReplay = false;
 		this.modes = null;
 		this.configOptions = [];
@@ -2339,6 +2346,11 @@ class AcpSession implements AgentSession {
 		);
 		this.canLoadSession = Boolean(initialized.agentCapabilities?.loadSession);
 		this.canResumeSession = Boolean(sessionCapabilities?.resume);
+		this.acceptsImagePrompts =
+			initialized.agentCapabilities?.promptCapabilities?.image === true;
+		this.acceptsEmbeddedContext =
+			initialized.agentCapabilities?.promptCapabilities?.embeddedContext ===
+			true;
 		this.canDeleteSession = Boolean(sessionCapabilities?.delete);
 		this.canCloseSession = Boolean(sessionCapabilities?.close);
 		if (this.cancelled) return;
@@ -2463,7 +2475,7 @@ class AcpSession implements AgentSession {
 		this.events.push({ type: "session_start", sessionId: this.sessionId });
 	}
 
-	async send(message: string): Promise<void> {
+	async send(message: string, opts?: SendOptions): Promise<void> {
 		this.assertPromptAdmission();
 		await this.initialize();
 		this.assertPromptAdmission();
@@ -2478,8 +2490,29 @@ class AcpSession implements AgentSession {
 			controlsLocked: true,
 			suppressError: false,
 		};
-		active.promise = this.runPrompt(message);
 		this.activePrompt = active;
+		let receiptSettled: () => void = () => {};
+		const receiptComplete = new Promise<void>((resolve) => {
+			receiptSettled = resolve;
+		});
+		const acceptedContent = this.acceptedStructuredContent(
+			opts?.structuredContent ?? [],
+		);
+		active.promise = (async () => {
+			try {
+				await opts?.onStructuredContentAccepted?.(acceptedContent);
+			} catch (error) {
+				console.error(
+					"[acp] structured prompt receipt callback failed:",
+					error,
+				);
+			} finally {
+				receiptSettled();
+			}
+			this.assertPromptAdmission();
+			if (this.cancelled || !this.connection || !this.sessionId) return;
+			await this.runPrompt(message, acceptedContent);
+		})();
 		void active.promise
 			.then(
 				() => {
@@ -2497,10 +2530,85 @@ class AcpSession implements AgentSession {
 			.finally(() => {
 				if (this.activePrompt === active) this.activePrompt = null;
 			});
+		await receiptComplete;
+	}
+
+	private acceptedStructuredContent(
+		structuredContent: readonly ProviderPromptContent[],
+	): ProviderPromptContent[] {
+		const accepted: ProviderPromptContent[] = [];
+		for (const block of structuredContent) {
+			if (block.type === "image") {
+				if (!this.acceptsImagePrompts) continue;
+				accepted.push({
+					type: "image",
+					data: block.data,
+					mimeType: block.mimeType,
+					...(block.uri ? { uri: block.uri } : {}),
+				});
+				continue;
+			}
+			if (!this.acceptsEmbeddedContext) continue;
+			if (block.text !== undefined) {
+				accepted.push({
+					type: "resource",
+					uri: block.uri,
+					...(block.mimeType ? { mimeType: block.mimeType } : {}),
+					text: block.text,
+				});
+			} else if (block.blob !== undefined) {
+				accepted.push({
+					type: "resource",
+					uri: block.uri,
+					...(block.mimeType ? { mimeType: block.mimeType } : {}),
+					blob: block.blob,
+				});
+			}
+		}
+		return accepted;
+	}
+
+	private promptBlocks(
+		message: string,
+		structuredContent: readonly ProviderPromptContent[],
+	): ContentBlock[] {
+		const prompt: ContentBlock[] = [{ type: "text", text: message }];
+		for (const block of structuredContent) {
+			if (block.type === "image") {
+				prompt.push({
+					type: "image",
+					data: block.data,
+					mimeType: block.mimeType,
+					...(block.uri ? { uri: block.uri } : {}),
+				});
+				continue;
+			}
+			if (block.text !== undefined) {
+				prompt.push({
+					type: "resource",
+					resource: {
+						uri: block.uri,
+						text: block.text,
+						...(block.mimeType ? { mimeType: block.mimeType } : {}),
+					},
+				});
+			} else if (block.blob !== undefined) {
+				prompt.push({
+					type: "resource",
+					resource: {
+						uri: block.uri,
+						blob: block.blob,
+						...(block.mimeType ? { mimeType: block.mimeType } : {}),
+					},
+				});
+			}
+		}
+		return prompt;
 	}
 
 	private async runPrompt(
 		message: string,
+		structuredContent: readonly ProviderPromptContent[] = [],
 		costStartUsd: number | null = this.latestCostUsd,
 		queryTurnStart = this.turns,
 		queryStartedMs = Date.now(),
@@ -2532,7 +2640,7 @@ class AcpSession implements AgentSession {
 		try {
 			response = await identity.connection.prompt({
 				sessionId: identity.sessionId,
-				prompt: [{ type: "text", text: message }],
+				prompt: this.promptBlocks(message, structuredContent),
 			});
 		} catch (error) {
 			if (this.runtimeIdentityIsCurrent(identity)) this.flushThoughts(true);
@@ -2588,6 +2696,7 @@ class AcpSession implements AgentSession {
 					: "Revise the native plan and present it for approval again.";
 				await this.runPrompt(
 					`${decision.message}\n\n${revisionInstruction}`,
+					[],
 					costStartUsd,
 					queryTurnStart,
 					queryStartedMs,
@@ -2601,6 +2710,7 @@ class AcpSession implements AgentSession {
 				await this.syncPermissionMode(this.params.permissionMode);
 				await this.runPrompt(
 					"The user approved the plan. Implement it now, including its validation steps. Do not create another plan unless implementation reveals a material blocker that requires user input.",
+					[],
 					costStartUsd,
 					queryTurnStart,
 					queryStartedMs,
@@ -2945,6 +3055,7 @@ export class AcpProvider implements AgentProvider {
 	readonly providerId: string;
 	readonly label: string;
 	readonly metadataCacheIdentity?: string;
+	readonly sessionContinuityIdentity?: string;
 	readonly modelCatalogScope = "workspace" as const;
 	readonly permissionModes = [
 		{
@@ -2976,6 +3087,9 @@ export class AcpProvider implements AgentProvider {
 		this.providerId = options.id;
 		this.label = options.label;
 		this.metadataCacheIdentity = options.metadataCacheIdentity;
+		this.sessionContinuityIdentity = options.metadataCacheIdentity
+			? createHash("sha256").update(options.metadataCacheIdentity).digest("hex")
+			: undefined;
 		this.availabilitySnapshot = options.initialAvailability;
 	}
 
@@ -3377,6 +3491,284 @@ export async function inspectAcpAgent(
 			);
 		}
 		return initialized;
+	} finally {
+		if (inspection) await inspection.cleanup(deadline.signal.aborted);
+		deadline.clear();
+	}
+}
+
+export type AcpProviderNativeSession = {
+	sessionId: string;
+	title?: string | null;
+	updatedAt?: string | null;
+};
+
+export type AcpProviderNativeSessionPage = {
+	sessions: AcpProviderNativeSession[];
+	/** True only when this connection also advertises load or resume support. */
+	canImportSessions: boolean;
+	nextCursor?: string;
+};
+
+export class AcpSessionListUnsupportedError extends Error {
+	constructor() {
+		super("The ACP agent does not advertise session/list support");
+		this.name = "AcpSessionListUnsupportedError";
+	}
+}
+
+export class AcpSessionImportUnsupportedError extends Error {
+	constructor() {
+		super("The ACP agent can list sessions but cannot load or resume them");
+		this.name = "AcpSessionImportUnsupportedError";
+	}
+}
+
+const MAX_ACP_SESSION_PAGE_SIZE = 100;
+const MAX_ACP_SESSION_SCAN_PAGES = 25;
+const MAX_ACP_SESSION_ID_CHARS = 512;
+const MAX_ACP_SESSION_TITLE_CHARS = 1_000;
+const MAX_ACP_SESSION_CURSOR_CHARS = 2_048;
+const MAX_ACP_SESSION_PATH_CHARS = 4_096;
+const MAX_ACP_SESSION_TIMESTAMP_CHARS = 128;
+
+function providerSessionString(
+	value: unknown,
+	label: string,
+	limit: number,
+	allowEmpty = false,
+): string {
+	if (
+		typeof value !== "string" ||
+		(!allowEmpty && value.length === 0) ||
+		value.length > limit
+	) {
+		throw new Error(`ACP session/list returned an invalid ${label}`);
+	}
+	return value;
+}
+
+function workspacePathIdentity(value: string): string {
+	const normalized = value.replaceAll("\\", "/").replace(/\/+$/, "") || "/";
+	return process.platform === "win32" || /^[a-z]:\//i.test(normalized)
+		? normalized.toLowerCase()
+		: normalized;
+}
+
+async function readAcpProviderSessionPage(
+	inspection: AcpInspectionConnection,
+	cwd: string,
+	timeouts: AcpLifecycleTimeouts,
+	canImportSessions: boolean,
+	cursor?: string,
+): Promise<AcpProviderNativeSessionPage> {
+	providerSessionString(cwd, "workspace path", MAX_ACP_SESSION_PATH_CHARS);
+	if (cursor !== undefined) {
+		providerSessionString(
+			cursor,
+			"pagination cursor",
+			MAX_ACP_SESSION_CURSOR_CHARS,
+		);
+	}
+	const page = await runInspectionPhase(
+		inspection,
+		"provider session listing",
+		timeouts.sessionMs,
+		() =>
+			inspection.connection.listSessions({
+				cwd,
+				...(cursor !== undefined ? { cursor } : {}),
+			}),
+	);
+	if (page.sessions.length > MAX_ACP_SESSION_PAGE_SIZE) {
+		throw new Error("ACP session/list returned an oversized session page");
+	}
+	const workspace = workspacePathIdentity(cwd);
+	const seen = new Set<string>();
+	const sessions: AcpProviderNativeSession[] = [];
+	for (const item of page.sessions) {
+		const sessionId = providerSessionString(
+			item.sessionId,
+			"session id",
+			MAX_ACP_SESSION_ID_CHARS,
+		);
+		const itemCwd = providerSessionString(
+			item.cwd,
+			"session workspace path",
+			MAX_ACP_SESSION_PATH_CHARS,
+		);
+		// The request is scoped to one workspace. Never surface metadata for a
+		// provider response that falls outside that exact workspace selection.
+		if (workspacePathIdentity(itemCwd) !== workspace || seen.has(sessionId)) {
+			continue;
+		}
+		seen.add(sessionId);
+		let title: string | null | undefined;
+		if (item.title !== undefined && item.title !== null) {
+			title = providerSessionString(
+				item.title,
+				"session title",
+				MAX_ACP_SESSION_TITLE_CHARS,
+				true,
+			);
+		} else {
+			title = item.title;
+		}
+		let updatedAt: string | null | undefined;
+		if (item.updatedAt !== undefined && item.updatedAt !== null) {
+			updatedAt = providerSessionString(
+				item.updatedAt,
+				"session timestamp",
+				MAX_ACP_SESSION_TIMESTAMP_CHARS,
+			);
+			if (Number.isNaN(Date.parse(updatedAt))) {
+				throw new Error(
+					"ACP session/list returned an invalid session timestamp",
+				);
+			}
+		} else {
+			updatedAt = item.updatedAt;
+		}
+		sessions.push({ sessionId, title, updatedAt });
+	}
+	let nextCursor: string | undefined;
+	if (page.nextCursor !== undefined && page.nextCursor !== null) {
+		nextCursor = providerSessionString(
+			page.nextCursor,
+			"pagination cursor",
+			MAX_ACP_SESSION_CURSOR_CHARS,
+		);
+	}
+	return {
+		sessions,
+		canImportSessions,
+		...(nextCursor ? { nextCursor } : {}),
+	};
+}
+
+function canImportAcpProviderSessions(
+	initialized: InitializeResponse,
+): boolean {
+	return Boolean(
+		initialized.agentCapabilities?.loadSession ||
+			initialized.agentCapabilities?.sessionCapabilities?.resume,
+	);
+}
+
+/**
+ * Read one provider-owned session metadata page for exactly one workspace.
+ * This does not load, resume, fork, import, or inspect any session transcript.
+ */
+export async function listAcpProviderSessions(
+	options: AcpProviderOptions,
+	cwd: string,
+	cursor?: string,
+): Promise<AcpProviderNativeSessionPage> {
+	providerSessionString(cwd, "workspace path", MAX_ACP_SESSION_PATH_CHARS);
+	if (cursor !== undefined) {
+		providerSessionString(
+			cursor,
+			"pagination cursor",
+			MAX_ACP_SESSION_CURSOR_CHARS,
+		);
+	}
+	const timeouts = acpTimeouts(options);
+	const deadline = createInspectionDeadline(
+		timeouts.inspectionMs + timeouts.sessionMs,
+		"provider session listing",
+	);
+	let inspection: AcpInspectionConnection | null = null;
+	try {
+		inspection = await createInspectionConnection(
+			options,
+			cwd,
+			deadline.signal,
+		);
+		const initialized = await initializeInspection(
+			inspection,
+			timeouts.initializeMs,
+		);
+		if (!initialized.agentCapabilities?.sessionCapabilities?.list) {
+			throw new AcpSessionListUnsupportedError();
+		}
+		return await readAcpProviderSessionPage(
+			inspection,
+			cwd,
+			timeouts,
+			canImportAcpProviderSessions(initialized),
+			cursor,
+		);
+	} finally {
+		if (inspection) await inspection.cleanup(deadline.signal.aborted);
+		deadline.clear();
+	}
+}
+
+/**
+ * Revalidate one exact provider-owned session against a bounded catalog scan.
+ * All pages share one initialized inspection process and no transcript is loaded.
+ */
+export async function findAcpProviderSession(
+	options: AcpProviderOptions,
+	cwd: string,
+	providerSessionId: string,
+): Promise<AcpProviderNativeSession | undefined> {
+	providerSessionString(cwd, "workspace path", MAX_ACP_SESSION_PATH_CHARS);
+	providerSessionString(
+		providerSessionId,
+		"session id",
+		MAX_ACP_SESSION_ID_CHARS,
+	);
+	const timeouts = acpTimeouts(options);
+	const deadline = createInspectionDeadline(
+		timeouts.inspectionMs + timeouts.sessionMs,
+		"provider session validation",
+	);
+	let inspection: AcpInspectionConnection | null = null;
+	try {
+		inspection = await createInspectionConnection(
+			options,
+			cwd,
+			deadline.signal,
+		);
+		const initialized = await initializeInspection(
+			inspection,
+			timeouts.initializeMs,
+		);
+		if (!initialized.agentCapabilities?.sessionCapabilities?.list) {
+			throw new AcpSessionListUnsupportedError();
+		}
+		if (!canImportAcpProviderSessions(initialized)) {
+			throw new AcpSessionImportUnsupportedError();
+		}
+		let cursor: string | undefined;
+		const seenCursors = new Set<string>();
+		for (
+			let pageIndex = 0;
+			pageIndex < MAX_ACP_SESSION_SCAN_PAGES;
+			pageIndex += 1
+		) {
+			const page = await readAcpProviderSessionPage(
+				inspection,
+				cwd,
+				timeouts,
+				true,
+				cursor,
+			);
+			const match = page.sessions.find(
+				(session) => session.sessionId === providerSessionId,
+			);
+			if (match) return match;
+			if (!page.nextCursor) return undefined;
+			if (seenCursors.has(page.nextCursor)) {
+				throw new Error("ACP session/list returned a repeated cursor");
+			}
+			seenCursors.add(page.nextCursor);
+			cursor = page.nextCursor;
+		}
+		throw new Error(
+			`ACP session/list exceeded the ${MAX_ACP_SESSION_SCAN_PAGES}-page validation limit`,
+		);
 	} finally {
 		if (inspection) await inspection.cleanup(deadline.signal.aborted);
 		deadline.clear();

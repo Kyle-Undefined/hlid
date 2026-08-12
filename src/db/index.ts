@@ -98,6 +98,7 @@ export {
 	insertForkedMessages,
 	linkProviderFrameToolStart,
 	recordProviderMessageFrame,
+	replaceUserMessageContextManifest,
 	retractProviderMessageFrames,
 	setAskUserQuestionProvenance,
 	setAskUserQuestionResolution,
@@ -160,6 +161,7 @@ export { getDb } from "./schema";
 // Sessions
 export {
 	createForkedSessionRow,
+	createProviderNativeSessionImport,
 	createSession,
 	deleteSession,
 	deleteSessionsOlderThan,
@@ -173,6 +175,7 @@ export {
 	getSessionLastQueryContext,
 	getSessionModel,
 	getSessionProviderId,
+	getSessionProviderRuntimeIdentity,
 	getSessionProviderSession,
 	getSessionSelection,
 	getSessionsPaginated,

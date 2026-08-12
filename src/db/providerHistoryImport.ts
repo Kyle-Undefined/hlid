@@ -2576,6 +2576,7 @@ export async function applyProviderHistoryImport(
 			}
 			db.run(
 				`UPDATE sessions SET provider_session_id = ?,
+				 provider_runtime_identity = NULL,
 				 claude_session_id = CASE WHEN ? = 'claude' THEN ? ELSE claude_session_id END,
 				 history_source = ?, history_resume_mode = ?, history_resume_path = ?
 				 WHERE id = ?`,

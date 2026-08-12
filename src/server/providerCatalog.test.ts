@@ -2338,6 +2338,140 @@ describe("createProviderCatalogSnapshot", () => {
 		expect(load).toHaveBeenCalledOnce();
 	});
 
+	it("does not livelock concurrent targeted capability publications", async () => {
+		let snapshot!: ReturnType<typeof createProviderCatalogSnapshot>;
+		const providers = [
+			makeProvider({ providerId: "codex" }),
+			makeProvider({ providerId: "acp:test" }),
+		];
+		const load = vi.fn(async (_providers, _catalog, options) => {
+			const target = options.refreshProviderId;
+			if (target) snapshot.invalidateMetadata(target);
+			await Promise.resolve();
+			return providers.map((provider) => ({
+				id: provider.providerId,
+				label: provider.label ?? provider.providerId,
+				available: true,
+				models: [],
+				capabilitySnapshot: {
+					contractVersion: 1 as const,
+					providerId: provider.providerId,
+					status: "current" as const,
+					source: "live" as const,
+					revision: `${target ?? "all"}-current`,
+					observedAt: 1,
+					capabilities: [],
+				},
+			}));
+		});
+		snapshot = createProviderCatalogSnapshot(
+			providers,
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+		const options = (refreshProviderId: string) => ({
+			includeProviderCapabilities: true,
+			preferCachedProviderCapabilities: false,
+			refreshProviderId,
+			discoveryCwd: "/work/project",
+		});
+
+		const [codex, acp] = await Promise.all([
+			snapshot.getVersioned(options("codex")),
+			snapshot.getVersioned(options("acp:test")),
+		]);
+
+		expect(codex.providers).toHaveLength(2);
+		expect(acp.providers).toHaveLength(2);
+		expect(load.mock.calls.map((call) => call[2].refreshProviderId)).toEqual([
+			"codex",
+			"acp:test",
+		]);
+	});
+
+	it("does not serialize capability reads across discovery workspaces", async () => {
+		let resolveFirst: ((value: ProviderInfo[]) => void) | undefined;
+		const providers = [makeProvider({ providerId: "acp:test" })];
+		const projection = [
+			{
+				id: "acp:test",
+				label: "ACP Test",
+				available: true,
+				models: [],
+			},
+		];
+		const load = vi.fn((_providers, _catalog, options) =>
+			options.discoveryCwd === "/slow"
+				? new Promise<ProviderInfo[]>((resolve) => {
+						resolveFirst = resolve;
+					})
+				: Promise.resolve(projection),
+		);
+		const snapshot = createProviderCatalogSnapshot(
+			providers,
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+		const options = (discoveryCwd: string) => ({
+			includeProviderCapabilities: true,
+			preferCachedProviderCapabilities: false,
+			refreshProviderId: "acp:test",
+			discoveryCwd,
+		});
+
+		const slow = snapshot.getVersioned(options("/slow"));
+		const fast = snapshot.getVersioned(options("/fast"));
+
+		expect(load).toHaveBeenCalledTimes(2);
+		await expect(fast).resolves.toMatchObject({ providers: projection });
+		resolveFirst?.(projection);
+		await expect(slow).resolves.toMatchObject({ providers: projection });
+	});
+
+	it("continues a workspace capability queue after a failed read", async () => {
+		const providers = [
+			makeProvider({ providerId: "codex" }),
+			makeProvider({ providerId: "acp:test" }),
+		];
+		const projection = providers.map((provider) => ({
+			id: provider.providerId,
+			label: provider.label ?? provider.providerId,
+			available: true,
+			models: [],
+		}));
+		const load = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("probe failed"))
+			.mockResolvedValueOnce(projection);
+		const snapshot = createProviderCatalogSnapshot(
+			providers,
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+		const options = (refreshProviderId: string) => ({
+			includeProviderCapabilities: true,
+			preferCachedProviderCapabilities: false,
+			refreshProviderId,
+			discoveryCwd: "/work/project",
+		});
+
+		const failed = snapshot.getVersioned(options("codex"));
+		const recovered = snapshot.getVersioned(options("acp:test"));
+
+		await expect(failed).rejects.toThrow("probe failed");
+		await expect(recovered).resolves.toMatchObject({ providers: projection });
+		expect(load).toHaveBeenCalledTimes(2);
+	});
+
 	it("does not store a capability-only model projection", async () => {
 		const load = vi.fn((_providers, _catalog, options) =>
 			Promise.resolve([

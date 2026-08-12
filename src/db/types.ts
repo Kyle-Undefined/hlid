@@ -57,6 +57,26 @@ export type SessionRow = {
 	tool_call_count?: number;
 };
 
+/** Exact provider-native session selected for an explicit Hlid import. */
+export type ProviderNativeSessionImport = {
+	id: string;
+	label: string;
+	agentCwd: string;
+	providerId: string;
+	providerSessionId: string;
+	/** Provider-supplied opaque digest. Never pass raw executable/config data. */
+	providerRuntimeIdentity: string;
+	model?: string | null;
+};
+
+/** Existing ownership is returned instead of creating duplicate Hlid rows. */
+export type ProviderNativeSessionImportResult = {
+	created: boolean;
+	/** Existing Hlid owner was rebound to the revalidated runtime/workspace. */
+	rebound: boolean;
+	sessionId: string;
+};
+
 export type SessionSelection = {
 	agentCwd: string | null;
 	providerId: string | null;

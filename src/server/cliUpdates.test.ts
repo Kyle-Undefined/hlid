@@ -359,6 +359,183 @@ ChatGPT 9PLM9XGG6VKS 26.707.9981.0 26.708.10000.0 msstore
 		]);
 	});
 
+	it("updates a Windows npm-installed OpenCode ACP agent with npm", async () => {
+		const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const directory = await mkdtemp(join(tmpdir(), "hlid-opencode-shim-"));
+		const executable = join(directory, "opencode.cmd");
+		try {
+			await writeFile(
+				executable,
+				'@ECHO off\r\n"%~dp0\\node.exe" "%~dp0\\node_modules\\opencode-ai\\bin\\opencode" %*\r\n',
+			);
+			const statuses = await inspectAcpUpdates({
+				listCandidates: vi.fn().mockResolvedValue([
+					{
+						item: acpItem({
+							id: "opencode",
+							name: "OpenCode",
+							version: "1.18.16",
+							providerId: "acp:opencode",
+							distribution: {
+								binary: { "windows-x86_64": { cmd: "opencode.exe" } },
+							},
+							command: "opencode",
+							args: ["acp"],
+							resolvedExecutable: executable,
+						}),
+						customExecutable: false,
+					},
+				]),
+				readVersion: vi.fn().mockResolvedValue("1.18.15"),
+				resolveGlobalNpmRoot: vi
+					.fn()
+					.mockResolvedValue(join(directory, "node_modules")),
+				now: () => 1_800_000_000_000,
+			});
+
+			expect(statuses).toEqual([
+				{
+					id: "acp:opencode",
+					label: "OpenCode (ACP)",
+					installedVersion: "1.18.15",
+					latestVersion: "1.18.16",
+					available: true,
+					updateCommand: "npm install --global opencode-ai@1.18.16",
+					updateMode: "automatic",
+					requiresElevation: false,
+					checkedAt: 1_800_000_000_000,
+				},
+			]);
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("opens an interactive npm update for a root-owned OpenCode package", async () => {
+		const statuses = await inspectAcpUpdates({
+			listCandidates: vi.fn().mockResolvedValue([
+				{
+					item: acpItem({
+						id: "opencode",
+						name: "OpenCode",
+						version: "1.18.16",
+						providerId: "acp:opencode",
+						distribution: {
+							binary: { "linux-x86_64": { cmd: "opencode" } },
+						},
+						resolvedExecutable:
+							"/usr/lib/node_modules/opencode-ai/bin/opencode",
+					}),
+					customExecutable: false,
+				},
+			]),
+			readVersion: vi.fn().mockResolvedValue("1.18.15"),
+			resolveGlobalNpmRoot: vi.fn().mockResolvedValue("/usr/lib/node_modules"),
+			now: () => 1_800_000_000_000,
+		});
+
+		expect(statuses[0]).toMatchObject({
+			updateCommand: "sudo npm install --global opencode-ai@1.18.16",
+			updateMode: "interactive",
+			requiresElevation: true,
+		});
+	});
+
+	it("does not infer npm ownership from OpenCode's command name", async () => {
+		const statuses = await inspectAcpUpdates({
+			listCandidates: vi.fn().mockResolvedValue([
+				{
+					item: acpItem({
+						id: "opencode",
+						name: "OpenCode",
+						version: "1.18.16",
+						providerId: "acp:opencode",
+						distribution: {
+							binary: { "linux-x86_64": { cmd: "opencode" } },
+						},
+						resolvedExecutable: "/opt/opencode/bin/opencode",
+					}),
+					customExecutable: false,
+				},
+			]),
+			readVersion: vi.fn().mockResolvedValue("1.18.15"),
+			now: () => 1_800_000_000_000,
+		});
+
+		expect(statuses[0]).toMatchObject({
+			id: "acp:opencode",
+			available: true,
+		});
+		expect(statuses[0]?.updateCommand).toBeUndefined();
+	});
+
+	it("does not relabel a pnpm-managed OpenCode package as npm-owned", async () => {
+		const statuses = await inspectAcpUpdates({
+			listCandidates: vi.fn().mockResolvedValue([
+				{
+					item: acpItem({
+						id: "opencode",
+						name: "OpenCode",
+						version: "1.18.16",
+						providerId: "acp:opencode",
+						distribution: {
+							binary: { "linux-x86_64": { cmd: "opencode" } },
+						},
+						resolvedExecutable:
+							"/home/user/.local/share/pnpm/global/5/node_modules/opencode-ai/bin/opencode",
+					}),
+					customExecutable: false,
+				},
+			]),
+			readVersion: vi.fn().mockResolvedValue("1.18.15"),
+			resolveGlobalNpmRoot: vi
+				.fn()
+				.mockResolvedValue("/usr/local/lib/node_modules"),
+			now: () => 1_800_000_000_000,
+		});
+
+		expect(statuses[0]?.updateCommand).toBeUndefined();
+	});
+
+	it("does not infer npm ownership from an unverified opencode.cmd", async () => {
+		const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const directory = await mkdtemp(join(tmpdir(), "hlid-opencode-cmd-"));
+		const executable = join(directory, "opencode.cmd");
+		try {
+			await writeFile(executable, "@ECHO off\r\nopencode-native.exe %*\r\n");
+			const statuses = await inspectAcpUpdates({
+				listCandidates: vi.fn().mockResolvedValue([
+					{
+						item: acpItem({
+							id: "opencode",
+							name: "OpenCode",
+							version: "1.18.16",
+							providerId: "acp:opencode",
+							distribution: {
+								binary: { "windows-x86_64": { cmd: "opencode.exe" } },
+							},
+							resolvedExecutable: executable,
+						}),
+						customExecutable: false,
+					},
+				]),
+				readVersion: vi.fn().mockResolvedValue("1.18.15"),
+				resolveGlobalNpmRoot: vi
+					.fn()
+					.mockResolvedValue(join(directory, "node_modules")),
+				now: () => 1_800_000_000_000,
+			});
+
+			expect(statuses[0]?.updateCommand).toBeUndefined();
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
 	it("does not guess an update command for custom ACP executables", async () => {
 		const statuses = await inspectAcpUpdates({
 			listCandidates: vi.fn().mockResolvedValue([

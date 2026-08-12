@@ -52,6 +52,7 @@ type AcpUpdateCandidate = {
 type AcpUpdateDependencies = {
 	listCandidates(): Promise<AcpUpdateCandidate[]>;
 	readVersion(item: AcpCatalogItem): Promise<string>;
+	resolveGlobalNpmRoot?(): Promise<string | null>;
 	now(): number;
 };
 
@@ -695,10 +696,104 @@ function wslUpdateAction(
 
 const acpRegistry = new AcpRegistry();
 
-function acpUpdateAction(
+function normalizedInstallPath(value: string): string {
+	const normalized = value.replaceAll("\\", "/").replace(/\/+$/, "");
+	return process.platform === "win32" || /^[a-z]:\//i.test(normalized)
+		? normalized.toLowerCase()
+		: normalized;
+}
+
+async function readGlobalNpmRoot(): Promise<string | null> {
+	try {
+		const result = await runBoundedProcess(
+			process.platform === "win32" ? "npm.cmd" : "npm",
+			["root", "--global"],
+			{
+				timeoutMs: COMMAND_TIMEOUT_MS,
+				timeoutError: "npm global root lookup timed out",
+			},
+		);
+		if (result.code !== 0) return null;
+		return (
+			result.output
+				.split(/\r?\n/)
+				.map((line) => line.trim())
+				.findLast(Boolean) ?? null
+		);
+	} catch {
+		return null;
+	}
+}
+
+async function isOpenCodeNpmExecutable(
+	executable: string,
+	globalNpmRoot: string | null,
+): Promise<boolean> {
+	if (!globalNpmRoot) return false;
+	const resolved = resolvedExecutable(executable);
+	const normalized = normalizedInstallPath(resolved);
+	const normalizedRoot = normalizedInstallPath(globalNpmRoot);
+	// Bun also installs npm packages below node_modules. Do not switch package
+	// managers when the resolved path identifies Bun's global install.
+	if (
+		normalized.includes("/.bun/") ||
+		normalized.includes("/bun/install/global/")
+	) {
+		return false;
+	}
+	if (normalized.startsWith(`${normalizedRoot}/opencode-ai/`)) return true;
+	if (!normalized.endsWith("/opencode.cmd")) return false;
+	const shimDirectory = normalized.slice(0, normalized.lastIndexOf("/"));
+	if (`${shimDirectory}/node_modules` !== normalizedRoot) return false;
+
+	// A .cmd basename alone does not prove npm ownership. Verify the generated
+	// shim points at OpenCode's published npm package before offering a command
+	// that can modify the user's global package installation.
+	try {
+		const shim = (await readFile(resolved, "utf8"))
+			.replaceAll("\\", "/")
+			.toLowerCase();
+		return shim.includes("/node_modules/opencode-ai/bin/opencode");
+	} catch {
+		return false;
+	}
+}
+
+async function openCodeAcpUpdateAction(
 	candidate: AcpUpdateCandidate,
-): CliUpdateAction | undefined {
+	resolveGlobalRoot: () => Promise<string | null>,
+): Promise<CliUpdateAction | undefined> {
+	const executable = candidate.item.resolvedExecutable;
+	const version = parseCliVersion(candidate.item.version);
+	if (
+		!executable ||
+		!version ||
+		!(await isOpenCodeNpmExecutable(executable, await resolveGlobalRoot()))
+	) {
+		return undefined;
+	}
+	const packageSpec = `opencode-ai@${version}`;
+	const resolved = resolvedExecutable(executable);
+	const requiresElevation = needsElevation(resolved);
+	return {
+		id: `acp:${candidate.item.id}`,
+		displayCommand: `${requiresElevation ? "sudo " : ""}npm install --global ${packageSpec}`,
+		command: process.platform === "win32" ? "npm.cmd" : "npm",
+		args: ["install", "--global", packageSpec],
+		automatic: !requiresElevation,
+		requiresElevation,
+	};
+}
+
+async function acpUpdateAction(
+	candidate: AcpUpdateCandidate,
+	resolveGlobalRoot: () => Promise<string | null> = readGlobalNpmRoot,
+): Promise<CliUpdateAction | undefined> {
 	if (candidate.customExecutable) return undefined;
+	if (candidate.item.id === "opencode") {
+		const action = await openCodeAcpUpdateAction(candidate, resolveGlobalRoot);
+		if (action) return action;
+	}
 	const { distribution } = candidate.item;
 	if (distribution.npx) {
 		return {
@@ -752,6 +847,7 @@ const defaultAcpDependencies: AcpUpdateDependencies = {
 		}
 		return parsed;
 	},
+	resolveGlobalNpmRoot: readGlobalNpmRoot,
 	now: Date.now,
 };
 
@@ -951,7 +1047,10 @@ export async function inspectAcpUpdates(
 					? "latest version: registry did not report a version"
 					: null,
 			].filter((value): value is string => value != null);
-			const action = acpUpdateAction(candidate);
+			const action = await acpUpdateAction(
+				candidate,
+				dependencies.resolveGlobalNpmRoot ?? readGlobalNpmRoot,
+			);
 			return {
 				id: `acp:${candidate.item.id}`,
 				label: `${candidate.item.name} (ACP)`,
@@ -1056,7 +1155,12 @@ export async function resolveCliUpdateAction(
 	const candidateId = id.slice("acp:".length);
 	const candidates = await defaultAcpDependencies.listCandidates();
 	const candidate = candidates.find((entry) => entry.item.id === candidateId);
-	return candidate ? (acpUpdateAction(candidate) ?? null) : null;
+	return candidate
+		? ((await acpUpdateAction(
+				candidate,
+				defaultAcpDependencies.resolveGlobalNpmRoot ?? readGlobalNpmRoot,
+			)) ?? null)
+		: null;
 }
 
 export type CliUpdateStatusCache = {

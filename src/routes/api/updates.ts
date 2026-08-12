@@ -1,12 +1,17 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { parseJsonAction } from "#/lib/actionRequest";
+import { heartbeatCliRuntimeLease } from "#/lib/cliUpdateRuntime";
 import {
 	cliUpdateAccessResponse,
 	isCliUpdateUiRequest,
 } from "#/lib/localRequest";
 import { forbiddenResponse } from "#/lib/originGate";
 import { applyUpdate, downloadUpdate, getStatus } from "#/lib/updates";
-import { applyCliUpdate, prepareCliUpdate } from "#/server/cliUpdateActions";
+import {
+	applyCliUpdate,
+	prepareCliUpdate,
+	reconcileAppliedCliUpdate,
+} from "#/server/cliUpdateActions";
 
 const ACTIONS = [
 	"check",
@@ -14,6 +19,8 @@ const ACTIONS = [
 	"apply",
 	"prepare_cli",
 	"apply_cli",
+	"heartbeat_cli",
+	"reconcile_cli",
 ] as const;
 type UpdateOperations = {
 	forbidden: (request: Request) => Response | null;
@@ -24,6 +31,8 @@ type UpdateOperations = {
 	apply: typeof applyUpdate;
 	prepareCli: typeof prepareCliUpdate;
 	applyCli: typeof applyCliUpdate;
+	heartbeatCli: typeof heartbeatCliRuntimeLease;
+	reconcileCli: typeof reconcileAppliedCliUpdate;
 };
 
 export function createUpdateRequestHandlers(operations: UpdateOperations) {
@@ -65,8 +74,12 @@ export function createUpdateRequestHandlers(operations: UpdateOperations) {
 			const parsed = await parseJsonAction(request, ACTIONS, "invalid json");
 			if (parsed instanceof Response) return parsed;
 			const cliAction =
-				parsed.action === "prepare_cli" || parsed.action === "apply_cli";
+				parsed.action === "prepare_cli" ||
+				parsed.action === "apply_cli" ||
+				parsed.action === "heartbeat_cli" ||
+				parsed.action === "reconcile_cli";
 			let cliId: string | null = null;
+			let cliLeaseId: string | null = null;
 			if (cliAction) {
 				const accessRejection = operations.cliAccess(request);
 				if (accessRejection) return accessRejection;
@@ -77,6 +90,22 @@ export function createUpdateRequestHandlers(operations: UpdateOperations) {
 					);
 				}
 				cliId = parsed.body.id;
+				if (
+					parsed.action === "heartbeat_cli" ||
+					parsed.action === "reconcile_cli"
+				) {
+					if (
+						typeof parsed.body.leaseId !== "string" ||
+						parsed.body.leaseId.length === 0 ||
+						parsed.body.leaseId.length > 200
+					) {
+						return Response.json(
+							{ ok: false, error: "leaseId is required" },
+							{ status: 400 },
+						);
+					}
+					cliLeaseId = parsed.body.leaseId;
+				}
 			}
 
 			try {
@@ -100,6 +129,14 @@ export function createUpdateRequestHandlers(operations: UpdateOperations) {
 							ok: true,
 							data: await single(() => operations.applyCli(cliId as string)),
 						});
+					case "heartbeat_cli":
+						await operations.heartbeatCli(cliLeaseId as string);
+						return Response.json({ ok: true });
+					case "reconcile_cli":
+						await single(() =>
+							operations.reconcileCli(cliId as string, cliLeaseId as string),
+						);
+						return Response.json({ ok: true });
 				}
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
@@ -119,6 +156,8 @@ const handlers = createUpdateRequestHandlers({
 	apply: applyUpdate,
 	prepareCli: prepareCliUpdate,
 	applyCli: applyCliUpdate,
+	heartbeatCli: heartbeatCliRuntimeLease,
+	reconcileCli: reconcileAppliedCliUpdate,
 });
 
 export const Route = createFileRoute("/api/updates")({

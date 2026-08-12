@@ -42,6 +42,53 @@ export type HlidContextAttachment = {
 	delivery: "native" | "path";
 };
 
+/** Bounded native ACP blocks delivered beside the textual provider prompt. */
+export type HlidStructuredPromptSummary = {
+	imageCount: number;
+	imageDecodedBytes: number;
+	embeddedResourceCount: number;
+	embeddedResourceChars: number;
+};
+
+type HlidStructuredPromptContent =
+	| { type: "image"; data: string }
+	| { type: "resource"; text?: string; blob?: string };
+
+function decodedBase64Bytes(data: string): number {
+	const normalized = data.replace(/\s/g, "");
+	if (normalized.length === 0) return 0;
+	const padding = normalized.endsWith("==")
+		? 2
+		: normalized.endsWith("=")
+			? 1
+			: 0;
+	return Math.max(0, Math.floor((normalized.length * 3) / 4) - padding);
+}
+
+/** Summarize only the native blocks a provider reports it will dispatch. */
+export function summarizeHlidStructuredPrompt(
+	content: readonly HlidStructuredPromptContent[],
+): HlidStructuredPromptSummary | undefined {
+	const summary: HlidStructuredPromptSummary = {
+		imageCount: 0,
+		imageDecodedBytes: 0,
+		embeddedResourceCount: 0,
+		embeddedResourceChars: 0,
+	};
+	for (const block of content) {
+		if (block.type === "image") {
+			summary.imageCount += 1;
+			summary.imageDecodedBytes += decodedBase64Bytes(block.data);
+			continue;
+		}
+		summary.embeddedResourceCount += 1;
+		summary.embeddedResourceChars += block.text?.length ?? 0;
+	}
+	return summary.imageCount > 0 || summary.embeddedResourceCount > 0
+		? summary
+		: undefined;
+}
+
 export type HlidPromptContextManifest = {
 	contractVersion: typeof HLID_CONTEXT_CONTRACT_VERSION;
 	userMessageChars: number;
@@ -58,6 +105,8 @@ export type HlidPromptContextManifest = {
 	attachments: HlidContextAttachment[];
 	vaultReferences: HlidVaultContextReference[];
 	workspaceReferences: HlidWorkspaceContextReference[];
+	/** Optional so persisted v1 receipts from before structured ACP prompts still parse. */
+	structuredPrompt?: HlidStructuredPromptSummary;
 	planHtml: boolean;
 	operatingBrief?: {
 		version: number;
@@ -117,6 +166,7 @@ export type HlidTurnContextManifest = HlidPromptContextManifest & {
 	model?: string;
 	effort?: string;
 	permissionMode?: string;
+	/** Characters in the textual provider prompt; native ACP blocks are summarized separately. */
 	providerPromptChars: number;
 	providerHandoffChars: number;
 	toolLoading: HlidToolLoadingSummary[];

@@ -44,6 +44,7 @@ import {
 	getSessionToolEventPage,
 	getSessionToolEventSummaries,
 	getSessionToolEventTranscriptWindow,
+	replaceUserMessageContextManifest,
 	setAskUserQuestionProvenance,
 	setAskUserQuestionResolution,
 	setMessageProviderTurnId,
@@ -63,6 +64,7 @@ import { retainProjectPreviewFeedback } from "./projectPreviewFeedback";
 import { getDb, setDbForTest } from "./schema";
 import {
 	createForkedSessionRow,
+	createProviderNativeSessionImport,
 	createSession,
 	deleteSession,
 	deleteSessionsOlderThan,
@@ -76,6 +78,7 @@ import {
 	getSessionLastQueryContext,
 	getSessionModel,
 	getSessionProviderId,
+	getSessionProviderRuntimeIdentity,
 	getSessionProviderSession,
 	getSessionSelection,
 	getSessionsPaginated,
@@ -480,7 +483,12 @@ describe("sessions — create & fetch", () => {
 		await createSession("source", "Imported Claude", "sonnet", {
 			providerId: "claude",
 		});
-		await setSessionProviderSession("source", "claude", "native-source");
+		await setSessionProviderSession(
+			"source",
+			"claude",
+			"native-source",
+			"runtime-v1",
+		);
 		db.run(
 			`UPDATE sessions SET history_resume_mode = 'session-store' WHERE id = 'source'`,
 		);
@@ -492,6 +500,9 @@ describe("sessions — create & fetch", () => {
 			provider_session_id: "native-fork",
 			history_resume_mode: "session-store",
 		});
+		expect(await getSessionProviderRuntimeIdentity("fork", "claude")).toBe(
+			"runtime-v1",
+		);
 	});
 
 	it("rejects rename for a missing session", async () => {
@@ -695,6 +706,43 @@ describe("sessions — provider sessions", () => {
 		expect(await getSessionClaudeId("s1")).toBeNull();
 	});
 
+	it("stores runtime continuity with the native id and clears both together", async () => {
+		await createSession("s1", "L", "m", { providerId: "acp:opencode" });
+		expect(
+			await setSessionProviderSession(
+				"s1",
+				"acp:opencode",
+				"opencode-session",
+				"runtime-v1",
+			),
+		).toBe(true);
+		expect(await getSessionProviderRuntimeIdentity("s1", "acp:opencode")).toBe(
+			"runtime-v1",
+		);
+		expect(await getSessionProviderRuntimeIdentity("s1", "codex")).toBeNull();
+
+		await setSessionProviderSession("s1", "acp:opencode", null);
+		expect(await getSessionProviderSession("s1", "acp:opencode")).toBeNull();
+		expect(
+			await getSessionProviderRuntimeIdentity("s1", "acp:opencode"),
+		).toBeNull();
+	});
+
+	it("clears runtime continuity when provider ownership changes", async () => {
+		await createSession("s1", "L", "m", { providerId: "acp:opencode" });
+		await setSessionProviderSession(
+			"s1",
+			"acp:opencode",
+			"opencode-session",
+			"runtime-v1",
+		);
+
+		await setSessionProviderId("s1", "codex");
+
+		expect(await getSessionProviderSession("s1")).toBeNull();
+		expect(await getSessionProviderRuntimeIdentity("s1")).toBeNull();
+	});
+
 	it("rejects a provider-native session write after ownership changes", async () => {
 		await createSession("s1", "L", "m", { providerId: "codex" });
 		await setSessionProviderId("s1", "claude");
@@ -794,6 +842,157 @@ describe("sessions — provider sessions", () => {
 		expect(await getSessionProviderSession("s1", "claude")).toBe(
 			"claude-native",
 		);
+	});
+});
+
+describe("sessions — provider-native imports", () => {
+	beforeEach(() => freshDb());
+
+	it("creates one resumable ACP-native Hlid owner with searchable metadata", async () => {
+		expect(
+			await createProviderNativeSessionImport({
+				id: "imported-opencode",
+				label: "Imported OpenCode work",
+				agentCwd: "/work/project",
+				providerId: "acp:opencode",
+				providerSessionId: "native-opencode",
+				providerRuntimeIdentity: "runtime-v1",
+				model: "openai/gpt-5.6",
+			}),
+		).toEqual({
+			created: true,
+			rebound: false,
+			sessionId: "imported-opencode",
+		});
+
+		const imported = await getSessionById("imported-opencode");
+		expect(imported).toMatchObject({
+			id: "imported-opencode",
+			label: "Imported OpenCode work",
+			agent_cwd: "/work/project",
+			provider_id: "acp:opencode",
+			provider_session_id: "native-opencode",
+			model: "openai/gpt-5.6",
+			selected_model: "openai/gpt-5.6",
+			history_imported: 1,
+			history_source: "acp-native",
+			history_resume_mode: "native",
+		});
+		expect(imported).not.toHaveProperty("provider_runtime_identity");
+		expect(
+			await getSessionProviderRuntimeIdentity(
+				"imported-opencode",
+				"acp:opencode",
+			),
+		).toBe("runtime-v1");
+		expect(
+			(await getSessionsPaginated(1, 10, { search: "opencode work" })).sessions,
+		).toMatchObject([{ id: "imported-opencode" }]);
+	});
+
+	it("atomically rebinds an existing provider-native owner without overwriting its label", async () => {
+		await createProviderNativeSessionImport({
+			id: "first-owner",
+			label: "Original label",
+			agentCwd: "/work/original",
+			providerId: "acp:opencode",
+			providerSessionId: "shared-native",
+			providerRuntimeIdentity: "runtime-v1",
+		});
+
+		expect(
+			await createProviderNativeSessionImport({
+				id: "second-owner",
+				label: "Replacement label",
+				agentCwd: "/work/replacement",
+				providerId: "acp:opencode",
+				providerSessionId: "shared-native",
+				providerRuntimeIdentity: "runtime-v2",
+			}),
+		).toEqual({ created: false, rebound: true, sessionId: "first-owner" });
+
+		expect(await getSessionById("first-owner")).toMatchObject({
+			label: "Original label",
+			agent_cwd: "/work/replacement",
+		});
+		expect(
+			await getSessionProviderRuntimeIdentity("first-owner", "acp:opencode"),
+		).toBe("runtime-v2");
+		expect(
+			await createProviderNativeSessionImport({
+				id: "unused-third-owner",
+				label: "Another replacement label",
+				agentCwd: "/work/replacement",
+				providerId: "acp:opencode",
+				providerSessionId: "shared-native",
+				providerRuntimeIdentity: "runtime-v2",
+			}),
+		).toEqual({ created: false, rebound: false, sessionId: "first-owner" });
+		expect(await getSessionById("second-owner")).toBeNull();
+	});
+
+	it("never exposes runtime continuity through public session row projections", async () => {
+		await createSession("private-runtime", "Private runtime", "model", {
+			providerId: "acp:opencode",
+		});
+		await setSessionProviderSession(
+			"private-runtime",
+			"acp:opencode",
+			"native-private",
+			"runtime-secret-digest",
+		);
+
+		const rows = [
+			await getSessionById("private-runtime"),
+			(await getSessionsPaginated(1, 10)).sessions.find(
+				(row) => row.id === "private-runtime",
+			),
+			(await getAllSessions()).find((row) => row.id === "private-runtime"),
+			(await getRecentSessions()).find((row) => row.id === "private-runtime"),
+		];
+		for (const row of rows) {
+			expect(row).toBeDefined();
+			expect(row).not.toHaveProperty("provider_runtime_identity");
+		}
+		expect(
+			await getSessionProviderRuntimeIdentity(
+				"private-runtime",
+				"acp:opencode",
+			),
+		).toBe("runtime-secret-digest");
+	});
+
+	it("rolls back without partial search data when the Hlid id is occupied", async () => {
+		const db = await getDb();
+		await createSession("occupied", "Existing", "m", { providerId: "codex" });
+
+		await expect(
+			createProviderNativeSessionImport({
+				id: "occupied",
+				label: "Imported OpenCode",
+				agentCwd: "/work/project",
+				providerId: "acp:opencode",
+				providerSessionId: "native-opencode",
+				providerRuntimeIdentity: "runtime-v1",
+			}),
+		).rejects.toThrow("Session id already exists: occupied");
+		expect(
+			db
+				.query<{ count: number }, []>(
+					`SELECT COUNT(*) AS count FROM session_search
+					 WHERE session_id = 'occupied'`,
+				)
+				.get()?.count,
+		).toBe(1);
+		expect(
+			db
+				.query<{ count: number }, []>(
+					`SELECT COUNT(*) AS count FROM sessions
+					 WHERE provider_id = 'acp:opencode'
+					   AND provider_session_id = 'native-opencode'`,
+				)
+				.get()?.count,
+		).toBe(0);
 	});
 });
 
@@ -2032,6 +2231,73 @@ describe("messages", () => {
 		});
 		expect(previous.hasMore).toBe(false);
 		expect((await getSessionMessages("s1"))[2].text).toBe("again");
+	});
+
+	it("replaces only the exact persisted user context receipt", async () => {
+		await createSession("s1", "L", "m");
+		const initial = JSON.stringify({ contractVersion: 1, promptChars: 10 });
+		const accepted = JSON.stringify({
+			contractVersion: 1,
+			promptChars: 10,
+			structuredPrompt: { imageCount: 1, imageDecodedBytes: 3 },
+		});
+		await appendMessage("s1", 0, "user", "hello", "turn-1", undefined, initial);
+		await appendMessage(
+			"s1",
+			0,
+			"assistant",
+			"same sequence",
+			undefined,
+			undefined,
+			initial,
+		);
+
+		await replaceUserMessageContextManifest("s1", 0, initial, accepted);
+
+		const rows = await getSessionMessages("s1");
+		expect(rows.find((row) => row.role === "user")?.context_manifest_json).toBe(
+			accepted,
+		);
+		expect(
+			rows.find((row) => row.role === "assistant")?.context_manifest_json,
+		).toBe(initial);
+		await expect(
+			replaceUserMessageContextManifest("s1", 0, initial, "stale write"),
+		).rejects.toThrow("no exact user receipt");
+		expect(
+			(await getSessionMessages("s1")).find((row) => row.role === "user")
+				?.context_manifest_json,
+		).toBe(accepted);
+	});
+
+	it("refuses an ambiguous user context receipt without changing either row", async () => {
+		await createSession("s1", "L", "m");
+		const initial = JSON.stringify({ contractVersion: 1, promptChars: 10 });
+		await appendMessage(
+			"s1",
+			0,
+			"user",
+			"first",
+			undefined,
+			undefined,
+			initial,
+		);
+		await appendMessage(
+			"s1",
+			0,
+			"user",
+			"duplicate",
+			undefined,
+			undefined,
+			initial,
+		);
+
+		await expect(
+			replaceUserMessageContextManifest("s1", 0, initial, "replacement"),
+		).rejects.toThrow("no exact user receipt");
+		expect(
+			(await getSessionMessages("s1")).map((row) => row.context_manifest_json),
+		).toEqual([initial, initial]);
 	});
 
 	it("returns empty array for session with no messages", async () => {

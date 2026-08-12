@@ -131,15 +131,21 @@ describe("ACP provider capability discovery", () => {
 		expect(get("acp-session:fork")?.maturity).toBe("experimental");
 		expect(get("acp-session:list")).toMatchObject({
 			support: "advertised",
+			integration: "integrated",
+			readiness: "ready",
+		});
+		for (const kind of ["image", "embedded-context"]) {
+			expect(get(`acp-prompt:${kind}`)).toMatchObject({
+				support: "advertised",
+				integration: "integrated",
+				readiness: "ready",
+			});
+		}
+		expect(get("acp-prompt:audio")).toMatchObject({
+			support: "advertised",
 			integration: "not-integrated",
 			readiness: "unavailable",
 		});
-		for (const kind of ["image", "audio", "embedded-context"]) {
-			expect(get(`acp-prompt:${kind}`)).toMatchObject({
-				support: "advertised",
-				integration: "not-integrated",
-			});
-		}
 		for (const transport of ["http", "sse"]) {
 			expect(get(`acp-mcp-transport:${transport}`)).toMatchObject({
 				support: "advertised",

@@ -337,8 +337,11 @@ function UpdatesView({
 	onDownload,
 	onLaunch,
 	cliBusyId,
+	cliUpdateOwned,
 	cliNotice,
+	cliReconcilePending,
 	onCliUpdate,
+	onRetryCliReconcile,
 }: {
 	status: UpdateStatus | null;
 	state: ApplyState;
@@ -348,8 +351,11 @@ function UpdatesView({
 	onDownload: () => void;
 	onLaunch: (version: string) => void;
 	cliBusyId: string | null;
+	cliUpdateOwned: boolean;
 	cliNotice: string | null;
+	cliReconcilePending: CliReconcilePending | null;
 	onCliUpdate: (update: CliUpdateStatus) => void;
+	onRetryCliReconcile: () => void;
 }) {
 	const busy = state.phase !== "idle" && state.phase !== "error";
 	return (
@@ -445,7 +451,7 @@ function UpdatesView({
 										trigger={(open) => (
 											<button
 												type="button"
-												disabled={cliBusyId !== null}
+												disabled={cliBusyId !== null || cliUpdateOwned}
 												onClick={open}
 												className="text-[9px] tracking-widest px-2.5 py-1 border border-primary/40 text-primary hover:bg-primary/10 transition-colors uppercase disabled:opacity-40"
 											>
@@ -466,14 +472,35 @@ function UpdatesView({
 				</Fragment>
 			))}
 			{cliNotice && (
-				<div className="px-4 py-2 text-xs text-muted-foreground">
-					{cliNotice}
+				<div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2 text-xs text-muted-foreground">
+					<span>{cliNotice}</span>
+					{cliReconcilePending && (
+						<button
+							type="button"
+							onClick={onRetryCliReconcile}
+							disabled={cliBusyId !== null}
+							className="shrink-0 border border-primary/40 px-2.5 py-1 text-[9px] tracking-widest text-primary uppercase hover:bg-primary/10 disabled:opacity-40"
+						>
+							{cliBusyId === cliReconcilePending.id
+								? "REFRESHING…"
+								: "RETRY RUNTIME REFRESH"}
+						</button>
+					)}
 				</div>
 			)}
 			<UpdateNotices status={status} state={state} />
 		</Section>
 	);
 }
+
+type CliReconcilePending = {
+	id: string;
+	leaseId: string;
+	label: string;
+	error: string;
+};
+
+const CLI_UPDATE_HEARTBEAT_MS = 60_000;
 
 export function UpdatesSection() {
 	const status = useSyncExternalStore(
@@ -485,7 +512,11 @@ export function UpdatesSection() {
 	const [fetchError, setFetchError] = useState<string | null>(null);
 	const [cliBusyId, setCliBusyId] = useState<string | null>(null);
 	const [cliNotice, setCliNotice] = useState<string | null>(null);
+	const [cliReconcilePending, setCliReconcilePending] =
+		useState<CliReconcilePending | null>(null);
 	const [cliTerminal, setCliTerminal] = useState<{
+		id: string;
+		leaseId: string;
 		label: string;
 		command: string;
 		cwd: string;
@@ -549,21 +580,59 @@ export function UpdatesSection() {
 		};
 	}, [state.phase]);
 
-	async function postAction(
-		action: "check" | "download" | "apply" | "prepare_cli" | "apply_cli",
-		extra: Record<string, unknown> = {},
-	): Promise<{ ok: boolean; data?: unknown; error?: string }> {
-		const res = await fetch("/api/updates", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action, ...extra }),
-		});
-		return (await res.json()) as {
-			ok: boolean;
-			data?: unknown;
-			error?: string;
+	const postAction = useCallback(
+		async (
+			action:
+				| "check"
+				| "download"
+				| "apply"
+				| "prepare_cli"
+				| "apply_cli"
+				| "heartbeat_cli"
+				| "reconcile_cli",
+			extra: Record<string, unknown> = {},
+		): Promise<{ ok: boolean; data?: unknown; error?: string }> => {
+			const res = await fetch("/api/updates", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ action, ...extra }),
+			});
+			return (await res.json()) as {
+				ok: boolean;
+				data?: unknown;
+				error?: string;
+			};
+		},
+		[],
+	);
+
+	const heartbeatId = cliTerminal?.id ?? cliReconcilePending?.id;
+	const heartbeatLeaseId = cliTerminal?.leaseId ?? cliReconcilePending?.leaseId;
+	useEffect(() => {
+		if (!heartbeatId || !heartbeatLeaseId) return;
+		let active = true;
+		const heartbeat = async () => {
+			const result = await postAction("heartbeat_cli", {
+				id: heartbeatId,
+				leaseId: heartbeatLeaseId,
+			}).catch((error) => ({ ok: false, error: String(error) }));
+			if (active && !result.ok) {
+				setCliNotice(
+					result.error ??
+						"Hlid could not renew the update safety lease. Finish or close the terminal and retry the runtime refresh.",
+				);
+			}
 		};
-	}
+		void heartbeat();
+		const interval = setInterval(
+			() => void heartbeat(),
+			CLI_UPDATE_HEARTBEAT_MS,
+		);
+		return () => {
+			active = false;
+			clearInterval(interval);
+		};
+	}, [heartbeatId, heartbeatLeaseId, postAction]);
 
 	async function runCliUpdate(update: CliUpdateStatus) {
 		const automatic = update.updateMode === "automatic";
@@ -579,15 +648,44 @@ export function UpdatesSection() {
 			return;
 		}
 		if (automatic) {
-			setCliNotice(`${update.label} updated. Rechecking installed versions…`);
-			await refresh();
+			const pending = (
+				result.data as
+					| {
+							reconcilePending?: {
+								id?: unknown;
+								leaseId?: unknown;
+								error?: unknown;
+							};
+					  }
+					| undefined
+			)?.reconcilePending;
+			if (
+				pending &&
+				typeof pending.id === "string" &&
+				typeof pending.leaseId === "string" &&
+				typeof pending.error === "string"
+			) {
+				setCliReconcilePending({
+					id: pending.id,
+					leaseId: pending.leaseId,
+					label: update.label,
+					error: pending.error,
+				});
+				setCliNotice(
+					`${update.label} updated, but Hlid could not refresh its provider runtime: ${pending.error}`,
+				);
+			} else {
+				setCliNotice(`${update.label} updated. Rechecking installed versions…`);
+				await refresh();
+			}
 		} else {
 			const data = result.data as
-				| { command?: string; terminalCwd?: string }
+				| { command?: string; terminalCwd?: string; leaseId?: string }
 				| undefined;
 			const command = data?.command ?? update.updateCommand;
 			const terminalCwd = data?.terminalCwd;
-			if (!command || !terminalCwd) {
+			const leaseId = data?.leaseId;
+			if (!command || !terminalCwd || !leaseId) {
 				setCliNotice("Update terminal details were incomplete");
 				setCliBusyId(null);
 				return;
@@ -599,6 +697,8 @@ export function UpdatesSection() {
 			} catch {}
 			setCliNotice("Provider sessions stopped and update terminal opened.");
 			setCliTerminal({
+				id: update.id,
+				leaseId,
 				label: update.label,
 				command,
 				cwd: terminalCwd,
@@ -629,10 +729,57 @@ export function UpdatesSection() {
 	}
 
 	async function closeCliTerminalAndRecheck() {
+		const terminal = cliTerminal;
 		setCliTerminal(null);
-		setCliNotice("Update terminal closed. Rechecking installed versions…");
+		setCliNotice("Update terminal closed. Refreshing runtime and versions…");
+		if (terminal) {
+			const reconciled = await postAction("reconcile_cli", {
+				id: terminal.id,
+				leaseId: terminal.leaseId,
+			}).catch((error) => ({ ok: false, error: String(error) }));
+			if (!reconciled.ok) {
+				const error =
+					reconciled.error ?? "Runtime refresh failed after the update";
+				setCliReconcilePending({
+					id: terminal.id,
+					leaseId: terminal.leaseId,
+					label: terminal.label,
+					error,
+				});
+				setCliNotice(
+					`${terminal.label} may be updated, but Hlid could not refresh its provider runtime: ${error}`,
+				);
+				return;
+			}
+		}
+		setCliReconcilePending(null);
 		const error = await forceCheck();
 		setCliNotice(error ?? "Installed CLI versions refreshed.");
+	}
+
+	async function retryCliReconcile() {
+		const pending = cliReconcilePending;
+		if (!pending) return;
+		setCliBusyId(pending.id);
+		setCliNotice(`Retrying ${pending.label} provider runtime refresh…`);
+		const reconciled = await postAction("reconcile_cli", {
+			id: pending.id,
+			leaseId: pending.leaseId,
+		}).catch((error) => ({ ok: false, error: String(error) }));
+		if (!reconciled.ok) {
+			const error =
+				reconciled.error ?? "Runtime refresh failed after the update";
+			setCliReconcilePending({ ...pending, error });
+			setCliNotice(
+				`${pending.label} may be updated, but Hlid could not refresh its provider runtime: ${error}`,
+			);
+			setCliBusyId(null);
+			return;
+		}
+		setCliReconcilePending(null);
+		const error = await forceCheck();
+		setCliNotice(error ?? "Installed CLI versions refreshed.");
+		setCliBusyId(null);
 	}
 
 	// Download + checksum-verify the new exe, then surface a "Launch" button.
@@ -686,17 +833,24 @@ export function UpdatesSection() {
 				state={state}
 				fetchError={fetchError}
 				cliBusyId={cliBusyId}
+				cliUpdateOwned={cliTerminal !== null || cliReconcilePending !== null}
 				cliNotice={cliNotice}
+				cliReconcilePending={cliReconcilePending}
 				onRefresh={() => void refresh()}
 				onCheck={() => void checkNow()}
 				onDownload={() => void downloadOnly()}
 				onLaunch={(version) => void launchStaged(version)}
 				onCliUpdate={(update) => void runCliUpdate(update)}
+				onRetryCliReconcile={() => void retryCliReconcile()}
 			/>
 			{status?.release && <LatestChanges release={status.release} />}
 			{cliTerminal && (
 				<CliUpdateTerminalModal
-					{...cliTerminal}
+					label={cliTerminal.label}
+					command={cliTerminal.command}
+					cwd={cliTerminal.cwd}
+					sessionId={cliTerminal.sessionId}
+					initiallyCopied={cliTerminal.initiallyCopied}
 					onClose={() => void closeCliTerminalAndRecheck()}
 				/>
 			)}

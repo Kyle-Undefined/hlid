@@ -1,15 +1,37 @@
+import { createHash } from "node:crypto";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
 	type ParseError,
 	parse as parseJsonc,
 	printParseErrorCode,
 } from "jsonc-parser";
 import type { HlidConfig } from "../config";
+import { declaredPathKey } from "../lib/paths";
 import { AcpProvider } from "./acpProvider";
 import type { AcpCatalogItem } from "./acpRegistry";
 import type { AgentProvider } from "./agentProvider";
 
 const OPENCODE_CONFIG_CONTENT = "OPENCODE_CONFIG_CONTENT";
 const MAX_OPENCODE_CONFIG_CONTENT_LENGTH = 24_000;
+const RUNTIME_ROOT_ENVIRONMENT_KEYS = [
+	"HOME",
+	"USERPROFILE",
+	"HOMEDRIVE",
+	"HOMEPATH",
+	"XDG_CONFIG_HOME",
+	"XDG_DATA_HOME",
+	"XDG_STATE_HOME",
+	"XDG_CACHE_HOME",
+	"APPDATA",
+	"LOCALAPPDATA",
+	"OPENCODE_CONFIG",
+	"OPENCODE_CONFIG_DIR",
+] as const;
+const OPENCODE_RUNTIME_FLAG_KEYS = [
+	"OPENCODE_DISABLE_PROJECT_CONFIG",
+	"OPENCODE_PURE",
+] as const;
 const PROTOTYPE_SPECIAL_PROVIDER_IDS = new Set([
 	"__proto__",
 	"constructor",
@@ -275,6 +297,67 @@ function openCodeBaseEnvironment(
 	};
 }
 
+function runtimeEnvironmentValue(
+	environment: Readonly<Record<string, string | undefined>>,
+	key: string,
+): string | undefined {
+	if (process.platform !== "win32") return environment[key];
+	return Object.entries(environment).find(
+		([candidate]) => candidate.toUpperCase() === key.toUpperCase(),
+	)?.[1];
+}
+
+function runtimeRootIdentity(
+	environment: Readonly<Record<string, string | undefined>>,
+	includeOpenCode: boolean,
+): { paths: Record<string, string>; flags?: Record<string, string> } {
+	const values = Object.fromEntries(
+		RUNTIME_ROOT_ENVIRONMENT_KEYS.flatMap((key) => {
+			const value = runtimeEnvironmentValue(environment, key)?.trim();
+			return value ? [[key, value] as const] : [];
+		}),
+	);
+	const driveHome =
+		values.HOMEDRIVE && values.HOMEPATH
+			? `${values.HOMEDRIVE}${values.HOMEPATH}`
+			: undefined;
+	const home = values.HOME ?? values.USERPROFILE ?? driveHome ?? homedir();
+	const roots = {
+		home,
+		config: values.XDG_CONFIG_HOME ?? join(home, ".config"),
+		data: values.XDG_DATA_HOME ?? join(home, ".local", "share"),
+		state: values.XDG_STATE_HOME ?? join(home, ".local", "state"),
+		cache: values.XDG_CACHE_HOME ?? join(home, ".cache"),
+		...(values.APPDATA ? { appData: values.APPDATA } : {}),
+		...(values.LOCALAPPDATA ? { localAppData: values.LOCALAPPDATA } : {}),
+		...(includeOpenCode && values.OPENCODE_CONFIG
+			? { openCodeConfig: values.OPENCODE_CONFIG }
+			: {}),
+		...(includeOpenCode && values.OPENCODE_CONFIG_DIR
+			? { openCodeConfigDir: values.OPENCODE_CONFIG_DIR }
+			: {}),
+	};
+	const paths = Object.fromEntries(
+		Object.entries(roots).map(([key, value]) => [key, declaredPathKey(value)]),
+	);
+	const flags = includeOpenCode
+		? Object.fromEntries(
+				OPENCODE_RUNTIME_FLAG_KEYS.flatMap((key) => {
+					const value = runtimeEnvironmentValue(environment, key)?.trim();
+					return value ? [[key, value.toLowerCase()] as const] : [];
+				}),
+			)
+		: {};
+	return {
+		paths,
+		...(Object.keys(flags).length > 0 ? { flags } : {}),
+	};
+}
+
+function digestRuntimeValue(value: string): string {
+	return createHash("sha256").update(value).digest("hex");
+}
+
 /** Validate the user-controlled/inherited OpenCode overlay before persistence. */
 export function preflightOpenCodeModelFilter(
 	config: HlidConfig,
@@ -319,14 +402,33 @@ export function acpRuntimeFingerprint(
 			openCodeEnvironmentValue(process.env, process.platform);
 		if (content !== undefined) environment[OPENCODE_CONFIG_CONTENT] = content;
 	}
+	const inheritedRuntimeEnvironment = {
+		...process.env,
+		...environment,
+	};
+	const inlineConfig = runtimeEnvironmentValue(
+		inheritedRuntimeEnvironment,
+		OPENCODE_CONFIG_CONTENT,
+	);
 	return JSON.stringify({
 		providerId: item.providerId,
-		label: item.name,
+		platform: process.platform,
+		architecture: process.arch,
 		command: item.command,
 		args: item.args,
+		executable: item.runtimeExecutableEvidence,
 		env: Object.fromEntries(
-			Object.entries(environment).sort(([a], [b]) => a.localeCompare(b)),
+			Object.entries(environment)
+				.sort(([a], [b]) => a.localeCompare(b))
+				.map(([key, value]) => [key, digestRuntimeValue(value)]),
 		),
+		runtimeRoots: runtimeRootIdentity(
+			inheritedRuntimeEnvironment,
+			item.id === "opencode",
+		),
+		inlineConfigDigest: inlineConfig
+			? digestRuntimeValue(inlineConfig)
+			: undefined,
 		modelFilter: configured?.model_filter
 			? {
 					mode: configured.model_filter.mode,
@@ -335,7 +437,7 @@ export function acpRuntimeFingerprint(
 					),
 				}
 			: undefined,
-		discoveryCwd: config.vault.path || process.cwd(),
+		discoveryCwd: declaredPathKey(config.vault.path || process.cwd()),
 	});
 }
 

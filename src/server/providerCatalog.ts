@@ -751,6 +751,11 @@ type ProviderCatalogVersion = {
 	acceptedLiveRefreshVersion?: string;
 };
 
+type VersionedProviderCatalogRead = {
+	providers: ProviderInfo[];
+	version: ProviderCatalogVersion;
+};
+
 function isLiveProviderCapabilityRead(
 	loadOptions: ProviderCatalogLoadOptions,
 ): boolean {
@@ -800,6 +805,11 @@ export function createProviderCatalogSnapshot(
 		{ value: ProviderInfo[]; refreshedAt: number }
 	>();
 	const inflight = new Map<string, Promise<ProviderInfo[]>>();
+	const versionedCapabilityInflight = new Map<
+		string,
+		Promise<VersionedProviderCatalogRead>
+	>();
+	const versionedCapabilityTails = new Map<string, Promise<void>>();
 	const supersededReads = new WeakSet<ProviderInfo[]>();
 	let generation = 0;
 	let metadataGeneration = 0;
@@ -1292,18 +1302,78 @@ export function createProviderCatalogSnapshot(
 		}
 		return Promise.resolve(snapshot.value);
 	};
+	const getVersionedSnapshot = async (
+		loadOptions: ProviderCatalogLoadOptions,
+	): Promise<VersionedProviderCatalogRead> => {
+		for (let attempt = 0; attempt < 3; attempt += 1) {
+			const version = versionFor(loadOptions);
+			const providers = await getSnapshot(loadOptions);
+			if (!supersededReads.has(providers) && versionIsCurrent(version)) {
+				return { providers, version: versionFor({}) };
+			}
+		}
+		throw new Error("Provider catalog changed repeatedly during refresh");
+	};
+	const versionedCapabilityKey = (
+		loadOptions: ProviderCatalogLoadOptions,
+	): string =>
+		JSON.stringify([
+			declaredPathKey(effectiveDiscoveryCwd(loadOptions)),
+			loadOptions.refreshProviderId ?? null,
+			loadOptions.includeHostCapabilities === true,
+			loadOptions.awaitHostCapabilities === true,
+			loadOptions.preferCachedModels === true,
+		]);
+	const getVersionedCapabilitySnapshot = (
+		loadOptions: ProviderCatalogLoadOptions,
+	): Promise<VersionedProviderCatalogRead> => {
+		const requestKey = versionedCapabilityKey(loadOptions);
+		const current = versionedCapabilityInflight.get(requestKey);
+		if (current) return current;
+
+		// Each successful provider capability probe publishes provider-scoped
+		// metadata. Let one versioned probe finish before another provider starts,
+		// otherwise concurrent probes continuously invalidate each other's catalog
+		// version and both exhaust the bounded retry loop. Identical reads still
+		// share one probe through the request-keyed in-flight map. Serialize only
+		// within one discovery workspace so a slow project cannot block unrelated
+		// workspaces.
+		const serializationKey = declaredPathKey(
+			effectiveDiscoveryCwd(loadOptions),
+		);
+		const previousTail = versionedCapabilityTails.get(serializationKey);
+		const run = () => getVersionedSnapshot(loadOptions);
+		const started = previousTail ? previousTail.then(run, run) : run();
+		let queued!: Promise<VersionedProviderCatalogRead>;
+		queued = started.finally(() => {
+			if (versionedCapabilityInflight.get(requestKey) === queued) {
+				versionedCapabilityInflight.delete(requestKey);
+			}
+		});
+		versionedCapabilityInflight.set(requestKey, queued);
+		let tail!: Promise<void>;
+		tail = queued.then(
+			() => {
+				if (versionedCapabilityTails.get(serializationKey) === tail) {
+					versionedCapabilityTails.delete(serializationKey);
+				}
+			},
+			() => {
+				if (versionedCapabilityTails.get(serializationKey) === tail) {
+					versionedCapabilityTails.delete(serializationKey);
+				}
+			},
+		);
+		versionedCapabilityTails.set(serializationKey, tail);
+		return queued;
+	};
 
 	return {
 		get: getSnapshot,
-		async getVersioned(loadOptions = {}) {
-			for (let attempt = 0; attempt < 3; attempt += 1) {
-				const version = versionFor(loadOptions);
-				const providers = await getSnapshot(loadOptions);
-				if (!supersededReads.has(providers) && versionIsCurrent(version)) {
-					return { providers, version: versionFor({}) };
-				}
-			}
-			throw new Error("Provider catalog changed repeatedly during refresh");
+		getVersioned(loadOptions = {}) {
+			return isLiveProviderCapabilityRead(loadOptions)
+				? getVersionedCapabilitySnapshot(loadOptions)
+				: getVersionedSnapshot(loadOptions);
 		},
 		isCurrentVersion(version) {
 			return versionIsCurrent(version);

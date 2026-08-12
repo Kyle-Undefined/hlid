@@ -48,6 +48,7 @@ import type {
 	AgentProvider,
 	AgentQueryParams,
 	AgentSession,
+	SendOptions,
 } from "./agentProvider";
 import { createClaudeHostInteractionHandlers } from "./claudeHostInteractions";
 import { buildPromptAsync } from "./promptBuilder";
@@ -1919,6 +1920,150 @@ describe("SessionManager — Slice B AgentSession reuse", () => {
 		expect(lastSendSpy.mock.calls[0][1]).toEqual({
 			inputOrigin: "human",
 		});
+		ctl.closeStream();
+	});
+
+	it("persists only the structured content accepted by an ACP provider", async () => {
+		const structuredContent = [
+			{
+				type: "image" as const,
+				data: "AQID",
+				mimeType: "image/png",
+			},
+			{
+				type: "resource" as const,
+				uri: "hlid://vault-reference/Selected.md",
+				mimeType: "text/markdown",
+				text: "selected content",
+			},
+		];
+		vi.mocked(buildPromptAsync).mockResolvedValueOnce({
+			prompt: "review selection",
+			safeAttachments: [],
+			resourcePaths: [],
+			safeVaultReferences: [],
+			safeWorkspaceReferences: [],
+			structuredContent,
+			contextManifest: {
+				...testPromptContextManifest(),
+				structuredPrompt: {
+					imageCount: 99,
+					imageDecodedBytes: 99,
+					embeddedResourceCount: 99,
+					embeddedResourceChars: 99,
+				},
+			},
+		});
+		const ctl = makeLongLivedProvider();
+		let sendSpy: ReturnType<typeof vi.fn> | undefined;
+		const appendCallCount = vi.mocked(dbMock.appendMessage).mock.calls.length;
+		const replaceCallCount = vi.mocked(dbMock.replaceUserMessageContextManifest)
+			.mock.calls.length;
+		const provider: AgentProvider = {
+			providerId: "acp:fake",
+			query(params: AgentQueryParams): AgentSession {
+				const session = ctl.provider.query(params);
+				const send = session.send.bind(session);
+				const acceptedSend = vi.fn(
+					async (message: string, options?: SendOptions) => {
+						await options?.onStructuredContentAccepted?.(structuredContent);
+						await send(message, options);
+					},
+				);
+				sendSpy = acceptedSend;
+				return { ...session, send: acceptedSend };
+			},
+		};
+		const sm = new SessionManager(
+			{ ...makeConfig(), vault_provider: "acp:fake" } as HlidConfig,
+			makeProviders(provider),
+		);
+
+		await sm.runQuery("review selection", () => {}, {
+			inputOrigin: "human",
+			sessionId: "structured-acp-session",
+		});
+
+		expect(sendSpy).toHaveBeenCalledWith(
+			"review selection",
+			expect.objectContaining({
+				inputOrigin: "human",
+				structuredContent,
+				onStructuredContentAccepted: expect.any(Function),
+			}),
+		);
+		const userAppend = vi
+			.mocked(dbMock.appendMessage)
+			.mock.calls.slice(appendCallCount)
+			.find(
+				(call) => call[0] === "structured-acp-session" && call[2] === "user",
+			);
+		if (!userAppend) throw new Error("persisted user receipt was not captured");
+		const initialJson = userAppend[6];
+		expect(initialJson).toBeTypeOf("string");
+		expect(JSON.parse(initialJson as string).structuredPrompt).toBeUndefined();
+		const replacement = vi
+			.mocked(dbMock.replaceUserMessageContextManifest)
+			.mock.calls.slice(replaceCallCount);
+		expect(replacement).toHaveLength(1);
+		expect(replacement[0]?.slice(0, 3)).toEqual([
+			"structured-acp-session",
+			0,
+			initialJson,
+		]);
+		expect(JSON.parse(replacement[0]?.[3] ?? "{}").structuredPrompt).toEqual({
+			imageCount: 1,
+			imageDecodedBytes: 3,
+			embeddedResourceCount: 1,
+			embeddedResourceChars: "selected content".length,
+		});
+		ctl.closeStream();
+	});
+
+	it("keeps the initial receipt when ACP gates off every structured block", async () => {
+		const structuredContent = [
+			{ type: "image" as const, data: "AQID", mimeType: "image/png" },
+		];
+		vi.mocked(buildPromptAsync).mockResolvedValueOnce({
+			prompt: "review selection",
+			safeAttachments: [],
+			resourcePaths: [],
+			safeVaultReferences: [],
+			safeWorkspaceReferences: [],
+			structuredContent,
+			contextManifest: testPromptContextManifest(),
+		});
+		const ctl = makeLongLivedProvider();
+		const replaceCallCount = vi.mocked(dbMock.replaceUserMessageContextManifest)
+			.mock.calls.length;
+		const provider: AgentProvider = {
+			providerId: "acp:fake",
+			query(params: AgentQueryParams): AgentSession {
+				const session = ctl.provider.query(params);
+				const send = session.send.bind(session);
+				return {
+					...session,
+					send: async (message, options) => {
+						await options?.onStructuredContentAccepted?.([]);
+						await send(message, options);
+					},
+				};
+			},
+		};
+		const sm = new SessionManager(
+			{ ...makeConfig(), vault_provider: "acp:fake" } as HlidConfig,
+			makeProviders(provider),
+		);
+
+		await sm.runQuery("review selection", () => {}, {
+			sessionId: "gated-acp-session",
+		});
+
+		expect(
+			vi
+				.mocked(dbMock.replaceUserMessageContextManifest)
+				.mock.calls.slice(replaceCallCount),
+		).toEqual([]);
 		ctl.closeStream();
 	});
 

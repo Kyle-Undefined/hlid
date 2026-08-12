@@ -333,6 +333,13 @@ it never bypasses `Hlið` policy. When a `Claude` `MCP` server needs structured
 input, `Raven` shows the question inline with its server provenance and keeps it
 there until you answer or decline it.
 
+An `ACP` agent that advertises structured image or embedded-context prompts gets
+native blocks for images you explicitly attach and references you explicitly
+select. `Hlið` resolves and bounds only those exact selections. It does not
+follow links, backlinks, embeds, attachments, imports, neighboring files, or
+related notes. Agents without the matching prompt capability keep the normal
+text fallback.
+
 `Hlið` keeps a compact context receipt for supported turns. Open it from the turn
 or with `/context` to see exactly what `Hlið` supplied: the provider selection,
 skills, exact references, attachments, permissions, and other bounded context.
@@ -656,6 +663,15 @@ and every row reports whether it is configured, authenticated, and usable in
 the current host and workspace. Supported OAuth flows open in the provider's
 browser flow and `Hlið` refreshes readiness when authentication finishes.
 
+An enabled `ACP` agent that advertises provider session listing gets **Browse
+provider sessions** after a successful connection check. The browser reads only
+bounded metadata for the exact configured workspace. It does not load a
+conversation or copy its messages. **Import into Hlid** creates or reopens a
+`Raven` entry with provider-native continuity; earlier transcript remains owned
+by the provider and is not copied into `Hlið`. This is an explicit import, never
+a `Hlið` fork. Import is offered only when the same agent also advertises native
+session loading or resumption. List-only agents remain a metadata browser.
+
 **Extensions** keeps the `Claude` and `Codex` inventories separate. Browse an
 installed package or marketplace, filter by environment or category, and
 review one package before installing it. The review shows its files and every
@@ -957,8 +973,15 @@ An install that needs elevation, like a root-owned global `npm` package inside
 `WSL`, gets **OPEN TERMINAL** instead. `Hlið` releases the provider, copies the
 exact command, and opens a terminal in the matching distro and workspace. Paste
 the command there so `sudo` can ask for the password itself. `Hlið` never asks
-for, stores, or relays that password. Custom `ACP` executables keep using their
-original installer.
+for, stores, or relays that password. New provider sessions stay blocked until
+the explicit **Finish update and refresh** action reconciles the runtime. While
+the update terminal or a retryable runtime-refresh notice remains open in
+`Forge`, `Hlið` renews that exact update lease. Its bounded expiry is crash and
+abandonment recovery, not the expected end of a long-running update. Backdrop
+clicks and `Escape` do not close the update terminal. An `OpenCode` `ACP` install
+gets the same `npm` update flow only when its resolved package path or generated
+Windows shim identifies `opencode-ai`. Custom executables and unrecognized
+binary installs keep using their original installer.
 
 Other LAN clients can see versions and copy guidance, but they cannot stop
 sessions or launch an update.

@@ -6,6 +6,8 @@ import type {
 	AcpAgentInfo,
 	AcpAuthMethod,
 	AcpCatalogItem,
+	AcpProviderNativeSessionPage,
+	AcpProviderSessionImportResult,
 } from "#/lib/serverFns/acp";
 import { AcpAuthMethodRow } from "./AcpAuthMethodRow";
 
@@ -13,9 +15,143 @@ export type AcpAgentConfig = NonNullable<HlidConfig["acp_agents"]>[number];
 export type AcpModelOption = NonNullable<ProviderInfo["models"]>[number];
 type OpenCodeModelFilter = NonNullable<AcpAgentConfig["model_filter"]>;
 type OpenCodeModelFilterMode = "all" | OpenCodeModelFilter["mode"];
-type AcpCardOperation = "inspect" | "refresh" | null;
+type AcpCardOperation = "inspect" | "refresh" | "sessions" | "import" | null;
 const EMPTY_MODEL_IDS: string[] = [];
 const MAX_MODEL_FILTER_SELECTIONS = 256;
+
+function providerSessionUpdatedLabel(updatedAt: string): string {
+	const timestamp = new Date(updatedAt);
+	return Number.isNaN(timestamp.getTime())
+		? updatedAt
+		: timestamp.toLocaleString();
+}
+
+function ProviderNativeSessionBrowser({
+	item,
+	page,
+	imports,
+	disabled,
+	operation,
+	importingProviderSessionId,
+	onLoadMore,
+	onClose,
+	onImport,
+}: {
+	item: AcpCatalogItem;
+	page: AcpProviderNativeSessionPage;
+	imports: Record<string, AcpProviderSessionImportResult> | undefined;
+	disabled: boolean;
+	operation: AcpCardOperation;
+	importingProviderSessionId?: string;
+	onLoadMore: (cursor: string) => void;
+	onClose: () => void;
+	onImport: (providerSessionId: string) => void;
+}) {
+	return (
+		<div className="min-w-0 space-y-3 border border-primary/25 bg-background/50 px-3 py-3">
+			<div className="flex min-w-0 items-start justify-between gap-3">
+				<div className="min-w-0 space-y-1">
+					<div className="text-[9px] tracking-widest text-foreground/70 uppercase">
+						Provider-native sessions
+					</div>
+					<p className="text-xs text-muted-foreground">
+						Read-only metadata from {item.name} for this exact workspace.
+						Browsing does not load or expand conversation history. These are not
+						Hlid sessions or forks.
+					</p>
+					<p className="text-[10px] text-muted-foreground">
+						{page.canImportSessions
+							? "Import creates a Hlid entry with provider-native continuity. Earlier transcript remains provider-owned and is not copied into Hlid."
+							: "This agent advertises session metadata only. It does not advertise loading or resuming these sessions, so Hlid cannot import them."}
+					</p>
+				</div>
+				<button
+					type="button"
+					disabled={disabled}
+					onClick={onClose}
+					className="shrink-0 text-[10px] text-primary uppercase disabled:text-muted-foreground/50"
+				>
+					Close
+				</button>
+			</div>
+			{page.sessions.length === 0 ? (
+				<p className="text-xs text-muted-foreground">
+					No provider-native sessions were returned for this workspace.
+				</p>
+			) : (
+				<ul className="min-w-0 divide-y divide-border/60 border border-border/70">
+					{page.sessions.map((session) => {
+						const imported = imports?.[session.sessionId];
+						const importing =
+							operation === "import" &&
+							importingProviderSessionId === session.sessionId;
+						return (
+							<li
+								key={session.sessionId}
+								className="flex min-w-0 flex-col gap-2 px-3 py-2 @2xl:flex-row @2xl:items-start @2xl:justify-between"
+							>
+								<div className="min-w-0 space-y-0.5">
+									<div className="break-words text-xs text-foreground">
+										{session.title?.trim() || "Untitled provider session"}
+									</div>
+									<code className="block break-all text-[10px] text-muted-foreground">
+										{session.sessionId}
+									</code>
+									{session.updatedAt && (
+										<time
+											dateTime={session.updatedAt}
+											className="block text-[10px] text-muted-foreground"
+										>
+											Updated {providerSessionUpdatedLabel(session.updatedAt)}
+										</time>
+									)}
+								</div>
+								{imported ? (
+									<div className="shrink-0 space-y-0.5 text-left @2xl:text-right">
+										<a
+											href={`/raven?session=${encodeURIComponent(imported.sessionId)}`}
+											className="text-[10px] text-primary uppercase"
+										>
+											Open in Raven
+										</a>
+										<p className="text-[9px] text-status-success/80">
+											{imported.created
+												? "Hlid entry created"
+												: "Existing Hlid entry found"}
+										</p>
+									</div>
+								) : page.canImportSessions ? (
+									<button
+										type="button"
+										disabled={disabled}
+										onClick={() => onImport(session.sessionId)}
+										className="shrink-0 text-left text-[10px] text-primary uppercase disabled:text-muted-foreground/50 @2xl:text-right"
+									>
+										{importing ? "Importing…" : "Import into Hlid"}
+									</button>
+								) : (
+									<span className="shrink-0 text-[10px] text-muted-foreground @2xl:text-right">
+										Metadata only
+									</span>
+								)}
+							</li>
+						);
+					})}
+				</ul>
+			)}
+			{page.nextCursor && (
+				<button
+					type="button"
+					disabled={disabled}
+					onClick={() => onLoadMore(page.nextCursor ?? "")}
+					className="text-[10px] text-primary uppercase disabled:text-muted-foreground/50"
+				>
+					{operation === "sessions" ? "Loading…" : "Load more"}
+				</button>
+			)}
+		</div>
+	);
+}
 
 function invocationLabel(item: AcpCatalogItem): string {
 	return [item.command, ...item.args].filter(Boolean).join(" ");
@@ -407,6 +543,10 @@ export function AcpAgentCard({
 	disabled,
 	authMethods,
 	agentInfo,
+	canListSessions,
+	providerSessions,
+	providerSessionImports,
+	importingProviderSessionId,
 	models,
 	onDiscoverModels,
 	optionsRefreshed,
@@ -415,6 +555,9 @@ export function AcpAgentCard({
 	onUpdateOverride,
 	onInspect,
 	onRefreshOptions,
+	onBrowseProviderSessions,
+	onCloseProviderSessions,
+	onImportProviderSession,
 }: {
 	item: AcpCatalogItem;
 	configured: AcpAgentConfig | undefined;
@@ -422,6 +565,10 @@ export function AcpAgentCard({
 	disabled: boolean;
 	authMethods: AcpAuthMethod[] | undefined;
 	agentInfo: AcpAgentInfo | null | undefined;
+	canListSessions?: boolean;
+	providerSessions?: AcpProviderNativeSessionPage | null;
+	providerSessionImports?: Record<string, AcpProviderSessionImportResult>;
+	importingProviderSessionId?: string;
 	models?: AcpModelOption[];
 	onDiscoverModels?: () => Promise<ProviderInfo["models"]>;
 	optionsRefreshed: boolean;
@@ -430,6 +577,9 @@ export function AcpAgentCard({
 	onUpdateOverride: (patch: Partial<AcpAgentConfig>) => void;
 	onInspect: (methodId?: string) => void;
 	onRefreshOptions: () => void;
+	onBrowseProviderSessions?: (cursor?: string) => void;
+	onCloseProviderSessions?: () => void;
+	onImportProviderSession?: (providerSessionId: string) => void;
 }) {
 	const enabled = Boolean(configured);
 	const openCode = item.id === "opencode";
@@ -551,8 +701,9 @@ export function AcpAgentCard({
 						<div className="mb-1 tracking-widest text-foreground/70 uppercase">
 							Connection boundary
 						</div>
-						Desktop session management and message-level undo or redo are not
-						exposed by this ACP connection.
+						Provider-native session browsing appears only when OpenCode
+						advertises it. Desktop controls and message-level undo or redo
+						remain provider-owned.
 					</div>
 					<p className="@2xl:col-span-2">
 						Models, modes, and effort controls come from the current OpenCode
@@ -624,6 +775,23 @@ export function AcpAgentCard({
 									? "Verify OpenCode ACP"
 									: "Inspect agent"}
 					</button>
+					{canListSessions && onBrowseProviderSessions && (
+						<button
+							type="button"
+							disabled={disabled || !configurationCurrent}
+							onClick={() => onBrowseProviderSessions()}
+							className="text-[10px] text-primary uppercase disabled:text-muted-foreground/50"
+						>
+							{operation === "sessions" && !providerSessions
+								? "Loading provider sessions…"
+								: "Browse provider sessions"}
+						</button>
+					)}
+					{canListSessions === false && (
+						<span className="text-[10px] text-muted-foreground">
+							Provider-native session listing not advertised.
+						</span>
+					)}
 					<button
 						type="button"
 						disabled={disabled || !configurationCurrent}
@@ -650,6 +818,22 @@ export function AcpAgentCard({
 					)}
 				</div>
 			)}
+			{providerSessions &&
+				onBrowseProviderSessions &&
+				onCloseProviderSessions &&
+				onImportProviderSession && (
+					<ProviderNativeSessionBrowser
+						item={item}
+						page={providerSessions}
+						imports={providerSessionImports}
+						disabled={disabled}
+						operation={operation}
+						importingProviderSessionId={importingProviderSessionId}
+						onLoadMore={onBrowseProviderSessions}
+						onClose={onCloseProviderSessions}
+						onImport={onImportProviderSession}
+					/>
+				)}
 			{authMethods && authMethods.length > 0 && (
 				<div className="min-w-0 space-y-2">
 					<div className="space-y-1 text-xs text-muted-foreground">

@@ -14,6 +14,8 @@ function operations(overrides: Partial<Operations> = {}): Operations {
 		apply: vi.fn().mockResolvedValue({ ok: true, applied: true }),
 		prepareCli: vi.fn().mockResolvedValue({ command: "sudo npm update" }),
 		applyCli: vi.fn().mockResolvedValue({ command: "npm update" }),
+		heartbeatCli: vi.fn().mockResolvedValue(undefined),
+		reconcileCli: vi.fn().mockResolvedValue(undefined),
 		...overrides,
 	} as Operations;
 }
@@ -55,7 +57,7 @@ describe("update request handlers", () => {
 		expect(await unknown.json()).toEqual({
 			ok: false,
 			error:
-				"action must be one of: check, download, apply, prepare_cli, apply_cli",
+				"action must be one of: check, download, apply, prepare_cli, apply_cli, heartbeat_cli, reconcile_cli",
 		});
 	});
 
@@ -123,12 +125,20 @@ describe("update request handlers", () => {
 	it.each([
 		"prepare_cli",
 		"apply_cli",
+		"heartbeat_cli",
+		"reconcile_cli",
 	] as const)("dispatches the local %s action with the selected CLI", async (action) => {
 		const ops = operations();
 		const response = await createUpdateRequestHandlers(ops).POST({
 			request: new Request("http://localhost/api/updates", {
 				method: "POST",
-				body: JSON.stringify({ action, id: "codex" }),
+				body: JSON.stringify({
+					action,
+					id: "codex",
+					...(action === "reconcile_cli" || action === "heartbeat_cli"
+						? { leaseId: "lease-1" }
+						: {}),
+				}),
 			}),
 		});
 		expect(response.status).toBe(200);
@@ -136,6 +146,36 @@ describe("update request handlers", () => {
 			action === "prepare_cli" ? 1 : 0,
 		);
 		expect(ops.applyCli).toHaveBeenCalledTimes(action === "apply_cli" ? 1 : 0);
+		expect(ops.heartbeatCli).toHaveBeenCalledTimes(
+			action === "heartbeat_cli" ? 1 : 0,
+		);
+		expect(ops.reconcileCli).toHaveBeenCalledTimes(
+			action === "reconcile_cli" ? 1 : 0,
+		);
+		if (action === "heartbeat_cli") {
+			expect(ops.heartbeatCli).toHaveBeenCalledWith("lease-1");
+		} else if (action === "reconcile_cli") {
+			expect(ops.reconcileCli).toHaveBeenCalledWith("codex", "lease-1");
+		}
+	});
+
+	it("requires an exact lease token for heartbeat and reconciliation", async () => {
+		for (const action of ["heartbeat_cli", "reconcile_cli"] as const) {
+			const ops = operations();
+			const response = await createUpdateRequestHandlers(ops).POST({
+				request: new Request("http://localhost/api/updates", {
+					method: "POST",
+					body: JSON.stringify({ action, id: "codex" }),
+				}),
+			});
+			expect(response.status).toBe(400);
+			expect(await response.json()).toEqual({
+				ok: false,
+				error: "leaseId is required",
+			});
+			expect(ops.heartbeatCli).not.toHaveBeenCalled();
+			expect(ops.reconcileCli).not.toHaveBeenCalled();
+		}
 	});
 
 	it("rejects concurrent mutations and allows retry after completion", async () => {

@@ -1497,6 +1497,7 @@ describe("SessionManager — native Codex realtime", () => {
 			"voice-aba",
 			"codex",
 			"active-codex-native",
+			null,
 		);
 	});
 

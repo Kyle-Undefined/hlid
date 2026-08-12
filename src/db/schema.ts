@@ -406,6 +406,14 @@ function applyMigrations(db: Db): void {
 		);
 	});
 
+	// Provider-native continuity is valid only for the exact executable/config
+	// identity that created or imported it. Store only the provider's opaque
+	// digest, never its raw executable, arguments, or environment. Legacy rows
+	// remain NULL and callers can conservatively start a fresh native session.
+	runMigration(db, "_migrated_sessions_provider_runtime_identity_v1", (db) => {
+		db.run(`ALTER TABLE sessions ADD COLUMN provider_runtime_identity TEXT`);
+	});
+
 	// actual_model: the model the CLI actually used (may differ from `model`
 	// when an agent's CLAUDE.md frontmatter overrides the vault default).
 	runMigration(db, "_migrated_sessions_actual_model", (db) => {

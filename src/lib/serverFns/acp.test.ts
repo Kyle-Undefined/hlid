@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { dbFetch, dbJson, requireDbOk } from "#/lib/dbClient";
-import { discoverAcpModels, loadAcpRegistry } from "./acp";
+import {
+	discoverAcpModels,
+	importAcpProviderSession,
+	listAcpProviderSessions,
+	loadAcpRegistry,
+} from "./acp";
 
 vi.mock("#/lib/dbClient", () => ({
 	dbFetch: vi.fn(),
@@ -83,6 +88,81 @@ describe("ACP registry server function", () => {
 
 		await expect(discoverAcpModels("opencode")).rejects.toThrow(
 			"invalid catalog",
+		);
+	});
+
+	it("lists one bounded provider-native session page", async () => {
+		const response = Response.json({
+			sessions: [
+				{
+					sessionId: "native-1",
+					title: "Native session",
+					updatedAt: "2026-08-12T12:00:00.000Z",
+				},
+			],
+			canImportSessions: true,
+			nextCursor: "next-page",
+		});
+		vi.mocked(dbFetch).mockResolvedValue(response);
+		vi.mocked(requireDbOk).mockResolvedValue(response);
+
+		await expect(
+			listAcpProviderSessions("opencode", "page-1"),
+		).resolves.toEqual({
+			sessions: [
+				{
+					sessionId: "native-1",
+					title: "Native session",
+					updatedAt: "2026-08-12T12:00:00.000Z",
+				},
+			],
+			canImportSessions: true,
+			nextCursor: "next-page",
+		});
+		expect(dbFetch).toHaveBeenCalledWith(
+			"/acp/sessions?id=opencode&cursor=page-1",
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
+		);
+		expect(requireDbOk).toHaveBeenCalledWith(
+			response,
+			"list ACP provider sessions",
+		);
+	});
+
+	it("rejects malformed provider-native session pages", async () => {
+		const response = Response.json({
+			sessions: [{ sessionId: "", title: "Broken" }],
+		});
+		vi.mocked(dbFetch).mockResolvedValue(response);
+		vi.mocked(requireDbOk).mockResolvedValue(response);
+		await expect(listAcpProviderSessions("opencode")).rejects.toThrow(
+			"invalid page",
+		);
+	});
+
+	it("imports exact provider-native continuity through the internal API", async () => {
+		const response = Response.json({ sessionId: "hlid-1", created: true });
+		vi.mocked(dbFetch).mockResolvedValue(response);
+		vi.mocked(requireDbOk).mockResolvedValue(response);
+
+		await expect(
+			importAcpProviderSession("opencode", "native-1"),
+		).resolves.toEqual({ sessionId: "hlid-1", created: true });
+		expect(dbFetch).toHaveBeenCalledWith(
+			"/acp/sessions/import",
+			expect.objectContaining({
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					id: "opencode",
+					providerSessionId: "native-1",
+				}),
+				signal: expect.any(AbortSignal),
+			}),
+		);
+		expect(requireDbOk).toHaveBeenCalledWith(
+			response,
+			"import ACP provider session",
 		);
 	});
 });

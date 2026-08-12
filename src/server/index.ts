@@ -21,6 +21,7 @@ import {
 	CLIPROXY_OPENCODE_PROVIDER_ID,
 } from "../lib/providerIds";
 import { loadToken, verifyToken } from "../lib/token";
+import { uid } from "../lib/utils";
 import { AcpRegistry } from "./acpRegistry";
 import { createAcpRouteHandler } from "./acpRoutes";
 import {
@@ -277,6 +278,20 @@ const acpRegistry = new AcpRegistry();
 const handleAcpRoute = createAcpRouteHandler({
 	registry: acpRegistry,
 	loadConfig,
+	importSession: async (input) => {
+		const result = await db.createProviderNativeSessionImport({
+			id: uid(),
+			label:
+				input.providerSession.title?.trim().slice(0, 160) ||
+				`${input.providerLabel} provider session`,
+			agentCwd: input.cwd,
+			providerId: input.providerId,
+			providerSessionId: input.providerSession.sessionId,
+			providerRuntimeIdentity: input.providerRuntimeIdentity,
+		});
+		if (result.created || result.rebound) bumpDataRevision("sessions");
+		return result;
+	},
 	syncRuntime: () => syncAcpRuntime(),
 });
 const handleExtensionRoute = createExtensionRouteHandler({
@@ -955,7 +970,7 @@ let acpRuntimeSyncTail: Promise<AcpRuntimeSyncResult> = Promise.resolve({
 
 async function applyAcpRuntimeConfig(): Promise<AcpRuntimeSyncResult> {
 	const latest = loadConfig();
-	const catalog = await acpRegistry.catalog(latest);
+	const catalog = await acpRegistry.catalog(latest, false, true);
 	const result = await syncAcpRuntimeProviders({
 		config: latest,
 		catalog,
@@ -1300,6 +1315,30 @@ const handleServerRequest = createServerRequestPolicy<AppServer>({
 	handleAuthenticated: handleAuthenticatedRoute,
 });
 
+function invalidCliUpdateLeaseResponse(): Response {
+	return Response.json({ error: "Invalid CLI update lease" }, { status: 409 });
+}
+
+async function requestedCliUpdateLease(
+	req: Request,
+	peerIp: string | undefined,
+): Promise<string | Response> {
+	if (
+		!isLoopback(peerIp) ||
+		!verifyToken(req.headers.get("x-hlid-internal"), SERVER_TOKEN)
+	) {
+		return new Response("Forbidden", { status: 403 });
+	}
+	const body = (await req.json().catch(() => null)) as {
+		leaseId?: unknown;
+	} | null;
+	return typeof body?.leaseId === "string" &&
+		body.leaseId.length > 0 &&
+		body.leaseId.length <= 200
+		? body.leaseId
+		: invalidCliUpdateLeaseResponse();
+}
+
 async function dispatchServerFetch(
 	req: Request,
 	server: AppServer,
@@ -1313,20 +1352,64 @@ async function dispatchServerFetch(
 		) {
 			return new Response("Forbidden", { status: 403 });
 		}
+		const leaseId = pool.beginCliUpdateLease();
 		const sessions = pool.getSize();
 		const appServers = listCodexAppServers().filter(
 			(entry) => entry.alive,
 		).length;
-		await pool.closeAllAndWait();
-		closeAllCodexAppServers();
+		try {
+			await pool.closeAllAndWait();
+			closeAllCodexAppServers();
+		} catch (error) {
+			pool.releaseCliUpdateLease(leaseId);
+			throw error;
+		}
 		broadcast({
 			type: "sessions_status",
 			sessions: getLiveSessionsStatus(pool, terminalPool),
 		});
 		return Response.json({
 			ok: true,
-			data: { sessions, appServers },
+			data: { sessions, appServers, leaseId },
 		});
+	}
+	if (
+		req.method === "POST" &&
+		url.pathname === "/internal/cli-updates/heartbeat"
+	) {
+		const leaseId = await requestedCliUpdateLease(req, peerIp);
+		if (leaseId instanceof Response) return leaseId;
+		if (!pool.renewCliUpdateLease(leaseId))
+			return invalidCliUpdateLeaseResponse();
+		return Response.json({ ok: true });
+	}
+	if (
+		req.method === "POST" &&
+		url.pathname === "/internal/cli-updates/reconcile-acp"
+	) {
+		const leaseId = await requestedCliUpdateLease(req, peerIp);
+		if (leaseId instanceof Response) return leaseId;
+		if (!pool.ownsCliUpdateLease(leaseId))
+			return invalidCliUpdateLeaseResponse();
+		await syncAcpRuntime();
+		if (!pool.releaseCliUpdateLease(leaseId)) {
+			return Response.json(
+				{ error: "CLI update lease expired during runtime refresh" },
+				{ status: 409 },
+			);
+		}
+		return Response.json({ ok: true });
+	}
+	if (
+		req.method === "POST" &&
+		url.pathname === "/internal/cli-updates/release"
+	) {
+		const leaseId = await requestedCliUpdateLease(req, peerIp);
+		if (leaseId instanceof Response) return leaseId;
+		if (!pool.releaseCliUpdateLease(leaseId)) {
+			return invalidCliUpdateLeaseResponse();
+		}
+		return Response.json({ ok: true });
 	}
 	if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") {
 		const selectedUrl = isProjectPreviewOriginRequest(req, url)

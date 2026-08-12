@@ -898,10 +898,40 @@ export type AgentInputOrigin =
 	| "auto-continuation"
 	| "unclassified";
 
+/**
+ * Explicit content Hlid has already resolved and authorized for one provider
+ * prompt. Providers must not treat these blocks as permission to discover
+ * related files, attachments, imports, or vault notes.
+ */
+export type ProviderPromptContent =
+	| {
+			type: "image";
+			data: string;
+			mimeType: string;
+			uri?: string;
+	  }
+	| {
+			type: "resource";
+			uri: string;
+			mimeType?: string;
+			text?: string;
+			blob?: string;
+	  };
+
 export type SendOptions = {
 	priority?: "now" | "next" | "later";
 	/** Provider-visible paths to audio files included as native turn input. */
 	audioPaths?: string[];
+	/** Already-authorized exact content for capability-gated native prompts. */
+	structuredContent?: ProviderPromptContent[];
+	/**
+	 * Observes the exact structured blocks retained after provider capability
+	 * negotiation. Providers await this callback before dispatch, but a callback
+	 * failure must not fail the provider turn.
+	 */
+	onStructuredContentAccepted?: (
+		content: readonly ProviderPromptContent[],
+	) => void | Promise<void>;
 	/**
 	 * Hlid-owned semantic provenance, captured where the input enters Hlid.
 	 * Providers translate this into their native origin model. Missing values
@@ -1261,6 +1291,13 @@ export interface AgentProvider {
 	 * hash this value before building cache keys; it must never be displayed.
 	 */
 	readonly metadataCacheIdentity?: string;
+	/**
+	 * Opaque provider-runtime identity that owns resumable native sessions.
+	 * Hlid persists this with the native session id and retires continuity when
+	 * the executable or provider storage context later changes. It must never be
+	 * displayed.
+	 */
+	readonly sessionContinuityIdentity?: string;
 	/** Whether model options can vary with the requested working directory. */
 	readonly modelCatalogScope?: "provider" | "workspace";
 	/** Live-fetch the provider's model catalog for an optional exact workspace. */

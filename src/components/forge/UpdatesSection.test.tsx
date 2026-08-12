@@ -78,13 +78,18 @@ function makeStatus(overrides?: Partial<UpdateStatus>): UpdateStatus {
  */
 function stubFetch(
 	status: UpdateStatus | Error,
-	postResults: Record<string, unknown> = {},
+	postResults: Record<string, unknown | (() => unknown)> = {},
 ) {
 	const fn = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => {
 		if (init?.method === "POST") {
 			const { action } = JSON.parse(String(init.body)) as { action: string };
+			const configured = postResults[action];
 			return Promise.resolve(
-				jsonResponse(postResults[action] ?? { ok: false }),
+				jsonResponse(
+					(typeof configured === "function" ? configured() : configured) ?? {
+						ok: false,
+					},
+				),
 			);
 		}
 		if (status instanceof Error) return Promise.reject(status);
@@ -479,8 +484,11 @@ describe("UpdatesSection", () => {
 					data: {
 						command: "sudo claude update",
 						terminalCwd: wslCwd,
+						leaseId: "lease-wsl",
 					},
 				},
+				reconcile_cli: { ok: true },
+				heartbeat_cli: { ok: true },
 				check: { ok: true, data: updatedStatus },
 			},
 		);
@@ -508,9 +516,23 @@ describe("UpdatesSection", () => {
 		expect(terminal.getAttribute("data-ws-path")).toBe("/ws/shell");
 		expect(terminal.getAttribute("data-terminate")).toBe("true");
 		expect(screen.getAllByText("sudo claude update")).toHaveLength(2);
+		expect(
+			screen
+				.getByRole("button", { name: "OPEN TERMINAL" })
+				.hasAttribute("disabled"),
+		).toBe(true);
+		const dialog = screen.getByRole("dialog", {
+			name: "Claude Code (Ubuntu-24.04) update terminal",
+		});
+		fireEvent.keyDown(dialog, { key: "Escape" });
+		expect(screen.getByRole("dialog")).toBeTruthy();
+		if (!dialog.parentElement)
+			throw new Error("dialog backdrop was not rendered");
+		fireEvent.click(dialog.parentElement);
+		expect(screen.getByRole("dialog")).toBeTruthy();
 
 		fireEvent.click(
-			screen.getByRole("button", { name: "Close update terminal" }),
+			screen.getByRole("button", { name: "Finish update and refresh" }),
 		);
 		expect(screen.queryByRole("dialog")).toBeNull();
 		expect(
@@ -522,6 +544,234 @@ describe("UpdatesSection", () => {
 			),
 		).toBe(true);
 		expect(screen.queryByRole("button", { name: "OPEN TERMINAL" })).toBeNull();
+	});
+
+	it("reconciles an interactive ACP runtime before rechecking versions", async () => {
+		const fetchMock = stubFetch(
+			makeStatus({
+				cliUpdateActionsAllowed: true,
+				cliUpdates: [
+					{
+						id: "acp:opencode",
+						label: "OpenCode (ACP)",
+						installedVersion: "1.18.15",
+						latestVersion: "1.18.16",
+						available: true,
+						updateCommand: "sudo npm install --global opencode-ai@1.18.16",
+						updateMode: "interactive",
+						requiresElevation: true,
+						checkedAt: Date.now(),
+					},
+				],
+			}),
+			{
+				prepare_cli: {
+					ok: true,
+					data: {
+						command: "sudo npm install --global opencode-ai@1.18.16",
+						terminalCwd: "/work/project",
+						leaseId: "lease-acp",
+					},
+				},
+				reconcile_cli: { ok: true },
+				heartbeat_cli: { ok: true },
+				check: { ok: true, data: makeStatus() },
+			},
+		);
+		Object.defineProperty(navigator, "clipboard", {
+			value: { writeText: vi.fn().mockResolvedValue(undefined) },
+			configurable: true,
+		});
+		render(<UpdatesSection />);
+
+		fireEvent.click(
+			await screen.findByRole("button", { name: "OPEN TERMINAL" }),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "open" }));
+		await screen.findByRole("dialog", {
+			name: "OpenCode (ACP) update terminal",
+		});
+		fireEvent.click(
+			screen.getByRole("button", { name: "Finish update and refresh" }),
+		);
+
+		await screen.findByText("Installed CLI versions refreshed.");
+		const actions = fetchMock.mock.calls.flatMap((call) => {
+			if (call[1]?.method !== "POST") return [];
+			return [JSON.parse(String(call[1].body)).action as string];
+		});
+		expect(actions.indexOf("reconcile_cli")).toBeGreaterThan(-1);
+		expect(actions.indexOf("reconcile_cli")).toBeLessThan(
+			actions.indexOf("check"),
+		);
+		const reconcile = fetchMock.mock.calls.find((call) =>
+			String(call[1]?.body).includes('"reconcile_cli"'),
+		);
+		expect(JSON.parse(String(reconcile?.[1]?.body))).toEqual({
+			action: "reconcile_cli",
+			id: "acp:opencode",
+			leaseId: "lease-acp",
+		});
+	});
+
+	it("retains an interactive update lease for an exact reconcile retry", async () => {
+		let reconcileAttempts = 0;
+		const fetchMock = stubFetch(
+			makeStatus({
+				cliUpdateActionsAllowed: true,
+				cliUpdates: [
+					{
+						id: "acp:opencode",
+						label: "OpenCode (ACP)",
+						installedVersion: "1.18.15",
+						latestVersion: "1.18.16",
+						available: true,
+						updateCommand: "sudo npm install --global opencode-ai@1.18.16",
+						updateMode: "interactive",
+						requiresElevation: true,
+						checkedAt: Date.now(),
+					},
+				],
+			}),
+			{
+				prepare_cli: {
+					ok: true,
+					data: {
+						command: "sudo npm install --global opencode-ai@1.18.16",
+						terminalCwd: "/work/project",
+						leaseId: "lease-retry",
+					},
+				},
+				heartbeat_cli: { ok: true },
+				reconcile_cli: () => {
+					reconcileAttempts += 1;
+					return reconcileAttempts === 1
+						? { ok: false, error: "owner refresh unavailable" }
+						: { ok: true };
+				},
+				check: { ok: true, data: makeStatus() },
+			},
+		);
+		Object.defineProperty(navigator, "clipboard", {
+			value: { writeText: vi.fn().mockResolvedValue(undefined) },
+			configurable: true,
+		});
+		render(<UpdatesSection />);
+
+		fireEvent.click(
+			await screen.findByRole("button", { name: "OPEN TERMINAL" }),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "open" }));
+		await screen.findByRole("dialog");
+		fireEvent.click(
+			screen.getByRole("button", { name: "Finish update and refresh" }),
+		);
+
+		expect(await screen.findByText(/owner refresh unavailable/)).toBeTruthy();
+		const retry = screen.getByRole("button", {
+			name: "RETRY RUNTIME REFRESH",
+		});
+		expect(
+			screen
+				.getByRole("button", { name: "OPEN TERMINAL" })
+				.hasAttribute("disabled"),
+		).toBe(true);
+		expect(retry.hasAttribute("disabled")).toBe(false);
+		expect(screen.queryByRole("dialog")).toBeNull();
+		expect(
+			fetchMock.mock.calls.some((call) =>
+				String(call[1]?.body).includes(
+					'"action":"heartbeat_cli","id":"acp:opencode","leaseId":"lease-retry"',
+				),
+			),
+		).toBe(true);
+
+		fireEvent.click(retry);
+		expect(
+			await screen.findByText("Installed CLI versions refreshed."),
+		).toBeTruthy();
+		expect(reconcileAttempts).toBe(2);
+		expect(
+			fetchMock.mock.calls
+				.filter((call) =>
+					String(call[1]?.body).includes('"action":"reconcile_cli"'),
+				)
+				.map((call) => JSON.parse(String(call[1]?.body))),
+		).toEqual([
+			{
+				action: "reconcile_cli",
+				id: "acp:opencode",
+				leaseId: "lease-retry",
+			},
+			{
+				action: "reconcile_cli",
+				id: "acp:opencode",
+				leaseId: "lease-retry",
+			},
+		]);
+		expect(
+			screen.queryByRole("button", { name: "RETRY RUNTIME REFRESH" }),
+		).toBeNull();
+	});
+
+	it("surfaces automatic ACP reconcile failure as the same retryable state", async () => {
+		const fetchMock = stubFetch(
+			makeStatus({
+				cliUpdateActionsAllowed: true,
+				cliUpdates: [
+					{
+						id: "acp:opencode",
+						label: "OpenCode (ACP)",
+						installedVersion: "1.18.15",
+						latestVersion: "1.18.16",
+						available: true,
+						updateCommand: "npm install --global opencode-ai@1.18.16",
+						updateMode: "automatic",
+						requiresElevation: false,
+						checkedAt: Date.now(),
+					},
+				],
+			}),
+			{
+				apply_cli: {
+					ok: true,
+					data: {
+						reconcilePending: {
+							id: "acp:opencode",
+							leaseId: "lease-auto",
+							error: "owner reconciliation failed",
+						},
+					},
+				},
+				heartbeat_cli: { ok: true },
+				reconcile_cli: { ok: true },
+				check: { ok: true, data: makeStatus() },
+			},
+		);
+		render(<UpdatesSection />);
+
+		fireEvent.click(await screen.findByRole("button", { name: "UPDATE" }));
+		fireEvent.click(screen.getByRole("button", { name: "update" }));
+		expect(await screen.findByText(/owner reconciliation failed/)).toBeTruthy();
+		expect(
+			fetchMock.mock.calls.some((call) =>
+				String(call[1]?.body).includes('"action":"check"'),
+			),
+		).toBe(false);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "RETRY RUNTIME REFRESH" }),
+		);
+		expect(
+			await screen.findByText("Installed CLI versions refreshed."),
+		).toBeTruthy();
+		expect(
+			fetchMock.mock.calls.some((call) =>
+				String(call[1]?.body).includes(
+					'"action":"reconcile_cli","id":"acp:opencode","leaseId":"lease-auto"',
+				),
+			),
+		).toBe(true);
 	});
 
 	it("does not expose CLI mutation controls to remote browsers", async () => {

@@ -7,11 +7,17 @@ import {
 	type AcpAgentInfo,
 	type AcpAuthMethod,
 	type AcpCatalogItem,
+	type AcpProviderNativeSessionPage,
+	type AcpProviderSessionImportResult,
 	authenticateAcpFn,
 	getAcpRegistryFn,
+	importAcpProviderSessionFn,
+	listAcpProviderSessionsFn,
 } from "#/lib/serverFns/acp";
 import { AcpAgentCard } from "./AcpAgentCard";
 import { Section } from "./fields";
+
+const MAX_PROVIDER_SESSION_BROWSER_PAGES = 25;
 
 export function AcpSection({
 	initialCatalog,
@@ -36,7 +42,8 @@ export function AcpSection({
 	const [search, setSearch] = useState("");
 	const [busy, setBusy] = useState<{
 		id: string;
-		type: "inspect" | "refresh";
+		type: "inspect" | "refresh" | "sessions" | "import";
+		providerSessionId?: string;
 	} | null>(null);
 	const [auth, setAuth] = useState<Record<string, AcpAuthMethod[]>>({});
 	const [agentInfo, setAgentInfo] = useState<
@@ -45,6 +52,17 @@ export function AcpSection({
 	const [optionsRefreshed, setOptionsRefreshed] = useState<
 		Record<string, boolean>
 	>({});
+	const [canListSessions, setCanListSessions] = useState<
+		Record<string, boolean | undefined>
+	>({});
+	const [providerSessions, setProviderSessions] = useState<
+		Record<string, AcpProviderNativeSessionPage | null | undefined>
+	>({});
+	const [providerSessionImports, setProviderSessionImports] = useState<
+		Record<string, Record<string, AcpProviderSessionImportResult>>
+	>({});
+	const providerSessionCursors = useRef<Record<string, Set<string>>>({});
+	const providerSessionPageCounts = useRef<Record<string, number>>({});
 	const [error, setError] = useState<string | null>(null);
 	const [catalogRefreshing, setCatalogRefreshing] = useState(false);
 	const operation = useRef<symbol | null>(null);
@@ -53,6 +71,11 @@ export function AcpSection({
 		setAuth({});
 		setAgentInfo({});
 		setOptionsRefreshed({});
+		setCanListSessions({});
+		setProviderSessions({});
+		setProviderSessionImports({});
+		providerSessionCursors.current = {};
+		providerSessionPageCounts.current = {};
 	}, [initialCatalog]);
 	const shown = useMemo(() => {
 		const query = search.trim();
@@ -68,6 +91,15 @@ export function AcpSection({
 		setAuth((current) => ({ ...current, [item.id]: [] }));
 		setAgentInfo((current) => ({ ...current, [item.id]: null }));
 		setOptionsRefreshed((current) => ({ ...current, [item.id]: false }));
+		setCanListSessions((current) => ({
+			...current,
+			[item.id]: undefined,
+		}));
+		setProviderSessions((current) => ({ ...current, [item.id]: null }));
+		setProviderSessionImports((current) => ({
+			...current,
+			[item.id]: {},
+		}));
 		onChange(
 			enabled
 				? value.filter((candidate) => candidate.id !== item.id)
@@ -82,6 +114,9 @@ export function AcpSection({
 		setAuth((current) => ({ ...current, [id]: [] }));
 		setAgentInfo((current) => ({ ...current, [id]: null }));
 		setOptionsRefreshed((current) => ({ ...current, [id]: false }));
+		setCanListSessions((current) => ({ ...current, [id]: undefined }));
+		setProviderSessions((current) => ({ ...current, [id]: null }));
+		setProviderSessionImports((current) => ({ ...current, [id]: {} }));
 		onChange(
 			value.map((candidate) =>
 				candidate.id === id ? { ...candidate, ...patch } : candidate,
@@ -100,6 +135,15 @@ export function AcpSection({
 		setError(null);
 		setAuth((current) => ({ ...current, [item.id]: [] }));
 		setAgentInfo((current) => ({ ...current, [item.id]: null }));
+		setCanListSessions((current) => ({
+			...current,
+			[item.id]: undefined,
+		}));
+		setProviderSessions((current) => ({ ...current, [item.id]: null }));
+		setProviderSessionImports((current) => ({
+			...current,
+			[item.id]: {},
+		}));
 		try {
 			const result = await authenticateAcpFn({
 				data: { id: item.id, methodId },
@@ -109,9 +153,131 @@ export function AcpSection({
 				...current,
 				[item.id]: result.agentInfo,
 			}));
+			setCanListSessions((current) => ({
+				...current,
+				[item.id]: result.canListSessions,
+			}));
 		} catch (cause) {
 			setError(
 				cause instanceof Error ? cause.message : "ACP authentication failed",
+			);
+		} finally {
+			if (operation.current === token) {
+				operation.current = null;
+				setBusy(null);
+			}
+		}
+	}
+
+	async function browseProviderSessions(
+		item: AcpCatalogItem,
+		cursor?: string,
+	): Promise<void> {
+		if (operation.current) return;
+		const token = Symbol(item.id);
+		operation.current = token;
+		setBusy({ id: item.id, type: "sessions" });
+		setError(null);
+		try {
+			if (!cursor) {
+				providerSessionCursors.current[item.id] = new Set();
+				providerSessionPageCounts.current[item.id] = 0;
+			} else if (providerSessionCursors.current[item.id]?.has(cursor)) {
+				throw new Error("The provider returned a repeated session cursor");
+			}
+			const page = await listAcpProviderSessionsFn({
+				data: { id: item.id, ...(cursor ? { cursor } : {}) },
+			});
+			if (cursor) {
+				const seenCursors =
+					providerSessionCursors.current[item.id] ?? new Set<string>();
+				seenCursors.add(cursor);
+				providerSessionCursors.current[item.id] = seenCursors;
+			}
+			const pageCount = (providerSessionPageCounts.current[item.id] ?? 0) + 1;
+			providerSessionPageCounts.current[item.id] = pageCount;
+			const nextCursor =
+				page.nextCursor &&
+				pageCount < MAX_PROVIDER_SESSION_BROWSER_PAGES &&
+				!providerSessionCursors.current[item.id]?.has(page.nextCursor)
+					? page.nextCursor
+					: undefined;
+			if (page.nextCursor && !nextCursor) {
+				setError(
+					pageCount >= MAX_PROVIDER_SESSION_BROWSER_PAGES
+						? `Provider session browsing is limited to ${MAX_PROVIDER_SESSION_BROWSER_PAGES} pages per inspection.`
+						: "The provider returned a repeated session cursor.",
+				);
+			}
+			setProviderSessions((current) => {
+				const previous = current[item.id];
+				if (!cursor || !previous) {
+					return {
+						...current,
+						[item.id]: {
+							sessions: page.sessions,
+							canImportSessions: page.canImportSessions,
+							...(nextCursor ? { nextCursor } : {}),
+						},
+					};
+				}
+				const known = new Set(
+					previous.sessions.map((session) => session.sessionId),
+				);
+				return {
+					...current,
+					[item.id]: {
+						sessions: [
+							...previous.sessions,
+							...page.sessions.filter(
+								(session) => !known.has(session.sessionId),
+							),
+						],
+						canImportSessions:
+							previous.canImportSessions && page.canImportSessions,
+						...(nextCursor ? { nextCursor } : {}),
+					},
+				};
+			});
+		} catch (cause) {
+			setError(
+				cause instanceof Error
+					? cause.message
+					: "ACP provider session listing failed",
+			);
+		} finally {
+			if (operation.current === token) {
+				operation.current = null;
+				setBusy(null);
+			}
+		}
+	}
+
+	async function importProviderSession(
+		item: AcpCatalogItem,
+		providerSessionId: string,
+	): Promise<void> {
+		if (operation.current) return;
+		const token = Symbol(item.id);
+		operation.current = token;
+		setBusy({ id: item.id, type: "import", providerSessionId });
+		setError(null);
+		try {
+			const result = await importAcpProviderSessionFn({
+				data: { id: item.id, providerSessionId },
+			});
+			setProviderSessionImports((current) => ({
+				...current,
+				[item.id]: {
+					...current[item.id],
+					[providerSessionId]: result,
+				},
+			}));
+		} catch (cause) {
+			setError(
+				cause instanceof Error
+					? cause.message
+					: "ACP provider session import failed",
 			);
 		} finally {
 			if (operation.current === token) {
@@ -154,6 +320,9 @@ export function AcpSection({
 			setAuth({});
 			setAgentInfo({});
 			setOptionsRefreshed({});
+			setCanListSessions({});
+			setProviderSessions({});
+			setProviderSessionImports({});
 		} catch (cause) {
 			setError(
 				cause instanceof Error ? cause.message : "ACP catalog refresh failed",
@@ -221,6 +390,14 @@ export function AcpSection({
 							disabled={busy !== null}
 							authMethods={auth[item.id]}
 							agentInfo={agentInfo[item.id]}
+							canListSessions={canListSessions[item.id]}
+							providerSessions={providerSessions[item.id]}
+							providerSessionImports={providerSessionImports[item.id]}
+							importingProviderSessionId={
+								busy?.id === item.id && busy.type === "import"
+									? busy.providerSessionId
+									: undefined
+							}
 							models={
 								providers.find((provider) => provider.id === item.providerId)
 									?.models
@@ -234,6 +411,18 @@ export function AcpSection({
 							onUpdateOverride={(patch) => updateOverride(item.id, patch)}
 							onInspect={(methodId) => void inspect(item, methodId)}
 							onRefreshOptions={() => void refreshOptions(item)}
+							onBrowseProviderSessions={(cursor) =>
+								void browseProviderSessions(item, cursor)
+							}
+							onCloseProviderSessions={() =>
+								setProviderSessions((current) => ({
+									...current,
+									[item.id]: null,
+								}))
+							}
+							onImportProviderSession={(providerSessionId) =>
+								void importProviderSession(item, providerSessionId)
+							}
 						/>
 					</div>
 				);

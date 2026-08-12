@@ -490,6 +490,234 @@ describe("SessionManager — setModel", () => {
 		);
 	});
 
+	it("keeps filtered OpenCode continuity when the persisted runtime digest matches", async () => {
+		const { provider, captured } = makeCaptureProvider("acp:opencode");
+		const continuityProvider: AgentProvider = {
+			...provider,
+			sessionContinuityIdentity: "runtime-v1",
+		};
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "filtered-opencode-current",
+			label: "Current filtered OpenCode",
+			selected_effort: "high",
+		} as never);
+		vi.mocked(dbMock.getSessionMessages).mockResolvedValueOnce([
+			{ role: "user", text: "prior" },
+		] as never);
+		vi.mocked(dbMock.getSessionModel).mockResolvedValueOnce(
+			"opencode/model-visible",
+		);
+		vi.mocked(dbMock.getSessionProviderId).mockResolvedValueOnce(
+			"acp:opencode",
+		);
+		vi.mocked(dbMock.getSessionProviderSession).mockResolvedValueOnce(
+			"native-current-filter",
+		);
+		vi.mocked(dbMock.getSessionProviderRuntimeIdentity).mockResolvedValueOnce(
+			"runtime-v1",
+		);
+		const config = makeConfig("");
+		config.vault_provider = "acp:opencode";
+		config.acp_agents = [
+			{
+				id: "opencode",
+				model_filter: {
+					mode: "hide",
+					models: ["opencode/model-hidden"],
+				},
+			},
+		];
+		const sm = new SessionManager(config, makeProviders(continuityProvider));
+
+		await sm.runQuery("continue", () => {}, {
+			sessionId: "filtered-opencode-current",
+		});
+
+		expect(captured.params?.sessionId).toBe("native-current-filter");
+		expect(captured.params?.model).toBe("opencode/model-visible");
+		expect(captured.params?.effort).toBe("high");
+	});
+
+	it("resumes a provider-native ACP import only under its matching runtime", async () => {
+		const { provider, captured } = makeCaptureProvider("acp:opencode");
+		const continuityProvider: AgentProvider = {
+			...provider,
+			sessionContinuityIdentity: "runtime-v1",
+		};
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "imported-opencode-current",
+			label: "Imported OpenCode",
+			history_imported: 1,
+			history_resume_mode: "native",
+		} as never);
+		vi.mocked(dbMock.getSessionProviderId).mockResolvedValueOnce(
+			"acp:opencode",
+		);
+		vi.mocked(dbMock.getSessionProviderSession).mockResolvedValueOnce(
+			"native-imported",
+		);
+		vi.mocked(dbMock.getSessionProviderRuntimeIdentity).mockResolvedValueOnce(
+			"runtime-v1",
+		);
+		const config = makeConfig("");
+		config.vault_provider = "acp:opencode";
+		config.acp_agents = [
+			{
+				id: "opencode",
+				model_filter: { mode: "hide", models: ["opencode/other"] },
+			},
+		];
+		const sm = new SessionManager(config, makeProviders(continuityProvider));
+
+		await sm.runQuery("continue", () => {}, {
+			sessionId: "imported-opencode-current",
+		});
+
+		expect(captured.params?.sessionId).toBe("native-imported");
+		expect(captured.params?.historyResumeMode).toBe("native");
+	});
+
+	it("fails legacy ACP continuity closed and rebinds the returned native id", async () => {
+		vi.mocked(dbMock.setSessionProviderSession).mockClear();
+		const { provider, captured } = makeCaptureProvider("acp:opencode");
+		const continuityProvider: AgentProvider = {
+			...provider,
+			sessionContinuityIdentity: "runtime-v2",
+		};
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "legacy-opencode",
+			label: "Legacy OpenCode",
+		} as never);
+		vi.mocked(dbMock.getSessionProviderId).mockResolvedValueOnce(
+			"acp:opencode",
+		);
+		vi.mocked(dbMock.getSessionProviderSession).mockResolvedValueOnce("sdk-1");
+		vi.mocked(dbMock.getSessionProviderRuntimeIdentity).mockResolvedValueOnce(
+			null,
+		);
+		const config = makeConfig("");
+		config.vault_provider = "acp:opencode";
+		const sm = new SessionManager(config, makeProviders(continuityProvider));
+
+		await sm.runQuery("continue", () => {}, { sessionId: "legacy-opencode" });
+
+		expect(captured.params?.sessionId).toBeUndefined();
+		expect(dbMock.setSessionProviderSession).toHaveBeenNthCalledWith(
+			1,
+			"legacy-opencode",
+			"acp:opencode",
+			null,
+		);
+		expect(dbMock.setSessionProviderSession).toHaveBeenLastCalledWith(
+			"legacy-opencode",
+			"acp:opencode",
+			"sdk-1",
+			"runtime-v2",
+		);
+	});
+
+	it("rejects a provider-native ACP import after its runtime digest changes", async () => {
+		const { provider, captured } = makeCaptureProvider("acp:opencode");
+		const continuityProvider: AgentProvider = {
+			...provider,
+			sessionContinuityIdentity: "runtime-v2",
+		};
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "imported-opencode-stale",
+			label: "Imported OpenCode",
+			history_imported: 1,
+			history_resume_mode: "native",
+		} as never);
+		vi.mocked(dbMock.getSessionProviderId).mockResolvedValueOnce(
+			"acp:opencode",
+		);
+		vi.mocked(dbMock.getSessionProviderSession).mockResolvedValueOnce(
+			"native-imported",
+		);
+		vi.mocked(dbMock.getSessionProviderRuntimeIdentity).mockResolvedValueOnce(
+			"runtime-v1",
+		);
+		const config = makeConfig("");
+		config.vault_provider = "acp:opencode";
+		const sm = new SessionManager(config, makeProviders(continuityProvider));
+
+		await expect(
+			sm.runQuery("continue", () => {}, {
+				sessionId: "imported-opencode-stale",
+			}),
+		).rejects.toThrow(
+			"This provider-native import belongs to a different ACP executable or storage context.",
+		);
+
+		expect(captured.params).toBeNull();
+		expect(sm.getCurrentSessionId()).toBeNull();
+	});
+
+	it("keeps the current session and observer intact when a stale import is rejected", async () => {
+		const { provider } = makeCaptureProvider("acp:opencode");
+		const originalQuery = provider.query.bind(provider);
+		provider.query = (params) => {
+			const session = originalQuery(params);
+			session.listBackgroundActivities = vi.fn().mockResolvedValue([]);
+			return session;
+		};
+		const continuityProvider: AgentProvider = {
+			...provider,
+			sessionContinuityIdentity: "runtime-v2",
+		};
+		vi.mocked(dbMock.getSessionById)
+			.mockResolvedValueOnce({
+				id: "current-a",
+				label: "Current A",
+				pinned: 1,
+				fork_parent_session_id: "source-a",
+				fork_parent_label: "Source A",
+				fork_kind: "exact",
+			} as never)
+			.mockResolvedValueOnce({
+				id: "stale-import-b",
+				label: "Stale B",
+				history_imported: 1,
+				history_resume_mode: "native",
+			} as never);
+		vi.mocked(dbMock.getSessionProviderId)
+			.mockResolvedValueOnce("acp:opencode")
+			.mockResolvedValueOnce("acp:opencode");
+		vi.mocked(dbMock.getSessionProviderSession)
+			.mockResolvedValueOnce(null)
+			.mockResolvedValueOnce("native-b");
+		vi.mocked(dbMock.getSessionProviderRuntimeIdentity)
+			.mockResolvedValueOnce(null)
+			.mockResolvedValueOnce("runtime-v1");
+		const config = makeConfig("");
+		config.vault_provider = "acp:opencode";
+		const sm = new SessionManager(config, makeProviders(continuityProvider));
+
+		await sm.runQuery("current", () => {}, { sessionId: "current-a" });
+		const observerBefore = (
+			sm as unknown as { backgroundActivityObserver: unknown }
+		).backgroundActivityObserver;
+		expect(observerBefore).not.toBeNull();
+
+		await expect(
+			sm.runQuery("stale", () => {}, { sessionId: "stale-import-b" }),
+		).rejects.toThrow(
+			"This provider-native import belongs to a different ACP executable or storage context.",
+		);
+
+		expect(sm.getCurrentSessionId()).toBe("current-a");
+		expect(sm.getSessionLabel()).toBe("Current A");
+		expect(sm.getSessionPresentation()).toMatchObject({
+			pinned: true,
+			forkParentSessionId: "source-a",
+			forkParentLabel: "Source A",
+		});
+		expect(
+			(sm as unknown as { backgroundActivityObserver: unknown })
+				.backgroundActivityObserver,
+		).toBe(observerBefore);
+	});
+
 	it("does not replace the globally focused session for a background turn", async () => {
 		const { provider } = makeCaptureProvider("claude");
 		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
@@ -912,6 +1140,7 @@ describe("SessionManager — setProvider", () => {
 				"aba-session",
 				"codex",
 				"codex-native",
+				null,
 			),
 		);
 		await expect(

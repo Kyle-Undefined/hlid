@@ -16,6 +16,7 @@ const supportsResume = ![
 	"hang-load",
 	"reject-load",
 	"load-only-replay",
+	"list-sessions-metadata-only",
 ].includes(behavior);
 const never = () => new Promise(() => {});
 const stall = async (phase) => {
@@ -143,13 +144,21 @@ agent({ name: "hlid-fake-agent" })
 		return {
 			protocolVersion: PROTOCOL_VERSION,
 			agentCapabilities: {
-				...(behavior === "resume-only" ? {} : { loadSession: true }),
+				...(behavior === "resume-only" ||
+				behavior === "list-sessions-metadata-only"
+					? {}
+					: { loadSession: true }),
 				mcpCapabilities:
 					behavior === "strict-capabilities" ? {} : { http: true, sse: true },
+				promptCapabilities:
+					behavior === "structured-prompts"
+						? { image: true, embeddedContext: true }
+						: {},
 				sessionCapabilities: {
 					fork: {},
 					delete: {},
 					close: {},
+					...(behavior.startsWith("list-sessions") ? { list: {} } : {}),
 					...(supportsResume ? { resume: {} } : {}),
 					...(behavior === "strict-capabilities"
 						? {}
@@ -163,6 +172,55 @@ agent({ name: "hlid-fake-agent" })
 	.onRequest("authenticate", async () => {
 		if (behavior === "hang-authenticate") await stall("authentication");
 		return {};
+	})
+	.onRequest("session/list", ({ params }) => {
+		if (behavior === "list-sessions-oversized") {
+			return {
+				sessions: Array.from({ length: 101 }, (_, index) => ({
+					sessionId: `native-${index}`,
+					cwd: params.cwd,
+				})),
+			};
+		}
+		if (!behavior.startsWith("list-sessions")) return { sessions: [] };
+		if (behavior === "list-sessions-repeated-cursor") {
+			return { sessions: [], nextCursor: "repeat" };
+		}
+		if (behavior === "list-sessions-endless") {
+			const page = Number.parseInt(
+				params.cursor?.replace("page-", "") ?? "0",
+				10,
+			);
+			return { sessions: [], nextCursor: `page-${page + 1}` };
+		}
+		if (params.cursor === "next-page") {
+			return {
+				sessions: [
+					{
+						sessionId: "native-2",
+						cwd: params.cwd,
+						title: "Second provider session",
+						updatedAt: "2026-08-12T13:00:00.000Z",
+					},
+				],
+			};
+		}
+		return {
+			sessions: [
+				{
+					sessionId: "native-1",
+					cwd: params.cwd,
+					title: "First provider session",
+					updatedAt: "2026-08-12T12:00:00.000Z",
+				},
+				{
+					sessionId: "foreign-native",
+					cwd: `${params.cwd}-other`,
+					title: "Foreign workspace session",
+				},
+			],
+			nextCursor: "next-page",
+		};
 	})
 	.onRequest("session/new", async ({ params }) => {
 		if (behavior === "hang-new") await stall("session creation");
@@ -360,6 +418,16 @@ agent({ name: "hlid-fake-agent" })
 		}
 		const text =
 			params.prompt.find((block) => block.type === "text")?.text ?? "";
+		if (text === "report-prompt-blocks") {
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "agent_message_chunk",
+					content: { type: "text", text: JSON.stringify(params.prompt) },
+				},
+			});
+			return { stopReason: "end_turn" };
+		}
 		if (text === "thought-transport-error") {
 			await notifyThought(
 				client,

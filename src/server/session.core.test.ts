@@ -1900,7 +1900,7 @@ describe("SessionManager — provider context reset", () => {
 			vi
 				.mocked(dbMock.setSessionProviderSession)
 				.mock.calls.slice(providerCallCount),
-		).toContainEqual(["sess-clear", "claude", "sdk-after-clear"]);
+		).toContainEqual(["sess-clear", "claude", "sdk-after-clear", null]);
 		expect(
 			vi.mocked(dbMock.appendMessage).mock.calls.slice(messageCallCount),
 		).toContainEqual([

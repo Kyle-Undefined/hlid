@@ -162,6 +162,9 @@ export function discoverAcpProviderCapabilities(input: {
 	const sessions = capabilities?.sessionCapabilities;
 	const prompts = capabilities?.promptCapabilities;
 	const mcp = capabilities?.mcpCapabilities;
+	const canImportSessions = Boolean(
+		capabilities?.loadSession || sessions?.resume,
+	);
 	const authMethodCount = input.initialized.authMethods?.length ?? 0;
 	const issues: string[] = [];
 	const configOptions = input.configOptions.slice(0, MAX_CONFIG_OPTIONS);
@@ -243,19 +246,34 @@ export function discoverAcpProviderCapabilities(input: {
 			segments: ["acp-session", "list"],
 			label: "ACP session catalog",
 			advertised: sessions?.list != null,
-			integration: "not-integrated",
-			operations: ["list", "import"],
+			integration: "integrated",
+			operations: canImportSessions ? ["list", "import"] : ["list"],
 			advertisedReason:
-				"The agent advertises session/list, but Hlid has no ACP session browser or import UI yet.",
+				"Hlid exposes a bounded, workspace-scoped provider session browser. Explicit provider-native continuity import is offered only when the agent also advertises session load or resume; earlier transcript remains provider-owned and is not copied into Hlid.",
 			notAdvertisedReason:
-				"The agent does not advertise session/list, and Hlid has no ACP session browser or import UI yet.",
+				"The agent does not advertise session/list, so Hlid cannot browse or import its provider-native sessions.",
 		}),
 	];
 
-	for (const [kind, advertised] of [
-		["image", prompts?.image === true],
-		["audio", prompts?.audio === true],
-		["embedded-context", prompts?.embeddedContext === true],
+	for (const [kind, advertised, integration, advertisedReason] of [
+		[
+			"image",
+			prompts?.image === true,
+			"integrated",
+			"Hlid sends only explicitly attached or selected images as structured ACP prompt blocks.",
+		],
+		[
+			"audio",
+			prompts?.audio === true,
+			"not-integrated",
+			"The agent accepts audio prompt content, but Hlid's ACP prompt path does not send native audio blocks.",
+		],
+		[
+			"embedded-context",
+			prompts?.embeddedContext === true,
+			"integrated",
+			"Hlid sends bounded content only for exact user-selected references and never expands links, imports, attachments, or neighboring files.",
+		],
 	] as const) {
 		evidence.push(
 			optionalCapability({
@@ -263,10 +281,9 @@ export function discoverAcpProviderCapabilities(input: {
 				segments: ["acp-prompt", kind],
 				label: `Prompt ${kind.replace("-", " ")}`,
 				advertised,
-				integration: "not-integrated",
+				integration,
 				operations: ["prompt"],
-				advertisedReason:
-					"The agent accepts this prompt content, but Hlid's ACP prompt path currently sends text only.",
+				advertisedReason,
 			}),
 		);
 	}

@@ -48,6 +48,34 @@ export async function appendMessage(
 	return Number(result.lastInsertRowid);
 }
 
+/**
+ * Optimistically replace the receipt on one exact persisted user message.
+ * The expected JSON guard prevents a late provider callback from overwriting a
+ * receipt that has already been revised by another path.
+ */
+export async function replaceUserMessageContextManifest(
+	sessionId: string,
+	seq: number,
+	expectedContextManifestJson: string,
+	contextManifestJson: string,
+): Promise<void> {
+	const db = await getDb();
+	db.transaction(() => {
+		const result = db.run(
+			`UPDATE messages
+			 SET context_manifest_json = ?
+			 WHERE session_id = ? AND seq = ? AND role = 'user'
+			   AND context_manifest_json = ?`,
+			[contextManifestJson, sessionId, seq, expectedContextManifestJson],
+		);
+		if (result.changes !== 1) {
+			throw new Error(
+				`replaceUserMessageContextManifest: no exact user receipt for session=${sessionId} seq=${seq}`,
+			);
+		}
+	})();
+}
+
 export type RealtimeTranscriptMessageInput = {
 	sessionId: string;
 	seq: number;

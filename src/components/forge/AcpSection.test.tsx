@@ -15,11 +15,15 @@ import { AcpSection } from "./AcpSection";
 const serverFns = vi.hoisted(() => ({
 	authenticate: vi.fn(),
 	registry: vi.fn(),
+	listSessions: vi.fn(),
+	importSession: vi.fn(),
 }));
 
 vi.mock("#/lib/serverFns/acp", () => ({
 	authenticateAcpFn: serverFns.authenticate,
 	getAcpRegistryFn: serverFns.registry,
+	listAcpProviderSessionsFn: serverFns.listSessions,
+	importAcpProviderSessionFn: serverFns.importSession,
 }));
 
 afterEach(() => {
@@ -84,6 +88,183 @@ describe("AcpSection", () => {
 		await waitFor(() =>
 			expect(screen.getByText("installed OpenCode 1.2.3")).toBeTruthy(),
 		);
+	});
+
+	it("browses paged provider-native metadata and imports explicit continuity", async () => {
+		serverFns.authenticate.mockResolvedValue({
+			authMethods: [],
+			agentInfo: { name: "OpenCode", version: "1.18.16" },
+			canListSessions: true,
+		});
+		serverFns.listSessions
+			.mockResolvedValueOnce({
+				sessions: [
+					{
+						sessionId: "native-1",
+						title: "First provider session",
+						updatedAt: "2026-08-12T12:00:00.000Z",
+					},
+				],
+				canImportSessions: true,
+				nextCursor: "next-page",
+			})
+			.mockResolvedValueOnce({
+				sessions: [
+					{
+						sessionId: "native-2",
+						title: "Second provider session",
+					},
+				],
+				canImportSessions: true,
+			});
+		serverFns.importSession.mockResolvedValue({
+			sessionId: "hlid-import-1",
+			created: true,
+		});
+		render(
+			<AcpSection
+				initialCatalog={[item("opencode", "OpenCode")]}
+				value={[{ id: "opencode" }]}
+				onChange={vi.fn()}
+			/>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Verify OpenCode ACP" }),
+		);
+		await screen.findByText("installed OpenCode 1.18.16");
+		fireEvent.click(
+			screen.getByRole("button", { name: "Browse provider sessions" }),
+		);
+
+		await screen.findByText("First provider session");
+		expect(
+			screen.getByText(/These are not Hlid sessions or forks/),
+		).toBeTruthy();
+		expect(
+			screen.getByText(/Earlier transcript remains provider-owned/),
+		).toBeTruthy();
+		expect(serverFns.listSessions).toHaveBeenNthCalledWith(1, {
+			data: { id: "opencode" },
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+		await screen.findByText("Second provider session");
+		expect(serverFns.listSessions).toHaveBeenNthCalledWith(2, {
+			data: { id: "opencode", cursor: "next-page" },
+		});
+
+		const importButtons = screen.getAllByRole("button", {
+			name: "Import into Hlid",
+		});
+		fireEvent.click(importButtons[0] as HTMLButtonElement);
+		const ravenLink = await screen.findByRole("link", {
+			name: "Open in Raven",
+		});
+		expect(serverFns.importSession).toHaveBeenCalledWith({
+			data: { id: "opencode", providerSessionId: "native-1" },
+		});
+		expect(ravenLink.getAttribute("href")).toBe("/raven?session=hlid-import-1");
+		expect(screen.getByText("Hlid entry created")).toBeTruthy();
+	});
+
+	it("does not offer provider session browsing when the capability is absent", async () => {
+		serverFns.authenticate.mockResolvedValue({
+			authMethods: [],
+			agentInfo: { name: "OpenCode", version: "1.18.16" },
+			canListSessions: false,
+		});
+		render(
+			<AcpSection
+				initialCatalog={[item("opencode", "OpenCode")]}
+				value={[{ id: "opencode" }]}
+				onChange={vi.fn()}
+			/>,
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: "Verify OpenCode ACP" }),
+		);
+		await screen.findByText("Provider-native session listing not advertised.");
+		expect(
+			screen.queryByRole("button", { name: "Browse provider sessions" }),
+		).toBeNull();
+	});
+
+	it("keeps list-only provider sessions metadata-only", async () => {
+		serverFns.authenticate.mockResolvedValue({
+			authMethods: [],
+			agentInfo: { name: "OpenCode", version: "1.18.16" },
+			canListSessions: true,
+			canImportSessions: false,
+		});
+		serverFns.listSessions.mockResolvedValue({
+			sessions: [{ sessionId: "metadata-only", title: "Listed session" }],
+			canImportSessions: false,
+		});
+		render(
+			<AcpSection
+				initialCatalog={[item("opencode", "OpenCode")]}
+				value={[{ id: "opencode" }]}
+				onChange={vi.fn()}
+			/>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Verify OpenCode ACP" }),
+		);
+		await screen.findByText("installed OpenCode 1.18.16");
+		fireEvent.click(
+			screen.getByRole("button", { name: "Browse provider sessions" }),
+		);
+
+		await screen.findByText("Listed session");
+		expect(screen.getByText("Metadata only")).toBeTruthy();
+		expect(
+			screen.getByText(/does not advertise loading or resuming/),
+		).toBeTruthy();
+		expect(
+			screen.queryByRole("button", { name: "Import into Hlid" }),
+		).toBeNull();
+		expect(serverFns.importSession).not.toHaveBeenCalled();
+	});
+
+	it("stops paging when a provider repeats its cursor", async () => {
+		serverFns.authenticate.mockResolvedValue({
+			authMethods: [],
+			agentInfo: { name: "OpenCode", version: "1.18.16" },
+			canListSessions: true,
+		});
+		serverFns.listSessions
+			.mockResolvedValueOnce({
+				sessions: [],
+				canImportSessions: true,
+				nextCursor: "repeat",
+			})
+			.mockResolvedValueOnce({
+				sessions: [],
+				canImportSessions: true,
+				nextCursor: "repeat",
+			});
+		render(
+			<AcpSection
+				initialCatalog={[item("opencode", "OpenCode")]}
+				value={[{ id: "opencode" }]}
+				onChange={vi.fn()}
+			/>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Verify OpenCode ACP" }),
+		);
+		await screen.findByText("installed OpenCode 1.18.16");
+		fireEvent.click(
+			screen.getByRole("button", { name: "Browse provider sessions" }),
+		);
+		await screen.findByRole("button", { name: "Load more" });
+		fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+
+		await screen.findByText("The provider returned a repeated session cursor.");
+		expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
 	});
 
 	it("preserves the last-good catalog when an explicit refresh fails", async () => {
