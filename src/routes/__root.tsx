@@ -9,6 +9,7 @@ import { useEffect, useRef, useSyncExternalStore } from "react";
 import { LiveSessionSwitcherBoundary } from "#/components/chat/LiveSessionSwitcher";
 import { ErrorBoundary } from "#/components/ErrorBoundary";
 import { BottomNav } from "#/components/nav/BottomNav";
+import { NavigationNamesProvider } from "#/components/nav/NavigationNamesContext";
 import { Sidebar } from "#/components/nav/Sidebar";
 import { PullToRefreshIndicator } from "#/components/PullToRefreshIndicator";
 import { UpdateBanner } from "#/components/UpdateBanner";
@@ -21,6 +22,7 @@ import {
 	getDataRevisionSnapshot,
 	subscribeDataRevisionSnapshot,
 } from "#/hooks/wsDataRevisionStore";
+import { resolveNavigationLabels } from "#/lib/navigationNames";
 import { shouldRevalidateRouteData } from "#/lib/routeDataRevalidation";
 import { isRavenPath } from "#/lib/scrollContainers";
 import { getConfig } from "#/lib/serverFns/config";
@@ -36,7 +38,10 @@ import appCss from "../styles.css?url";
 export const Route = createRootRoute({
 	loader: async () => {
 		const { ui } = await getConfig();
-		return themeBootstrapConfig(ui);
+		return {
+			...themeBootstrapConfig(ui),
+			navigationLabels: resolveNavigationLabels(ui.navigation_names),
+		};
 	},
 	head: () => ({
 		meta: [
@@ -192,8 +197,13 @@ function RegisterErrorLogger() {
 }
 
 function RootDocument({ children }: { children: React.ReactNode }) {
-	const { theme, mobileTheme, customTheme, mobileCustomTheme } =
-		Route.useLoaderData();
+	const {
+		theme,
+		mobileTheme,
+		customTheme,
+		mobileCustomTheme,
+		navigationLabels,
+	} = Route.useLoaderData();
 	const pathname = useRouterState({
 		select: (state) => state.location.pathname,
 	});
@@ -231,47 +241,49 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 				<HeadContent />
 			</head>
 			<body>
-				{pathname === "/login" || pathname === "/login/" ? (
-					children
-				) : (
-					// --app-height: pinned to the visual viewport on the client by
-					// useVisualViewportGuard; 100svh keeps the nav visible before hydration.
-					<div
-						ref={shellRef}
-						className="flex h-[var(--app-height,100svh)] overflow-hidden bg-background text-foreground"
-					>
-						<ErrorBoundary>
-							<Sidebar />
-						</ErrorBoundary>
+				<NavigationNamesProvider initialLabels={navigationLabels}>
+					{pathname === "/login" || pathname === "/login/" ? (
+						children
+					) : (
+						// --app-height: pinned to the visual viewport on the client by
+						// useVisualViewportGuard; 100svh keeps the nav visible before hydration.
 						<div
-							ref={wrapperRef}
-							className="flex-1 flex flex-col min-h-0 overflow-hidden relative"
+							ref={shellRef}
+							className="flex h-[var(--app-height,100svh)] overflow-hidden bg-background text-foreground"
 						>
-							<PullToRefreshIndicator
-								pullY={pullY}
-								isRefreshing={isRefreshing}
-							/>
 							<ErrorBoundary>
-								<UpdateBanner />
+								<Sidebar />
 							</ErrorBoundary>
-							<main
-								data-scroll-to-top="app"
-								className={`flex-1 min-h-0 overscroll-y-contain ${ravenRoute ? "overflow-hidden" : "overflow-auto"}`}
+							<div
+								ref={wrapperRef}
+								className="flex-1 flex flex-col min-h-0 overflow-hidden relative"
 							>
-								{ravenRoute ? (
-									<LiveSessionSwitcherBoundary routeKey={routeKey}>
-										{children}
-									</LiveSessionSwitcherBoundary>
-								) : (
-									children
-								)}
-							</main>
-							<ErrorBoundary>
-								<BottomNav />
-							</ErrorBoundary>
+								<PullToRefreshIndicator
+									pullY={pullY}
+									isRefreshing={isRefreshing}
+								/>
+								<ErrorBoundary>
+									<UpdateBanner />
+								</ErrorBoundary>
+								<main
+									data-scroll-to-top="app"
+									className={`flex-1 min-h-0 overscroll-y-contain ${ravenRoute ? "overflow-hidden" : "overflow-auto"}`}
+								>
+									{ravenRoute ? (
+										<LiveSessionSwitcherBoundary routeKey={routeKey}>
+											{children}
+										</LiveSessionSwitcherBoundary>
+									) : (
+										children
+									)}
+								</main>
+								<ErrorBoundary>
+									<BottomNav />
+								</ErrorBoundary>
+							</div>
 						</div>
-					</div>
-				)}
+					)}
+				</NavigationNamesProvider>
 				<Scripts />
 				{pathname !== "/login" && pathname !== "/login/" && (
 					<>

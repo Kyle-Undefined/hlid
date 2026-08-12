@@ -17,6 +17,7 @@ const ui: UiForm = {
 	hideSkillsIndex: true,
 	showProviderEntries: false,
 	htmlPlans: false,
+	navigationNames: { preset: "hlid", labels: {} },
 };
 
 describe("CustomThemeSection responsive controls", () => {

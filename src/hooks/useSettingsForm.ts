@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ClaudeForm } from "#/components/forge/ClaudeSection";
+import { usePublishNavigationNames } from "#/components/nav/NavigationNamesContext";
 import type { HlidConfig } from "#/config";
 import type { getAcpRegistryFn } from "#/lib/serverFns/acp";
 import type { getCliProxyInfoFn } from "#/lib/serverFns/cliproxy";
@@ -57,6 +58,7 @@ export function useSettingsForm(
 	initial: SettingsInitial,
 	onSaved: () => Promise<void>,
 ) {
+	const publishNavigationNames = usePublishNavigationNames();
 	const initialFormsRef = useRef(createSettingsForms(initial));
 	const initialForms = initialFormsRef.current;
 	const [vault, setVault] = useState(initialForms.vault);
@@ -153,6 +155,7 @@ export function useSettingsForm(
 			if (!response.ok) throw new Error(await responseError(response));
 			const runtimeResult = await responseResult(response);
 			if (!mountedRef.current) return;
+			publishNavigationNames(forms.ui.navigationNames);
 			if (revision === revisionRef.current) {
 				dirtyRef.current = false;
 				setDirty(false);
@@ -235,8 +238,9 @@ export function useSettingsForm(
 		initialForms,
 	]);
 
-	useEffect(
-		() => () => {
+	useEffect(() => {
+		mountedRef.current = true;
+		return () => {
 			mountedRef.current = false;
 			if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
 			if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
@@ -246,15 +250,19 @@ export function useSettingsForm(
 				currentFormsRef.current,
 				restartRequiredRef.current,
 			);
+			const navigationNames = currentFormsRef.current.ui.navigationNames;
 			void fetch("/api/config", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(config),
 				keepalive: true,
-			}).catch(() => {});
-		},
-		[],
-	);
+			})
+				.then((response) => {
+					if (response.ok) publishNavigationNames(navigationNames);
+				})
+				.catch(() => {});
+		};
+	}, [publishNavigationNames]);
 
 	const changeClaude = (patch: Partial<ClaudeForm>) => {
 		const next = applyAgentFormPatch(claude, codex, cliproxy, acpAgents, patch);

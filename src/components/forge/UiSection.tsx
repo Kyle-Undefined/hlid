@@ -1,4 +1,5 @@
 import { THEME_OPTIONS } from "#/lib/agentOptions";
+import type { NavigationNamesConfig } from "#/lib/navigationNames";
 import type { CustomThemePalette, ThemeName } from "#/lib/theme";
 import { displayHotkey, hotkeyFromEvent } from "#/lib/voiceHotkey";
 import { Field, Section } from "./fields";
@@ -13,6 +14,7 @@ export type UiForm = {
 	hideSkillsIndex: boolean;
 	showProviderEntries: boolean;
 	htmlPlans: boolean;
+	navigationNames: NavigationNamesConfig;
 };
 
 const MOBILE_THEME_OPTIONS = [

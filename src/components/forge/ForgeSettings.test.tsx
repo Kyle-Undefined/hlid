@@ -72,6 +72,13 @@ vi.mock("#/components/forge/McpSection", () => ({
 vi.mock("#/components/forge/NetworkSection", () => ({
 	NetworkSection: () => <div>Network content</div>,
 }));
+vi.mock("#/components/forge/NavigationNamesSection", () => ({
+	NavigationNamesSection: () => (
+		<div id="forge-section-navigation-names" tabIndex={-1}>
+			Navigation names content
+		</div>
+	),
+}));
 vi.mock("#/components/forge/PricingSection", () => ({
 	PricingSection: () => <div>Pricing catalog content</div>,
 }));
@@ -167,6 +174,23 @@ describe("ForgeSettings search", () => {
 		expect(screen.getByText("Voice content")).toBeTruthy();
 		await waitFor(() =>
 			expect(document.activeElement?.id).toBe("forge-setting-recording-hotkey"),
+		);
+	});
+
+	it("opens and focuses navigation name settings from search", async () => {
+		renderSettings();
+		fireEvent.change(screen.getByRole("textbox", { name: "Search settings" }), {
+			target: { value: "Navigation names" },
+		});
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: /Navigation names.*Experience.*Navigation names/i,
+			}),
+		);
+		expect(screen.getByText("Navigation names content")).toBeTruthy();
+		await waitFor(() =>
+			expect(document.activeElement?.id).toBe("forge-section-navigation-names"),
 		);
 	});
 

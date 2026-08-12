@@ -9,6 +9,10 @@ import { setConfigCache } from "../server/config";
 import { bumpDataRevision } from "../server/dataRevision";
 import { syncWrappers } from "../server/wrappers";
 import { writeFileAtomicSync } from "./atomicFile";
+import {
+	DEFAULT_NAVIGATION_NAMES_CONFIG,
+	NAVIGATION_IDS,
+} from "./navigationNames";
 import { CONFIG_PATH } from "./paths";
 
 function tomlVal(value: unknown): string {
@@ -198,6 +202,17 @@ function serializeUi(config: HlidConfig["ui"]): string[] {
 	]);
 }
 
+function serializeNavigationNames(config: HlidConfig["ui"]): string[] {
+	const navigationNames =
+		config.navigation_names ?? DEFAULT_NAVIGATION_NAMES_CONFIG;
+	return section("ui.navigation_names", [
+		`preset = ${tomlVal(navigationNames.preset)}`,
+		...NAVIGATION_IDS.flatMap((id) =>
+			optionalEntry(id, navigationNames.labels[id]),
+		),
+	]);
+}
+
 function serializeThemePalette(
 	name: "ui.custom_theme" | "ui.mobile_custom_theme",
 	palette: HlidConfig["ui"]["custom_theme"],
@@ -319,6 +334,8 @@ export function serializeConfig(config: HlidConfig): string {
 		...serializeProjectPreview(config.project_preview),
 		"",
 		...serializeUi(config.ui),
+		"",
+		...serializeNavigationNames(config.ui),
 		...(config.ui.custom_theme
 			? [
 					"",

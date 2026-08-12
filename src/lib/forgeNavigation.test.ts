@@ -270,6 +270,12 @@ describe("Forge setting search", () => {
 		["Privacy mode", "setting:privacy-mode", "experience", "privacy"],
 		["HTML plans", "setting:html-plans", "experience", "ui"],
 		[
+			"Navigation names",
+			"setting:navigation-names",
+			"experience",
+			"navigation-names",
+		],
+		[
 			"Allow External Agents",
 			"setting:allow-external-agents",
 			"access",

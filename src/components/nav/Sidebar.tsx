@@ -10,10 +10,12 @@ import {
 	type UpdateStatus,
 } from "../../hooks/updateStore";
 import { LockButton } from "../auth/LockButton";
-import { NAV_ITEMS, navActiveOptions, navSearch } from "./items";
+import { NavigationLinks } from "./NavigationLinks";
+import { useNavigationLabels } from "./NavigationNamesContext";
 import { useSystemStatusIndicator } from "./SystemStatusDot";
 
 export function Sidebar() {
+	const navigationLabels = useNavigationLabels();
 	const {
 		attentionCount,
 		attentionTone,
@@ -82,23 +84,12 @@ export function Sidebar() {
 				</div>
 			</div>
 
-			<nav className="flex-1 py-1">
-				{NAV_ITEMS.map(({ to, label, icon: Icon, exact }) => (
-					<Link
-						key={to}
-						to={to}
-						search={navSearch(to, lastRavenSession)}
-						className={`flex items-center gap-3 px-4 py-2.5 text-[11px] tracking-widest text-sidebar-foreground/70 transition-colors duration-100 border-l-2 border-transparent ${themeSurfaceClass.sidebarAction}`}
-						activeProps={{
-							className:
-								"flex items-center gap-3 px-4 py-2.5 text-[11px] tracking-widest text-sidebar-primary border-l-2 border-sidebar-primary bg-sidebar-primary/5 transition-colors duration-100",
-						}}
-						activeOptions={navActiveOptions(exact)}
-					>
-						<Icon className="w-3.5 h-3.5 shrink-0" />
-						<span>{label}</span>
-					</Link>
-				))}
+			<nav aria-label="Primary navigation" className="flex-1 py-1">
+				<NavigationLinks
+					navigationLabels={navigationLabels}
+					lastRavenSession={lastRavenSession}
+					variant="desktop"
+				/>
 			</nav>
 			<div className="border-t border-sidebar-border">
 				<LockButton />

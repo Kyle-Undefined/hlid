@@ -7,12 +7,17 @@ vi.mock("@tanstack/react-router", () => ({
 		to,
 		search,
 		children,
+		...props
 	}: {
 		to: string;
 		search?: { session?: string; agent?: string };
 		children: React.ReactNode;
+		"aria-label"?: string;
+		title?: string;
 	}) => (
 		<a
+			aria-label={props["aria-label"]}
+			title={props.title}
 			href={
 				search?.session
 					? `${to}?session=${search.session}${search.agent ? `&agent=${search.agent}` : ""}`
@@ -29,7 +34,9 @@ vi.mock("./SystemStatusDot", () => ({
 }));
 
 import { rememberRavenSessionId } from "#/hooks/ravenSessionStore";
+import { resolveNavigationLabels } from "#/lib/navigationNames";
 import { BottomNav } from "./BottomNav";
+import { NavigationNamesProvider } from "./NavigationNamesContext";
 
 afterEach(cleanup);
 
@@ -56,5 +63,28 @@ describe("BottomNav", () => {
 		expect(
 			screen.getByRole("link", { name: "RAVEN" }).getAttribute("href"),
 		).toBe("/raven?session=third-of-five&agent=/selected-project");
+	});
+
+	it("changes visible names without changing routes and keeps Hlið context", () => {
+		const navigationLabels = resolveNavigationLabels({
+			preset: "plain",
+			labels: { einherjar: "Workspace" },
+		});
+		render(
+			<NavigationNamesProvider initialLabels={navigationLabels}>
+				<BottomNav />
+			</NavigationNamesProvider>,
+		);
+
+		const home = screen.getByRole("link", {
+			name: "HOME, Hlið name: WATCH",
+		});
+		expect(home.getAttribute("href")).toBe("/");
+		expect(home.getAttribute("title")).toBe("HOME · Hlið: WATCH");
+
+		const workspace = screen.getByRole("link", {
+			name: "Workspace, Hlið name: EINHERJAR",
+		});
+		expect(workspace.getAttribute("href")).toBe("/einherjar");
 	});
 });

@@ -146,13 +146,19 @@ page and the workflows that connect them.
 | **LEDGER** (`/ledger`) | Live-session controls, pinned and archived sessions, parent/child provenance, provider-history import, and analytics for tokens, cost, cache behavior, tools, stop reasons, context, and provider limits. |
 | **FORGE** (`/forge`) | Settings, provider extensions, integrations, access, updates, maintenance, and developer tools. |
 
+Those Hlið names remain the default. **FORGE → Experience → Navigation names**
+can switch the menu to plain-language names or set each name individually. It
+only changes the desktop and mobile menu labels: the Hlið wordmark, routes,
+icons, page names, and underlying concepts stay the same.
+
 ## Configuration and data
 
 The packaged app keeps its executable, config, database, downloaded voice
 models, and runtime data together under `%LOCALAPPDATA%\Hlid`.
 
 `hlid.config.toml` holds the vault layout, providers, server and `TLS` ports,
-network access, attachments, voice, `UI` preferences, and registered agents.
+network access, attachments, voice, `UI` preferences, navigation names, and
+registered agents.
 Most of it can be changed in `Forge`. A setting with a restart marker does not
 kick in until `Hlið` restarts. Server, `ACP`, and `Umbod` changes are the main
 ones that need it.

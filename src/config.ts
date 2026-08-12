@@ -1,4 +1,15 @@
 import { z } from "zod";
+import {
+	DEFAULT_NAVIGATION_NAMES_CONFIG,
+	duplicateEffectiveNavigationLabelIds,
+	hasForbiddenNavigationLabelCharacters,
+	hasVisibleNavigationLabelCharacters,
+	NAVIGATION_IDS,
+	NAVIGATION_LABEL_MAX_GRAPHEMES,
+	type NavigationNamesConfig,
+	navigationLabelGraphemeCount,
+	normalizeNavigationLabel,
+} from "./lib/navigationNames";
 
 const HexColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/);
 const ThemePaletteSchema = z
@@ -183,6 +194,79 @@ const CodexSchema = z.object({
 	})),
 });
 
+const NavigationLabelSchema = z
+	.string()
+	.superRefine((label, context) => {
+		if (hasForbiddenNavigationLabelCharacters(label)) {
+			context.addIssue({
+				code: "custom",
+				message: "Navigation labels cannot contain control or bidi characters",
+			});
+			return;
+		}
+		const normalized = normalizeNavigationLabel(label);
+		if (!hasVisibleNavigationLabelCharacters(normalized)) {
+			context.addIssue({
+				code: "custom",
+				message: "Navigation labels cannot be blank",
+			});
+			return;
+		}
+		if (
+			navigationLabelGraphemeCount(normalized) > NAVIGATION_LABEL_MAX_GRAPHEMES
+		) {
+			context.addIssue({
+				code: "custom",
+				message: `Navigation labels cannot exceed ${NAVIGATION_LABEL_MAX_GRAPHEMES} characters`,
+			});
+		}
+	})
+	.transform(normalizeNavigationLabel);
+
+/** An explicit object strips unknown keys while preserving stable labels. */
+const NavigationLabelsSchema = z.object({
+	watch: NavigationLabelSchema.optional(),
+	vault: NavigationLabelSchema.optional(),
+	relics: NavigationLabelSchema.optional(),
+	raven: NavigationLabelSchema.optional(),
+	einherjar: NavigationLabelSchema.optional(),
+	ledger: NavigationLabelSchema.optional(),
+	forge: NavigationLabelSchema.optional(),
+});
+
+const NavigationNamesSchema = z
+	.object({
+		preset: z.enum(["hlid", "plain"]).default("hlid"),
+		labels: NavigationLabelsSchema.default({}),
+		watch: NavigationLabelSchema.optional(),
+		vault: NavigationLabelSchema.optional(),
+		relics: NavigationLabelSchema.optional(),
+		raven: NavigationLabelSchema.optional(),
+		einherjar: NavigationLabelSchema.optional(),
+		ledger: NavigationLabelSchema.optional(),
+		forge: NavigationLabelSchema.optional(),
+	})
+	.transform((navigationNames): NavigationNamesConfig => {
+		const directLabels: NavigationNamesConfig["labels"] = {};
+		for (const id of NAVIGATION_IDS) {
+			const label = navigationNames[id];
+			if (label !== undefined) directLabels[id] = label;
+		}
+		return {
+			preset: navigationNames.preset,
+			labels: { ...navigationNames.labels, ...directLabels },
+		};
+	})
+	.superRefine((navigationNames, context) => {
+		for (const id of duplicateEffectiveNavigationLabelIds(navigationNames)) {
+			context.addIssue({
+				code: "custom",
+				path: ["labels", id],
+				message: "Navigation labels must be unique",
+			});
+		}
+	});
+
 const UiSchema = z.object({
 	enter_to_submit: z.boolean().default(true),
 	live_sessions_hotkey: z.string().default("Alt+Shift+KeyS"),
@@ -195,6 +279,10 @@ const UiSchema = z.object({
 	mobile_custom_theme: ThemePaletteSchema.optional(),
 	/** Default for the per-session HTML-plans toggle in plan mode. */
 	html_plans: z.boolean().default(false),
+	navigation_names: NavigationNamesSchema.default(() => ({
+		preset: DEFAULT_NAVIGATION_NAMES_CONFIG.preset,
+		labels: { ...DEFAULT_NAVIGATION_NAMES_CONFIG.labels },
+	})),
 });
 
 const StatusVocabularySchema = z.object({
@@ -536,6 +624,10 @@ const HlidConfigBaseSchema = z.object({
 		show_provider_entries: false,
 		theme: "tan" as const,
 		html_plans: false,
+		navigation_names: {
+			preset: DEFAULT_NAVIGATION_NAMES_CONFIG.preset,
+			labels: { ...DEFAULT_NAVIGATION_NAMES_CONFIG.labels },
+		},
 	})),
 	status_vocabulary: StatusVocabularySchema.default(() => ({
 		active: ["Active", "In Progress"],

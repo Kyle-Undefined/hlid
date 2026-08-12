@@ -19,6 +19,7 @@ import { EventLogSection } from "#/components/forge/EventLogSection";
 import { ExtensionsSection } from "#/components/forge/ExtensionsSection";
 import { InstructionFilesSection } from "#/components/forge/InstructionFilesSection";
 import { McpSection } from "#/components/forge/McpSection";
+import { NavigationNamesSection } from "#/components/forge/NavigationNamesSection";
 import { NetworkSection } from "#/components/forge/NetworkSection";
 import { ObsidianSection } from "#/components/forge/ObsidianSection";
 import { PricingSection } from "#/components/forge/PricingSection";
@@ -633,6 +634,12 @@ function ExperienceCategory({
 				ui={state.ui}
 				onChange={(patch) => state.setUi((ui) => ({ ...ui, ...patch }))}
 				voiceHotkey={state.voice.enabled ? state.voice.hotkey : ""}
+			/>
+			<NavigationNamesSection
+				value={state.ui.navigationNames}
+				onChange={(navigationNames) =>
+					state.setUi((ui) => ({ ...ui, navigationNames }))
+				}
 			/>
 			<section
 				id="forge-section-custom-theme"

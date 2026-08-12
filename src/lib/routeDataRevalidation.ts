@@ -35,6 +35,15 @@ export function shouldRevalidateRouteData(
 	pathname: string,
 	changedDomains: readonly DataDomain[],
 ): boolean {
+	// Root shell configuration, including navigation names and themes, is visible
+	// on every authenticated route rather than only in a route's local loader.
+	if (
+		changedDomains.includes("config") &&
+		pathname !== "/login" &&
+		pathname !== "/login/"
+	) {
+		return true;
+	}
 	const relevant = ROUTE_DATA_DOMAINS.find((entry) => entry.match(pathname));
 	return Boolean(
 		relevant &&

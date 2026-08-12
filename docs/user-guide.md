@@ -216,6 +216,13 @@ The main navigation has **Watch**, **Vault**, **Relics**, **Raven**,
 **Einherjar**, **Ledger**, and **Forge**. I'll start with the two places that
 launch and supervise work, then get into the browsers and settings around them.
 
+Those are Hlið's canonical names and remain the default. **Forge → Experience →
+Navigation names** can use the built-in plain-language set or a custom name for
+any menu item. This changes only the visible desktop and mobile navigation
+labels. Routes, icons, page headings, and Hlið's underlying terminology do not
+change, and an aliased link keeps its Hlið name in its tooltip and accessible
+label.
+
 ### Watch
 
 ![Watch overview with activity, sessions, and skills](images/watch-overview.png)
@@ -610,10 +617,11 @@ not configured for that entry stay hidden.
   provider-native, and unavailable behavior with its supporting runtime evidence.
   Edits take effect when the matching provider conversation starts or reloads.
 - **Access** has network, `TLS`, password, and trusted-device settings.
-- **Experience** has built-in or custom desktop/mobile themes, input behavior,
-  the provider-entry visibility toggle for the `/` picker, `HTML` plan defaults,
-  voice, and browser-local privacy mode. `Hlið` and vault entries always remain
-  visible; the toggle controls every provider-badged skill, command, or plugin.
+- **Experience** has configurable navigation names, built-in or custom
+  desktop/mobile themes, input behavior, the provider-entry visibility toggle
+  for the `/` picker, `HTML` plan defaults, voice, and browser-local privacy
+  mode. `Hlið` and vault entries always remain visible; the toggle controls
+  every provider-badged skill, command, or plugin.
 - **Integrations** manages provider Apps and connectors, `CLIProxyAPI`, `MCP`,
   `Umbod`, and the `ACP` catalog.
 - **Extensions** manages installed `Claude` and `Codex` plugins and their

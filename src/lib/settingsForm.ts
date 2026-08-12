@@ -264,6 +264,10 @@ function createUiForm(initial: HlidConfig): UiForm {
 		hideSkillsIndex: initial.ui.hide_skills_index,
 		showProviderEntries: initial.ui.show_provider_entries,
 		htmlPlans: initial.ui.html_plans ?? false,
+		navigationNames: {
+			preset: initial.ui.navigation_names.preset,
+			labels: { ...initial.ui.navigation_names.labels },
+		},
 	};
 }
 
@@ -460,6 +464,10 @@ export function buildSettingsConfig(
 			custom_theme: forms.ui.customTheme,
 			mobile_custom_theme: forms.ui.mobileCustomTheme,
 			html_plans: forms.ui.htmlPlans,
+			navigation_names: {
+				preset: forms.ui.navigationNames.preset,
+				labels: { ...forms.ui.navigationNames.labels },
+			},
 		},
 		status_vocabulary: {
 			active: vocabularyValues(forms.vocab.active),

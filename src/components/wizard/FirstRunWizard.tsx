@@ -114,6 +114,7 @@ export function buildFirstRunConfig(s: StructureState): HlidConfig {
 			show_provider_entries: false,
 			theme: s.theme,
 			html_plans: false,
+			navigation_names: { preset: "hlid", labels: {} },
 		},
 		status_vocabulary: {
 			active: ["Active", "In Progress"],

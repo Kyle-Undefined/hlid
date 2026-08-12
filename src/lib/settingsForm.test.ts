@@ -28,7 +28,14 @@ describe("settings form conversion", () => {
 			project_preview: { use_real_browser_profile: true },
 			server: { port: 4000, tls_proxy_port: 4443 },
 			status_vocabulary: { active: ["Doing"], planning: [], done: ["Done"] },
-			ui: { html_plans: true, show_provider_entries: true },
+			ui: {
+				html_plans: true,
+				show_provider_entries: true,
+				navigation_names: {
+					preset: "plain",
+					labels: { einherjar: "Team Space" },
+				},
+			},
 		});
 		const forms = createSettingsForms(initial);
 
@@ -52,10 +59,37 @@ describe("settings form conversion", () => {
 		expect(forms.ui.htmlPlans).toBe(true);
 		expect(forms.ui.showProviderEntries).toBe(true);
 		expect(forms.ui.liveSessionsHotkey).toBe("Alt+Shift+KeyS");
+		expect(forms.ui.navigationNames).toEqual({
+			preset: "plain",
+			labels: { einherjar: "Team Space" },
+		});
 		expect(forms.vocab).toEqual({
 			active: "Doing",
 			planning: "",
 			done: "Done",
+		});
+	});
+
+	it("round-trips navigation names without sharing the persisted labels object", () => {
+		const initial = HlidConfigSchema.parse({
+			ui: {
+				navigation_names: {
+					preset: "plain",
+					labels: { einherjar: "Team Space" },
+				},
+			},
+		});
+		const forms = createSettingsForms(initial);
+		forms.ui.navigationNames.labels.forge = "Workshop";
+
+		expect(initial.ui.navigation_names.labels).toEqual({
+			einherjar: "Team Space",
+		});
+		expect(
+			buildSettingsConfig(initial, forms, false).ui.navigation_names,
+		).toEqual({
+			preset: "plain",
+			labels: { einherjar: "Team Space", forge: "Workshop" },
 		});
 	});
 
@@ -211,6 +245,7 @@ describe("settings form conversion", () => {
 		expect(forms.ui.htmlPlans).toBe(false);
 		expect(forms.ui.showProviderEntries).toBe(false);
 		expect(forms.ui.liveSessionsHotkey).toBe("Alt+Shift+KeyS");
+		expect(forms.ui.navigationNames).toEqual({ preset: "hlid", labels: {} });
 	});
 
 	it("copies the selected built-in into new desktop and mobile custom palettes", () => {

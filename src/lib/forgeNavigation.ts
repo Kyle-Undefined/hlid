@@ -199,7 +199,7 @@ export const FORGE_CATEGORIES: readonly ForgeCategoryDefinition[] = [
 	{
 		id: "experience",
 		label: "Experience",
-		description: "Themes, input, voice, and privacy",
+		description: "Navigation names, themes, input, voice, and privacy",
 		group: "primary",
 		keywords: ["theme", "input", "voice", "whisper", "privacy", "speech"],
 		sections: [
@@ -208,6 +208,18 @@ export const FORGE_CATEGORIES: readonly ForgeCategoryDefinition[] = [
 				label: "UI",
 				description: "Theme, submit behavior, hotkeys, and plan presentation.",
 				keywords: ["enter", "hotkey", "skills", "html plans"],
+			},
+			{
+				id: "navigation-names",
+				label: "Navigation names",
+				description: "Choose Hlið, plain-language, or custom menu names.",
+				keywords: [
+					"menu",
+					"labels",
+					"terminology",
+					"plain language",
+					"einherjar",
+				],
 			},
 			{
 				id: "custom-theme",
@@ -601,6 +613,22 @@ const SETTING_DESTINATIONS: readonly SettingDefinition[] = [
 		section: "ui",
 		keywords: ["plan", "approval", "artifact"],
 		focusId: "forge-setting-html-plans",
+	},
+	{
+		id: "navigation-names",
+		label: "Navigation names",
+		description:
+			"Choose Hlið, plain-language, or custom names for the main menu.",
+		category: "experience",
+		section: "navigation-names",
+		keywords: [
+			"navigation",
+			"menu",
+			"labels",
+			"terminology",
+			"plain language",
+			"einherjar",
+		],
 	},
 	{
 		id: "custom-theme",

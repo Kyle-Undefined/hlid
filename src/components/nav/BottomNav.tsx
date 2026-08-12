@@ -1,15 +1,10 @@
-import { Link } from "@tanstack/react-router";
 import { useLastRavenSession } from "#/hooks/ravenSessionStore";
-import { NAV_ITEMS, navActiveOptions, navSearch } from "./items";
+import { NavigationLinks } from "./NavigationLinks";
+import { useNavigationLabels } from "./NavigationNamesContext";
 import { WsStatusDot } from "./SystemStatusDot";
 
-const BASE =
-	"min-w-0 flex-1 flex flex-col items-center gap-1 py-2.5 px-0.5 transition-colors duration-100";
-
-const LABEL =
-	"w-full overflow-hidden text-ellipsis whitespace-nowrap text-center text-[clamp(7px,2vw,9px)] tracking-[0.08em]";
-
 export function BottomNav() {
+	const navigationLabels = useNavigationLabels();
 	const lastRavenSession = useLastRavenSession();
 	return (
 		<nav
@@ -17,26 +12,16 @@ export function BottomNav() {
 			className="relative z-30 shrink-0 bg-sidebar border-t border-sidebar-border md:hidden"
 		>
 			<div className="flex w-full pb-[env(safe-area-inset-bottom)]">
-				{NAV_ITEMS.map(({ to, label, icon: Icon, exact }) => (
-					<Link
-						key={to}
-						to={to}
-						search={navSearch(to, lastRavenSession)}
-						className={`${BASE} text-muted-foreground hover:text-foreground`}
-						activeProps={{ className: `${BASE} text-primary` }}
-						activeOptions={navActiveOptions(exact)}
-					>
-						<span className="relative">
-							<Icon className="w-4 h-4 shrink-0" />
-							{to === "/" && (
-								<span className="absolute -right-4 -top-1">
-									<WsStatusDot />
-								</span>
-							)}
+				<NavigationLinks
+					navigationLabels={navigationLabels}
+					lastRavenSession={lastRavenSession}
+					variant="mobile"
+					watchAdornment={
+						<span className="absolute -right-4 -top-1">
+							<WsStatusDot />
 						</span>
-						<span className={LABEL}>{label}</span>
-					</Link>
-				))}
+					}
+				/>
 			</div>
 		</nav>
 	);

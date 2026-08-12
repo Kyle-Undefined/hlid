@@ -17,6 +17,7 @@ function uiForm(showProviderEntries: boolean): UiForm {
 		hideSkillsIndex: true,
 		showProviderEntries,
 		htmlPlans: false,
+		navigationNames: { preset: "hlid", labels: {} },
 	};
 }
 

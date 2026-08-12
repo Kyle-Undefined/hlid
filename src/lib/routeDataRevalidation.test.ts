@@ -15,6 +15,13 @@ describe("shouldRevalidateRouteData", () => {
 		expect(shouldRevalidateRouteData("/relics", ["relics"])).toBe(false);
 	});
 
+	it("refreshes root-shell configuration on every authenticated route", () => {
+		expect(shouldRevalidateRouteData("/ledger", ["config"])).toBe(true);
+		expect(shouldRevalidateRouteData("/relics", ["config"])).toBe(true);
+		expect(shouldRevalidateRouteData("/unknown", ["config"])).toBe(true);
+		expect(shouldRevalidateRouteData("/login", ["config"])).toBe(false);
+	});
+
 	it("does not reload Raven transcripts for session activity", () => {
 		expect(shouldRevalidateRouteData("/raven", ["stats", "sessions"])).toBe(
 			false,

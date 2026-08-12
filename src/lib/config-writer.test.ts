@@ -113,6 +113,12 @@ describe("writeConfig — persistence invariants", () => {
 				max_sleep_minutes: 120,
 				resume_buffer_seconds: 30,
 			},
+			ui: {
+				navigation_names: {
+					preset: "plain",
+					labels: { einherjar: "Team Space", raven: "Conversation Hub" },
+				},
+			},
 			agents: [{ path: "/agent", interactive_mode: false }],
 			acp_agents: [
 				{
@@ -135,6 +141,75 @@ describe("writeConfig — persistence invariants", () => {
 
 		const reparsed = HlidConfigSchema.parse(parse(serializeConfig(config)));
 		expect(reparsed).toEqual(config);
+	});
+
+	it("defaults, normalizes, and strips unknown navigation label keys", () => {
+		expect(HlidConfigSchema.parse({}).ui.navigation_names).toEqual({
+			preset: "hlid",
+			labels: {},
+		});
+
+		const config = HlidConfigSchema.parse({
+			ui: {
+				navigation_names: {
+					preset: "plain",
+					labels: {
+						einherjar: "  Team   Space  ",
+						future_destination: "Future",
+					},
+				},
+			},
+		});
+
+		expect(config.ui.navigation_names).toEqual({
+			preset: "plain",
+			labels: { einherjar: "Team Space" },
+		});
+	});
+
+	it("rejects unsafe, oversized, and duplicate navigation labels", () => {
+		for (const navigationNames of [
+			{ preset: "unknown", labels: {} },
+			{ preset: "hlid", labels: { watch: "   " } },
+			{ preset: "hlid", labels: { watch: "Bad\nLabel" } },
+			{ preset: "hlid", labels: { watch: "\u202eBad" } },
+			{ preset: "hlid", labels: { watch: "\u200c\u200d" } },
+			{ preset: "hlid", labels: { watch: "a".repeat(25) } },
+			{
+				preset: "hlid",
+				labels: { watch: "Same destination", vault: "same DESTINATION" },
+			},
+			{ preset: "hlid", labels: { watch: "vault" } },
+		]) {
+			expect(
+				HlidConfigSchema.safeParse({
+					ui: { navigation_names: navigationNames },
+				}).success,
+			).toBe(false);
+		}
+	});
+
+	it("writes navigation names as a nested UI table and omits absent overrides", () => {
+		const config = HlidConfigSchema.parse({
+			ui: {
+				navigation_names: {
+					preset: "plain",
+					labels: { einherjar: "Team Space" },
+				},
+			},
+		});
+		const serialized = serializeConfig(config);
+		const navigationSection = serialized.slice(
+			serialized.indexOf("[ui.navigation_names]"),
+			serialized.indexOf("[status_vocabulary]"),
+		);
+
+		expect(navigationSection).toContain('preset = "plain"');
+		expect(navigationSection).toContain('einherjar = "Team Space"');
+		expect(navigationSection).not.toMatch(/^watch\s*=/m);
+		expect(
+			HlidConfigSchema.parse(parse(serialized)).ui.navigation_names,
+		).toEqual(config.ui.navigation_names);
 	});
 
 	it("validates bounded OpenCode filters and every persisted model override", () => {
@@ -274,6 +349,8 @@ describe("writeConfig — section headers", () => {
 		expect(toml).toContain("[project_preview]");
 		expect(toml).toContain("use_real_browser_profile = false");
 		expect(toml).toContain("[ui]");
+		expect(toml).toContain("[ui.navigation_names]");
+		expect(toml).toContain('preset = "hlid"');
 		expect(toml).toContain("[status_vocabulary]");
 	});
 });

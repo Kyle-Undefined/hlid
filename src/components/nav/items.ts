@@ -7,20 +7,61 @@ import {
 	Scroll,
 	Users,
 } from "lucide-react";
+import type { NavigationId } from "#/lib/navigationNames";
 
 /**
  * Shared nav item list — rendered by both the desktop Sidebar and the
  * mobile BottomNav. Order is the menu order in both contexts.
  */
 export const NAV_ITEMS = [
-	{ to: "/", label: "WATCH", icon: Eye, exact: true },
-	{ to: "/vault", label: "VAULT", icon: Archive, exact: false },
-	{ to: "/relics", label: "RELICS", icon: Gem, exact: false },
-	{ to: "/raven", label: "RAVEN", icon: MessageCircle, exact: false },
-	{ to: "/einherjar", label: "EINHERJAR", icon: Users, exact: false },
-	{ to: "/ledger", label: "LEDGER", icon: Scroll, exact: false },
-	{ to: "/forge", label: "FORGE", icon: Hammer, exact: false },
+	{ id: "watch", to: "/", label: "WATCH", icon: Eye, exact: true },
+	{
+		id: "vault",
+		to: "/vault",
+		label: "VAULT",
+		icon: Archive,
+		exact: false,
+	},
+	{ id: "relics", to: "/relics", label: "RELICS", icon: Gem, exact: false },
+	{
+		id: "raven",
+		to: "/raven",
+		label: "RAVEN",
+		icon: MessageCircle,
+		exact: false,
+	},
+	{
+		id: "einherjar",
+		to: "/einherjar",
+		label: "EINHERJAR",
+		icon: Users,
+		exact: false,
+	},
+	{
+		id: "ledger",
+		to: "/ledger",
+		label: "LEDGER",
+		icon: Scroll,
+		exact: false,
+	},
+	{ id: "forge", to: "/forge", label: "FORGE", icon: Hammer, exact: false },
 ] as const;
+
+export function navDisplayMetadata(
+	id: NavigationId,
+	canonicalLabel: string,
+	navigationLabels: Record<NavigationId, string>,
+) {
+	const displayLabel = navigationLabels[id] ?? canonicalLabel;
+	const aliased = displayLabel !== canonicalLabel;
+	return {
+		displayLabel,
+		ariaLabel: aliased
+			? `${displayLabel}, Hlið name: ${canonicalLabel}`
+			: displayLabel,
+		title: aliased ? `${displayLabel} · Hlið: ${canonicalLabel}` : undefined,
+	};
+}
 
 export function navSearch(
 	to: (typeof NAV_ITEMS)[number]["to"],

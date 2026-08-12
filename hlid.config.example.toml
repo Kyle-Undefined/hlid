@@ -16,6 +16,13 @@ live_sessions_hotkey = "Alt+Shift+KeyS"
 # show provider-owned skills, commands, and plugin entries.
 show_provider_entries = false
 
+[ui.navigation_names]
+# "hlid" keeps WATCH, VAULT, RELICS, RAVEN, EINHERJAR, LEDGER, and FORGE.
+# "plain" starts with HOME, KNOWLEDGE, LIBRARY, CHAT, AGENTS, HISTORY, and SETTINGS.
+preset = "hlid"
+# Optional per-item names override either preset without changing its URL.
+# einherjar = "Workspace"
+
 [voice]
 enabled = false
 # "local" dictates with Whisper; "codex_dictation" uses Codex realtime;

@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 import { act, renderHook } from "@testing-library/react";
+import { type ReactNode, StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	NavigationNamesProvider,
+	useNavigationLabels,
+} from "#/components/nav/NavigationNamesContext";
 import { HlidConfigSchema } from "#/config";
+import { resolveNavigationLabels } from "#/lib/navigationNames";
 import { type SettingsInitial, useSettingsForm } from "./useSettingsForm";
 
 function initialSettings(): SettingsInitial {
@@ -77,6 +83,46 @@ describe("useSettingsForm autosave", () => {
 		expect(onSaved).toHaveBeenCalledOnce();
 		expect(result.current.savedMsg).toBe("saved");
 		expect(result.current.saving).toBe(false);
+	});
+
+	it("publishes saved navigation names into the mounted shell", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(Response.json({ ok: true })),
+		);
+		const initial = initialSettings();
+		const wrapper = ({ children }: { children: ReactNode }) => (
+			<StrictMode>
+				<NavigationNamesProvider
+					initialLabels={resolveNavigationLabels(initial.ui.navigation_names)}
+				>
+					{children}
+				</NavigationNamesProvider>
+			</StrictMode>
+		);
+		const { result } = renderHook(
+			() => ({
+				form: useSettingsForm(initial, vi.fn().mockResolvedValue(undefined)),
+				labels: useNavigationLabels(),
+			}),
+			{ wrapper },
+		);
+
+		act(() =>
+			result.current.form.setUi({
+				...result.current.form.ui,
+				navigationNames: {
+					preset: "plain",
+					labels: { einherjar: "Workspace" },
+				},
+			}),
+		);
+		expect(result.current.labels.einherjar).toBe("EINHERJAR");
+
+		await advance(800);
+
+		expect(result.current.labels.einherjar).toBe("Workspace");
+		expect(result.current.labels.watch).toBe("HOME");
 	});
 
 	it("marks server changes as requiring restart", async () => {
