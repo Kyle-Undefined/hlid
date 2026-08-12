@@ -2,7 +2,6 @@ import {
 	AlertTriangle,
 	Bot,
 	CheckCircle2,
-	ChevronRight,
 	CirclePause,
 	ExternalLink,
 	LoaderCircle,
@@ -34,6 +33,11 @@ import {
 import type { HlidDelegationListItem } from "#/lib/serverFns/hlidDelegations";
 import { getHlidDelegationsFn } from "#/lib/serverFns/hlidDelegations";
 import type { SessionStatusEntry } from "#/server/protocol";
+import {
+	activitySummary,
+	CollapsibleActivityPanel,
+	usePersistentPanelOpen,
+} from "./CollapsibleActivityPanel";
 
 const EMPTY_SESSION_STATUSES: SessionStatusEntry[] = [];
 const PANEL_CHILD_LIMIT = 50;
@@ -318,16 +322,14 @@ function panelSummary(
 	const completed = children.filter(
 		(child) => child.status === "completed" || child.status === "cancelled",
 	).length;
-	return [
+	return activitySummary([
 		`${children.length} ${children.length === 1 ? "child" : "children"}`,
 		needsAttention > 0 ? `${needsAttention} needs you` : null,
 		running > 0 ? `${running} running` : null,
 		waiting > 0 ? `${waiting} waiting` : null,
 		failed > 0 ? `${failed} failed` : null,
 		completed > 0 ? `${completed} settled` : null,
-	]
-		.filter((part): part is string => part !== null)
-		.join(" · ");
+	]);
 }
 
 export function HlidDelegationActivityPanel({
@@ -418,13 +420,10 @@ export function HlidDelegationActivityPanel({
 		() => sessionStatuses.find((status) => status.db_session_id === sessionId),
 		[sessionId, sessionStatuses],
 	);
-	const [openOverride, setOpenOverride] = useState<boolean | null>(
-		() => panelOpenOverrides.get(sessionId) ?? null,
+	const { open, toggleOpen } = usePersistentPanelOpen(
+		sessionId,
+		panelOpenOverrides,
 	);
-	useEffect(() => {
-		setOpenOverride(panelOpenOverrides.get(sessionId) ?? null);
-	}, [sessionId]);
-	const open = openOverride ?? false;
 	const now = useLiveNow(orderedChildren.some(active));
 	const descendantUsageSummary = parentSessionStatus
 		? liveDelegationUsageLabel(parentSessionStatus)
@@ -434,63 +433,39 @@ export function HlidDelegationActivityPanel({
 
 	if (orderedChildren.length === 0) return null;
 
-	const toggleOpen = () => {
-		const next = !open;
-		panelOpenOverrides.set(sessionId, next);
-		setOpenOverride(next);
-	};
-
 	return (
-		<section
-			aria-label="Hlid delegated children"
-			className="my-1 min-w-0 max-w-full overflow-hidden border-y border-primary/10 bg-primary/[0.015]"
-		>
-			<button
-				type="button"
-				onClick={toggleOpen}
-				aria-expanded={open}
-				aria-label={`${open ? "Hide" : "Show"} Hlid delegated children`}
-				className="grid min-h-11 w-full min-w-0 grid-cols-[auto_auto_minmax(0,1fr)] items-center gap-2 overflow-hidden px-3 py-2 text-left transition-colors hover:bg-primary/[0.03]"
-			>
-				<ChevronRight
-					className={`h-3 w-3 shrink-0 text-primary/50 transition-transform duration-150 ${open ? "rotate-90" : ""}`}
-				/>
-				<Bot className="h-3.5 w-3.5 shrink-0 text-primary/60" />
-				<div className="min-w-0">
-					<div className="truncate text-[10px] font-medium tracking-wider text-primary/75">
-						Hlid children
-					</div>
-					<div className="truncate font-mono text-[8px] text-muted-foreground/50">
-						{panelSummary(orderedChildren, statusByChildSession)}
-						{refreshFailed ? " · refresh unavailable" : ""}
-					</div>
-					<div
-						title={
-							descendantUsageSummary
-								? "Tokens and cost are cumulative across all delegated descendants. Elapsed time spans the first descendant start through the last stop, or now while work is active."
-								: "Tokens and cost are cumulative across the direct children shown. Elapsed time spans the first child start through the last stop, or now while work is active."
-						}
-						className="mt-0.5 font-mono text-[8px] leading-tight text-primary/45"
-					>
-						{usageSummary}
-					</div>
-				</div>
-			</button>
-			{open && (
-				<ul
-					aria-label="Durable Hlid children"
-					className="max-h-80 list-none overflow-y-auto overscroll-contain sm:max-h-96"
+		<CollapsibleActivityPanel
+			label="Hlid delegated children"
+			title="Hlid children"
+			summary={`${panelSummary(orderedChildren, statusByChildSession)}${refreshFailed ? " · refresh unavailable" : ""}`}
+			icon={<Bot className="h-3.5 w-3.5 text-primary/60" />}
+			open={open}
+			onToggle={toggleOpen}
+			toggleAriaLabel={`${open ? "Hide" : "Show"} Hlid delegated children`}
+			bodyClassName="max-h-80 overflow-y-auto overscroll-contain sm:max-h-96"
+			details={
+				<div
+					title={
+						descendantUsageSummary
+							? "Tokens and cost are cumulative across all delegated descendants. Elapsed time spans the first descendant start through the last stop, or now while work is active."
+							: "Tokens and cost are cumulative across the direct children shown. Elapsed time spans the first child start through the last stop, or now while work is active."
+					}
+					className="mt-0.5 font-mono text-[8px] leading-tight text-primary/45"
 				>
-					{orderedChildren.map((child) => (
-						<ChildRow
-							key={child.id}
-							child={child}
-							sessionStatus={statusByChildSession.get(child.child_session_id)}
-							now={now}
-						/>
-					))}
-				</ul>
-			)}
-		</section>
+					{usageSummary}
+				</div>
+			}
+		>
+			<ul aria-label="Durable Hlid children" className="list-none">
+				{orderedChildren.map((child) => (
+					<ChildRow
+						key={child.id}
+						child={child}
+						sessionStatus={statusByChildSession.get(child.child_session_id)}
+						now={now}
+					/>
+				))}
+			</ul>
+		</CollapsibleActivityPanel>
 	);
 }

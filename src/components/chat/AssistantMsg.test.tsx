@@ -6,15 +6,24 @@ import {
 	render,
 	screen,
 	waitFor,
+	within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as privacyStore from "#/hooks/privacyStore";
 import type { TaskActivity } from "#/server/agentProvider";
 import type { ToolEventMessage } from "#/server/protocol";
 import { AssistantMsg, normalizeMd } from "./AssistantMsg";
-import type { AssistantMessage, UserMessage } from "./chatReducer";
+import type {
+	AssistantMessage,
+	PermissionMessage,
+	UserMessage,
+} from "./chatReducer";
+import { resetSubagentOpenStateForTest } from "./SubagentToolBlock";
 
-afterEach(cleanup);
+afterEach(() => {
+	cleanup();
+	resetSubagentOpenStateForTest();
+});
 
 function makeMsg(overrides?: Partial<AssistantMessage>): AssistantMessage {
 	return {
@@ -1059,8 +1068,127 @@ describe("AssistantMsg", () => {
 		expect(screen.queryByRole("button", { name: /read old/i })).toBeNull();
 		expect(screen.getByRole("button", { name: /read new/i })).toBeTruthy();
 		expect(
+			screen.getByRole("button", { name: /subagents.*collapsed/i }),
+		).toBeTruthy();
+		fireEvent.click(
+			screen.getByRole("button", { name: /subagents.*collapsed/i }),
+		);
+		expect(
 			screen.getByRole("button", { name: /active child running/i }),
 		).toBeTruthy();
+	});
+
+	it("groups multiple active subagents in one collapsed mobile-friendly panel", () => {
+		render(
+			<AssistantMsg
+				message={makeMsg({
+					toolEvents: ["source", "tests", "runtime"].map((name) => ({
+						type: "tool_event" as const,
+						id: `subagent-${name}`,
+						name: "spawn_agent",
+						input: {},
+						subagent: {
+							provider: "codex",
+							agentId: `child-${name}`,
+							name,
+							status: "running" as const,
+							startedAtMs: 1,
+						},
+					})),
+				})}
+			/>,
+		);
+
+		const group = screen.getByRole("button", {
+			name: /subagents.*3 running.*collapsed/i,
+		});
+		expect(group.getAttribute("aria-expanded")).toBe("false");
+		expect(screen.getByText("3 subagents · 3 running")).toBeTruthy();
+		const bodyId = group.getAttribute("aria-controls");
+		expect(bodyId).toBeTruthy();
+		expect(document.getElementById(bodyId ?? "")?.hidden).toBe(true);
+		expect(
+			screen.queryByRole("button", { name: /source running/i }),
+		).toBeNull();
+
+		fireEvent.click(group);
+		expect(screen.getByRole("region", { name: "Subagents" })).toBeTruthy();
+		const list = screen.getByRole("list", { name: "Active subagents" });
+		expect(list.parentElement?.className).toContain("max-h-80");
+		expect(within(list).getAllByRole("listitem")).toHaveLength(3);
+		expect(
+			within(list).getAllByRole("button", { name: /running/i }),
+		).toHaveLength(3);
+	});
+
+	it("surfaces workflow approval attention in the collapsed group", () => {
+		const onDecidePermission = vi.fn();
+		const approval: PermissionMessage = {
+			id: "approval-1",
+			role: "permission",
+			toolName: "Write",
+			title: "Claude requests Write",
+			requester: {
+				providerId: "claude",
+				agentId: "workflow-child",
+			},
+			decision: "pending",
+		};
+		render(
+			<AssistantMsg
+				sessionId="session-1"
+				pendingPermissionsByWorkflow={
+					new Map([["claude:workflow-1", [approval]]])
+				}
+				onDecidePermission={onDecidePermission}
+				message={makeMsg({
+					streaming: true,
+					toolEvents: [
+						{
+							type: "tool_event",
+							id: "ordinary-agent",
+							name: "Task",
+							input: {},
+							subagent: {
+								provider: "claude",
+								agentId: "ordinary-agent",
+								name: "Ordinary agent",
+								status: "running",
+								startedAtMs: 1,
+							},
+						},
+						{
+							type: "tool_event",
+							id: "workflow",
+							name: "Workflow",
+							input: {},
+							subagent: {
+								provider: "claude",
+								agentId: "workflow-1",
+								kind: "workflow",
+								name: "Needs approval",
+								status: "running",
+								startedAtMs: 1,
+							},
+						},
+					],
+				})}
+			/>,
+		);
+
+		const group = screen.getByRole("button", {
+			name: /2 subagents.*1 needs you.*2 running.*collapsed/i,
+		});
+		expect(
+			screen.getByText("2 subagents · 1 needs you · 2 running"),
+		).toBeTruthy();
+		fireEvent.click(group);
+		const listItems = within(
+			screen.getByRole("list", { name: "Active subagents" }),
+		).getAllByRole("listitem");
+		expect(within(listItems[0]).getByText("Needs approval")).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+		expect(onDecidePermission).toHaveBeenCalledWith("approval-1", true);
 	});
 
 	it("keeps active subagent cards below later parent tool calls and text", () => {
@@ -1092,9 +1220,16 @@ describe("AssistantMsg", () => {
 			/>,
 		);
 		const read = screen.getByRole("button", { name: /^Read path:/ });
-		const active = screen.getByRole("button", { name: /explorer running/i });
+		const activeGroup = screen.getByRole("button", {
+			name: /subagents.*collapsed/i,
+		});
 		expect(
-			read.compareDocumentPosition(active) & Node.DOCUMENT_POSITION_FOLLOWING,
+			read.compareDocumentPosition(activeGroup) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		fireEvent.click(activeGroup);
+		expect(
+			screen.getByRole("button", { name: /explorer running/i }),
 		).toBeTruthy();
 
 		// Terminal cards return to their original transcript position.
@@ -1179,6 +1314,9 @@ describe("AssistantMsg", () => {
 		expect(
 			screen.queryByRole("button", { name: /reader running/i }),
 		).toBeNull();
+		fireEvent.click(
+			screen.getByRole("button", { name: /subagents.*collapsed/i }),
+		);
 		fireEvent.click(
 			screen.getByRole("button", { name: /repository audit running/i }),
 		);

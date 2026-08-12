@@ -306,6 +306,7 @@ type ToolBlockProps = {
 	onToggleVisualization?: (eventId: string) => void;
 	onVisualizationInactive?: (eventId: string) => void;
 	childSubagents?: ReadonlyArray<SubagentSnapshot>;
+	subagentContained?: boolean;
 	pendingPermissions?: ReadonlyArray<PermissionMessage>;
 	onDecidePermission?: PermissionDecisionHandler;
 	/** Ordinary tools use the shared responsive inspector inside Activity trays. */
@@ -371,6 +372,7 @@ function SpecializedToolEvent({
 	onToggleVisualization,
 	onVisualizationInactive,
 	childSubagents,
+	subagentContained,
 	pendingPermissions,
 	onDecidePermission,
 }: ToolBlockProps & { kind: SpecializedToolEventKind }) {
@@ -427,6 +429,7 @@ function SpecializedToolEvent({
 		<SubagentToolBlock
 			subagent={subagent}
 			childSubagents={childSubagents}
+			contained={subagentContained}
 			pendingPermissions={pendingPermissions}
 			onDecidePermission={onDecidePermission}
 			onStop={

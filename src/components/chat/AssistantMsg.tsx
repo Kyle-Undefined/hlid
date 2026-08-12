@@ -27,6 +27,7 @@ import {
 } from "./ProjectPreviewToolBlock";
 import { ReadAloudButton } from "./ReadAloudButton";
 import { SaveToObsidianActions } from "./SaveToObsidianActions";
+import { SubagentActivityPanel } from "./SubagentToolBlock";
 import { TaskActivityGroupToolBlock } from "./TaskActivityToolBlock";
 import { ToolBlock } from "./ToolBlock";
 
@@ -223,6 +224,7 @@ export function AssistantMsg({
 		event: (typeof message.toolEvents)[number],
 		transcriptPlan = persistentTranscriptPlan,
 		inspectTool?: ActivityTrayRenderContext["onSelectTool"],
+		subagentContained = false,
 	) => {
 		const historicalPreviewEvents = historicalProjectPreviewGroups?.get(
 			event.id,
@@ -270,6 +272,7 @@ export function AssistantMsg({
 						: undefined
 				}
 				onDecidePermission={onDecidePermission}
+				subagentContained={subagentContained}
 				onInspect={inspectTool}
 				compactSpecialized={compactPinnedPreview}
 				responseSettled={!message.streaming}
@@ -388,6 +391,39 @@ export function AssistantMsg({
 			persistentTranscriptPlan.activeSubagentEventIndices,
 			providerId,
 		],
+	);
+	const activeSubagentEntries = useMemo(
+		() =>
+			activeSubagentEvents
+				.flatMap((event, index) => {
+					const subagent = event.subagent;
+					if (!subagent) return [];
+					const approvalCount =
+						subagent.kind === "workflow"
+							? (pendingPermissionsByWorkflow?.get(
+									`${subagent.provider}:${subagent.agentId}`,
+								)?.length ?? 0)
+							: 0;
+					return [{ event, subagent, approvalCount, index }];
+				})
+				.sort(
+					(left, right) =>
+						Number(right.approvalCount > 0) - Number(left.approvalCount > 0) ||
+						left.index - right.index,
+				),
+		[activeSubagentEvents, pendingPermissionsByWorkflow],
+	);
+	const activeSubagents = useMemo(
+		() => activeSubagentEntries.map(({ subagent }) => subagent),
+		[activeSubagentEntries],
+	);
+	const activeSubagentApprovalCount = useMemo(
+		() =>
+			activeSubagentEntries.reduce(
+				(total, { approvalCount }) => total + approvalCount,
+				0,
+			),
+		[activeSubagentEntries],
 	);
 	const groupedPreviewEvents = useMemo(
 		() =>
@@ -568,7 +604,21 @@ export function AssistantMsg({
 				</div>
 			)}
 			{activeTaskActivityGroups.map(renderTaskActivityGroup)}
-			{activeSubagentEvents.map((event) => renderTool(event))}
+			{activeSubagentEvents.length > 0 && (
+				<SubagentActivityPanel
+					subagents={activeSubagents}
+					stateKey={`${sessionId ?? "session"}:${message.id}`}
+					approvalCount={activeSubagentApprovalCount}
+				>
+					<ul aria-label="Active subagents" className="list-none">
+						{activeSubagentEntries.map(({ event }) => (
+							<li key={event.id}>
+								{renderTool(event, persistentTranscriptPlan, undefined, true)}
+							</li>
+						))}
+					</ul>
+				</SubagentActivityPanel>
+			)}
 			{groupedProjectPreviewEventIds === undefined &&
 				groupedPreviewEvents.length > 0 && (
 					<ProjectPreviewActivityCard

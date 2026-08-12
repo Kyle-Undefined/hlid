@@ -11,9 +11,15 @@ import {
 	Workflow as WorkflowIcon,
 	XCircle,
 } from "lucide-react";
+import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { SubagentSnapshot } from "#/server/agentProvider";
+import {
+	activitySummary,
+	CollapsibleActivityPanel,
+	usePersistentPanelOpen,
+} from "./CollapsibleActivityPanel";
 import type { PermissionMessage } from "./chatReducer";
 import {
 	PermissionCard,
@@ -21,6 +27,7 @@ import {
 } from "./PermissionCard";
 
 const subagentOpenOverrides = new Map<string, boolean>();
+const subagentGroupOpenOverrides = new Map<string, boolean>();
 
 function subagentStateKey(
 	subagent: SubagentSnapshot,
@@ -57,6 +64,70 @@ export function summarizeWorkflowChildren(
 		`${done} done`,
 		`${failed} failed`,
 	].join(" / ");
+}
+
+export function summarizeSubagents(
+	subagents: ReadonlyArray<SubagentSnapshot>,
+	approvalCount = 0,
+): string {
+	const running = subagents.filter(
+		(subagent) =>
+			subagent.status === "pending" || subagent.status === "running",
+	).length;
+	const waiting = subagents.filter(
+		(subagent) => subagent.status === "paused",
+	).length;
+	const failed = subagents.filter(
+		(subagent) =>
+			subagent.status === "failed" || subagent.status === "interrupted",
+	).length;
+	const completed = subagents.filter(
+		(subagent) => subagent.status === "completed",
+	).length;
+	return activitySummary([
+		`${subagents.length} ${subagents.length === 1 ? "subagent" : "subagents"}`,
+		approvalCount > 0 ? `${approvalCount} needs you` : null,
+		running > 0 ? `${running} running` : null,
+		waiting > 0 ? `${waiting} waiting` : null,
+		failed > 0 ? `${failed} failed` : null,
+		completed > 0 ? `${completed} completed` : null,
+	]);
+}
+
+export function SubagentActivityPanel({
+	subagents,
+	stateKey,
+	approvalCount = 0,
+	children,
+}: {
+	subagents: ReadonlyArray<SubagentSnapshot>;
+	stateKey: string;
+	approvalCount?: number;
+	children: ReactNode;
+}) {
+	const { open, toggleOpen } = usePersistentPanelOpen(
+		stateKey,
+		subagentGroupOpenOverrides,
+	);
+
+	if (subagents.length === 0) return null;
+
+	const summary = summarizeSubagents(subagents, approvalCount);
+
+	return (
+		<CollapsibleActivityPanel
+			label="Subagents"
+			title="Subagents"
+			summary={summary}
+			icon={<Bot className="h-3.5 w-3.5 text-primary/60" />}
+			open={open}
+			onToggle={toggleOpen}
+			keepMounted
+			bodyClassName="max-h-80 overflow-y-auto overscroll-contain border-t border-primary/10 sm:max-h-96"
+		>
+			{children}
+		</CollapsibleActivityPanel>
+	);
 }
 
 export function formatSubagentDuration(durationMs: number): string {
@@ -148,7 +219,7 @@ function SubagentHeader({
 			onClick={onToggle}
 			aria-expanded={open}
 			aria-label={`${title} ${statusLabel(subagent.status).toLowerCase()}`}
-			className="grid min-h-11 w-full min-w-0 max-w-full grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 overflow-hidden px-3 py-2 text-left transition-colors hover:bg-primary/[0.03] sm:flex sm:gap-2"
+			className="grid min-h-11 w-full min-w-0 max-w-full grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 overflow-hidden px-3 py-2 text-left transition-colors hover:bg-primary/[0.03] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/60 sm:flex sm:gap-2"
 		>
 			<ChevronRight
 				className={`h-3 w-3 shrink-0 text-primary/50 transition-transform duration-150 ${open ? "rotate-90" : ""}`}
@@ -205,9 +276,11 @@ function SubagentHeader({
 function SubagentDetails({
 	subagent,
 	durationMs,
+	contained,
 }: {
 	subagent: SubagentSnapshot;
 	durationMs: number;
+	contained: boolean;
 }) {
 	return (
 		<PrivacyMask className="mx-3 mb-2 min-w-0 max-w-[calc(100%_-_1.5rem)] overflow-hidden border border-[var(--tool-panel-border)] bg-[var(--tool-panel)]">
@@ -243,7 +316,9 @@ function SubagentDetails({
 						<div className="mb-1 text-[9px] uppercase tracking-widest text-muted-foreground/50">
 							Prompt
 						</div>
-						<div className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[10px] text-primary/65">
+						<div
+							className={`${contained ? "" : "max-h-40 overflow-y-auto"} whitespace-pre-wrap break-words font-mono text-[10px] text-primary/65`}
+						>
 							{subagent.prompt}
 						</div>
 					</div>
@@ -253,7 +328,9 @@ function SubagentDetails({
 						<div className="mb-1 text-[9px] uppercase tracking-widest text-muted-foreground/50">
 							Result preview
 						</div>
-						<div className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[10px] text-primary/65">
+						<div
+							className={`${contained ? "" : "max-h-48 overflow-y-auto"} whitespace-pre-wrap break-words font-mono text-[10px] text-primary/65`}
+						>
 							{subagent.resultPreview}
 						</div>
 					</div>
@@ -393,6 +470,7 @@ export function SubagentToolBlock({
 	subagent,
 	childSubagents = [],
 	nested = false,
+	contained = false,
 	initiallyOpen = false,
 	stateScope = "transcript",
 	onStop,
@@ -405,6 +483,8 @@ export function SubagentToolBlock({
 	subagent: SubagentSnapshot;
 	childSubagents?: ReadonlyArray<SubagentSnapshot>;
 	nested?: boolean;
+	/** Let a surrounding panel own vertical scrolling. */
+	contained?: boolean;
 	initiallyOpen?: boolean;
 	stateScope?: string;
 	onStop?: () => void;
@@ -507,7 +587,11 @@ export function SubagentToolBlock({
 				))}
 			{open && (
 				<>
-					<SubagentDetails subagent={subagent} durationMs={durationMs} />
+					<SubagentDetails
+						subagent={subagent}
+						durationMs={durationMs}
+						contained={contained}
+					/>
 					{subagent.kind === "workflow" && (
 						<WorkflowActions
 							subagent={subagent}
@@ -521,13 +605,14 @@ export function SubagentToolBlock({
 					{childSubagents.length > 0 && (
 						<ul
 							aria-label="Workflow agents"
-							className="mx-3 mb-2 max-h-80 list-none overflow-y-auto overscroll-contain border border-[var(--tool-panel-border)] bg-[var(--tool-panel)] py-1 sm:max-h-96"
+							className={`mx-3 mb-2 list-none border border-[var(--tool-panel-border)] bg-[var(--tool-panel)] py-1 ${contained ? "" : "max-h-80 overflow-y-auto overscroll-contain sm:max-h-96"}`}
 						>
 							{childSubagents.map((child) => (
 								<li key={`${child.provider}:${child.agentId}`}>
 									<SubagentToolBlock
 										subagent={child}
 										nested
+										contained={contained}
 										stateScope={stateScope}
 									/>
 								</li>
@@ -544,4 +629,5 @@ export function SubagentToolBlock({
 // fallow-ignore-next-line unused-export -- test-only reset
 export function resetSubagentOpenStateForTest(): void {
 	subagentOpenOverrides.clear();
+	subagentGroupOpenOverrides.clear();
 }

@@ -12,6 +12,7 @@ import type { SubagentSnapshot } from "#/server/agentProvider";
 import type { PermissionMessage } from "./chatReducer";
 import {
 	resetSubagentOpenStateForTest,
+	SubagentActivityPanel,
 	SubagentToolBlock,
 	summarizeWorkflowChildren,
 } from "./SubagentToolBlock";
@@ -36,6 +37,105 @@ afterEach(() => {
 });
 
 describe("SubagentToolBlock", () => {
+	it("restores a parent group's state by response key without leaking to another response", () => {
+		const subagents = [snapshot()];
+		const panel = (stateKey: string) => (
+			<SubagentActivityPanel subagents={subagents} stateKey={stateKey}>
+				<SubagentToolBlock subagent={subagents[0]} />
+			</SubagentActivityPanel>
+		);
+		const first = render(panel("session-1:response-1"));
+		fireEvent.click(
+			screen.getByRole("button", { name: /subagents.*collapsed/i }),
+		);
+		expect(
+			screen
+				.getByRole("button", { name: /subagents.*expanded/i })
+				.getAttribute("aria-expanded"),
+		).toBe("true");
+
+		first.unmount();
+		const sameKey = render(panel("session-1:response-1"));
+		expect(
+			screen
+				.getByRole("button", { name: /subagents.*expanded/i })
+				.getAttribute("aria-expanded"),
+		).toBe("true");
+
+		sameKey.unmount();
+		render(panel("session-1:response-2"));
+		expect(
+			screen
+				.getByRole("button", { name: /subagents.*collapsed/i })
+				.getAttribute("aria-expanded"),
+		).toBe("false");
+	});
+
+	it("keeps child approval drafts and stop guards mounted while the parent is collapsed", () => {
+		const onDecide = vi.fn();
+		const onStop = vi.fn();
+		const workflow = snapshot({
+			provider: "claude",
+			agentId: "workflow-1",
+			taskId: "workflow-1",
+			kind: "workflow",
+			name: "Repository audit",
+		});
+		const approval: PermissionMessage = {
+			id: "approval-1",
+			role: "permission",
+			toolName: "Bash",
+			title: "Claude requests Shell command",
+			decision: "pending",
+		};
+		render(
+			<SubagentActivityPanel
+				subagents={[workflow]}
+				stateKey="session-1:response-1"
+				approvalCount={1}
+			>
+				<SubagentToolBlock
+					subagent={workflow}
+					pendingPermissions={[approval]}
+					onDecidePermission={onDecide}
+					onStop={onStop}
+				/>
+			</SubagentActivityPanel>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: /subagents.*collapsed/i }),
+		);
+		const redirect = screen.getByPlaceholderText(
+			"Tell Claude what to do instead…",
+		) as HTMLTextAreaElement;
+		fireEvent.change(redirect, { target: { value: "Inspect only" } });
+		fireEvent.click(
+			screen.getByRole("button", { name: /repository audit running/i }),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Stop workflow" }));
+		expect(onStop).toHaveBeenCalledOnce();
+
+		fireEvent.click(
+			screen.getByRole("button", { name: /subagents.*expanded/i }),
+		);
+		expect(redirect.isConnected).toBe(true);
+		fireEvent.click(
+			screen.getByRole("button", { name: /subagents.*collapsed/i }),
+		);
+		expect(
+			(
+				screen.getByPlaceholderText(
+					"Tell Claude what to do instead…",
+				) as HTMLTextAreaElement
+			).value,
+		).toBe("Inspect only");
+		expect(
+			(screen.getByRole("button", { name: "Stopping" }) as HTMLButtonElement)
+				.disabled,
+		).toBe(true);
+	});
+
 	it("summarizes native workflow children by lifecycle state", () => {
 		expect(
 			summarizeWorkflowChildren([
@@ -312,6 +412,39 @@ describe("SubagentToolBlock", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Stop workflow" }));
 		expect(onStop).toHaveBeenCalledOnce();
 		expect(screen.getByRole("button", { name: "Stopping" })).toBeTruthy();
+	});
+
+	it("lets a containing subagent panel own workflow and detail scrolling", () => {
+		const child = snapshot({
+			provider: "claude",
+			agentId: "child-reader",
+			name: "Reader",
+			prompt: "Inspect the repository",
+		});
+		render(
+			<SubagentToolBlock
+				subagent={snapshot({
+					provider: "claude",
+					agentId: "workflow-1",
+					kind: "workflow",
+					name: "Repository audit",
+				})}
+				childSubagents={[child]}
+				contained
+			/>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: /repository audit running/i }),
+		);
+		const workflowAgents = screen.getByRole("list", {
+			name: "Workflow agents",
+		});
+		expect(workflowAgents.className).not.toContain("overflow-y-auto");
+		fireEvent.click(screen.getByRole("button", { name: /reader running/i }));
+		expect(screen.getByText("Inspect the repository").className).not.toContain(
+			"overflow-y-auto",
+		);
 	});
 
 	it("keeps a child approval visible and actionable on a collapsed workflow", () => {
