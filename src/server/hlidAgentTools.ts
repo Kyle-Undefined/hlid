@@ -49,6 +49,7 @@ import {
 	HLID_HELP_TOPICS,
 	HLID_PROVIDER_CAPABILITY_AVAILABILITIES,
 	HLID_PROVIDER_CAPABILITY_INTEGRATIONS,
+	type HlidHelpTopic,
 	type HlidOperatingContext,
 	MAX_HLID_PROVIDER_CAPABILITY_PAGE_SIZE,
 } from "./hlidHelp";
@@ -221,11 +222,11 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 	{
 		name: "hlid_help",
 		description:
-			"Return bounded, versioned operating guidance for the Hlid capabilities available in the active provider, environment, permission mode, workspace, and session. Omit topic for the live capability overview, or request one focused topic. Provider capability help supports exact lookup, search, status filters, and revision-bound pagination so a truncated page never has to be treated as the whole catalog. Use this instead of guessing cross-provider behavior or loading a static Hlid manual.",
+			"Return bounded, versioned operating guidance for the Hlid capabilities available in the active provider, environment, permission mode, workspace, and session. Omit topic for the capability overview, or request one focused topic. Provider capability help reports discovery provenance and supports exact lookup, search, status filters, and revision-bound pagination so a truncated page never has to be treated as the whole catalog. Use this instead of guessing cross-provider behavior or loading a static Hlid manual.",
 		readOnly: true,
 		deferLoading: true,
 		searchHint:
-			"Hlid help capabilities operating context references permissions sessions plans review workflows goals Relics Project Preview MCP skills extensions API Computer Use voice audio providers handoff",
+			"Hlid help capabilities operating context references permissions sessions maintenance Ledger diagnostics plans review workflows Routines orchestration goals Relics Project Preview MCP skills extensions API Computer Use voice audio providers handoff",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -238,12 +239,12 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 				query: {
 					type: "string",
 					description:
-						"With topic=providers, search capability IDs, labels, operations, state, and reasons.",
+						"With topic=providers, search the resolved provider capability snapshot by IDs, labels, operations, state, and reasons.",
 				},
 				capability_id: {
 					type: "string",
 					description:
-						"With topic=providers, retrieve one exact capability ID from the full active-provider snapshot.",
+						"With topic=providers, retrieve one exact capability ID from the resolved provider capability snapshot. Check registry.providerDiscovery before treating it as current.",
 				},
 				integration: {
 					type: "string",
@@ -255,7 +256,7 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 					type: "string",
 					enum: [...HLID_PROVIDER_CAPABILITY_AVAILABILITIES],
 					description:
-						"With topic=providers, filter by resolved live availability.",
+						"With topic=providers, filter by the availability reported in the resolved provider capability snapshot.",
 				},
 				limit: {
 					type: "number",
@@ -1091,8 +1092,57 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 
 export type HlidAgentToolContext = HlidOperatingContext;
 
+const PROVIDER_DEPENDENT_HELP_TOPICS = new Set<HlidHelpTopic>([
+	"workflows",
+	"orchestration",
+	"goals",
+	"skills_extensions",
+	"computer_use",
+	"voice_audio",
+	"providers",
+]);
+const LIVE_PROVIDER_CATALOG_HELP_TOPICS = new Set<HlidHelpTopic>([
+	"orchestration",
+	"voice_audio",
+	"providers",
+]);
+
+function mergeActiveProviderSnapshot(
+	captured: ProviderInfo | undefined,
+	live: ProviderInfo,
+): ProviderInfo {
+	if (!captured || captured.id !== live.id) return live;
+	const hostCapabilities = {
+		...(live.hostCapabilities ?? {}),
+		...(captured.hostCapabilities ?? {}),
+	};
+	return {
+		...captured,
+		...live,
+		models: live.models ?? captured.models,
+		capabilities: live.capabilities ?? captured.capabilities,
+		forkCapability: live.forkCapability ?? captured.forkCapability,
+		...(Object.keys(hostCapabilities).length > 0 ? { hostCapabilities } : {}),
+		capabilitySnapshot: live.capabilitySnapshot ?? captured.capabilitySnapshot,
+		permissionProfiles: live.permissionProfiles ?? captured.permissionProfiles,
+	};
+}
+
+function providerDiscoveryFailure(
+	captured: ProviderInfo | undefined,
+	reason: string,
+): NonNullable<HlidOperatingContext["providerDiscovery"]> {
+	return {
+		status: captured ? "captured" : "unavailable",
+		source: captured ? "active-provider-context" : "none",
+		retryable: true,
+		reason,
+	};
+}
+
 async function liveHlidOperatingContext(
 	context: HlidAgentToolContext,
+	topic: HlidHelpTopic,
 ): Promise<HlidAgentToolContext> {
 	let codexRealtimeEnabled = context.codexRealtimeEnabled;
 	try {
@@ -1100,10 +1150,19 @@ async function liveHlidOperatingContext(
 	} catch {
 		// The provider-captured value remains a safe fallback during config I/O.
 	}
+	const capturedToolRegistry = context.registeredHlidTools
+		? [...new Set(context.registeredHlidTools)]
+		: undefined;
+	const {
+		providerSnapshot: contextProviderSnapshot,
+		providerDiscovery: _contextProviderDiscovery,
+		...baseContext
+	} = context;
 	let live: HlidAgentToolContext = {
-		...context,
+		...baseContext,
 		codexRealtimeEnabled,
-		registeredHlidTools: HLID_AGENT_TOOL_SPECS.map((spec) => spec.name),
+		registeredHlidTools:
+			capturedToolRegistry ?? HLID_AGENT_TOOL_SPECS.map((spec) => spec.name),
 	};
 	if (context.sessionId) {
 		try {
@@ -1134,28 +1193,104 @@ async function liveHlidOperatingContext(
 			// Persisted selections are best-effort; provider context remains usable.
 		}
 	}
-	const [providerCatalog, voiceRuntime, ttsSnapshot] = await Promise.all([
-		(async () => {
+	const capturedProviderSnapshot =
+		contextProviderSnapshot?.id === live.providerId
+			? contextProviderSnapshot
+			: undefined;
+	if (capturedProviderSnapshot) {
+		live = {
+			...live,
+			providerSnapshot: capturedProviderSnapshot,
+			providerDiscovery: {
+				status: "captured",
+				source: "active-provider-context",
+				retryable: false,
+			},
+		};
+	}
+	const needsProviderCatalog =
+		LIVE_PROVIDER_CATALOG_HELP_TOPICS.has(topic) ||
+		(!capturedProviderSnapshot && PROVIDER_DEPENDENT_HELP_TOPICS.has(topic));
+	const needsVoiceRuntime = topic === "voice_audio";
+	const [providerRead, voiceRuntime, ttsSnapshot] = await Promise.all([
+		(async (): Promise<
+			| {
+					providers?: ProviderInfo[];
+					active?: ProviderInfo;
+					discovery: NonNullable<HlidOperatingContext["providerDiscovery"]>;
+			  }
+			| undefined
+		> => {
+			if (!needsProviderCatalog) return undefined;
 			try {
 				const providerParams = new URLSearchParams({
 					host_capabilities: "1",
 					provider_capabilities: "1",
+					...(live.providerId && topic !== "orchestration"
+						? { provider_id: live.providerId }
+						: {}),
 				});
-				if (live.runtimeCwd) {
+				if (live.runtimeCwd && topic !== "orchestration") {
 					providerParams.set("capability_cwd", live.runtimeCwd);
 					providerParams.set("provider_capabilities_wait", "1");
 				}
 				const response = await dbFetch(
 					`/providers?${providerParams.toString()}`,
 				);
-				if (!response.ok) return undefined;
-				const body = (await response.json()) as { providers?: ProviderInfo[] };
-				return body.providers;
+				if (!response.ok) {
+					return {
+						discovery: providerDiscoveryFailure(
+							capturedProviderSnapshot,
+							`Live provider discovery returned HTTP ${response.status}. Retry focused provider help.`,
+						),
+					};
+				}
+				const body = (await response.json()) as { providers?: unknown };
+				if (!Array.isArray(body.providers)) {
+					return {
+						discovery: providerDiscoveryFailure(
+							capturedProviderSnapshot,
+							"Live provider discovery returned an invalid catalog. Retry focused provider help.",
+						),
+					};
+				}
+				const providers = body.providers as ProviderInfo[];
+				const active = providers.find(
+					(provider) => provider.id === live.providerId,
+				);
+				if (!active) {
+					return {
+						providers,
+						discovery: providerDiscoveryFailure(
+							capturedProviderSnapshot,
+							"The live provider catalog did not include the active provider. Retry focused provider help.",
+						),
+					};
+				}
+				const revision = response.headers
+					.get("x-hlid-providers-revision")
+					?.trim();
+				return {
+					providers,
+					active: mergeActiveProviderSnapshot(capturedProviderSnapshot, active),
+					discovery: {
+						status: "current" as const,
+						source: "live-provider-catalog" as const,
+						retryable: false,
+						...(revision ? { revision } : {}),
+					},
+				};
 			} catch {
-				return undefined;
+				return {
+					discovery: providerDiscoveryFailure(
+						capturedProviderSnapshot,
+						"Live provider discovery failed. Retry focused provider help.",
+					),
+				};
 			}
 		})(),
 		(async () => {
+			if (!needsVoiceRuntime) return undefined;
 			try {
 				const response = await dbFetch("/voice");
 				if (!response.ok) return undefined;
@@ -1175,6 +1310,7 @@ async function liveHlidOperatingContext(
 			}
 		})(),
 		(async () => {
+			if (!needsVoiceRuntime) return undefined;
 			try {
 				const response = await dbFetch("/tts");
 				if (!response.ok) return undefined;
@@ -1201,22 +1337,27 @@ async function liveHlidOperatingContext(
 					: undefined,
 		};
 	}
-	const providerSnapshot = providerCatalog?.find(
-		(provider) => provider.id === live.providerId,
-	);
+	const providerSnapshot = providerRead?.active ?? capturedProviderSnapshot;
+	const providerCatalog = providerRead?.providers ?? context.providerCatalog;
+	const registeredHlidTools = capturedToolRegistry
+		? capturedToolRegistry
+		: [
+				...HLID_AGENT_TOOL_SPECS.map((spec) => spec.name),
+				...(providerSnapshot?.hostCapabilities?.windowsComputerUse?.available
+					? [HLID_WINDOWS_COMPUTER_USE_TOOL]
+					: []),
+				...(providerSnapshot?.hostCapabilities?.windowsVisualize?.available
+					? [HLID_CREATE_VISUALIZATION_TOOL]
+					: []),
+			];
 	return {
 		...live,
-		registeredHlidTools: [
-			...HLID_AGENT_TOOL_SPECS.map((spec) => spec.name),
-			...(providerSnapshot?.hostCapabilities?.windowsComputerUse?.available
-				? [HLID_WINDOWS_COMPUTER_USE_TOOL]
-				: []),
-			...(providerSnapshot?.hostCapabilities?.windowsVisualize?.available
-				? [HLID_CREATE_VISUALIZATION_TOOL]
-				: []),
-		],
+		registeredHlidTools,
 		...(providerSnapshot ? { providerSnapshot } : {}),
 		...(providerCatalog ? { providerCatalog } : {}),
+		...(providerRead?.discovery
+			? { providerDiscovery: providerRead.discovery }
+			: {}),
 		...(voiceRuntime?.status ? { voiceSnapshot: voiceRuntime.status } : {}),
 		...(ttsSnapshot ? { ttsSnapshot } : {}),
 	};
@@ -1768,9 +1909,10 @@ async function executeCleanupHlidSessions(
 const hlidAgentToolHandlers = {
 	hlid_help: async (input, context) => {
 		const parsed = hlidAgentSchemas.hlid_help.parse(input);
+		const topic = parsed.topic ?? "overview";
 		return buildHlidHelpResponse(
-			parsed.topic ?? "overview",
-			await liveHlidOperatingContext(context),
+			topic,
+			await liveHlidOperatingContext(context, topic),
 			{
 				providerCapabilities: {
 					query: parsed.query,

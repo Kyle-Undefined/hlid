@@ -29,9 +29,12 @@ export const HLID_HELP_TOPICS = [
 	"permissions",
 	"sessions",
 	"maintenance",
+	"ledger",
 	"context",
+	"diagnostics",
 	"plans_review",
 	"workflows",
+	"routines",
 	"orchestration",
 	"goals",
 	"relics",
@@ -95,6 +98,13 @@ export type HlidOperatingContext = {
 	registeredHlidTools?: readonly string[];
 	providerSnapshot?: ProviderInfo;
 	providerCatalog?: readonly ProviderInfo[];
+	providerDiscovery?: {
+		status: "current" | "captured" | "unavailable";
+		source: "live-provider-catalog" | "active-provider-context" | "none";
+		retryable: boolean;
+		reason?: string;
+		revision?: string;
+	};
 };
 
 type CapabilityAvailability =
@@ -194,7 +204,14 @@ export type HlidCapabilityManifest = {
 		revision: string;
 		commandActions: CommandAction[];
 		hlidTools: string[];
-		providerSnapshot: "current" | "unavailable";
+		providerSnapshot: "current" | "captured" | "unavailable";
+		providerDiscovery?: {
+			status: "current" | "captured" | "unavailable";
+			source: "live-provider-catalog" | "active-provider-context" | "none";
+			retryable: boolean;
+			reason?: string;
+			revision?: string;
+		};
 		providerCapabilities?: {
 			status: "current" | "stale" | "partial" | "unavailable";
 			revision: string;
@@ -414,7 +431,7 @@ function focusedProviderCapabilityCatalog(
 	const snapshot = provider?.capabilitySnapshot;
 	if (!snapshot) {
 		return {
-			source: "live-provider-capability-catalog" as const,
+			source: "resolved-provider-capability-snapshot" as const,
 			snapshot: "unavailable" as const,
 			total: 0,
 			returned: 0,
@@ -512,7 +529,7 @@ function focusedProviderCapabilityCatalog(
 				})
 			: undefined;
 	return {
-		source: "live-provider-capability-catalog" as const,
+		source: "resolved-provider-capability-snapshot" as const,
 		snapshot: snapshot.status,
 		revision: boundedValue(snapshot.revision, 80),
 		observedAt: snapshot.observedAt,
@@ -553,9 +570,11 @@ export function buildHlidHelpResponse(
 	options: HlidHelpOptions = {},
 ): string {
 	const manifest = buildHlidCapabilityManifest(context);
+	// Overview is a bounded index. Detailed mode state remains available through
+	// each focused topic so additive top-level capabilities cannot exhaust it.
 	const capability =
 		topic === "overview"
-			? manifest.capabilities
+			? manifest.capabilities.map(({ modes: _modes, ...item }) => item)
 			: manifest.capabilities.filter((item) => item.id === topic);
 	const shared = {
 		contractVersion: manifest.contractVersion,

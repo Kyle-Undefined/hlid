@@ -140,6 +140,21 @@ function effectiveSdkPermissionMode(
 
 type SdkQuery = ReturnType<typeof query>;
 
+const CLAUDE_PROVIDER_CAPABILITIES = {
+	workflowCatalog: true,
+	backgroundActivities: {
+		maturity: "experimental",
+		operations: ["background", "list", "stop"],
+	},
+} as const;
+
+const CLAUDE_PROVIDER_FORK_CAPABILITY = {
+	kind: "exact",
+	cutoff: "message",
+	wholeSession: true,
+	throughMessage: true,
+} as const;
+
 function createHlidSdkServer(params: AgentQueryParams) {
 	return createSdkMcpServer({
 		name: HLID_AGENT_NAMESPACE,
@@ -164,6 +179,21 @@ function createHlidSdkServer(params: AgentQueryParams) {
 							sessionId: params.hostSessionId,
 							vaultName: params.vaultName,
 							agentMode: params.agentMode,
+							registeredHlidTools: HLID_AGENT_TOOL_SPECS.map(
+								(candidate) => candidate.name,
+							),
+							providerSnapshot: {
+								id: params.providerId ?? "claude",
+								label: "Claude",
+								available: true,
+								...(params.model
+									? {
+											models: [{ value: params.model, label: params.model }],
+										}
+									: {}),
+								capabilities: CLAUDE_PROVIDER_CAPABILITIES,
+								forkCapability: CLAUDE_PROVIDER_FORK_CAPABILITY,
+							},
 						}),
 					),
 				{
@@ -4797,13 +4827,7 @@ export class ClaudeProvider implements AgentProvider {
 	readonly providerId: string;
 	readonly label: string;
 	// fallow-ignore-next-line unused-class-member -- Read through AgentProvider by the provider catalog.
-	readonly capabilities = {
-		workflowCatalog: true,
-		backgroundActivities: {
-			maturity: "experimental",
-			operations: ["background", "list", "stop"],
-		},
-	} as const;
+	readonly capabilities = CLAUDE_PROVIDER_CAPABILITIES;
 	hlidToolLoading() {
 		const hlidTools = describeHlidToolLoading(HLID_AGENT_TOOL_SPECS, true);
 		const obsidianTools = describeHlidToolLoading(
@@ -4816,12 +4840,7 @@ export class ClaudeProvider implements AgentProvider {
 		];
 	}
 	// fallow-ignore-next-line unused-class-member -- Read through AgentProvider by the provider catalog.
-	readonly forkCapability = {
-		kind: "exact",
-		cutoff: "message",
-		wholeSession: true,
-		throughMessage: true,
-	} as const;
+	readonly forkCapability = CLAUDE_PROVIDER_FORK_CAPABILITY;
 	// The SDK's streaming-input query is lazy — probes must send a turn first.
 	readonly probeRequiresTurn = true;
 

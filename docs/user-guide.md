@@ -282,7 +282,11 @@ provider. Capabilities owned by `Hlið`, such as `/review` and `/computer-use`,
 follow its routing, approval, audit, and accounting path.
 
 Agents check `hlid_help` to see which `Hlið` capabilities are available right now
-and how to use one without guessing. `hlid_api` gives them the exact current
+and how to use one without guessing. For provider capability results,
+`registry.providerDiscovery` says whether the catalog is current, captured from the
+active provider adapter, or unavailable. A captured or unavailable discovery result,
+or omission from a bounded page, is not proof that a provider feature is absent.
+`hlid_api` gives agents the exact current
 `HTTP` inventory through bounded, revision-bound pages. The returned host URLs
 still require network reachability and `Hlið` authentication, so an agent uses a
 typed `Hlið` tool when one exists. If a capability is not available, a similar
@@ -294,6 +298,7 @@ history, `Ledger` aggregates, the current session's context receipts, a redacted
 `Event Log`, and safe `Routine` metadata and run history. Agents can also preview
 a `Routine` schedule or restart an existing session `Project Preview`. These reads
 do not widen references or bypass the approval and authorization flows for changes.
+The matching focused help topics are `ledger`, `diagnostics`, and `routines`.
 
 Structured provider actions stay out of the prompt text too. `/compact` tells a
 supported `Claude` or `Codex` runtime to compact its active conversation. `/mcp`
@@ -600,10 +605,10 @@ not configured for that entry stay hidden.
   `Codex Computer Use` defaults when the `Windows` capability exists. The vault
   editor follows the configured vault provider. Global files are shown only for
   provider families configured by the vault or an `Einherjar`, grouped by their
-  `Windows` or `WSL` runtime. A provider's current capability snapshot separates
-  integrated, provider-native, and unavailable behavior with its supporting
-  runtime evidence. Edits take effect when the matching provider conversation
-  starts or reloads.
+  `Windows` or `WSL` runtime. A provider's bounded capability snapshot reports its
+  current, stale, partial, or unavailable status and separates integrated,
+  provider-native, and unavailable behavior with its supporting runtime evidence.
+  Edits take effect when the matching provider conversation starts or reloads.
 - **Access** has network, `TLS`, password, and trusted-device settings.
 - **Experience** has built-in or custom desktop/mobile themes, input behavior,
   the provider-entry visibility toggle for the `/` picker, `HTML` plan defaults,

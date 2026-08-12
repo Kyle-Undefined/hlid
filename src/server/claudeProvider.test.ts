@@ -8155,6 +8155,15 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 				providerId: "claude",
 				runtimeCwd: "/tmp/test",
 				sessionId: "host-session-1",
+				registeredHlidTools: expect.arrayContaining([
+					"hlid_help",
+					"inspect_hlid_ledger",
+				]),
+				providerSnapshot: expect.objectContaining({
+					id: "claude",
+					available: true,
+					capabilities: expect.objectContaining({ workflowCatalog: true }),
+				}),
 			}),
 		);
 		const capturePreview = hlidServer.instance.options.tools.find(

@@ -45,7 +45,7 @@ type ManifestState = {
 	orchestrationAvailability: Availability;
 	selectedModel: SelectedModel | undefined;
 	modelAudioAvailable: boolean | undefined;
-	providerRealtime: boolean;
+	providerRealtime: boolean | undefined;
 	providerRealtimeFeature: boolean | undefined;
 	hostCapabilities:
 		| Record<string, { label: string; available: boolean; reason?: string }>
@@ -88,6 +88,7 @@ function resolvedProviderCapability(
 ): boolean {
 	const snapshot = provider?.capabilitySnapshot;
 	if (!snapshot) return fallback;
+	if (snapshot.status !== "current") return false;
 	const id = providerCapabilityId(provider.id, ...segments);
 	const capability = snapshot.capabilities.find((item) => item.id === id);
 	if (!capability) return fallback;
@@ -95,6 +96,28 @@ function resolvedProviderCapability(
 		capability.integration === "integrated" &&
 		capability.availability === "available"
 	);
+}
+
+function providerFeatureKnownUnavailable(
+	state: ManifestState,
+	legacy: boolean | undefined,
+	...segments: string[]
+): boolean {
+	const provider = state.provider;
+	if (!provider) return false;
+	if (provider.available === false) return true;
+	const snapshot = provider.capabilitySnapshot;
+	if (snapshot && snapshot.status !== "current") return legacy === false;
+	const id = providerCapabilityId(provider.id, ...segments);
+	const resolved = snapshot?.capabilities.find(
+		(capability) => capability.id === id,
+	);
+	if (resolved) {
+		return resolved.availability === "unavailable";
+	}
+	// Optional adapter fields are not negative evidence. Only an explicit false
+	// legacy value may prove that the current adapter does not expose the feature.
+	return legacy === false;
 }
 
 function activeCommandActions(
@@ -257,7 +280,7 @@ function buildManifestState(
 		),
 		selectedModel,
 		modelAudioAvailable: selectedModel?.inputModalities?.includes("audio"),
-		providerRealtime: provider?.capabilities?.realtime === true,
+		providerRealtime: provider?.capabilities?.realtime,
 		providerRealtimeFeature: providerExperimentalFeatureEnabled(
 			provider,
 			"realtime_conversation",
@@ -301,29 +324,36 @@ function buildVoiceState(state: ManifestState): VoiceState {
 	const realtimeConfigured =
 		state.providerId === "codex" &&
 		state.provider?.available !== false &&
-		state.providerRealtime &&
+		state.providerRealtime !== false &&
 		state.context.codexRealtimeEnabled === true;
 	const realtimeClientReady =
 		realtimeConfigured &&
+		state.providerRealtime === true &&
 		(state.providerRealtimeFeature === true ||
 			state.context.codexRealtimeBackendAvailable === true);
 	const realtimeAvailable =
-		realtimeConfigured && state.context.codexRealtimeBackendAvailable === true;
+		realtimeConfigured &&
+		state.providerRealtime === true &&
+		state.context.codexRealtimeBackendAvailable === true;
 	const codexDictationAvailability: Availability = !realtimeConfigured
 		? "unavailable"
-		: state.context.codexRealtimeBackendAvailable === false
-			? "unavailable"
-			: realtimeAvailable
-				? "provider-native"
-				: "conditional";
+		: state.providerRealtime === undefined
+			? "conditional"
+			: state.context.codexRealtimeBackendAvailable === false
+				? "unavailable"
+				: realtimeAvailable
+					? "provider-native"
+					: "conditional";
 	const ravenLiveAvailability: Availability = !realtimeConfigured
 		? "unavailable"
-		: realtimeAvailable
-			? "provider-native"
-			: state.providerRealtimeFeature === false ||
-					state.context.codexRealtimeBackendAvailable === false
-				? "unavailable"
-				: "conditional";
+		: state.providerRealtime === undefined
+			? "conditional"
+			: realtimeAvailable
+				? "provider-native"
+				: state.providerRealtimeFeature === false ||
+						state.context.codexRealtimeBackendAvailable === false
+					? "unavailable"
+					: "conditional";
 	return {
 		localDictationAvailability,
 		localReadAloudAvailability,
@@ -420,6 +450,22 @@ function providerCapabilitySummary(provider: ProviderInfo | undefined) {
 	};
 }
 
+function providerDiscoverySnapshot(context: HlidOperatingContext) {
+	const discovery = context.providerDiscovery;
+	if (!discovery) return undefined;
+	return {
+		status: discovery.status,
+		source: discovery.source,
+		retryable: discovery.retryable,
+		...(discovery.reason
+			? { reason: boundedValue(discovery.reason, 300) }
+			: {}),
+		...(discovery.revision
+			? { revision: boundedValue(discovery.revision, 80) }
+			: {}),
+	};
+}
+
 function buildRegistrySnapshot(state: ManifestState) {
 	const { context, provider, selectedModel } = state;
 	return {
@@ -472,6 +518,7 @@ function buildRegistrySnapshot(state: ManifestState) {
 				? boundedValue(context.codexRealtimeBackendReason, 300)
 				: null,
 		},
+		providerDiscovery: providerDiscoverySnapshot(context) ?? null,
 		orchestrationTargets: state.orchestrationTargets,
 	};
 }
@@ -528,6 +575,16 @@ function maintenanceCapability(state: ManifestState): Capability {
 	};
 }
 
+function ledgerCapability(state: ManifestState): Capability {
+	return {
+		id: "ledger",
+		owner: "hlid",
+		availability: toolAvailability(state.tools, ["inspect_hlid_ledger"]),
+		summary:
+			"Agents can inspect bounded Hlid Ledger aggregates without exposing workspace paths or raw immutable usage rows.",
+	};
+}
+
 function contextCapability(state: ManifestState): Capability {
 	return {
 		id: "context",
@@ -538,6 +595,16 @@ function contextCapability(state: ManifestState): Capability {
 				: "conditional",
 		summary:
 			"Hlid records a bounded receipt of the context it adds to each turn. Raven exposes it through /context without adding the receipt to the provider transcript.",
+	};
+}
+
+function diagnosticsCapability(state: ManifestState): Capability {
+	return {
+		id: "diagnostics",
+		owner: "hlid",
+		availability: toolAvailability(state.tools, ["inspect_hlid_diagnostics"]),
+		summary:
+			"Agents can inspect bounded, redacted Hlid Event Log entries without changing runtime state.",
 	};
 }
 
@@ -553,14 +620,39 @@ function plansReviewCapability(state: ManifestState): Capability {
 
 function workflowsCapability(state: ManifestState): Capability {
 	const available = state.commands.has("workflows");
+	const knownUnavailable = providerFeatureKnownUnavailable(
+		state,
+		state.provider?.capabilities?.workflowCatalog,
+		"workflow-catalog",
+	);
 	return {
 		id: "workflows",
 		owner: "provider",
-		availability: available ? "provider-native" : "unavailable",
+		availability: available
+			? "provider-native"
+			: knownUnavailable
+				? "unavailable"
+				: "conditional",
 		providerGuidance: providerGuidance(state, "provider-command-catalog"),
 		summary: available
 			? "Claude Dynamic Workflows remain provider-native; Hlid supplies the Raven lifecycle and review surface."
-			: "The active provider does not expose Claude Dynamic Workflows.",
+			: knownUnavailable
+				? "The active provider does not expose Claude Dynamic Workflows."
+				: "Claude Dynamic Workflow availability could not be confirmed from the current provider evidence.",
+	};
+}
+
+function routinesCapability(state: ManifestState): Capability {
+	return {
+		id: "routines",
+		owner: "hlid",
+		availability: toolAvailability(state.tools, [
+			"list_hlid_routines",
+			"inspect_hlid_routine",
+			"preview_hlid_routine_schedule",
+		]),
+		summary:
+			"Agents can inspect safe Hlid Routine metadata and preview schedules without changing authorization or execution state.",
 	};
 }
 
@@ -576,14 +668,25 @@ function orchestrationCapability(state: ManifestState): Capability {
 
 function goalsCapability(state: ManifestState): Capability {
 	const available = state.commands.has("goal");
+	const knownUnavailable = providerFeatureKnownUnavailable(
+		state,
+		state.provider?.capabilities?.goalControl,
+		"goal-control",
+	);
 	return {
 		id: "goals",
 		owner: "provider",
-		availability: available ? "provider-native" : "unavailable",
+		availability: available
+			? "provider-native"
+			: knownUnavailable
+				? "unavailable"
+				: "conditional",
 		providerGuidance: providerGuidance(state, "provider-capability-catalog"),
 		summary: available
 			? "Goals use Codex's native goal lifecycle; Hlid displays and persists the live provider state."
-			: "The active provider does not expose Codex native goals.",
+			: knownUnavailable
+				? "The active provider does not expose Codex native goals."
+				: "Codex native goal availability could not be confirmed from the current provider evidence.",
 	};
 }
 
@@ -757,15 +860,17 @@ function codexDictationMode(
 		providerGuidance: providerGuidance(state, "provider-capability-catalog"),
 		summary: !voice.realtimeConfigured
 			? "Codex realtime dictation requires the native Codex provider, its realtime capability, and the Hlid preview setting. The selected coding model's audio modalities do not gate dictation."
-			: state.context.codexRealtimeBackendAvailable === false
-				? boundedValue(
-						state.context.codexRealtimeBackendReason ??
-							"Codex realtime dictation is unavailable for the signed-in account or realtime backend.",
-						300,
-					)
-				: voice.realtimeAvailable
-					? "Codex realtime dictation is available and returns editable text to the composer. It is independent of the selected coding model's audio modalities."
-					: "Codex realtime dictation is ready to try and returns editable text to the composer. Account backend support is confirmed on first use, independently of the selected coding model's audio modalities.",
+			: state.providerRealtime === undefined
+				? "Codex realtime dictation is conditional because the active provider's realtime capability could not be confirmed. The selected coding model's audio modalities do not gate dictation."
+				: state.context.codexRealtimeBackendAvailable === false
+					? boundedValue(
+							state.context.codexRealtimeBackendReason ??
+								"Codex realtime dictation is unavailable for the signed-in account or realtime backend.",
+							300,
+						)
+					: voice.realtimeAvailable
+						? "Codex realtime dictation is available and returns editable text to the composer. It is independent of the selected coding model's audio modalities."
+						: "Codex realtime dictation is ready to try and returns editable text to the composer. Account backend support is confirmed on first use, independently of the selected coding model's audio modalities.",
 	};
 }
 
@@ -852,9 +957,12 @@ function buildCapabilities(
 		permissionsCapability(state),
 		sessionsCapability(state),
 		maintenanceCapability(state),
+		ledgerCapability(state),
 		contextCapability(state),
+		diagnosticsCapability(state),
 		plansReviewCapability(state),
 		workflowsCapability(state),
+		routinesCapability(state),
 		orchestrationCapability(state),
 		goalsCapability(state),
 		relicsCapability(state),
@@ -896,6 +1004,7 @@ export function buildHlidCapabilityManifestImpl(
 		context,
 		options.maxOrchestrationTargetCatalogChars,
 	);
+	const providerDiscovery = providerDiscoverySnapshot(context);
 	return {
 		contractVersion: options.contractVersion,
 		runtime: manifestRuntime(state),
@@ -917,7 +1026,10 @@ export function buildHlidCapabilityManifestImpl(
 			),
 			commandActions: state.commandActions,
 			hlidTools: state.toolNames,
-			providerSnapshot: state.provider ? "current" : "unavailable",
+			providerSnapshot:
+				context.providerDiscovery?.status ??
+				(state.provider ? "current" : "unavailable"),
+			...(providerDiscovery ? { providerDiscovery } : {}),
 			...(providerCapabilitySummary(state.provider)
 				? {
 						providerCapabilities: providerCapabilitySummary(state.provider),

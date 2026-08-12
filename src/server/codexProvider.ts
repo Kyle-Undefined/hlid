@@ -25,6 +25,7 @@ import type {
 	ProviderAppCatalogRequest,
 } from "../lib/providerAppTypes";
 import { compareProviderBackgroundActivity } from "../lib/providerBackgroundActivity";
+import type { ProviderInfo } from "../lib/providerTypes";
 import type {
 	AgentEvent,
 	AgentProvider,
@@ -190,6 +191,29 @@ type ApprovalRequestResult =
 	| PermissionsRequestApprovalResponse
 	| CommandExecutionRequestApprovalResponse
 	| FileChangeRequestApprovalResponse;
+
+const CODEX_PROVIDER_CAPABILITIES = {
+	goalControl: true,
+	structuredActivities: ["compact", "review"],
+	realtime: true,
+	appCatalog: true,
+	appAuthentication: true,
+	backgroundActivities: {
+		maturity: "experimental",
+		operations: ["list", "terminate", "clean"],
+	},
+	generatedMedia: {
+		maturity: "stable",
+		operations: ["persist", "preview", "download"],
+	},
+} as const;
+
+const CODEX_PROVIDER_FORK_CAPABILITY = {
+	kind: "exact",
+	cutoff: "turn",
+	wholeSession: true,
+	throughMessage: true,
+} as const;
 
 type ProviderRealtimeEventHandler = (event: ProviderRealtimeEvent) => void;
 
@@ -2303,6 +2327,12 @@ class CodexAgentSession implements AgentSession {
 	private expectedActivePermissionProfile: string | null = null;
 	/** Terminal fail-closed state after Codex reports a different active profile. */
 	private permissionProfileFailure: Error | null = null;
+	/** Exact Hlid namespace loaded into this native thread. */
+	private registeredHlidTools: string[] = HLID_AGENT_TOOL_SPECS.map(
+		(spec) => spec.name,
+	);
+	/** Active-adapter evidence retained when the shared provider catalog is degraded. */
+	private hlidProviderSnapshot: ProviderInfo | undefined;
 
 	private launch: CodexLaunchConfig | null = null;
 
@@ -3965,6 +3995,33 @@ class CodexAgentSession implements AgentSession {
 			!this.delegatedWindowsWorker && this.params.providerId === "codex"
 				? (await refreshWindowsVisualizeCapability(true)).available
 				: false;
+		this.registeredHlidTools = [
+			...HLID_AGENT_TOOL_SPECS.map((spec) => spec.name),
+			...(computerUseAvailable ? [HLID_WINDOWS_COMPUTER_USE_TOOL] : []),
+			...(visualizeAvailable ? [HLID_CREATE_VISUALIZATION_TOOL] : []),
+		];
+		this.hlidProviderSnapshot = {
+			id: this.params.providerId ?? "codex",
+			label: "Codex",
+			available: true,
+			...(this.params.model
+				? {
+						models: [{ value: this.params.model, label: this.params.model }],
+					}
+				: {}),
+			capabilities: CODEX_PROVIDER_CAPABILITIES,
+			forkCapability: CODEX_PROVIDER_FORK_CAPABILITY,
+			hostCapabilities: {
+				windowsComputerUse: {
+					label: "Windows Computer Use",
+					available: computerUseAvailable,
+				},
+				windowsVisualize: {
+					label: "Windows Visualize",
+					available: visualizeAvailable,
+				},
+			},
+		};
 
 		const approvalsReviewerRequest = this.captureApprovalsReviewerRequest();
 		const threadParams = {
@@ -4903,6 +4960,8 @@ class CodexAgentSession implements AgentSession {
 						sessionId: this.params.hostSessionId,
 						vaultName: this.params.vaultName,
 						agentMode: this.params.agentMode,
+						registeredHlidTools: this.registeredHlidTools,
+						providerSnapshot: this.hlidProviderSnapshot,
 					},
 				);
 				return {
@@ -6668,21 +6727,7 @@ export class CodexProvider implements AgentProvider {
 	readonly providerId: string;
 	readonly label: string;
 	// fallow-ignore-next-line unused-class-member -- Read through AgentProvider by the provider catalog.
-	readonly capabilities = {
-		goalControl: true,
-		structuredActivities: ["compact", "review"],
-		realtime: true,
-		appCatalog: true,
-		appAuthentication: true,
-		backgroundActivities: {
-			maturity: "experimental",
-			operations: ["list", "terminate", "clean"],
-		},
-		generatedMedia: {
-			maturity: "stable",
-			operations: ["persist", "preview", "download"],
-		},
-	} as const;
+	readonly capabilities = CODEX_PROVIDER_CAPABILITIES;
 	hlidToolLoading() {
 		const computerUseAvailable = windowsComputerUseHostAvailable();
 		const visualizeAvailable =
@@ -6717,12 +6762,7 @@ export class CodexProvider implements AgentProvider {
 		];
 	}
 	// fallow-ignore-next-line unused-class-member -- Read through AgentProvider by the provider catalog.
-	readonly forkCapability = {
-		kind: "exact",
-		cutoff: "turn",
-		wholeSession: true,
-		throughMessage: true,
-	} as const;
+	readonly forkCapability = CODEX_PROVIDER_FORK_CAPABILITY;
 	protected readonly providerProfile?: CodexProviderProfile;
 	private readonly realtimeEnabled: () => boolean;
 	private readonly metadataExecutable: () => string | undefined;

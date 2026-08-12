@@ -91,6 +91,10 @@ describe("Hlid agent tools", () => {
 
 		expect(advertisedTopics).toEqual([...HLID_HELP_TOPICS]);
 		expect(advertisedTopics).toContain("orchestration");
+		expect(helpSpec?.searchHint).toContain("Ledger");
+		expect(helpSpec?.searchHint).toContain("diagnostics");
+		expect(helpSpec?.searchHint).toContain("Routines");
+		expect(helpSpec?.searchHint).toContain("orchestration");
 		for (const topic of HLID_HELP_TOPICS) {
 			expect(hlidAgentSchemas.hlid_help.parse({ topic })).toEqual({ topic });
 		}
@@ -117,8 +121,16 @@ describe("Hlid agent tools", () => {
 			hlidAgentSchemas.hlid_help.parse({ topic: "mcp", query: "plan" }),
 		).toThrow(/topic=providers/i);
 		expect(helpSpec?.inputSchema.properties).toMatchObject({
-			query: { type: "string" },
-			capability_id: { type: "string" },
+			query: {
+				type: "string",
+				description: expect.stringContaining(
+					"resolved provider capability snapshot",
+				),
+			},
+			capability_id: {
+				type: "string",
+				description: expect.stringContaining("registry.providerDiscovery"),
+			},
 			integration: {
 				type: "string",
 				enum: ["integrated", "provider-native", "not-integrated"],
@@ -126,6 +138,9 @@ describe("Hlid agent tools", () => {
 			availability: {
 				type: "string",
 				enum: ["available", "provider-native", "conditional", "unavailable"],
+				description: expect.stringContaining(
+					"resolved provider capability snapshot",
+				),
 			},
 			limit: { type: "number" },
 			cursor: { type: "string" },
@@ -814,14 +829,34 @@ describe("Hlid agent tools", () => {
 	});
 
 	it("returns bounded help from the live persisted session selection", async () => {
-		db.dbFetch.mockResolvedValueOnce(
-			Response.json({
-				provider_id: "codex",
-				selected_model: "gpt-5.6-sol",
-				selected_effort: "high",
-				selected_permission_mode: "acceptEdits",
-			}),
-		);
+		db.dbFetch.mockImplementation((path: string) => {
+			if (path === "/db/session-row?id=session-1") {
+				return Promise.resolve(
+					Response.json({
+						provider_id: "codex",
+						selected_model: "gpt-5.6-sol",
+						selected_effort: "high",
+						selected_permission_mode: "acceptEdits",
+					}),
+				);
+			}
+			if (path.startsWith("/providers?")) {
+				return Promise.resolve(
+					Response.json({
+						providers: [
+							{
+								id: "codex",
+								label: "Codex",
+								available: true,
+								models: [],
+								capabilities: { goalControl: true },
+							},
+						],
+					}),
+				);
+			}
+			return Promise.resolve(Response.json({}));
+		});
 		const result = JSON.parse(
 			await executeHlidAgentTool(
 				"hlid_help",
@@ -851,13 +886,13 @@ describe("Hlid agent tools", () => {
 			capabilities: [
 				{
 					id: "workflows",
-					availability: "unavailable",
+					availability: "conditional",
 				},
 			],
 		});
 		expect(db.dbFetch).toHaveBeenCalledWith("/db/session-row?id=session-1");
 		expect(db.dbFetch).toHaveBeenCalledWith(
-			"/providers?host_capabilities=1&provider_capabilities=1&capability_cwd=%2Fwork%2Fproject&provider_capabilities_wait=1",
+			"/providers?host_capabilities=1&provider_capabilities=1&provider_id=codex&capability_cwd=%2Fwork%2Fproject&provider_capabilities_wait=1",
 		);
 	});
 
@@ -880,8 +915,186 @@ describe("Hlid agent tools", () => {
 		);
 
 		expect(db.dbFetch).toHaveBeenCalledWith(
-			"/providers?host_capabilities=1&provider_capabilities=1&capability_cwd=%5C%5Cwsl.localhost%5CUbuntu-24.04%5Chome%5Ckyle%5Cdevelopment%5Crepos%5Chlid&provider_capabilities_wait=1",
+			"/providers?host_capabilities=1&provider_capabilities=1&provider_id=codex&capability_cwd=%5C%5Cwsl.localhost%5CUbuntu-24.04%5Chome%5Ckyle%5Cdevelopment%5Crepos%5Chlid&provider_capabilities_wait=1",
 		);
+	});
+
+	it("reports provider discovery failure without inventing native unavailability", async () => {
+		db.dbFetch.mockImplementation((path: string) => {
+			if (path.startsWith("/providers?")) {
+				return Promise.resolve(
+					Response.json(
+						{ error: "Provider catalog changed repeatedly during refresh" },
+						{ status: 503 },
+					),
+				);
+			}
+			return Promise.resolve(Response.json({}));
+		});
+
+		const result = JSON.parse(
+			await executeHlidAgentTool(
+				"hlid_help",
+				{ topic: "goals" },
+				{ providerId: "codex", runtimeCwd: "/work/project" },
+			),
+		);
+
+		expect(result.capabilities).toEqual([
+			expect.objectContaining({
+				id: "goals",
+				availability: "conditional",
+			}),
+		]);
+		expect(result.registry).toMatchObject({
+			providerSnapshot: "unavailable",
+			providerDiscovery: {
+				status: "unavailable",
+				source: "none",
+				retryable: true,
+				reason: expect.stringContaining("HTTP 503"),
+			},
+		});
+	});
+
+	it("retains active provider and exact loaded tools when live discovery fails", async () => {
+		db.dbFetch.mockImplementation((path: string) => {
+			if (path.startsWith("/providers?")) {
+				return Promise.resolve(new Response(null, { status: 503 }));
+			}
+			return Promise.resolve(Response.json({}));
+		});
+		const registeredHlidTools = [
+			...HLID_AGENT_TOOL_SPECS.map((spec) => spec.name),
+			"windows_computer_use",
+			"create_visualization",
+		];
+		const context = {
+			providerId: "codex",
+			runtimeCwd: "/work/project",
+			registeredHlidTools,
+			providerSnapshot: {
+				id: "codex",
+				label: "Codex",
+				available: true,
+				capabilities: { goalControl: true },
+				hostCapabilities: {
+					windowsComputerUse: {
+						label: "Windows Computer Use",
+						available: true,
+					},
+					windowsVisualize: {
+						label: "Windows Visualize",
+						available: true,
+					},
+				},
+			},
+		} as const;
+
+		const failedDiscovery = JSON.parse(
+			await executeHlidAgentTool("hlid_help", { topic: "providers" }, context),
+		);
+		const goals = JSON.parse(
+			await executeHlidAgentTool("hlid_help", { topic: "goals" }, context),
+		);
+
+		expect(goals.capabilities).toEqual([
+			expect.objectContaining({
+				id: "goals",
+				availability: "provider-native",
+			}),
+		]);
+		expect(failedDiscovery.registry).toMatchObject({
+			providerSnapshot: "captured",
+			providerDiscovery: {
+				status: "captured",
+				source: "active-provider-context",
+				retryable: true,
+			},
+		});
+		expect(failedDiscovery.registry.hlidTools).toHaveLength(
+			HLID_AGENT_TOOL_SPECS.length + 2,
+		);
+		expect(new Set(failedDiscovery.registry.hlidTools).size).toBe(
+			failedDiscovery.registry.hlidTools.length,
+		);
+		expect(failedDiscovery.registry.hlidTools).toEqual(
+			expect.arrayContaining(["windows_computer_use", "create_visualization"]),
+		);
+		expect(db.dbFetch).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not wait on provider discovery for provider-independent help", async () => {
+		db.dbFetch.mockClear();
+
+		const result = JSON.parse(
+			await executeHlidAgentTool(
+				"hlid_help",
+				{ topic: "references" },
+				{ providerId: "codex", runtimeCwd: "/work/project" },
+			),
+		);
+
+		expect(result.capabilities).toEqual([
+			expect.objectContaining({ id: "references", availability: "available" }),
+		]);
+		expect(db.dbFetch).not.toHaveBeenCalled();
+	});
+
+	it("builds overview from captured provider evidence without live probes", async () => {
+		db.dbFetch.mockClear();
+		const registeredHlidTools = [
+			...HLID_AGENT_TOOL_SPECS.map((spec) => spec.name),
+			"windows_computer_use",
+			"create_visualization",
+		];
+
+		const result = JSON.parse(
+			await executeHlidAgentTool(
+				"hlid_help",
+				{ topic: "overview" },
+				{
+					providerId: "codex",
+					runtimeCwd: "/work/project",
+					registeredHlidTools,
+					providerSnapshot: {
+						id: "codex",
+						label: "Codex",
+						available: true,
+						capabilities: { goalControl: true, realtime: true },
+						hostCapabilities: {
+							windowsComputerUse: {
+								label: "Windows Computer Use",
+								available: true,
+							},
+							windowsVisualize: {
+								label: "Windows Visualize",
+								available: true,
+							},
+						},
+					},
+				},
+			),
+		);
+
+		expect(db.dbFetch).not.toHaveBeenCalled();
+		expect(result.registry).toMatchObject({
+			providerSnapshot: "captured",
+			providerDiscovery: {
+				status: "captured",
+				source: "active-provider-context",
+				retryable: false,
+			},
+			hlidTools: expect.arrayContaining([
+				"windows_computer_use",
+				"create_visualization",
+			]),
+		});
+		expect(
+			result.capabilities.find(
+				(capability: { id: string }) => capability.id === "goals",
+			),
+		).toMatchObject({ availability: "provider-native" });
 	});
 
 	it("retrieves an omitted provider capability through the agent help tool", async () => {
@@ -982,26 +1195,29 @@ describe("Hlid agent tools", () => {
 			}
 			if (path.startsWith("/providers?")) {
 				return Promise.resolve(
-					Response.json({
-						providers: [
-							{
-								id: "codex",
-								label: "Codex",
-								available: true,
-								models: [],
-								hostCapabilities: {
-									windowsComputerUse: {
-										label: "Windows Computer Use",
-										available: true,
-									},
-									windowsVisualize: {
-										label: "Windows Visualize",
-										available: true,
+					Response.json(
+						{
+							providers: [
+								{
+									id: "codex",
+									label: "Codex",
+									available: true,
+									models: [],
+									hostCapabilities: {
+										windowsComputerUse: {
+											label: "Windows Computer Use",
+											available: true,
+										},
+										windowsVisualize: {
+											label: "Windows Visualize",
+											available: true,
+										},
 									},
 								},
-							},
-						],
-					}),
+							],
+						},
+						{ headers: { "x-hlid-providers-revision": "42" } },
+					),
 				);
 			}
 			return Promise.resolve(Response.json({}));
@@ -1010,7 +1226,7 @@ describe("Hlid agent tools", () => {
 		const result = JSON.parse(
 			await executeHlidAgentTool(
 				"hlid_help",
-				{ topic: "overview" },
+				{ topic: "computer_use" },
 				{ providerId: "codex", runtimeCwd, sessionId: "session-1" },
 			),
 		);
@@ -1019,6 +1235,12 @@ describe("Hlid agent tools", () => {
 		expect(result.registry.hlidTools).toEqual(
 			expect.arrayContaining(["windows_computer_use", "create_visualization"]),
 		);
+		expect(result.registry.providerDiscovery).toMatchObject({
+			status: "current",
+			source: "live-provider-catalog",
+			retryable: false,
+			revision: "42",
+		});
 		expect(
 			result.capabilities.find(
 				(capability: { id: string }) => capability.id === "computer_use",
@@ -1036,10 +1258,7 @@ describe("Hlid agent tools", () => {
 					}),
 				);
 			}
-			if (
-				path ===
-				"/providers?host_capabilities=1&provider_capabilities=1&capability_cwd=%2Fwork%2Fproject&provider_capabilities_wait=1"
-			) {
+			if (path === "/providers?host_capabilities=1&provider_capabilities=1") {
 				return Promise.resolve(
 					Response.json({
 						providers: [

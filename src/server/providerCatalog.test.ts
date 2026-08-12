@@ -2009,6 +2009,65 @@ describe("createProviderCatalogSnapshot", () => {
 		expect(load).toHaveBeenCalledTimes(2);
 	});
 
+	it("does not return a superseded targeted live refresh as current", async () => {
+		let resolveOlder: ((value: ProviderInfo[]) => void) | undefined;
+		let resolveNewer: ((value: ProviderInfo[]) => void) | undefined;
+		const stale = [
+			{
+				id: "acp:a",
+				label: "ACP A",
+				available: true,
+				models: [{ value: "a/old", label: "A Old" }],
+			},
+		];
+		const fresh = [
+			{
+				id: "acp:a",
+				label: "ACP A",
+				available: true,
+				models: [{ value: "a/new", label: "A New" }],
+			},
+		];
+		const load = vi
+			.fn()
+			.mockImplementationOnce(
+				() =>
+					new Promise<ProviderInfo[]>((resolve) => {
+						resolveOlder = resolve;
+					}),
+			)
+			.mockImplementationOnce(
+				() =>
+					new Promise<ProviderInfo[]>((resolve) => {
+						resolveNewer = resolve;
+					}),
+			)
+			.mockResolvedValue(fresh);
+		const snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "acp:a" })],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+		const options = {
+			refresh: true,
+			refreshProviderId: "acp:a",
+		} as const;
+
+		const older = snapshot.getVersioned(options);
+		snapshot.invalidateMetadata("acp:a");
+		const newer = snapshot.getVersioned(options);
+		resolveNewer?.(fresh);
+		await newer;
+		resolveOlder?.(stale);
+
+		const result = await older;
+		expect(result.providers[0]?.models).toEqual(fresh[0]?.models);
+		expect(snapshot.isCurrentVersion(result.version)).toBe(true);
+	});
+
 	it("retries a versioned live refresh invalidated by a runtime replacement", async () => {
 		let resolveFirst: ((value: ProviderInfo[]) => void) | undefined;
 		const load = vi
@@ -2138,6 +2197,627 @@ describe("createProviderCatalogSnapshot", () => {
 		]);
 		expect(snapshot.isCurrentVersion(result.version)).toBe(true);
 		expect(load).toHaveBeenCalledOnce();
+	});
+
+	it("returns a targeted capability read across its own metadata publication", async () => {
+		let snapshot!: ReturnType<typeof createProviderCatalogSnapshot>;
+		const load = vi.fn(async () => {
+			snapshot.invalidateMetadata("codex");
+			return [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [],
+					capabilitySnapshot: {
+						contractVersion: 1 as const,
+						providerId: "codex",
+						status: "current" as const,
+						source: "live" as const,
+						revision: "v1-current",
+						observedAt: 1,
+						capabilities: [],
+					},
+				},
+			];
+		});
+		snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "codex" })],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+
+		const result = await snapshot.getVersioned({
+			includeProviderCapabilities: true,
+			preferCachedProviderCapabilities: false,
+			refreshProviderId: "codex",
+			discoveryCwd: "/work/project",
+		});
+
+		expect(result.providers[0]?.capabilitySnapshot?.revision).toBe(
+			"v1-current",
+		);
+		expect(snapshot.isCurrentVersion(result.version)).toBe(true);
+		expect(load).toHaveBeenCalledOnce();
+		snapshot.invalidateMetadata("codex");
+		expect(snapshot.isCurrentVersion(result.version)).toBe(false);
+	});
+
+	it.each([
+		["another provider", "claude"],
+		["unscoped metadata", undefined],
+	] as const)("retries a capability read after %s changes", async (_label, invalidationTarget) => {
+		let snapshot!: ReturnType<typeof createProviderCatalogSnapshot>;
+		let call = 0;
+		const load = vi.fn(async () => {
+			call += 1;
+			if (call === 1) snapshot.invalidateMetadata(invalidationTarget);
+			return [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [],
+					capabilitySnapshot: {
+						contractVersion: 1 as const,
+						providerId: "codex",
+						status: "current" as const,
+						source: "live" as const,
+						revision: `v${call}`,
+						observedAt: call,
+						capabilities: [],
+					},
+				},
+			];
+		});
+		snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "codex" })],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+
+		const result = await snapshot.getVersioned({
+			includeProviderCapabilities: true,
+			preferCachedProviderCapabilities: false,
+			refreshProviderId: "codex",
+			discoveryCwd: "/work/project",
+		});
+
+		expect(result.providers[0]?.capabilitySnapshot?.revision).toBe("v2");
+		expect(load).toHaveBeenCalledTimes(2);
+	});
+
+	it("accepts catalog-wide capability publications from participating providers", async () => {
+		let snapshot!: ReturnType<typeof createProviderCatalogSnapshot>;
+		const load = vi.fn(async () => {
+			snapshot.invalidateMetadata("codex");
+			snapshot.invalidateMetadata("claude");
+			return [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [],
+				},
+				{
+					id: "claude",
+					label: "Claude",
+					available: true,
+					models: [],
+				},
+			];
+		});
+		snapshot = createProviderCatalogSnapshot(
+			[
+				makeProvider({ providerId: "codex" }),
+				makeProvider({ providerId: "claude" }),
+			],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+
+		const result = await snapshot.getVersioned({
+			includeProviderCapabilities: true,
+			preferCachedProviderCapabilities: false,
+			discoveryCwd: "/work/project",
+		});
+
+		expect(result.providers.map((provider) => provider.id)).toEqual([
+			"codex",
+			"claude",
+		]);
+		expect(load).toHaveBeenCalledOnce();
+	});
+
+	it("does not store a capability-only model projection", async () => {
+		const load = vi.fn((_providers, _catalog, options) =>
+			Promise.resolve([
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models:
+						options.preferCachedProviderCapabilities === false
+							? [{ value: "capability-model", label: "Capability" }]
+							: [{ value: "cached-model", label: "Cached" }],
+				},
+			]),
+		);
+		const snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "codex" })],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+		const options = {
+			includeProviderCapabilities: true,
+			discoveryCwd: "/work/project",
+		} as const;
+
+		const live = await snapshot.get({
+			...options,
+			preferCachedProviderCapabilities: false,
+			refreshProviderId: "codex",
+		});
+		const cached = await snapshot.get(options);
+
+		expect(live[0]?.models?.[0]?.value).toBe("capability-model");
+		expect(cached[0]?.models?.[0]?.value).toBe("cached-model");
+		expect(load).toHaveBeenCalledTimes(2);
+	});
+
+	it("single-flights identical direct capability reads", async () => {
+		let resolveLoad: ((value: ProviderInfo[]) => void) | undefined;
+		const load = vi.fn(
+			() =>
+				new Promise<ProviderInfo[]>((resolve) => {
+					resolveLoad = resolve;
+				}),
+		);
+		const snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "codex" })],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+		const options = {
+			includeProviderCapabilities: true,
+			preferCachedProviderCapabilities: false,
+			refreshProviderId: "codex",
+			discoveryCwd: "/work/project",
+		} as const;
+
+		const first = snapshot.getVersioned(options);
+		const second = snapshot.getVersioned(options);
+		expect(load).toHaveBeenCalledOnce();
+		resolveLoad?.([
+			{
+				id: "codex",
+				label: "Codex",
+				available: true,
+				models: [],
+			},
+		]);
+
+		await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+		expect(load).toHaveBeenCalledOnce();
+	});
+
+	it("does not retry a capability read for an unrelated provider refresh in another workspace", async () => {
+		let resolveCapability: ((value: ProviderInfo[]) => void) | undefined;
+		let capabilityCalls = 0;
+		const capabilityProjection: ProviderInfo[] = [
+			{
+				id: "codex",
+				label: "Codex",
+				available: true,
+				models: [],
+				capabilitySnapshot: {
+					contractVersion: 1,
+					providerId: "codex",
+					status: "current",
+					source: "live",
+					revision: "codex-current",
+					observedAt: 1,
+					capabilities: [],
+				},
+			},
+		];
+		const load = vi.fn((_providers, _catalog, options) => {
+			if (options.refresh) {
+				return Promise.resolve<ProviderInfo[]>([
+					{
+						id: "claude",
+						label: "Claude",
+						available: true,
+						models: [{ value: "claude/new", label: "Claude New" }],
+					},
+				]);
+			}
+			capabilityCalls += 1;
+			if (capabilityCalls === 1) {
+				return new Promise<ProviderInfo[]>((resolve) => {
+					resolveCapability = resolve;
+				});
+			}
+			return Promise.resolve(capabilityProjection);
+		});
+		const snapshot = createProviderCatalogSnapshot(
+			[
+				makeProvider({ providerId: "codex" }),
+				makeProvider({ providerId: "claude" }),
+			],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+
+		const capability = snapshot.getVersioned({
+			includeProviderCapabilities: true,
+			preferCachedProviderCapabilities: false,
+			refreshProviderId: "codex",
+			discoveryCwd: "/work/codex",
+		});
+		await snapshot.get({
+			refresh: true,
+			refreshProviderId: "claude",
+			discoveryCwd: "/work/claude",
+		});
+		resolveCapability?.(capabilityProjection);
+
+		await capability;
+		expect(capabilityCalls).toBe(1);
+	});
+
+	it("retains accepted host capability fields on a direct capability read", async () => {
+		const hostCapabilities = {
+			windowsComputerUse: { label: "Windows Computer Use", available: true },
+		};
+		const load = vi.fn((_providers, _catalog, options) =>
+			Promise.resolve([
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [],
+					...(options.refresh ? { hostCapabilities } : {}),
+				},
+			]),
+		);
+		const snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "codex" })],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+
+		await snapshot.get({
+			refresh: true,
+			includeHostCapabilities: true,
+			discoveryCwd: "/work/project",
+		});
+		const capability = await snapshot.get({
+			includeHostCapabilities: true,
+			includeProviderCapabilities: true,
+			preferCachedProviderCapabilities: false,
+			refreshProviderId: "codex",
+			discoveryCwd: "/work/project",
+		});
+
+		expect(capability[0]?.hostCapabilities).toEqual(hostCapabilities);
+	});
+
+	it("prefers fresh host fields during a combined capability and host wait", async () => {
+		const staleHost = {
+			windowsComputerUse: { label: "Windows Computer Use", available: false },
+		};
+		const freshHost = {
+			windowsComputerUse: { label: "Windows Computer Use", available: true },
+		};
+		const load = vi
+			.fn()
+			.mockResolvedValueOnce([
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [],
+					hostCapabilities: staleHost,
+				},
+			])
+			.mockResolvedValueOnce([
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [],
+					hostCapabilities: freshHost,
+				},
+			]);
+		const snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "codex" })],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+		await snapshot.get({
+			refresh: true,
+			includeHostCapabilities: true,
+			discoveryCwd: "/work/project",
+		});
+
+		const capability = await snapshot.get({
+			includeHostCapabilities: true,
+			awaitHostCapabilities: true,
+			includeProviderCapabilities: true,
+			preferCachedProviderCapabilities: false,
+			refreshProviderId: "codex",
+			discoveryCwd: "/work/project",
+		});
+
+		expect(capability[0]?.hostCapabilities).toEqual(freshHost);
+	});
+
+	it("retries a capability read when a full refresh starts", async () => {
+		let resolveCapability: ((value: ProviderInfo[]) => void) | undefined;
+		const negotiatedFork = {
+			kind: "exact" as const,
+			wholeSession: true as const,
+			throughMessage: false,
+		};
+		const load = vi
+			.fn()
+			.mockImplementationOnce(
+				() =>
+					new Promise<ProviderInfo[]>((resolve) => {
+						resolveCapability = resolve;
+					}),
+			)
+			.mockResolvedValueOnce([
+				{
+					id: "acp:test",
+					label: "ACP Test",
+					available: true,
+					models: [{ value: "fresh", label: "Fresh" }],
+					forkCapability: negotiatedFork,
+				},
+			])
+			.mockResolvedValueOnce([
+				{
+					id: "acp:test",
+					label: "ACP Test",
+					available: true,
+					models: [{ value: "fresh", label: "Fresh" }],
+				},
+			]);
+		const snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "acp:test" })],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+		const capability = snapshot.getVersioned({
+			includeProviderCapabilities: true,
+			preferCachedProviderCapabilities: false,
+			refreshProviderId: "acp:test",
+			discoveryCwd: "/work/project",
+		});
+		await snapshot.get({
+			refresh: true,
+			refreshProviderId: "acp:test",
+			discoveryCwd: "/work/project",
+		});
+		resolveCapability?.([
+			{
+				id: "acp:test",
+				label: "ACP Test",
+				available: true,
+				models: [{ value: "stale", label: "Stale" }],
+			},
+		]);
+
+		await capability;
+		expect(load).toHaveBeenCalledTimes(3);
+		expect(
+			load.mock.calls[2]?.[2].providerCapabilityForkOverrides?.get("acp:test"),
+		).toEqual(negotiatedFork);
+	});
+
+	it("retries a capability read after an already-active full refresh completes", async () => {
+		let resolveRefresh: ((value: ProviderInfo[]) => void) | undefined;
+		let resolveCapability: ((value: ProviderInfo[]) => void) | undefined;
+		const oldFork = {
+			kind: "exact" as const,
+			wholeSession: true as const,
+			throughMessage: false,
+		};
+		const newFork = {
+			kind: "exact" as const,
+			cutoff: "turn" as const,
+			wholeSession: true as const,
+			throughMessage: true,
+		};
+		const load = vi
+			.fn()
+			.mockResolvedValueOnce([
+				{
+					id: "acp:test",
+					label: "ACP Test",
+					available: true,
+					models: [],
+					forkCapability: oldFork,
+				},
+			])
+			.mockImplementationOnce(
+				() =>
+					new Promise<ProviderInfo[]>((resolve) => {
+						resolveRefresh = resolve;
+					}),
+			)
+			.mockImplementationOnce(
+				() =>
+					new Promise<ProviderInfo[]>((resolve) => {
+						resolveCapability = resolve;
+					}),
+			)
+			.mockResolvedValueOnce([
+				{
+					id: "acp:test",
+					label: "ACP Test",
+					available: true,
+					models: [],
+					forkCapability: newFork,
+				},
+			]);
+		const snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "acp:test" })],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+		await snapshot.get({
+			refresh: true,
+			refreshProviderId: "acp:test",
+			discoveryCwd: "/work/project",
+		});
+		const refresh = snapshot.get({
+			refresh: true,
+			refreshProviderId: "acp:test",
+			discoveryCwd: "/work/project",
+		});
+		const capability = snapshot.getVersioned({
+			includeProviderCapabilities: true,
+			preferCachedProviderCapabilities: false,
+			refreshProviderId: "acp:test",
+			discoveryCwd: "/work/project",
+		});
+		resolveRefresh?.([
+			{
+				id: "acp:test",
+				label: "ACP Test",
+				available: true,
+				models: [],
+				forkCapability: newFork,
+			},
+		]);
+		await refresh;
+		resolveCapability?.([
+			{
+				id: "acp:test",
+				label: "ACP Test",
+				available: true,
+				models: [],
+				forkCapability: oldFork,
+			},
+		]);
+
+		const result = await capability;
+		expect(result.providers[0]?.forkCapability).toEqual(newFork);
+		expect(load).toHaveBeenCalledTimes(4);
+		expect(
+			load.mock.calls[3]?.[2].providerCapabilityForkOverrides?.get("acp:test"),
+		).toEqual(newFork);
+	});
+
+	it("notices out-of-order full-refresh completions in another projection", async () => {
+		let resolveA: ((value: ProviderInfo[]) => void) | undefined;
+		let resolveCapability: ((value: ProviderInfo[]) => void) | undefined;
+		const oldFork = {
+			kind: "exact" as const,
+			wholeSession: true as const,
+			throughMessage: false,
+		};
+		const newFork = {
+			kind: "exact" as const,
+			cutoff: "turn" as const,
+			wholeSession: true as const,
+			throughMessage: true,
+		};
+		const projection = (forkCapability: typeof oldFork | typeof newFork) => [
+			{
+				id: "acp:test",
+				label: "ACP Test",
+				available: true,
+				models: [],
+				forkCapability,
+			},
+		];
+		const load = vi
+			.fn()
+			.mockResolvedValueOnce(projection(oldFork))
+			.mockImplementationOnce(
+				() =>
+					new Promise<ProviderInfo[]>((resolve) => {
+						resolveA = resolve;
+					}),
+			)
+			.mockResolvedValueOnce(projection(oldFork))
+			.mockImplementationOnce(
+				() =>
+					new Promise<ProviderInfo[]>((resolve) => {
+						resolveCapability = resolve;
+					}),
+			)
+			.mockResolvedValueOnce(projection(newFork));
+		const snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "acp:test" })],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+		await snapshot.get({
+			refresh: true,
+			refreshProviderId: "acp:test",
+			discoveryCwd: "/a",
+		});
+		const refreshA = snapshot.get({
+			refresh: true,
+			refreshProviderId: "acp:test",
+			discoveryCwd: "/a",
+		});
+		await snapshot.get({
+			refresh: true,
+			refreshProviderId: "acp:test",
+			discoveryCwd: "/b",
+		});
+		const capability = snapshot.getVersioned({
+			includeProviderCapabilities: true,
+			preferCachedProviderCapabilities: false,
+			refreshProviderId: "acp:test",
+			discoveryCwd: "/a",
+		});
+		resolveA?.(projection(newFork));
+		await refreshA;
+		resolveCapability?.(projection(oldFork));
+
+		const result = await capability;
+		expect(result.providers[0]?.forkCapability).toEqual(newFork);
+		expect(load).toHaveBeenCalledTimes(5);
 	});
 
 	it("does not let an older base refresh overwrite a newer rich projection", async () => {
@@ -2433,6 +3113,25 @@ describe("providerCatalogRequestOptions", () => {
 			includeHostCapabilities: false,
 			awaitHostCapabilities: false,
 			includeProviderCapabilities: true,
+			discoveryCwd: "/work/project",
+		});
+	});
+
+	it("scopes an explicit capability wait to the requested provider", () => {
+		expect(
+			providerCatalogRequestOptions(
+				new URLSearchParams(
+					"provider_capabilities=1&provider_capabilities_wait=1&provider_id=codex&capability_cwd=%2Fwork%2Fproject",
+				),
+			),
+		).toEqual({
+			refresh: false,
+			preferCachedModels: true,
+			preferCachedProviderCapabilities: false,
+			includeHostCapabilities: false,
+			awaitHostCapabilities: false,
+			includeProviderCapabilities: true,
+			refreshProviderId: "codex",
 			discoveryCwd: "/work/project",
 		});
 	});

@@ -11,7 +11,11 @@ import * as db from "../db";
 import { declaredPathKey } from "../lib/paths";
 import type { ProviderCapabilityDiscovery } from "../lib/providerCapabilityTypes";
 import type { ProviderInfo } from "../lib/providerTypes";
-import type { AgentProvider, ProviderModelInfo } from "./agentProvider";
+import type {
+	AgentProvider,
+	ProviderForkCapability,
+	ProviderModelInfo,
+} from "./agentProvider";
 import {
 	buildProviderCapabilitySnapshot,
 	isProviderCapabilityDiscovery,
@@ -513,6 +517,11 @@ export async function loadProviderCatalog(
 		includeProviderCapabilities?: boolean;
 		preferCachedModels?: boolean;
 		preferCachedProviderCapabilities?: boolean;
+		/** Last accepted negotiated forks used to build coherent capability evidence. */
+		providerCapabilityForkOverrides?: ReadonlyMap<
+			string,
+			ProviderForkCapability
+		>;
 		discoveryCwd?: string;
 	} = {},
 ): Promise<ProviderInfo[]> {
@@ -528,11 +537,16 @@ export async function loadProviderCatalog(
 			// contract used by Hlid tooling. Route reads keep this preference cached.
 			const liveProviderCapabilityRead =
 				options.includeProviderCapabilities === true &&
-				options.preferCachedProviderCapabilities === false;
+				options.preferCachedProviderCapabilities === false &&
+				(!options.refreshProviderId ||
+					options.refreshProviderId === provider.providerId);
 			const liveHostCapabilityRead =
 				options.includeHostCapabilities === true &&
 				options.awaitHostCapabilities === true;
 			const cachedAvailability = provider.cachedAvailability?.();
+			const declaredForkCapability =
+				options.providerCapabilityForkOverrides?.get(provider.providerId) ??
+				provider.forkCapability;
 			const check: { available: boolean; reason?: string } | null =
 				(liveRefresh || liveProviderCapabilityRead) && provider.check
 					? await boundedProviderDiscovery(
@@ -601,9 +615,9 @@ export async function loadProviderCatalog(
 								`fork:${provider.providerId}`,
 								`${provider.providerId} fork-capability negotiation`,
 								() => provider.resolveForkCapability?.(),
-								provider.forkCapability,
-							).then((resolved) => resolved ?? provider.forkCapability)
-						: provider.forkCapability,
+								declaredForkCapability,
+							).then((resolved) => resolved ?? declaredForkCapability)
+						: declaredForkCapability,
 					options.includeProviderCapabilities && providerAvailable
 						? observeCatalogStep(
 								`provider-capabilities:${provider.providerId}`,
@@ -731,8 +745,21 @@ type ProviderCatalogLoadOptions = NonNullable<
 type ProviderCatalogVersion = {
 	generation: number;
 	metadataVersion: number | string | null;
-	metadataExclusion?: string;
+	metadataExclusions?: string[];
+	liveRefreshScopes?: string[];
+	liveRefreshVersion?: string;
+	acceptedLiveRefreshVersion?: string;
 };
+
+function isLiveProviderCapabilityRead(
+	loadOptions: ProviderCatalogLoadOptions,
+): boolean {
+	return (
+		loadOptions.refresh !== true &&
+		loadOptions.includeProviderCapabilities === true &&
+		loadOptions.preferCachedProviderCapabilities === false
+	);
+}
 
 export type ProviderCatalogSnapshot = {
 	get(options?: ProviderCatalogLoadOptions): Promise<ProviderInfo[]>;
@@ -773,6 +800,7 @@ export function createProviderCatalogSnapshot(
 		{ value: ProviderInfo[]; refreshedAt: number }
 	>();
 	const inflight = new Map<string, Promise<ProviderInfo[]>>();
+	const supersededReads = new WeakSet<ProviderInfo[]>();
 	let generation = 0;
 	let metadataGeneration = 0;
 	let unscopedMetadataGeneration = 0;
@@ -782,6 +810,8 @@ export function createProviderCatalogSnapshot(
 	const latestLiveRefresh = new Map<string, number>();
 	const latestCachedRefresh = new Map<string, number>();
 	const activeLiveRefreshes = new Map<string, Set<number>>();
+	const liveRefreshStarts = new Map<string, number>();
+	const acceptedLiveRefreshes = new Map<string, number>();
 	const lastKnownLiveFields = new Map<string, ProviderInfo[]>();
 	const keyFor = (
 		includeHostCapabilities: boolean,
@@ -797,34 +827,99 @@ export function createProviderCatalogSnapshot(
 			? options.discoveryCwd()
 			: options.discoveryCwd) ??
 		process.cwd();
-	const metadataVersionExcept = (providerId: string): string =>
+	const metadataVersionExcept = (providerIds: ReadonlySet<string>): string =>
 		JSON.stringify({
 			unscoped: unscopedMetadataGeneration,
 			providers: [...providerMetadataGenerations]
-				.filter(([candidate]) => candidate !== providerId)
+				.filter(([candidate]) => !providerIds.has(candidate))
 				.sort(([a], [b]) => a.localeCompare(b)),
 		});
+	const liveRefreshScopeKey = (
+		discoveryCwd: string,
+		providerId: string | undefined,
+	) => `${declaredPathKey(discoveryCwd)}:${providerId ?? "all-providers"}`;
+	const liveRefreshDependencies = (
+		loadOptions: ProviderCatalogLoadOptions,
+	): string[] => {
+		const discoveryCwd = effectiveDiscoveryCwd(loadOptions);
+		const providerIds = loadOptions.refreshProviderId
+			? [loadOptions.refreshProviderId]
+			: providerList().map((provider) => provider.providerId);
+		return [
+			liveRefreshScopeKey(discoveryCwd, undefined),
+			...providerIds.map((providerId) =>
+				liveRefreshScopeKey(discoveryCwd, providerId),
+			),
+		].sort();
+	};
+	const liveRefreshVersionForScopes = (
+		versions: ReadonlyMap<string, number>,
+		scopes: readonly string[],
+	): string =>
+		JSON.stringify(scopes.map((key) => [key, versions.get(key) ?? 0]));
 	const versionFor = (
 		loadOptions: ProviderCatalogLoadOptions,
-	): ProviderCatalogVersion => ({
-		generation,
-		...(loadOptions.refresh
+	): ProviderCatalogVersion => {
+		const capabilityRead = isLiveProviderCapabilityRead(loadOptions);
+		const metadataExclusions = capabilityRead
 			? loadOptions.refreshProviderId
+				? [loadOptions.refreshProviderId]
+				: providerList().map((provider) => provider.providerId)
+			: loadOptions.refresh && loadOptions.refreshProviderId
+				? [loadOptions.refreshProviderId]
+				: undefined;
+		const liveRefreshScopes = capabilityRead
+			? liveRefreshDependencies(loadOptions)
+			: undefined;
+		return {
+			generation,
+			metadataVersion: metadataExclusions
+				? metadataVersionExcept(new Set(metadataExclusions))
+				: loadOptions.refresh
+					? null
+					: metadataGeneration,
+			...(metadataExclusions ? { metadataExclusions } : {}),
+			...(capabilityRead
 				? {
-						metadataVersion: metadataVersionExcept(
-							loadOptions.refreshProviderId,
+						liveRefreshScopes,
+						liveRefreshVersion: liveRefreshVersionForScopes(
+							liveRefreshStarts,
+							liveRefreshScopes ?? [],
 						),
-						metadataExclusion: loadOptions.refreshProviderId,
+						acceptedLiveRefreshVersion: liveRefreshVersionForScopes(
+							acceptedLiveRefreshes,
+							liveRefreshScopes ?? [],
+						),
 					}
-				: { metadataVersion: null }
-			: { metadataVersion: metadataGeneration }),
-	});
+				: {}),
+		};
+	};
 	const versionIsCurrent = (version: ProviderCatalogVersion): boolean => {
 		if (version.generation !== generation) return false;
+		if (
+			version.liveRefreshVersion !== undefined &&
+			version.liveRefreshVersion !==
+				liveRefreshVersionForScopes(
+					liveRefreshStarts,
+					version.liveRefreshScopes ?? [],
+				)
+		) {
+			return false;
+		}
+		if (
+			version.acceptedLiveRefreshVersion !== undefined &&
+			version.acceptedLiveRefreshVersion !==
+				liveRefreshVersionForScopes(
+					acceptedLiveRefreshes,
+					version.liveRefreshScopes ?? [],
+				)
+		) {
+			return false;
+		}
 		if (version.metadataVersion === null) return true;
-		return version.metadataExclusion
+		return version.metadataExclusions
 			? version.metadataVersion ===
-					metadataVersionExcept(version.metadataExclusion)
+					metadataVersionExcept(new Set(version.metadataExclusions))
 			: version.metadataVersion === metadataGeneration;
 	};
 
@@ -870,28 +965,33 @@ export function createProviderCatalogSnapshot(
 								};
 							});
 				const projectedKey = keyFor(withHost, withProvider, discoveryCwd);
-				if (
+				const requested =
 					withHost === includeHostCapabilities &&
-					withProvider === includeProviderCapabilities
-				) {
-					requestedProjection = projected;
-				}
-				if (
+					withProvider === includeProviderCapabilities;
+				const supersededByLive =
 					write.liveRefresh !== undefined &&
-					latestLiveRefresh.get(projectedKey) !== write.liveRefresh
-				) {
-					continue;
-				}
+					latestLiveRefresh.get(projectedKey) !== write.liveRefresh;
+				let supersededByCached = false;
 				if (write.cachedRefresh !== undefined) {
 					const liveEpochAtStart =
 						write.liveEpochsAtCachedStart?.get(projectedKey) ?? 0;
-					if (
+					supersededByCached =
 						latestCachedRefresh.get(projectedKey) !== write.cachedRefresh ||
 						write.liveActiveAtCachedStart?.has(projectedKey) ||
-						(latestLiveRefresh.get(projectedKey) ?? 0) !== liveEpochAtStart
-					) {
-						continue;
+						(latestLiveRefresh.get(projectedKey) ?? 0) !== liveEpochAtStart;
+				}
+				if (supersededByLive || supersededByCached) {
+					if (requested) {
+						const currentProjection =
+							snapshots.get(projectedKey)?.value ??
+							lastKnownLiveFields.get(projectedKey);
+						requestedProjection = [...(currentProjection ?? projected)];
+						supersededReads.add(requestedProjection);
 					}
+					continue;
+				}
+				if (requested) {
+					requestedProjection = projected;
 				}
 				snapshots.set(projectedKey, {
 					value: projected,
@@ -995,6 +1095,10 @@ export function createProviderCatalogSnapshot(
 			}
 		}
 		const liveRefresh = loadOptions.refresh ? ++nextLiveRefresh : null;
+		const liveRefreshScope =
+			liveRefresh === null
+				? undefined
+				: liveRefreshScopeKey(discoveryCwd, loadOptions.refreshProviderId);
 		const cachedRefresh = liveRefresh === null ? ++nextCachedRefresh : null;
 		const liveEpochsAtCachedStart =
 			cachedRefresh === null
@@ -1014,6 +1118,12 @@ export function createProviderCatalogSnapshot(
 						),
 					);
 		if (liveRefresh !== null) {
+			if (liveRefreshScope) {
+				liveRefreshStarts.set(
+					liveRefreshScope,
+					(liveRefreshStarts.get(liveRefreshScope) ?? 0) + 1,
+				);
+			}
 			for (const key of destinationKeys) {
 				latestLiveRefresh.set(key, liveRefresh);
 				const active = activeLiveRefreshes.get(key) ?? new Set<number>();
@@ -1034,7 +1144,7 @@ export function createProviderCatalogSnapshot(
 				const metadataIsCurrent =
 					refreshMetadataGeneration === metadataGeneration;
 				if (runtimeIsCurrent && (metadataIsCurrent || liveRefresh !== null)) {
-					return store(
+					const stored = store(
 						includeHostCapabilities,
 						includeProviderCapabilities,
 						discoveryCwd,
@@ -1059,6 +1169,17 @@ export function createProviderCatalogSnapshot(
 							...(liveActiveAtCachedStart ? { liveActiveAtCachedStart } : {}),
 						},
 					);
+					if (
+						liveRefresh !== null &&
+						liveRefreshScope &&
+						!supersededReads.has(stored)
+					) {
+						acceptedLiveRefreshes.set(
+							liveRefreshScope,
+							(acceptedLiveRefreshes.get(liveRefreshScope) ?? 0) + 1,
+						);
+					}
+					return stored;
 				}
 				return value;
 			})
@@ -1076,9 +1197,75 @@ export function createProviderCatalogSnapshot(
 		return pending;
 	}
 
+	/**
+	 * Capability waits return their live evidence directly. The underlying
+	 * capability cache publishes metadata invalidation, so persisting this
+	 * process-free model projection here would only race the normal catalog
+	 * rematerialization and explicit model refreshes.
+	 */
+	function readLiveProviderCapabilities(
+		loadOptions: ProviderCatalogLoadOptions,
+	): Promise<ProviderInfo[]> {
+		const discoveryCwd = effectiveDiscoveryCwd(loadOptions);
+		const version = versionFor(loadOptions);
+		const directKey = `provider-capability:${generation}:${
+			version.metadataVersion ?? "unversioned"
+		}:${version.liveRefreshVersion ?? 0}:${
+			version.acceptedLiveRefreshVersion ?? 0
+		}:${keyFor(
+			loadOptions.includeHostCapabilities === true,
+			true,
+			discoveryCwd,
+		)}:${loadOptions.awaitHostCapabilities ? "await-host" : "cached-host"}:${
+			loadOptions.refreshProviderId ?? "all-providers"
+		}`;
+		const current = inflight.get(directKey);
+		if (current) return current;
+		const baseKey = keyFor(false, false, discoveryCwd);
+		const hostKey = keyFor(true, false, discoveryCwd);
+		const lastAcceptedBase =
+			snapshots.get(baseKey)?.value ?? lastKnownLiveFields.get(baseKey);
+		const lastAcceptedHost = loadOptions.includeHostCapabilities
+			? (snapshots.get(hostKey)?.value ?? lastKnownLiveFields.get(hostKey))
+			: undefined;
+		const providerCapabilityForkOverrides = new Map(
+			(lastAcceptedBase ?? []).flatMap((provider) =>
+				provider.forkCapability
+					? ([[provider.id, provider.forkCapability]] as const)
+					: [],
+			),
+		);
+		const pending = load(providerList(), catalog, {
+			...loadOptions,
+			discoveryCwd,
+			providerCapabilityForkOverrides,
+		})
+			.then((providers) => {
+				if (!lastAcceptedHost) return providers;
+				const hostById = new Map(
+					lastAcceptedHost.map((provider) => [
+						provider.id,
+						provider.hostCapabilities,
+					]),
+				);
+				return providers.map((provider) => ({
+					...provider,
+					...(!provider.hostCapabilities && hostById.get(provider.id)
+						? { hostCapabilities: hostById.get(provider.id) }
+						: {}),
+				}));
+			})
+			.finally(() => inflight.delete(directKey));
+		inflight.set(directKey, pending);
+		return pending;
+	}
+
 	const getSnapshot = (
 		loadOptions: ProviderCatalogLoadOptions = {},
 	): Promise<ProviderInfo[]> => {
+		if (isLiveProviderCapabilityRead(loadOptions)) {
+			return readLiveProviderCapabilities(loadOptions);
+		}
 		if (loadOptions.refresh || loadOptions.awaitHostCapabilities) {
 			return refresh(loadOptions);
 		}
@@ -1112,7 +1299,9 @@ export function createProviderCatalogSnapshot(
 			for (let attempt = 0; attempt < 3; attempt += 1) {
 				const version = versionFor(loadOptions);
 				const providers = await getSnapshot(loadOptions);
-				if (versionIsCurrent(version)) return { providers, version };
+				if (!supersededReads.has(providers) && versionIsCurrent(version)) {
+					return { providers, version: versionFor({}) };
+				}
 			}
 			throw new Error("Provider catalog changed repeatedly during refresh");
 		},
@@ -1140,6 +1329,8 @@ export function createProviderCatalogSnapshot(
 			latestLiveRefresh.clear();
 			latestCachedRefresh.clear();
 			activeLiveRefreshes.clear();
+			liveRefreshStarts.clear();
+			acceptedLiveRefreshes.clear();
 			lastKnownLiveFields.clear();
 		},
 	};
@@ -1166,6 +1357,8 @@ export function providerCatalogRequestOptions(searchParams: URLSearchParams): {
 } {
 	const refresh = searchParams.get("refresh") === "1";
 	const refreshProviderId = searchParams.get("provider_id")?.trim();
+	const waitForProviderCapabilities =
+		searchParams.get("provider_capabilities_wait") === "1";
 	const rawDiscoveryCwd = searchParams.get("capability_cwd");
 	const discoveryCwd = rawDiscoveryCwd?.trim();
 	if (
@@ -1181,13 +1374,14 @@ export function providerCatalogRequestOptions(searchParams: URLSearchParams): {
 	return {
 		refresh,
 		preferCachedModels: !refresh,
-		preferCachedProviderCapabilities:
-			searchParams.get("provider_capabilities_wait") !== "1",
+		preferCachedProviderCapabilities: !waitForProviderCapabilities,
 		includeHostCapabilities: searchParams.get("host_capabilities") === "1",
 		awaitHostCapabilities: searchParams.get("host_capabilities_wait") === "1",
 		includeProviderCapabilities:
 			searchParams.get("provider_capabilities") === "1",
-		...(refresh && refreshProviderId ? { refreshProviderId } : {}),
+		...((refresh || waitForProviderCapabilities) && refreshProviderId
+			? { refreshProviderId }
+			: {}),
 		...(discoveryCwd ? { discoveryCwd } : {}),
 	};
 }

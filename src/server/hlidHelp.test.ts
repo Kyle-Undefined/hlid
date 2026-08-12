@@ -222,7 +222,7 @@ describe("Hlid operating guidance", () => {
 		});
 		expect(
 			manifest.capabilities.find((item) => item.id === "workflows"),
-		).toMatchObject({ availability: "unavailable" });
+		).toMatchObject({ availability: "conditional" });
 		expect(manifest.registry).toMatchObject({
 			providerSnapshot: "current",
 			hlidTools: ["hlid_api", "publish_relic"],
@@ -231,7 +231,7 @@ describe("Hlid operating guidance", () => {
 		expect(manifest.registry.revision).toMatch(/^v1-[0-9a-f]{8}$/);
 	});
 
-	it("reports Claude workflows as provider-native and goals as unavailable", () => {
+	it("reports Claude workflows as provider-native without inferring absent goals", () => {
 		const manifest = buildHlidCapabilityManifest({
 			providerId: "claude",
 			runtimeCwd: "/work/hlid",
@@ -256,7 +256,7 @@ describe("Hlid operating guidance", () => {
 		});
 		expect(
 			manifest.capabilities.find((item) => item.id === "goals"),
-		).toMatchObject({ owner: "provider", availability: "unavailable" });
+		).toMatchObject({ owner: "provider", availability: "conditional" });
 	});
 
 	it("keeps agent maintenance available while reclaim remains Forge-only", () => {
@@ -284,6 +284,80 @@ describe("Hlid operating guidance", () => {
 		expect(focused.guidance.join(" ")).toContain(
 			"No Hlid agent tool exposes VACUUM",
 		);
+	});
+
+	it("publishes Ledger, diagnostics, and Routines as focused Hlid-owned capabilities", () => {
+		const context = {
+			providerId: "codex",
+			sessionId: "session-1",
+			registeredHlidTools: [
+				"inspect_hlid_ledger",
+				"inspect_hlid_diagnostics",
+				"list_hlid_routines",
+				"inspect_hlid_routine",
+				"preview_hlid_routine_schedule",
+			],
+		};
+		const ledger = JSON.parse(buildHlidHelpResponse("ledger", context));
+		const diagnostics = JSON.parse(
+			buildHlidHelpResponse("diagnostics", context),
+		);
+		const routines = JSON.parse(buildHlidHelpResponse("routines", context));
+
+		expect(ledger.capabilities).toEqual([
+			expect.objectContaining({
+				id: "ledger",
+				owner: "hlid",
+				availability: "available",
+			}),
+		]);
+		expect(ledger.guidance.join(" ")).toContain("raw immutable usage rows");
+		expect(diagnostics.capabilities).toEqual([
+			expect.objectContaining({
+				id: "diagnostics",
+				owner: "hlid",
+				availability: "available",
+			}),
+		]);
+		expect(diagnostics.guidance.join(" ")).toContain(
+			"not treat the result as a complete raw log export",
+		);
+		expect(routines.capabilities).toEqual([
+			expect.objectContaining({
+				id: "routines",
+				owner: "hlid",
+				availability: "available",
+			}),
+		]);
+		expect(routines.guidance.join(" ")).toContain(
+			"distinct from provider-native Dynamic Workflows",
+		);
+		expect(routines.guidance.join(" ")).toContain(
+			"do not create, edit, archive, authorize, trigger, pause, resume",
+		);
+	});
+
+	it("keeps Routines separate from provider-native workflows", () => {
+		const workflows = JSON.parse(
+			buildHlidHelpResponse("workflows", { providerId: "claude" }),
+		);
+		const incompleteRoutines = JSON.parse(
+			buildHlidHelpResponse("routines", {
+				registeredHlidTools: ["list_hlid_routines", "inspect_hlid_routine"],
+			}),
+		);
+
+		expect(workflows.capabilities).toEqual([
+			expect.objectContaining({ id: "workflows", owner: "provider" }),
+		]);
+		expect(workflows.guidance.join(" ")).not.toContain("Routine");
+		expect(incompleteRoutines.capabilities).toEqual([
+			expect.objectContaining({
+				id: "routines",
+				owner: "hlid",
+				availability: "unavailable",
+			}),
+		]);
 	});
 
 	it("advertises orchestration only with a live workspace session and the complete lifecycle tools", () => {
@@ -1006,14 +1080,93 @@ describe("Hlid operating guidance", () => {
 		const manifest = buildHlidCapabilityManifest({
 			providerId: "codex",
 			sessionId: "session-1",
+			codexRealtimeEnabled: true,
 		});
 		expect(
 			manifest.capabilities.find((item) => item.id === "goals"),
-		).toMatchObject({ availability: "unavailable" });
+		).toMatchObject({ availability: "conditional" });
+		expect(
+			manifest.capabilities.find((item) => item.id === "workflows"),
+		).toMatchObject({ availability: "conditional" });
 		expect(
 			manifest.capabilities.find((item) => item.id === "computer_use"),
 		).toMatchObject({ availability: "conditional" });
+		expect(
+			manifest.capabilities.find((item) => item.id === "voice_audio"),
+		).toMatchObject({
+			modes: {
+				codex_dictation: { availability: "conditional" },
+				raven_live: { availability: "conditional" },
+			},
+		});
 		expect(manifest.registry.providerSnapshot).toBe("unavailable");
+	});
+
+	it("distinguishes captured provider evidence from a current live catalog", () => {
+		const manifest = buildHlidCapabilityManifest({
+			providerId: "codex",
+			sessionId: "session-1",
+			providerSnapshot: {
+				id: "codex",
+				label: "Codex",
+				available: true,
+				capabilities: { goalControl: true },
+			},
+			providerDiscovery: {
+				status: "captured",
+				source: "active-provider-context",
+				retryable: true,
+				reason: `provider route failed ${"x".repeat(5_000)}`,
+			},
+		});
+
+		expect(manifest.registry).toMatchObject({
+			providerSnapshot: "captured",
+			providerDiscovery: {
+				status: "captured",
+				source: "active-provider-context",
+				retryable: true,
+			},
+		});
+		expect(manifest.registry.providerDiscovery?.reason?.length).toBeLessThan(
+			400,
+		);
+		expect(
+			manifest.capabilities.find((item) => item.id === "goals"),
+		).toMatchObject({ availability: "provider-native" });
+	});
+
+	it("does not label captured provider capability data as a live catalog", () => {
+		const context = {
+			...providerHelpContext([
+				providerCapability({
+					id: "codex:goal-control",
+					label: "Goal control",
+					integration: "provider-native",
+					availability: "provider-native",
+				}),
+			]),
+			providerDiscovery: {
+				status: "captured" as const,
+				source: "active-provider-context" as const,
+				retryable: true,
+				reason: "Live provider discovery returned HTTP 503.",
+			},
+		};
+		const response = JSON.parse(buildHlidHelpResponse("providers", context));
+
+		expect(response.registry).toMatchObject({
+			providerSnapshot: "captured",
+			providerDiscovery: {
+				status: "captured",
+				source: "active-provider-context",
+			},
+		});
+		expect(response.providerCapabilities).toMatchObject({
+			source: "resolved-provider-capability-snapshot",
+			snapshot: "current",
+			items: [expect.objectContaining({ id: "codex:goal-control" })],
+		});
 	});
 
 	it("returns a bounded focused provider capability inventory", () => {
@@ -1280,6 +1433,118 @@ describe("Hlid operating guidance", () => {
 		expect(
 			manifest.capabilities.find((item) => item.id === "goals"),
 		).toMatchObject({ availability: "unavailable" });
+	});
+
+	it("keeps conditional and non-current provider evidence conditional", () => {
+		for (const [status, availability] of [
+			["current", "conditional"],
+			["stale", "unavailable"],
+			["partial", "unavailable"],
+		] as const) {
+			const manifest = buildHlidCapabilityManifest({
+				providerId: "codex",
+				sessionId: "session-1",
+				providerSnapshot: {
+					id: "codex",
+					label: "Codex",
+					available: true,
+					capabilities: { goalControl: true },
+					capabilitySnapshot: {
+						contractVersion: 1,
+						providerId: "codex",
+						status,
+						source: status === "current" ? "live" : "memory",
+						revision: `v1-goal-${status}`,
+						observedAt: 1,
+						capabilities: [
+							{
+								id: "codex:goal-control",
+								label: "Durable goal control",
+								scope: "session",
+								support: "advertised",
+								integration:
+									availability === "unavailable"
+										? "not-integrated"
+										: "integrated",
+								readiness:
+									availability === "unavailable" ? "unavailable" : "gated",
+								source: "provider-runtime",
+								availability,
+							},
+						],
+					},
+				},
+			});
+
+			expect(manifest.registry.commandActions).not.toContain("goal");
+			expect(
+				manifest.capabilities.find((item) => item.id === "goals"),
+			).toMatchObject({ availability: "conditional" });
+		}
+	});
+
+	it("uses an explicit legacy false as negative provider evidence", () => {
+		const manifest = buildHlidCapabilityManifest({
+			providerId: "codex",
+			sessionId: "session-1",
+			providerSnapshot: {
+				id: "codex",
+				label: "Codex",
+				available: true,
+				capabilities: { goalControl: false },
+				capabilitySnapshot: {
+					contractVersion: 1,
+					providerId: "codex",
+					status: "stale",
+					source: "memory",
+					revision: "v1-goal-stale-with-explicit-negative",
+					observedAt: 1,
+					capabilities: [],
+				},
+			},
+		});
+
+		expect(manifest.registry.commandActions).not.toContain("goal");
+		expect(
+			manifest.capabilities.find((item) => item.id === "goals"),
+		).toMatchObject({ availability: "unavailable" });
+	});
+
+	it("enables native goals from resolved provider evidence", () => {
+		const manifest = buildHlidCapabilityManifest({
+			providerId: "codex",
+			sessionId: "session-1",
+			providerSnapshot: {
+				id: "codex",
+				label: "Codex",
+				available: true,
+				capabilitySnapshot: {
+					contractVersion: 1,
+					providerId: "codex",
+					status: "current",
+					source: "live",
+					revision: "v1-goal-current",
+					observedAt: 1,
+					capabilities: [
+						{
+							id: "codex:goal-control",
+							label: "Durable goal control",
+							scope: "session",
+							support: "advertised",
+							integration: "integrated",
+							readiness: "ready",
+							source: "provider-runtime",
+							availability: "available",
+						},
+					],
+				},
+			},
+		});
+
+		expect(manifest.registry.commandActions).toContain("goal");
+		expect(
+			manifest.capabilities.find((item) => item.id === "goals"),
+		).toMatchObject({ availability: "provider-native" });
 	});
 
 	it("gates session-owned context and plan help without hiding package guidance", () => {

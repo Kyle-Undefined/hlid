@@ -29,12 +29,22 @@ export const TOPIC_GUIDANCE: Record<HlidHelpTopic, string[]> = {
 		"Physical database reclaim remains a confirmed Forge-only action. No Hlid agent tool exposes VACUUM or stops an active Raven or terminal session.",
 		"Managed PNG optimization and durable embedded-image compaction run automatically at their storage or upgrade boundaries; agents do not need to invoke them.",
 	],
+	ledger: [
+		"Hlid Ledger is the accounting record for sessions and provider-reported usage; it is separate from provider-native context and usage displays.",
+		"Use inspect_hlid_ledger for bounded aggregate totals, trends, tool usage, model share, and stop reasons. It defaults to the last 30 days unless an explicit range is supplied.",
+		"Agent Ledger inspection excludes workspace path facets and raw immutable usage rows. Use the returned filters and aggregates without inferring omitted source data.",
+	],
 	context: [
 		"Hlid adds only the operating brief and the exact instructions, references, skills, attachments, or plan guidance selected for the turn.",
 		"Use Raven /context to inspect the persisted receipt: character and token estimates, context blocks, exact references, attachment delivery, provider handoff size, and deferred tool counts.",
 		"The receipt is Hlid metadata stored outside the visible provider transcript. Inspecting it does not send another prompt to the provider.",
 		"Claude and Codex defer Hlid and Obsidian tool schemas until discovery. ACP receives registered MCP tool schemas because its current transport has no equivalent deferred-loading contract.",
 		"Use inspect_hlid_context to read the active session's persisted receipts without sending another provider prompt.",
+	],
+	diagnostics: [
+		"Use inspect_hlid_diagnostics for a bounded, redacted view of Hlid Event Log entries.",
+		"Paths, URLs, UUIDs, control characters, and stored detail payloads are omitted or redacted. Do not treat the result as a complete raw log export.",
+		"Diagnostic inspection is read-only and does not restart providers, repair integrations, or change Event Log retention.",
 	],
 	plans_review: [
 		"Provider-native planning remains native; Hlid owns the shared presentation and decision lifecycle.",
@@ -45,7 +55,12 @@ export const TOPIC_GUIDANCE: Record<HlidHelpTopic, string[]> = {
 	workflows: [
 		"Dynamic Workflows are Claude-native.",
 		"Hlid owns their Raven presentation, parent-child correlation, lifecycle controls, and retained transcript state.",
-		"Scheduled Routines are Hlid-owned. Agents can list safe Routine metadata, inspect bounded run history, and preview schedule occurrences without changing authorization or execution state.",
+	],
+	routines: [
+		"Scheduled Routines are Hlid-owned and distinct from provider-native Dynamic Workflows.",
+		"Use list_hlid_routines for safe schedule and status metadata, inspect_hlid_routine for one exact Routine and bounded run history, and preview_hlid_routine_schedule to calculate proposed occurrences.",
+		"These agent tools are read-only. They do not create, edit, archive, authorize, trigger, pause, resume, or otherwise change a Routine or its execution state.",
+		"Routine inspection excludes prompts, paths, exact references, grant constraints, and delivery payloads.",
 	],
 	orchestration: [
 		"Choose the exact provider ID and optional model, effort, and model service-tier values from orchestrationTargets. This is a bounded snapshot of the live provider catalog; do not guess unavailable or truncated entries.",
@@ -110,6 +125,7 @@ export const TOPIC_GUIDANCE: Record<HlidHelpTopic, string[]> = {
 	],
 	providers: [
 		"Provider-native operations remain native and capability-gated.",
+		"Check registry.providerDiscovery before treating the provider page as current. A captured snapshot is active-adapter fallback evidence; an unavailable snapshot includes a bounded retryable reason instead of proving a feature absent.",
 		"The default provider item list is a bounded priority page, not the complete catalog. Omission is not evidence of unavailability; use query, capability_id, state filters, or nextCursor to retrieve the full live snapshot on demand.",
 		"Never present transcript replay as an exact fork or a prompt convention as a structured provider operation.",
 		"When a Raven session changes provider, Hlid can supply a bounded visible-transcript handoff. Native hidden context does not cross that boundary.",

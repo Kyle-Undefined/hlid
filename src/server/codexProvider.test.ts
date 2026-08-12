@@ -4320,6 +4320,15 @@ describe("CodexAgentSession — commands", () => {
 				permissionMode: "default",
 				runtimeCwd: "/tmp/codex-test",
 				sessionId: "host-session-1",
+				registeredHlidTools: expect.arrayContaining([
+					"hlid_help",
+					"inspect_hlid_ledger",
+				]),
+				providerSnapshot: expect.objectContaining({
+					id: "codex",
+					available: true,
+					capabilities: expect.objectContaining({ goalControl: true }),
+				}),
 			}),
 		);
 		vi.mocked(executeHlidAgentToolRich).mockResolvedValueOnce({
