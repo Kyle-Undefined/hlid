@@ -236,7 +236,9 @@ const NavigationLabelsSchema = z.object({
 
 const NavigationNamesSchema = z
 	.object({
-		preset: z.enum(["hlid", "plain"]).default("hlid"),
+		preset: z
+			.enum(["hlid", "plain"])
+			.default(DEFAULT_NAVIGATION_NAMES_CONFIG.preset),
 		labels: NavigationLabelsSchema.default({}),
 		watch: NavigationLabelSchema.optional(),
 		vault: NavigationLabelSchema.optional(),

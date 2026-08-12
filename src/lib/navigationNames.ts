@@ -10,7 +10,7 @@ export const NAVIGATION_IDS = [
 
 export type NavigationId = (typeof NAVIGATION_IDS)[number];
 
-export const NAVIGATION_NAME_PRESETS = ["hlid", "plain"] as const;
+export const NAVIGATION_NAME_PRESETS = ["plain", "hlid"] as const;
 
 export type NavigationNamePreset = (typeof NAVIGATION_NAME_PRESETS)[number];
 
@@ -72,7 +72,7 @@ export const NAVIGATION_NAME_DEFINITIONS = [
 ] as const satisfies readonly NavigationNameDefinition[];
 
 export const DEFAULT_NAVIGATION_NAMES_CONFIG: NavigationNamesConfig = {
-	preset: "hlid",
+	preset: "plain",
 	labels: {},
 };
 
@@ -122,7 +122,10 @@ function presetLabel(
 	definition: NavigationNameDefinition,
 	preset: NavigationNamePreset | undefined,
 ): string {
-	return preset === "plain" ? definition.plainLabel : definition.hlidLabel;
+	const effectivePreset = preset ?? DEFAULT_NAVIGATION_NAMES_CONFIG.preset;
+	return effectivePreset === "hlid"
+		? definition.hlidLabel
+		: definition.plainLabel;
 }
 
 function usableOverride(value: string | undefined): string | undefined {

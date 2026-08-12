@@ -5,6 +5,7 @@ import {
 	DEFAULT_AUTO_SLEEP_CONFIG,
 	DEFAULT_VOICE_CONFIG,
 } from "#/config";
+import { DEFAULT_NAVIGATION_NAMES_CONFIG } from "#/lib/navigationNames";
 import type { ProviderInfo } from "#/lib/providerTypes";
 import { getProvidersFn } from "#/lib/serverFns/providers";
 import { buildVaultSection } from "#/lib/vaultConfig";
@@ -114,7 +115,10 @@ export function buildFirstRunConfig(s: StructureState): HlidConfig {
 			show_provider_entries: false,
 			theme: s.theme,
 			html_plans: false,
-			navigation_names: { preset: "hlid", labels: {} },
+			navigation_names: {
+				preset: DEFAULT_NAVIGATION_NAMES_CONFIG.preset,
+				labels: { ...DEFAULT_NAVIGATION_NAMES_CONFIG.labels },
+			},
 		},
 		status_vocabulary: {
 			active: ["Active", "In Progress"],

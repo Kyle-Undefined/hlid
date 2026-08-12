@@ -71,7 +71,10 @@ describe("first-run configuration policy", () => {
 				permission_mode: "acceptEdits",
 				agent_progress_summaries: false,
 			},
-			ui: { theme: "dark" },
+			ui: {
+				theme: "dark",
+				navigation_names: { preset: "plain", labels: {} },
+			},
 			attachments: { max_bytes: 25 * 1024 * 1024 },
 			voice: { enabled: false },
 		});

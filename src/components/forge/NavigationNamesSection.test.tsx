@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	DEFAULT_NAVIGATION_NAMES_CONFIG,
 	NAVIGATION_LABEL_MAX_GRAPHEMES,
 	NAVIGATION_NAME_DEFINITIONS,
 	type NavigationNamesConfig,
@@ -35,25 +36,30 @@ function presetButton(name: "Hlið" | "Plain language") {
 }
 
 describe("NavigationNamesSection", () => {
-	it("shows Hlið defaults and explains the display-only boundary", () => {
-		render(<NavigationNamesHarness initial={{ preset: "hlid", labels: {} }} />);
+	it("selects Plain language by default and explains the display-only boundary", () => {
+		render(
+			<NavigationNamesHarness initial={DEFAULT_NAVIGATION_NAMES_CONFIG} />,
+		);
 
 		expect(
 			screen.getByRole("heading", { name: "Navigation names" }),
 		).toBeTruthy();
 		expect(screen.getByText(/Routes and features do not change/)).toBeTruthy();
 		expect(screen.getByText(/page terminology stays Hlið-native/)).toBeTruthy();
-		expect(presetButton("Hlið").getAttribute("aria-pressed")).toBe("true");
+		expect(presetButton("Plain language").getAttribute("aria-pressed")).toBe(
+			"true",
+		);
+		expect(presetButton("Hlið").getAttribute("aria-pressed")).toBe("false");
 
 		for (const definition of NAVIGATION_NAME_DEFINITIONS) {
 			const input = screen.getByLabelText(
 				`${definition.hlidLabel} custom name`,
 			) as HTMLInputElement;
 			expect(input.value).toBe("");
-			expect(input.placeholder).toBe(`Base: ${definition.hlidLabel}`);
+			expect(input.placeholder).toBe(`Base: ${definition.plainLabel}`);
 			expect(
 				screen.getByTestId(`navigation-effective-${definition.id}`).textContent,
-			).toBe(`Effective: ${definition.hlidLabel}`);
+			).toBe(`Effective: ${definition.plainLabel}`);
 		}
 	});
 

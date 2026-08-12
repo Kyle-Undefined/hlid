@@ -18,14 +18,14 @@ type NavigationNameDrafts = Partial<Record<NavigationId, string>>;
 
 const PRESET_OPTIONS = [
 	{
+		value: "plain" as const,
+		label: "Plain language",
+		description: "The default familiar names for each feature",
+	},
+	{
 		value: "hlid" as const,
 		label: "Hlið",
 		description: "Hlið's native navigation names",
-	},
-	{
-		value: "plain" as const,
-		label: "Plain language",
-		description: "Familiar names for finding each feature",
 	},
 ];
 

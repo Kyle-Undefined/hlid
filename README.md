@@ -136,20 +136,20 @@ page and the workflows that connect them.
 
 ## Pages
 
-| Page | What it is for |
+| Default menu / page | What it is for |
 |---|---|
-| **WATCH** (`/`) | Quick prompts, skills, slash commands, scheduled `Routines`, usage, `MCP` state, recent sessions, and vault context. |
-| **VAULT** (`/vault`) | Notes, projects, memory, skills, and a jump into the matching `Obsidian` desktop note. |
-| **RELICS** (`/relics`) | Attachments, plans, reports, and reviewed `Agent Skill` packages owned by `Hlið`. |
-| **RAVEN** (`/raven`) | Full agent chat with provider controls, commands, goals, exact forks, voice, `@` references, plans, approvals, questions, queues, durable children, context receipts, a real project terminal, and `Project Preview`. |
-| **EINHERJAR** (`/einherjar`) | Extra working directories or personality/context overlays. |
-| **LEDGER** (`/ledger`) | Live-session controls, pinned and archived sessions, parent/child provenance, provider-history import, and analytics for tokens, cost, cache behavior, tools, stop reasons, context, and provider limits. |
-| **FORGE** (`/forge`) | Settings, provider extensions, integrations, access, updates, maintenance, and developer tools. |
+| **HOME** / **WATCH** (`/`) | Quick prompts, skills, slash commands, scheduled `Routines`, usage, `MCP` state, recent sessions, and vault context. |
+| **KNOWLEDGE** / **VAULT** (`/vault`) | Notes, projects, memory, skills, and a jump into the matching `Obsidian` desktop note. |
+| **LIBRARY** / **RELICS** (`/relics`) | Attachments, plans, reports, and reviewed `Agent Skill` packages owned by `Hlið`. |
+| **CHAT** / **RAVEN** (`/raven`) | Full agent chat with provider controls, commands, goals, exact forks, voice, `@` references, plans, approvals, questions, queues, durable children, context receipts, a real project terminal, and `Project Preview`. |
+| **AGENTS** / **EINHERJAR** (`/einherjar`) | Extra working directories or personality/context overlays. |
+| **HISTORY** / **LEDGER** (`/ledger`) | Live-session controls, pinned and archived sessions, parent/child provenance, provider-history import, and analytics for tokens, cost, cache behavior, tools, stop reasons, context, and provider limits. |
+| **SETTINGS** / **FORGE** (`/forge`) | Settings, provider extensions, integrations, access, updates, maintenance, and developer tools. |
 
-Those Hlið names remain the default. **FORGE → Experience → Navigation names**
-can switch the menu to plain-language names or set each name individually. It
-only changes the desktop and mobile menu labels: the Hlið wordmark, routes,
-icons, page names, and underlying concepts stay the same.
+The plain-language menu names are selected by default. **SETTINGS → Experience
+→ Navigation names** can switch the menu to Hlið's canonical names or set each
+name individually. It only changes the desktop and mobile menu labels: the Hlið
+wordmark, routes, icons, page names, and underlying concepts stay the same.
 
 ## Configuration and data
 

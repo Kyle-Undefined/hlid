@@ -145,7 +145,7 @@ describe("writeConfig — persistence invariants", () => {
 
 	it("defaults, normalizes, and strips unknown navigation label keys", () => {
 		expect(HlidConfigSchema.parse({}).ui.navigation_names).toEqual({
-			preset: "hlid",
+			preset: "plain",
 			labels: {},
 		});
 
@@ -350,7 +350,7 @@ describe("writeConfig — section headers", () => {
 		expect(toml).toContain("use_real_browser_profile = false");
 		expect(toml).toContain("[ui]");
 		expect(toml).toContain("[ui.navigation_names]");
-		expect(toml).toContain('preset = "hlid"');
+		expect(toml).toContain('preset = "plain"');
 		expect(toml).toContain("[status_vocabulary]");
 	});
 });

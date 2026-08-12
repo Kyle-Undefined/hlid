@@ -245,7 +245,7 @@ describe("settings form conversion", () => {
 		expect(forms.ui.htmlPlans).toBe(false);
 		expect(forms.ui.showProviderEntries).toBe(false);
 		expect(forms.ui.liveSessionsHotkey).toBe("Alt+Shift+KeyS");
-		expect(forms.ui.navigationNames).toEqual({ preset: "hlid", labels: {} });
+		expect(forms.ui.navigationNames).toEqual({ preset: "plain", labels: {} });
 	});
 
 	it("copies the selected built-in into new desktop and mobile custom palettes", () => {

@@ -117,7 +117,7 @@ describe("useSettingsForm autosave", () => {
 				},
 			}),
 		);
-		expect(result.current.labels.einherjar).toBe("EINHERJAR");
+		expect(result.current.labels.einherjar).toBe("AGENTS");
 
 		await advance(800);
 

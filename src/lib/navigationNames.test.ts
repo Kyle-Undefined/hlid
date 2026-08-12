@@ -42,10 +42,10 @@ describe("navigation name definitions", () => {
 		]);
 	});
 
-	it("defines the Hlid and plain presets", () => {
-		expect(NAVIGATION_NAME_PRESETS).toEqual(["hlid", "plain"]);
+	it("defines the plain default and Hlid option", () => {
+		expect(NAVIGATION_NAME_PRESETS).toEqual(["plain", "hlid"]);
 		expect(DEFAULT_NAVIGATION_NAMES_CONFIG).toEqual({
-			preset: "hlid",
+			preset: "plain",
 			labels: {},
 		});
 	});
@@ -99,15 +99,15 @@ describe("navigation label normalization and safety", () => {
 });
 
 describe("resolveNavigationLabels", () => {
-	it("uses the exact Hlid names with no configuration", () => {
+	it("uses plain-language names with no configuration", () => {
 		expect(resolveNavigationLabels()).toEqual({
-			watch: "WATCH",
-			vault: "VAULT",
-			relics: "RELICS",
-			raven: "RAVEN",
-			einherjar: "EINHERJAR",
-			ledger: "LEDGER",
-			forge: "FORGE",
+			watch: "HOME",
+			vault: "KNOWLEDGE",
+			relics: "LIBRARY",
+			raven: "CHAT",
+			einherjar: "AGENTS",
+			ledger: "HISTORY",
+			forge: "SETTINGS",
 		});
 	});
 

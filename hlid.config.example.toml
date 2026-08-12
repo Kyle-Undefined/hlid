@@ -17,9 +17,9 @@ live_sessions_hotkey = "Alt+Shift+KeyS"
 show_provider_entries = false
 
 [ui.navigation_names]
-# "hlid" keeps WATCH, VAULT, RELICS, RAVEN, EINHERJAR, LEDGER, and FORGE.
-# "plain" starts with HOME, KNOWLEDGE, LIBRARY, CHAT, AGENTS, HISTORY, and SETTINGS.
-preset = "hlid"
+# "plain" is the default: HOME, KNOWLEDGE, LIBRARY, CHAT, AGENTS, HISTORY, and SETTINGS.
+# Choose "hlid" for WATCH, VAULT, RELICS, RAVEN, EINHERJAR, LEDGER, and FORGE.
+preset = "plain"
 # Optional per-item names override either preset without changing its URL.
 # einherjar = "Workspace"
 

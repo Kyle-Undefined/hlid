@@ -55,12 +55,16 @@ import { Sidebar } from "./Sidebar";
 afterEach(cleanup);
 
 describe("Sidebar", () => {
-	it("uses Hlið names by default", () => {
+	it("uses plain-language names by default", () => {
 		render(<Sidebar />);
 		const nav = screen.getByRole("navigation", { name: "Primary navigation" });
 
 		expect(within(nav).getAllByRole("link")).toHaveLength(7);
-		expect(within(nav).getByRole("link", { name: "EINHERJAR" })).toBeTruthy();
+		expect(
+			within(nav).getByRole("link", {
+				name: "AGENTS, Hlið name: EINHERJAR",
+			}),
+		).toBeTruthy();
 	});
 
 	it("shows resolved names while retaining canonical context and routes", () => {

@@ -50,9 +50,9 @@ describe("BottomNav", () => {
 		expect(within(nav).getAllByRole("link")).toHaveLength(7);
 		expect(within(nav).queryByRole("button", { name: /lock/i })).toBeNull();
 		expect(
-			within(screen.getByRole("link", { name: "WATCH" })).getByTestId(
-				"system-status",
-			),
+			within(
+				screen.getByRole("link", { name: "HOME, Hlið name: WATCH" }),
+			).getByTestId("system-status"),
 		).not.toBeNull();
 	});
 
@@ -61,7 +61,9 @@ describe("BottomNav", () => {
 		render(<BottomNav />);
 
 		expect(
-			screen.getByRole("link", { name: "RAVEN" }).getAttribute("href"),
+			screen
+				.getByRole("link", { name: "CHAT, Hlið name: RAVEN" })
+				.getAttribute("href"),
 		).toBe("/raven?session=third-of-five&agent=/selected-project");
 	});
 

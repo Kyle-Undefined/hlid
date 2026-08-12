@@ -36,7 +36,7 @@ describe("NavigationNamesProvider", () => {
 			</NavigationNamesProvider>,
 		);
 
-		expect(screen.getByTestId("einherjar-label").textContent).toBe("EINHERJAR");
+		expect(screen.getByTestId("einherjar-label").textContent).toBe("AGENTS");
 		fireEvent.click(screen.getByRole("button", { name: "Publish" }));
 		expect(screen.getByTestId("einherjar-label").textContent).toBe("Workspace");
 	});

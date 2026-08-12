@@ -212,16 +212,17 @@ Uploads can stay temporary for one session or become managed vault attachments.
 
 ## The pages
 
-The main navigation has **Watch**, **Vault**, **Relics**, **Raven**,
-**Einherjar**, **Ledger**, and **Forge**. I'll start with the two places that
-launch and supervise work, then get into the browsers and settings around them.
+The main navigation defaults to **Home**, **Knowledge**, **Library**, **Chat**,
+**Agents**, **History**, and **Settings**. Hlið's canonical page names remain
+**Watch**, **Vault**, **Relics**, **Raven**, **Einherjar**, **Ledger**, and
+**Forge**. I'll start with the two places that launch and supervise work, then
+get into the browsers and settings around them.
 
-Those are Hlið's canonical names and remain the default. **Forge → Experience →
-Navigation names** can use the built-in plain-language set or a custom name for
-any menu item. This changes only the visible desktop and mobile navigation
-labels. Routes, icons, page headings, and Hlið's underlying terminology do not
-change, and an aliased link keeps its Hlið name in its tooltip and accessible
-label.
+**Settings → Experience → Navigation names** can switch the menu to Hlið's
+canonical names or set a custom name for any menu item. This changes only the
+visible desktop and mobile navigation labels. Routes, icons, page headings, and
+Hlið's underlying terminology do not change, and an aliased link keeps its Hlið
+name in its tooltip and accessible label.
 
 ### Watch
 
