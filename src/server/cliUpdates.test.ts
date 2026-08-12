@@ -12,6 +12,7 @@ import {
 	inspectCliUpdates,
 	inspectWindowsDesktopUpdates,
 	inspectWslUpdates,
+	invalidateAcpCliUpdateStatuses,
 	parseCliUpdateStatusCache,
 	parseCliVersion,
 	parseCodexDesktopStoreUpdateManifest,
@@ -63,6 +64,7 @@ function acpItem(overrides: Partial<AcpCatalogItem> = {}): AcpCatalogItem {
 		args: [],
 		env: {},
 		installGuidance: "bun add --global other-acp@1.2.0",
+		targets: [],
 		...overrides,
 	};
 }
@@ -564,6 +566,105 @@ ChatGPT 9PLM9XGG6VKS 26.707.9981.0 26.708.10000.0 msstore
 		expect(statuses[0]?.updateCommand).toBeUndefined();
 	});
 
+	it("leaves exact WSL ACP inspection and updates to Forge", async () => {
+		const readVersion = vi.fn().mockResolvedValue("1.1.0");
+		const externalTarget = {
+			targetId: "wsl-ubuntu",
+			target: { kind: "wsl" as const, distro: "Ubuntu-24.04" },
+			label: "WSL · Ubuntu-24.04",
+			recommended: true,
+			selected: true,
+			platformTarget: "linux-x86_64",
+			provenance: "external" as const,
+			available: true,
+			canEnable: true,
+			canInstall: false,
+			canUpdate: false,
+			canRemove: false,
+			registryVersion: "1.2.0",
+			mutationRevision: "a".repeat(64),
+			command: "other-acp",
+			args: [],
+			env: {},
+			installGuidance: "install in WSL",
+		};
+		const statuses = await inspectAcpUpdates({
+			listCandidates: vi.fn().mockResolvedValue([
+				{
+					item: acpItem({
+						targets: [externalTarget],
+					}),
+					customExecutable: false,
+				},
+				{
+					item: acpItem({
+						id: "managed",
+						name: "Managed ACP",
+						providerId: "acp:managed",
+						targets: [
+							{
+								...externalTarget,
+								provenance: "managed",
+								canUpdate: true,
+								canRemove: true,
+								installedVersion: "1.1.0",
+								observedVersion: "1.1.0",
+								command: "/mnt/c/Hlid/managed-acp",
+							},
+						],
+					}),
+					customExecutable: false,
+				},
+			]),
+			readVersion,
+			now: () => 1_800_000_000_000,
+		});
+
+		expect(statuses).toEqual([]);
+		expect(readVersion).not.toHaveBeenCalled();
+	});
+
+	it("leaves managed Windows ACP inspection and updates to Forge", async () => {
+		const readVersion = vi.fn().mockResolvedValue("1.1.0");
+		const managedHostTarget = {
+			targetId: "host",
+			target: { kind: "host" as const },
+			label: "Windows",
+			recommended: true,
+			selected: true,
+			platformTarget: "windows-x86_64",
+			provenance: "managed" as const,
+			available: true,
+			canEnable: true,
+			canInstall: false,
+			canUpdate: true,
+			canRemove: true,
+			registryVersion: "1.2.0",
+			installedVersion: "1.1.0",
+			observedVersion: "1.1.0",
+			mutationRevision: "a".repeat(64),
+			resolvedExecutable: "C:\\Hlid\\managed\\other-acp.exe",
+			command: "C:\\Hlid\\managed\\other-acp.exe",
+			args: [],
+			env: {},
+			installGuidance: "Managed by Hlid",
+		};
+		const statuses = await inspectAcpUpdates({
+			listCandidates: vi.fn().mockResolvedValue([
+				{
+					item: acpItem({ targets: [managedHostTarget] }),
+					customExecutable: false,
+					managed: true,
+				},
+			]),
+			readVersion,
+			now: () => 1_800_000_000_000,
+		});
+
+		expect(statuses).toEqual([]);
+		expect(readVersion).not.toHaveBeenCalled();
+	});
+
 	it("marks a root-owned WSL Codex install as interactive sudo", async () => {
 		const statuses = await inspectWslUpdates({
 			listDistros: () => ["Ubuntu-24.04"],
@@ -623,6 +724,26 @@ ChatGPT 9PLM9XGG6VKS 26.707.9981.0 26.708.10000.0 msstore
 });
 
 describe("CLI update status cache", () => {
+	it("drops cached ACP actions when runtime identity changes", async () => {
+		const native = cachedStatus("codex");
+		const acp = cachedStatus("acp:other");
+		const dependencies = statusDependencies({
+			readCache: vi.fn().mockResolvedValue({
+				checkedAt: 1_800_000_000_000,
+				statuses: [native, acp],
+			}),
+		});
+
+		await invalidateAcpCliUpdateStatuses(dependencies);
+		expect(await getCliUpdateStatuses(undefined, dependencies)).toEqual([
+			native,
+		]);
+		expect(dependencies.writeCache).toHaveBeenCalledWith({
+			checkedAt: 1_800_000_000_000,
+			statuses: [native],
+		});
+	});
+
 	it("strictly validates persisted cache data", () => {
 		const status = cachedStatus();
 		expect(

@@ -1,8 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { AgentSchema } from "#/config";
 import { agentConfigToEntry } from "#/lib/agentMcp";
-import { writeConfig } from "#/lib/config-writer";
 import { forbiddenResponse } from "#/lib/originGate";
+import { saveAgentRosterConfig } from "#/server/agentRosterConfig";
 import { loadConfig } from "#/server/config";
 
 // ─── Handlers (exported for unit tests) ──────────────────────────────────────
@@ -30,8 +30,7 @@ export async function handlePostAgents(request: Request): Promise<Response> {
 				{ status: 400 },
 			);
 		}
-		const config = loadConfig();
-		writeConfig({ ...config, agents: parsed.data });
+		await saveAgentRosterConfig(parsed.data);
 		return Response.json({ ok: true });
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : "Bad request";

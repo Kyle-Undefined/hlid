@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { HlidConfig } from "#/config";
+import { mutateAcpManagedInstallation } from "#/lib/acpManagedClient";
+import type { AcpManagedMutationAction } from "#/lib/acpManagedTypes";
 import { acpRuntimeIdentity } from "#/lib/acpRuntimeIdentity";
 import type { ProviderInfo } from "#/lib/providerTypes";
 import { includesSearchText } from "#/lib/search";
@@ -19,6 +21,44 @@ import { Section } from "./fields";
 
 const MAX_PROVIDER_SESSION_BROWSER_PAGES = 25;
 
+function preferredTargetId(item: AcpCatalogItem): string {
+	const managed = item.targets.filter(
+		(target) => target.provenance === "managed",
+	);
+	return (
+		item.targets.find((target) => target.operation)?.targetId ??
+		item.targets.find((target) => target.selected)?.targetId ??
+		(managed.length === 1 ? managed[0]?.targetId : undefined) ??
+		item.targets.find((target) => target.recommended)?.targetId ??
+		item.targets[0]?.targetId ??
+		""
+	);
+}
+
+function selectedTargetIds(
+	catalog: AcpCatalogItem[],
+	current: Record<string, string> = {},
+): Record<string, string> {
+	return Object.fromEntries(
+		catalog.map((item) => {
+			const configured = item.targets.find(
+				(target) => target.selected,
+			)?.targetId;
+			const retained = item.targets.some(
+				(target) => target.targetId === current[item.id],
+			)
+				? current[item.id]
+				: undefined;
+			return [
+				item.id,
+				item.enabled
+					? (configured ?? retained ?? preferredTargetId(item))
+					: (retained ?? configured ?? preferredTargetId(item)),
+			];
+		}),
+	);
+}
+
 export function AcpSection({
 	initialCatalog,
 	value,
@@ -26,6 +66,7 @@ export function AcpSection({
 	workspaceConfigurationCurrent = true,
 	providers = [],
 	onChange,
+	onCatalogChange,
 	onRefreshProviders,
 	onDiscoverModels,
 }: {
@@ -35,6 +76,7 @@ export function AcpSection({
 	workspaceConfigurationCurrent?: boolean;
 	providers?: ProviderInfo[];
 	onChange: (value: NonNullable<HlidConfig["acp_agents"]>) => void;
+	onCatalogChange?: (catalog: AcpCatalogItem[]) => void;
 	onRefreshProviders?: (providerId: string) => void | Promise<void>;
 	onDiscoverModels?: (item: AcpCatalogItem) => Promise<ProviderInfo["models"]>;
 }) {
@@ -42,9 +84,17 @@ export function AcpSection({
 	const [search, setSearch] = useState("");
 	const [busy, setBusy] = useState<{
 		id: string;
-		type: "inspect" | "refresh" | "sessions" | "import";
+		type:
+			| "inspect"
+			| "refresh"
+			| "sessions"
+			| "import"
+			| AcpManagedMutationAction;
 		providerSessionId?: string;
 	} | null>(null);
+	const [selectedTargets, setSelectedTargets] = useState<
+		Record<string, string>
+	>(() => selectedTargetIds(initialCatalog));
 	const [auth, setAuth] = useState<Record<string, AcpAuthMethod[]>>({});
 	const [agentInfo, setAgentInfo] = useState<
 		Record<string, AcpAgentInfo | null>
@@ -68,6 +118,7 @@ export function AcpSection({
 	const operation = useRef<symbol | null>(null);
 	useEffect(() => {
 		setCatalog(initialCatalog);
+		setSelectedTargets((current) => selectedTargetIds(initialCatalog, current));
 		setAuth({});
 		setAgentInfo({});
 		setOptionsRefreshed({});
@@ -77,6 +128,34 @@ export function AcpSection({
 		providerSessionCursors.current = {};
 		providerSessionPageCounts.current = {};
 	}, [initialCatalog]);
+	const managedOperationActive = catalog.some((item) =>
+		item.targets.some((target) => Boolean(target.operation)),
+	);
+	useEffect(() => {
+		if (!managedOperationActive) return;
+		let active = true;
+		let polling = false;
+		const poll = async () => {
+			if (polling) return;
+			polling = true;
+			try {
+				const refreshed = await getAcpRegistryFn();
+				if (!active) return;
+				setCatalog(refreshed);
+				onCatalogChange?.(refreshed);
+				setSelectedTargets((current) => selectedTargetIds(refreshed, current));
+			} catch {
+				// Keep the last operation snapshot visible and retry on the next tick.
+			} finally {
+				polling = false;
+			}
+		};
+		const timer = window.setInterval(() => void poll(), 1_000);
+		return () => {
+			active = false;
+			window.clearInterval(timer);
+		};
+	}, [managedOperationActive, onCatalogChange]);
 	const shown = useMemo(() => {
 		const query = search.trim();
 		return query
@@ -88,6 +167,12 @@ export function AcpSection({
 
 	function toggle(item: AcpCatalogItem): void {
 		const enabled = value.some((candidate) => candidate.id === item.id);
+		const selectedTarget = item.targets.find(
+			(target) => target.targetId === selectedTargets[item.id],
+		);
+		const canConfigureExternal =
+			selectedTarget?.provenance === "missing" && !selectedTarget.canInstall;
+		if (!enabled && !selectedTarget?.canEnable && !canConfigureExternal) return;
 		setAuth((current) => ({ ...current, [item.id]: [] }));
 		setAgentInfo((current) => ({ ...current, [item.id]: null }));
 		setOptionsRefreshed((current) => ({ ...current, [item.id]: false }));
@@ -103,8 +188,53 @@ export function AcpSection({
 		onChange(
 			enabled
 				? value.filter((candidate) => candidate.id !== item.id)
-				: [...value, { id: item.id }],
+				: [...value, { id: item.id, target: selectedTarget?.target }],
 		);
+	}
+
+	async function mutateManagedInstallation(
+		item: AcpCatalogItem,
+		targetId: string,
+		action: AcpManagedMutationAction,
+	): Promise<void> {
+		if (operation.current || managedOperationActive) return;
+		const token = Symbol(item.id);
+		operation.current = token;
+		setBusy({ id: item.id, type: action });
+		setError(null);
+		try {
+			const target = item.targets.find(
+				(candidate) => candidate.targetId === targetId,
+			);
+			if (!target) throw new Error("ACP execution target is unavailable");
+			const managedOperation = await mutateAcpManagedInstallation({
+				action,
+				agentId: item.id,
+				targetId,
+				revision: target.mutationRevision,
+			});
+			const nextCatalog = catalog.map((candidate) =>
+				candidate.id !== item.id
+					? candidate
+					: {
+							...candidate,
+							targets: candidate.targets.map((target) =>
+								target.targetId === targetId
+									? { ...target, operation: managedOperation }
+									: target,
+							),
+						},
+			);
+			setCatalog(nextCatalog);
+			onCatalogChange?.(nextCatalog);
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : `ACP ${action} failed`);
+		} finally {
+			if (operation.current === token) {
+				operation.current = null;
+				setBusy(null);
+			}
+		}
 	}
 
 	function updateOverride(
@@ -128,7 +258,7 @@ export function AcpSection({
 		item: AcpCatalogItem,
 		methodId?: string,
 	): Promise<void> {
-		if (operation.current) return;
+		if (operation.current || managedOperationActive) return;
 		const token = Symbol(item.id);
 		operation.current = token;
 		setBusy({ id: item.id, type: "inspect" });
@@ -289,7 +419,7 @@ export function AcpSection({
 
 	async function refreshOptions(item: AcpCatalogItem): Promise<void> {
 		if (!onRefreshProviders) return;
-		if (operation.current) return;
+		if (operation.current || managedOperationActive) return;
 		const token = Symbol(item.id);
 		operation.current = token;
 		setBusy({ id: item.id, type: "refresh" });
@@ -311,12 +441,14 @@ export function AcpSection({
 	}
 
 	async function refreshCatalog(): Promise<void> {
-		if (catalogRefreshing || busy !== null) return;
+		if (catalogRefreshing || busy !== null || managedOperationActive) return;
 		setCatalogRefreshing(true);
 		setError(null);
 		try {
 			const refreshed = await getAcpRegistryFn({ data: { refresh: true } });
 			setCatalog(refreshed);
+			onCatalogChange?.(refreshed);
+			setSelectedTargets((current) => selectedTargetIds(refreshed, current));
 			setAuth({});
 			setAgentInfo({});
 			setOptionsRefreshed({});
@@ -344,7 +476,9 @@ export function AcpSection({
 					/>
 					<button
 						type="button"
-						disabled={catalogRefreshing || busy !== null}
+						disabled={
+							catalogRefreshing || busy !== null || managedOperationActive
+						}
 						onClick={() => void refreshCatalog()}
 						className="px-3 py-1.5 border border-border text-[10px] tracking-widest uppercase"
 					>
@@ -354,8 +488,8 @@ export function AcpSection({
 				<p className="text-xs text-muted-foreground">
 					Enabling, disabling, or changing an ACP agent applies immediately.
 					Sessions using a removed or replaced agent are disconnected.
-					Installation commands are guidance only and are never run
-					automatically.
+					Hlid-managed installations require confirmation. Installation and
+					execution use the exact environment selected for each agent.
 				</p>
 				<p className="text-xs text-muted-foreground">
 					ACP agents decide which native actions they report for approval and
@@ -368,14 +502,19 @@ export function AcpSection({
 			{shown.map((item) => {
 				const openCode = item.id === "opencode";
 				const configured = value.find((candidate) => candidate.id === item.id);
+				const selectedTargetId =
+					selectedTargets[item.id] ?? preferredTargetId(item);
 				const savedConfigured = savedValue.find(
 					(candidate) => candidate.id === item.id,
 				);
-				const configurationCurrent =
+				const managedMutationConfigurationCurrent =
 					workspaceConfigurationCurrent &&
-					Boolean(savedConfigured) &&
 					acpRuntimeIdentity(configured ? [configured] : []) ===
 						acpRuntimeIdentity(savedConfigured ? [savedConfigured] : []);
+				const configurationCurrent =
+					managedMutationConfigurationCurrent &&
+					Boolean(savedConfigured) &&
+					Boolean(configured);
 				return (
 					<div
 						key={item.id}
@@ -386,8 +525,9 @@ export function AcpSection({
 						<AcpAgentCard
 							item={item}
 							configured={configured}
+							selectedTargetId={selectedTargetId}
 							operation={busy?.id === item.id ? busy.type : null}
-							disabled={busy !== null}
+							disabled={busy !== null || managedOperationActive}
 							authMethods={auth[item.id]}
 							agentInfo={agentInfo[item.id]}
 							canListSessions={canListSessions[item.id]}
@@ -407,7 +547,19 @@ export function AcpSection({
 							}
 							optionsRefreshed={optionsRefreshed[item.id] ?? false}
 							configurationCurrent={configurationCurrent}
+							managedMutationConfigurationCurrent={
+								managedMutationConfigurationCurrent
+							}
 							onToggle={() => toggle(item)}
+							onSelectTarget={(targetId) =>
+								setSelectedTargets((current) => ({
+									...current,
+									[item.id]: targetId,
+								}))
+							}
+							onManagedMutation={(action) =>
+								void mutateManagedInstallation(item, selectedTargetId, action)
+							}
 							onUpdateOverride={(patch) => updateOverride(item.id, patch)}
 							onInspect={(methodId) => void inspect(item, methodId)}
 							onRefreshOptions={() => void refreshOptions(item)}

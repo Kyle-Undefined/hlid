@@ -81,6 +81,7 @@
     "remark-math": "6.0.0",
     "smol-toml": "1.7.1",
     "tailwindcss": "4.3.3",
+    "yauzl": "3.4.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
@@ -95,6 +96,7 @@
     "@types/node": "22.20.1",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
+    "@types/yauzl": "3.4.0",
     "@vitejs/plugin-react": "6.0.5",
     "@vitest/coverage-istanbul": "4.1.10",
     "@vitest/coverage-v8": "4.1.10",

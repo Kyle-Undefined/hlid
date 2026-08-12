@@ -15,6 +15,7 @@ import {
 	registerBunServer,
 	registerShutdownCleanup,
 } from "../lib/lifecycle";
+import { ACP_MANAGED_DIR } from "../lib/paths";
 import {
 	CLIPROXY_CODEX_HARNESS_PROVIDER_ID,
 	CLIPROXY_CODEX_PROVIDER_ID,
@@ -22,6 +23,12 @@ import {
 } from "../lib/providerIds";
 import { loadToken, verifyToken } from "../lib/token";
 import { uid } from "../lib/utils";
+import {
+	createAcpExecutionAdapter,
+	windowsPathToWsl,
+} from "./acpExecutionAdapter";
+import { AcpManagedInstaller } from "./acpManagedInstall";
+import { inspectAcpAgent } from "./acpProvider";
 import { AcpRegistry } from "./acpRegistry";
 import { createAcpRouteHandler } from "./acpRoutes";
 import {
@@ -275,6 +282,42 @@ await bootstrapUmbod().catch((error) => {
 });
 
 const acpRegistry = new AcpRegistry();
+const acpManagedInstaller = new AcpManagedInstaller(ACP_MANAGED_DIR, {
+	toTargetPath: ({ hostPath, target }) => {
+		if (target.kind === "host") return hostPath;
+		const translated = windowsPathToWsl(hostPath);
+		if (!translated) {
+			throw new Error(
+				"Hlid's managed integration directory is not visible from WSL",
+			);
+		}
+		return translated;
+	},
+	probe: async ({ agentId, target, command, args, env, hostCwd, signal }) => {
+		if (signal.aborted) throw signal.reason;
+		const inspected = await inspectAcpAgent(
+			{
+				id: `acp:${agentId}`,
+				label: agentId,
+				command,
+				args,
+				env,
+				target,
+				discoveryCwd: hostCwd,
+				executionAdapter: createAcpExecutionAdapter,
+			},
+			undefined,
+			signal,
+		);
+		if (signal.aborted) throw signal.reason;
+		return { observedVersion: inspected.agentInfo?.version ?? undefined };
+	},
+	refresh: async () => {
+		acpRegistry.invalidateAvailability();
+		await syncAcpRuntime();
+	},
+});
+acpRegistry.attachManagedCatalog(acpManagedInstaller);
 const handleAcpRoute = createAcpRouteHandler({
 	registry: acpRegistry,
 	loadConfig,
@@ -293,6 +336,9 @@ const handleAcpRoute = createAcpRouteHandler({
 		return result;
 	},
 	syncRuntime: () => syncAcpRuntime(),
+	managedInstaller: acpManagedInstaller,
+	managedMutationAuthorized: (request) =>
+		verifyToken(request.headers.get("x-hlid-internal"), SERVER_TOKEN),
 });
 const handleExtensionRoute = createExtensionRouteHandler({
 	loadConfig,
@@ -346,15 +392,16 @@ function cliProxyProviders(connection: CliProxyConnection): AgentProvider[] {
 		new CliProxyCodexProvider(connection),
 		new CliProxyNativeCodexProvider(connection),
 	];
-	const openCode = acpCatalog.find(
-		(candidate) => candidate.id === "opencode" && candidate.available,
+	const openCode = acpCatalog.find((candidate) => candidate.id === "opencode");
+	const hostOpenCode = openCode?.targets.find(
+		(target) => target.target.kind === "host" && target.available,
 	);
-	if (openCode) {
+	if (hostOpenCode) {
 		routed.push(
 			new CliProxyOpenCodeProvider(connection, {
-				command: openCode.command,
-				args: openCode.args,
-				env: openCode.env,
+				command: hostOpenCode.command,
+				args: hostOpenCode.args,
+				env: hostOpenCode.env,
 			}),
 		);
 	}

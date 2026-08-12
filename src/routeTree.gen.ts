@@ -26,6 +26,7 @@ import { Route as ApiTailscaleRouteImport } from './routes/api/tailscale'
 import { Route as ApiUmbodRouteImport } from './routes/api/umbod'
 import { Route as ApiUpdatesRouteImport } from './routes/api/updates'
 import { Route as ApiVersionRouteImport } from './routes/api/version'
+import { Route as ApiAcpInstallationsRouteImport } from './routes/api/acp/installations'
 import { Route as ApiAgentsIndexRouteImport } from './routes/api/agents/index'
 import { Route as ApiAgentsClaudemdRouteImport } from './routes/api/agents/claudemd'
 import { Route as ApiAgentsValidateRouteImport } from './routes/api/agents/validate'
@@ -127,6 +128,11 @@ const ApiUpdatesRoute = ApiUpdatesRouteImport.update({
 const ApiVersionRoute = ApiVersionRouteImport.update({
   id: '/api/version',
   path: '/api/version',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAcpInstallationsRoute = ApiAcpInstallationsRouteImport.update({
+  id: '/api/acp/installations',
+  path: '/api/acp/installations',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiAgentsIndexRoute = ApiAgentsIndexRouteImport.update({
@@ -233,6 +239,7 @@ export interface FileRoutesByFullPath {
   '/api/umbod': typeof ApiUmbodRoute
   '/api/updates': typeof ApiUpdatesRoute
   '/api/version': typeof ApiVersionRoute
+  '/api/acp/installations': typeof ApiAcpInstallationsRoute
   '/api/agents/claudemd': typeof ApiAgentsClaudemdRoute
   '/api/agents/validate': typeof ApiAgentsValidateRoute
   '/api/attachments/$id': typeof ApiAttachmentsIdRouteWithChildren
@@ -269,6 +276,7 @@ export interface FileRoutesByTo {
   '/api/umbod': typeof ApiUmbodRoute
   '/api/updates': typeof ApiUpdatesRoute
   '/api/version': typeof ApiVersionRoute
+  '/api/acp/installations': typeof ApiAcpInstallationsRoute
   '/api/agents/claudemd': typeof ApiAgentsClaudemdRoute
   '/api/agents/validate': typeof ApiAgentsValidateRoute
   '/api/attachments/$id': typeof ApiAttachmentsIdRouteWithChildren
@@ -306,6 +314,7 @@ export interface FileRoutesById {
   '/api/umbod': typeof ApiUmbodRoute
   '/api/updates': typeof ApiUpdatesRoute
   '/api/version': typeof ApiVersionRoute
+  '/api/acp/installations': typeof ApiAcpInstallationsRoute
   '/api/agents/claudemd': typeof ApiAgentsClaudemdRoute
   '/api/agents/validate': typeof ApiAgentsValidateRoute
   '/api/attachments/$id': typeof ApiAttachmentsIdRouteWithChildren
@@ -344,6 +353,7 @@ export interface FileRouteTypes {
     | '/api/umbod'
     | '/api/updates'
     | '/api/version'
+    | '/api/acp/installations'
     | '/api/agents/claudemd'
     | '/api/agents/validate'
     | '/api/attachments/$id'
@@ -380,6 +390,7 @@ export interface FileRouteTypes {
     | '/api/umbod'
     | '/api/updates'
     | '/api/version'
+    | '/api/acp/installations'
     | '/api/agents/claudemd'
     | '/api/agents/validate'
     | '/api/attachments/$id'
@@ -416,6 +427,7 @@ export interface FileRouteTypes {
     | '/api/umbod'
     | '/api/updates'
     | '/api/version'
+    | '/api/acp/installations'
     | '/api/agents/claudemd'
     | '/api/agents/validate'
     | '/api/attachments/$id'
@@ -453,6 +465,7 @@ export interface RootRouteChildren {
   ApiUmbodRoute: typeof ApiUmbodRoute
   ApiUpdatesRoute: typeof ApiUpdatesRoute
   ApiVersionRoute: typeof ApiVersionRoute
+  ApiAcpInstallationsRoute: typeof ApiAcpInstallationsRoute
   ApiAgentsClaudemdRoute: typeof ApiAgentsClaudemdRoute
   ApiAgentsValidateRoute: typeof ApiAgentsValidateRoute
   ApiAttachmentsIdRoute: typeof ApiAttachmentsIdRouteWithChildren
@@ -588,6 +601,13 @@ declare module '@tanstack/react-router' {
       path: '/api/version'
       fullPath: '/api/version'
       preLoaderRoute: typeof ApiVersionRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/acp/installations': {
+      id: '/api/acp/installations'
+      path: '/api/acp/installations'
+      fullPath: '/api/acp/installations'
+      preLoaderRoute: typeof ApiAcpInstallationsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/agents/': {
@@ -765,6 +785,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiUmbodRoute: ApiUmbodRoute,
   ApiUpdatesRoute: ApiUpdatesRoute,
   ApiVersionRoute: ApiVersionRoute,
+  ApiAcpInstallationsRoute: ApiAcpInstallationsRoute,
   ApiAgentsClaudemdRoute: ApiAgentsClaudemdRoute,
   ApiAgentsValidateRoute: ApiAgentsValidateRoute,
   ApiAttachmentsIdRoute: ApiAttachmentsIdRouteWithChildren,

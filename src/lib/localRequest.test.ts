@@ -7,11 +7,37 @@ vi.mock("@tanstack/react-start/server", () => ({ getRequestIP }));
 vi.mock("#/server/auth", () => ({ effectivePeerIp }));
 vi.mock("./token", () => ({ loadToken: () => "service-token" }));
 
-import { cliUpdateAccessResponse, isCliUpdateUiRequest } from "./localRequest";
+import {
+	acpManagedInstallAccessResponse,
+	cliUpdateAccessResponse,
+	isAcpManagedInstallUiRequest,
+	isCliUpdateUiRequest,
+} from "./localRequest";
 
 beforeEach(() => {
 	vi.clearAllMocks();
 	getRequestIP.mockReturnValue("127.0.0.1");
+});
+
+describe("ACP managed installation UI request gate", () => {
+	it("uses the same loopback and Tailscale boundary as CLI updates", async () => {
+		effectivePeerIp.mockReturnValue("100.64.0.8");
+		const allowed = new Request(
+			"https://hlid.example.ts.net/api/acp/installations",
+		);
+		expect(isAcpManagedInstallUiRequest(allowed)).toBe(true);
+		expect(acpManagedInstallAccessResponse(allowed)).toBeNull();
+
+		effectivePeerIp.mockReturnValue("192.168.1.8");
+		const response = acpManagedInstallAccessResponse(
+			new Request("https://hlid.example/api/acp/installations"),
+		);
+		expect(response?.status).toBe(403);
+		expect(await response?.json()).toEqual({
+			ok: false,
+			error: "ACP installations can only be managed locally or over Tailscale",
+		});
+	});
 });
 
 describe("CLI update UI request gate", () => {

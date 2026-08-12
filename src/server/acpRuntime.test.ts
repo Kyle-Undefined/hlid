@@ -37,6 +37,7 @@ function item(
 		args: ["acp"],
 		env: {},
 		installGuidance: "install it",
+		targets: [],
 		...options,
 	};
 }
@@ -314,6 +315,35 @@ describe("ACP runtime synchronization", () => {
 		vi.stubEnv("XDG_CONFIG_HOME", "/runtime/config-one");
 		vi.stubEnv("OPENCODE_PURE", "false");
 		expect(acpRuntimeFingerprint(base, runtimeConfig)).not.toBe(identity);
+	});
+
+	it("changes runtime identity and provider launch ownership with the execution target", () => {
+		const hostConfig = config([{ id: "opencode" }]);
+		const wslConfig = HlidConfigSchema.parse({
+			vault: {
+				name: "Vault",
+				path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\workspace",
+			},
+			acp_agents: [
+				{
+					id: "opencode",
+					target: { kind: "wsl", distro: "Ubuntu-24.04" },
+				},
+			],
+		});
+		const catalogItem = item("opencode");
+
+		expect(acpRuntimeFingerprint(catalogItem, hostConfig)).not.toBe(
+			acpRuntimeFingerprint(catalogItem, wslConfig),
+		);
+		const provider = createConfiguredAcpProvider(catalogItem, wslConfig);
+		expect(provider.options.target).toEqual({
+			kind: "wsl",
+			distro: "Ubuntu-24.04",
+		});
+		expect(provider.options.discoveryCwd).toBe(
+			"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\workspace",
+		);
 	});
 
 	it("marks a manually persisted invalid filter unavailable without crashing startup", () => {

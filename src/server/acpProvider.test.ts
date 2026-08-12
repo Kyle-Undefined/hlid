@@ -23,6 +23,10 @@ import {
 	assertSafeAcpCmdShimInvocation,
 } from "./acpExecutable";
 import {
+	type AcpExecutionAdapter,
+	createAcpExecutionAdapter,
+} from "./acpExecutionAdapter";
+import {
 	AcpProvider,
 	type AcpProviderOptions,
 	AcpSessionImportUnsupportedError,
@@ -1894,6 +1898,78 @@ describe("AcpProvider — MCP status", () => {
 });
 
 describe("AcpProvider — model catalog", () => {
+	it("uses one target adapter for sessions, inspection, authentication, and forks", async () => {
+		const base = createAcpExecutionAdapter({ kind: "host" });
+		const terminate = vi.fn();
+		const start = vi.fn(async (input: Parameters<typeof base.start>[0]) => {
+			const started = await base.start(input);
+			return {
+				...started,
+				terminate: async (...args: Parameters<typeof started.terminate>) => {
+					terminate(...args);
+					await started.terminate(...args);
+				},
+			};
+		});
+		const providerPath = vi.fn((_cwd: string, path: string) =>
+			path.endsWith("extra") ? "/provider/extra" : "/provider/repo",
+		);
+		const adapter: AcpExecutionAdapter = {
+			...base,
+			target: { kind: "wsl", distro: "Test-Distro" },
+			key: "wsl:test-distro",
+			providerPath,
+			start,
+		};
+		const executionAdapter = vi.fn(() => adapter);
+		const hostCwd = process.cwd();
+		const hostExtra = join(hostCwd, "extra");
+		const provider = makeProvider({
+			target: { kind: "wsl", distro: "Test-Distro" },
+			executionAdapter,
+			timeouts: processTestTimeouts,
+		});
+
+		const session = provider.query(
+			params("allow", {
+				cwd: hostCwd,
+				additionalDirectories: [hostExtra],
+			}),
+		);
+		await session.send("report-session-inputs");
+		const events: AgentEvent[] = [];
+		for await (const event of session) {
+			events.push(event);
+			if (event.type === "done") break;
+		}
+		expect(events).toContainEqual({
+			type: "text_delta",
+			text: JSON.stringify({
+				additionalDirectories: ["/provider/extra"],
+				mcpTransports: ["stdio"],
+			}),
+		});
+		await session.cancelAndWait?.();
+
+		await expect(
+			provider.listModels({ cwd: hostCwd }),
+		).resolves.not.toHaveLength(0);
+		await expect(inspectAcpAgent(provider.options)).resolves.toEqual(
+			expect.objectContaining({
+				agentInfo: expect.objectContaining({ version: "1.0.0" }),
+			}),
+		);
+		await expect(
+			provider.forkSession({ sessionId: "fake-session", cwd: hostCwd }),
+		).resolves.toEqual({ sessionId: expect.any(String) });
+
+		expect(executionAdapter).toHaveBeenCalled();
+		expect(start).toHaveBeenCalledTimes(4);
+		expect(providerPath).toHaveBeenCalledWith(hostCwd, hostCwd);
+		expect(providerPath).toHaveBeenCalledWith(hostCwd, hostExtra);
+		expect(terminate).toHaveBeenCalledTimes(4);
+	});
+
 	it("surfaces ACP model and thought-level config options", async () => {
 		const models = await makeProvider().listModels();
 		expect(models).toEqual([
@@ -2436,6 +2512,22 @@ describe("AcpProvider — error handling", () => {
 		).rejects.toThrow(
 			/ACP initialize timed out after 500ms[\s\S]*fake initialize stalled/,
 		);
+	});
+
+	it("cancels an inspection from the caller signal", async () => {
+		const controller = new AbortController();
+		const pending = inspectAcpAgent(
+			behaviorProvider("hang-initialize", {
+				...processTestTimeouts,
+				initializeMs: 10_000,
+			}).options,
+			undefined,
+			controller.signal,
+		);
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		controller.abort(new Error("managed install cancelled"));
+
+		await expect(pending).rejects.toThrow(/managed install cancelled/);
 	});
 
 	it("bounds out-of-band authentication independently", async () => {

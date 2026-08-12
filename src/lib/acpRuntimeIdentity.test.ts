@@ -62,4 +62,18 @@ describe("acpRuntimeIdentity", () => {
 			]),
 		);
 	});
+
+	it("includes the normalized execution target", () => {
+		expect(acpRuntimeIdentity([{ id: "opencode" }])).toBe(
+			acpRuntimeIdentity([{ id: "opencode", target: { kind: "host" } }]),
+		);
+		expect(acpRuntimeIdentity([{ id: "opencode" }])).not.toBe(
+			acpRuntimeIdentity([
+				{
+					id: "opencode",
+					target: { kind: "wsl", distro: "Ubuntu-24.04" },
+				},
+			]),
+		);
+	});
 });

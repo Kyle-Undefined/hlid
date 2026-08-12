@@ -107,6 +107,12 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		desc: "Inspect an enabled ACP agent's live model catalog without Hlid's OpenCode model-visibility overlay. Used on demand by Forge so filtered-out models remain editable.",
 	},
 	{
+		method: "POST",
+		path: "/acp/managed/mutate",
+		server: "api",
+		desc: "Internal token-authenticated managed ACP install, update, or removal mutation using only a server-resolved agent ID and execution-target ID. Install and update require a configured Windows or WSL target; removal can use a validated managed-install receipt after its workspace disappears.",
+	},
+	{
 		method: "GET",
 		path: "/acp/sessions?id=opencode&cursor=",
 		server: "api",
@@ -530,6 +536,12 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		path: "/api/updates",
 		server: "ui",
 		desc: 'Body: {"action": "check"|"download"|"apply"}, {"action": "prepare_cli"|"apply_cli", "id": string}, or {"action": "heartbeat_cli"|"reconcile_cli", "id": string, "leaseId": string}. CLI actions are restricted to local or authenticated Tailscale requests.',
+	},
+	{
+		method: "POST",
+		path: "/api/acp/installations",
+		server: "ui",
+		desc: 'Install, update, or remove a checksummed ACP binary in an exact server-resolved Windows or WSL target. Body: {"action":"install"|"update"|"remove","agentId":string,"targetId":string,"revision":string}. Revision is the opaque confirmation binding from the ACP catalog. Install and update require a configured target; removal can use a receipt-backed cleanup target. Restricted to same-origin local or authenticated Tailscale requests.',
 	},
 	{
 		method: "GET",

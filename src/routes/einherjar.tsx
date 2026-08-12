@@ -9,7 +9,6 @@ import type {
 } from "#/components/einherjar/AgentCard";
 import { AgentCard, AgentEmptyState } from "#/components/einherjar/AgentCard";
 import { agentConfigToEntry, inspectAgentPath } from "#/lib/agentMcp";
-import { writeConfig } from "#/lib/config-writer";
 import type { InstructionFileTarget } from "#/lib/instructionFileTypes";
 import type { ProviderInfo } from "#/lib/providerTypes";
 import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
@@ -39,8 +38,10 @@ const validateAgentPathFn = createServerFn({ method: "GET" })
 const saveAgentsFn = createServerFn({ method: "POST" })
 	.validator((raw) => agentListSchema.parse(raw))
 	.handler(async ({ data: agentList }) => {
-		const config = await getConfig();
-		writeConfig({ ...config, agents: agentList });
+		const { saveAgentRosterConfig } = await import(
+			"#/server/agentRosterConfig"
+		);
+		await saveAgentRosterConfig(agentList);
 	});
 
 const getExternalAllowedFn = createServerFn({ method: "GET" }).handler(

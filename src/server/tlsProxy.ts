@@ -73,6 +73,7 @@ const SKIP_REQ = new Set([
 	"x-hlid-preview-origin",
 	"x-hlid-proxy-token",
 	"x-hlid-forwarded-proto",
+	"x-hlid-forwarded-host",
 	"x-hlid-forwarded-client-ip",
 ]);
 const SKIP_RES = new Set(["connection", "keep-alive", "transfer-encoding"]);
@@ -120,6 +121,7 @@ function buildForwardHeaders(
 	}
 	headers.set("x-hlid-forwarded-proto", "https");
 	headers.set("x-hlid-forwarded-client-ip", peerIp ?? "");
+	headers.set("x-hlid-forwarded-host", new URL(request.url).host);
 	headers.set("x-hlid-proxy-token", internalToken);
 	for (const [name, value] of Object.entries(forwardHeaders ?? {})) {
 		headers.set(name, value);

@@ -12,6 +12,7 @@ vi.mock("../db", () => ({ getSetting, saveSetting }));
 
 import { HlidConfigSchema } from "../config";
 import { AcpRegistry, resolveAcpInvocation } from "./acpRegistry";
+import { acpExecutionTargetId } from "./acpTargets";
 
 const registry = {
 	version: "1",
@@ -258,6 +259,580 @@ describe("AcpRegistry", () => {
 			expect.any(String),
 			expect.objectContaining({ cwd: "/vault/workspace" }),
 		);
+	});
+
+	it("offers managed installation for a checksummed Windows host binary", async () => {
+		const instance = new AcpRegistry(
+			async () => ({
+				version: "1",
+				agents: [
+					{
+						id: "opencode",
+						name: "OpenCode",
+						version: "1.18.16",
+						description: "Open agent",
+						distribution: {
+							binary: {
+								"windows-x86_64": {
+									cmd: "./opencode.exe",
+									args: ["acp"],
+									archive: "https://example.com/opencode.zip",
+									sha256: "a".repeat(64),
+								},
+							},
+						},
+					},
+				],
+			}),
+			undefined,
+			{
+				platform: "win32",
+				architecture: "x64",
+				which: () => null,
+				managed: {
+					managedRecord: () => null,
+					resolveManagedInvocation: () => null,
+					targetState: () => ({}),
+					installSupport: () => ({ supported: true }),
+				},
+			},
+		);
+
+		const [item] = await instance.catalog(HlidConfigSchema.parse({}), true);
+		expect(
+			item?.targets.find((target) => target.targetId === "host"),
+		).toMatchObject({
+			target: { kind: "host" },
+			label: "Windows",
+			platformTarget: "windows-x86_64",
+			provenance: "missing",
+			canInstall: true,
+			canUpdate: false,
+			canRemove: false,
+		});
+	});
+
+	it("keeps a managed Windows receipt authoritative over an executable override", async () => {
+		const target = { kind: "host" as const };
+		const managedRecord = {
+			target,
+			command: "C:\\Hlid\\integrations\\acp\\opencode.exe",
+			args: ["acp"],
+			env: {},
+			installedVersion: "1.0.0",
+			observedVersion: "1.0.0",
+			usable: true,
+		};
+		const instance = new AcpRegistry(
+			async () => ({
+				version: "1",
+				agents: [
+					{
+						id: "opencode",
+						name: "OpenCode",
+						version: "1.1.0",
+						description: "Open agent",
+						distribution: {
+							binary: {
+								"windows-x86_64": {
+									cmd: "./opencode.exe",
+									archive: "https://example.com/opencode.zip",
+									sha256: "a".repeat(64),
+								},
+							},
+						},
+					},
+				],
+			}),
+			undefined,
+			{
+				platform: "win32",
+				architecture: "x64",
+				which: (command) =>
+					command === managedRecord.command ? managedRecord.command : null,
+				managed: {
+					managedRecord: () => managedRecord,
+					resolveManagedInvocation: () => managedRecord,
+					targetState: () => ({}),
+					installSupport: () => ({
+						supported: true,
+						updateAvailable: true,
+					}),
+				},
+			},
+		);
+
+		const [item] = await instance.catalog(
+			HlidConfigSchema.parse({
+				acp_agents: [{ id: "opencode", executable: "external-open.exe" }],
+			}),
+			true,
+		);
+		const selected = item?.targets.find((target) => target.selected);
+		expect(selected).toMatchObject({
+			target,
+			provenance: "managed",
+			command: managedRecord.command,
+			canInstall: false,
+			canUpdate: false,
+			canRemove: true,
+			blockedReason:
+				"Remove this Hlid-managed installation before switching to a custom executable",
+		});
+	});
+
+	it("binds managed confirmation to the exact target working directory", async () => {
+		const instance = new AcpRegistry(async () => registry, undefined, {
+			platform: "win32",
+			architecture: "x64",
+			which: () => null,
+			managed: {
+				managedRecord: () => null,
+				resolveManagedInvocation: () => null,
+				targetState: () => ({}),
+				installSupport: () => ({ supported: true }),
+			},
+		});
+		const first = await instance.catalog(
+			HlidConfigSchema.parse({ vault: { path: "C:\\first" } }),
+			true,
+		);
+		const second = await instance.catalog(
+			HlidConfigSchema.parse({ vault: { path: "C:\\second" } }),
+		);
+		expect(first[0]?.targets[0]?.mutationRevision).not.toBe(
+			second[0]?.targets[0]?.mutationRevision,
+		);
+	});
+
+	it("recommends the exact configured WSL distro without selecting it prematurely", async () => {
+		const instance = new AcpRegistry(async () => registry, undefined, {
+			platform: "win32",
+			architecture: "x64",
+			which: () => null,
+			adapterFactory: (target) =>
+				({
+					target: target ?? { kind: "host" },
+					key: target?.kind === "wsl" ? `wsl:${target.distro}` : "host",
+					registryPlatform: async () => ({
+						platform: target?.kind === "wsl" ? "linux" : "win32",
+						architecture: "x64",
+					}),
+					providerPath: (_cwd: string, path: string) => path,
+					pathAccessible: () => true,
+					resolveExecutable: async () => null,
+					start: vi.fn(),
+					adaptMcpServer: <T>(server: T) => server,
+				}) as never,
+		});
+
+		const [item] = await instance.catalog(
+			HlidConfigSchema.parse({
+				vault: {
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\vault",
+				},
+			}),
+			true,
+		);
+		const wsl = item?.targets.find((target) => target.target.kind === "wsl");
+		expect(wsl).toMatchObject({
+			label: "WSL · Ubuntu-24.04",
+			recommended: true,
+			selected: false,
+			platformTarget: "linux-x86_64",
+		});
+	});
+
+	it("resolves and selects a configured ACP inside the same WSL distro", async () => {
+		const binaryRegistry = {
+			version: "1",
+			agents: [
+				{
+					id: "opencode",
+					name: "OpenCode",
+					version: "1.0.0",
+					description: "Open agent",
+					distribution: {
+						binary: {
+							"linux-x86_64": { cmd: "./opencode", args: ["acp"] },
+						},
+					},
+				},
+			],
+		};
+		const instance = new AcpRegistry(async () => binaryRegistry, undefined, {
+			platform: "win32",
+			architecture: "x64",
+			which: () => null,
+			adapterFactory: (target) =>
+				({
+					target: target ?? { kind: "host" },
+					key: target?.kind === "wsl" ? `wsl:${target.distro}` : "host",
+					registryPlatform: async () => ({
+						platform: target?.kind === "wsl" ? "linux" : "win32",
+						architecture: "x64",
+					}),
+					providerPath: (_cwd: string, path: string) => path,
+					pathAccessible: () => true,
+					resolveExecutable: async (command: string) =>
+						target?.kind === "wsl" && command === "opencode"
+							? "/usr/local/bin/opencode"
+							: null,
+					start: vi.fn(),
+					adaptMcpServer: <T>(server: T) => server,
+				}) as never,
+		});
+		const config = HlidConfigSchema.parse({
+			vault: {
+				path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\vault",
+			},
+			acp_agents: [
+				{
+					id: "opencode",
+					target: { kind: "wsl", distro: "Ubuntu-24.04" },
+				},
+			],
+		});
+
+		const [item] = await instance.catalog(config, true);
+		expect(item).toMatchObject({
+			enabled: true,
+			available: true,
+			command: "opencode",
+			args: ["acp"],
+			resolvedExecutable: "/usr/local/bin/opencode",
+		});
+		expect(item?.targets.find((target) => target.selected)).toMatchObject({
+			target: { kind: "wsl", distro: "Ubuntu-24.04" },
+			provenance: "external",
+		});
+	});
+
+	it("keeps an invalid managed installation removable without probing it", async () => {
+		const target = { kind: "wsl" as const, distro: "Ubuntu-24.04" };
+		const resolveExecutable = vi.fn(async () => "/managed/opencode");
+		const managedRecord = {
+			target,
+			command: "/mnt/c/hlid/acp/opencode",
+			args: ["acp"],
+			env: {},
+			installedVersion: "0.9.0",
+			usable: false,
+			error: "Managed ACP files are missing or failed validation",
+		};
+		const instance = new AcpRegistry(
+			async () => ({
+				version: "1",
+				agents: [
+					{
+						id: "opencode",
+						name: "OpenCode",
+						version: "1.0.0",
+						description: "Open agent",
+						distribution: {
+							binary: {
+								"linux-x86_64": {
+									cmd: "./opencode",
+									archive: "https://example.com/opencode.tar.gz",
+									sha256: "a".repeat(64),
+								},
+							},
+						},
+					},
+				],
+			}),
+			undefined,
+			{
+				platform: "win32",
+				architecture: "x64",
+				which: () => null,
+				adapterFactory: () =>
+					({
+						target,
+						key: "wsl:Ubuntu-24.04",
+						registryPlatform: async () => ({
+							platform: "linux",
+							architecture: "x64",
+						}),
+						providerPath: (_cwd: string, path: string) => path,
+						pathAccessible: () => true,
+						resolveExecutable,
+						start: vi.fn(),
+						adaptMcpServer: <T>(server: T) => server,
+					}) as never,
+				managed: {
+					managedRecord: () => managedRecord,
+					resolveManagedInvocation: () => null,
+					targetState: () => ({ error: managedRecord.error }),
+					installSupport: () => ({ supported: true }),
+				},
+			},
+		);
+
+		const [item] = await instance.catalog(
+			HlidConfigSchema.parse({
+				vault: {
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\vault",
+				},
+				acp_agents: [{ id: "opencode", target }],
+			}),
+			true,
+		);
+		const selected = item?.targets.find((status) => status.selected);
+		expect(selected).toMatchObject({
+			provenance: "managed",
+			available: false,
+			canEnable: false,
+			canRemove: true,
+			installedVersion: "0.9.0",
+			command: "/mnt/c/hlid/acp/opencode",
+			error: managedRecord.error,
+		});
+		expect(resolveExecutable).not.toHaveBeenCalled();
+	});
+
+	it("surfaces receipt-backed cleanup after a WSL workspace is removed without probing that distro", async () => {
+		const target = { kind: "wsl" as const, distro: "Ubuntu-24.04" };
+		const targetId = acpExecutionTargetId(target);
+		const claim = {
+			agentId: "other",
+			target,
+			targetId,
+			hostCwd: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\removed",
+		};
+		const record = {
+			target,
+			command: "/mnt/c/Hlid/managed-other",
+			args: [],
+			env: {},
+			installedVersion: "1.0.0",
+			usable: true,
+		};
+		const registryPlatform = vi.fn(async () => ({
+			platform: "linux" as const,
+			architecture: "x64" as const,
+		}));
+		const resolveExecutable = vi.fn(async () => record.command);
+		const instance = new AcpRegistry(async () => registry, undefined, {
+			platform: "win32",
+			architecture: "x64",
+			which: () => null,
+			adapterFactory: (adapterTarget) =>
+				({
+					target: adapterTarget ?? { kind: "host" },
+					key:
+						adapterTarget?.kind === "wsl"
+							? `wsl:${adapterTarget.distro}`
+							: "host",
+					registryPlatform,
+					providerPath: (_cwd: string, path: string) => path,
+					pathAccessible: () => true,
+					resolveExecutable,
+					start: vi.fn(),
+					adaptMcpServer: <T>(server: T) => server,
+				}) as never,
+			managed: {
+				claimedTargets: () => [claim],
+				managedRecord: (agentId, managedTarget) =>
+					agentId === claim.agentId &&
+					JSON.stringify(managedTarget) === JSON.stringify(target)
+						? record
+						: null,
+				resolveManagedInvocation: () => record,
+				targetState: () => ({}),
+				installSupport: () => ({ supported: true }),
+			},
+		});
+
+		const catalog = await instance.catalog(HlidConfigSchema.parse({}), true);
+		const cleanup = catalog
+			.find((item) => item.id === "other")
+			?.targets.find((status) => status.targetId === targetId);
+		expect(cleanup).toMatchObject({
+			target,
+			cleanupOnly: true,
+			provenance: "managed",
+			available: false,
+			canEnable: false,
+			canInstall: false,
+			canUpdate: false,
+			canRemove: true,
+			installedVersion: "1.0.0",
+		});
+		expect(registryPlatform).not.toHaveBeenCalled();
+		expect(resolveExecutable).not.toHaveBeenCalled();
+
+		const restored = await instance.catalog(
+			HlidConfigSchema.parse({
+				vault: {
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\restored",
+				},
+			}),
+		);
+		const matching = restored
+			.find((item) => item.id === "other")
+			?.targets.filter((status) => status.targetId === targetId);
+		expect(matching).toHaveLength(1);
+		expect(matching?.[0]?.cleanupOnly).toBeUndefined();
+		expect(registryPlatform).toHaveBeenCalledOnce();
+	});
+
+	it("groups every remove-only target after an agent disappears from the registry", async () => {
+		const targets = [
+			{ kind: "wsl" as const, distro: "Ubuntu-24.04" },
+			{ kind: "wsl" as const, distro: "Debian" },
+		];
+		const claims = targets.map((target) => ({
+			agentId: "retired-agent",
+			target,
+			targetId: acpExecutionTargetId(target),
+			hostCwd: `\\\\wsl.localhost\\${target.distro}\\home\\kyle\\removed`,
+		}));
+		const managedRecord = (target: (typeof targets)[number]) => ({
+			target,
+			command: `/mnt/c/Hlid/retired-agent-${target.distro}`,
+			args: ["acp"],
+			env: {},
+			installedVersion: "2.0.0",
+			usable: true,
+		});
+		const registryPlatform = vi.fn();
+		const instance = new AcpRegistry(
+			async () => ({ version: "1", agents: [] }),
+			undefined,
+			{
+				platform: "win32",
+				architecture: "x64",
+				which: () => null,
+				adapterFactory: (adapterTarget) =>
+					({
+						target: adapterTarget ?? { kind: "host" },
+						key: "host",
+						registryPlatform,
+						providerPath: (_cwd: string, path: string) => path,
+						pathAccessible: () => true,
+						resolveExecutable: vi.fn(),
+						start: vi.fn(),
+						adaptMcpServer: <T>(server: T) => server,
+					}) as never,
+				managed: {
+					claimedTargets: () => claims,
+					managedRecord: (_agentId, target) =>
+						target.kind === "wsl" ? managedRecord(target) : null,
+					resolveManagedInvocation: (_agentId, target) =>
+						target.kind === "wsl" ? managedRecord(target) : null,
+					targetState: () => ({}),
+					installSupport: () => ({ supported: false }),
+				},
+			},
+		);
+
+		const catalog = await instance.catalog(HlidConfigSchema.parse({}), true);
+		expect(catalog).toEqual([
+			expect.objectContaining({
+				id: "retired-agent",
+				enabled: false,
+				available: false,
+				targets: [
+					expect.objectContaining({
+						target: targets[0],
+						cleanupOnly: true,
+						canRemove: true,
+						installedVersion: "2.0.0",
+					}),
+					expect.objectContaining({
+						target: targets[1],
+						cleanupOnly: true,
+						canRemove: true,
+						installedVersion: "2.0.0",
+					}),
+				],
+			}),
+		]);
+		expect(registryPlatform).not.toHaveBeenCalled();
+	});
+
+	it("blocks install and update when the exact WSL runtime probe fails", async () => {
+		const target = { kind: "wsl" as const, distro: "Ubuntu-24.04" };
+		const resolveExecutable = vi.fn(async () => "/managed/opencode");
+		const managedRecord = {
+			target,
+			command: "/mnt/c/hlid/acp/opencode",
+			args: ["acp"],
+			env: {},
+			installedVersion: "0.9.0",
+			usable: true,
+		};
+		const instance = new AcpRegistry(
+			async () => ({
+				version: "1",
+				agents: [
+					{
+						id: "opencode",
+						name: "OpenCode",
+						version: "1.0.0",
+						description: "Open agent",
+						distribution: {
+							binary: {
+								"linux-x86_64": {
+									cmd: "./opencode",
+									archive: "https://example.com/opencode.tar.gz",
+									sha256: "a".repeat(64),
+								},
+							},
+						},
+					},
+				],
+			}),
+			undefined,
+			{
+				platform: "win32",
+				architecture: "x64",
+				which: () => null,
+				adapterFactory: () =>
+					({
+						target,
+						key: "wsl:Ubuntu-24.04",
+						registryPlatform: async () => {
+							throw new Error("WSL distro Ubuntu-24.04 is unavailable");
+						},
+						providerPath: (_cwd: string, path: string) => path,
+						pathAccessible: () => true,
+						resolveExecutable,
+						start: vi.fn(),
+						adaptMcpServer: <T>(server: T) => server,
+					}) as never,
+				managed: {
+					managedRecord: () => managedRecord,
+					resolveManagedInvocation: () => managedRecord,
+					targetState: () => ({}),
+					installSupport: () => ({
+						supported: true,
+						updateAvailable: true,
+					}),
+				},
+			},
+		);
+
+		const [item] = await instance.catalog(
+			HlidConfigSchema.parse({
+				vault: {
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\vault",
+				},
+				acp_agents: [{ id: "opencode", target }],
+			}),
+			true,
+		);
+		const selected = item?.targets.find((status) => status.selected);
+		expect(selected).toMatchObject({
+			provenance: "managed",
+			available: false,
+			canInstall: false,
+			canUpdate: false,
+			canRemove: true,
+			blockedReason: "WSL distro Ubuntu-24.04 is unavailable",
+		});
+		expect(resolveExecutable).not.toHaveBeenCalled();
 	});
 });
 

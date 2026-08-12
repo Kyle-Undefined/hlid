@@ -1,5 +1,8 @@
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, posix, resolve, sep, win32 } from "node:path";
+import { parseWslUncSyntax } from "./wslPathSyntax";
+
+export { parseWslUncSyntax } from "./wslPathSyntax";
 
 // When running as a compiled exe, resolve data files relative to the exe dir
 // so the Windows Run-key CWD (System32) doesn't break config/DB paths.
@@ -20,6 +23,9 @@ export const PRICING_OVERRIDES_PATH = resolve(
 /** Hlid-owned CLIProxy binaries, credentials, and provider auth files. */
 export const CLIPROXY_DIR = resolve(APP_DIR, "integrations", "cliproxy");
 
+/** Hlid-owned, checksummed ACP agent installations and their receipts. */
+export const ACP_MANAGED_DIR = resolve(APP_DIR, "integrations", "acp");
+
 /** Hlid-owned durable content. Repositories and vaults remain linked sources. */
 export const LIBRARY_DIR =
 	process.env.NODE_ENV === "test"
@@ -27,16 +33,6 @@ export const LIBRARY_DIR =
 		: resolve(APP_DIR, "library");
 
 const isWindows = process.platform === "win32";
-
-export function parseWslUncSyntax(
-	p: string,
-): { distro: string; posixPath: string } | null {
-	const m = p.match(/^\\\\(?:wsl\$|wsl\.localhost)\\([^\\]+)\\(.*)$/i);
-	if (!m) return null;
-	const distro = m[1];
-	const rest = m[2].replace(/\\/g, "/");
-	return { distro, posixPath: `/${rest}` };
-}
 
 /** Classify only explicit path syntax; callers retain their own host/WSL fallback policy. */
 export function explicitPathEnvironment(

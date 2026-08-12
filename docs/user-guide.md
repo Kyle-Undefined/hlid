@@ -124,8 +124,13 @@ directory. They never come back to the `Forge` `UI`. Remote management and the
 
 Once `CLIProxyAPI` is enabled, its routes show up anywhere `Hlið` has a provider
 picker. The `Claude Code` and `Codex` routes appear when their `CLIs` are installed.
-`OpenCode` appears when its `ACP` command is installed. `Hlið` injects runtime-only
-provider config for `Codex` and `OpenCode`. It does not rewrite
+`OpenCode` appears when its `ACP` command is installed. In `Forge`, choose its
+exact execution target first. On a Windows host, supported official checksummed
+binary releases can be installed either in `Windows` or in an exact configured
+`WSL` distro. `Hlið` verifies and probes the binary in that target, and only
+then offers **Enable**. Package-based, checksumless, and externally managed
+commands keep their own installer and never give `Hlið` removal control. `Hlið`
+injects runtime-only provider config for `Codex` and `OpenCode`. It does not rewrite
 `~/.codex/config.toml`, `opencode.json`, or either harness's saved credentials.
 
 For an existing, externally managed `CLIProxyAPI` process, configure advanced
@@ -962,27 +967,30 @@ copy and restarts `Hlið`. Dismissing it leaves the current version alone.
 
 `Hlið` also checks the installed `Claude` and `Codex` `CLI` versions. Enabled
 `ACP` agents report their own versions, which get compared with the `ACP`
-registry. Updates show in the global banner and under **FORGE → Overview** with
-the command that belongs to that installation.
+registry. Hlið-managed ACP installations update from their agent card in
+`Forge`, using the same exact execution target and verification flow. External
+host ACP installations still show the command that belongs to their installer.
 
 From a loopback browser or an authenticated `Tailscale` connection, **UPDATE**
 can handle a user-writable installation. `Hlið` warns before stopping active
 provider sessions, releases shared app-server processes, runs the known update
 command, then checks the installed version again. Terminal sessions stay open.
 
-An install that needs elevation, like a root-owned global `npm` package inside
-`WSL`, gets **OPEN TERMINAL** instead. `Hlið` releases the provider, copies the
-exact command, and opens a terminal in the matching distro and workspace. Paste
-the command there so `sudo` can ask for the password itself. `Hlið` never asks
-for, stores, or relays that password. New provider sessions stay blocked until
-the explicit **Finish update and refresh** action reconciles the runtime. While
+A `Claude` or `Codex` install that needs elevation, like a root-owned global
+`npm` package inside `WSL`, gets **OPEN TERMINAL** instead. `Hlið` releases the
+provider, copies the exact command, and opens a terminal in the matching distro
+and workspace. Paste the command there so `sudo` can ask for the password
+itself. `Hlið` never asks for, stores, or relays that password. New provider
+sessions stay blocked until the explicit **Finish update and refresh** action
+reconciles the runtime. While
 the update terminal or a retryable runtime-refresh notice remains open in
 `Forge`, `Hlið` renews that exact update lease. Its bounded expiry is crash and
 abandonment recovery, not the expected end of a long-running update. Backdrop
 clicks and `Escape` do not close the update terminal. An `OpenCode` `ACP` install
 gets the same `npm` update flow only when its resolved package path or generated
 Windows shim identifies `opencode-ai`. Custom executables and unrecognized
-binary installs keep using their original installer.
+binary installs, including other external `WSL` `ACP` installations, keep using
+their original installer outside `Hlið`.
 
 Other LAN clients can see versions and copy guidance, but they cannot stop
 sessions or launch an update.

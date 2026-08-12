@@ -77,16 +77,20 @@ use_real_browser_profile = false
 model = "inherit"
 effort = "medium"
 
-# Installed Agent Client Protocol agents get enabled from Forge. It shows the
-# install command when one is missing, but Hlid does not run it automatically.
+# Agent Client Protocol agents get installed and enabled separately in Forge.
+# On Windows, Forge can manage supported official checksummed binary releases
+# on the Windows host or in an exact configured WSL distro. External commands
+# and unsupported package formats keep their own installer. Absence of target
+# means the Windows host.
 # [[acp_agents]]
 # id = "opencode"
-# executable = "opencode"
-# args = ["acp"]
+# target = { kind = "wsl", distro = "Ubuntu-24.04" }
 # Forge can manage this without editing OpenCode's own files. "hide" removes
 # listed models; "only" exposes only the listed full provider/model IDs to Hlid.
 # model_filter = { mode = "only", models = ["opencode/gpt-5.6-sol"] }
 #
+# Set executable/args only for an externally managed command. Hlid will use it
+# but will not update or remove it.
 # [[acp_agents]]
 # id = "pi-acp"
 # executable = "pi-acp"

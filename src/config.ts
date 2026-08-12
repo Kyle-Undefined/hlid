@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AcpExecutionTargetSchema } from "./lib/acpExecutionTarget";
 import {
 	DEFAULT_NAVIGATION_NAMES_CONFIG,
 	duplicateEffectiveNavigationLabelIds,
@@ -10,6 +11,7 @@ import {
 	navigationLabelGraphemeCount,
 	normalizeNavigationLabel,
 } from "./lib/navigationNames";
+import { parseWslUncSyntax } from "./lib/wslPathSyntax";
 
 const HexColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/);
 const ThemePaletteSchema = z
@@ -541,6 +543,7 @@ export const AcpModelFilterSchema = z
 const AcpAgentSchema = z
 	.object({
 		id: z.string().min(1),
+		target: AcpExecutionTargetSchema.optional(),
 		executable: z.string().optional(),
 		args: z.array(z.string()).optional(),
 		env: z.record(z.string(), z.string()).optional(),
@@ -650,6 +653,58 @@ const HlidConfigBaseSchema = z.object({
 
 export const HlidConfigSchema = HlidConfigBaseSchema.superRefine(
 	(config, context) => {
+		const acpWslTargetDistros = new Map(
+			config.acp_agents
+				?.filter(
+					(
+						agent,
+					): agent is typeof agent & {
+						target: { kind: "wsl"; distro: string };
+					} => agent.target?.kind === "wsl",
+				)
+				.map((agent) => [agent.id, agent.target.distro] as const) ?? [],
+		);
+		const requireMatchingAcpWslPath = (
+			provider: string,
+			path: string,
+			issuePath: (string | number)[],
+		) => {
+			if (!provider.startsWith("acp:")) return;
+			const targetDistro = acpWslTargetDistros.get(
+				provider.slice("acp:".length),
+			);
+			const workspaceDistro = parseWslUncSyntax(path)?.distro;
+			if (
+				!targetDistro ||
+				!workspaceDistro ||
+				targetDistro.toLowerCase() === workspaceDistro.toLowerCase()
+			) {
+				return;
+			}
+			context.addIssue({
+				code: "custom",
+				path: issuePath,
+				message: `Workspace WSL distro ${JSON.stringify(workspaceDistro)} must match ACP provider ${JSON.stringify(provider)} target ${JSON.stringify(targetDistro)}`,
+			});
+		};
+
+		requireMatchingAcpWslPath(config.vault_provider, config.vault.path, [
+			"vault",
+			"path",
+		]);
+		config.agents.forEach((agent, index) => {
+			requireMatchingAcpWslPath(agent.provider, agent.path, [
+				"agents",
+				index,
+				"path",
+			]);
+		});
+
+		const configuredWslDistros = new Set(
+			[config.vault.path, ...config.agents.map((agent) => agent.path)]
+				.map((path) => parseWslUncSyntax(path)?.distro.toLowerCase())
+				.filter((distro): distro is string => Boolean(distro)),
+		);
 		const seenAcpAgents = new Set<string>();
 		config.acp_agents?.forEach((agent, index) => {
 			if (seenAcpAgents.has(agent.id)) {
@@ -657,6 +712,16 @@ export const HlidConfigSchema = HlidConfigBaseSchema.superRefine(
 					code: "custom",
 					path: ["acp_agents", index, "id"],
 					message: `ACP agent ${JSON.stringify(agent.id)} is configured more than once`,
+				});
+			}
+			if (
+				agent.target?.kind === "wsl" &&
+				!configuredWslDistros.has(agent.target.distro.toLowerCase())
+			) {
+				context.addIssue({
+					code: "custom",
+					path: ["acp_agents", index, "target"],
+					message: `ACP WSL target ${JSON.stringify(agent.target.distro)} must match the configured vault or an exact agent workspace`,
 				});
 			}
 			seenAcpAgents.add(agent.id);

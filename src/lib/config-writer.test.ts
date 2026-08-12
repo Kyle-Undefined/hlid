@@ -82,7 +82,7 @@ describe("writeConfig — persistence invariants", () => {
 		const config = HlidConfigSchema.parse({
 			vault: {
 				name: "Round trip",
-				path: "/vault",
+				path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\Fornbok",
 				style: "wiki",
 				save_to_obsidian_template: "Quick Capture",
 				obsidian_command_allowlist: ["templater-obsidian:insert-templater"],
@@ -123,6 +123,7 @@ describe("writeConfig — persistence invariants", () => {
 			acp_agents: [
 				{
 					id: "opencode",
+					target: { kind: "wsl", distro: "Ubuntu-24.04" },
 					executable: "/opt/opencode",
 					args: ["acp"],
 					env: { API_URL: "https://example.test:8443/path" },
@@ -270,6 +271,34 @@ describe("writeConfig — persistence invariants", () => {
 				["agents", 0, "recap_model"],
 			]),
 		);
+	});
+
+	it("requires an ACP WSL target to match an exact configured workspace distro", () => {
+		expect(
+			HlidConfigSchema.safeParse({
+				vault: {
+					name: "Fornbok",
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\Fornbok",
+				},
+				acp_agents: [
+					{ id: "opencode", target: { kind: "wsl", distro: "Debian" } },
+				],
+			}).success,
+		).toBe(false);
+		expect(
+			HlidConfigSchema.safeParse({
+				vault: {
+					name: "Fornbok",
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\Fornbok",
+				},
+				acp_agents: [
+					{
+						id: "opencode",
+						target: { kind: "wsl", distro: "ubuntu-24.04" },
+					},
+				],
+			}).success,
+		).toBe(true);
 	});
 
 	it("round-trips an optional Codex permission profile and omits the default", () => {

@@ -7,7 +7,8 @@ import {
 	printParseErrorCode,
 } from "jsonc-parser";
 import type { HlidConfig } from "../config";
-import { declaredPathKey } from "../lib/paths";
+import { acpExecutionTargetKey } from "../lib/acpExecutionTarget";
+import { declaredPathKey, parseWslUncSyntax } from "../lib/paths";
 import { AcpProvider } from "./acpProvider";
 import type { AcpCatalogItem } from "./acpRegistry";
 import type { AgentProvider } from "./agentProvider";
@@ -237,11 +238,12 @@ export function effectiveAcpEnvironment(
 	inheritedEnvironment: Readonly<
 		Record<string, string | undefined>
 	> = process.env,
-	platform: NodeJS.Platform = process.platform,
+	platform?: NodeJS.Platform,
 ): Record<string, string> {
 	const configured = (config.acp_agents ?? []).find(
 		(agent) => agent.id === item.id,
 	);
+	const targetPlatform = platform ?? acpTargetPlatform(configured);
 	const environment = { ...item.env, ...configured?.env };
 	if (item.id !== "opencode" || !configured?.model_filter) return environment;
 	const { environment: normalizedEnvironment, content: existingContent } =
@@ -249,7 +251,7 @@ export function effectiveAcpEnvironment(
 			item.env,
 			configured.env,
 			inheritedEnvironment,
-			platform,
+			targetPlatform,
 		);
 	return {
 		...normalizedEnvironment,
@@ -258,6 +260,29 @@ export function effectiveAcpEnvironment(
 			configured.model_filter,
 		),
 	};
+}
+
+function acpTargetPlatform(
+	configured: NonNullable<HlidConfig["acp_agents"]>[number] | undefined,
+): NodeJS.Platform {
+	return configured?.target?.kind === "wsl" ? "linux" : process.platform;
+}
+
+export function acpDiscoveryCwd(
+	config: HlidConfig,
+	configured: NonNullable<HlidConfig["acp_agents"]>[number] | undefined,
+): string {
+	if (configured?.target?.kind !== "wsl") {
+		return config.vault.path || process.cwd();
+	}
+	const distro = configured.target.distro.toLowerCase();
+	return (
+		([config.vault.path, ...config.agents.map((agent) => agent.path)].find(
+			(path) => parseWslUncSyntax(path)?.distro.toLowerCase() === distro,
+		) ??
+			config.vault.path) ||
+		process.cwd()
+	);
 }
 
 function openCodeEnvironmentValue(
@@ -364,7 +389,7 @@ export function preflightOpenCodeModelFilter(
 	inheritedEnvironment: Readonly<
 		Record<string, string | undefined>
 	> = process.env,
-	platform: NodeJS.Platform = process.platform,
+	platform?: NodeJS.Platform,
 ): void {
 	const configured = (config.acp_agents ?? []).find(
 		(agent) => agent.id === "opencode",
@@ -374,7 +399,7 @@ export function preflightOpenCodeModelFilter(
 		{},
 		configured.env,
 		inheritedEnvironment,
-		platform,
+		platform ?? acpTargetPlatform(configured),
 	);
 	openCodeModelFilterContent(content, configured.model_filter);
 }
@@ -387,19 +412,20 @@ export function acpRuntimeFingerprint(
 		(agent) => agent.id === item.id,
 	);
 	const rawEnvironment = { ...item.env, ...configured?.env };
+	const targetPlatform = acpTargetPlatform(configured);
 	const environment = configured?.model_filter
 		? openCodeBaseEnvironment(
 				item.env,
 				configured.env,
 				process.env,
-				process.platform,
+				targetPlatform,
 			).environment
 		: rawEnvironment;
 	if (configured?.model_filter) {
 		const content =
-			openCodeEnvironmentValue(configured.env, process.platform) ??
-			openCodeEnvironmentValue(item.env, process.platform) ??
-			openCodeEnvironmentValue(process.env, process.platform);
+			openCodeEnvironmentValue(configured.env, targetPlatform) ??
+			openCodeEnvironmentValue(item.env, targetPlatform) ??
+			openCodeEnvironmentValue(process.env, targetPlatform);
 		if (content !== undefined) environment[OPENCODE_CONFIG_CONTENT] = content;
 	}
 	const inheritedRuntimeEnvironment = {
@@ -412,7 +438,8 @@ export function acpRuntimeFingerprint(
 	);
 	return JSON.stringify({
 		providerId: item.providerId,
-		platform: process.platform,
+		target: acpExecutionTargetKey(configured?.target),
+		platform: targetPlatform,
 		architecture: process.arch,
 		command: item.command,
 		args: item.args,
@@ -437,7 +464,7 @@ export function acpRuntimeFingerprint(
 					),
 				}
 			: undefined,
-		discoveryCwd: declaredPathKey(config.vault.path || process.cwd()),
+		discoveryCwd: declaredPathKey(acpDiscoveryCwd(config, configured)),
 	});
 }
 
@@ -460,7 +487,14 @@ export function createConfiguredAcpProvider(
 		label: item.name,
 		command: item.command,
 		args: item.args,
-		env: () => effectiveAcpEnvironment(item, config),
+		target: configured?.target,
+		env: () =>
+			effectiveAcpEnvironment(
+				item,
+				config,
+				process.env,
+				acpTargetPlatform(configured),
+			),
 		modelFilter: configured?.model_filter,
 		initialAvailability: {
 			available: overlayError ? false : item.available,
@@ -470,7 +504,7 @@ export function createConfiguredAcpProvider(
 					? { reason: item.unavailableReason }
 					: {}),
 		},
-		discoveryCwd: config.vault.path || process.cwd(),
+		discoveryCwd: acpDiscoveryCwd(config, configured),
 		metadataCacheIdentity: acpRuntimeFingerprint(item, config),
 	});
 }

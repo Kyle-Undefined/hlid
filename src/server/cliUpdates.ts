@@ -47,6 +47,7 @@ type CliDefinition = {
 type AcpUpdateCandidate = {
 	item: AcpCatalogItem;
 	customExecutable: boolean;
+	managed?: boolean;
 };
 
 type AcpUpdateDependencies = {
@@ -789,7 +790,17 @@ async function acpUpdateAction(
 	candidate: AcpUpdateCandidate,
 	resolveGlobalRoot: () => Promise<string | null> = readGlobalNpmRoot,
 ): Promise<CliUpdateAction | undefined> {
-	if (candidate.customExecutable) return undefined;
+	const selectedTarget = candidate.item.targets.find(
+		(target) => target.selected,
+	);
+	if (
+		candidate.customExecutable ||
+		candidate.managed ||
+		selectedTarget?.target.kind === "wsl" ||
+		selectedTarget?.provenance === "managed"
+	) {
+		return undefined;
+	}
 	if (candidate.item.id === "opencode") {
 		const action = await openCodeAcpUpdateAction(candidate, resolveGlobalRoot);
 		if (action) return action;
@@ -826,10 +837,24 @@ const defaultAcpDependencies: AcpUpdateDependencies = {
 		);
 		return (await acpRegistry.catalog(config))
 			.filter((item) => item.enabled && item.available)
-			.map((item) => ({
-				item,
-				customExecutable: Boolean(configured.get(item.id)?.executable),
-			}));
+			.flatMap((item) => {
+				const selectedTarget = item.targets.find((target) => target.selected);
+				// Forge owns every Hlid-managed ACP lifecycle and every exact WSL
+				// target. The legacy updater only inspects external host commands.
+				if (
+					selectedTarget?.target.kind === "wsl" ||
+					selectedTarget?.provenance === "managed"
+				) {
+					return [];
+				}
+				return [
+					{
+						item,
+						customExecutable: Boolean(configured.get(item.id)?.executable),
+						managed: false,
+					},
+				];
+			});
 	},
 	readVersion: async (item) => {
 		const initialized = await inspectAcpAgent({
@@ -1031,8 +1056,19 @@ export async function inspectAcpUpdates(
 ): Promise<CliUpdateStatus[]> {
 	const checkedAt = dependencies.now();
 	const candidates = await dependencies.listCandidates();
-	return Promise.all(
+	const statuses = await Promise.all(
 		candidates.map(async (candidate) => {
+			const selectedTarget = candidate.item.targets.find(
+				(target) => target.selected,
+			);
+			// Managed ACP and WSL ACP lifecycle belongs to Forge. Never inspect or
+			// mutate either through this external-host updater.
+			if (
+				selectedTarget?.target.kind === "wsl" ||
+				selectedTarget?.provenance === "managed"
+			) {
+				return null;
+			}
 			const [installedResult] = await Promise.allSettled([
 				dependencies.readVersion(candidate.item),
 			]);
@@ -1073,6 +1109,10 @@ export async function inspectAcpUpdates(
 				...(errors.length > 0 ? { error: errors.join("; ") } : {}),
 			} satisfies CliUpdateStatus;
 		}),
+	);
+	return statuses.filter(
+		(status): status is Exclude<(typeof statuses)[number], null> =>
+			status != null,
 	);
 }
 
@@ -1379,6 +1419,23 @@ export async function getCliUpdateStatuses(
 
 export function isCliUpdateStatusRefreshPending(): boolean {
 	return inflight !== null || scheduledRefresh !== null;
+}
+
+/** Drop target-sensitive ACP update entries after Forge changes ACP runtime identity. */
+export async function invalidateAcpCliUpdateStatuses(
+	dependencies: CliUpdateStatusDependencies = defaultStatusDependencies,
+): Promise<void> {
+	if (scheduledRefresh) clearTimeout(scheduledRefresh);
+	scheduledRefresh = null;
+	if (inflight) await inflight.catch(() => {});
+	await hydrateCache(dependencies);
+	if (!cached) return;
+	const next = {
+		...cached,
+		statuses: cached.statuses.filter((status) => !status.id.startsWith("acp:")),
+	};
+	cached = next;
+	await dependencies.writeCache(next).catch(() => {});
 }
 
 /** @internal Reset module-level cache state between dependency-injected tests. */

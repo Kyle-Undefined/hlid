@@ -258,6 +258,42 @@ describe("POST /api/config — handlePostConfig", () => {
 		});
 	});
 
+	it("synchronizes an exact WSL ACP when its matching workspace changes", async () => {
+		const current = HlidConfigSchema.parse({
+			vault: { path: "C:\\Vault" },
+			agents: [
+				{
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\old",
+				},
+			],
+			acp_agents: [
+				{
+					id: "opencode",
+					target: { kind: "wsl", distro: "Ubuntu-24.04" },
+				},
+			],
+		});
+		mockLoadConfig.mockReturnValue(current);
+		vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as never);
+		const next = HlidConfigSchema.parse({
+			...current,
+			agents: [
+				{
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\new",
+				},
+			],
+		});
+
+		const response = await handlePostConfig(post(next));
+
+		expect(response.status).toBe(200);
+		expect(dbFetch).toHaveBeenCalledWith("/acp/sync", { method: "POST" });
+		expect(await response.json()).toMatchObject({
+			ok: true,
+			acp_runtime_synced: true,
+		});
+	});
+
 	it("reports ACP synchronization failures without rolling back the saved config", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		vi.mocked(dbFetch).mockImplementation((path) =>

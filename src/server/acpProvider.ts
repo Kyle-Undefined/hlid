@@ -1,6 +1,5 @@
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
-import { win32 } from "node:path";
 import { Readable, Writable } from "node:stream";
 import {
 	type Client,
@@ -22,6 +21,7 @@ import {
 	type ToolCallContent,
 	type ToolCallUpdate,
 } from "@agentclientprotocol/sdk";
+import type { AcpExecutionTarget } from "../lib/acpExecutionTarget";
 import {
 	type AcpModelVisibilityFilter,
 	acpModelVisible,
@@ -31,10 +31,11 @@ import { legacyProjectMcpAdapter } from "../lib/mcpConfig";
 import { replacementUnifiedDiff } from "../lib/unifiedDiff";
 import { discoverAcpProviderCapabilities } from "./acpCapabilityDiscovery";
 import {
-	acpCmdShimCommand,
-	acpLaunchUsesShell,
-	findAcpExecutable,
-} from "./acpExecutable";
+	type AcpExecutionAdapter,
+	type AcpExecutionAdapterFactory,
+	type AcpStartedProcess,
+	createAcpExecutionAdapter,
+} from "./acpExecutionAdapter";
 import {
 	acpSelectValues,
 	findAcpSessionConfigOption as configOption,
@@ -55,7 +56,6 @@ import type {
 	SlashCommand,
 	ToolProgressSnapshot,
 } from "./agentProvider";
-import { childIsRunning, waitForChildExit } from "./childProcessLifecycle";
 import { HLID_AGENT_NAMESPACE, HLID_AGENT_TOOL_SPECS } from "./hlidAgentTools";
 import { hlidMcpProcessCommand } from "./hlidMcpServer";
 import { isHtmlPlanPath } from "./htmlPlanPath";
@@ -175,96 +175,6 @@ async function runAcpPhase<T>(options: {
 	}
 }
 
-function spawnWindowsTaskkill(pid: number) {
-	const systemRoot =
-		process.env.SystemRoot ?? process.env.WINDIR ?? "C:\\Windows";
-	return spawn(
-		win32.join(systemRoot, "System32", "taskkill.exe"),
-		["/PID", String(pid), "/T", "/F"],
-		{ stdio: "ignore", windowsHide: true },
-	);
-}
-
-async function terminateWindowsProcessTree(
-	pid: number,
-	timeoutMs: number,
-): Promise<boolean> {
-	const killer = spawnWindowsTaskkill(pid);
-	let failed = false;
-	killer.once("error", () => {
-		failed = true;
-	});
-	if (await waitForChildExit(killer, timeoutMs)) {
-		return !failed && killer.exitCode === 0;
-	}
-	killer.kill();
-	return false;
-}
-
-function initiateOwnedChildTermination(
-	child: ChildProcessWithoutNullStreams,
-): void {
-	if (!childIsRunning(child)) return;
-	child.stdin.end();
-	const pid = child.pid;
-	if (process.platform === "win32" && pid) {
-		const killer = spawnWindowsTaskkill(pid);
-		killer.once("error", () => {
-			child.kill("SIGKILL");
-		});
-		killer.once("close", (code) => {
-			if (code !== 0 && childIsRunning(child)) child.kill("SIGKILL");
-		});
-		killer.unref();
-		return;
-	}
-	try {
-		if (pid) process.kill(-pid, "SIGKILL");
-		else child.kill("SIGKILL");
-	} catch {
-		child.kill("SIGKILL");
-	}
-}
-
-async function terminateOwnedChild(
-	child: ChildProcessWithoutNullStreams,
-	graceMs: number,
-	immediate = false,
-): Promise<void> {
-	if (!childIsRunning(child)) return;
-	if (immediate) {
-		initiateOwnedChildTermination(child);
-		if (await waitForChildExit(child, graceMs)) return;
-	} else {
-		child.stdin.end();
-		if (await waitForChildExit(child, Math.min(100, graceMs))) return;
-	}
-	const pid = child.pid;
-	if (process.platform === "win32" && pid) {
-		const killedTree = await terminateWindowsProcessTree(pid, graceMs).catch(
-			() => false,
-		);
-		if (killedTree && (await waitForChildExit(child, graceMs))) return;
-		child.kill("SIGKILL");
-		await waitForChildExit(child, graceMs);
-		return;
-	}
-	try {
-		if (pid) process.kill(-pid, "SIGTERM");
-		else child.kill("SIGTERM");
-	} catch {
-		child.kill("SIGTERM");
-	}
-	if (await waitForChildExit(child, graceMs)) return;
-	try {
-		if (pid) process.kill(-pid, "SIGKILL");
-		else child.kill("SIGKILL");
-	} catch {
-		child.kill("SIGKILL");
-	}
-	await waitForChildExit(child, graceMs);
-}
-
 function waitForPromptSettlement(
 	prompt: ActiveAcpPrompt,
 	timeoutMs: number,
@@ -286,92 +196,36 @@ function waitForPromptSettlement(
 	});
 }
 
-function waitForSpawn(child: ChildProcessWithoutNullStreams): Promise<void> {
-	if (child.pid !== undefined) return Promise.resolve();
-	return new Promise((resolve, reject) => {
-		const cleanup = () => {
-			child.off("spawn", onSpawn);
-			child.off("error", onError);
-		};
-		const onSpawn = () => {
-			cleanup();
-			resolve();
-		};
-		const onError = (error: Error) => {
-			cleanup();
-			reject(error);
-		};
-		child.once("spawn", onSpawn);
-		child.once("error", onError);
-	});
-}
-
-type StartedAcpProcess = {
-	child: ChildProcessWithoutNullStreams;
-	stderr: () => string;
-};
-
 async function startAcpProcess(options: {
 	provider: AcpProviderOptions;
 	cwd: string;
 	env: Record<string, string>;
 	signal?: AbortSignal;
-}): Promise<StartedAcpProcess> {
+}): Promise<AcpStartedProcess> {
 	const timeouts = acpTimeouts(options.provider);
 	const effectiveEnv = { ...process.env, ...options.env };
-	const resolvedCommand = await runAcpPhase({
-		phase: "executable resolution",
-		timeoutMs: timeouts.preparationMs,
-		signal: options.signal,
-		run: () =>
-			findAcpExecutable(options.provider.command, {
-				cwd: options.cwd,
-				env: effectiveEnv,
-			}),
-	});
-	if (!resolvedCommand) {
-		throw new AcpPhaseError(
-			"executable resolution",
-			`failed: ${options.provider.command} is not installed`,
-		);
-	}
-	const args = options.provider.args ?? [];
-	const useShell = acpLaunchUsesShell(resolvedCommand);
-	const launchCommand = useShell
-		? acpCmdShimCommand(resolvedCommand, args)
-		: resolvedCommand;
-	const launchArgs = useShell ? [] : args;
-	let child: ChildProcessWithoutNullStreams;
 	try {
-		child = spawn(launchCommand, launchArgs, {
-			cwd: options.cwd,
-			env: effectiveEnv,
-			stdio: ["pipe", "pipe", "pipe"],
-			windowsHide: true,
-			detached: process.platform !== "win32",
-			shell: useShell,
+		return await runAcpPhase({
+			phase: "process spawn",
+			timeoutMs: timeouts.preparationMs + timeouts.spawnMs,
+			signal: options.signal,
+			run: () =>
+				acpAdapter(options.provider).start({
+					command: options.provider.command,
+					args: options.provider.args ?? [],
+					hostCwd: options.cwd,
+					env: effectiveEnv,
+					forwardedEnvNames: Object.keys(options.env),
+					signal: options.signal,
+					preparationTimeoutMs: timeouts.preparationMs,
+					spawnTimeoutMs: timeouts.spawnMs,
+				}),
 		});
 	} catch (error) {
+		if (error instanceof AcpPhaseError) throw error;
 		throw new AcpPhaseError("process spawn", `failed: ${errorText(error)}`, {
 			cause: error,
 		});
-	}
-	let capturedStderr = "";
-	child.stderr.setEncoding("utf8");
-	child.stderr.on("data", (chunk: string) => {
-		capturedStderr = `${capturedStderr}${chunk}`.slice(-8_000);
-	});
-	try {
-		await runAcpPhase({
-			phase: "process spawn",
-			timeoutMs: timeouts.spawnMs,
-			signal: options.signal,
-			run: () => waitForSpawn(child),
-		});
-		return { child, stderr: () => capturedStderr };
-	} catch (error) {
-		await terminateOwnedChild(child, timeouts.terminateGraceMs);
-		throw appendAcpStderr(error, capturedStderr);
 	}
 }
 
@@ -380,6 +234,9 @@ export type AcpProviderOptions = {
 	label: string;
 	command: string;
 	args?: string[];
+	target?: AcpExecutionTarget;
+	/** Injectable target adapter factory. Primarily used by lifecycle tests. */
+	executionAdapter?: AcpExecutionAdapterFactory;
 	env?:
 		| Record<string, string>
 		| (() => Record<string, string> | Promise<Record<string, string>>);
@@ -396,6 +253,12 @@ export type AcpProviderOptions = {
 	/** Last registry-owned availability result, used before the first live check. */
 	initialAvailability?: { available: boolean; reason?: string };
 };
+
+function acpAdapter(options: AcpProviderOptions): AcpExecutionAdapter {
+	return (options.executionAdapter ?? createAcpExecutionAdapter)(
+		options.target,
+	);
+}
 
 async function resolveAcpEnv(
 	env: AcpProviderOptions["env"],
@@ -1239,7 +1102,8 @@ class AcpSession implements AgentSession {
 	private modelVisibilityFault: Error | null = null;
 	private initPromise: Promise<void> | null = null;
 	private cleanupPromise: Promise<void> | null = null;
-	private cleanupChild: ChildProcessWithoutNullStreams | null = null;
+	private cleanupProcess: AcpStartedProcess | null = null;
+	private ownedProcess: AcpStartedProcess | null = null;
 	private activePrompt: ActiveAcpPrompt | null = null;
 	private cancelled = false;
 	private turns = 0;
@@ -1986,27 +1850,27 @@ class AcpSession implements AgentSession {
 
 	private async stopOwnedProcess(immediate = false): Promise<void> {
 		if (this.cleanupPromise) {
-			if (immediate && this.cleanupChild) {
-				initiateOwnedChildTermination(this.cleanupChild);
+			if (immediate && this.cleanupProcess) {
+				this.cleanupProcess.initiateTermination();
 			}
 			return this.cleanupPromise;
 		}
-		const child = this.process;
-		if (!child) return;
+		const owned = this.ownedProcess;
+		const child = owned?.child;
+		if (!owned || !child) return;
 		this.expectedProcessExits.add(child);
 		this.process = null;
+		this.ownedProcess = null;
 		this.connection = null;
-		this.cleanupChild = child;
-		const pending = terminateOwnedChild(
-			child,
-			this.timeouts.terminateGraceMs,
-			immediate,
-		).finally(() => {
-			if (this.cleanupPromise === pending) {
-				this.cleanupPromise = null;
-				this.cleanupChild = null;
-			}
-		});
+		this.cleanupProcess = owned;
+		const pending = owned
+			.terminate(this.timeouts.terminateGraceMs, immediate)
+			.finally(() => {
+				if (this.cleanupPromise === pending) {
+					this.cleanupPromise = null;
+					this.cleanupProcess = null;
+				}
+			});
 		this.cleanupPromise = pending;
 		return pending;
 	}
@@ -2016,6 +1880,7 @@ class AcpSession implements AgentSession {
 		this.runtimeGeneration += 1;
 		this.connection = null;
 		this.process = null;
+		this.ownedProcess = null;
 		this.sessionId = null;
 		this.initPromise = null;
 		this.canDeleteSession = false;
@@ -2059,6 +1924,8 @@ class AcpSession implements AgentSession {
 
 	private async initializeRuntime(): Promise<void> {
 		const runtimeGeneration = ++this.runtimeGeneration;
+		const adapter = acpAdapter(this.options);
+		const providerCwd = adapter.providerPath(this.params.cwd, this.params.cwd);
 		const [providerEnv, obsidianStatus] = await this.runPhase(
 			"startup preparation",
 			this.timeouts.preparationMs,
@@ -2074,21 +1941,26 @@ class AcpSession implements AgentSession {
 		if (
 			!this.mcpServers.some((server) => server.name === HLID_AGENT_NAMESPACE)
 		) {
-			this.mcpServers.unshift({
-				name: HLID_AGENT_NAMESPACE,
-				...hlidMcpProcessCommand({
-					providerId: this.params.providerId ?? this.options.id,
-					model: this.params.model,
-					effort: this.params.effort,
-					permissionMode: this.params.permissionMode,
-					policyEnforced: this.params.policyEnforced,
-					codexRealtimeEnabled: this.params.codexRealtimeEnabled,
-					runtimeCwd: this.params.cwd,
-					sessionId: this.params.hostSessionId,
-					vaultName: this.params.vaultName,
-					agentMode: this.params.agentMode,
-				}),
-			});
+			this.mcpServers.unshift(
+				adapter.adaptMcpServer(
+					{
+						name: HLID_AGENT_NAMESPACE,
+						...hlidMcpProcessCommand({
+							providerId: this.params.providerId ?? this.options.id,
+							model: this.params.model,
+							effort: this.params.effort,
+							permissionMode: this.params.permissionMode,
+							policyEnforced: this.params.policyEnforced,
+							codexRealtimeEnabled: this.params.codexRealtimeEnabled,
+							runtimeCwd: this.params.cwd,
+							sessionId: this.params.hostSessionId,
+							vaultName: this.params.vaultName,
+							agentMode: this.params.agentMode,
+						}),
+					},
+					this.params.cwd,
+				),
+			);
 			this.mcpStatuses.unshift({
 				name: HLID_AGENT_NAMESPACE,
 				status: "pending",
@@ -2101,10 +1973,15 @@ class AcpSession implements AgentSession {
 				(server) => server.name === OBSIDIAN_AGENT_NAMESPACE,
 			)
 		) {
-			this.mcpServers.unshift({
-				name: OBSIDIAN_AGENT_NAMESPACE,
-				...obsidianMcpProcessCommand(),
-			});
+			this.mcpServers.unshift(
+				adapter.adaptMcpServer(
+					{
+						name: OBSIDIAN_AGENT_NAMESPACE,
+						...obsidianMcpProcessCommand(),
+					},
+					this.params.cwd,
+				),
+			);
 			this.mcpStatuses.unshift({
 				name: OBSIDIAN_AGENT_NAMESPACE,
 				status: "pending",
@@ -2119,6 +1996,7 @@ class AcpSession implements AgentSession {
 			signal: this.runtimeAbortController.signal,
 		});
 		const { child } = started;
+		this.ownedProcess = started;
 		this.process = child;
 		this.stderr = started.stderr;
 		child.once("error", (error) => {
@@ -2339,7 +2217,11 @@ class AcpSession implements AgentSession {
 		const additionalDirectoryParams =
 			sessionCapabilities?.additionalDirectories &&
 			this.params.additionalDirectories !== undefined
-				? { additionalDirectories: this.params.additionalDirectories }
+				? {
+						additionalDirectories: this.params.additionalDirectories
+							.filter((path) => adapter.pathAccessible(this.params.cwd, path))
+							.map((path) => adapter.providerPath(this.params.cwd, path)),
+					}
 				: {};
 		const sessionMcpServers = this.negotiatedMcpServers(
 			initialized.agentCapabilities?.mcpCapabilities,
@@ -2372,7 +2254,7 @@ class AcpSession implements AgentSession {
 						() =>
 							connection.resumeSession({
 								sessionId: this.params.sessionId ?? "",
-								cwd: this.params.cwd,
+								cwd: providerCwd,
 								...additionalDirectoryParams,
 								mcpServers: sessionMcpServers,
 							}),
@@ -2388,7 +2270,7 @@ class AcpSession implements AgentSession {
 							() =>
 								connection.loadSession({
 									sessionId: this.params.sessionId ?? "",
-									cwd: this.params.cwd,
+									cwd: providerCwd,
 									...additionalDirectoryParams,
 									mcpServers: sessionMcpServers,
 								}),
@@ -2410,7 +2292,7 @@ class AcpSession implements AgentSession {
 					this.timeouts.sessionMs,
 					() =>
 						connection.newSession({
-							cwd: this.params.cwd,
+							cwd: providerCwd,
 							...additionalDirectoryParams,
 							mcpServers: sessionMcpServers,
 						}),
@@ -2423,7 +2305,7 @@ class AcpSession implements AgentSession {
 				this.timeouts.sessionMs,
 				() =>
 					connection.newSession({
-						cwd: this.params.cwd,
+						cwd: providerCwd,
 						...additionalDirectoryParams,
 						mcpServers: sessionMcpServers,
 					}),
@@ -3122,10 +3004,16 @@ export class AcpProvider implements AgentProvider {
 				timeoutMs: acpTimeouts(this.options).preparationMs,
 				run: async () => {
 					const providerEnv = await resolveAcpEnv(this.options.env);
-					return findAcpExecutable(this.options.command, {
-						cwd: this.options.discoveryCwd ?? process.cwd(),
-						env: { ...process.env, ...providerEnv },
-					});
+					const hostCwd = this.options.discoveryCwd ?? process.cwd();
+					return acpAdapter(this.options).resolveExecutable(
+						this.options.command,
+						{
+							hostCwd,
+							env: { ...process.env, ...providerEnv },
+							forwardedEnvNames: Object.keys(providerEnv),
+							timeoutMs: acpTimeouts(this.options).preparationMs,
+						},
+					);
 				},
 			});
 			const result = resolved
@@ -3224,10 +3112,12 @@ export class AcpProvider implements AgentProvider {
 			"session fork inspection",
 		);
 		let inspection: AcpInspectionConnection | null = null;
+		const hostCwd = params.cwd ?? this.options.discoveryCwd ?? process.cwd();
+		const providerCwd = acpAdapter(this.options).providerPath(hostCwd, hostCwd);
 		try {
 			inspection = await createInspectionConnection(
 				this.options,
-				params.cwd ?? this.options.discoveryCwd ?? process.cwd(),
+				hostCwd,
 				deadline.signal,
 			);
 			const { connection } = inspection;
@@ -3249,7 +3139,7 @@ export class AcpProvider implements AgentProvider {
 				() =>
 					connection.unstable_forkSession({
 						sessionId: params.sessionId,
-						cwd: params.cwd ?? this.options.discoveryCwd ?? process.cwd(),
+						cwd: providerCwd,
 						mcpServers: [],
 					}),
 			);
@@ -3322,8 +3212,7 @@ async function createInspectionConnection(
 			stderr: started.stderr,
 			signal,
 			cleanup: (immediate = signal?.aborted ?? false) => {
-				cleanupPromise ??= terminateOwnedChild(
-					child,
+				cleanupPromise ??= started.terminate(
 					timeouts.terminateGraceMs,
 					immediate,
 				);
@@ -3331,7 +3220,7 @@ async function createInspectionConnection(
 			},
 		};
 	} catch (error) {
-		await terminateOwnedChild(child, timeouts.terminateGraceMs, true);
+		await started.terminate(timeouts.terminateGraceMs, true);
 		throw appendAcpStderr(error, started.stderr());
 	}
 }
@@ -3372,6 +3261,7 @@ function initializeInspection(
 function createInspectionDeadline(
 	timeoutMs: number,
 	phase: string,
+	externalSignal?: AbortSignal,
 ): {
 	signal: AbortSignal;
 	clear: () => void;
@@ -3383,9 +3273,20 @@ function createInspectionDeadline(
 		);
 	}, timeoutMs);
 	timer.unref?.();
+	const onAbort = () => {
+		controller.abort(
+			externalSignal?.reason ??
+				new AcpPhaseError(phase, "cancelled by the caller"),
+		);
+	};
+	if (externalSignal?.aborted) onAbort();
+	else externalSignal?.addEventListener("abort", onAbort, { once: true });
 	return {
 		signal: controller.signal,
-		clear: () => clearTimeout(timer),
+		clear: () => {
+			clearTimeout(timer);
+			externalSignal?.removeEventListener("abort", onAbort);
+		},
 	};
 }
 
@@ -3393,6 +3294,7 @@ async function inspectAcpMetadata(
 	options: AcpProviderOptions,
 	cwd = options.discoveryCwd ?? process.cwd(),
 ): Promise<AcpMetadataInspection> {
+	const providerCwd = acpAdapter(options).providerPath(cwd, cwd);
 	const timeouts = acpTimeouts(options);
 	const deadline = createInspectionDeadline(
 		timeouts.inspectionMs,
@@ -3415,7 +3317,7 @@ async function inspectAcpMetadata(
 			timeouts.sessionMs,
 			() =>
 				connection.newSession({
-					cwd,
+					cwd: providerCwd,
 					mcpServers: [],
 				}),
 		);
@@ -3459,6 +3361,7 @@ async function inspectAcpMetadata(
 export async function inspectAcpAgent(
 	options: AcpProviderOptions,
 	methodId?: string,
+	signal?: AbortSignal,
 ): Promise<InitializeResponse> {
 	const timeouts = acpTimeouts(options);
 	const deadline = createInspectionDeadline(
@@ -3469,6 +3372,7 @@ export async function inspectAcpAgent(
 					timeouts.authenticationMs
 			: timeouts.inspectionMs,
 		methodId ? "authenticated inspection" : "agent inspection",
+		signal,
 	);
 	let inspection: AcpInspectionConnection | null = null;
 	try {

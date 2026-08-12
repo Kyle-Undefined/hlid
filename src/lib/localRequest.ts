@@ -22,3 +22,19 @@ export function cliUpdateAccessResponse(request: Request): Response | null {
 		{ status: 403 },
 	);
 }
+
+/** Use the same narrow mutation boundary for Hlid-managed ACP installations. */
+export const isAcpManagedInstallUiRequest = isCliUpdateUiRequest;
+
+export function acpManagedInstallAccessResponse(
+	request: Request,
+): Response | null {
+	if (isAcpManagedInstallUiRequest(request)) return null;
+	return Response.json(
+		{
+			ok: false,
+			error: "ACP installations can only be managed locally or over Tailscale",
+		},
+		{ status: 403 },
+	);
+}

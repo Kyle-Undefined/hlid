@@ -152,6 +152,10 @@ describe("buildApiIndex", () => {
 		const updateWrite = endpoint("POST", "/api/updates");
 		expect(updateWrite?.desc).toContain("authenticated Tailscale");
 		expect(updateWrite?.desc).not.toContain("loopback-only");
+		const acpInstall = endpoint("POST", "/api/acp/installations");
+		expect(acpInstall?.desc).toContain("server-resolved Windows or WSL target");
+		expect(acpInstall?.desc).toContain("receipt-backed cleanup target");
+		expect(acpInstall?.desc).toContain("authenticated Tailscale");
 
 		const configRead = endpoint("GET", "/api/config");
 		expect(configRead?.desc).toContain("__HLID_SECRET_SET__");

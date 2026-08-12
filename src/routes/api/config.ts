@@ -9,6 +9,7 @@ import { forbiddenResponse } from "#/lib/originGate";
 import { expandTilde } from "#/lib/paths";
 import { publicConfig, restoreConfigSecrets } from "#/lib/publicConfig";
 import {
+	acpDiscoveryCwd,
 	OpenCodeConfigOverlayError,
 	preflightOpenCodeModelFilter,
 } from "#/server/acpRuntime";
@@ -19,10 +20,15 @@ let pendingAcpRuntimeTarget: string | null = null;
 function acpRuntimeTarget(
 	config: ReturnType<typeof HlidConfigSchema.parse>,
 ): string {
+	const discoveryCwds = (config.acp_agents ?? [])
+		.map((agent) => [agent.id, acpDiscoveryCwd(config, agent)] as const)
+		.sort(([left], [right]) => left.localeCompare(right));
 	return createHash("sha256")
 		.update(config.vault.path)
 		.update("\0")
 		.update(acpRuntimeIdentity(config.acp_agents ?? []))
+		.update("\0")
+		.update(JSON.stringify(discoveryCwds))
 		.digest("base64url");
 }
 
@@ -132,10 +138,8 @@ export async function handlePostConfig(request: Request): Promise<Response> {
 	const nextAcpAgents = config.acp_agents ?? [];
 	const nextAcpRuntimeTarget = acpRuntimeTarget(config);
 	const acpRuntimeIdentityChanged =
-		acpRuntimeIdentity(currentAcpAgents) !==
-			acpRuntimeIdentity(nextAcpAgents) ||
-		(current.vault.path !== config.vault.path &&
-			(currentAcpAgents.length > 0 || nextAcpAgents.length > 0));
+		(currentAcpAgents.length > 0 || nextAcpAgents.length > 0) &&
+		currentAcpRuntimeTarget !== nextAcpRuntimeTarget;
 	const acpRuntimeSyncRequired =
 		acpRuntimeIdentityChanged ||
 		pendingAcpRuntimeTarget === nextAcpRuntimeTarget;
@@ -143,6 +147,13 @@ export async function handlePostConfig(request: Request): Promise<Response> {
 	const acpRuntimeSync = acpRuntimeSyncRequired
 		? dbFetch("/acp/sync", { method: "POST" })
 		: null;
+	if (acpRuntimeIdentityChanged) {
+		void import("#/server/cliUpdates")
+			.then(({ invalidateAcpCliUpdateStatuses }) =>
+				invalidateAcpCliUpdateStatuses(),
+			)
+			.catch(() => {});
+	}
 	if (!codexRuntimeIdentityChanged && !acpRuntimeSyncRequired) {
 		void codexRuntimeSync.catch(() => {});
 		return Response.json({

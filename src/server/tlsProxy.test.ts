@@ -344,6 +344,7 @@ describe("TLS HTTP proxy limits", () => {
 		expect(headers.get("x-hlid-proxy-token")).toBe("internal-secret");
 		expect(headers.get("x-hlid-forwarded-proto")).toBe("https");
 		expect(headers.get("x-hlid-forwarded-client-ip")).toBe("192.0.2.5");
+		expect(headers.get("x-hlid-forwarded-host")).toBe("hlid.test");
 		expect(headers.get("accept-encoding")).toBe("identity");
 		expect(response.status).toBe(201);
 		expect(response.headers.get("x-upstream")).toBe("yes");

@@ -138,6 +138,46 @@ describe("forge route loader", () => {
 });
 
 describe("forge inventory refresh", () => {
+	it("retains managed ACP operation snapshots across route remounts", () => {
+		const loaderData = {
+			server: { port: 3000 },
+			cwd: "C:\\workspace",
+			providers: [],
+			accountInfo: null,
+			voiceInfo: { status: { state: "ready", model: "base" }, models: [] },
+			cliProxyInfo: {
+				state: "ready",
+				managed: false,
+				authenticated: false,
+				oauth: "idle",
+				accounts: {},
+			},
+			acpCatalog: [],
+			inventoryStatus: "ready",
+		};
+		routeState.loaderData = loaderData;
+		const Component = route.component;
+		const first = render(<Component />);
+		const activeCatalog = [
+			{
+				id: "opencode",
+				targets: [{ operation: { id: "operation-1", phase: "probing" } }],
+			},
+		];
+		const onAcpCatalogChange = routeState.forgeSettings.mock.lastCall?.[0]
+			.onAcpCatalogChange as (catalog: unknown[]) => void;
+		act(() => onAcpCatalogChange(activeCatalog));
+		expect(
+			routeState.forgeSettings.mock.lastCall?.[0].initial.acpCatalog,
+		).toEqual(activeCatalog);
+
+		first.unmount();
+		render(<Component />);
+		expect(
+			routeState.forgeSettings.mock.lastCall?.[0].initial.acpCatalog,
+		).toEqual(activeCatalog);
+	});
+
 	it("hydrates URL-backed Forge navigation and serializes destination changes", () => {
 		routeState.loaderData = {
 			server: { port: 3000 },

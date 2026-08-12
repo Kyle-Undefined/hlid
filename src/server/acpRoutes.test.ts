@@ -6,6 +6,77 @@ import {
 } from "./acpProvider";
 import { createAcpRouteHandler } from "./acpRoutes";
 import { OpenCodeConfigOverlayError } from "./acpRuntime";
+import { acpExecutionTargetId } from "./acpTargets";
+
+const mutationRevision = "a".repeat(64);
+const hostTarget = {
+	targetId: "host",
+	target: { kind: "host" as const },
+	label: "Host",
+	recommended: true,
+	selected: true,
+	platformTarget: "linux-x86_64",
+	provenance: "external" as const,
+	available: true,
+	canEnable: true,
+	canInstall: true,
+	canUpdate: false,
+	canRemove: false,
+	registryVersion: "1",
+	mutationRevision,
+	resolvedExecutable: "/usr/bin/opencode",
+	command: "opencode",
+	args: ["acp"],
+	env: { TARGET_SECRET: "redacted" },
+	installGuidance: "install",
+};
+const { env: _hostTargetEnvironment, ...publicHostTarget } = hostTarget;
+const orphanTarget = { kind: "wsl" as const, distro: "Ubuntu-24.04" };
+const orphanTargetId = acpExecutionTargetId(orphanTarget);
+const orphanClaim = {
+	agentId: "opencode",
+	target: orphanTarget,
+	targetId: orphanTargetId,
+	hostCwd: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\removed",
+};
+const secondOrphanTarget = { kind: "wsl" as const, distro: "Debian" };
+const secondOrphanTargetId = acpExecutionTargetId(secondOrphanTarget);
+const secondOrphanClaim = {
+	agentId: "opencode",
+	target: secondOrphanTarget,
+	targetId: secondOrphanTargetId,
+	hostCwd: "\\\\wsl.localhost\\Debian\\home\\kyle\\removed",
+};
+const orphanTargetStatus = {
+	targetId: orphanTargetId,
+	target: orphanTarget,
+	label: "WSL · Ubuntu-24.04",
+	recommended: false,
+	selected: false,
+	platformTarget: "linux-unknown",
+	provenance: "managed" as const,
+	available: false,
+	canEnable: false,
+	canInstall: false,
+	canUpdate: false,
+	canRemove: true,
+	cleanupOnly: true,
+	registryVersion: "1",
+	installedVersion: "1",
+	mutationRevision,
+	command: "/mnt/c/Hlid/opencode",
+	args: ["acp"],
+	env: {},
+	installGuidance: "Remove the retained managed installation",
+	blockedReason: "The original WSL workspace is no longer configured",
+};
+const secondOrphanTargetStatus = {
+	...orphanTargetStatus,
+	targetId: secondOrphanTargetId,
+	target: secondOrphanTarget,
+	label: "WSL · Debian",
+	command: "/mnt/c/Hlid/opencode-debian",
+};
 
 const enabledAgent = {
 	id: "opencode",
@@ -20,6 +91,7 @@ const enabledAgent = {
 	args: ["acp"],
 	env: { BASE: "registry" },
 	installGuidance: "install",
+	targets: [hostTarget],
 };
 
 const catalog = vi.fn();
@@ -481,9 +553,255 @@ describe("ACP internal HTTP routes", () => {
 		expect(syncRuntime).toHaveBeenCalledOnce();
 		const body = (await response?.json()) as { agents: unknown[] };
 		expect(body).toEqual({
-			agents: [{ ...enabledAgent, env: {} }],
+			agents: [
+				{
+					...enabledAgent,
+					env: {},
+					targets: [publicHostTarget],
+				},
+			],
 		});
 		expect(body.agents[0]).not.toHaveProperty("runtimeExecutableEvidence");
+	});
+
+	it("starts a managed mutation only from server-resolved catalog data", async () => {
+		const completion = Promise.resolve();
+		const mutate = vi.fn(() => ({
+			operation: {
+				id: "operation-1",
+				action: "install" as const,
+				phase: "queued" as const,
+				cancelable: true,
+			},
+			completion,
+		}));
+		const managedHandle = createAcpRouteHandler({
+			registry: { catalog },
+			loadConfig,
+			managedInstaller: { mutate },
+			managedMutationAuthorized: () => true,
+		});
+		const response = await managedHandle(
+			new URL("http://localhost/acp/managed/mutate"),
+			request("/acp/managed/mutate", "POST", {
+				action: "install",
+				agentId: "opencode",
+				targetId: "host",
+				revision: mutationRevision,
+			}),
+		);
+
+		expect(response?.status).toBe(202);
+		expect(mutate).toHaveBeenCalledWith({
+			action: "install",
+			agent: enabledAgent,
+			targetDescriptor: expect.objectContaining({
+				targetId: "host",
+				target: { kind: "host" },
+			}),
+			platformTarget: "linux-x86_64",
+			enabled: true,
+		});
+		expect(await response?.json()).toEqual({
+			ok: true,
+			data: {
+				id: "operation-1",
+				action: "install",
+				phase: "queued",
+				cancelable: true,
+			},
+		});
+	});
+
+	it("removes a receipt-backed managed target after its workspace disappears", async () => {
+		const mutate = vi.fn(() => ({
+			operation: {
+				id: "operation-remove",
+				action: "remove" as const,
+				phase: "queued" as const,
+				cancelable: false,
+			},
+			completion: Promise.resolve(),
+		}));
+		const orphanAgent = {
+			...enabledAgent,
+			enabled: false,
+			available: false,
+			command: orphanTargetStatus.command,
+			args: orphanTargetStatus.args,
+			env: {},
+			targets: [orphanTargetStatus, secondOrphanTargetStatus],
+		};
+		loadConfig.mockReturnValue(HlidConfigSchema.parse({}));
+		catalog.mockResolvedValue([orphanAgent]);
+		const managedHandle = createAcpRouteHandler({
+			registry: { catalog },
+			loadConfig,
+			managedInstaller: {
+				mutate,
+				claimedTargets: () => [orphanClaim, secondOrphanClaim],
+			},
+			managedMutationAuthorized: () => true,
+		});
+
+		const response = await managedHandle(
+			new URL("http://localhost/acp/managed/mutate"),
+			request("/acp/managed/mutate", "POST", {
+				action: "remove",
+				agentId: "opencode",
+				targetId: secondOrphanTargetId,
+				revision: mutationRevision,
+			}),
+		);
+
+		expect(response?.status).toBe(202);
+		expect(mutate).toHaveBeenCalledWith({
+			action: "remove",
+			agent: orphanAgent,
+			targetDescriptor: {
+				targetId: secondOrphanTargetId,
+				target: secondOrphanTarget,
+				label: "WSL · Debian",
+				cwd: secondOrphanClaim.hostCwd,
+				recommended: false,
+			},
+			platformTarget: "linux-unknown",
+			enabled: false,
+		});
+	});
+
+	it.each([
+		"install",
+		"update",
+	] as const)("does not allow %s through an orphaned managed-target claim", async (action) => {
+		const mutate = vi.fn();
+		loadConfig.mockReturnValue(HlidConfigSchema.parse({}));
+		const managedHandle = createAcpRouteHandler({
+			registry: { catalog },
+			loadConfig,
+			managedInstaller: {
+				mutate,
+				claimedTargets: () => [orphanClaim],
+			},
+			managedMutationAuthorized: () => true,
+		});
+
+		const response = await managedHandle(
+			new URL("http://localhost/acp/managed/mutate"),
+			request("/acp/managed/mutate", "POST", {
+				action,
+				agentId: "opencode",
+				targetId: orphanTargetId,
+				revision: mutationRevision,
+			}),
+		);
+
+		expect(response?.status).toBe(404);
+		expect(catalog).not.toHaveBeenCalled();
+		expect(mutate).not.toHaveBeenCalled();
+	});
+
+	it("requires the internal managed-mutation authorization boundary", async () => {
+		const mutate = vi.fn();
+		const managedHandle = createAcpRouteHandler({
+			registry: { catalog },
+			loadConfig,
+			managedInstaller: { mutate },
+			managedMutationAuthorized: () => false,
+		});
+		const response = await managedHandle(
+			new URL("http://localhost/acp/managed/mutate"),
+			request("/acp/managed/mutate", "POST", {
+				action: "install",
+				agentId: "opencode",
+				targetId: "host",
+			}),
+		);
+		expect(response?.status).toBe(403);
+		expect(mutate).not.toHaveBeenCalled();
+	});
+
+	it("requires reconfirmation when registry or install state changes", async () => {
+		const mutate = vi.fn();
+		const managedHandle = createAcpRouteHandler({
+			registry: { catalog },
+			loadConfig,
+			managedInstaller: { mutate },
+			managedMutationAuthorized: () => true,
+		});
+		const response = await managedHandle(
+			new URL("http://localhost/acp/managed/mutate"),
+			request("/acp/managed/mutate", "POST", {
+				action: "install",
+				agentId: "opencode",
+				targetId: "host",
+				revision: "b".repeat(64),
+			}),
+		);
+
+		expect(response?.status).toBe(409);
+		expect(mutate).not.toHaveBeenCalled();
+	});
+
+	it("rechecks configuration after asynchronous catalog resolution", async () => {
+		const mutate = vi.fn();
+		loadConfig
+			.mockReturnValueOnce(
+				HlidConfigSchema.parse({ acp_agents: [{ id: "opencode" }] }),
+			)
+			.mockReturnValueOnce(HlidConfigSchema.parse({ acp_agents: [] }));
+		const managedHandle = createAcpRouteHandler({
+			registry: { catalog },
+			loadConfig,
+			managedInstaller: { mutate },
+			managedMutationAuthorized: () => true,
+		});
+		const response = await managedHandle(
+			new URL("http://localhost/acp/managed/mutate"),
+			request("/acp/managed/mutate", "POST", {
+				action: "install",
+				agentId: "opencode",
+				targetId: "host",
+				revision: mutationRevision,
+			}),
+		);
+
+		expect(response?.status).toBe(409);
+		expect(mutate).not.toHaveBeenCalled();
+	});
+
+	it("rejects a managed mutation when invocation overrides change during catalog resolution", async () => {
+		const mutate = vi.fn();
+		loadConfig
+			.mockReturnValueOnce(
+				HlidConfigSchema.parse({ acp_agents: [{ id: "opencode" }] }),
+			)
+			.mockReturnValueOnce(
+				HlidConfigSchema.parse({
+					acp_agents: [
+						{ id: "opencode", executable: "custom-opencode", args: ["serve"] },
+					],
+				}),
+			);
+		const managedHandle = createAcpRouteHandler({
+			registry: { catalog },
+			loadConfig,
+			managedInstaller: { mutate },
+			managedMutationAuthorized: () => true,
+		});
+
+		const response = await managedHandle(
+			new URL("http://localhost/acp/managed/mutate"),
+			request("/acp/managed/mutate", "POST", {
+				action: "install",
+				agentId: "opencode",
+				targetId: "host",
+				revision: mutationRevision,
+			}),
+		);
+
+		expect(response?.status).toBe(409);
+		expect(mutate).not.toHaveBeenCalled();
 	});
 
 	it("validates authentication requests before inspecting an agent", async () => {

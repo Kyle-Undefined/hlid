@@ -1,5 +1,9 @@
 import { type HlidConfig, HlidConfigSchema } from "../config";
+import { acpExecutionTargetLabel } from "../lib/acpExecutionTarget";
+import { parseAcpManagedMutationRequest } from "../lib/acpManagedTypes";
 import { AcpModelCatalogSchema } from "../lib/acpModelCatalog";
+import { acpRuntimeIdentity } from "../lib/acpRuntimeIdentity";
+import type { AcpManagedInstaller } from "./acpManagedInstall";
 import {
 	AcpProvider,
 	type AcpProviderNativeSession,
@@ -12,10 +16,16 @@ import {
 } from "./acpProvider";
 import type { AcpCatalogItem } from "./acpRegistry";
 import {
+	acpDiscoveryCwd,
 	acpRuntimeFingerprint,
 	effectiveAcpEnvironment,
 	OpenCodeConfigOverlayError,
 } from "./acpRuntime";
+import {
+	type AcpExecutionTargetDescriptor,
+	acpExecutionTargetId,
+	configuredAcpExecutionTarget,
+} from "./acpTargets";
 import type { ProviderModelInfo } from "./agentProvider";
 
 export type AcpProviderSessionImportInput = {
@@ -50,6 +60,10 @@ type AcpRouteDependencies = {
 	logSessionListFailure?: (message: string) => void;
 	logSessionImportFailure?: (message: string) => void;
 	syncRuntime?: () => Promise<unknown>;
+	managedInstaller?: Pick<AcpManagedInstaller, "mutate"> &
+		Partial<Pick<AcpManagedInstaller, "claimedTargets">>;
+	managedMutationAuthorized?: (request: Request) => boolean;
+	logManagedMutationFailure?: (message: string) => void;
 };
 
 async function inspectAcpModels(
@@ -64,8 +78,13 @@ async function resolveEnabledAcpItem(
 	dependencies: AcpRouteDependencies,
 	refreshRuntimeEvidence = false,
 ): Promise<
-	| { config: HlidConfig; item: AcpCatalogItem; response?: never }
-	| { config?: never; item?: never; response: Response }
+	| {
+			config: HlidConfig;
+			item: AcpCatalogItem;
+			configured: NonNullable<HlidConfig["acp_agents"]>[number] | undefined;
+			response?: never;
+	  }
+	| { config?: never; item?: never; configured?: never; response: Response }
 > {
 	const config = dependencies.loadConfig();
 	const item = (
@@ -87,7 +106,11 @@ async function resolveEnabledAcpItem(
 			),
 		};
 	}
-	return { config, item };
+	return {
+		config,
+		item,
+		configured: (config.acp_agents ?? []).find((agent) => agent.id === item.id),
+	};
 }
 
 async function resolveEnabledAcpRuntime(
@@ -111,7 +134,7 @@ async function resolveEnabledAcpRuntime(
 > {
 	const resolved = await resolveEnabledAcpItem(id, dependencies);
 	if (resolved.response) return resolved;
-	const { config, item } = resolved;
+	const { config, configured, item } = resolved;
 	let environment: Record<string, string>;
 	try {
 		environment = effectiveAcpEnvironment(item, config);
@@ -123,7 +146,7 @@ async function resolveEnabledAcpRuntime(
 		}
 		throw error;
 	}
-	const cwd = config.vault.path || process.cwd();
+	const cwd = acpDiscoveryCwd(config, configured);
 	return {
 		config,
 		item,
@@ -134,6 +157,7 @@ async function resolveEnabledAcpRuntime(
 			command: item.command,
 			args: item.args,
 			env: environment,
+			target: configured?.target,
 			discoveryCwd: cwd,
 			initialAvailability: { available: true },
 		},
@@ -151,9 +175,8 @@ async function discoverAcpModels(
 
 	const resolved = await resolveEnabledAcpItem(id, dependencies);
 	if (resolved.response) return resolved.response;
-	const { config, item } = resolved;
-
-	const discoveryCwd = config.vault.path || process.cwd();
+	const { config, configured, item } = resolved;
+	const targetCwd = acpDiscoveryCwd(config, configured);
 	try {
 		const models = await (dependencies.inspectModels ?? inspectAcpModels)(
 			{
@@ -162,10 +185,11 @@ async function discoverAcpModels(
 				command: item.command,
 				args: item.args,
 				env: item.env,
-				discoveryCwd,
+				target: configured?.target,
+				discoveryCwd: targetCwd,
 				initialAvailability: { available: true },
 			},
-			discoveryCwd,
+			targetCwd,
 		);
 		const parsed = AcpModelCatalogSchema.safeParse(models);
 		if (!parsed.success) throw new Error("invalid ACP model catalog");
@@ -386,6 +410,162 @@ async function importProviderNativeSession(
 	}
 }
 
+function managedMutationTarget(
+	config: HlidConfig,
+	action: "install" | "update" | "remove",
+	agentId: string,
+	targetId: string,
+	dependencies: AcpRouteDependencies,
+): AcpExecutionTargetDescriptor | null {
+	const configured = configuredAcpExecutionTarget(config, targetId);
+	if (configured || action !== "remove") return configured;
+	const claim = dependencies.managedInstaller
+		?.claimedTargets?.()
+		.find(
+			(candidate) =>
+				candidate.agentId === agentId && candidate.targetId === targetId,
+		);
+	return claim
+		? {
+				targetId: claim.targetId,
+				target: claim.target,
+				label: acpExecutionTargetLabel(claim.target),
+				cwd: claim.hostCwd,
+				recommended: false,
+			}
+		: null;
+}
+
+async function mutateManagedAcpInstallation(
+	request: Request,
+	dependencies: AcpRouteDependencies,
+): Promise<Response> {
+	if (!dependencies.managedInstaller) {
+		return Response.json(
+			{ ok: false, error: "Managed ACP installation is unavailable" },
+			{ status: 503 },
+		);
+	}
+	if (
+		dependencies.managedMutationAuthorized &&
+		!dependencies.managedMutationAuthorized(request)
+	) {
+		return Response.json({ ok: false, error: "Forbidden" }, { status: 403 });
+	}
+	const parsed = await parseAcpManagedMutationRequest(request);
+	if (!parsed.success) {
+		return Response.json(
+			{ ok: false, error: "A valid ACP installation action is required" },
+			{ status: 400 },
+		);
+	}
+	const config = dependencies.loadConfig();
+	const descriptor = managedMutationTarget(
+		config,
+		parsed.data.action,
+		parsed.data.agentId,
+		parsed.data.targetId,
+		dependencies,
+	);
+	const configured = (config.acp_agents ?? []).find(
+		(agent) => agent.id === parsed.data.agentId,
+	);
+	if (!descriptor) {
+		return Response.json(
+			{ ok: false, error: "ACP execution target is not configured" },
+			{ status: 404 },
+		);
+	}
+	const item = (await dependencies.registry.catalog(config)).find(
+		(agent) => agent.id === parsed.data.agentId,
+	);
+	const target = item?.targets.find(
+		(candidate) => candidate.targetId === descriptor.targetId,
+	);
+	if (!item || !target) {
+		return Response.json(
+			{ ok: false, error: "ACP agent or execution target was not found" },
+			{ status: 404 },
+		);
+	}
+	if (parsed.data.revision !== target.mutationRevision) {
+		return Response.json(
+			{
+				ok: false,
+				error:
+					"ACP installation details changed. Review the current version and confirm again.",
+			},
+			{ status: 409 },
+		);
+	}
+	const allowed =
+		parsed.data.action === "install"
+			? target.canInstall
+			: parsed.data.action === "update"
+				? target.canUpdate
+				: target.canRemove;
+	if (!allowed) {
+		return Response.json(
+			{ ok: false, error: `ACP ${parsed.data.action} is no longer available` },
+			{ status: 409 },
+		);
+	}
+	const currentConfig = dependencies.loadConfig();
+	const currentDescriptor = managedMutationTarget(
+		currentConfig,
+		parsed.data.action,
+		parsed.data.agentId,
+		parsed.data.targetId,
+		dependencies,
+	);
+	const currentConfigured = (currentConfig.acp_agents ?? []).find(
+		(agent) => agent.id === item.id,
+	);
+	const currentSelectedTargetId = currentConfigured
+		? acpExecutionTargetId(currentConfigured.target ?? { kind: "host" })
+		: undefined;
+	if (
+		!currentDescriptor ||
+		JSON.stringify(currentDescriptor) !== JSON.stringify(descriptor) ||
+		acpRuntimeIdentity(configured ? [configured] : []) !==
+			acpRuntimeIdentity(currentConfigured ? [currentConfigured] : []) ||
+		item.enabled !== Boolean(currentConfigured) ||
+		(item.enabled && currentSelectedTargetId !== descriptor.targetId)
+	) {
+		return Response.json(
+			{
+				ok: false,
+				error:
+					"ACP configuration changed. Wait for the save to finish and confirm again.",
+			},
+			{ status: 409 },
+		);
+	}
+	try {
+		const job = dependencies.managedInstaller.mutate({
+			action: parsed.data.action,
+			agent: item,
+			targetDescriptor: descriptor,
+			platformTarget: target.platformTarget,
+			enabled: item.enabled && target.selected,
+		});
+		void job.completion.catch((error) => {
+			(dependencies.logManagedMutationFailure ?? console.warn)(
+				`[acp] Managed ${parsed.data.action} failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		});
+		return Response.json({ ok: true, data: job.operation }, { status: 202 });
+	} catch (error) {
+		return Response.json(
+			{
+				ok: false,
+				error: error instanceof Error ? error.message : String(error),
+			},
+			{ status: 409 },
+		);
+	}
+}
+
 async function preflightAcpConfig(
 	request: Request,
 	dependencies: AcpRouteDependencies,
@@ -456,9 +636,15 @@ export function createAcpRouteHandler(dependencies: AcpRouteDependencies) {
 					({ runtimeExecutableEvidence: _runtimeEvidence, ...agent }) => ({
 						...agent,
 						env: {},
+						targets: (agent.targets ?? []).map(
+							({ env: _env, ...target }) => target,
+						),
 					}),
 				),
 			});
+		}
+		if (url.pathname === "/acp/managed/mutate" && request.method === "POST") {
+			return mutateManagedAcpInstallation(request, dependencies);
 		}
 		if (url.pathname === "/acp/authenticate" && request.method === "POST") {
 			return authenticateAcpAgent(request, dependencies);

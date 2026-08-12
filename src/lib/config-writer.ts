@@ -282,6 +282,7 @@ function serializeAcpAgent(
 	return [
 		"[[acp_agents]]",
 		`id = ${tomlVal(agent.id)}`,
+		...(agent.target ? [`target = ${tomlInlineTable(agent.target)}`] : []),
 		...optionalEntry("executable", agent.executable),
 		...optionalEntry("args", agent.args),
 		...(agent.env ? [`env = ${tomlInlineTable(agent.env)}`] : []),

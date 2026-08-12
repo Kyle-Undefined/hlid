@@ -12,11 +12,14 @@ import type { HlidConfig } from "#/config";
 import type { AcpCatalogItem } from "#/lib/serverFns/acp";
 import { AcpSection } from "./AcpSection";
 
+const mutationRevision = "a".repeat(64);
+
 const serverFns = vi.hoisted(() => ({
 	authenticate: vi.fn(),
 	registry: vi.fn(),
 	listSessions: vi.fn(),
 	importSession: vi.fn(),
+	mutate: vi.fn(),
 }));
 
 vi.mock("#/lib/serverFns/acp", () => ({
@@ -26,9 +29,14 @@ vi.mock("#/lib/serverFns/acp", () => ({
 	importAcpProviderSessionFn: serverFns.importSession,
 }));
 
+vi.mock("#/lib/acpManagedClient", () => ({
+	mutateAcpManagedInstallation: serverFns.mutate,
+}));
+
 afterEach(() => {
 	cleanup();
 	vi.clearAllMocks();
+	vi.useRealTimers();
 });
 
 function item(id: string, name: string): AcpCatalogItem {
@@ -44,6 +52,53 @@ function item(id: string, name: string): AcpCatalogItem {
 		args: [],
 		env: {},
 		installGuidance: `Install ${name}`,
+		targets: [
+			{
+				targetId: "host",
+				target: { kind: "host" },
+				label: "Windows",
+				recommended: true,
+				selected: true,
+				platformTarget: "windows-x86_64",
+				provenance: "external",
+				available: true,
+				canEnable: true,
+				canInstall: false,
+				canUpdate: false,
+				canRemove: false,
+				registryVersion: "1.0.0",
+				mutationRevision,
+				command: id,
+				args: [],
+				installGuidance: `Install ${name}`,
+			},
+		],
+	};
+}
+
+function wslTarget(
+	patch: Partial<AcpCatalogItem["targets"][number]> = {},
+): AcpCatalogItem["targets"][number] {
+	return {
+		targetId: "wsl-ubuntu",
+		target: { kind: "wsl", distro: "Ubuntu-24.04" },
+		label: "WSL · Ubuntu-24.04",
+		recommended: true,
+		selected: true,
+		platformTarget: "linux-x86_64",
+		provenance: "managed",
+		available: true,
+		canEnable: true,
+		canInstall: false,
+		canUpdate: false,
+		canRemove: true,
+		registryVersion: "1.0.0",
+		mutationRevision,
+		installedVersion: "1.0.0",
+		command: "/managed/opencode",
+		args: ["acp"],
+		installGuidance: "Install OpenCode",
+		...patch,
 	};
 }
 
@@ -339,6 +394,15 @@ describe("AcpSection", () => {
 				...item("opencode", "OpenCode"),
 				available: false,
 				unavailableReason: "OpenCode CLI is no longer available",
+				targets: [
+					{
+						...item("opencode", "OpenCode").targets[0],
+						provenance: "missing",
+						available: false,
+						canEnable: false,
+						installGuidance: "Install OpenCode",
+					},
+				],
 			},
 		]);
 		render(
@@ -499,7 +563,16 @@ describe("AcpSection", () => {
 		);
 		view.rerender(
 			<AcpSection
-				initialCatalog={[{ ...original, args: ["acp", "--new"] }]}
+				initialCatalog={[
+					{
+						...original,
+						args: ["acp", "--new"],
+						targets: original.targets.map((target) => ({
+							...target,
+							args: ["acp", "--new"],
+						})),
+					},
+				]}
 				value={[{ id: "opencode" }]}
 				onChange={vi.fn()}
 				onDiscoverModels={discover}
@@ -610,6 +683,273 @@ describe("AcpSection", () => {
 					name: "Refresh models & modes",
 				}) as HTMLButtonElement
 			).disabled,
+		).toBe(false);
+	});
+
+	it("persists the exact verified target only when enabling an agent", () => {
+		const onChange = vi.fn();
+		const opencode = item("opencode", "OpenCode");
+		render(
+			<AcpSection
+				initialCatalog={[
+					{
+						...opencode,
+						enabled: false,
+						targets: [
+							{
+								...opencode.targets[0],
+								recommended: false,
+								selected: false,
+							},
+							wslTarget(),
+						],
+					},
+				]}
+				value={[]}
+				onChange={onChange}
+			/>,
+		);
+
+		expect(
+			(
+				screen.getByRole("combobox", {
+					name: "OpenCode execution environment",
+				}) as HTMLSelectElement
+			).value,
+		).toBe("wsl-ubuntu");
+		fireEvent.click(screen.getByRole("button", { name: "Enable" }));
+
+		expect(onChange).toHaveBeenCalledWith([
+			{
+				id: "opencode",
+				target: { kind: "wsl", distro: "Ubuntu-24.04" },
+			},
+		]);
+	});
+
+	it("keeps exact-target configuration reachable for an unsupported external install", () => {
+		const onChange = vi.fn();
+		const opencode = item("opencode", "OpenCode");
+		render(
+			<AcpSection
+				initialCatalog={[
+					{
+						...opencode,
+						enabled: false,
+						available: false,
+						targets: [
+							wslTarget({
+								provenance: "missing",
+								available: false,
+								canEnable: false,
+								canInstall: false,
+								canRemove: false,
+								installedVersion: undefined,
+							}),
+						],
+					},
+				]}
+				value={[]}
+				onChange={onChange}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "Enable" }));
+		expect(onChange).toHaveBeenCalledWith([
+			{
+				id: "opencode",
+				target: { kind: "wsl", distro: "Ubuntu-24.04" },
+			},
+		]);
+	});
+
+	it("starts a confirmed managed installation and shows its progress", async () => {
+		serverFns.mutate.mockResolvedValue({
+			id: "operation-1",
+			action: "install",
+			phase: "downloading",
+			received: 1024,
+			total: 2048,
+			cancelable: true,
+		});
+		const opencode = item("opencode", "OpenCode");
+		render(
+			<AcpSection
+				initialCatalog={[
+					{
+						...opencode,
+						enabled: false,
+						available: false,
+						targets: [
+							wslTarget({
+								provenance: "missing",
+								available: false,
+								canEnable: false,
+								canInstall: true,
+								canRemove: false,
+								installedVersion: undefined,
+							}),
+						],
+					},
+				]}
+				value={[]}
+				onChange={vi.fn()}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "Install" }));
+		fireEvent.click(screen.getByRole("button", { name: "install" }));
+
+		await waitFor(() =>
+			expect(serverFns.mutate).toHaveBeenCalledWith({
+				action: "install",
+				agentId: "opencode",
+				targetId: "wsl-ubuntu",
+				revision: mutationRevision,
+			}),
+		);
+		expect((await screen.findByRole("status")).textContent).toContain(
+			"Installing · Downloading · 1 KB of 2 KB",
+		);
+	});
+
+	it("polls the catalog until a managed operation settles", async () => {
+		vi.useFakeTimers();
+		const opencode = item("opencode", "OpenCode");
+		serverFns.registry.mockResolvedValue([
+			{
+				...opencode,
+				enabled: false,
+				targets: [wslTarget()],
+			},
+		]);
+		render(
+			<AcpSection
+				initialCatalog={[
+					{
+						...opencode,
+						enabled: false,
+						targets: [
+							wslTarget({
+								available: false,
+								canEnable: false,
+								operation: {
+									id: "operation-1",
+									action: "install",
+									phase: "probing",
+									cancelable: false,
+								},
+							}),
+						],
+					},
+				]}
+				value={[]}
+				onChange={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByRole("status").textContent).toContain(
+			"Installing · Probing",
+		);
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(1_000);
+		});
+
+		expect(serverFns.registry).toHaveBeenCalledOnce();
+		expect(screen.getByText(/Managed by Hlid/)).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Enable" })).toBeTruthy();
+	});
+
+	it("reopens on the non-recommended WSL target with managed state", () => {
+		const opencode = item("opencode", "OpenCode");
+		const ubuntu = wslTarget({
+			targetId: "wsl-ubuntu",
+			recommended: true,
+			selected: false,
+			provenance: "missing",
+			available: false,
+			canEnable: false,
+			canRemove: false,
+		});
+		const debian = wslTarget({
+			targetId: "wsl-debian",
+			target: { kind: "wsl", distro: "Debian" },
+			label: "WSL · Debian",
+			recommended: false,
+			selected: false,
+			operation: {
+				id: "operation-1",
+				action: "install",
+				phase: "probing",
+				cancelable: false,
+			},
+		});
+		const catalog = [
+			{ ...opencode, enabled: false, targets: [ubuntu, debian] },
+		];
+
+		render(
+			<AcpSection initialCatalog={catalog} value={[]} onChange={vi.fn()} />,
+		);
+		expect(
+			(
+				screen.getByRole("combobox", {
+					name: "OpenCode execution environment",
+				}) as HTMLSelectElement
+			).value,
+		).toBe("wsl-debian");
+		cleanup();
+
+		render(
+			<AcpSection
+				initialCatalog={[
+					{
+						...opencode,
+						enabled: false,
+						targets: [ubuntu, { ...debian, operation: undefined }],
+					},
+				]}
+				value={[]}
+				onChange={vi.fn()}
+			/>,
+		);
+		expect(
+			(
+				screen.getByRole("combobox", {
+					name: "OpenCode execution environment",
+				}) as HTMLSelectElement
+			).value,
+		).toBe("wsl-debian");
+		expect(screen.getByText(/Managed by Hlid · WSL · Debian/)).toBeTruthy();
+	});
+
+	it("waits for a disable save before enabling managed removal", () => {
+		const opencode = item("opencode", "OpenCode");
+		const props = {
+			initialCatalog: [{ ...opencode, targets: [wslTarget()] }],
+			value: [],
+			onChange: vi.fn(),
+		};
+		const { rerender } = render(
+			<AcpSection
+				{...props}
+				savedValue={[
+					{
+						id: "opencode",
+						target: { kind: "wsl", distro: "Ubuntu-24.04" },
+					},
+				]}
+			/>,
+		);
+		expect(
+			(screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement)
+				.disabled,
+		).toBe(true);
+
+		rerender(<AcpSection {...props} savedValue={[]} />);
+		expect(
+			(screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement)
+				.disabled,
 		).toBe(false);
 	});
 });

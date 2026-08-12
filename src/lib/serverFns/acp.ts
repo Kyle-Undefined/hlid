@@ -1,6 +1,7 @@
 /** ACP agent registry and authentication server fns. */
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import type { AcpTargetStatus } from "#/lib/acpManagedTypes";
 import { AcpModelCatalogSchema } from "#/lib/acpModelCatalog";
 import { dbFetch, dbJson, requireDbOk } from "#/lib/dbClient";
 import type { ProviderInfo } from "#/lib/providerTypes";
@@ -20,6 +21,7 @@ export type AcpCatalogItem = {
 	args: string[];
 	env: Record<string, string>;
 	installGuidance: string;
+	targets: AcpTargetStatus[];
 	repository?: string;
 	website?: string;
 };

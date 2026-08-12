@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { dbFetch } from "#/lib/dbClient";
 import { makeRequest } from "#/test/routeTestKit";
 import { handleGetAgents, handlePostAgents } from "./index";
 
 vi.mock("#/server/config");
 vi.mock("#/lib/originGate");
 vi.mock("#/lib/config-writer", () => ({ writeConfig: vi.fn() }));
+vi.mock("#/lib/dbClient");
 vi.mock("node:fs", () => ({ existsSync: vi.fn(() => false) }));
 
 const { loadConfig } = await import("#/server/config");
@@ -25,6 +27,7 @@ beforeEach(() => {
 	vi.resetAllMocks();
 	mockForbiddenResponse.mockReturnValue(null);
 	mockExistsSync.mockReturnValue(false);
+	vi.mocked(dbFetch).mockResolvedValue(new Response());
 });
 
 // ─── GET /api/agents ──────────────────────────────────────────────────────────
@@ -128,6 +131,60 @@ describe("handlePostAgents", () => {
 			}),
 		);
 		expect(res.status).toBe(400);
+	});
+
+	it("rejects removing the workspace that owns an enabled ACP WSL target", async () => {
+		mockLoadConfig.mockReturnValue({
+			agents: [
+				{
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\project",
+					mode: "cwd",
+					provider: "claude",
+				},
+			],
+			acp_agents: [
+				{
+					id: "opencode",
+					target: { kind: "wsl", distro: "Ubuntu-24.04" },
+				},
+			],
+		} as never);
+
+		const res = await handlePostAgents(postReq([]));
+		expect(res.status).toBe(400);
+		expect(mockWriteConfig).not.toHaveBeenCalled();
+	});
+
+	it("synchronizes ACP after moving discovery to another exact-distro workspace", async () => {
+		const retained = {
+			path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\second",
+			mode: "cwd" as const,
+			provider: "claude",
+		};
+		mockLoadConfig.mockReturnValue({
+			agents: [
+				{
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\first",
+					mode: "cwd",
+					provider: "claude",
+				},
+				retained,
+			],
+			acp_agents: [
+				{
+					id: "opencode",
+					target: { kind: "wsl", distro: "Ubuntu-24.04" },
+				},
+			],
+		} as never);
+
+		const response = await handlePostAgents(postReq([retained]));
+
+		expect(response.status).toBe(200);
+		expect(mockWriteConfig).toHaveBeenCalledWith(
+			expect.objectContaining({ agents: [retained] }),
+		);
+		expect(dbFetch).toHaveBeenCalledWith("/acp/sync", { method: "POST" });
 	});
 
 	it("returns 403 when origin blocked", async () => {

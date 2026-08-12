@@ -385,6 +385,12 @@ function SettingsPage() {
 		},
 		[commitInventory],
 	);
+	const commitAcpCatalog = useCallback(
+		(acpCatalog: ForgeInventory["acpCatalog"]) => {
+			commitInventory({ ...inventoryRef.current, acpCatalog });
+		},
+		[commitInventory],
+	);
 	const refreshProviderOptions = useCallback(
 		async (providerId: string) => {
 			const requestSeed = loaderSeedRef.current;
@@ -543,6 +549,7 @@ function SettingsPage() {
 			onRetryInventory={() => refreshInventory(true)}
 			onRefreshProviderOptions={refreshProviderOptions}
 			onDiscoverAcpModels={discoverAcpModels}
+			onAcpCatalogChange={commitAcpCatalog}
 		/>
 	);
 }

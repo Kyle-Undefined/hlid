@@ -18,27 +18,83 @@ import {
 	type AcpModelOption,
 } from "./AcpAgentCard";
 
+const mutationRevision = "a".repeat(64);
+
 afterEach(cleanup);
 
 function makeItem(overrides?: Partial<AcpCatalogItem>): AcpCatalogItem {
+	const available = overrides?.available ?? true;
+	const command = overrides?.command ?? "gemini";
+	const args = overrides?.args ?? ["--acp"];
+	const resolvedExecutable = overrides?.resolvedExecutable;
 	return {
 		id: "gemini",
 		name: "Gemini CLI",
 		version: "1.2.0",
 		description: "Google's ACP agent",
-		available: true,
-		command: "gemini",
-		args: ["--acp"],
+		available,
+		command,
+		args,
 		installGuidance: "npm i -g @google/gemini-cli",
+		targets: [
+			{
+				targetId: "host",
+				target: { kind: "host" },
+				label: "Windows",
+				recommended: true,
+				selected: true,
+				platformTarget: "windows-x86_64",
+				provenance: available ? "external" : "missing",
+				available,
+				canEnable: available,
+				canInstall: false,
+				canUpdate: false,
+				canRemove: false,
+				registryVersion: "1.2.0",
+				mutationRevision,
+				resolvedExecutable,
+				command,
+				args,
+				installGuidance: "npm i -g @google/gemini-cli",
+			},
+		],
 		...overrides,
 	} as AcpCatalogItem;
+}
+
+function managedWslTarget(
+	patch: Partial<AcpCatalogItem["targets"][number]> = {},
+): AcpCatalogItem["targets"][number] {
+	return {
+		targetId: "wsl-ubuntu",
+		target: { kind: "wsl", distro: "Ubuntu-24.04" },
+		label: "WSL · Ubuntu-24.04",
+		recommended: true,
+		selected: true,
+		platformTarget: "linux-x86_64",
+		provenance: "managed",
+		available: true,
+		canEnable: true,
+		canInstall: false,
+		canUpdate: true,
+		canRemove: true,
+		registryVersion: "1.3.0",
+		mutationRevision,
+		installedVersion: "1.2.0",
+		resolvedExecutable: "/managed/gemini",
+		command: "/managed/gemini",
+		args: ["--acp"],
+		installGuidance: "Install Gemini CLI",
+		...patch,
+	};
 }
 
 function renderCard(
 	overrides?: Partial<{
 		item: AcpCatalogItem;
 		configured: AcpAgentConfig | undefined;
-		operation: "inspect" | "refresh" | null;
+		selectedTargetId: string;
+		operation: "inspect" | "refresh" | "install" | "update" | "remove" | null;
 		disabled: boolean;
 		authMethods: AcpAuthMethod[] | undefined;
 		agentInfo: AcpAgentInfo | null | undefined;
@@ -46,6 +102,8 @@ function renderCard(
 		optionsRefreshed: boolean;
 		configurationCurrent: boolean;
 		onToggle: () => void;
+		onSelectTarget: (targetId: string) => void;
+		onManagedMutation: (action: "install" | "update" | "remove") => void;
 		onUpdateOverride: (patch: Partial<AcpAgentConfig>) => void;
 		onInspect: (methodId?: string) => void;
 		onRefreshOptions: () => void;
@@ -54,9 +112,11 @@ function renderCard(
 			| undefined;
 	}>,
 ) {
+	const renderedItem = overrides?.item ?? makeItem();
 	const props = {
-		item: makeItem(),
+		item: renderedItem,
 		configured: undefined,
+		selectedTargetId: renderedItem.targets[0]?.targetId ?? "",
 		operation: null,
 		disabled: false,
 		authMethods: undefined,
@@ -65,6 +125,8 @@ function renderCard(
 		optionsRefreshed: false,
 		configurationCurrent: true,
 		onToggle: vi.fn(),
+		onSelectTarget: vi.fn(),
+		onManagedMutation: vi.fn(),
 		onUpdateOverride: vi.fn(),
 		onInspect: vi.fn(),
 		onRefreshOptions: vi.fn(),
@@ -91,6 +153,215 @@ describe("AcpAgentCard", () => {
 	it("shows install guidance when unavailable", () => {
 		renderCard({ item: makeItem({ available: false }) });
 		expect(screen.getByText("npm i -g @google/gemini-cli")).toBeTruthy();
+	});
+
+	it("keeps configuration reachable for an unsupported external install", () => {
+		const onToggle = vi.fn();
+		renderCard({ item: makeItem({ available: false }), onToggle });
+		fireEvent.click(screen.getByRole("button", { name: "Enable" }));
+		expect(onToggle).toHaveBeenCalledOnce();
+	});
+
+	it("selects an explicit execution environment before enablement", () => {
+		const host = makeItem().targets[0];
+		const item = makeItem({
+			targets: [
+				{ ...host, recommended: false, selected: false },
+				managedWslTarget(),
+			],
+		});
+		const onSelectTarget = vi.fn();
+		renderCard({
+			item,
+			selectedTargetId: "wsl-ubuntu",
+			onSelectTarget,
+		});
+
+		const selector = screen.getByRole("combobox", {
+			name: "Gemini CLI execution environment",
+		}) as HTMLSelectElement;
+		expect(selector.value).toBe("wsl-ubuntu");
+		fireEvent.change(selector, { target: { value: "host" } });
+		expect(onSelectTarget).toHaveBeenCalledWith("host");
+	});
+
+	it("keeps install separate from enable and requires confirmation", () => {
+		const onManagedMutation = vi.fn();
+		renderCard({
+			item: makeItem({
+				available: false,
+				targets: [
+					managedWslTarget({
+						provenance: "missing",
+						available: false,
+						canEnable: false,
+						canInstall: true,
+						canUpdate: false,
+						canRemove: false,
+						installedVersion: undefined,
+					}),
+				],
+			}),
+			selectedTargetId: "wsl-ubuntu",
+			onManagedMutation,
+		});
+
+		expect(screen.queryByRole("button", { name: "Enable" })).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Install" }));
+		expect(
+			screen.getByText("install Gemini CLI v1.3.0 in WSL · Ubuntu-24.04?"),
+		).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "install" }));
+		expect(onManagedMutation).toHaveBeenCalledWith("install");
+	});
+
+	it("confirms a managed Windows host installation", () => {
+		const onManagedMutation = vi.fn();
+		const host = makeItem({ available: false }).targets[0];
+		renderCard({
+			item: makeItem({
+				available: false,
+				targets: [
+					{
+						...host,
+						provenance: "missing",
+						available: false,
+						canEnable: false,
+						canInstall: true,
+						registryVersion: "1.3.0",
+					},
+				],
+			}),
+			selectedTargetId: "host",
+			onManagedMutation,
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "Install" }));
+		expect(
+			screen.getByText("install Gemini CLI v1.3.0 in Windows?"),
+		).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "install" }));
+		expect(onManagedMutation).toHaveBeenCalledWith("install");
+	});
+
+	it("shows managed update and removal while protecting an enabled target", () => {
+		const onManagedMutation = vi.fn();
+		renderCard({
+			item: makeItem({ targets: [managedWslTarget()] }),
+			selectedTargetId: "wsl-ubuntu",
+			configured: {
+				id: "gemini",
+				target: { kind: "wsl", distro: "Ubuntu-24.04" },
+			} as AcpAgentConfig,
+			onManagedMutation,
+		});
+
+		expect(screen.getByText(/Managed by Hlid/)).toBeTruthy();
+		expect(
+			(
+				screen.getByRole("combobox", {
+					name: "Gemini CLI execution environment",
+				}) as HTMLSelectElement
+			).disabled,
+		).toBe(true);
+		expect(
+			(screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement)
+				.disabled,
+		).toBe(true);
+		fireEvent.click(screen.getByRole("button", { name: "Update" }));
+		fireEvent.click(screen.getByRole("button", { name: "update" }));
+		expect(onManagedMutation).toHaveBeenCalledWith("update");
+	});
+
+	it("requires confirmation before removing a disabled managed target", () => {
+		const onManagedMutation = vi.fn();
+		renderCard({
+			item: makeItem({ targets: [managedWslTarget()] }),
+			selectedTargetId: "wsl-ubuntu",
+			onManagedMutation,
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+		expect(
+			screen.getByText(
+				"remove Hlid-managed Gemini CLI from WSL · Ubuntu-24.04?",
+			),
+		).toBeTruthy();
+		expect(onManagedMutation).not.toHaveBeenCalled();
+		fireEvent.click(screen.getByRole("button", { name: "remove" }));
+		expect(onManagedMutation).toHaveBeenCalledWith("remove");
+	});
+
+	it("offers only removal for a receipt-backed target whose workspace is gone", () => {
+		const onManagedMutation = vi.fn();
+		renderCard({
+			item: makeItem({
+				available: false,
+				targets: [
+					managedWslTarget({
+						cleanupOnly: true,
+						available: false,
+						canEnable: false,
+						canInstall: false,
+						canUpdate: false,
+						canRemove: true,
+						blockedReason:
+							"The workspace for this managed WSL installation is no longer configured.",
+					}),
+				],
+			}),
+			selectedTargetId: "wsl-ubuntu",
+			onManagedMutation,
+		});
+
+		expect(
+			screen.getByText(
+				"The workspace for this managed WSL installation is no longer configured.",
+			),
+		).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Enable" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Update" })).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+		fireEvent.click(screen.getByRole("button", { name: "remove" }));
+		expect(onManagedMutation).toHaveBeenCalledWith("remove");
+	});
+
+	it("never offers managed lifecycle actions for an external executable", () => {
+		renderCard();
+		expect(screen.getByText(/Externally managed · Windows/)).toBeTruthy();
+		expect(
+			screen.getByText(
+				"Hlid can use this executable but will not update or remove it.",
+			),
+		).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Update" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+	});
+
+	it("renders background installation progress", () => {
+		renderCard({
+			item: makeItem({
+				targets: [
+					managedWslTarget({
+						available: false,
+						canEnable: false,
+						operation: {
+							id: "operation-1",
+							action: "install",
+							phase: "downloading",
+							received: 1024,
+							total: 2048,
+							cancelable: true,
+						},
+					}),
+				],
+			}),
+			selectedTargetId: "wsl-ubuntu",
+		});
+
+		expect(screen.getByRole("status").textContent).toContain(
+			"Installing · Downloading · 1 KB of 2 KB",
+		);
 	});
 
 	it("shows overrides and auth entry point when configured", () => {
@@ -697,7 +968,7 @@ describe("AcpAgentCard", () => {
 		expect(screen.getByText("OpenCode CLI not found")).toBeTruthy();
 		expect(
 			screen.getByText(
-				"OpenCode Desktop and the OpenCode CLI are separate installs. Hlid needs the CLI in the same environment where Hlid runs.",
+				"OpenCode Desktop and the OpenCode CLI are separate installs. Hlid needs the CLI in the selected execution environment.",
 			),
 		).toBeTruthy();
 		expect(screen.getByText("opencode is not installed")).toBeTruthy();

@@ -373,12 +373,14 @@ function AcpCatalogPage({
 	onBack,
 	onRefreshProviders,
 	onDiscoverAcpModels,
+	onCatalogChange,
 }: {
 	state: SettingsFormState;
 	initial: SettingsInitial;
 	onBack: () => void;
 	onRefreshProviders: (providerId: string) => void | Promise<void>;
 	onDiscoverAcpModels?: (id: string) => Promise<ProviderInfo["models"]>;
+	onCatalogChange?: (catalog: SettingsInitial["acpCatalog"]) => void;
 }) {
 	return (
 		<>
@@ -399,6 +401,7 @@ function AcpCatalogPage({
 				}
 				providers={initial.providers}
 				onChange={state.setAcpAgents}
+				onCatalogChange={onCatalogChange}
 				onRefreshProviders={onRefreshProviders}
 				onDiscoverModels={
 					onDiscoverAcpModels
@@ -996,6 +999,7 @@ function CategoryContent({
 	onDeveloperView,
 	onRefreshProviders,
 	onDiscoverAcpModels,
+	onAcpCatalogChange,
 }: {
 	category: Category;
 	navigation: ForgeNavigationState;
@@ -1016,6 +1020,7 @@ function CategoryContent({
 	onDeveloperView: (view: DeveloperView) => void;
 	onRefreshProviders: (providerId: string) => void | Promise<void>;
 	onDiscoverAcpModels?: (id: string) => Promise<ProviderInfo["models"]>;
+	onAcpCatalogChange?: (catalog: SettingsInitial["acpCatalog"]) => void;
 }) {
 	if (category === "integrations" && showApps)
 		return (
@@ -1046,6 +1051,7 @@ function CategoryContent({
 					onBack={() => onShowCatalog(false)}
 					onRefreshProviders={onRefreshProviders}
 					onDiscoverAcpModels={onDiscoverAcpModels}
+					onCatalogChange={onAcpCatalogChange}
 				/>
 			</>
 		);
@@ -1257,6 +1263,7 @@ export function ForgeSettings({
 	onRetryInventory = () => {},
 	onRefreshProviderOptions = onRetryInventory,
 	onDiscoverAcpModels,
+	onAcpCatalogChange,
 	navigation: controlledNavigation,
 	onNavigationChange,
 }: {
@@ -1266,6 +1273,7 @@ export function ForgeSettings({
 	onRetryInventory?: () => void | Promise<void>;
 	onRefreshProviderOptions?: (providerId: string) => void | Promise<void>;
 	onDiscoverAcpModels?: (id: string) => Promise<ProviderInfo["models"]>;
+	onAcpCatalogChange?: (catalog: SettingsInitial["acpCatalog"]) => void;
 	/** URL-backed navigation supplied by the Forge route. */
 	navigation?: ForgeNavigationState;
 	/** Receives category, section, setting, and nested-view navigation changes. */
@@ -1580,6 +1588,7 @@ export function ForgeSettings({
 								}
 								onRefreshProviders={onRefreshProviderOptions}
 								onDiscoverAcpModels={onDiscoverAcpModels}
+								onAcpCatalogChange={onAcpCatalogChange}
 							/>
 						)}
 					</div>

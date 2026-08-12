@@ -1,4 +1,5 @@
 import type { HlidConfig } from "#/config";
+import { acpExecutionTargetKey } from "./acpExecutionTarget";
 
 /**
  * Stable identity for the ACP subprocess configuration that can be applied
@@ -14,6 +15,7 @@ export function acpRuntimeIdentity(
 		agents
 			.map((agent) => ({
 				id: agent.id,
+				target: acpExecutionTargetKey(agent.target),
 				executable: agent.executable,
 				args: agent.args,
 				env: agent.env
