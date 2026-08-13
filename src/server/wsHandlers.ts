@@ -17,6 +17,10 @@ import {
 	syncMcpInventory,
 	syncVaultMcpList,
 } from "./mcpInventory";
+import {
+	removeNotificationPresence,
+	updateNotificationPresence,
+} from "./notificationPresence";
 import { projectPreviewManager } from "./projectPreview";
 import {
 	type ClientMessage,
@@ -2194,6 +2198,10 @@ async function handleMessage(
 		});
 		return;
 	}
+	if (msg.type === "notification_presence") {
+		updateNotificationPresence(context.ws, msg.session_id, msg.visible);
+		return;
+	}
 	if (msg.type === "subscribe_session") {
 		await handleSubscribeSession(context, msg);
 		return;
@@ -2807,6 +2815,7 @@ export function createWsHandlers(
 
 		close(ws: ServerWebSocket<WsData>) {
 			wsState.clients.delete(ws);
+			removeNotificationPresence(ws);
 			// Remove from subscribed session's subscriber set.
 			// SessionRunState.removeSubscriber also clears ownerWs/inFlightChatCount.
 			const entry = pool.get(ws.data.subscribedSessionId);

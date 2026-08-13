@@ -633,10 +633,10 @@ not configured for that entry stay hidden.
   Edits take effect when the matching provider conversation starts or reloads.
 - **Access** has network, `TLS`, password, and trusted-device settings.
 - **Experience** has configurable navigation names, built-in or custom
-  desktop/mobile themes, input behavior, the provider-entry visibility toggle
-  for the `/` picker, `HTML` plan defaults, voice, and browser-local privacy
-  mode. `Hlið` and vault entries always remain visible; the toggle controls
-  every provider-badged skill, command, or plugin.
+	desktop/mobile themes, input behavior, the provider-entry visibility toggle
+	for the `/` picker, `HTML` plan defaults, optional device notifications,
+	voice, and browser-local privacy mode. `Hlið` and vault entries always remain
+	visible; the toggle controls every provider-badged skill, command, or plugin.
 - **Integrations** manages provider Apps and connectors, `CLIProxyAPI`, `MCP`,
   `Umbod`, and the `ACP` catalog.
 - **Extensions** manages installed `Claude` and `Codex` plugins and their
@@ -785,6 +785,38 @@ For another device:
 Remote password login and microphone capture both need `HTTPS`. `Hlið` accepts
 localhost and `Tailscale CGNAT` peers by default. Only turn on regular `RFC1918`
 LAN access for a network you actually trust.
+
+### Background notifications
+
+Open **FORGE → Experience → Notifications** on each device that should receive
+alerts. Notifications are off until you choose **Enable on this device**. That
+click is the only time `Hlið` asks the browser for permission. **Needs attention**
+starts on for approvals, questions, plan review, blocked work, and failures.
+**Work finished** starts off and is sent only when a top-level `Raven` session
+becomes ready. A delegated child's completion is internal progress owned by its
+parent and does not notify separately. Generic Lock Screen wording hides session
+names; Detailed wording includes the session name and a plain-language reason.
+Sound, Focus, summaries, and Lock Screen visibility remain under the device's
+own notification settings.
+
+On `iPhone` and `iPad`, add the `HTTPS` site to the Home Screen and open it as a
+web app before enabling notifications. A supported installed `PWA` can receive
+them while backgrounded or while the phone is locked. The `Hlið` host needs
+outbound internet access to the browser's push service, and the device still
+needs a route back to the `Hlið` address when you tap the alert. A tap opens the
+exact `Raven` session, preserving that destination through sign-in if needed.
+Approvals are always resolved inside `Raven`, where `Hlið` rechecks the current
+prompt instead of treating a Lock Screen action as authorization.
+
+The notification control in a durable `Raven` session offers **Default**,
+**Notify**, and **Mute**. Default follows each subscribed device's two category
+switches. Notify sends every alert that session is eligible to produce even when
+a device category is off. Mute suppresses its alerts everywhere. Repeated state
+updates are grouped by session, brief transitions settle before delivery, and
+the session already visible in a focused `Raven` window does not notify you
+again. Delegated children can still send **Needs attention** when action must
+happen in that exact child; their ordinary completion is represented by the
+eventual top-level session alert.
 
 ## Voice and attachments
 

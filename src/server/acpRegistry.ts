@@ -670,9 +670,11 @@ export class AcpRegistry {
 							: "WSL target is unavailable",
 					platformTarget: "linux-unknown",
 				};
-				const value = lastGood
-					? { ...lastGood, error: failure.error }
-					: failure;
+				// A transient WSL startup timeout must not erase a target the user has
+				// already proved works. Keep last-good evidence authoritative and retry
+				// after the short failure TTL. Real harness launches still fail normally
+				// when the distro is genuinely unavailable.
+				const value = lastGood ?? failure;
 				if (this.targetPlatformCache.get(key)?.generation === generation) {
 					this.targetPlatformCache.set(key, {
 						value,
@@ -680,7 +682,6 @@ export class AcpRegistry {
 						expiresAt: this.now() + this.platformFailureTtlMs,
 						generation,
 					});
-					if (lastGood) this.publishPlatformChange();
 				}
 				return value;
 			},
@@ -726,11 +727,12 @@ export class AcpRegistry {
 					),
 				};
 				this.targetPlatformCache.set(key, {
-					value: { ...lastGood, verificationPending: true },
+					value: lastGood,
 					lastGood,
-					// Persisted evidence supplies architecture, not current liveness.
-					// Expire it immediately so targetPlatform verifies in background.
-					expiresAt: 0,
+					// Persisted evidence supplies stable architecture. The single registry
+					// availability batch below supplies current distro liveness without
+					// launching a second WSL process during every Hlid restart.
+					expiresAt: this.now() + this.platformSuccessTtlMs,
 					generation: 0,
 				});
 			})
@@ -858,7 +860,7 @@ export class AcpRegistry {
 			const platforms = await this.targetPlatforms(
 				descriptors,
 				adapters,
-				refresh || refreshRuntimeEvidence,
+				refreshRuntimeEvidence,
 			);
 			const planKey = (agentId: string, targetId: string) =>
 				`${agentId}\0${targetId}`;
@@ -939,6 +941,7 @@ export class AcpRegistry {
 					invocation,
 					validatedManagedExecutable,
 					probeEligible:
+						selected &&
 						!validatedManagedExecutable &&
 						!runtimeError &&
 						Boolean(invocation.command) &&
@@ -960,29 +963,10 @@ export class AcpRegistry {
 				: this.observeFullAvailability;
 			const catalog = await observeAvailability(
 				"availability",
-				`availability scan for ${registryAgents.length} agents`,
+				`availability scan for configured ACP agents`,
 				async () => {
-					type ProbeGroup = {
-						adapter: ReturnType<AcpExecutionAdapterFactory>;
-						descriptor: AcpExecutionTargetDescriptor;
-						environment: NodeJS.ProcessEnv;
-						forwardedEnvNames: string[];
-						requests: Map<string, string[]>;
-					};
-					const batchGroups = new Map<string, ProbeGroup>();
-					const directGroups = new Map<
-						string,
-						ProbeGroup & { command: string }
-					>();
-					const addProbeRequest = (
-						group: ProbeGroup,
-						command: string,
-						key: string,
-					) => {
-						const requests = group.requests.get(command) ?? [];
-						requests.push(key);
-						group.requests.set(command, requests);
-					};
+					const resolvedExecutables = new Map<string, string | null>();
+					const configuredProbes: Promise<void>[] = [];
 					for (const agent of registryAgents) {
 						for (const descriptor of descriptors) {
 							const key = planKey(agent.id, descriptor.targetId);
@@ -993,103 +977,30 @@ export class AcpRegistry {
 							const forwardedEnvNames = Object.keys(plan.invocation.env).sort(
 								(a, b) => a.localeCompare(b),
 							);
-							const environmentKey = createHash("sha256")
-								.update(
-									JSON.stringify({
-										target: descriptor.target,
-										hostCwd: descriptor.cwd,
-										environment: Object.entries(environment).sort(([a], [b]) =>
-											a.localeCompare(b),
-										),
-										forwardedEnvNames,
-									}),
-								)
-								.digest("hex");
-							const useBatch =
-								Boolean(adapter.resolveExecutables) &&
-								(descriptor.target.kind === "wsl" ||
-									this.which === findAcpExecutable);
-							const groupKey = useBatch
-								? environmentKey
-								: `${environmentKey}:${createHash("sha256")
-										.update(plan.invocation.command)
-										.digest("hex")}`;
-							if (useBatch) {
-								let group = batchGroups.get(groupKey);
-								if (!group) {
-									group = {
-										adapter,
-										descriptor,
-										environment,
-										forwardedEnvNames,
-										requests: new Map(),
-									};
-									batchGroups.set(groupKey, group);
-								}
-								addProbeRequest(group, plan.invocation.command, key);
-							} else {
-								let group = directGroups.get(groupKey);
-								if (!group) {
-									group = {
-										adapter,
-										descriptor,
-										environment,
-										forwardedEnvNames,
-										requests: new Map(),
-										command: plan.invocation.command,
-									};
-									directGroups.set(groupKey, group);
-								}
-								addProbeRequest(group, plan.invocation.command, key);
-							}
-						}
-					}
-					const resolvedExecutables = new Map<string, string | null>();
-					await Promise.all([
-						...[...batchGroups.values()].map(async (group) => {
-							const commands = [...group.requests.keys()];
-							const resolveMany = group.adapter.resolveExecutables;
-							const resolved = resolveMany
-								? await boundedExecutableProbe(
+							configuredProbes.push(
+								(async () => {
+									const resolved = await boundedExecutableProbe(
 										Promise.resolve().then(() =>
-											resolveMany.call(group.adapter, commands, {
-												hostCwd: group.descriptor.cwd,
-												env: group.environment,
-												forwardedEnvNames: group.forwardedEnvNames,
-												timeoutMs: this.availabilityProbeTimeoutMs,
-											}),
+											descriptor.target.kind === "host"
+												? this.which(plan.invocation.command, {
+														cwd: descriptor.cwd,
+														env: environment,
+													})
+												: adapter.resolveExecutable(plan.invocation.command, {
+														hostCwd: descriptor.cwd,
+														env: environment,
+														forwardedEnvNames,
+														timeoutMs: this.availabilityProbeTimeoutMs,
+													}),
 										),
 										this.availabilityProbeTimeoutMs,
-									)
-								: null;
-							for (const [command, keys] of group.requests) {
-								for (const key of keys) {
-									resolvedExecutables.set(key, resolved?.get(command) ?? null);
-								}
-							}
-						}),
-						...[...directGroups.values()].map(async (group) => {
-							const resolved = await boundedExecutableProbe(
-								Promise.resolve().then(() =>
-									group.descriptor.target.kind === "host"
-										? this.which(group.command, {
-												cwd: group.descriptor.cwd,
-												env: group.environment,
-											})
-										: group.adapter.resolveExecutable(group.command, {
-												hostCwd: group.descriptor.cwd,
-												env: group.environment,
-												forwardedEnvNames: group.forwardedEnvNames,
-												timeoutMs: this.availabilityProbeTimeoutMs,
-											}),
-								),
-								this.availabilityProbeTimeoutMs,
+									);
+									resolvedExecutables.set(key, resolved);
+								})(),
 							);
-							for (const keys of group.requests.values()) {
-								for (const key of keys) resolvedExecutables.set(key, resolved);
-							}
-						}),
-					]);
+						}
+					}
+					await Promise.all(configuredProbes);
 					const items = await Promise.all(
 						registryAgents.map(async (agent): Promise<AcpCatalogItem> => {
 							const override = (config.acp_agents ?? []).find(

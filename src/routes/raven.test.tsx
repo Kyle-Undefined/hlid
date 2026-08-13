@@ -137,6 +137,13 @@ vi.mock("#/components/chat/MessageList", () => ({
 		<div data-testid="messages">{messages.length}</div>
 	),
 }));
+vi.mock("#/components/chat/SessionNotificationOverrideControl", () => ({
+	SessionNotificationOverrideControl: ({
+		sessionId,
+	}: {
+		sessionId: string;
+	}) => <div data-testid="session-notification-override">{sessionId}</div>,
+}));
 vi.mock("#/components/cockpit/SlashPicker", () => ({
 	SlashPicker: ({
 		items,
@@ -203,6 +210,9 @@ vi.mock("#/hooks/useChatWsHandler", () => ({
 	},
 }));
 vi.mock("#/hooks/useLoadChatHistory", () => ({ useLoadChatHistory: vi.fn() }));
+vi.mock("#/hooks/useNotificationPresence", () => ({
+	useNotificationPresence: vi.fn(),
+}));
 vi.mock("#/hooks/projectPreviewStore", () => ({
 	useProjectPreview: () => state.preview,
 	useProjectPreviewPresentationRequest: () => 0,
@@ -331,6 +341,7 @@ vi.mock("#/lib/serverFns/voice", () => ({
 vi.mock("#/lib/serverFns/config");
 
 import { resetRavenTerminalsForTesting } from "#/hooks/ravenTerminalStore";
+import { useNotificationPresence } from "#/hooks/useNotificationPresence";
 import {
 	loadRavenProviders,
 	refreshRavenProvider,
@@ -846,6 +857,68 @@ describe("Raven auto-sleep copy", () => {
 });
 
 describe("Raven composed submission behavior", () => {
+	it("reports the current Raven session for notification suppression", () => {
+		render(<ChatPage />);
+
+		expect(useNotificationPresence).toHaveBeenCalledWith(
+			expect.any(String),
+			null,
+			"connected",
+			state.send,
+		);
+	});
+
+	it("offers notification overrides only for the durable session identity", () => {
+		configureEffortRejectionSession();
+		state.loaderData = { ...state.loaderData, sessionPersisted: true };
+		state.sessions = [];
+		render(<ChatPage />);
+
+		const settings = screen.getByRole("button", {
+			name: /Claude.*Sonnet 4\.6.*session model and notification settings/i,
+		});
+		fireEvent.click(settings);
+		expect(
+			screen.getByTestId("session-notification-override").textContent,
+		).toBe("saved-session");
+		expect(
+			screen.getByRole("dialog", {
+				name: "Session model and notification settings",
+			}),
+		).toBeTruthy();
+	});
+
+	it("does not offer notification overrides for a missing durable route", () => {
+		configureEffortRejectionSession();
+		state.loaderData = { ...state.loaderData, sessionPersisted: false };
+		state.sessions = [];
+		render(<ChatPage />);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: /Claude.*Sonnet 4\.6/i }),
+		);
+		expect(screen.queryByTestId("session-notification-override")).toBeNull();
+	});
+
+	it("does not offer notification overrides for an undurable live identity", () => {
+		configureEffortRejectionSession();
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: "live-session",
+			sessionPersisted: false,
+		};
+		state.sessions = state.sessions.map((session) => ({
+			...(session as Record<string, unknown>),
+			db_session_id: null,
+		}));
+		render(<ChatPage />);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: /Claude.*Sonnet 4\.6/i }),
+		);
+		expect(screen.queryByTestId("session-notification-override")).toBeNull();
+	});
+
 	it("inserts dictated text at the active Raven selection", () => {
 		const requestFrame = vi
 			.spyOn(window, "requestAnimationFrame")
@@ -2471,9 +2544,14 @@ describe("Raven composed submission behavior", () => {
 
 		render(<ChatPage />);
 		fireEvent.click(screen.getByRole("button", { name: /Codex.*gpt-5\.4/i }));
+		expect(screen.queryByTestId("session-notification-override")).toBeNull();
 
 		fireEvent.click(screen.getByRole("button", { name: "GPT-5.5" }));
-		expect(screen.getByRole("dialog", { name: "Model settings" })).toBeTruthy();
+		expect(
+			screen.getByRole("dialog", {
+				name: "Session model and notification settings",
+			}),
+		).toBeTruthy();
 		expect(state.send).toHaveBeenCalledWith({
 			type: "set_model",
 			model: "gpt-5.5",
@@ -2481,7 +2559,11 @@ describe("Raven composed submission behavior", () => {
 		});
 
 		fireEvent.click(screen.getByRole("button", { name: "High" }));
-		expect(screen.getByRole("dialog", { name: "Model settings" })).toBeTruthy();
+		expect(
+			screen.getByRole("dialog", {
+				name: "Session model and notification settings",
+			}),
+		).toBeTruthy();
 		expect(state.send).toHaveBeenCalledWith({
 			type: "set_effort",
 			effort: "high",
@@ -2489,7 +2571,11 @@ describe("Raven composed submission behavior", () => {
 		});
 
 		fireEvent.focus(screen.getByRole("combobox"));
-		expect(screen.queryByRole("dialog", { name: "Model settings" })).toBeNull();
+		expect(
+			screen.queryByRole("dialog", {
+				name: "Session model and notification settings",
+			}),
+		).toBeNull();
 	});
 
 	it("keeps an ACP provider usable when it advertises no model choices", () => {
@@ -2596,7 +2682,9 @@ describe("Raven composed submission behavior", () => {
 			session_id: expect.any(String),
 		});
 		expect(
-			screen.getByRole("button", { name: /^OpenCode · ask$/i }),
+			screen.getByRole("button", {
+				name: /^OpenCode · ask · Open session model and notification settings$/i,
+			}),
 		).toBeTruthy();
 	});
 
@@ -4365,7 +4453,11 @@ describe("Raven composed submission behavior", () => {
 				name: /claude.*sonnet 4\.6.*auto/i,
 			}),
 		);
-		expect(screen.queryByRole("dialog", { name: "Model settings" })).toBeNull();
+		expect(
+			screen.queryByRole("dialog", {
+				name: "Session model and notification settings",
+			}),
+		).toBeNull();
 		expect(
 			screen.getByRole("note", {
 				name: "Claude does not expose Auto classifier usage or cost, so Hlid Ledger totals exclude that overhead.",

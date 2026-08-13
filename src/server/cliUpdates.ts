@@ -833,7 +833,7 @@ async function acpUpdateAction(
 }
 
 async function readAuthoritativeAcpCatalog(): Promise<AcpCatalogItem[]> {
-	const response = await dbFetch("/acp/registry?refresh=1", {
+	const response = await dbFetch("/acp/registry?refresh=1&configured=1", {
 		signal: AbortSignal.timeout(REGISTRY_TIMEOUT_MS),
 	});
 	if (!response.ok) {
@@ -849,10 +849,15 @@ async function readAuthoritativeAcpCatalog(): Promise<AcpCatalogItem[]> {
 const defaultAcpDependencies: AcpUpdateDependencies = {
 	listCandidates: async () => {
 		const config = loadConfig();
+		const configuredAgents = config.acp_agents ?? [];
 		const configured = new Map(
-			(config.acp_agents ?? []).map((agent) => [agent.id, agent]),
+			configuredAgents.map((agent) => [agent.id, agent]),
 		);
-		return (await acpRegistry.catalog(config))
+		return (
+			await acpRegistry.catalog(config, false, false, {
+				agentIds: configuredAgents.map((agent) => agent.id),
+			})
+		)
 			.filter((item) => item.enabled && item.available)
 			.flatMap((item) => {
 				const selectedTarget = item.targets.find((target) => target.selected);

@@ -87,8 +87,8 @@ set up, `Hlið` is happy.
   shows the right command or in-app flow for each installation, but it does not
   quietly run installers.
 - Works as a responsive `PWA` with built-in or custom desktop and mobile
-  themes, pull-to-refresh, and a privacy mode for paths, filenames, and
-  `Ledger` totals.
+  themes, pull-to-refresh, optional background session notifications, and a
+  privacy mode for paths, filenames, and `Ledger` totals.
 
 ## Install it
 

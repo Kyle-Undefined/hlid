@@ -1274,6 +1274,17 @@ export type ClientConnectionProbeMessage = {
 	request_id: string;
 };
 
+/**
+ * Short-lived proof that this browser is visibly showing a Raven session.
+ * The server uses the lease to avoid pushing a notification for the session
+ * already in front of the user.
+ */
+export type ClientNotificationPresenceMessage = {
+	type: "notification_presence";
+	session_id: string;
+	visible: boolean;
+};
+
 export type ClientProbeMcpMessage = {
 	type: "probe_mcp";
 	agent_cwd?: string;
@@ -1522,6 +1533,7 @@ export type ClientMessage =
 	| ClientPermissionResponseMessage
 	| ClientSyncMessage
 	| ClientConnectionProbeMessage
+	| ClientNotificationPresenceMessage
 	| ClientProbeMcpMessage
 	| ClientProbeProviderConfigMessage
 	| ClientMcpControlMessage

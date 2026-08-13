@@ -16,6 +16,7 @@ todos.json
 hlid.db
 hlid.db-*
 auth.json
+web-push-vapid.json
 .cta.json
 logs/
 library/

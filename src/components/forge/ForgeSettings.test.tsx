@@ -79,6 +79,13 @@ vi.mock("#/components/forge/NavigationNamesSection", () => ({
 		</div>
 	),
 }));
+vi.mock("#/components/forge/NotificationsSection", () => ({
+	NotificationsSection: () => (
+		<div id="forge-section-notifications" tabIndex={-1}>
+			Notifications content
+		</div>
+	),
+}));
 vi.mock("#/components/forge/PricingSection", () => ({
 	PricingSection: () => <div>Pricing catalog content</div>,
 }));

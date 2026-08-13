@@ -1990,4 +1990,62 @@ function applyMigrations(db: Db): void {
 			`CREATE INDEX idx_permission_events_session ON permission_events(session_id)`,
 		);
 	});
+
+	// Web Push subscriptions are device capabilities, not application config.
+	// Keep their endpoint and encryption material in Hlid's private database while
+	// the VAPID signing key remains a host-owned sidecar file. Session overrides
+	// are installation-wide so a single Raven choice applies consistently to all
+	// devices; selecting "default" is represented by removing the override row.
+	runMigration(db, "_migrated_web_push_notifications_v1", (db) => {
+		db.run(`
+			CREATE TABLE push_subscriptions (
+				id TEXT PRIMARY KEY,
+				endpoint TEXT NOT NULL UNIQUE,
+				p256dh TEXT NOT NULL,
+				auth TEXT NOT NULL,
+				expiration_time_ms INTEGER,
+				needs_attention INTEGER NOT NULL DEFAULT 1
+					CHECK(needs_attention IN (0, 1)),
+				work_finished INTEGER NOT NULL DEFAULT 0
+					CHECK(work_finished IN (0, 1)),
+				privacy TEXT NOT NULL DEFAULT 'generic'
+					CHECK(privacy IN ('generic', 'detailed')),
+				enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+				created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+				updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+				last_success_at INTEGER,
+				last_failure_at INTEGER,
+				failure_count INTEGER NOT NULL DEFAULT 0
+					CHECK(failure_count >= 0)
+			)
+		`);
+		db.run(
+			`CREATE INDEX idx_push_subscriptions_delivery
+			 ON push_subscriptions(enabled, expiration_time_ms)`,
+		);
+		db.run(`
+			CREATE TABLE push_session_overrides (
+				session_id TEXT PRIMARY KEY
+					REFERENCES sessions(id) ON DELETE CASCADE,
+				mode TEXT NOT NULL CHECK(mode IN ('notify', 'mute')),
+				updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+			)
+		`);
+	});
+
+	// Bind newly registered browser endpoints to the durable authenticated
+	// browser session that registered them. The nullable column preserves Web
+	// Push rows created by the v1 prerelease schema; the next successful browser
+	// reconciliation claims those rows for its current trusted-device session.
+	runMigration(db, "_migrated_web_push_auth_session_v2", (db) => {
+		db.run(`
+			ALTER TABLE push_subscriptions
+			ADD COLUMN auth_session_hash TEXT
+				REFERENCES auth_sessions(token_hash) ON DELETE CASCADE
+		`);
+		db.run(
+			`CREATE INDEX idx_push_subscriptions_auth_session
+			 ON push_subscriptions(auth_session_hash)`,
+		);
+	});
 }

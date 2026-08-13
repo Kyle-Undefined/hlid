@@ -141,6 +141,31 @@ describe("existing password login", () => {
 		);
 	});
 
+	it("preserves the requested authenticated destination after unlocking", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi
+				.fn()
+				.mockResolvedValueOnce(
+					Response.json({ state: "unauthenticated", theme: "dark" }),
+				)
+				.mockResolvedValueOnce(Response.json({ ok: true })),
+		);
+		render(<LoginPage returnTo="/raven?session=session-1" />);
+		await screen.findByRole("heading", { name: "Unlock Hlid" });
+		fireEvent.change(screen.getByLabelText("Password"), {
+			target: { value: "long-enough-password" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
+
+		await waitFor(() =>
+			expect(mocks.enterAuthenticatedApp).toHaveBeenCalledWith(
+				undefined,
+				"/raven?session=session-1",
+			),
+		);
+	});
+
 	it("reports status lookup failures", async () => {
 		vi.stubGlobal(
 			"fetch",

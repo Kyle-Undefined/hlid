@@ -736,7 +736,17 @@ export function createAcpRouteHandler(dependencies: AcpRouteDependencies) {
 		if (url.pathname === "/acp/registry" && request.method === "GET") {
 			const refresh = url.searchParams.get("refresh") === "1";
 			const config = dependencies.loadConfig();
-			const agents = await dependencies.registry.catalog(config, refresh);
+			const configuredOnly = url.searchParams.get("configured") === "1";
+			const agents = await dependencies.registry.catalog(
+				config,
+				refresh,
+				false,
+				configuredOnly
+					? {
+							agentIds: (config.acp_agents ?? []).map((agent) => agent.id),
+						}
+					: {},
+			);
 			if (refresh && dependencies.syncRuntime) {
 				// The explicit refresh already materialized executable evidence for this
 				// exact config snapshot. Hand it to runtime synchronization so it can

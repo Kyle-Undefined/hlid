@@ -1,7 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	acpExecutionAdapterInternals,
 	createAcpExecutionAdapter,
@@ -10,54 +7,55 @@ import {
 
 const {
 	adaptInternalMcpServer,
-	parseWslExecutableBatchOutput,
 	withWslEnvironment,
 	wslLaunch,
-	wslExecutableBatchProbeLaunch,
 	wslExecutableProbeLaunch,
 	wslPathAccessible,
 	wslProviderPath,
+	wslRegistryPlatform,
+	clearWslPlatformProbeCache,
 	wslTerminationHelper,
 } = acpExecutionAdapterInternals;
 
 describe("ACP execution adapter", () => {
+	it("shares one process-wide WSL platform probe across every caller", async () => {
+		clearWslPlatformProbeCache();
+		let release:
+			| ((value: {
+					platform: NodeJS.Platform;
+					architecture: NodeJS.Architecture;
+			  }) => void)
+			| undefined;
+		const probe = vi.fn(
+			() =>
+				new Promise<{
+					platform: NodeJS.Platform;
+					architecture: NodeJS.Architecture;
+				}>((resolve) => {
+					release = resolve;
+				}),
+		);
+		const first = wslRegistryPlatform("Ubuntu-24.04", {}, probe);
+		const second = wslRegistryPlatform("ubuntu-24.04", {}, probe);
+
+		expect(probe).toHaveBeenCalledOnce();
+		release?.({ platform: "linux", architecture: "x64" });
+		await expect(Promise.all([first, second])).resolves.toEqual([
+			{ platform: "linux", architecture: "x64" },
+			{ platform: "linux", architecture: "x64" },
+		]);
+		await expect(
+			wslRegistryPlatform("Ubuntu-24.04", {}, probe),
+		).resolves.toEqual({ platform: "linux", architecture: "x64" });
+		expect(probe).toHaveBeenCalledOnce();
+		clearWslPlatformProbeCache();
+	});
+
 	it("keeps host paths unchanged for a host runtime", () => {
 		const adapter = createAcpExecutionAdapter({ kind: "host" });
 		expect(adapter.providerPath("C:\\work", "C:\\work\\file.txt")).toBe(
 			"C:\\work\\file.txt",
 		);
-	});
-
-	it("batch-resolves host commands against one exact launch environment", async () => {
-		const directory = mkdtempSync(join(tmpdir(), "hlid-acp-host-batch-"));
-		const command = `hlid-host-batch-${process.pid}`;
-		const filename = process.platform === "win32" ? `${command}.cmd` : command;
-		const executable = join(directory, filename);
-		writeFileSync(
-			executable,
-			process.platform === "win32" ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n",
-		);
-		if (process.platform !== "win32") chmodSync(executable, 0o755);
-		try {
-			const adapter = createAcpExecutionAdapter({ kind: "host" });
-			await expect(
-				adapter.resolveExecutables?.([command, "missing-host-agent"], {
-					hostCwd: directory,
-					env: {
-						PATH: [directory].join(delimiter),
-						PATHEXT: process.platform === "win32" ? ".CMD" : undefined,
-					},
-					timeoutMs: 1_000,
-				}),
-			).resolves.toEqual(
-				new Map([
-					[command, executable],
-					["missing-host-agent", null],
-				]),
-			);
-		} finally {
-			rmSync(directory, { recursive: true, force: true });
-		}
 	});
 
 	it("translates paths only for the exact WSL target", () => {
@@ -194,64 +192,6 @@ describe("ACP execution adapter", () => {
 		);
 		expect(single.args.at(-3)).toContain("/mnt/[A-Za-z]/*");
 		expect(single.env.WSLENV).toBe("Path/u");
-
-		const batch = wslExecutableBatchProbeLaunch(
-			"Ubuntu-24.04",
-			["agent", "missing"],
-			"/home/kyle/repo",
-			{ Path: "/mnt/c/custom" },
-			["Path"],
-		);
-		expect(
-			batch.args.find((value) => value.includes("for candidate")),
-		).toContain("/mnt/[A-Za-z]/*");
-		expect(batch.env.WSLENV).toBe("Path/u");
-	});
-
-	it("resolves a command batch in one exact WSL invocation without shell interpolation", () => {
-		const commands = [
-			"agent",
-			"/mnt/c/Hlid/managed/opencode",
-			"literal; touch /tmp/no",
-		];
-		const probe = wslExecutableBatchProbeLaunch(
-			"Ubuntu-24.04",
-			commands,
-			"/home/kyle/repo",
-			{ TOKEN: "explicit", WSLENV: "HOST_SECRET/u" },
-			["TOKEN"],
-		);
-		expect(probe.executable).toBe("wsl.exe");
-		expect(probe.args.slice(0, 4)).toEqual([
-			"-d",
-			"Ubuntu-24.04",
-			"--cd",
-			"/home/kyle/repo",
-		]);
-		expect(probe.args.slice(-commands.length)).toEqual(commands);
-		expect(probe.env.WSLENV).toBe("TOKEN/u");
-		expect(
-			probe.args.find((value) => value.includes("for candidate")),
-		).toContain("/mnt/[A-Za-z]/*");
-	});
-
-	it("maps bounded NUL-delimited WSL batch results back to exact commands", () => {
-		const commands = ["agent", "/mnt/c/Hlid/opencode", "missing"];
-		expect(
-			parseWslExecutableBatchOutput(
-				commands,
-				"login banner\\n\0/usr/bin/agent\0/mnt/c/Hlid/opencode\0\0",
-			),
-		).toEqual(
-			new Map([
-				["agent", "/usr/bin/agent"],
-				["/mnt/c/Hlid/opencode", "/mnt/c/Hlid/opencode"],
-				["missing", null],
-			]),
-		);
-		expect(parseWslExecutableBatchOutput(commands, "malformed output")).toEqual(
-			new Map(commands.map((command) => [command, null])),
-		);
 	});
 
 	it("launches a managed /mnt executable from a Windows cwd in the exact distro", () => {

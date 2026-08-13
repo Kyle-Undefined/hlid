@@ -90,7 +90,10 @@ export abstract class PtySessionPoolBase<TEntry extends PtyPoolEntry> {
 	protected onCreated(_sessionId: string): void {}
 
 	/** Hook for subclasses that need to react to the PTY process exiting. */
-	protected onExited(_sessionId: string): void {}
+	protected onExited(_sessionId: string, _code: number): void {}
+
+	/** Hook after delayed cleanup removes a process that already exited. */
+	protected onCleaned(_sessionId: string): void {}
 
 	/**
 	 * Wire a freshly spawned bridge into `entry`: pipe output to the ring
@@ -111,7 +114,7 @@ export abstract class PtySessionPoolBase<TEntry extends PtyPoolEntry> {
 
 		bridge.onExit((code) => {
 			entry.alive = false;
-			this.onExited(sessionId);
+			this.onExited(sessionId, code);
 			const frame = JSON.stringify({ type: "exit", code });
 			for (const sub of entry.subscribers) {
 				sub.send(frame);
@@ -176,6 +179,7 @@ export abstract class PtySessionPoolBase<TEntry extends PtyPoolEntry> {
 			if (entry && !entry.alive) {
 				this.entries.delete(sessionId);
 				this.forgetWsMappingsFor(sessionId);
+				this.onCleaned(sessionId);
 			}
 		}, delayMs);
 	}

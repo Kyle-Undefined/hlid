@@ -1,3 +1,5 @@
+import { loginLocationForReturnTo, safeAuthReturnTo } from "./authReturnTo";
+
 const AUTH_PATH_PREFIX = "/api/auth/";
 
 /**
@@ -8,8 +10,9 @@ const AUTH_PATH_PREFIX = "/api/auth/";
  */
 export function enterAuthenticatedApp(
 	target: Pick<Location, "replace"> = window.location,
+	returnTo = "/",
 ): void {
-	target.replace("/");
+	target.replace(safeAuthReturnTo(returnTo));
 }
 
 export function shouldRedirectUnauthorized(
@@ -60,7 +63,14 @@ export function installAuthRedirect(): void {
 			shouldRedirectUnauthorized(response.status, requestUrl, location.href)
 		) {
 			redirecting = true;
-			location.replace("/login");
+			let returnTo = "/";
+			try {
+				const current = new URL(location.href);
+				returnTo = `${current.pathname}${current.search}${current.hash}`;
+			} catch {
+				// A malformed synthetic location safely falls back to the app root.
+			}
+			location.replace(loginLocationForReturnTo(returnTo));
 		}
 		return response;
 	};

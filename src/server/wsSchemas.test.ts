@@ -52,6 +52,41 @@ describe("chat WebSocket runtime schema", () => {
 		).toBeNull();
 	});
 
+	it("accepts only bounded notification presence messages", () => {
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "notification_presence",
+					session_id: "session-1",
+					visible: true,
+				}),
+			),
+		).toEqual({
+			type: "notification_presence",
+			session_id: "session-1",
+			visible: true,
+		});
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "notification_presence",
+					session_id: "",
+					visible: true,
+				}),
+			),
+		).toBeNull();
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "notification_presence",
+					session_id: "session-1",
+					visible: true,
+					extra: true,
+				}),
+			),
+		).toBeNull();
+	});
+
 	it("bounds chat text and attachment arrays", () => {
 		expect(
 			parseClientMessage(

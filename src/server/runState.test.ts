@@ -24,6 +24,7 @@ import {
 	type ReplayState,
 	SessionRunState,
 	send,
+	subscribeSessionsStatusBroadcast,
 	wsState,
 } from "./runState";
 
@@ -259,6 +260,19 @@ describe("broadcast — client delivery", () => {
 
 	it("does not throw when clients set is empty", () => {
 		expect(() => broadcast({ type: "chunk", text: "quiet" })).not.toThrow();
+	});
+
+	it("observes only authoritative sessions status broadcasts", () => {
+		const observer = vi.fn();
+		const unsubscribe = subscribeSessionsStatusBroadcast(observer);
+		broadcast({ type: "chunk", text: "quiet" });
+		expect(observer).not.toHaveBeenCalled();
+		broadcast({ type: "sessions_status", sessions: [] });
+		expect(observer).toHaveBeenCalledOnce();
+		expect(observer).toHaveBeenCalledWith([]);
+		unsubscribe();
+		broadcast({ type: "sessions_status", sessions: [] });
+		expect(observer).toHaveBeenCalledOnce();
 	});
 });
 

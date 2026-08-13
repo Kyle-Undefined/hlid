@@ -1,6 +1,10 @@
 import type { ServerWebSocket } from "bun";
 import * as db from "../db";
-import type { ReplayBufferMessage, ServerMessage } from "./protocol";
+import type {
+	ReplayBufferMessage,
+	ServerMessage,
+	SessionStatusEntry,
+} from "./protocol";
 
 // ── Shared replay-buffer transition ──────────────────────────────────────────
 
@@ -177,6 +181,20 @@ export const wsState = {
 	clients: new Set<ServerWebSocket<unknown>>(),
 };
 
+type SessionsStatusObserver = (sessions: SessionStatusEntry[]) => void;
+const sessionsStatusObservers = new Set<SessionsStatusObserver>();
+
+/**
+ * Observe the same authoritative snapshots sent to every UI client. Delivery
+ * work must stay non-blocking; observers should enqueue their own async work.
+ */
+export function subscribeSessionsStatusBroadcast(
+	observer: SessionsStatusObserver,
+): () => void {
+	sessionsStatusObservers.add(observer);
+	return () => sessionsStatusObservers.delete(observer);
+}
+
 export function broadcast(msg: ServerMessage): void {
 	if (msg.type === "mcp_status")
 		void db
@@ -184,6 +202,18 @@ export function broadcast(msg: ServerMessage): void {
 			.catch((e) =>
 				console.error("[runState] saveSetting mcp_status_cache failed:", e),
 			);
+	if (msg.type === "sessions_status") {
+		for (const observer of sessionsStatusObservers) {
+			try {
+				observer(msg.sessions);
+			} catch (error) {
+				console.error(
+					"[runState] sessions_status observer failed:",
+					error instanceof Error ? error.message : String(error),
+				);
+			}
+		}
+	}
 
 	const data = JSON.stringify(msg);
 	for (const ws of wsState.clients) {

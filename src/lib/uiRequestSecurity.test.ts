@@ -63,7 +63,9 @@ describe("uiSecurityRejection", () => {
 			dependencies(),
 		);
 		expect(documentResult?.status).toBe(302);
-		expect(documentResult?.headers.get("location")).toBe("/login");
+		expect(documentResult?.headers.get("location")).toBe(
+			"/login?next=%2Fraven",
+		);
 
 		const apiResult = await uiSecurityRejection(
 			new Request("http://hlid.test/api/config"),
@@ -101,6 +103,17 @@ describe("uiSecurityRejection", () => {
 		);
 		expect(result?.status).toBe(302);
 		expect(result?.headers.get("location")).toBe("/");
+	});
+
+	it("preserves a bounded Raven destination through authentication", async () => {
+		const result = await uiSecurityRejection(
+			new Request("http://hlid.test/login?next=%2Fraven%3Fsession%3Dsession-1"),
+			"127.0.0.1",
+			false,
+			dependencies({ authenticate: async () => true }),
+		);
+		expect(result?.status).toBe(302);
+		expect(result?.headers.get("location")).toBe("/raven?session=session-1");
 	});
 
 	it("allows only the explicit build-time login shell peer bypass", async () => {

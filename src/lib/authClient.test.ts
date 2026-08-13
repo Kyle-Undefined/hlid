@@ -16,6 +16,14 @@ describe("client authentication redirect policy", () => {
 		expect(replace).toHaveBeenCalledWith("/");
 	});
 
+	it("re-enters an exact bounded Raven destination", () => {
+		const replace = vi.fn();
+
+		enterAuthenticatedApp({ replace }, "/raven?session=session-1");
+
+		expect(replace).toHaveBeenCalledWith("/raven?session=session-1");
+	});
+
 	it("redirects same-origin protected 401 responses", () => {
 		expect(
 			shouldRedirectUnauthorized(
@@ -72,6 +80,6 @@ describe("client authentication redirect policy", () => {
 		installAuthRedirect();
 		await fakeWindow.fetch("/api/config");
 
-		expect(replace).toHaveBeenCalledWith("/login");
+		expect(replace).toHaveBeenCalledWith("/login?next=%2Fvault");
 	});
 });

@@ -43,6 +43,7 @@ import {
 import { MessageList } from "#/components/chat/MessageList";
 import { ProjectPreviewPane } from "#/components/chat/ProjectPreviewPane";
 import { RavenGoalStrip } from "#/components/chat/RavenGoalStrip";
+import { SessionNotificationOverrideControl } from "#/components/chat/SessionNotificationOverrideControl";
 import {
 	VaultReferenceBadges,
 	VaultReferencePicker,
@@ -76,6 +77,7 @@ import { useCommands } from "#/hooks/useCommands";
 import { useDraft } from "#/hooks/useDraft";
 import { useFileUpload } from "#/hooks/useFileUpload";
 import { useLoadChatHistory } from "#/hooks/useLoadChatHistory";
+import { useNotificationPresence } from "#/hooks/useNotificationPresence";
 import { useSlashPicker } from "#/hooks/useSlashPicker";
 import { useVaultReferencePicker } from "#/hooks/useVaultReferencePicker";
 import { uploadVoiceRecording, useVoiceInput } from "#/hooks/useVoiceInput";
@@ -759,6 +761,8 @@ function useRavenSessionIdentity({
 function useRavenChatRuntime({
 	existingSessionId,
 	isExplicitSession,
+	sessionId,
+	notificationSessionId,
 	sessionIdRef,
 	agentCwd,
 	expectedProviderId,
@@ -766,6 +770,8 @@ function useRavenChatRuntime({
 }: {
 	existingSessionId: string | null;
 	isExplicitSession: boolean;
+	sessionId: string;
+	notificationSessionId: string | null;
 	sessionIdRef: { current: string };
 	agentCwd?: string;
 	expectedProviderId?: string;
@@ -1091,6 +1097,12 @@ function useRavenChatRuntime({
 		],
 	);
 	const connection = useWs(handleAllMessages);
+	useNotificationPresence(
+		sessionId,
+		notificationSessionId,
+		connection.wsStatus,
+		connection.send,
+	);
 	const controlGoal = useCallback(
 		(
 			control:
@@ -2734,6 +2746,9 @@ export function ChatPage() {
 	});
 	const { agentSkillContext, sessionId, sessionIdRef, interactiveMode } =
 		session;
+	const notificationSessionId =
+		session.liveSessionStatus?.db_session_id ??
+		(sessionPersisted ? sessionId : null);
 	const restoredSession = Boolean(
 		existingSessionId && agentSkillContext === initialAgentSkillContext,
 	);
@@ -3140,6 +3155,8 @@ export function ChatPage() {
 	const runtime = useRavenChatRuntime({
 		existingSessionId,
 		isExplicitSession,
+		sessionId,
+		notificationSessionId,
 		sessionIdRef,
 		agentCwd: agentSkillContext,
 		expectedProviderId: activeProviderId,
@@ -3511,6 +3528,7 @@ export function ChatPage() {
 	const composerProps: ChatComposerProps = {
 		interactiveMode,
 		savedSession: restoredSession,
+		sessionPersisted,
 		config,
 		agentList,
 		session,
@@ -4572,6 +4590,7 @@ function OptionGroup({
 
 function ChatModelBadge({
 	config,
+	sessionPersisted,
 	session,
 	runtime,
 	voice,
@@ -4614,6 +4633,9 @@ function ChatModelBadge({
 		send,
 	} = runtime;
 	const { sessionId } = session;
+	const notificationSessionId =
+		session.liveSessionStatus?.db_session_id ??
+		(sessionPersisted ? sessionId : null);
 	const displayedModel = activeModel ?? model;
 	const liveActive = isRavenLiveInteractionLocked(voice.livePhase);
 	const displayedEffort = activeProviderId.startsWith("acp:")
@@ -4677,7 +4699,7 @@ function ChatModelBadge({
 						disabled={liveActive}
 						aria-haspopup="dialog"
 						aria-expanded={showModelPopup}
-						aria-label={badgeParts.join(" · ")}
+						aria-label={`${badgeParts.join(" · ")} · Open session model and notification settings`}
 						onClick={(e) => {
 							e.stopPropagation();
 							setShowModelPopup((v) => !v);
@@ -4708,7 +4730,7 @@ function ChatModelBadge({
 							ref={popupRef}
 							tabIndex={-1}
 							role="dialog"
-							aria-label="Model settings"
+							aria-label="Session model and notification settings"
 							onKeyDown={(e) => {
 								if (e.key === "Escape") {
 									e.stopPropagation();
@@ -4941,6 +4963,11 @@ function ChatModelBadge({
 										excludes it.
 									</div>
 								)}
+							{notificationSessionId && (
+								<SessionNotificationOverrideControl
+									sessionId={notificationSessionId}
+								/>
+							)}
 							<div className="normal-case tracking-normal text-muted-foreground/30 pt-1 border-t border-border/50">
 								session only — not saved to config
 							</div>
@@ -5877,6 +5904,7 @@ type RavenVoice = ReturnType<typeof useRavenVoice>;
 interface ChatComposerProps {
 	interactiveMode: boolean;
 	savedSession: boolean;
+	sessionPersisted: boolean;
 	config: RavenConfig;
 	agentList: RavenAgentList;
 	session: RavenSessionIdentity;

@@ -122,6 +122,9 @@ import {
 } from "./providerCatalog";
 import { seedWindowMarks, startProviderProxy } from "./proxy";
 import { bootstrapPtyRuntime } from "./pty-bootstrap";
+import { deliverPushEvent } from "./pushDelivery";
+import { PushNotificationCoordinator } from "./pushNotificationCoordinator";
+import { handlePushRoute } from "./pushRoutes";
 import { createReadAloudRouteHandler } from "./readAloudRoutes";
 import {
 	acpProviderOperationSlowRequestThreshold,
@@ -140,7 +143,7 @@ import {
 	startRoutineScheduler,
 	stopRoutineScheduler,
 } from "./routineScheduler";
-import { broadcast } from "./runState";
+import { broadcast, subscribeSessionsStatusBroadcast } from "./runState";
 import {
 	createAuthenticatedRouteHandler,
 	createServerRequestPolicy,
@@ -411,7 +414,7 @@ const handleExtensionRoute = createExtensionRouteHandler({
 	},
 });
 const acpCatalog = await acpRegistry.catalog(config, false, false, {
-	agentIds: ["opencode", ...(config.acp_agents ?? []).map((agent) => agent.id)],
+	agentIds: (config.acp_agents ?? []).map((agent) => agent.id),
 });
 const cliProxy = new CliProxyManager(config.cliproxy);
 const providers = new Map<string, AgentProvider>([
@@ -584,6 +587,25 @@ const broadcastLiveSessions = () => {
 		sessions: getLiveSessionsStatus(pool, terminalPool),
 	});
 };
+const pushNotificationCoordinator = new PushNotificationCoordinator({
+	deliver: async (event) => {
+		await deliverPushEvent({
+			kind: event.kind,
+			sessionId: event.sessionId,
+			label: event.label,
+			reason: event.reason,
+			url: event.url,
+			createdAt: event.occurredAt,
+			expiresAt: event.expiresAt,
+		});
+	},
+});
+// Establish the current process state as a quiet baseline before observing
+// later transitions. Restarting Hlid must not replay stale attention as push.
+pushNotificationCoordinator.observe(getLiveSessionsStatus(pool, terminalPool));
+const unsubscribePushNotifications = subscribeSessionsStatusBroadcast(
+	(sessions) => pushNotificationCoordinator.observe(sessions),
+);
 pool.setStatusChangeHandler(broadcastLiveSessions);
 let durableDelegationRefresh: Promise<void> | null = null;
 let durableDelegationRefreshAgain = false;
@@ -659,6 +681,8 @@ void db.getSetting("mcp_status_cache").then((cached) => {
 });
 
 async function cleanupForShutdown(): Promise<void> {
+	unsubscribePushNotifications();
+	pushNotificationCoordinator.close();
 	stopRoutineScheduler();
 	cliProxy.close();
 	voice.close();
@@ -1412,6 +1436,7 @@ const handleAuthenticatedRoute = createAuthenticatedRouteHandler({
 		handleRoutineRoute,
 		handleHlidDelegationRoute,
 		handleProjectPreviewRoute,
+		handlePushRoute,
 		(url, request) =>
 			handleSkillRoute(url, request, config, providers, {
 				refreshProviderSkills: () =>
@@ -1693,17 +1718,16 @@ if (isCompiled) {
 	}
 	const vaultPath = config.vault.path || process.cwd();
 	const claudeExecutable = resolveClaudeExecutable();
+	// Startup discovery is process-wide, not one probe per configured agent.
+	// Agent-specific metadata is populated when that agent is actually used.
+	// Fan-out here can overwhelm a cold WSL service and make every distro look
+	// unavailable until Windows recovers it.
 	const claudeScopes = [
 		{
 			cacheCwd: vaultPath,
 			agentCwd: undefined,
 			agentMode: "cwd" as const,
 		},
-		...(config.agents ?? []).map((agent) => ({
-			cacheCwd: agent.path,
-			agentCwd: agent.path,
-			agentMode: agent.mode,
-		})),
 	];
 	const uniqueClaudeScopes = [
 		...new Map(claudeScopes.map((scope) => [scope.cacheCwd, scope])).values(),

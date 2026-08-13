@@ -142,6 +142,20 @@ export {
 	listProviderBackgroundActivities,
 	replaceSessionBackgroundActivities,
 } from "./providerBackgroundActivities";
+export type { StoredPushSubscription } from "./pushNotifications";
+export {
+	deletePushSubscription,
+	disableExpiredPushSubscriptions,
+	getPushSessionOverride,
+	getPushSubscription,
+	listDeliverablePushSubscriptions,
+	pushSubscriptionWantsNotification,
+	recordPushDeliveryFailure,
+	recordPushDeliverySuccess,
+	setPushSessionOverride,
+	updatePushSubscriptionPreferences,
+	upsertPushSubscription,
+} from "./pushNotifications";
 export type { RoutineRunRow } from "./routines";
 // Routines
 export {

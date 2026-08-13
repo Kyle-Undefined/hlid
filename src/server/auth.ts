@@ -220,10 +220,16 @@ export async function createSession(deviceLabel?: string): Promise<string> {
 export async function validateSessionToken(
 	token: string | null | undefined,
 ): Promise<boolean> {
+	return (await validSessionHash(token)) !== null;
+}
+
+async function validSessionHash(
+	token: string | null | undefined,
+): Promise<string | null> {
 	// A session is meaningful only while the credential that issued it exists.
 	// This also prevents /login <-> / redirect loops after auth.json is removed.
-	if (!hasCredential()) return false;
-	if (!token || token.length > 256) return false;
+	if (!hasCredential()) return null;
+	if (!token || token.length > 256) return null;
 	const now = Math.floor(Date.now() / 1000);
 	const hash = tokenHash(token);
 	const db = await getDb();
@@ -232,14 +238,14 @@ export async function validateSessionToken(
 			`SELECT token_hash, last_used_at FROM auth_sessions WHERE token_hash = ? AND expires_at > ?`,
 		)
 		.get(hash, now);
-	if (!row) return false;
+	if (!row) return null;
 	const expected = Buffer.from(row.token_hash, "hex");
 	const candidate = Buffer.from(hash, "hex");
 	if (
 		expected.length !== candidate.length ||
 		!timingSafeEqual(expected, candidate)
 	) {
-		return false;
+		return null;
 	}
 	if (now - row.last_used_at >= 300) {
 		db.run(`UPDATE auth_sessions SET last_used_at = ? WHERE token_hash = ?`, [
@@ -247,7 +253,17 @@ export async function validateSessionToken(
 			hash,
 		]);
 	}
-	return true;
+	return hash;
+}
+
+/**
+ * Return the opaque durable session identity for an authenticated browser
+ * request. The raw HttpOnly cookie never leaves the server-side request path.
+ */
+export async function authenticatedSessionHash(
+	request: Request,
+): Promise<string | null> {
+	return validSessionHash(readCookie(request));
 }
 
 export async function authenticateRequest(request: Request): Promise<boolean> {
@@ -324,7 +340,12 @@ export async function revokeSession(
 
 export async function revokeAllSessions(): Promise<void> {
 	const db = await getDb();
-	db.run(`DELETE FROM auth_sessions`);
+	// Bound rows cascade with auth_sessions. The explicit subscription delete also
+	// removes nullable v1 rows that predate per-device session ownership.
+	db.transaction(() => {
+		db.run(`DELETE FROM push_subscriptions`);
+		db.run(`DELETE FROM auth_sessions`);
+	})();
 }
 
 export async function changePassword(

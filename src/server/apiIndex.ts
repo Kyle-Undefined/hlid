@@ -66,6 +66,48 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 	},
 	{
 		method: "GET",
+		path: "/api/push/config",
+		server: "api",
+		desc: "Authenticated Web Push availability and the installation's public VAPID application-server key. Private signing material is never returned.",
+	},
+	{
+		method: "POST",
+		path: "/api/push/status",
+		server: "api",
+		desc: 'Read one browser endpoint\'s subscription state and device preferences. Body: {"endpoint"?: string}.',
+	},
+	{
+		method: "POST",
+		path: "/api/push/subscriptions",
+		server: "api",
+		desc: "Register or refresh one validated browser PushSubscription, with optional needs-attention, work-finished, and privacy preferences.",
+	},
+	{
+		method: "PATCH",
+		path: "/api/push/subscriptions",
+		server: "api",
+		desc: "Update one subscribed device's needs-attention, work-finished, or generic/detailed privacy preferences.",
+	},
+	{
+		method: "DELETE",
+		path: "/api/push/subscriptions",
+		server: "api",
+		desc: "Revoke one exact browser endpoint and permanently remove its Web Push encryption material.",
+	},
+	{
+		method: "GET",
+		path: "/api/push/session-overrides?session_id=",
+		server: "api",
+		desc: "Read the installation-wide Default, Notify, or Mute notification override for one exact Hlid session.",
+	},
+	{
+		method: "PATCH",
+		path: "/api/push/session-overrides",
+		server: "api",
+		desc: "Set one session to Default, Notify for both event categories on subscribed devices, or Mute. Default removes the durable override.",
+	},
+	{
+		method: "GET",
 		path: "/providers?refresh=1&host_capabilities=1&provider_capabilities=1",
 		server: "api",
 		desc: "Provider availability and server-owned model and capability catalog. Normal reads use a roughly 60-second stale-while-revalidate snapshot backed by cached model and provider evidence; refresh=1 forces live discovery, host_capabilities=1 includes host-only readiness, and host_capabilities_wait=1 performs only the bounded host-readiness recovery without refreshing models. provider_capabilities=1 includes the bounded support, integration, readiness, and resolved-availability snapshot. capability_cwd may select an exact absolute workspace for workspace-scoped evidence, while provider_capabilities_wait=1 awaits an uncached discovery result. Includes input modalities, per-model effort and service tiers, permission modes, exact-fork support, and structured, realtime, and workflow capabilities.",

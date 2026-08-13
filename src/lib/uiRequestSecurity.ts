@@ -1,4 +1,9 @@
 import { isAllowedOrigin, isAllowedOriginHeader } from "./allowedOrigin";
+import {
+	loginLocationForReturnTo,
+	requestAuthReturnTo,
+	safeAuthReturnTo,
+} from "./authReturnTo";
 import { isPublicPath } from "./publicPath";
 
 export type UiSecurityDependencies = {
@@ -22,7 +27,10 @@ export function unauthenticatedResponse(request: Request): Response {
 	if (isDocumentNavigationRequest(request)) {
 		return new Response(null, {
 			status: 302,
-			headers: { location: "/login", "cache-control": "no-store" },
+			headers: {
+				location: loginLocationForReturnTo(requestAuthReturnTo(request)),
+				"cache-control": "no-store",
+			},
 		});
 	}
 	return Response.json(
@@ -68,7 +76,10 @@ export async function uiSecurityRejection(
 	if (pathname === "/login" && authenticated) {
 		return new Response(null, {
 			status: 302,
-			headers: { location: "/", "cache-control": "no-store" },
+			headers: {
+				location: safeAuthReturnTo(url.searchParams.get("next")),
+				"cache-control": "no-store",
+			},
 		});
 	}
 	if (isPublicPath(pathname) || authenticated) return null;

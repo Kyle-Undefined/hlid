@@ -833,6 +833,8 @@ describe("ACP internal HTTP routes", () => {
 		expect(catalog).toHaveBeenCalledWith(
 			loadConfig.mock.results[0]?.value,
 			true,
+			false,
+			{},
 		);
 		expect(syncRuntime).toHaveBeenCalledWith({
 			config: loadConfig.mock.results[0]?.value,
@@ -904,6 +906,21 @@ describe("ACP internal HTTP routes", () => {
 				cancelable: true,
 			},
 		});
+	});
+
+	it("limits update refreshes to configured harnesses", async () => {
+		const response = await handle(
+			new URL("http://localhost/acp/registry?refresh=1&configured=1"),
+			request("/acp/registry?refresh=1&configured=1"),
+		);
+
+		expect(response?.status).toBe(200);
+		expect(catalog).toHaveBeenCalledWith(
+			loadConfig.mock.results[0]?.value,
+			true,
+			false,
+			{ agentIds: ["opencode"] },
+		);
 	});
 
 	it("removes a receipt-backed managed target after its workspace disappears", async () => {

@@ -30,6 +30,8 @@ interface TerminalSessionEntry extends PtyPoolEntry {
 	forkParentLabel: string | null;
 	forkKind: "exact" | "recap" | null;
 	attentionStartedAt: number;
+	exitCode: number | null;
+	exitedAt: number | null;
 }
 
 export interface TerminalSubscribeOpts {
@@ -81,6 +83,8 @@ export class TerminalSessionPool extends PtySessionPoolBase<TerminalSessionEntry
 				forkParentLabel: opts.forkParentLabel ?? null,
 				forkKind: opts.forkKind ?? null,
 				attentionStartedAt: Date.now(),
+				exitCode: null,
+				exitedAt: null,
 				bridge,
 				buffer: new RingBuffer(),
 				subscribers: new Set(),
@@ -121,20 +125,25 @@ export class TerminalSessionPool extends PtySessionPoolBase<TerminalSessionEntry
 	getSessionsStatus(): SessionStatusEntry[] {
 		const out: SessionStatusEntry[] = [];
 		for (const entry of this.entries.values()) {
-			if (!entry.alive) continue;
+			const terminalFailed = !entry.alive && entry.exitCode !== 0;
+			const attentionAt = entry.exitedAt ?? entry.attentionStartedAt;
 			out.push({
 				session_id: entry.sessionId,
 				agent_cwd: entry.cwd,
 				agent_name: entry.label || "Terminal session",
-				state: "running",
+				state: entry.alive ? "running" : terminalFailed ? "error" : "idle",
 				provider_id: "claude",
 				model: "claude-cli",
 				hasPendingPermissions: false,
 				attention: {
-					bucket: "working",
-					reason: "terminal",
-					since: entry.attentionStartedAt,
-					last_activity_at: entry.attentionStartedAt,
+					bucket: entry.alive
+						? "working"
+						: terminalFailed
+							? "needs_attention"
+							: "recent",
+					reason: entry.alive ? "terminal" : terminalFailed ? "error" : "ready",
+					since: attentionAt,
+					last_activity_at: attentionAt,
 					queue_count: 0,
 					pending_count: 0,
 				},
@@ -160,7 +169,16 @@ export class TerminalSessionPool extends PtySessionPoolBase<TerminalSessionEntry
 		this.onChange?.();
 	}
 
-	protected override onExited(): void {
+	protected override onExited(sessionId: string, code: number): void {
+		const entry = this.entries.get(sessionId);
+		if (entry) {
+			entry.exitCode = code;
+			entry.exitedAt = Date.now();
+		}
+		this.onChange?.();
+	}
+
+	protected override onCleaned(): void {
 		this.onChange?.();
 	}
 }

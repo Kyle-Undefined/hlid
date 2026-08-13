@@ -16,7 +16,6 @@ import {
 	acpCmdShimCommand,
 	acpLaunchUsesShell,
 	findAcpExecutable,
-	findAcpExecutables,
 } from "./acpExecutable";
 import { childIsRunning, waitForChildExit } from "./childProcessLifecycle";
 
@@ -26,7 +25,27 @@ const WSL_ACP_LAUNCH_SCRIPT =
 const WSL_ACP_TERMINATE_SCRIPT =
 	'process_group_file=$1; attempt=0; while [ ! -r "$process_group_file" ] && [ "$attempt" -lt 20 ]; do attempt=$((attempt + 1)); sleep 0.05; done; if [ ! -r "$process_group_file" ]; then exit 0; fi; IFS= read -r process_group_id < "$process_group_file" || process_group_id=; rm -f -- "$process_group_file"; case "$process_group_id" in ""|*[!0-9]*) exit 0 ;; esac; /bin/kill -TERM -- "-$process_group_id" 2>/dev/null || exit 0; sleep 0.5; /bin/kill -KILL -- "-$process_group_id" 2>/dev/null || true';
 const WSL_HELPER_TIMEOUT_MS = 2_500;
+const WSL_PLATFORM_PROBE_TIMEOUT_MS = 2_500;
+const WSL_PLATFORM_PROBE_SUCCESS_TTL_MS = 6 * 60 * 60_000;
+const WSL_PLATFORM_PROBE_FAILURE_TTL_MS = 5_000;
 const INTERNAL_MCP_ENV_PREFIX = "HLID_INTERNAL_MCP_";
+
+type WslPlatform = {
+	platform: NodeJS.Platform;
+	architecture: NodeJS.Architecture;
+};
+
+type WslPlatformProbe = (
+	distro: string,
+	options: { signal?: AbortSignal; timeoutMs: number },
+) => Promise<WslPlatform>;
+
+type WslPlatformProbeCacheEntry = {
+	probe: Promise<WslPlatform>;
+	expiresAt: number;
+};
+
+const wslPlatformProbeCache = new Map<string, WslPlatformProbeCacheEntry>();
 
 export type AcpTargetEnvironment = Record<string, string | undefined>;
 
@@ -79,11 +98,6 @@ export interface AcpExecutionAdapter {
 		command: string,
 		options: ResolveAcpTargetExecutablesOptions,
 	): Promise<string | null>;
-	/** Resolve several commands against one exact target environment and cwd. */
-	resolveExecutables?(
-		commands: readonly string[],
-		options: ResolveAcpTargetExecutablesOptions,
-	): Promise<Map<string, string | null>>;
 	start(input: StartAcpTargetProcessInput): Promise<AcpStartedProcess>;
 	adaptMcpServer<T extends AcpMcpServerLike>(server: T, hostCwd: string): T;
 }
@@ -336,17 +350,38 @@ function captureWslProcess<T>(
 		let output = "";
 		let settled = false;
 		let timer: ReturnType<typeof setTimeout> | undefined;
+		const cleanup = () => {
+			if (timer !== undefined) clearTimeout(timer);
+			options.signal?.removeEventListener("abort", onAbort);
+		};
 		const finish = (error?: unknown) => {
 			if (settled) return;
 			settled = true;
-			if (timer !== undefined) clearTimeout(timer);
-			options.signal?.removeEventListener("abort", onAbort);
+			cleanup();
 			if (error) reject(error);
 			else resolve(options.map(output));
 		};
+		const terminate = (error: unknown) => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			const complete = () => reject(error);
+			if (process.platform !== "win32" || !child.pid) {
+				child.kill();
+				complete();
+				return;
+			}
+			const killer = spawnWindowsTaskkill(child.pid);
+			void waitForChildExit(killer, WSL_HELPER_TIMEOUT_MS)
+				.catch(() => false)
+				.finally(() => {
+					killer.kill();
+					if (childIsRunning(child)) child.kill("SIGKILL");
+					complete();
+				});
+		};
 		const onAbort = () => {
-			child.kill();
-			finish(options.signal?.reason ?? new Error(options.cancelledMessage));
+			terminate(options.signal?.reason ?? new Error(options.cancelledMessage));
 		};
 		child.stdout.setEncoding("utf8");
 		child.stdout.on("data", (chunk: string) => {
@@ -355,8 +390,7 @@ function captureWslProcess<T>(
 		child.once("error", finish);
 		child.once("close", (code) => finish(options.closeError?.(code)));
 		timer = setTimeout(() => {
-			child.kill();
-			finish(new Error(options.timeoutMessage));
+			terminate(new Error(options.timeoutMessage));
 		}, options.timeoutMs);
 		if (options.signal?.aborted) onAbort();
 		else options.signal?.addEventListener("abort", onAbort, { once: true });
@@ -378,11 +412,6 @@ function hostAdapter(target: AcpExecutionTarget): AcpExecutionAdapter {
 		pathAccessible: () => true,
 		resolveExecutable: (command, options) =>
 			findAcpExecutable(command, {
-				cwd: options.hostCwd,
-				env: options.env,
-			}),
-		resolveExecutables: (commands, options) =>
-			findAcpExecutables(commands, {
 				cwd: options.hostCwd,
 				env: options.env,
 			}),
@@ -409,11 +438,11 @@ function hostAdapter(target: AcpExecutionTarget): AcpExecutionAdapter {
 	};
 }
 
-async function wslRegistryPlatform(
+async function probeWslRegistryPlatform(
 	distro: string,
-	options: { signal?: AbortSignal; timeoutMs?: number } = {},
-): Promise<{ platform: NodeJS.Platform; architecture: NodeJS.Architecture }> {
-	const timeoutMs = options.timeoutMs ?? 2_500;
+	options: { signal?: AbortSignal; timeoutMs: number },
+): Promise<WslPlatform> {
+	const timeoutMs = options.timeoutMs;
 	const architecture = await captureWslProcess({
 		launch: {
 			executable: "wsl.exe",
@@ -430,6 +459,43 @@ async function wslRegistryPlatform(
 		map: wslArchitectureFromUname,
 	});
 	return { platform: "linux", architecture };
+}
+
+async function wslRegistryPlatform(
+	distro: string,
+	options: { signal?: AbortSignal; timeoutMs?: number } = {},
+	probePlatform: WslPlatformProbe = probeWslRegistryPlatform,
+): Promise<WslPlatform> {
+	const timeoutMs = Math.max(
+		options.timeoutMs ?? 0,
+		WSL_PLATFORM_PROBE_TIMEOUT_MS,
+	);
+	// Abortable callers own their probe. Normal registry discovery is shared
+	// process-wide so every integration reuses one exact distro observation.
+	if (options.signal) {
+		return probePlatform(distro, { signal: options.signal, timeoutMs });
+	}
+	const key = distro.trim().toLowerCase();
+	const now = Date.now();
+	const cached = wslPlatformProbeCache.get(key);
+	if (cached && cached.expiresAt > now) return cached.probe;
+
+	const pending = probePlatform(distro, { timeoutMs });
+	const entry: WslPlatformProbeCacheEntry = {
+		probe: pending,
+		expiresAt: now + WSL_PLATFORM_PROBE_SUCCESS_TTL_MS,
+	};
+	wslPlatformProbeCache.set(key, entry);
+	void pending.catch(() => {
+		if (wslPlatformProbeCache.get(key) === entry) {
+			entry.expiresAt = Date.now() + WSL_PLATFORM_PROBE_FAILURE_TTL_MS;
+		}
+	});
+	return pending;
+}
+
+function clearWslPlatformProbeCache(): void {
+	wslPlatformProbeCache.clear();
 }
 
 export function wslArchitectureFromUname(value: string): NodeJS.Architecture {
@@ -482,51 +548,6 @@ function wslExecutableProbeLaunch(
 	};
 }
 
-function wslExecutableBatchProbeLaunch(
-	distro: string,
-	commands: readonly string[],
-	providerCwd: string,
-	env: AcpTargetEnvironment,
-	forwardedEnvNames: string[],
-): Pick<Launch, "executable" | "args" | "env"> {
-	const filterInheritedWindowsPath =
-		wslExecutableSearchPathScript(forwardedEnvNames);
-	const script = `${filterInheritedWindowsPath}printf "\\0"; for candidate do resolved=; case "$candidate" in */*) [ -f "$candidate" ] && [ -x "$candidate" ] && resolved=$candidate ;; *) resolved=$(command -v -- "$candidate" 2>/dev/null || true) ;; esac; printf "%s\\0" "$resolved"; done`;
-	return {
-		executable: "wsl.exe",
-		args: [
-			"-d",
-			distro,
-			"--cd",
-			providerCwd,
-			"--exec",
-			"bash",
-			"-lc",
-			script,
-			"hlid-acp-resolve-batch",
-			...commands,
-		],
-		env: withWslEnvironment(env, forwardedEnvNames, "u"),
-	};
-}
-
-function parseWslExecutableBatchOutput(
-	commands: readonly string[],
-	output: string,
-): Map<string, string | null> {
-	const fields = output.split("\0");
-	const results = fields.slice(-(commands.length + 1), -1);
-	return new Map(
-		commands.map((command, index) => {
-			const candidate =
-				results.length === commands.length
-					? (results[index]?.trim() ?? "")
-					: "";
-			return [command, candidate.startsWith("/") ? candidate : null] as const;
-		}),
-	);
-}
-
 async function resolveWslExecutable(
 	distro: string,
 	command: string,
@@ -557,39 +578,6 @@ async function resolveWslExecutable(
 			const candidate = output.trim().split(/\r?\n/).at(-1) ?? "";
 			return candidate.startsWith("/") ? candidate : null;
 		},
-	});
-}
-
-async function resolveWslExecutables(
-	distro: string,
-	commands: readonly string[],
-	hostCwd: string,
-	env: AcpTargetEnvironment,
-	forwardedEnvNames: string[],
-	timeoutMs: number,
-	signal?: AbortSignal,
-): Promise<Map<string, string | null>> {
-	const uniqueCommands = [...new Set(commands)];
-	if (uniqueCommands.length === 0) return new Map();
-	const providerCwd = wslProviderPath(distro, hostCwd, hostCwd);
-	if (!providerCwd.startsWith("/")) {
-		return new Map(uniqueCommands.map((command) => [command, null]));
-	}
-	const launch = wslExecutableBatchProbeLaunch(
-		distro,
-		uniqueCommands,
-		providerCwd,
-		env,
-		forwardedEnvNames,
-	);
-	return captureWslProcess({
-		launch,
-		signal,
-		timeoutMs,
-		maxOutput: Math.min(1_048_576, 1 + uniqueCommands.length * 4_097),
-		cancelledMessage: "WSL executable resolution cancelled",
-		timeoutMessage: `WSL executable resolution timed out after ${timeoutMs}ms`,
-		map: (output) => parseWslExecutableBatchOutput(uniqueCommands, output),
 	});
 }
 
@@ -781,16 +769,6 @@ function wslAdapter(
 				options.timeoutMs,
 				options.signal,
 			),
-		resolveExecutables: (commands, options) =>
-			resolveWslExecutables(
-				target.distro,
-				commands,
-				options.hostCwd,
-				options.env,
-				options.forwardedEnvNames ?? [],
-				options.timeoutMs,
-				options.signal,
-			),
 		start: async (input) => {
 			const executable = await resolveWslExecutable(
 				target.distro,
@@ -827,6 +805,6 @@ export const acpExecutionAdapterInternals = {
 	wslLaunch,
 	wslTerminationHelper,
 	wslExecutableProbeLaunch,
-	wslExecutableBatchProbeLaunch,
-	parseWslExecutableBatchOutput,
+	wslRegistryPlatform,
+	clearWslPlatformProbeCache,
 };

@@ -21,6 +21,7 @@ import { InstructionFilesSection } from "#/components/forge/InstructionFilesSect
 import { McpSection } from "#/components/forge/McpSection";
 import { NavigationNamesSection } from "#/components/forge/NavigationNamesSection";
 import { NetworkSection } from "#/components/forge/NetworkSection";
+import { NotificationsSection } from "#/components/forge/NotificationsSection";
 import { ObsidianSection } from "#/components/forge/ObsidianSection";
 import { PricingSection } from "#/components/forge/PricingSection";
 import { SecuritySection } from "#/components/forge/SecuritySection";
@@ -667,6 +668,7 @@ function ExperienceCategory({
 					Open theme editor
 				</button>
 			</section>
+			<NotificationsSection />
 			<VoiceSection
 				voice={state.voice}
 				onChange={(patch) =>

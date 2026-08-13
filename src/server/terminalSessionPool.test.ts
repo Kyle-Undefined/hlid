@@ -311,4 +311,51 @@ describe("TerminalSessionPool — PTY exit handling", () => {
 		);
 		pool.closeAll();
 	});
+
+	it("publishes a bounded completion snapshot before cleaning up a clean exit", () => {
+		vi.clearAllMocks();
+		vi.useFakeTimers();
+		vi.setSystemTime(2_000);
+		let exitCb: ((code: number) => void) | undefined;
+		mockBridgeInstance.onData.mockImplementation(() => {});
+		mockBridgeInstance.onExit.mockImplementation(
+			(cb: (code: number) => void) => {
+				exitCb = cb;
+			},
+		);
+		const onChange = vi.fn();
+		const pool = new TerminalSessionPool(undefined, onChange);
+		pool.subscribe(makeWs() as never, makeSubOpts());
+
+		exitCb?.(0);
+		expect(pool.getSessionsStatus()[0]).toMatchObject({
+			state: "idle",
+			attention: { bucket: "recent", reason: "ready", since: 2_000 },
+		});
+
+		vi.advanceTimersByTime(5_000);
+		expect(pool.getSessionsStatus()).toEqual([]);
+		expect(onChange).toHaveBeenCalledTimes(3);
+		vi.useRealTimers();
+	});
+
+	it("publishes attention for a failed terminal exit", () => {
+		vi.clearAllMocks();
+		let exitCb: ((code: number) => void) | undefined;
+		mockBridgeInstance.onData.mockImplementation(() => {});
+		mockBridgeInstance.onExit.mockImplementation(
+			(cb: (code: number) => void) => {
+				exitCb = cb;
+			},
+		);
+		const pool = new TerminalSessionPool();
+		pool.subscribe(makeWs() as never, makeSubOpts());
+
+		exitCb?.(1);
+		expect(pool.getSessionsStatus()[0]).toMatchObject({
+			state: "error",
+			attention: { bucket: "needs_attention", reason: "error" },
+		});
+		pool.closeAll();
+	});
 });

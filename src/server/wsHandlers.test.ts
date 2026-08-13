@@ -37,6 +37,8 @@ const {
 	wsState,
 	mockSend,
 	mockBroadcast,
+	mockRemoveNotificationPresence,
+	mockUpdateNotificationPresence,
 	mockLoadConfig,
 	mockWaitForClaudeWarmupSnapshot,
 	mockWaitForAllClaudeWarmupSnapshots,
@@ -46,6 +48,8 @@ const {
 	},
 	mockSend: vi.fn(),
 	mockBroadcast: vi.fn(),
+	mockRemoveNotificationPresence: vi.fn(),
+	mockUpdateNotificationPresence: vi.fn(),
 	mockWaitForClaudeWarmupSnapshot: vi.fn().mockResolvedValue(null),
 	mockWaitForAllClaudeWarmupSnapshots: vi.fn().mockResolvedValue([]),
 	mockLoadConfig: vi.fn().mockReturnValue({
@@ -68,6 +72,11 @@ vi.mock("./runState", () => ({
 	wsState,
 	send: mockSend,
 	broadcast: mockBroadcast,
+}));
+
+vi.mock("./notificationPresence", () => ({
+	removeNotificationPresence: mockRemoveNotificationPresence,
+	updateNotificationPresence: mockUpdateNotificationPresence,
 }));
 
 vi.mock("./claudeWarmup", () => ({
@@ -247,6 +256,8 @@ beforeEach(() => {
 	wsState.clients.clear();
 	mockSend.mockClear();
 	mockBroadcast.mockClear();
+	mockRemoveNotificationPresence.mockClear();
+	mockUpdateNotificationPresence.mockClear();
 });
 
 describe("message — connection_probe", () => {
@@ -265,6 +276,32 @@ describe("message — connection_probe", () => {
 			type: "connection_ack",
 			request_id: "resume-1",
 		});
+		expect(pool.get).not.toHaveBeenCalled();
+		expect(pool.findByDbSessionId).not.toHaveBeenCalled();
+		expect(pool.vaultEntry).not.toHaveBeenCalled();
+	});
+});
+
+describe("message — notification_presence", () => {
+	it("records bounded visibility without routing or restoring a session", async () => {
+		const { pool } = wrapSession(makeSession());
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "notification_presence",
+				session_id: "db-session",
+				visible: true,
+			}),
+		);
+
+		expect(mockUpdateNotificationPresence).toHaveBeenCalledWith(
+			ws,
+			"db-session",
+			true,
+		);
 		expect(pool.get).not.toHaveBeenCalled();
 		expect(pool.findByDbSessionId).not.toHaveBeenCalled();
 		expect(pool.vaultEntry).not.toHaveBeenCalled();
@@ -1700,6 +1737,7 @@ describe("close", () => {
 		open(ws as never);
 		close(ws as never);
 		expect(wsState.clients.has(ws)).toBe(false);
+		expect(mockRemoveNotificationPresence).toHaveBeenCalledWith(ws);
 	});
 
 	it("calls runState.removeSubscriber when owner disconnects", () => {

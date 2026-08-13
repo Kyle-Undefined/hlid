@@ -36,7 +36,7 @@ function applyTheme(status: AuthStatus): void {
 	applyThemeToDocument(selected, palette);
 }
 
-export function LoginPage() {
+export function LoginPage({ returnTo = "/" }: { returnTo?: string }) {
 	const [state, setState] = useState<AuthState | null>(null);
 	const [password, setPassword] = useState("");
 	const [confirm, setConfirm] = useState("");
@@ -51,7 +51,8 @@ export function LoginPage() {
 			})
 			.then((result) => {
 				applyTheme(result);
-				if (result.state === "authenticated") enterAuthenticatedApp();
+				if (result.state === "authenticated")
+					enterAuthenticatedApp(undefined, returnTo);
 				else setState(result.state);
 			})
 			.catch((reason) =>
@@ -59,7 +60,7 @@ export function LoginPage() {
 					reason instanceof Error ? reason.message : "Unable to continue",
 				),
 			);
-	}, []);
+	}, [returnTo]);
 
 	async function submit(event: React.FormEvent) {
 		event.preventDefault();
@@ -90,7 +91,7 @@ export function LoginPage() {
 			await new Promise<void>((resolve) =>
 				requestAnimationFrame(() => resolve()),
 			);
-			enterAuthenticatedApp();
+			enterAuthenticatedApp(undefined, returnTo);
 		} catch {
 			setError("Unable to reach Hlid");
 		} finally {

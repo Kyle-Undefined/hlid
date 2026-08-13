@@ -137,10 +137,9 @@ async function buildPathIndex(
 async function pathIndex(
 	directories: string[],
 	pathExt: string | undefined,
-	fresh = false,
 ): Promise<Map<string, string[]>> {
 	const key = `${directories.join("\0")}\0${pathExt ?? ""}`;
-	if (fresh || !pathIndexRead || pathIndexKey !== key) {
+	if (!pathIndexRead || pathIndexKey !== key) {
 		pathIndexKey = key;
 		pathIndexRead = buildPathIndex(directories);
 	}
@@ -207,25 +206,6 @@ function indexedAcpExecutableCandidates(
 	return { indexed, orderedCandidates, orderedIndexed };
 }
 
-/** Resolve an ACP executable without synchronous PATH filesystem work. */
-async function resolveIndexedAcpExecutable(
-	command: string,
-	directories: string[],
-	pathExt: string | undefined,
-	index: Map<string, string[]>,
-): Promise<string | null> {
-	const { orderedIndexed } = indexedAcpExecutableCandidates(
-		command,
-		directories,
-		pathExt,
-		index,
-	);
-	for (const candidate of orderedIndexed) {
-		if (await canAccess(candidate)) return candidate;
-	}
-	return null;
-}
-
 export type FindAcpExecutablesOptions = {
 	cwd?: string;
 	env?: Record<string, string | undefined>;
@@ -248,59 +228,6 @@ function acpExecutableSearchContext(options: FindAcpExecutablesOptions): {
 		pathExt,
 		directories: pathDirectories(pathValue, cwd),
 	};
-}
-
-/**
- * Resolve ACP executables against one exact cwd/environment group. PATH
- * directories are freshly indexed once for the batch, preserving discovery
- * freshness without a PATH x PATHEXT filesystem-probe fanout for misses.
- */
-export async function findAcpExecutables(
-	commands: readonly string[],
-	options: FindAcpExecutablesOptions = {},
-): Promise<Map<string, string | null>> {
-	const uniqueCommands = [...new Set(commands)];
-	if (uniqueCommands.length === 0) return new Map();
-	const { cwd, pathExt, directories } = acpExecutableSearchContext(options);
-	const pathCommands = uniqueCommands.filter(
-		(command) =>
-			command.length > 0 &&
-			!isAbsolute(command) &&
-			!command.includes("/") &&
-			!command.includes("\\"),
-	);
-	// One fresh listing pass makes the whole group current and bounds misses to
-	// PATH directory reads rather than PATH x PATHEXT filesystem probes.
-	const index =
-		pathCommands.length > 0
-			? await pathIndex(directories, pathExt, true)
-			: null;
-	const resolved = await Promise.all(
-		uniqueCommands.map(async (command) => {
-			if (!command) return [command, null] as const;
-			if (
-				isAbsolute(command) ||
-				command.includes("/") ||
-				command.includes("\\")
-			) {
-				const candidate = isAbsolute(command) ? command : resolve(cwd, command);
-				return [
-					command,
-					(await canAccess(candidate)) ? candidate : null,
-				] as const;
-			}
-			return [
-				command,
-				await resolveIndexedAcpExecutable(
-					command,
-					directories,
-					pathExt,
-					index as Map<string, string[]>,
-				),
-			] as const;
-		}),
-	);
-	return new Map(resolved);
 }
 
 /** Resolve one ACP executable without synchronous PATH filesystem work. */

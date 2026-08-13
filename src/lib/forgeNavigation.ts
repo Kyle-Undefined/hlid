@@ -199,9 +199,18 @@ export const FORGE_CATEGORIES: readonly ForgeCategoryDefinition[] = [
 	{
 		id: "experience",
 		label: "Experience",
-		description: "Navigation names, themes, input, voice, and privacy",
+		description: "Navigation names, themes, notifications, voice, and privacy",
 		group: "primary",
-		keywords: ["theme", "input", "voice", "whisper", "privacy", "speech"],
+		keywords: [
+			"theme",
+			"input",
+			"notifications",
+			"alerts",
+			"voice",
+			"whisper",
+			"privacy",
+			"speech",
+		],
 		sections: [
 			{
 				id: "ui",
@@ -226,6 +235,20 @@ export const FORGE_CATEGORIES: readonly ForgeCategoryDefinition[] = [
 				label: "Custom theme",
 				description: "Edit the desktop or mobile custom color palette.",
 				keywords: ["palette", "colors", "appearance", "mobile"],
+			},
+			{
+				id: "notifications",
+				label: "Notifications",
+				description:
+					"Device opt-in, attention and completion alerts, and Lock Screen wording.",
+				keywords: [
+					"push",
+					"alerts",
+					"attention",
+					"work finished",
+					"lock screen",
+					"pwa",
+				],
 			},
 			{
 				id: "read-aloud",
@@ -1333,6 +1356,38 @@ const SETTING_DESTINATIONS: readonly SettingDefinition[] = [
 		],
 		"theme",
 	),
+	...staticSettings("experience", "notifications", [
+		[
+			"notifications-device",
+			"This device",
+			"Enable or disable background notifications on this device.",
+			["push", "pwa", "permission", "opt in"],
+		],
+		[
+			"notification-permission",
+			"Notification permission",
+			"Inspect whether this browser allows Hlid notifications.",
+			["blocked", "allowed", "browser"],
+		],
+		[
+			"notifications-needs-attention",
+			"Needs attention",
+			"Alert for approvals, questions, review, errors, and blocked work.",
+			["approval", "question", "plan", "failed"],
+		],
+		[
+			"notifications-work-finished",
+			"Work finished",
+			"Alert when background work completes.",
+			["done", "complete", "completion"],
+		],
+		[
+			"notifications-lock-screen",
+			"Lock Screen wording",
+			"Choose generic or detailed notification text.",
+			["privacy", "session name", "reason"],
+		],
+	]),
 	...staticSettings("experience", "read-aloud", [
 		[
 			"speech-engine",

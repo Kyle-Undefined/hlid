@@ -297,6 +297,12 @@ describe("Forge setting search", () => {
 		["Umbod", "setting:umbod", "integrations", "umbod"],
 		["ACP", "setting:opencode-acp", "integrations", "opencode-acp"],
 		["Custom Theme", "setting:custom-theme", "experience", "custom-theme"],
+		[
+			"Work finished",
+			"setting:notifications-work-finished",
+			"experience",
+			"notifications",
+		],
 		["restart", "setting:restart", "advanced", "danger-zone"],
 		["reclaim", "setting:reclaim-database-space", "advanced", "danger-zone"],
 		["neural", "setting:neural-voice-model", "experience", "voice-models"],

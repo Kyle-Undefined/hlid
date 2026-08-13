@@ -45,6 +45,19 @@ describe("buildApiIndex", () => {
 		).toBe(true);
 	});
 
+	it("documents the authenticated Web Push device and session contracts", () => {
+		expect(endpoint("GET", "/api/push/config")?.desc).toContain("public VAPID");
+		expect(endpoint("POST", "/api/push/subscriptions")?.desc).toContain(
+			"privacy",
+		);
+		expect(endpoint("DELETE", "/api/push/subscriptions")?.desc).toContain(
+			"permanently remove",
+		);
+		expect(endpoint("PATCH", "/api/push/session-overrides")?.desc).toContain(
+			"both event categories",
+		);
+	});
+
 	it("documents the current filter and pagination contracts for user-visible database routes", () => {
 		const sessions = endpoint(
 			"GET",

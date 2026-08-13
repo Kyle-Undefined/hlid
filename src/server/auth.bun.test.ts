@@ -3,6 +3,10 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+	getPushSubscription,
+	upsertPushSubscription,
+} from "../db/pushNotifications";
 import { setDbForTest } from "../db/schema";
 import {
 	PROJECT_PREVIEW_AUTH_ENV,
@@ -37,6 +41,7 @@ describe("server-side authentication lifecycle", () => {
 			expect(await auth.authenticateRequest(trusted)).toBe(true);
 			expect(await auth.authState(trusted)).toBe("authenticated");
 			expect(await auth.authenticateSessionRequest(trusted)).toBe(false);
+			expect(await auth.authenticatedSessionHash(trusted)).toBeNull();
 			expect(
 				await auth.authorizeServiceRequest(
 					trusted,
@@ -70,14 +75,50 @@ describe("server-side authentication lifecycle", () => {
 
 		const token = await auth.createSession("bun test");
 		expect(await auth.validateSessionToken(token)).toBe(true);
+		const tokenRequest = new Request("http://localhost", {
+			headers: { cookie: `${auth.AUTH_COOKIE}=${encodeURIComponent(token)}` },
+		});
+		const sessionHash = await auth.authenticatedSessionHash(tokenRequest);
+		expect(sessionHash).toMatch(/^[a-f0-9]{64}$/);
 		const stored = db
 			.query<{ token_hash: string }, []>("SELECT token_hash FROM auth_sessions")
 			.get();
 		expect(stored?.token_hash).not.toBe(token);
+		await upsertPushSubscription(
+			{
+				endpoint: "https://fcm.googleapis.com/fcm/send/auth-device-one",
+				expirationTime: null,
+				keys: { p256dh: "public", auth: "auth" },
+			},
+			sessionHash ?? "",
+		);
 		await auth.revokeSession(token);
 		expect(await auth.validateSessionToken(token)).toBe(false);
+		expect(
+			await getPushSubscription(
+				"https://fcm.googleapis.com/fcm/send/auth-device-one",
+			),
+		).toBeNull();
 
 		const second = await auth.createSession();
+		const secondHash = await auth.authenticatedSessionHash(
+			new Request("http://localhost", {
+				headers: { cookie: `${auth.AUTH_COOKIE}=${second}` },
+			}),
+		);
+		await upsertPushSubscription(
+			{
+				endpoint: "https://fcm.googleapis.com/fcm/send/auth-device-two",
+				keys: { p256dh: "public", auth: "auth" },
+			},
+			secondHash ?? "",
+		);
+		// A nullable v1 row has no individual owner, but global credential
+		// revocation must still remove it.
+		db.run(
+			`INSERT INTO push_subscriptions (id, endpoint, p256dh, auth)
+			 VALUES ('legacy-auth-device', 'https://fcm.googleapis.com/fcm/send/legacy-auth-device', 'public', 'auth')`,
+		);
 		expect(
 			await auth.changePassword(
 				"correct horse battery staple",
@@ -85,6 +126,13 @@ describe("server-side authentication lifecycle", () => {
 			),
 		).toBe(true);
 		expect(await auth.validateSessionToken(second)).toBe(false);
+		expect(
+			db
+				.query<{ count: number }, []>(
+					`SELECT COUNT(*) AS count FROM push_subscriptions`,
+				)
+				.get()?.count,
+		).toBe(0);
 		expect(
 			await auth.verifyLogin("new correct horse battery staple", "127.0.0.1"),
 		).toBe(true);
