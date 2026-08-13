@@ -503,7 +503,7 @@ describe("Hlid operating guidance", () => {
 		);
 
 		expect(focused.orchestrationTargets).toMatchObject({
-			source: "live-provider-catalog",
+			source: "provider-catalog-cache",
 			snapshot: "current",
 			totalProviders: 2,
 			availableProviders: 1,

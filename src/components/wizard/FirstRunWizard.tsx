@@ -79,6 +79,7 @@ export function buildFirstRunConfig(s: StructureState): HlidConfig {
 			local_network_access: false,
 			allow_external_agents: false,
 		},
+		diagnostics: { event_log: true },
 		claude: {
 			model: "claude-sonnet-4-6",
 			effort: "high",

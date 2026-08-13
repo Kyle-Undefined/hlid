@@ -5,7 +5,8 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { setEventLogPersistenceEnabled } from "../lib/eventLogPolicy";
 import {
 	ANALYTICS_SCOPES,
 	getAnalyticsRevision,
@@ -3203,7 +3204,11 @@ describe("permission events", () => {
 // ── event log ────────────────────────────────────────────────────────────────
 
 describe("event log — appendLog / getLogs", () => {
-	beforeEach(() => freshDb());
+	beforeEach(() => {
+		setEventLogPersistenceEnabled(true);
+		freshDb();
+	});
+	afterEach(() => setEventLogPersistenceEnabled(true));
 
 	it("appends a log entry and retrieves it", async () => {
 		await appendLog("info", "test", "hello world");
@@ -3270,6 +3275,16 @@ describe("event log — appendLog / getLogs", () => {
 		await clearLogs();
 		const { total } = await getLogs(1, 10);
 		expect(total).toBe(0);
+	});
+
+	it("keeps retained rows but suppresses every new append while persistence is off", async () => {
+		await appendLog("info", "test", "retained");
+		setEventLogPersistenceEnabled(false);
+		await appendLog("warn", "test", "suppressed");
+
+		const { logs, total } = await getLogs(1, 10);
+		expect(total).toBe(1);
+		expect(logs.map((entry) => entry.message)).toEqual(["retained"]);
 	});
 });
 

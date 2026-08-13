@@ -140,6 +140,22 @@ describe("useSettingsForm autosave", () => {
 		expect(body.server.port).toBe(4100);
 	});
 
+	it("saves Event Log persistence live without requiring restart", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(Response.json({ ok: true }));
+		vi.stubGlobal("fetch", fetchMock);
+		const { result } = renderHook(() =>
+			useSettingsForm(initialSettings(), vi.fn().mockResolvedValue(undefined)),
+		);
+
+		act(() => result.current.setDiagnostics({ event_log: false }));
+		await advance(800);
+
+		expect(result.current.savedMsg).toBe("saved");
+		expect(
+			JSON.parse(fetchMock.mock.calls[0][1].body as string).diagnostics,
+		).toEqual({ event_log: false });
+	});
+
 	it("saves ACP defaults without requiring a restart", async () => {
 		const fetchMock = vi.fn().mockResolvedValue(Response.json({ ok: true }));
 		vi.stubGlobal("fetch", fetchMock);

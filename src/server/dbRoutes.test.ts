@@ -25,6 +25,7 @@ const {
 	mockGetAttachmentsForSession,
 	mockGetProviderUsage,
 	mockGetLogs,
+	mockAppendLog,
 	mockGetAggregatedStats,
 	mockGetRecentSessions,
 	mockGetSessionsPaginated,
@@ -68,6 +69,7 @@ const {
 	mockGetAttachmentsForSession: vi.fn(),
 	mockGetProviderUsage: vi.fn(),
 	mockGetLogs: vi.fn(),
+	mockAppendLog: vi.fn(),
 	mockGetAggregatedStats: vi.fn(),
 	mockGetRecentSessions: vi.fn(),
 	mockGetSessionsPaginated: vi.fn(),
@@ -113,6 +115,7 @@ vi.mock("../db", () => ({
 	getAttachmentsForSession: mockGetAttachmentsForSession,
 	getProviderUsage: mockGetProviderUsage,
 	getLogs: mockGetLogs,
+	appendLog: mockAppendLog,
 	getAggregatedStats: mockGetAggregatedStats,
 	getRecentSessions: mockGetRecentSessions,
 	getSessionsPaginated: mockGetSessionsPaginated,
@@ -199,6 +202,10 @@ import {
 	markAnalyticsChanged,
 	resetAnalyticsRevisionForTest,
 } from "../db/analyticsRevision";
+import {
+	isEventLogPersistenceEnabled,
+	setEventLogPersistenceEnabled,
+} from "../lib/eventLogPolicy";
 import { resetAnalyticsSnapshotsForTest } from "./analyticsSnapshots";
 import { handleDbRoute, parseAttachmentListFilter } from "./dbRoutes";
 
@@ -309,6 +316,7 @@ describe("handleDbRoute — POST provider history import", () => {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	setEventLogPersistenceEnabled(true);
 	mockGetSessionToolEventTranscriptWindow.mockResolvedValue({
 		items: [],
 		pages: [],
@@ -2825,5 +2833,46 @@ describe("handleDbRoute — GET /db/logs", () => {
 			makeRequest(),
 		);
 		expect(mockGetLogs).toHaveBeenCalledWith(1, 50, undefined);
+	});
+});
+
+describe("handleDbRoute — POST Event Log controls", () => {
+	it("applies the persistence policy live in the data server", async () => {
+		const response = await handleDbRoute(
+			makeUrl("/db/logs/policy"),
+			makeRequest("POST", { enabled: false }),
+		);
+
+		expect(response?.status).toBe(200);
+		expect(await response?.json()).toEqual({ ok: true, enabled: false });
+		expect(isEventLogPersistenceEnabled()).toBe(false);
+	});
+
+	it("rejects malformed persistence policies", async () => {
+		const response = await handleDbRoute(
+			makeUrl("/db/logs/policy"),
+			makeRequest("POST", { enabled: "off" }),
+		);
+
+		expect(response?.status).toBe(400);
+		expect(isEventLogPersistenceEnabled()).toBe(true);
+	});
+
+	it("bounds forwarded UI errors before appending them", async () => {
+		const response = await handleDbRoute(
+			makeUrl("/db/logs/client-error"),
+			makeRequest("POST", {
+				message: "m".repeat(10_100),
+				componentStack: "c".repeat(50_100),
+			}),
+		);
+
+		expect(response?.status).toBe(200);
+		expect(mockAppendLog).toHaveBeenCalledWith(
+			"error",
+			"ui",
+			"m".repeat(10_000),
+			{ componentStack: "c".repeat(50_000) },
+		);
 	});
 });

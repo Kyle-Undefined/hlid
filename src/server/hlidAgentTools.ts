@@ -1102,7 +1102,7 @@ const PROVIDER_DEPENDENT_HELP_TOPICS = new Set<HlidHelpTopic>([
 	"voice_audio",
 	"providers",
 ]);
-const LIVE_PROVIDER_CATALOG_HELP_TOPICS = new Set<HlidHelpTopic>([
+const PROVIDER_CATALOG_HELP_TOPICS = new Set<HlidHelpTopic>([
 	"orchestration",
 	"voice_audio",
 	"providers",
@@ -1138,6 +1138,26 @@ function providerDiscoveryFailure(
 		source: captured ? "active-provider-context" : "none",
 		retryable: true,
 		reason,
+	};
+}
+
+function cachedProviderDiscovery(
+	provider: ProviderInfo,
+	revision?: string,
+): NonNullable<HlidOperatingContext["providerDiscovery"]> {
+	const snapshot = provider.capabilitySnapshot;
+	const status =
+		snapshot?.status === "unavailable"
+			? "unavailable"
+			: snapshot?.status === "current" &&
+					(snapshot.source === "live" || snapshot.source === "adapter")
+				? "current"
+				: "captured";
+	return {
+		status,
+		source: "provider-catalog-cache",
+		retryable: false,
+		...(revision ? { revision } : {}),
 	};
 }
 
@@ -1210,7 +1230,7 @@ async function liveHlidOperatingContext(
 		};
 	}
 	const needsProviderCatalog =
-		LIVE_PROVIDER_CATALOG_HELP_TOPICS.has(topic) ||
+		PROVIDER_CATALOG_HELP_TOPICS.has(topic) ||
 		(!capturedProviderSnapshot && PROVIDER_DEPENDENT_HELP_TOPICS.has(topic));
 	const needsVoiceRuntime = topic === "voice_audio";
 	const [providerRead, voiceRuntime, ttsSnapshot] = await Promise.all([
@@ -1233,7 +1253,10 @@ async function liveHlidOperatingContext(
 				});
 				if (live.runtimeCwd && topic !== "orchestration") {
 					providerParams.set("capability_cwd", live.runtimeCwd);
-					providerParams.set("provider_capabilities_wait", "1");
+					// Ordinary help reads use the server-owned, workspace-scoped
+					// stale-while-revalidate snapshot. Uncached capability discovery
+					// remains an explicit `/providers?provider_capabilities_wait=1`
+					// contract instead of making every help call start provider probes.
 				}
 				const response = await dbFetch(
 					`/providers?${providerParams.toString()}`,
@@ -1242,7 +1265,7 @@ async function liveHlidOperatingContext(
 					return {
 						discovery: providerDiscoveryFailure(
 							capturedProviderSnapshot,
-							`Live provider discovery returned HTTP ${response.status}. Retry focused provider help.`,
+							`Provider catalog read returned HTTP ${response.status}. Retry focused provider help.`,
 						),
 					};
 				}
@@ -1251,7 +1274,7 @@ async function liveHlidOperatingContext(
 					return {
 						discovery: providerDiscoveryFailure(
 							capturedProviderSnapshot,
-							"Live provider discovery returned an invalid catalog. Retry focused provider help.",
+							"Provider catalog read returned an invalid catalog. Retry focused provider help.",
 						),
 					};
 				}
@@ -1264,7 +1287,7 @@ async function liveHlidOperatingContext(
 						providers,
 						discovery: providerDiscoveryFailure(
 							capturedProviderSnapshot,
-							"The live provider catalog did not include the active provider. Retry focused provider help.",
+							"The provider catalog did not include the active provider. Retry focused provider help.",
 						),
 					};
 				}
@@ -1274,18 +1297,13 @@ async function liveHlidOperatingContext(
 				return {
 					providers,
 					active: mergeActiveProviderSnapshot(capturedProviderSnapshot, active),
-					discovery: {
-						status: "current" as const,
-						source: "live-provider-catalog" as const,
-						retryable: false,
-						...(revision ? { revision } : {}),
-					},
+					discovery: cachedProviderDiscovery(active, revision),
 				};
 			} catch {
 				return {
 					discovery: providerDiscoveryFailure(
 						capturedProviderSnapshot,
-						"Live provider discovery failed. Retry focused provider help.",
+						"Provider catalog read failed. Retry focused provider help.",
 					),
 				};
 			}

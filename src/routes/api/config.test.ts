@@ -67,9 +67,79 @@ describe("POST /api/config — handlePostConfig", () => {
 		expect(response.status).toBe(200);
 		expect(stat).toHaveBeenCalledWith(resolve(homedir(), "vault"));
 		expect(writeConfig).toHaveBeenCalledWith(config);
+		expect(dbFetch).toHaveBeenCalledWith("/db/logs/policy", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ enabled: true }),
+		});
 		expect(dbFetch).toHaveBeenCalledWith("/voice/sync", { method: "POST" });
 		expect(dbFetch).toHaveBeenCalledWith("/cliproxy/sync", { method: "POST" });
 		expect(dbFetch).not.toHaveBeenCalledWith("/acp/sync", { method: "POST" });
+	});
+
+	it("applies an Event Log opt-out to the live data server after persistence", async () => {
+		const next = HlidConfigSchema.parse({
+			diagnostics: { event_log: false },
+		});
+
+		const response = await handlePostConfig(post(next));
+
+		expect(response.status).toBe(200);
+		expect(writeConfig).toHaveBeenCalledWith(next);
+		expect(dbFetch).toHaveBeenCalledWith("/db/logs/policy", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ enabled: false }),
+		});
+		expect(await response.json()).toEqual({
+			ok: true,
+			runtime_synced: true,
+			acp_runtime_synced: true,
+		});
+	});
+
+	it("keeps a successful config save truthful when live Event Log sync fails", async () => {
+		vi.mocked(dbFetch).mockImplementation((path) =>
+			path === "/db/logs/policy"
+				? Promise.resolve(new Response(null, { status: 503 }))
+				: Promise.resolve(new Response()),
+		);
+		const next = HlidConfigSchema.parse({
+			diagnostics: { event_log: false },
+		});
+
+		const response = await handlePostConfig(post(next));
+
+		expect(response.status).toBe(200);
+		expect(writeConfig).toHaveBeenCalledWith(next);
+		expect(await response.json()).toEqual({
+			ok: true,
+			runtime_synced: true,
+			acp_runtime_synced: true,
+			warning:
+				"Event Log persistence will use its previous setting until Hlid restarts.",
+		});
+	});
+
+	it("does not misreport a successful runtime sync when only Event Log sync warns", async () => {
+		vi.mocked(dbFetch).mockImplementation((path) =>
+			path === "/db/logs/policy"
+				? Promise.resolve(new Response(null, { status: 503 }))
+				: Promise.resolve(new Response()),
+		);
+		const next = HlidConfigSchema.parse({
+			voice: { codex_live_mode: true },
+		});
+
+		const response = await handlePostConfig(post(next));
+
+		expect(await response.json()).toEqual({
+			ok: true,
+			runtime_synced: true,
+			acp_runtime_synced: true,
+			warning:
+				"Event Log persistence will use its previous setting until Hlid restarts.",
+		});
 	});
 
 	it("keeps an existing CLIProxy key out of GET responses and preserves it on save", async () => {

@@ -51,6 +51,11 @@ const observeModelDiscovery = createSlowOperationObserver({
 	scope: "provider catalog",
 	thresholdMs: 5_000,
 });
+const runCatalogStepUnobserved: typeof observeCatalogStep = (
+	_signature,
+	_label,
+	operation,
+) => Promise.resolve().then(operation);
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
@@ -550,12 +555,18 @@ export async function loadProviderCatalog(
 				(!options.refreshProviderId ||
 					options.refreshProviderId === provider.providerId);
 			// `provider_capabilities_wait=1` is an explicit capability-only live
-			// contract used by Hlid tooling. Route reads keep this preference cached.
+			// contract. Ordinary route and Hlid help reads keep this preference cached.
 			const liveProviderCapabilityRead =
 				options.includeProviderCapabilities === true &&
 				options.preferCachedProviderCapabilities === false &&
 				(!options.refreshProviderId ||
 					options.refreshProviderId === provider.providerId);
+			// Live discovery has its own bounded observer below. Keep the snapshot
+			// observer only for cached reads so one live operation produces one warning.
+			const observeProviderCapabilitySnapshot =
+				liveRefresh || liveProviderCapabilityRead
+					? runCatalogStepUnobserved
+					: observeCatalogStep;
 			const liveHostCapabilityRead =
 				options.includeHostCapabilities === true &&
 				options.awaitHostCapabilities === true;
@@ -651,7 +662,7 @@ export async function loadProviderCatalog(
 							).then((resolved) => resolved ?? declaredForkCapability)
 						: declaredForkCapability,
 					options.includeProviderCapabilities && providerInitiallyAvailable
-						? observeCatalogStep(
+						? observeProviderCapabilitySnapshot(
 								`provider-capabilities:${provider.providerId}`,
 								`${provider.providerId} provider-capability snapshot`,
 								async () => {
@@ -925,10 +936,12 @@ export function createProviderCatalogSnapshot(
 		loadOptions: ProviderCatalogLoadOptions,
 	): ProviderCatalogVersion => {
 		const capabilityRead = isLiveProviderCapabilityRead(loadOptions);
+		// Capability evidence is exact to the returned workspace snapshot. Any
+		// provider-scoped cache publication is observational metadata and must not
+		// make a concurrent exact read stale; runtime, unscoped, and live-refresh
+		// generations below still supersede it.
 		const metadataExclusions = capabilityRead
-			? loadOptions.refreshProviderId
-				? [loadOptions.refreshProviderId]
-				: providerList().map((provider) => provider.providerId)
+			? providerList().map((provider) => provider.providerId)
 			: loadOptions.refresh && loadOptions.refreshProviderId
 				? [loadOptions.refreshProviderId]
 				: undefined;
@@ -1363,7 +1376,12 @@ export function createProviderCatalogSnapshot(
 			const version = versionFor(loadOptions);
 			const providers = await getSnapshot(loadOptions);
 			if (!supersededReads.has(providers) && versionIsCurrent(version)) {
-				return { providers, version: versionFor({}) };
+				return {
+					providers,
+					version: versionFor(
+						isLiveProviderCapabilityRead(loadOptions) ? loadOptions : {},
+					),
+				};
 			}
 		}
 		throw new Error("Provider catalog changed repeatedly during refresh");

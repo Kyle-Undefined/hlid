@@ -100,7 +100,7 @@ export type HlidOperatingContext = {
 	providerCatalog?: readonly ProviderInfo[];
 	providerDiscovery?: {
 		status: "current" | "captured" | "unavailable";
-		source: "live-provider-catalog" | "active-provider-context" | "none";
+		source: "provider-catalog-cache" | "active-provider-context" | "none";
 		retryable: boolean;
 		reason?: string;
 		revision?: string;
@@ -167,7 +167,7 @@ type HlidOrchestrationProviderTarget = {
 };
 
 export type HlidOrchestrationTargetCatalog = {
-	source: "live-provider-catalog";
+	source: "provider-catalog-cache";
 	snapshot: "current" | "unavailable";
 	totalProviders: number;
 	availableProviders: number;
@@ -207,7 +207,7 @@ export type HlidCapabilityManifest = {
 		providerSnapshot: "current" | "captured" | "unavailable";
 		providerDiscovery?: {
 			status: "current" | "captured" | "unavailable";
-			source: "live-provider-catalog" | "active-provider-context" | "none";
+			source: "provider-catalog-cache" | "active-provider-context" | "none";
 			retryable: boolean;
 			reason?: string;
 			revision?: string;

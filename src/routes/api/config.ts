@@ -130,6 +130,21 @@ export async function handlePostConfig(request: Request): Promise<Response> {
 	} catch {
 		return Response.json({ error: "Failed to write config" }, { status: 500 });
 	}
+	let eventLogPolicyWarning: string | undefined;
+	try {
+		const response = await dbFetch("/db/logs/policy", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ enabled: config.diagnostics.event_log }),
+		});
+		if (!response.ok) {
+			eventLogPolicyWarning =
+				"Event Log persistence will use its previous setting until Hlid restarts.";
+		}
+	} catch {
+		eventLogPolicyWarning =
+			"Event Log persistence will use its previous setting until Hlid restarts.";
+	}
 	void dbFetch("/voice/sync", { method: "POST" }).catch(() => {});
 	const codexRuntimeIdentityChanged =
 		current.voice.codex_live_mode !== config.voice.codex_live_mode ||
@@ -160,6 +175,7 @@ export async function handlePostConfig(request: Request): Promise<Response> {
 			ok: true,
 			runtime_synced: true,
 			acp_runtime_synced: true,
+			...(eventLogPolicyWarning ? { warning: eventLogPolicyWarning } : {}),
 		});
 	}
 	// Realtime launch flags and the executable are process identity. Wait for the
@@ -207,12 +223,15 @@ export async function handlePostConfig(request: Request): Promise<Response> {
 		);
 		pendingAcpRuntimeTarget = acpRuntimeSynced ? null : nextAcpRuntimeTarget;
 	}
-	const runtimeWarning = runtimeWarnings.join(" ") || undefined;
+	const runtimeWarning =
+		[runtimeWarnings.join(" "), eventLogPolicyWarning]
+			.filter((warning): warning is string => Boolean(warning))
+			.join(" ") || undefined;
 	if (runtimeWarning) {
 		console.warn(`[config] ${runtimeWarning}`);
 		return Response.json({
 			ok: true,
-			runtime_synced: false,
+			runtime_synced: runtimeWarnings.length === 0,
 			acp_runtime_synced: acpRuntimeSynced,
 			warning: runtimeWarning,
 		});

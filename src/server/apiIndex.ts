@@ -570,7 +570,7 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		method: "GET",
 		path: "/db/logs?page=&size=&level=",
 		server: "api",
-		desc: "Paginated server log entries with filtered total and all-level counts; size is 1–200 (default 50) and level is all|error|warn|info (default all). Console output is redirected here in the compiled executable.",
+		desc: "Paginated server log entries with filtered total and all-level counts; size is 1–200 (default 50) and level is all|error|warn|info (default all). When Event Log persistence is on, compiled console output is redirected here.",
 	},
 	{
 		method: "DELETE",

@@ -157,8 +157,8 @@ The packaged app keeps its executable, config, database, downloaded voice
 models, and runtime data together under `%LOCALAPPDATA%\Hlid`.
 
 `hlid.config.toml` holds the vault layout, providers, server and `TLS` ports,
-network access, attachments, voice, `UI` preferences, navigation names, and
-registered agents.
+network access, attachments, diagnostics, voice, `UI` preferences, navigation
+names, and registered agents.
 Most of it can be changed in `Forge`. A setting with a restart marker does not
 kick in until `Hlið` restarts. Server, `ACP`, and `Umbod` changes are the main
 ones that need it.

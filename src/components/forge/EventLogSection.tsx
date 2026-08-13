@@ -4,7 +4,7 @@ import { ConfirmAction } from "#/components/ConfirmAction";
 import type { LogCounts, LogLevel, LogRow } from "#/db";
 import { dbFetch, requireDbOk } from "#/lib/dbClient";
 import { eventLogQuerySchema } from "#/lib/serverFnSchemas";
-import { Section } from "./fields";
+import { Field, Section } from "./fields";
 
 // ─── Server functions ─────────────────────────────────────────────────────────
 
@@ -242,7 +242,13 @@ function EventLogPagination({
 	);
 }
 
-export function EventLogSection() {
+export function EventLogSection({
+	persistenceEnabled,
+	onPersistenceChange,
+}: {
+	persistenceEnabled: boolean;
+	onPersistenceChange: (enabled: boolean) => void;
+}) {
 	const [activeTab, setActiveTab] = useState<LevelTab>("all");
 	const [page, setPage] = useState(1);
 	const [data, setData] = useState<EventLogData | null>(null);
@@ -292,6 +298,23 @@ export function EventLogSection() {
 
 	return (
 		<Section title="Event Log">
+			<Field
+				id="forge-setting-event-log-persistence"
+				label="Event Log persistence"
+				hint="stores bounded runtime diagnostics in Hlid's database. turning this off stops new entries immediately after the setting saves; existing entries remain until cleared, and the underlying timing checks may still run."
+			>
+				<label className="flex items-center gap-2 cursor-pointer">
+					<input
+						type="checkbox"
+						checked={persistenceEnabled}
+						onChange={(event) => onPersistenceChange(event.target.checked)}
+						className="accent-primary w-3.5 h-3.5"
+					/>
+					<span className="text-xs text-muted-foreground">
+						{persistenceEnabled ? "on" : "off"}
+					</span>
+				</label>
+			</Field>
 			{error && (
 				<div role="alert" className="mb-3 text-xs text-destructive">
 					{error}

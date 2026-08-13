@@ -78,6 +78,7 @@ export function useSettingsForm(
 	const [projectPreview, setProjectPreview] = useState(
 		initialForms.projectPreview,
 	);
+	const [diagnostics, setDiagnostics] = useState(initialForms.diagnostics);
 	const [server, setServer] = useState(initialForms.server);
 	const [ui, setUi] = useState(initialForms.ui);
 	const [vocab, setVocab] = useState(initialForms.vocab);
@@ -118,6 +119,7 @@ export function useSettingsForm(
 		umbod,
 		autoSleep,
 		projectPreview,
+		diagnostics,
 	};
 	const currentFormsRef = useRef(currentForms);
 	currentFormsRef.current = currentForms;
@@ -204,6 +206,7 @@ export function useSettingsForm(
 			umbod === initialForms.umbod &&
 			autoSleep === initialForms.autoSleep &&
 			projectPreview === initialForms.projectPreview &&
+			diagnostics === initialForms.diagnostics &&
 			server === initialForms.server
 		) {
 			return;
@@ -234,6 +237,7 @@ export function useSettingsForm(
 		umbod,
 		autoSleep,
 		projectPreview,
+		diagnostics,
 		server,
 		initialForms,
 	]);
@@ -291,6 +295,8 @@ export function useSettingsForm(
 		setAutoSleep,
 		projectPreview,
 		setProjectPreview,
+		diagnostics,
+		setDiagnostics,
 		server,
 		setServer,
 		ui,

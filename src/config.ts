@@ -97,6 +97,11 @@ const ServerSchema = z.object({
 	allow_external_agents: z.boolean().default(false),
 });
 
+const DiagnosticsSchema = z.object({
+	/** Persist bounded runtime diagnostics in the Event Log. */
+	event_log: z.boolean().default(true),
+});
+
 const ClaudeSchema = z.object({
 	model: z.string().default("claude-sonnet-4-6"),
 	effort: z.string().default("high"),
@@ -602,6 +607,7 @@ const HlidConfigBaseSchema = z.object({
 		local_network_access: false,
 		allow_external_agents: false,
 	})),
+	diagnostics: DiagnosticsSchema.default(() => ({ event_log: true })),
 	claude: ClaudeSchema.default(() => ({
 		model: "claude-sonnet-4-6",
 		effort: "high" as const,

@@ -642,7 +642,9 @@ not configured for that entry stay hidden.
 - **Extensions** manages installed `Claude` and `Codex` plugins and their
   marketplaces.
 - **Developer** switches between the event log, local `API` reference, and pricing
-  catalog.
+  catalog. The Event Log persistence control is on by default. Turning it off
+  stops new database entries after the setting saves; retained entries remain
+  available until cleared, and the underlying timing checks may still run.
 - **Advanced** has database maintenance, provider-session reload, restart, and
   shutdown controls.
 

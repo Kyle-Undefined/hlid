@@ -8,6 +8,10 @@ import { resolveCodexExecutable } from "../lib/codexPath";
 import { writeConfig } from "../lib/config-writer";
 import { resolveDevServerPort } from "../lib/devServerPort";
 import {
+	isEventLogPersistenceEnabled,
+	setEventLogPersistenceEnabled,
+} from "../lib/eventLogPolicy";
+import {
 	registerInternalApiBase,
 	registerInternalApiHandler,
 } from "../lib/internalApiTransport";
@@ -202,6 +206,7 @@ if (process.argv[2] === "auth" && process.argv[3] === "reset") {
 // all console output to the DB log so no console is ever allocated.
 if (process.execPath.endsWith(".exe")) {
 	const toDb = (level: "info" | "warn" | "error", args: unknown[]) => {
+		if (!isEventLogPersistenceEnabled()) return;
 		const msg = formatPersistentConsoleMessage(level, args);
 		if (!msg) return;
 		void db.appendLog(level, "console", msg);
@@ -242,6 +247,7 @@ if (restartParentArg && process.platform !== "win32") {
 }
 
 const loadedConfig = loadConfig();
+setEventLogPersistenceEnabled(loadedConfig.diagnostics.event_log);
 const resolvedDevPort = resolveDevServerPort(loadedConfig.server.port);
 const config =
 	resolvedDevPort === loadedConfig.server.port

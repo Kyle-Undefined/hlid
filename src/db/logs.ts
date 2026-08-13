@@ -1,3 +1,4 @@
+import { isEventLogPersistenceEnabled } from "#/lib/eventLogPolicy";
 import { getDb } from "./schema";
 import type { LogCounts, LogLevel, LogRow } from "./types";
 
@@ -10,8 +11,13 @@ export async function appendLog(
 	message: string,
 	detail?: unknown,
 ): Promise<void> {
+	if (!isEventLogPersistenceEnabled()) return;
 	try {
 		const db = await getDb();
+		// getDb() may yield while the live config sync turns persistence off.
+		// Recheck at the transaction boundary so a previously queued append does
+		// not land after the setting has taken effect.
+		if (!isEventLogPersistenceEnabled()) return;
 		db.transaction(() => {
 			db.run(
 				`INSERT INTO event_log (level, source, message, detail) VALUES (?, ?, ?, ?)`,

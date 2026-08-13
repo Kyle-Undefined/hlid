@@ -58,6 +58,7 @@ export type SettingsForms = {
 	umbod: HlidConfig["umbod"];
 	autoSleep: AutoSleepForm;
 	projectPreview: ProjectPreviewForm;
+	diagnostics: HlidConfig["diagnostics"];
 };
 
 export function applyAgentFormPatch(
@@ -306,6 +307,7 @@ export function createSettingsForms(initial: HlidConfig): SettingsForms {
 		umbod: initial.umbod,
 		autoSleep: createAutoSleepForm(initial),
 		projectPreview: createProjectPreviewForm(initial),
+		diagnostics: initial.diagnostics,
 		server: createServerForm(initial),
 		ui: createUiForm(initial),
 		vocab: createVocabForm(initial),
@@ -475,6 +477,7 @@ export function buildSettingsConfig(
 			done: vocabularyValues(forms.vocab.done),
 		},
 		attachments: initial.attachments ?? DEFAULT_ATTACHMENTS_CONFIG,
+		diagnostics: forms.diagnostics,
 		voice: forms.voice,
 		umbod: forms.umbod,
 		auto_sleep: autoSleepConfig(forms.autoSleep),

@@ -892,11 +892,11 @@ describe("Hlid agent tools", () => {
 		});
 		expect(db.dbFetch).toHaveBeenCalledWith("/db/session-row?id=session-1");
 		expect(db.dbFetch).toHaveBeenCalledWith(
-			"/providers?host_capabilities=1&provider_capabilities=1&provider_id=codex&capability_cwd=%2Fwork%2Fproject&provider_capabilities_wait=1",
+			"/providers?host_capabilities=1&provider_capabilities=1&provider_id=codex&capability_cwd=%2Fwork%2Fproject",
 		);
 	});
 
-	it("uses the persisted active workspace for provider capability discovery", async () => {
+	it("uses the persisted active workspace for the cached capability snapshot", async () => {
 		db.dbFetch.mockResolvedValueOnce(
 			Response.json({
 				provider_id: "codex",
@@ -915,7 +915,7 @@ describe("Hlid agent tools", () => {
 		);
 
 		expect(db.dbFetch).toHaveBeenCalledWith(
-			"/providers?host_capabilities=1&provider_capabilities=1&provider_id=codex&capability_cwd=%5C%5Cwsl.localhost%5CUbuntu-24.04%5Chome%5Ckyle%5Cdevelopment%5Crepos%5Chlid&provider_capabilities_wait=1",
+			"/providers?host_capabilities=1&provider_capabilities=1&provider_id=codex&capability_cwd=%5C%5Cwsl.localhost%5CUbuntu-24.04%5Chome%5Ckyle%5Cdevelopment%5Crepos%5Chlid",
 		);
 	});
 
@@ -1236,8 +1236,8 @@ describe("Hlid agent tools", () => {
 			expect.arrayContaining(["windows_computer_use", "create_visualization"]),
 		);
 		expect(result.registry.providerDiscovery).toMatchObject({
-			status: "current",
-			source: "live-provider-catalog",
+			status: "captured",
+			source: "provider-catalog-cache",
 			retryable: false,
 			revision: "42",
 		});
@@ -1248,7 +1248,52 @@ describe("Hlid agent tools", () => {
 		).toMatchObject({ owner: "hlid", availability: "available" });
 	});
 
-	it("uses the full live provider catalog for orchestration target discovery", async () => {
+	it("reports persisted provider capability evidence as cached and stale", async () => {
+		db.dbFetch.mockResolvedValue(
+			Response.json({
+				providers: [
+					{
+						id: "codex",
+						label: "Codex",
+						available: true,
+						models: [],
+						capabilitySnapshot: {
+							contractVersion: 1,
+							providerId: "codex",
+							status: "stale",
+							source: "persisted",
+							revision: "v1-persisted",
+							observedAt: 1,
+							capabilities: [],
+						},
+					},
+				],
+			}),
+		);
+
+		const result = JSON.parse(
+			await executeHlidAgentTool(
+				"hlid_help",
+				{ topic: "providers" },
+				{ providerId: "codex", runtimeCwd: "/work/project" },
+			),
+		);
+
+		expect(result.registry).toMatchObject({
+			providerSnapshot: "captured",
+			providerDiscovery: {
+				status: "captured",
+				source: "provider-catalog-cache",
+				retryable: false,
+			},
+			providerCapabilities: {
+				status: "stale",
+				revision: "v1-persisted",
+			},
+		});
+	});
+
+	it("uses the full cached provider catalog for orchestration target discovery", async () => {
 		db.dbFetch.mockImplementation((path: string) => {
 			if (path === "/db/session-row?id=session-1") {
 				return Promise.resolve(
@@ -1300,7 +1345,7 @@ describe("Hlid agent tools", () => {
 			}),
 		]);
 		expect(result.orchestrationTargets).toMatchObject({
-			source: "live-provider-catalog",
+			source: "provider-catalog-cache",
 			snapshot: "current",
 			totalProviders: 2,
 			availableProviders: 2,
@@ -1321,7 +1366,7 @@ describe("Hlid agent tools", () => {
 		});
 	});
 
-	it("combines the live provider catalog, feature flag, model, and registered tools", async () => {
+	it("combines the provider catalog, feature flag, model, and registered tools", async () => {
 		config.loadConfig.mockReturnValue({
 			voice: { codex_live_mode: true },
 		});

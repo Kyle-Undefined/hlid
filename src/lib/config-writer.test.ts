@@ -23,6 +23,10 @@ import { renameSync, writeFileSync } from "node:fs";
 import { parse } from "smol-toml";
 import { type HlidConfig, HlidConfigSchema } from "../config";
 import { serializeConfig, writeConfig } from "./config-writer";
+import {
+	isEventLogPersistenceEnabled,
+	setEventLogPersistenceEnabled,
+} from "./eventLogPolicy";
 import { builtInThemePalette } from "./theme";
 
 const mockWrite = vi.mocked(writeFileSync);
@@ -39,6 +43,7 @@ function makeConfig(overrides: Partial<HlidConfig> = {}): HlidConfig {
 			local_network_access: false,
 			allow_external_agents: false,
 		},
+		diagnostics: { event_log: true },
 		claude: {
 			model: "claude-sonnet-4-6",
 			effort: "high",
@@ -75,11 +80,13 @@ function capturedToml(): string {
 beforeEach(() => {
 	mockWrite.mockClear();
 	mockRename.mockClear();
+	setEventLogPersistenceEnabled(true);
 });
 
 describe("writeConfig — persistence invariants", () => {
 	it("round-trips every schema field, including attachment policy", () => {
 		const config = HlidConfigSchema.parse({
+			diagnostics: { event_log: false },
 			vault: {
 				name: "Round trip",
 				path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\Fornbok",
@@ -142,6 +149,30 @@ describe("writeConfig — persistence invariants", () => {
 
 		const reparsed = HlidConfigSchema.parse(parse(serializeConfig(config)));
 		expect(reparsed).toEqual(config);
+	});
+
+	it("keeps Event Log persistence on by default and serializes an explicit opt-out", () => {
+		expect(HlidConfigSchema.parse({}).diagnostics.event_log).toBe(true);
+		const disabled = HlidConfigSchema.parse({
+			diagnostics: { event_log: false },
+		});
+		const serialized = serializeConfig(disabled);
+
+		expect(serialized).toContain("[diagnostics]\nevent_log = false");
+		expect(
+			HlidConfigSchema.parse(parse(serialized)).diagnostics.event_log,
+		).toBe(false);
+	});
+
+	it("applies Event Log persistence live after the atomic config write", () => {
+		const disabled = HlidConfigSchema.parse({
+			diagnostics: { event_log: false },
+		});
+
+		writeConfig(disabled);
+
+		expect(isEventLogPersistenceEnabled()).toBe(false);
+		expect(mockRename).toHaveBeenCalledOnce();
 	});
 
 	it("defaults, normalizes, and strips unknown navigation label keys", () => {

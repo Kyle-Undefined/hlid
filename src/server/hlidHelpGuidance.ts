@@ -63,7 +63,7 @@ export const TOPIC_GUIDANCE: Record<HlidHelpTopic, string[]> = {
 		"Routine inspection excludes prompts, paths, exact references, grant constraints, and delivery payloads.",
 	],
 	orchestration: [
-		"Choose the exact provider ID and optional model, effort, and model service-tier values from orchestrationTargets. This is a bounded snapshot of the live provider catalog; do not guess unavailable or truncated entries.",
+		"Choose the exact provider ID and optional model, effort, and model service-tier values from orchestrationTargets. This is a bounded server-owned provider catalog snapshot; do not guess unavailable or truncated entries.",
 		"For Codex user-input children, set permission_mode=plan: request_user_input is unavailable in default mode. A question-only turn does not enter plan review without a real plan.",
 		"Use provider-native same-provider subagents when a durable Raven child is unnecessary. Hlid delegation is an explicit ordinary child session.",
 		"Delegation is bounded to three levels, four active direct children per parent, and twelve active delegated children across Hlid. The ordinary session pool has its own separate capacity. Children default to the parent workspace; cwd may select only the exact configured vault or a registered workspace. Permissions must be inherited or narrower.",
@@ -125,8 +125,8 @@ export const TOPIC_GUIDANCE: Record<HlidHelpTopic, string[]> = {
 	],
 	providers: [
 		"Provider-native operations remain native and capability-gated.",
-		"Check registry.providerDiscovery before treating the provider page as current. A captured snapshot is active-adapter fallback evidence; an unavailable snapshot includes a bounded retryable reason instead of proving a feature absent.",
-		"The default provider item list is a bounded priority page, not the complete catalog. Omission is not evidence of unavailability; use query, capability_id, state filters, or nextCursor to retrieve the full live snapshot on demand.",
+		"Check registry.providerDiscovery before treating the provider page as current. A captured snapshot is cached or active-adapter fallback evidence; an unavailable snapshot includes a bounded retryable reason instead of proving a feature absent.",
+		"The default provider item list is a bounded priority page, not the complete catalog. Omission is not evidence of unavailability; use query, capability_id, state filters, or nextCursor to retrieve the full resolved snapshot on demand.",
 		"Never present transcript replay as an exact fork or a prompt convention as a structured provider operation.",
 		"When a Raven session changes provider, Hlid can supply a bounded visible-transcript handoff. Native hidden context does not cross that boundary.",
 		"Compaction and working-tree review use structured provider activity only when the active provider advertises support.",

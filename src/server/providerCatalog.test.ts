@@ -1566,6 +1566,56 @@ describe("loadProviderCatalog", () => {
 		expect(modelsFor).not.toHaveBeenCalled();
 		expect(resolveForkCapability).not.toHaveBeenCalled();
 	});
+
+	it("attributes live capability timing once while retaining cached snapshot timing", async () => {
+		vi.useFakeTimers();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const provider = makeProvider({ providerId: "timed-capability" });
+			const discovery = {
+				source: "live" as const,
+				discovery: { observedAt: 1, evidence: [] },
+			};
+			const delayedDiscovery = () =>
+				new Promise<typeof discovery>((resolve) => {
+					setTimeout(() => resolve(discovery), 1_100);
+				});
+			const catalog = {
+				modelsFor: vi.fn().mockResolvedValue([]),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+				capabilitiesFor: vi.fn(delayedDiscovery),
+				cachedCapabilitiesFor: vi.fn(delayedDiscovery),
+			};
+
+			const live = loadProviderCatalog([provider], catalog, {
+				includeProviderCapabilities: true,
+				preferCachedProviderCapabilities: false,
+				discoveryCwd: "/work/project",
+			});
+			await vi.advanceTimersByTimeAsync(1_100);
+			await live;
+
+			const cached = loadProviderCatalog([provider], catalog, {
+				includeProviderCapabilities: true,
+				discoveryCwd: "/work/project",
+			});
+			await vi.advanceTimersByTimeAsync(1_100);
+			await cached;
+
+			const capabilityWarnings = warn.mock.calls
+				.map(([message]) => String(message))
+				.filter((message) =>
+					message.includes("timed-capability provider-capability"),
+				);
+			expect(capabilityWarnings).toEqual([
+				"[provider catalog] timed-capability provider-capability discovery took 1100ms",
+				"[provider catalog] timed-capability provider-capability snapshot took 1100ms",
+			]);
+		} finally {
+			warn.mockRestore();
+			vi.useRealTimers();
+		}
+	});
 });
 
 describe("createProviderCatalogSnapshot", () => {
@@ -2449,6 +2499,8 @@ describe("createProviderCatalogSnapshot", () => {
 		expect(snapshot.isCurrentVersion(result.version)).toBe(true);
 		expect(load).toHaveBeenCalledOnce();
 		snapshot.invalidateMetadata("codex");
+		expect(snapshot.isCurrentVersion(result.version)).toBe(true);
+		snapshot.invalidateMetadata();
 		expect(snapshot.isCurrentVersion(result.version)).toBe(false);
 	});
 
@@ -2598,24 +2650,39 @@ describe("createProviderCatalogSnapshot", () => {
 		]);
 	});
 
-	it("does not serialize capability reads across discovery workspaces", async () => {
-		let resolveFirst: ((value: ProviderInfo[]) => void) | undefined;
-		const providers = [makeProvider({ providerId: "acp:test" })];
-		const projection = [
-			{
-				id: "acp:test",
-				label: "ACP Test",
+	it("keeps concurrent capability publications current across workspaces", async () => {
+		const providers = [
+			makeProvider({ providerId: "codex" }),
+			makeProvider({ providerId: "acp:test" }),
+		];
+		const resolvers = new Map<string, (value: ProviderInfo[]) => void>();
+		const projection = (target: string, discoveryCwd: string): ProviderInfo[] =>
+			providers.map((provider) => ({
+				id: provider.providerId,
+				label: provider.label ?? provider.providerId,
 				available: true,
 				models: [],
-			},
-		];
-		const load = vi.fn((_providers, _catalog, options) =>
-			options.discoveryCwd === "/slow"
-				? new Promise<ProviderInfo[]>((resolve) => {
-						resolveFirst = resolve;
-					})
-				: Promise.resolve(projection),
-		);
+				...(provider.providerId === target
+					? {
+							capabilitySnapshot: {
+								contractVersion: 1 as const,
+								providerId: target,
+								status: "current" as const,
+								source: "live" as const,
+								revision: `${target}:${discoveryCwd}`,
+								observedAt: 1,
+								context: { cwd: discoveryCwd },
+								capabilities: [],
+							},
+						}
+					: {}),
+			}));
+		const load = vi.fn((_providers, _catalog, options) => {
+			const target = options.refreshProviderId ?? "all-providers";
+			return new Promise<ProviderInfo[]>((resolve) => {
+				resolvers.set(target, resolve);
+			});
+		});
 		const snapshot = createProviderCatalogSnapshot(
 			providers,
 			{
@@ -2631,13 +2698,34 @@ describe("createProviderCatalogSnapshot", () => {
 			discoveryCwd,
 		});
 
-		const slow = snapshot.getVersioned(options("/slow"));
-		const fast = snapshot.getVersioned(options("/fast"));
+		const codex = snapshot.getVersioned({
+			...options("/work/codex"),
+			refreshProviderId: "codex",
+		});
+		const acp = snapshot.getVersioned({
+			...options("/work/acp"),
+			refreshProviderId: "acp:test",
+		});
 
 		expect(load).toHaveBeenCalledTimes(2);
-		await expect(fast).resolves.toMatchObject({ providers: projection });
-		resolveFirst?.(projection);
-		await expect(slow).resolves.toMatchObject({ providers: projection });
+		snapshot.invalidateMetadata("acp:test");
+		resolvers.get("acp:test")?.(projection("acp:test", "/work/acp"));
+		const acpResult = await acp;
+		snapshot.invalidateMetadata("codex");
+		resolvers.get("codex")?.(projection("codex", "/work/codex"));
+		const codexResult = await codex;
+
+		expect(load).toHaveBeenCalledTimes(2);
+		expect(acpResult.providers[1]?.capabilitySnapshot).toMatchObject({
+			revision: "acp:test:/work/acp",
+			context: { cwd: "/work/acp" },
+		});
+		expect(codexResult.providers[0]?.capabilitySnapshot).toMatchObject({
+			revision: "codex:/work/codex",
+			context: { cwd: "/work/codex" },
+		});
+		expect(snapshot.isCurrentVersion(acpResult.version)).toBe(true);
+		expect(snapshot.isCurrentVersion(codexResult.version)).toBe(true);
 	});
 
 	it("continues a workspace capability queue after a failed read", async () => {

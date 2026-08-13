@@ -7,6 +7,18 @@ import {
 } from "./settingsForm";
 
 describe("settings form conversion", () => {
+	it("round-trips Event Log persistence without requiring server form changes", () => {
+		const initial = HlidConfigSchema.parse({
+			diagnostics: { event_log: true },
+		});
+		const forms = createSettingsForms(initial);
+		forms.diagnostics = { event_log: false };
+
+		expect(buildSettingsConfig(initial, forms, false).diagnostics).toEqual({
+			event_log: false,
+		});
+	});
+
 	it("creates editable string forms from persisted config", () => {
 		const initial = HlidConfigSchema.parse({
 			vault_provider: "codex",

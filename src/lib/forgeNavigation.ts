@@ -1979,6 +1979,12 @@ const SETTING_DESTINATIONS: readonly SettingDefinition[] = [
 		"event-log",
 		[
 			[
+				"event-log-persistence",
+				"Event Log persistence",
+				"Choose whether Hlid stores new runtime diagnostic entries.",
+				["logging", "store logs", "disable logs", "diagnostics"],
+			],
+			[
 				"event-log-level",
 				"Event Log level",
 				"Filter recorded runtime events by all, error, warning, or info.",

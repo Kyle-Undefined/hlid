@@ -1,6 +1,7 @@
 /** Client-side error logging server fn. */
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import { dbFetch, requireDbOk } from "#/lib/dbClient";
 
 const logClientErrorSchema = z.object({
 	message: z
@@ -17,8 +18,15 @@ const logClientErrorSchema = z.object({
 export const logClientErrorFn = createServerFn({ method: "POST" })
 	.validator((raw) => logClientErrorSchema.parse(raw))
 	.handler(async ({ data }) => {
-		const { appendLog } = await import("#/db");
-		await appendLog("error", "ui", data.message, {
-			componentStack: data.componentStack,
-		});
+		await requireDbOk(
+			await dbFetch("/db/logs/client-error", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					message: data.message,
+					componentStack: data.componentStack,
+				}),
+			}),
+			"write client error to the event log",
+		);
 	});

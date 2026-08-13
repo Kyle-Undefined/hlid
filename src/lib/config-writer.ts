@@ -9,6 +9,7 @@ import { setConfigCache } from "../server/config";
 import { bumpDataRevision } from "../server/dataRevision";
 import { syncWrappers } from "../server/wrappers";
 import { writeFileAtomicSync } from "./atomicFile";
+import { setEventLogPersistenceEnabled } from "./eventLogPolicy";
 import {
 	DEFAULT_NAVIGATION_NAMES_CONFIG,
 	NAVIGATION_IDS,
@@ -83,6 +84,10 @@ function serializeServer(config: HlidConfig["server"]): string[] {
 			config.allow_external_agents,
 		),
 	]);
+}
+
+function serializeDiagnostics(config: HlidConfig["diagnostics"]): string[] {
+	return section("diagnostics", [`event_log = ${tomlVal(config.event_log)}`]);
 }
 
 function serializeVoice(config: HlidConfig["voice"]): string[] {
@@ -314,6 +319,8 @@ export function serializeConfig(config: HlidConfig): string {
 		"",
 		...serializeServer(config.server),
 		"",
+		...serializeDiagnostics(config.diagnostics),
+		"",
 		...serializeVoice(config.voice),
 		"",
 		...serializeUmbod(config.umbod),
@@ -372,6 +379,7 @@ export function writeConfig(config: HlidConfig): void {
 		mode: 0o600,
 	});
 	setConfigCache(config);
+	setEventLogPersistenceEnabled(config.diagnostics.event_log);
 	bumpDataRevision("config", "vault", "providers", "mcp");
 	syncWrappers(config.agents ?? []);
 }

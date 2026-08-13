@@ -10,6 +10,11 @@ tls_proxy_port = 3443
 local_network_access = false
 allow_external_agents = false
 
+[diagnostics]
+# Retains up to 1,000 runtime diagnostic entries in Hlid's database. Turning
+# this off preserves existing entries but stops new Event Log persistence.
+event_log = true
+
 [ui]
 live_sessions_hotkey = "Alt+Shift+KeyS"
 # Hlid and vault entries always remain in the slash picker. Turn this on to also

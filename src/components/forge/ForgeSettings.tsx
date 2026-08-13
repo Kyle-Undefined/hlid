@@ -848,11 +848,13 @@ function ProviderAppsPage({
 }
 
 function DeveloperCategory({
+	state,
 	developerView,
 	onDeveloperView,
 	navigation,
 	onNavigate,
 }: {
+	state: SettingsFormState;
 	developerView: DeveloperView;
 	onDeveloperView: (view: DeveloperView) => void;
 	navigation: ForgeNavigationState;
@@ -931,7 +933,12 @@ function DeveloperCategory({
 				className="scroll-mt-20 focus-visible:outline-none"
 			>
 				{developerView === "events" ? (
-					<EventLogSection />
+					<EventLogSection
+						persistenceEnabled={state.diagnostics.event_log}
+						onPersistenceChange={(eventLog) =>
+							state.setDiagnostics({ event_log: eventLog })
+						}
+					/>
 				) : developerView === "api" ? (
 					<ApiSection />
 				) : (
@@ -1144,6 +1151,7 @@ function CategoryContent({
 		case "developer":
 			return (
 				<DeveloperCategory
+					state={state}
 					developerView={developerView}
 					onDeveloperView={onDeveloperView}
 					navigation={navigation}

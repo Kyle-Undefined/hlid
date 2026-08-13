@@ -532,6 +532,7 @@ function renderSettings(
 					vocab: {},
 					autoSleep: {},
 					projectPreview: {},
+					diagnostics: { event_log: true },
 					server: {},
 					ui: {
 						theme: "tan",
@@ -548,6 +549,7 @@ function renderSettings(
 					setVocab: vi.fn(),
 					setAutoSleep: vi.fn(),
 					setProjectPreview: vi.fn(),
+					setDiagnostics: vi.fn(),
 					setServer: vi.fn(),
 					setUi: vi.fn(),
 					setVoice: vi.fn(),

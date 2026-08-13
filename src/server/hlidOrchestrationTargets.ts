@@ -23,7 +23,7 @@ function catalogWith(
 	providers: ProviderTarget[],
 ): HlidOrchestrationTargetCatalog {
 	return {
-		source: "live-provider-catalog",
+		source: "provider-catalog-cache",
 		snapshot: "current",
 		totalProviders: context.totalProviders,
 		availableProviders: context.availableProviders,
@@ -239,7 +239,7 @@ export function buildOrchestrationTargetCatalog(
 ): HlidOrchestrationTargetCatalog {
 	if (!providerCatalog) {
 		return {
-			source: "live-provider-catalog",
+			source: "provider-catalog-cache",
 			snapshot: "unavailable",
 			totalProviders: 0,
 			availableProviders: 0,

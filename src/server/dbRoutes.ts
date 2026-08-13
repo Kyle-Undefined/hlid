@@ -1,5 +1,6 @@
 import * as db from "../db";
 import type { AttachmentListFilter } from "../db/types";
+import { setEventLogPersistenceEnabled } from "../lib/eventLogPolicy";
 import { parseHlidTurnContextManifest } from "../lib/hlidContext";
 import {
 	HLID_DELEGATION_CONTROL_OWNERSHIP_ERROR,
@@ -771,6 +772,45 @@ async function handlePostRoute(
 	context: DbRouteContext,
 ): Promise<Response | null> {
 	switch (context.url.pathname) {
+		case "/db/logs/client-error": {
+			const body = (await context.req.json().catch(() => null)) as {
+				message?: unknown;
+				componentStack?: unknown;
+			} | null;
+			if (
+				typeof body?.message !== "string" ||
+				body.message.trim() === "" ||
+				(body.componentStack !== undefined &&
+					typeof body.componentStack !== "string")
+			) {
+				return Response.json(
+					{ error: "Invalid client error" },
+					{ status: 400 },
+				);
+			}
+			await db.appendLog(
+				"error",
+				"ui",
+				body.message.slice(0, 10_000),
+				body.componentStack === undefined
+					? undefined
+					: { componentStack: body.componentStack.slice(0, 50_000) },
+			);
+			return Response.json({ ok: true });
+		}
+		case "/db/logs/policy": {
+			const body = (await context.req.json().catch(() => null)) as {
+				enabled?: unknown;
+			} | null;
+			if (typeof body?.enabled !== "boolean") {
+				return Response.json(
+					{ error: "enabled must be a boolean" },
+					{ status: 400 },
+				);
+			}
+			setEventLogPersistenceEnabled(body.enabled);
+			return Response.json({ ok: true, enabled: body.enabled });
+		}
 		case "/db/storage/optimize": {
 			await unlinkPaths(
 				(await db.listPendingFileDeletions()).map((entry) => entry.path),

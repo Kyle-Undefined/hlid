@@ -468,6 +468,12 @@ describe("Forge setting search", () => {
 			"extensions",
 			"provider-extensions",
 		],
+		[
+			"Event Log persistence",
+			"setting:event-log-persistence",
+			"developer",
+			"event-log",
+		],
 		["Clear Event Log", "setting:clear-event-log", "developer", "event-log"],
 		[
 			"Pricing overrides TOML",
