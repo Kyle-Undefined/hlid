@@ -18,6 +18,7 @@ import {
 	parseCodexDesktopStoreUpdateManifest,
 	parseWindowsStoreVersions,
 	readElectronAsarPackageVersion,
+	resolveCliUpdateAction,
 } from "./cliUpdates";
 
 function cachedStatus(id: CliUpdateStatus["id"] = "codex"): CliUpdateStatus {
@@ -665,6 +666,163 @@ ChatGPT 9PLM9XGG6VKS 26.707.9981.0 26.708.10000.0 msstore
 		expect(readVersion).not.toHaveBeenCalled();
 	});
 
+	it("projects every authoritative managed ACP update as an exact Forge notice", async () => {
+		const hostRevision = "a".repeat(64);
+		const wslRevision = "b".repeat(64);
+		const managedTarget = {
+			targetId: "host",
+			target: { kind: "host" as const },
+			label: "Windows",
+			recommended: true,
+			selected: false,
+			platformTarget: "windows-x86_64",
+			provenance: "managed" as const,
+			available: true,
+			canEnable: true,
+			canInstall: false,
+			canUpdate: true,
+			canRemove: true,
+			registryVersion: "1.18.18",
+			installedVersion: "1.18.16",
+			observedVersion: "1.18.16",
+			mutationRevision: hostRevision,
+			resolvedExecutable: "C:\\Hlid\\managed\\opencode.exe",
+			command: "C:\\Hlid\\managed\\opencode.exe",
+			args: ["acp"],
+			env: {},
+			installGuidance: "Managed by Hlid",
+		};
+		const readVersion = vi.fn().mockResolvedValue("should not be inspected");
+		const statuses = await inspectAcpUpdates({
+			listCandidates: vi.fn().mockResolvedValue([]),
+			listManagedCatalog: vi.fn().mockResolvedValue([
+				acpItem({
+					id: "opencode",
+					name: "OpenCode",
+					providerId: "acp:opencode",
+					enabled: false,
+					available: false,
+					targets: [
+						managedTarget,
+						{
+							...managedTarget,
+							targetId: "wsl-ubuntu-24.04",
+							target: {
+								kind: "wsl" as const,
+								distro: "Ubuntu-24.04",
+							},
+							label: "WSL · Ubuntu-24.04",
+							platformTarget: "linux-x86_64",
+							mutationRevision: wslRevision,
+							resolvedExecutable: "/managed/opencode",
+							command: "/managed/opencode",
+						},
+					],
+				}),
+			]),
+			readVersion,
+			now: () => 1_800_000_000_000,
+		});
+
+		expect(statuses).toEqual([
+			{
+				id: "acp:opencode:managed:host",
+				label: "OpenCode (ACP · Windows)",
+				installedVersion: "1.18.16",
+				latestVersion: "1.18.18",
+				available: true,
+				updateInstructions:
+					"Update from Forge > Integrations > OpenCode and ACP agents",
+				noticeId: `managed-acp:opencode:host:${hostRevision}`,
+				noticeDestination: {
+					category: "integrations",
+					section: "opencode-acp",
+					view: "acp",
+				},
+				checkedAt: 1_800_000_000_000,
+			},
+			{
+				id: "acp:opencode:managed:wsl-ubuntu-24.04",
+				label: "OpenCode (ACP · WSL · Ubuntu-24.04)",
+				installedVersion: "1.18.16",
+				latestVersion: "1.18.18",
+				available: true,
+				updateInstructions:
+					"Update from Forge > Integrations > OpenCode and ACP agents",
+				noticeId: `managed-acp:opencode:wsl-ubuntu-24.04:${wslRevision}`,
+				noticeDestination: {
+					category: "integrations",
+					section: "opencode-acp",
+					view: "acp",
+				},
+				checkedAt: 1_800_000_000_000,
+			},
+		]);
+		expect(readVersion).not.toHaveBeenCalled();
+		for (const status of statuses) {
+			expect(status).not.toHaveProperty("updateCommand");
+			expect(status).not.toHaveProperty("updateMode");
+			expect(status).not.toHaveProperty("requiresElevation");
+		}
+	});
+
+	it("requires owner-authoritative update capability and revision data", async () => {
+		const baseTarget = {
+			targetId: "host",
+			target: { kind: "host" as const },
+			label: "Windows",
+			recommended: true,
+			selected: true,
+			platformTarget: "windows-x86_64",
+			provenance: "managed" as const,
+			available: true,
+			canEnable: true,
+			canInstall: false,
+			canUpdate: false,
+			canRemove: true,
+			registryVersion: "1.18.18",
+			installedVersion: "1.18.16",
+			mutationRevision: "c".repeat(64),
+			command: "C:\\Hlid\\managed\\opencode.exe",
+			args: ["acp"],
+			env: {},
+			installGuidance: "Managed by Hlid",
+		};
+		const statuses = await inspectAcpUpdates({
+			listCandidates: vi.fn().mockResolvedValue([]),
+			listManagedCatalog: vi.fn().mockResolvedValue([
+				acpItem({
+					id: "opencode",
+					targets: [
+						baseTarget,
+						{
+							...baseTarget,
+							targetId: "bad-revision",
+							canUpdate: true,
+							mutationRevision: "not-authoritative",
+						},
+						{
+							...baseTarget,
+							targetId: "external",
+							provenance: "external",
+							canUpdate: true,
+						},
+					],
+				}),
+			]),
+			readVersion: vi.fn(),
+			now: () => 1_800_000_000_000,
+		});
+
+		expect(statuses).toEqual([]);
+	});
+
+	it("does not resolve managed ACP notice IDs through the generic updater", async () => {
+		await expect(
+			resolveCliUpdateAction("acp:opencode:managed:wsl-ubuntu-24.04"),
+		).resolves.toBeNull();
+	});
+
 	it("marks a root-owned WSL Codex install as interactive sudo", async () => {
 		const statuses = await inspectWslUpdates({
 			listDistros: () => ["Ubuntu-24.04"],
@@ -746,6 +904,27 @@ describe("CLI update status cache", () => {
 
 	it("strictly validates persisted cache data", () => {
 		const status = cachedStatus();
+		const managedNotice = {
+			...cachedStatus("acp:opencode:managed:host"),
+			noticeId: `managed-acp:opencode:host:${"a".repeat(64)}`,
+			noticeDestination: {
+				category: "integrations" as const,
+				section: "opencode-acp",
+				view: "acp" as const,
+			},
+		};
+		expect(
+			parseCliUpdateStatusCache(
+				JSON.stringify({
+					schemaVersion: 5,
+					checkedAt: 1_800_000_000_000,
+					statuses: [status, managedNotice],
+				}),
+			),
+		).toEqual({
+			checkedAt: 1_800_000_000_000,
+			statuses: [status, managedNotice],
+		});
 		expect(
 			parseCliUpdateStatusCache(
 				JSON.stringify({
@@ -754,14 +933,40 @@ describe("CLI update status cache", () => {
 					statuses: [status],
 				}),
 			),
-		).toEqual({ checkedAt: 1_800_000_000_000, statuses: [status] });
+		).toBeNull();
 		expect(parseCliUpdateStatusCache("not-json")).toBeNull();
 		expect(
 			parseCliUpdateStatusCache(
 				JSON.stringify({
-					schemaVersion: 4,
+					schemaVersion: 5,
 					checkedAt: 1_800_000_000_000,
 					statuses: [{ ...status, installedVersion: { bad: true } }],
+				}),
+			),
+		).toBeNull();
+		expect(
+			parseCliUpdateStatusCache(
+				JSON.stringify({
+					schemaVersion: 5,
+					checkedAt: 1_800_000_000_000,
+					statuses: [
+						{
+							...managedNotice,
+							noticeDestination: {
+								...managedNotice.noticeDestination,
+								unexpected: "untrusted",
+							},
+						},
+					],
+				}),
+			),
+		).toBeNull();
+		expect(
+			parseCliUpdateStatusCache(
+				JSON.stringify({
+					schemaVersion: 5,
+					checkedAt: 1_800_000_000_000,
+					statuses: [{ ...managedNotice, noticeId: { bad: true } }],
 				}),
 			),
 		).toBeNull();

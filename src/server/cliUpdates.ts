@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { resolveClaudeExecutable } from "../lib/claudePath";
 import type { CliUpdateStatus } from "../lib/cliUpdateTypes";
 import { resolveCodexExecutable } from "../lib/codexPath";
+import { dbFetch } from "../lib/dbClient";
 import { canonicalInstallDir } from "../lib/install";
 import { parseWslUnc } from "../lib/paths";
 import { runBoundedProcess } from "../lib/process";
@@ -21,7 +22,7 @@ const DESKTOP_CHECK_TTL_MS = 5 * 60 * 1000;
 const COMMAND_TIMEOUT_MS = 4_000;
 const STORE_TIMEOUT_MS = 15_000;
 const REGISTRY_TIMEOUT_MS = 15_000;
-const CACHE_SCHEMA_VERSION = 4;
+const CACHE_SCHEMA_VERSION = 5;
 const BACKGROUND_REFRESH_DELAY_MS = 1_500;
 const CODEX_DESKTOP_STORE_ID = "9PLM9XGG6VKS";
 const CODEX_DESKTOP_PACKAGE_IDENTITY = "OpenAI.Codex";
@@ -52,6 +53,8 @@ type AcpUpdateCandidate = {
 
 type AcpUpdateDependencies = {
 	listCandidates(): Promise<AcpUpdateCandidate[]>;
+	/** Read the owner server's receipt-backed catalog, including every target. */
+	listManagedCatalog?(): Promise<AcpCatalogItem[]>;
 	readVersion(item: AcpCatalogItem): Promise<string>;
 	resolveGlobalNpmRoot?(): Promise<string | null>;
 	now(): number;
@@ -829,6 +832,20 @@ async function acpUpdateAction(
 	return undefined;
 }
 
+async function readAuthoritativeAcpCatalog(): Promise<AcpCatalogItem[]> {
+	const response = await dbFetch("/acp/registry?refresh=1", {
+		signal: AbortSignal.timeout(REGISTRY_TIMEOUT_MS),
+	});
+	if (!response.ok) {
+		throw new Error(`ACP registry returned ${response.status}`);
+	}
+	const payload = (await response.json()) as { agents?: unknown };
+	if (!Array.isArray(payload.agents)) {
+		throw new Error("ACP registry returned an invalid catalog");
+	}
+	return payload.agents as AcpCatalogItem[];
+}
+
 const defaultAcpDependencies: AcpUpdateDependencies = {
 	listCandidates: async () => {
 		const config = loadConfig();
@@ -856,6 +873,10 @@ const defaultAcpDependencies: AcpUpdateDependencies = {
 				];
 			});
 	},
+	// The standalone registry above intentionally has no access to managed
+	// receipts. Ask the owner server for its materialized catalog so notification
+	// state is derived from the same exact target/revision snapshot as Forge.
+	listManagedCatalog: readAuthoritativeAcpCatalog,
 	readVersion: async (item) => {
 		const initialized = await inspectAcpAgent({
 			id: item.providerId,
@@ -1051,11 +1072,66 @@ export async function inspectAllWindowsDesktopUpdates(): Promise<
 	);
 }
 
+const MANAGED_ACP_AGENT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const MANAGED_ACP_TARGET_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
+const MANAGED_ACP_REVISION_RE = /^[a-f0-9]{64}$/;
+
+function managedAcpUpdateStatuses(
+	items: AcpCatalogItem[],
+	checkedAt: number,
+): CliUpdateStatus[] {
+	return items.flatMap((item) => {
+		if (
+			!MANAGED_ACP_AGENT_ID_RE.test(item.id) ||
+			typeof item.name !== "string" ||
+			!Array.isArray(item.targets)
+		) {
+			return [];
+		}
+		return item.targets.flatMap((target) => {
+			if (
+				target.provenance !== "managed" ||
+				target.canUpdate !== true ||
+				!MANAGED_ACP_TARGET_ID_RE.test(target.targetId) ||
+				!MANAGED_ACP_REVISION_RE.test(target.mutationRevision) ||
+				typeof target.label !== "string" ||
+				typeof target.registryVersion !== "string"
+			) {
+				return [];
+			}
+			return [
+				{
+					id: `acp:${item.id}:managed:${target.targetId}`,
+					label: `${item.name} (ACP · ${target.label})`,
+					installedVersion:
+						typeof target.installedVersion === "string"
+							? target.installedVersion
+							: null,
+					latestVersion: target.registryVersion,
+					available: true,
+					updateInstructions:
+						"Update from Forge > Integrations > OpenCode and ACP agents",
+					noticeId: `managed-acp:${item.id}:${target.targetId}:${target.mutationRevision}`,
+					noticeDestination: {
+						category: "integrations",
+						section: "opencode-acp",
+						view: "acp",
+					},
+					checkedAt,
+				} satisfies CliUpdateStatus,
+			];
+		});
+	});
+}
+
 export async function inspectAcpUpdates(
 	dependencies: AcpUpdateDependencies = defaultAcpDependencies,
 ): Promise<CliUpdateStatus[]> {
 	const checkedAt = dependencies.now();
-	const candidates = await dependencies.listCandidates();
+	const [candidates, managedCatalog] = await Promise.all([
+		dependencies.listCandidates(),
+		dependencies.listManagedCatalog?.().catch(() => []) ?? Promise.resolve([]),
+	]);
 	const statuses = await Promise.all(
 		candidates.map(async (candidate) => {
 			const selectedTarget = candidate.item.targets.find(
@@ -1110,10 +1186,13 @@ export async function inspectAcpUpdates(
 			} satisfies CliUpdateStatus;
 		}),
 	);
-	return statuses.filter(
-		(status): status is Exclude<(typeof statuses)[number], null> =>
-			status != null,
-	);
+	return [
+		...statuses.filter(
+			(status): status is Exclude<(typeof statuses)[number], null> =>
+				status != null,
+		),
+		...managedAcpUpdateStatuses(managedCatalog, checkedAt),
+	];
 }
 
 export async function inspectWslUpdates(
@@ -1191,6 +1270,15 @@ export async function resolveCliUpdateAction(
 			wslUpdateAction(distro, provider as NativeCliId, info.executable) ?? null
 		);
 	}
+	// Managed target IDs are notification identities only. Their lifecycle is
+	// confirmation-bound to Forge's exact target/revision catalog contract.
+	if (
+		/^acp:[A-Za-z0-9][A-Za-z0-9._-]{0,127}:managed:[A-Za-z0-9._:-]{1,128}$/.test(
+			id,
+		)
+	) {
+		return null;
+	}
 	if (!id.startsWith("acp:")) return null;
 	const candidateId = id.slice("acp:".length);
 	const candidates = await defaultAcpDependencies.listCandidates();
@@ -1227,6 +1315,61 @@ function cachePath(): string {
 	return join(canonicalInstallDir(), "cli-update-cache.json");
 }
 
+const PERSISTED_FORGE_CATEGORIES = new Set([
+	"overview",
+	"workspace",
+	"agents",
+	"access",
+	"experience",
+	"integrations",
+	"extensions",
+	"developer",
+	"advanced",
+]);
+const PERSISTED_FORGE_VIEWS = new Set([
+	"events",
+	"api",
+	"pricing",
+	"apps",
+	"umbod",
+	"acp",
+	"theme",
+]);
+const PERSISTED_FORGE_TARGETS = new Set(["desktop", "mobile"]);
+
+function isPersistedNoticeDestination(value: unknown): boolean {
+	if (value === undefined) return true;
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const destination = value as Record<string, unknown>;
+	if (
+		Object.keys(destination).some(
+			(key) =>
+				key !== "category" &&
+				key !== "section" &&
+				key !== "setting" &&
+				key !== "view" &&
+				key !== "target",
+		)
+	) {
+		return false;
+	}
+	return (
+		(destination.category === undefined ||
+			(typeof destination.category === "string" &&
+				PERSISTED_FORGE_CATEGORIES.has(destination.category))) &&
+		(destination.section === undefined ||
+			typeof destination.section === "string") &&
+		(destination.setting === undefined ||
+			typeof destination.setting === "string") &&
+		(destination.view === undefined ||
+			(typeof destination.view === "string" &&
+				PERSISTED_FORGE_VIEWS.has(destination.view))) &&
+		(destination.target === undefined ||
+			(typeof destination.target === "string" &&
+				PERSISTED_FORGE_TARGETS.has(destination.target)))
+	);
+}
+
 function isPersistedStatus(value: unknown): value is CliUpdateStatus {
 	if (!value || typeof value !== "object") return false;
 	const status = value as Partial<CliUpdateStatus>;
@@ -1248,6 +1391,8 @@ function isPersistedStatus(value: unknown): value is CliUpdateStatus {
 		nullableString(status.installedVersion) &&
 		nullableString(status.latestVersion) &&
 		typeof status.available === "boolean" &&
+		(status.noticeId === undefined || typeof status.noticeId === "string") &&
+		isPersistedNoticeDestination(status.noticeDestination) &&
 		(status.updateCommand === undefined ||
 			typeof status.updateCommand === "string") &&
 		(status.updateInstructions === undefined ||

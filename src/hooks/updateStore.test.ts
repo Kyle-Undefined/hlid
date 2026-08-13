@@ -250,6 +250,125 @@ describe("fetchUpdateStatus", () => {
 	});
 });
 
+describe("refreshUpdateStatus", () => {
+	it("clears the stale snapshot and publishes a forced server check", async () => {
+		const previous = makeStatus({ latest: "0.0.62" });
+		const refreshed = makeStatus({ latest: "0.0.63" });
+		let resolveFetch: ((value: unknown) => void) | undefined;
+		const fetchMock = vi.fn().mockReturnValue(
+			new Promise((resolve) => {
+				resolveFetch = resolve;
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		store.setUpdateStatus(previous);
+		const subscriber = vi.fn();
+		store.subscribeUpdateStatus(subscriber);
+
+		const pending = store.refreshUpdateStatus();
+
+		expect(store.getUpdateSnapshot()).toBeNull();
+		expect(subscriber).toHaveBeenCalledOnce();
+		expect(fetchMock).toHaveBeenCalledWith(
+			"/api/updates",
+			expect.objectContaining({
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ action: "check" }),
+			}),
+		);
+
+		resolveFetch?.({
+			json: async () => ({ ok: true, data: refreshed }),
+		});
+		await pending;
+
+		expect(store.getUpdateSnapshot()).toEqual(refreshed);
+		expect(subscriber).toHaveBeenCalledTimes(2);
+	});
+
+	it("restores the last useful snapshot when the forced check fails", async () => {
+		const previous = makeStatus();
+		store.setUpdateStatus(previous);
+		const subscriber = vi.fn();
+		store.subscribeUpdateStatus(subscriber);
+		vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+
+		await store.refreshUpdateStatus();
+
+		expect(store.getUpdateSnapshot()).toEqual(previous);
+		expect(subscriber).toHaveBeenCalledTimes(2);
+	});
+
+	it("ignores an older startup GET that completes after a forced check", async () => {
+		const stale = makeStatus({ latest: "0.0.62" });
+		const refreshed = makeStatus({ latest: "0.0.63" });
+		let resolveStartup: ((value: unknown) => void) | undefined;
+		const fetchMock = vi.fn((_url: RequestInfo | URL, init?: RequestInit) => {
+			if (init?.method === "POST") {
+				return Promise.resolve({
+					json: async () => ({ ok: true, data: refreshed }),
+				});
+			}
+			return new Promise((resolve) => {
+				resolveStartup = resolve;
+			});
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const startup = store.fetchUpdateStatus();
+		await store.refreshUpdateStatus();
+		expect(store.getUpdateSnapshot()).toEqual(refreshed);
+
+		resolveStartup?.({ json: async () => ({ ok: true, data: stale }) });
+		await startup;
+
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(store.getUpdateSnapshot()).toEqual(refreshed);
+	});
+
+	it("does not restore stale state over a newer external snapshot", async () => {
+		const previous = makeStatus({ latest: "0.0.62" });
+		const newer = makeStatus({ latest: "0.0.64" });
+		let rejectRefresh: ((reason: Error) => void) | undefined;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockReturnValue(
+				new Promise((_, reject) => {
+					rejectRefresh = reject;
+				}),
+			),
+		);
+		store.setUpdateStatus(previous);
+		const pending = store.refreshUpdateStatus();
+		store.setUpdateStatus(newer);
+
+		rejectRefresh?.(new Error("late failure"));
+		await pending;
+
+		expect(store.getUpdateSnapshot()).toEqual(newer);
+	});
+
+	it("coalesces concurrent forced checks", async () => {
+		let resolveFetch: ((value: unknown) => void) | undefined;
+		const fetchMock = vi.fn().mockReturnValue(
+			new Promise((resolve) => {
+				resolveFetch = resolve;
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const first = store.refreshUpdateStatus();
+		const second = store.refreshUpdateStatus();
+		expect(fetchMock).toHaveBeenCalledOnce();
+		resolveFetch?.({
+			json: async () => ({ ok: true, data: makeStatus() }),
+		});
+		await Promise.all([first, second]);
+		expect(fetchMock).toHaveBeenCalledOnce();
+	});
+});
+
 describe("__resetForTesting", () => {
 	it("clears the snapshot, the didFetch flag, and the listeners", async () => {
 		const cb = vi.fn();

@@ -1,3 +1,5 @@
+import type { ForgeRouteSearch } from "./forgeNavigation";
+
 export type CliUpdateStatus = {
 	id:
 		| "codex"
@@ -14,6 +16,10 @@ export type CliUpdateStatus = {
 	installedVersion: string | null;
 	latestVersion: string | null;
 	available: boolean;
+	/** Stable dismissal identity when the same version can represent distinct notices. */
+	noticeId?: string;
+	/** Forge destination that owns the update workflow. */
+	noticeDestination?: ForgeRouteSearch;
 	updateCommand?: string;
 	/** Human-facing workflow when an update is visible but cannot be applied by Hlid. */
 	updateInstructions?: string;

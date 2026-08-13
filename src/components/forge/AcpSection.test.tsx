@@ -20,6 +20,11 @@ const serverFns = vi.hoisted(() => ({
 	listSessions: vi.fn(),
 	importSession: vi.fn(),
 	mutate: vi.fn(),
+	refreshUpdates: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("#/hooks/updateStore", () => ({
+	refreshUpdateStatus: serverFns.refreshUpdates,
 }));
 
 vi.mock("#/lib/serverFns/acp", () => ({
@@ -352,6 +357,7 @@ describe("AcpSection", () => {
 			screen.getByText("OpenCode CLI found · verify the ACP connection"),
 		).toBeTruthy();
 		expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
+		expect(serverFns.refreshUpdates).not.toHaveBeenCalled();
 	});
 
 	it("clears negotiated identity when catalog invocation metadata changes", async () => {
@@ -427,6 +433,7 @@ describe("AcpSection", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
 
 		await screen.findByText("OpenCode CLI not found");
+		expect(serverFns.refreshUpdates).toHaveBeenCalledOnce();
 		expect(screen.queryByText("installed OpenCode 1.2.3")).toBeNull();
 		expect(screen.queryByText("OpenCode login")).toBeNull();
 		expect(
@@ -816,13 +823,30 @@ describe("AcpSection", () => {
 	it("polls the catalog until a managed operation settles", async () => {
 		vi.useFakeTimers();
 		const opencode = item("opencode", "OpenCode");
-		serverFns.registry.mockResolvedValue([
-			{
-				...opencode,
-				enabled: false,
-				targets: [wslTarget()],
-			},
-		]);
+		serverFns.registry
+			.mockResolvedValueOnce([
+				{
+					...opencode,
+					enabled: false,
+					targets: [
+						wslTarget({
+							operation: {
+								id: "operation-1",
+								action: "install",
+								phase: "refreshing",
+								cancelable: false,
+							},
+						}),
+					],
+				},
+			])
+			.mockResolvedValueOnce([
+				{
+					...opencode,
+					enabled: false,
+					targets: [wslTarget()],
+				},
+			]);
 		render(
 			<AcpSection
 				initialCatalog={[
@@ -856,8 +880,22 @@ describe("AcpSection", () => {
 		});
 
 		expect(serverFns.registry).toHaveBeenCalledOnce();
+		expect(serverFns.refreshUpdates).not.toHaveBeenCalled();
+		expect(screen.getByRole("status").textContent).toContain(
+			"Installing · Refreshing",
+		);
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(1_000);
+		});
+
+		expect(serverFns.registry).toHaveBeenCalledTimes(2);
+		expect(serverFns.refreshUpdates).toHaveBeenCalledOnce();
 		expect(screen.getByText(/Managed by Hlid/)).toBeTruthy();
 		expect(screen.getByRole("button", { name: "Enable" })).toBeTruthy();
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(3_000);
+		});
+		expect(serverFns.refreshUpdates).toHaveBeenCalledOnce();
 	});
 
 	it("reopens on the non-recommended WSL target with managed state", () => {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { HlidConfig } from "#/config";
+import { refreshUpdateStatus } from "#/hooks/updateStore";
 import { mutateAcpManagedInstallation } from "#/lib/acpManagedClient";
 import type { AcpManagedMutationAction } from "#/lib/acpManagedTypes";
 import { acpRuntimeIdentity } from "#/lib/acpRuntimeIdentity";
@@ -20,6 +21,12 @@ import { AcpAgentCard } from "./AcpAgentCard";
 import { Section } from "./fields";
 
 const MAX_PROVIDER_SESSION_BROWSER_PAGES = 25;
+
+function hasManagedOperation(catalog: AcpCatalogItem[]): boolean {
+	return catalog.some((item) =>
+		item.targets.some((target) => Boolean(target.operation)),
+	);
+}
 
 function preferredTargetId(item: AcpCatalogItem): string {
 	const managed = item.targets.filter(
@@ -144,9 +151,7 @@ export function AcpSection({
 		providerSessionCursors.current = {};
 		providerSessionPageCounts.current = {};
 	}, [initialCatalog, resetCatalogAgentState]);
-	const managedOperationActive = catalog.some((item) =>
-		item.targets.some((target) => Boolean(target.operation)),
-	);
+	const managedOperationActive = hasManagedOperation(catalog);
 	useEffect(() => {
 		if (!managedOperationActive) return;
 		let active = true;
@@ -160,6 +165,9 @@ export function AcpSection({
 				setCatalog(refreshed);
 				onCatalogChange?.(refreshed);
 				setSelectedTargets((current) => selectedTargetIds(refreshed, current));
+				if (!hasManagedOperation(refreshed)) {
+					void refreshUpdateStatus();
+				}
 			} catch {
 				// Keep the last operation snapshot visible and retry on the next tick.
 			} finally {
@@ -439,6 +447,7 @@ export function AcpSection({
 			setCatalog(refreshed);
 			onCatalogChange?.(refreshed);
 			resetCatalogAgentState(refreshed);
+			void refreshUpdateStatus();
 		} catch (cause) {
 			setError(
 				cause instanceof Error ? cause.message : "ACP catalog refresh failed",

@@ -616,7 +616,9 @@ not configured for that entry stay hidden.
 **FORGE** keeps the settings in these categories:
 
 - **Overview** shows `Hlið` and provider `CLI` updates, installation and startup
-  state, storage use, and the latest published release notes.
+  state, storage use, and the latest published release notes. The global update
+  notice also surfaces updates for exact `Hlið`-managed `ACP` targets and opens
+  their integration card, where the target-bound update is confirmed.
 - **Workspace** holds the vault, folder mappings, vocabulary, and the optional
   `Obsidian` desktop `CLI` connection.
 - **Agents** holds provider, model, effort, permissions, usage limits, recaps,
@@ -968,8 +970,11 @@ copy and restarts `Hlið`. Dismissing it leaves the current version alone.
 `Hlið` also checks the installed `Claude` and `Codex` `CLI` versions. Enabled
 `ACP` agents report their own versions, which get compared with the `ACP`
 registry. Hlið-managed ACP installations update from their agent card in
-`Forge`, using the same exact execution target and verification flow. External
-host ACP installations still show the command that belongs to their installer.
+`Forge`, using the same exact execution target and verification flow. Their
+global notices identify the managed environment and open that integration; they
+never expose the managed update through the generic `CLI` command runner.
+External host ACP installations still show the command that belongs to their
+installer.
 
 From a loopback browser or an authenticated `Tailscale` connection, **UPDATE**
 can handle a user-writable installation. `Hlið` warns before stopping active
