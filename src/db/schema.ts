@@ -74,6 +74,17 @@ function runMigration(db: Db, name: string, fn: (db: Db) => void): void {
 	}
 }
 
+function normalizedMigratedPushDeviceName(value: string): string {
+	const cleaned = Array.from(value, (character) => {
+		const code = character.charCodeAt(0);
+		return code <= 31 || code === 127 ? " " : character;
+	})
+		.join("")
+		.replace(/\s+/g, " ")
+		.trim();
+	return (cleaned || "Subscribed device").slice(0, 80);
+}
+
 function initSchema(db: Db): void {
 	db.run("PRAGMA foreign_keys = ON");
 	createSystemTables(db);
@@ -2047,5 +2058,85 @@ function applyMigrations(db: Db): void {
 			`CREATE INDEX idx_push_subscriptions_auth_session
 			 ON push_subscriptions(auth_session_hash)`,
 		);
+	});
+
+	// Split actionable requests from operational problems without changing an
+	// existing device's opt-in. The old needs_attention value is copied to both
+	// categories so an explicit prerelease opt-out remains off. Device names,
+	// completion thresholds, pauses, and one-shot completion overrides are all
+	// device/session metadata; endpoint capabilities remain private.
+	runMigration(db, "_migrated_web_push_preferences_v3", (db) => {
+		db.run(`
+			ALTER TABLE push_subscriptions
+			ADD COLUMN requests INTEGER NOT NULL DEFAULT 1
+				CHECK(requests IN (0, 1))
+		`);
+		db.run(`
+			ALTER TABLE push_subscriptions
+			ADD COLUMN problems INTEGER NOT NULL DEFAULT 1
+				CHECK(problems IN (0, 1))
+		`);
+		db.run(`
+			ALTER TABLE push_subscriptions
+			ADD COLUMN completion_min_runtime_minutes INTEGER NOT NULL DEFAULT 0
+				CHECK(completion_min_runtime_minutes IN (0, 1, 5, 10))
+		`);
+		db.run(`
+			ALTER TABLE push_subscriptions
+			ADD COLUMN paused_until INTEGER CHECK(paused_until IS NULL OR paused_until >= 0)
+		`);
+		db.run(`
+			ALTER TABLE push_subscriptions
+			ADD COLUMN device_name TEXT NOT NULL DEFAULT 'Subscribed device'
+		`);
+		db.run(`
+			UPDATE push_subscriptions
+			SET requests = needs_attention,
+			    problems = needs_attention,
+			    device_name = SUBSTR(COALESCE(NULLIF(TRIM((
+			      SELECT owner.device_label FROM auth_sessions owner
+			      WHERE owner.token_hash = push_subscriptions.auth_session_hash
+			    )), ''), 'Subscribed device'), 1, 80)
+		`);
+		for (const row of db
+			.query<{ id: string; device_name: string }, []>(
+				`SELECT id, device_name FROM push_subscriptions`,
+			)
+			.all()) {
+			const normalized = normalizedMigratedPushDeviceName(row.device_name);
+			if (normalized !== row.device_name) {
+				db.run(`UPDATE push_subscriptions SET device_name = ? WHERE id = ?`, [
+					normalized,
+					row.id,
+				]);
+			}
+		}
+		db.run(`
+			CREATE TABLE push_session_overrides_v3 (
+				session_id TEXT PRIMARY KEY
+					REFERENCES sessions(id) ON DELETE CASCADE,
+				mode TEXT NOT NULL
+					CHECK(mode IN ('notify', 'notify_once', 'mute')),
+				updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+			)
+		`);
+		db.run(`
+			INSERT INTO push_session_overrides_v3 (session_id, mode, updated_at)
+			SELECT session_id, mode, updated_at FROM push_session_overrides
+		`);
+		db.run(`DROP TABLE push_session_overrides`);
+		db.run(
+			`ALTER TABLE push_session_overrides_v3 RENAME TO push_session_overrides`,
+		);
+	});
+
+	// Timed pauses and manual-resume pauses are different user intent. Keep an
+	// explicit flag rather than encoding "until I resume" as a fake future date.
+	runMigration(db, "_migrated_web_push_manual_pause_v4", (db) => {
+		db.run(`
+			ALTER TABLE push_subscriptions
+			ADD COLUMN paused_indefinitely INTEGER NOT NULL DEFAULT 0
+				CHECK(paused_indefinitely IN (0, 1))
+		`);
 	});
 }

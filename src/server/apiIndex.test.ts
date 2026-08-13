@@ -53,8 +53,15 @@ describe("buildApiIndex", () => {
 		expect(endpoint("DELETE", "/api/push/subscriptions")?.desc).toContain(
 			"permanently remove",
 		);
+		expect(endpoint("POST", "/api/push/devices")?.desc).toContain("non-secret");
+		expect(endpoint("POST", "/api/push/test")?.desc).toContain(
+			"completion-batch forms",
+		);
+		expect(
+			endpoint("GET", "/api/push/session-overrides?session_id=")?.desc,
+		).toContain("Notify once");
 		expect(endpoint("PATCH", "/api/push/session-overrides")?.desc).toContain(
-			"both event categories",
+			"Notify once",
 		);
 	});
 

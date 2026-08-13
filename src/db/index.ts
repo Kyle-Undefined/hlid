@@ -142,16 +142,23 @@ export {
 	listProviderBackgroundActivities,
 	replaceSessionBackgroundActivities,
 } from "./providerBackgroundActivities";
-export type { StoredPushSubscription } from "./pushNotifications";
+export type {
+	PushSubscriptionDevice,
+	StoredPushSubscription,
+} from "./pushNotifications";
 export {
+	clearPushSessionNotifyOnce,
 	deletePushSubscription,
 	disableExpiredPushSubscriptions,
 	getPushSessionOverride,
 	getPushSubscription,
 	listDeliverablePushSubscriptions,
+	listPushSubscriptionDevices,
 	pushSubscriptionWantsNotification,
 	recordPushDeliveryFailure,
 	recordPushDeliverySuccess,
+	renamePushSubscriptionDevice,
+	revokePushSubscriptionDevice,
 	setPushSessionOverride,
 	updatePushSubscriptionPreferences,
 	upsertPushSubscription,

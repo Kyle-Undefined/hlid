@@ -58,7 +58,7 @@ describe("PushNotificationTransitionTracker", () => {
 		);
 	});
 
-	it("emits one attention event on entry, not reason churn", () => {
+	it("emits attention on entry and a replacement on meaningful reason change", () => {
 		const tracker = new PushNotificationTransitionTracker();
 		tracker.observe([session("working", "provider_turn")], 1_000);
 		const events = tracker.observe(
@@ -69,12 +69,15 @@ describe("PushNotificationTransitionTracker", () => {
 			{
 				kind: "needs_attention",
 				sessionId: "db-1",
-				url: "/raven?session=db-1",
+				url: "/raven?session=db-1&attention=permission",
 				label: "Ship notifications",
 			},
 		]);
 		expect(
 			tracker.observe([session("needs_attention", "question", 1_200)], 1_200),
+		).toMatchObject([{ kind: "needs_attention", reason: "question" }]);
+		expect(
+			tracker.observe([session("needs_attention", "question", 1_300)], 1_300),
 		).toEqual([]);
 	});
 
@@ -98,6 +101,20 @@ describe("PushNotificationTransitionTracker", () => {
 		const childDone = session("recent", "ready", 3_100);
 		childDone.delegation_parent_session_id = "db-parent";
 		expect(delegated.observe([childDone], 3_100)).toEqual([]);
+	});
+
+	it("measures runtime from the continuous working epoch across reason churn", () => {
+		const tracker = new PushNotificationTransitionTracker();
+		tracker.observe([session("working", "provider_turn", 1_000)], 1_000);
+		expect(
+			tracker.observe(
+				[session("working", "provider_activity", 120_000)],
+				120_000,
+			),
+		).toEqual([]);
+		expect(
+			tracker.observe([session("recent", "ready", 301_000)], 301_000),
+		).toMatchObject([{ kind: "work_finished", runtimeMs: 300_000 }]);
 	});
 
 	it("fails closed when delegated completion metadata is incomplete", () => {
@@ -271,7 +288,7 @@ describe("PushNotificationTransitionTracker", () => {
 			{
 				kind: "needs_attention",
 				sessionId: "db-grandchild",
-				url: "/raven?session=db-grandchild",
+				url: "/raven?session=db-grandchild&attention=question",
 				reason: "question",
 			},
 		]);
@@ -304,7 +321,7 @@ describe("PushNotificationTransitionTracker", () => {
 				{
 					kind: "needs_attention",
 					sessionId: "db-child",
-					url: "/raven?session=db-child",
+					url: "/raven?session=db-child&attention=permission",
 				},
 			],
 		);
@@ -395,53 +412,35 @@ describe("PushNotificationTransitionTracker", () => {
 		]);
 	});
 
-	it("keeps delegated attention exact while retaining main failures", () => {
-		const delegated = new PushNotificationTransitionTracker();
-		const childWorking = session("working", "provider_turn");
-		childWorking.delegation_parent_session_id = "db-parent";
-		delegated.observe([childWorking], 1_000);
-		const childError = session("needs_attention", "error", 1_100);
-		childError.delegation_parent_session_id = "db-parent";
-		expect(delegated.observe([childError], 1_100)).toMatchObject([
-			{
-				kind: "needs_attention",
-				sessionId: "db-1",
-				url: "/raven?session=db-1",
-				reason: "error",
-			},
-		]);
-
-		const background = new PushNotificationTransitionTracker();
-		const backgroundChild = session("working", "provider_activity", 1_200);
-		backgroundChild.delegation_depth = 1;
-		background.observe([backgroundChild], 1_200);
-		const backgroundFailure = session(
-			"needs_attention",
+	it("keeps child failures parent-owned while retaining top-level failures", () => {
+		const childOwnedReasons = [
+			"error",
 			"background_failed",
-			1_300,
-		);
-		backgroundFailure.delegation_depth = 1;
-		expect(background.observe([backgroundFailure], 1_300)).toMatchObject([
-			{
-				kind: "needs_attention",
-				sessionId: "db-1",
-				reason: "background_failed",
-			},
-		]);
+			"goal_blocked",
+			"goal_budget",
+			"routine_action_required",
+			"routine_delivery_error",
+			"routine_failed",
+			"routine_unavailable",
+			"delegation_interrupted",
+		] as const;
+		for (const [index, reason] of childOwnedReasons.entries()) {
+			const delegated = new PushNotificationTransitionTracker();
+			const startedAt = 1_000 + index * 100;
+			const childWorking = session("working", "provider_turn", startedAt);
+			childWorking.delegation_parent_session_id = "db-parent";
+			delegated.observe([childWorking], startedAt);
 
-		const blocked = new PushNotificationTransitionTracker();
-		const blockedChild = session("working", "goal_active", 1_400);
-		blockedChild.delegation_parent_session_id = "db-parent";
-		blocked.observe([blockedChild], 1_400);
-		const childGoalBlocked = session("needs_attention", "goal_blocked", 1_500);
-		childGoalBlocked.delegation_parent_session_id = "db-parent";
-		expect(blocked.observe([childGoalBlocked], 1_500)).toMatchObject([
-			{
-				kind: "needs_attention",
-				sessionId: "db-1",
-				reason: "goal_blocked",
-			},
-		]);
+			// Some terminal provider snapshots lose delegation metadata. Remembered
+			// durable provenance must still fail closed and leave the outcome to the
+			// top-level session.
+			expect(
+				delegated.observe(
+					[session("needs_attention", reason, startedAt + 50)],
+					startedAt + 50,
+				),
+			).toEqual([]);
+		}
 
 		const main = new PushNotificationTransitionTracker();
 		main.observe([session("working", "provider_turn")], 2_000);
@@ -470,9 +469,89 @@ describe("PushNotificationTransitionTracker", () => {
 			},
 		]);
 	});
+
+	it("retains exact deep links for direct child requests", () => {
+		for (const reason of ["permission", "question", "plan_review"] as const) {
+			const tracker = new PushNotificationTransitionTracker();
+			const childWorking = session("working", "provider_turn", 1_000);
+			childWorking.delegation_parent_session_id = "db-parent";
+			tracker.observe([childWorking], 1_000);
+
+			expect(
+				tracker.observe([session("needs_attention", reason, 1_100)], 1_100),
+			).toMatchObject([
+				{
+					kind: "needs_attention",
+					sessionId: "db-1",
+					reason,
+					url: `/raven?session=db-1&attention=${reason}`,
+				},
+			]);
+		}
+	});
 });
 
 describe("PushNotificationCoordinator", () => {
+	it("replaces a settling permission with the current pending question", async () => {
+		let now = 1_000;
+		const callbacks: Array<() => void> = [];
+		const deliver = vi.fn();
+		const coordinator = new PushNotificationCoordinator({
+			deliver,
+			now: () => now,
+			visibleUntil: () => null,
+			schedule: (next) => {
+				callbacks.push(next);
+				return callbacks.length as unknown as ReturnType<typeof setTimeout>;
+			},
+			cancel: () => {},
+		});
+		coordinator.observe([session("working", "provider_turn", 1_000)]);
+		now = 1_100;
+		coordinator.observe([session("needs_attention", "permission", 1_100)]);
+		now = 1_200;
+		coordinator.observe([session("needs_attention", "question", 1_200)]);
+		now = 1_951;
+		for (const callback of callbacks) callback();
+		await Promise.resolve();
+		expect(deliver).toHaveBeenCalledOnce();
+		expect(deliver).toHaveBeenCalledWith(
+			expect.objectContaining({ reason: "question" }),
+		);
+	});
+
+	it("delivers a new direct attention reason after an earlier alert", async () => {
+		let now = 1_000;
+		const callbacks: Array<() => void> = [];
+		const deliver = vi.fn();
+		const coordinator = new PushNotificationCoordinator({
+			deliver,
+			now: () => now,
+			visibleUntil: () => null,
+			schedule: (next) => {
+				callbacks.push(next);
+				return callbacks.length as unknown as ReturnType<typeof setTimeout>;
+			},
+			cancel: () => {},
+		});
+		coordinator.observe([session("working", "provider_turn", 1_000)]);
+		now = 1_100;
+		coordinator.observe([session("needs_attention", "permission", 1_100)]);
+		now = 1_851;
+		callbacks.shift()?.();
+		await Promise.resolve();
+		now = 2_000;
+		coordinator.observe([session("needs_attention", "question", 2_000)]);
+		now = 2_751;
+		callbacks.shift()?.();
+		await Promise.resolve();
+		expect(deliver).toHaveBeenCalledTimes(2);
+		expect(deliver.mock.calls.map(([event]) => event.reason)).toEqual([
+			"permission",
+			"question",
+		]);
+	});
+
 	it("defers while Raven is visible, then delivers if still relevant", async () => {
 		let now = 1_000;
 		let callback: (() => void) | undefined;
@@ -559,6 +638,8 @@ describe("PushNotificationCoordinator", () => {
 
 		now = 1_851;
 		callback?.();
+		now = 21_851;
+		callback?.();
 		await Promise.resolve();
 		expect(deliver).toHaveBeenCalledOnce();
 	});
@@ -621,13 +702,102 @@ describe("PushNotificationCoordinator", () => {
 		]);
 		now = 10_851;
 		callback?.();
+		now = 30_851;
+		callback?.();
 		await Promise.resolve();
 		expect(deliver).toHaveBeenCalledTimes(1);
-		expect(deliver).toHaveBeenCalledWith(
+		expect(deliver).toHaveBeenCalledWith([
 			expect.objectContaining({
 				kind: "work_finished",
 				sessionId: "db-parent",
 			}),
+		]);
+	});
+
+	it("chunks a busy completion window into portable batches of at most ten", async () => {
+		let now = 1_000;
+		const scheduled: Array<() => void> = [];
+		const deliver = vi.fn();
+		const coordinator = new PushNotificationCoordinator({
+			deliver,
+			now: () => now,
+			visibleUntil: () => null,
+			schedule: (next) => {
+				scheduled.push(next);
+				return scheduled.length as unknown as ReturnType<typeof setTimeout>;
+			},
+			cancel: () => {},
+		});
+		const working = Array.from({ length: 11 }, (_, index) => {
+			const value = session("working", "provider_turn", 1_000);
+			value.session_id = `pool-${index}`;
+			value.db_session_id = `db-${index}`;
+			return value;
+		});
+		coordinator.observe(working);
+		now = 1_100;
+		coordinator.observe(
+			working.map((value) => ({
+				...value,
+				attention: {
+					bucket: "recent" as const,
+					reason: "ready" as const,
+					since: now,
+					last_activity_at: now,
+					queue_count: 0,
+					pending_count: 0,
+				},
+			})),
 		);
+		expect(scheduled).toHaveLength(11);
+		now = 1_851;
+		for (const callback of scheduled.splice(0, 11)) callback();
+		expect(scheduled).toHaveLength(1);
+		now = 21_851;
+		scheduled.shift()?.();
+		await Promise.resolve();
+		expect(deliver).toHaveBeenCalledTimes(2);
+		expect(deliver.mock.calls[0]?.[0]).toHaveLength(10);
+		expect(deliver.mock.calls[1]?.[0]).toHaveLength(1);
+	});
+
+	it("rechecks presence and expiry when the completion batch flushes", async () => {
+		let now = 1_000;
+		let visible = false;
+		const scheduled: Array<() => void> = [];
+		const deliver = vi.fn();
+		const coordinator = new PushNotificationCoordinator({
+			deliver,
+			now: () => now,
+			visibleUntil: () => (visible ? now + 1_000 : null),
+			schedule: (next) => {
+				scheduled.push(next);
+				return scheduled.length as unknown as ReturnType<typeof setTimeout>;
+			},
+			cancel: () => {},
+		});
+		coordinator.observe([session("working", "provider_turn", 1_000)]);
+		now = 1_100;
+		coordinator.observe([session("recent", "ready", 1_100)]);
+		now = 1_851;
+		scheduled.shift()?.();
+		visible = true;
+		now = 21_851;
+		scheduled.shift()?.();
+		await Promise.resolve();
+		expect(deliver).not.toHaveBeenCalled();
+
+		visible = false;
+		coordinator.observe([session("working", "provider_turn", 30_000)]);
+		now = 30_100;
+		coordinator.observe([session("recent", "ready", 30_100)]);
+		now = 30_851;
+		scheduled.shift()?.();
+		// The normal TTL is much longer; advance beyond it to exercise the flush
+		// guard without changing production timers.
+		now = 6 * 60_000;
+		scheduled.shift()?.();
+		await Promise.resolve();
+		expect(deliver).not.toHaveBeenCalled();
 	});
 });

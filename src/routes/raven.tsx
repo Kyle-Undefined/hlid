@@ -203,6 +203,50 @@ import {
 } from "#/server/protocol";
 
 type RavenPaneTab = "chat" | "terminal" | "preview";
+export type RavenNotificationAttention =
+	| "permission"
+	| "question"
+	| "plan_review";
+
+export function ravenNotificationAttention(
+	value: unknown,
+): RavenNotificationAttention | undefined {
+	return value === "permission" ||
+		value === "question" ||
+		value === "plan_review"
+		? value
+		: undefined;
+}
+
+/**
+ * Focuses only a card that is still rendered as pending. Resolved cards do not
+ * retain this marker, so a notification can never revive or target stale work.
+ */
+export function focusRavenNotificationAttention(
+	root: ParentNode,
+	attention: RavenNotificationAttention,
+): HTMLElement | null {
+	const card = root.querySelector<HTMLElement>(
+		`[data-notification-attention="${attention}"]`,
+	);
+	if (!card) return null;
+	const attentionId = card.dataset.notificationAttentionId;
+	const dialog = attentionId
+		? Array.from(
+				document.querySelectorAll<HTMLElement>(
+					`[data-notification-attention-dialog="${attention}"]`,
+				),
+			).find(
+				(candidate) =>
+					candidate.dataset.notificationAttentionId === attentionId,
+			)
+		: undefined;
+	const target = dialog ?? card;
+	target.dataset.notificationHighlight = "true";
+	if (!dialog) target.scrollIntoView?.({ behavior: "smooth", block: "center" });
+	target.focus({ preventScroll: true });
+	return target;
+}
 
 export function ravenTabAfterProjectPreviewStops(
 	tab: RavenPaneTab,
@@ -461,11 +505,23 @@ async function loadRavenRoute(session?: string, agent?: string) {
 export const Route = createFileRoute("/raven")({
 	validateSearch: (
 		search: Record<string, unknown>,
-	): { session?: string; agent?: string; prompt?: string } => {
-		const out: { session?: string; agent?: string; prompt?: string } = {};
+	): {
+		session?: string;
+		agent?: string;
+		prompt?: string;
+		attention?: RavenNotificationAttention;
+	} => {
+		const out: {
+			session?: string;
+			agent?: string;
+			prompt?: string;
+			attention?: RavenNotificationAttention;
+		} = {};
 		if (typeof search.session === "string") out.session = search.session;
 		if (typeof search.agent === "string") out.agent = search.agent;
 		if (typeof search.prompt === "string") out.prompt = search.prompt;
+		const attention = ravenNotificationAttention(search.attention);
+		if (out.session && attention) out.attention = attention;
 		return out;
 	},
 	loaderDeps: ({ search: { session, agent } }) => ({ session, agent }),
@@ -3289,6 +3345,80 @@ export function ChatPage() {
 		setShowModelPopup,
 	});
 	const { focusSkillOnNextRender } = viewport;
+	const notificationAttention = ravenSearch.attention;
+	const hasPendingNotificationAttention = useMemo(() => {
+		if (!notificationAttention) return false;
+		return runtime.messages.some((message) => {
+			switch (notificationAttention) {
+				case "permission":
+					return (
+						message.role === "permission" &&
+						message.decision === "pending" &&
+						message.providerOutcome !== "blocked"
+					);
+				case "question":
+					return (
+						message.role === "ask_user_question" && message.answers === null
+					);
+				case "plan_review":
+					return (
+						message.role === "plan_proposal" && message.decision === "pending"
+					);
+			}
+			return false;
+		});
+	}, [notificationAttention, runtime.messages]);
+	const consumeNotificationAttention = useCallback(() => {
+		void navigate({
+			to: "/raven",
+			search: (previous) => ({ ...previous, attention: undefined }),
+			replace: true,
+		});
+	}, [navigate]);
+	useLayoutEffect(() => {
+		if (
+			!notificationAttention ||
+			!runtime.interactionMetadataReady ||
+			!hasPendingNotificationAttention
+		)
+			return;
+		const target = focusRavenNotificationAttention(
+			viewport.transcriptContentRef.current ?? document,
+			notificationAttention,
+		);
+		if (!target) return;
+		consumeNotificationAttention();
+		window.setTimeout(() => {
+			if (target.isConnected) delete target.dataset.notificationHighlight;
+		}, 2_400);
+	}, [
+		consumeNotificationAttention,
+		hasPendingNotificationAttention,
+		notificationAttention,
+		runtime.interactionMetadataReady,
+		viewport.transcriptContentRef,
+	]);
+	useEffect(() => {
+		if (
+			!notificationAttention ||
+			runtime.wsStatus !== "connected" ||
+			!runtime.historyReady ||
+			!runtime.interactionMetadataReady ||
+			hasPendingNotificationAttention
+		)
+			return;
+		// History and the buffered live replay are authoritative now. Consume a
+		// settled signal only after that boundary, never on an arbitrary timeout that
+		// can race a large transcript hydration.
+		consumeNotificationAttention();
+	}, [
+		consumeNotificationAttention,
+		hasPendingNotificationAttention,
+		notificationAttention,
+		runtime.historyReady,
+		runtime.interactionMetadataReady,
+		runtime.wsStatus,
+	]);
 
 	// ─── Skills + slash picker ────────────────────────────────────────────────
 

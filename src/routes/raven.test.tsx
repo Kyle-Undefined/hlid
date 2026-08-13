@@ -341,6 +341,7 @@ vi.mock("#/lib/serverFns/voice", () => ({
 vi.mock("#/lib/serverFns/config");
 
 import { resetRavenTerminalsForTesting } from "#/hooks/ravenTerminalStore";
+import { useLoadChatHistory } from "#/hooks/useLoadChatHistory";
 import { useNotificationPresence } from "#/hooks/useNotificationPresence";
 import {
 	loadRavenProviders,
@@ -360,9 +361,11 @@ import {
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import {
 	ChatPage,
+	focusRavenNotificationAttention,
 	isNewProjectPreviewPresentationRequest,
 	providerBackgroundOperationAvailable,
 	Route,
+	ravenNotificationAttention,
 	ravenSleepDetail,
 	ravenTabAfterProjectPreviewStops,
 } from "./raven";
@@ -412,6 +415,14 @@ beforeEach(() => {
 	state.terminalProps = null;
 	state.preview = null;
 	state.search = {};
+	vi.mocked(useLoadChatHistory).mockReturnValue({
+		historyReady: true,
+		interactionMetadataReady: true,
+		hasOlderHistory: false,
+		isLoadingOlderHistory: false,
+		loadOlderHistory: vi.fn(),
+		loadEarlierToolEvents: vi.fn(),
+	} as never);
 	state.loaderData = {
 		config: {
 			vault: { path: "/vault" },
@@ -6136,6 +6147,89 @@ function makeLoaderConfig(overrides?: Record<string, unknown>) {
 }
 
 describe("raven route search/deps", () => {
+	it("retains a settled attention hint until interaction metadata is authoritative", async () => {
+		configureEffortRejectionSession();
+		state.search = { session: "saved-session", attention: "question" };
+		vi.mocked(useLoadChatHistory).mockReturnValue({
+			historyReady: true,
+			interactionMetadataReady: false,
+			hasOlderHistory: false,
+			isLoadingOlderHistory: false,
+			loadOlderHistory: vi.fn(),
+			loadEarlierToolEvents: vi.fn(),
+		} as never);
+		const view = render(<ChatPage />);
+
+		await act(async () => {});
+		expect(state.navigate).not.toHaveBeenCalledWith(
+			expect.objectContaining({ to: "/raven", replace: true }),
+		);
+
+		vi.mocked(useLoadChatHistory).mockReturnValue({
+			historyReady: true,
+			interactionMetadataReady: true,
+			hasOlderHistory: false,
+			isLoadingOlderHistory: false,
+			loadOlderHistory: vi.fn(),
+			loadEarlierToolEvents: vi.fn(),
+		} as never);
+		view.rerender(<ChatPage />);
+
+		await waitFor(() =>
+			expect(state.navigate).toHaveBeenCalledWith(
+				expect.objectContaining({
+					to: "/raven",
+					replace: true,
+					search: expect.any(Function),
+				}),
+			),
+		);
+	});
+
+	it("bounds notification attention search and focuses only a matching card", () => {
+		expect(ravenNotificationAttention("permission")).toBe("permission");
+		expect(ravenNotificationAttention("question")).toBe("question");
+		expect(ravenNotificationAttention("plan_review")).toBe("plan_review");
+		expect(ravenNotificationAttention("error")).toBeUndefined();
+
+		const root = document.createElement("div");
+		const target = document.createElement("div");
+		target.tabIndex = -1;
+		target.dataset.notificationAttention = "question";
+		target.scrollIntoView = vi.fn();
+		root.append(target);
+		document.body.append(root);
+		expect(focusRavenNotificationAttention(root, "question")).toBe(target);
+		expect(target.dataset.notificationHighlight).toBe("true");
+		expect(target.scrollIntoView).toHaveBeenCalledWith({
+			behavior: "smooth",
+			block: "center",
+		});
+		expect(document.activeElement).toBe(target);
+		expect(focusRavenNotificationAttention(root, "permission")).toBeNull();
+	});
+
+	it("keeps notification focus inside an open HTML plan modal", () => {
+		const root = document.createElement("div");
+		const card = document.createElement("div");
+		card.tabIndex = -1;
+		card.dataset.notificationAttention = "plan_review";
+		card.dataset.notificationAttentionId = "plan-1";
+		card.scrollIntoView = vi.fn();
+		root.append(card);
+		document.body.append(root);
+		const dialog = document.createElement("div");
+		dialog.tabIndex = -1;
+		dialog.dataset.notificationAttentionDialog = "plan_review";
+		dialog.dataset.notificationAttentionId = "plan-1";
+		document.body.append(dialog);
+
+		expect(focusRavenNotificationAttention(root, "plan_review")).toBe(dialog);
+		expect(document.activeElement).toBe(dialog);
+		expect(dialog.dataset.notificationHighlight).toBe("true");
+		expect(card.scrollIntoView).not.toHaveBeenCalled();
+	});
+
 	it("replaces the previous transcript immediately while a session load is pending", () => {
 		expect(route.pendingMs).toBe(0);
 		const Pending = route.pendingComponent;
@@ -6158,6 +6252,13 @@ describe("raven route search/deps", () => {
 			session: "s",
 			prompt: "p",
 		});
+		expect(
+			route.validateSearch({ session: "s", attention: "plan_review" }),
+		).toEqual({ session: "s", attention: "plan_review" });
+		expect(route.validateSearch({ attention: "permission" })).toEqual({});
+		expect(
+			route.validateSearch({ session: "s", attention: "not-real" }),
+		).toEqual({ session: "s" });
 	});
 
 	it("loaderDeps extracts session and agent", () => {

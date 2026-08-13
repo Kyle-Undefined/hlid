@@ -50,10 +50,15 @@ function fixture() {
 			auth: auth.toString("base64url"),
 		},
 		expirationTime: null,
+		name: "Test device",
 		preferences: {
-			needs_attention: true,
+			requests: true,
+			problems: true,
 			work_finished: false,
 			privacy: "generic",
+			completion_min_runtime_minutes: 0,
+			paused_until: null,
+			paused_indefinitely: false,
 		},
 		enabled: true,
 		createdAt: 1,
@@ -266,6 +271,76 @@ describe("standards-only Web Push sender", () => {
 			{ nowMs: NOW + 1 },
 		).headers.get("authorization");
 		expect(otherAudience).not.toBe(first);
+	});
+
+	it("serializes portable batch and test notification envelopes", () => {
+		const { auth, client, payload, subscription } = fixture();
+		const batch: WebPushNotificationPayload = {
+			...payload,
+			kind: "work_finished",
+			sessionIds: ["session-1", "session-2"],
+			batchId: "batch-test-123",
+			url: "/raven",
+		};
+		const batchRequest = prepareWebPushRequest(
+			subscription,
+			batch,
+			vapidKeys(),
+			{
+				nowMs: NOW,
+				salt: Buffer.alloc(16, 6),
+				ephemeralPrivateKey: Buffer.alloc(32, 10),
+			},
+		);
+		const batchPlain = decryptBody(batchRequest.body, client.ecdh, auth);
+		const batchEnvelope = JSON.parse(
+			batchPlain.subarray(0, -1).toString("utf8"),
+		);
+		expect(batchEnvelope.notification).toMatchObject({
+			navigate: "/raven",
+			tag: "hlid-work-finished-batch:batch-test-123",
+			data: {
+				kind: "work_finished",
+				sessionId: "session-1",
+				sessionIds: ["session-1", "session-2"],
+				batchId: "batch-test-123",
+				url: "/raven",
+			},
+		});
+
+		const testPayload: WebPushNotificationPayload = {
+			version: 1,
+			kind: "test",
+			title: "Hlid test notification",
+			body: "Notifications are working on this device.",
+			url: "/forge?category=experience&section=notifications",
+			createdAt: NOW,
+			expiresAt: NOW + 300_000,
+		};
+		const testRequest = prepareWebPushRequest(
+			subscription,
+			testPayload,
+			vapidKeys(),
+			{
+				nowMs: NOW,
+				salt: Buffer.alloc(16, 8),
+				ephemeralPrivateKey: Buffer.alloc(32, 12),
+			},
+		);
+		const testPlain = decryptBody(testRequest.body, client.ecdh, auth);
+		const testEnvelope = JSON.parse(testPlain.subarray(0, -1).toString("utf8"));
+		expect(testEnvelope.notification).toMatchObject({
+			navigate: "/forge?category=experience&section=notifications",
+			tag: "hlid-test",
+			data: {
+				kind: "test",
+				url: "/forge?category=experience&section=notifications",
+			},
+		});
+		expect(testEnvelope.notification.data).not.toHaveProperty("sessionId");
+		expect(testRequest.headers.get("topic")).not.toBe(
+			batchRequest.headers.get("topic"),
+		);
 	});
 
 	it("restricts durable endpoints and validates browser key material", () => {

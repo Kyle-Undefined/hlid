@@ -1,12 +1,16 @@
 import { createServerFn } from "@tanstack/react-start";
 import { dbFetch, requireDbOk } from "#/lib/dbClient";
 import {
+	deletePushDeviceSchema,
+	listPushDevicesSchema,
 	type PushPreferences,
 	pushEndpointSchema,
 	pushSessionIdSchema,
 	pushStatusSchema,
+	pushTestSchema,
 	type SessionNotificationMode,
 	subscribePushSchema,
+	updatePushDeviceSchema,
 	updatePushSessionOverrideSchema,
 	updatePushSubscriptionSchema,
 } from "#/lib/pushNotificationSchemas";
@@ -19,6 +23,21 @@ export type PushStatusResponse = {
 	available: true;
 	subscribed: boolean;
 	preferences: PushPreferences | null;
+	device_name: string | null;
+};
+
+export type PushDeviceResponse = {
+	id: string;
+	name: string;
+	current: boolean;
+	enabled: boolean;
+	paused_until: number | null;
+	paused_indefinitely: boolean;
+	created_at: number;
+	updated_at: number;
+	last_success_at: number | null;
+	last_failure_at: number | null;
+	failure_count: number;
 };
 
 async function internalJson<T>(
@@ -101,6 +120,64 @@ export const unsubscribeFromPushFn = createServerFn({ method: "POST" })
 				body: JSON.stringify(data),
 			},
 		),
+	);
+
+export const listPushDevicesFn = createServerFn({ method: "POST" })
+	.validator((raw) => listPushDevicesSchema.parse(raw ?? {}))
+	.handler(({ data }) =>
+		internalJson<{ devices: PushDeviceResponse[] }>(
+			"/api/push/devices",
+			"List notification devices",
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(data),
+			},
+		),
+	);
+
+export const updatePushDeviceFn = createServerFn({ method: "POST" })
+	.validator((raw) => updatePushDeviceSchema.parse(raw))
+	.handler(({ data }) =>
+		internalJson<{ ok: true; device: PushDeviceResponse }>(
+			"/api/push/devices",
+			"Rename notification device",
+			{
+				method: "PATCH",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(data),
+			},
+		),
+	);
+
+export const deletePushDeviceFn = createServerFn({ method: "POST" })
+	.validator((raw) => deletePushDeviceSchema.parse(raw))
+	.handler(({ data }) =>
+		internalJson<{ ok: true; removed: boolean }>(
+			"/api/push/devices",
+			"Revoke notification device",
+			{
+				method: "DELETE",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(data),
+			},
+		),
+	);
+
+export const sendTestPushNotificationFn = createServerFn({ method: "POST" })
+	.validator((raw) => pushTestSchema.parse(raw))
+	.handler(({ data }) =>
+		internalJson<{
+			accepted: boolean;
+			accepted_at: number | null;
+			failure_at: number | null;
+			failure_count: number;
+			subscription_removed: boolean;
+		}>("/api/push/test", "Send test notification", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(data),
+		}),
 	);
 
 export const getSessionNotificationOverrideFn = createServerFn({

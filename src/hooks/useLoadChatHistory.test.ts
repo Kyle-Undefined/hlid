@@ -162,6 +162,106 @@ describe("useLoadChatHistory — initial load", () => {
 		expect(liveStatsStore.resetLiveStats).not.toHaveBeenCalled();
 	});
 
+	it("keeps restored-session interaction metadata unready until pending cards hydrate", async () => {
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			{
+				...makeRow("user", "wait for my answer", 1000),
+				seq: 0,
+			},
+		]);
+		let resolveQuestions!: (
+			value: Awaited<ReturnType<typeof getSessionAskUserQuestionsFn>>,
+		) => void;
+		vi.mocked(getSessionAskUserQuestionsFn).mockReturnValue(
+			new Promise((resolve) => {
+				resolveQuestions = resolve;
+			}),
+		);
+		const dispatch = vi.fn();
+
+		const view = renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+
+		// A notification-opened restored session must never look authoritative on
+		// its first render, before the load effect has even started.
+		expect(view.result.current.interactionMetadataReady).toBe(false);
+		await act(async () => {});
+		expect(view.result.current.historyReady).toBe(true);
+		expect(view.result.current.interactionMetadataReady).toBe(false);
+		expect(
+			dispatch.mock.calls.some(([action]) => action.type === "HYDRATE_HISTORY"),
+		).toBe(false);
+
+		await act(async () => {
+			resolveQuestions([
+				{
+					request_id: "question-from-notification",
+					seq: 1,
+					questions_json: JSON.stringify([
+						{
+							question: "Continue?",
+							options: ["Yes", "No"],
+							multiSelect: false,
+						},
+					]),
+					provenance_json: null,
+					answers_json: null,
+					notes_json: null,
+					timestamp: 2000,
+				},
+			]);
+		});
+
+		expect(view.result.current.interactionMetadataReady).toBe(true);
+		const hydrated = dispatch.mock.calls.find(
+			([action]) => action.type === "HYDRATE_HISTORY",
+		)?.[0].items;
+		expect(hydrated).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					kind: "ask_user_question",
+					id: "question-from-notification",
+				}),
+			]),
+		);
+	});
+
+	it("does not declare interaction metadata authoritative after a failed read", async () => {
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			makeRow("user", "restore this session", 1000),
+		]);
+		vi.mocked(getSessionPermissionsFn).mockRejectedValue(
+			new Error("permission metadata unavailable"),
+		);
+		const consoleError = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => {});
+
+		const view = renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch: vi.fn(),
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+
+		await act(async () => {});
+		expect(view.result.current.historyReady).toBe(true);
+		expect(view.result.current.interactionMetadataReady).toBe(false);
+		consoleError.mockRestore();
+	});
+
 	it("deduplicates one per-response page request and maps it through the history mapper", async () => {
 		vi.mocked(getSessionDataFn).mockResolvedValue([
 			makeRow("assistant", "done", 1000),

@@ -11,12 +11,13 @@ export type PushNotificationEvent = {
 	reason: SessionAttentionReason;
 	url: string;
 	tag: string;
+	runtimeMs?: number;
 	occurredAt: number;
 	expiresAt: number;
 };
 
 export type PushNotificationDelivery = (
-	event: PushNotificationEvent,
+	event: PushNotificationEvent | PushNotificationEvent[],
 ) => void | Promise<void>;
 
 type AttentionState = Pick<
@@ -25,14 +26,22 @@ type AttentionState = Pick<
 > & {
 	dbSessionId: string | null;
 	delegated: boolean;
+	workingSince: number | null;
 };
 
 const ATTENTION_TTL_MS = 15 * 60_000;
 const FINISHED_TTL_MS = 5 * 60_000;
 const TRANSITION_SETTLE_MS = 750;
+const COMPLETION_BATCH_WINDOW_MS = 20_000;
+const MAX_COMPLETION_BATCH_SIZE = 10;
 const COMPLETION_REASONS = new Set<SessionAttentionReason>([
 	"ready",
 	"background_completed",
+]);
+const DELEGATED_DIRECT_REQUEST_REASONS = new Set<SessionAttentionReason>([
+	"permission",
+	"question",
+	"plan_review",
 ]);
 
 function hasDelegatedProvenance(session: SessionStatusEntry): boolean {
@@ -59,6 +68,14 @@ function snapshotAttention(
 		delegated:
 			hasDelegatedProvenance(session) ||
 			(sameDurableSession && previous.delegated),
+		workingSince:
+			attention.bucket === "working"
+				? sameDurableSession &&
+					previous?.bucket === "working" &&
+					previous.workingSince !== null
+					? previous.workingSince
+					: attention.since
+				: null,
 	};
 }
 
@@ -87,15 +104,20 @@ function eventForTransition(
 
 	let kind: PushNotificationKind | null = null;
 	let ttl = ATTENTION_TTL_MS;
+	let runtimeMs: number | undefined;
 	const delegated = hasDelegatedProvenance(session) || previous.delegated;
 	if (
 		current.bucket === "needs_attention" &&
-		previous.bucket !== "needs_attention"
+		(previous.bucket !== "needs_attention" ||
+			previous.reason !== current.reason)
 	) {
 		// Descendant attention is represented by the exact child row. The same
 		// rollup can reach ancestors in a later broadcast, so suppress it here
 		// rather than relying on same-snapshot ancestry filtering.
 		if (current.reason === "delegated_child_attention") return null;
+		if (delegated && !DELEGATED_DIRECT_REQUEST_REASONS.has(current.reason)) {
+			return null;
+		}
 		kind = "needs_attention";
 	} else if (
 		// Durable delegated completion and failure counts are internal lifecycle.
@@ -108,6 +130,13 @@ function eventForTransition(
 	) {
 		kind = "work_finished";
 		ttl = FINISHED_TTL_MS;
+		if (previous.workingSince !== null) {
+			const completedAt =
+				current.since >= previous.workingSince && current.since <= now
+					? current.since
+					: now;
+			runtimeMs = completedAt - previous.workingSince;
+		}
 	}
 	if (!kind) return null;
 
@@ -118,8 +147,17 @@ function eventForTransition(
 		sessionAliases,
 		label: sessionLabel(session),
 		reason: current.reason,
-		url: `/raven?session=${encodeURIComponent(sessionId)}`,
+		url: `/raven?${new URLSearchParams({
+			session: sessionId,
+			...(kind === "needs_attention" &&
+			(current.reason === "permission" ||
+				current.reason === "question" ||
+				current.reason === "plan_review")
+				? { attention: current.reason }
+				: {}),
+		})}`,
 		tag: `hlid-session-${sessionId}`,
+		...(runtimeMs !== undefined ? { runtimeMs } : {}),
 		occurredAt: now,
 		expiresAt: now + ttl,
 	};
@@ -179,6 +217,8 @@ export class PushNotificationCoordinator {
 	private readonly tracker = new PushNotificationTransitionTracker();
 	private readonly latest = new Map<string, AttentionState | undefined>();
 	private readonly pending = new Map<string, ScheduledEvent>();
+	private completionBatch: PushNotificationEvent[] = [];
+	private completionTimer: ReturnType<typeof setTimeout> | null = null;
 	private readonly deliver: PushNotificationDelivery;
 	private readonly now: () => number;
 	private readonly visibleUntil: NonNullable<
@@ -224,6 +264,9 @@ export class PushNotificationCoordinator {
 
 	close(): void {
 		for (const key of Array.from(this.pending.keys())) this.clearPending(key);
+		if (this.completionTimer) this.cancel(this.completionTimer);
+		this.completionTimer = null;
+		this.completionBatch = [];
 	}
 
 	private eventStillRelevant(event: PushNotificationEvent): boolean {
@@ -231,7 +274,9 @@ export class PushNotificationCoordinator {
 		if (!state) return event.kind === "work_finished";
 		if (state.dbSessionId !== event.sessionId) return false;
 		if (event.kind === "needs_attention") {
-			return state.bucket === "needs_attention";
+			return (
+				state.bucket === "needs_attention" && state.reason === event.reason
+			);
 		}
 		return (
 			state.bucket === "recent" &&
@@ -271,7 +316,49 @@ export class PushNotificationCoordinator {
 		}
 
 		this.pending.delete(key);
-		void Promise.resolve(this.deliver(scheduled.event)).catch((error) => {
+		if (scheduled.event.kind === "work_finished") {
+			this.enqueueCompletion(scheduled.event);
+			return;
+		}
+		this.runDelivery(scheduled.event);
+	}
+
+	private enqueueCompletion(event: PushNotificationEvent): void {
+		const existing = this.completionBatch.findIndex(
+			(candidate) => candidate.sessionId === event.sessionId,
+		);
+		if (existing >= 0) this.completionBatch[existing] = event;
+		else this.completionBatch.push(event);
+		if (this.completionTimer) return;
+		this.completionTimer = this.schedule(
+			() => this.flushCompletions(),
+			COMPLETION_BATCH_WINDOW_MS,
+		);
+	}
+
+	private flushCompletions(): void {
+		this.completionTimer = null;
+		const now = this.now();
+		const ready = this.completionBatch.filter((event) => {
+			if (event.expiresAt <= now || !this.eventStillRelevant(event))
+				return false;
+			const visibleUntil = this.visibleUntil(event.sessionAliases, now);
+			return !visibleUntil || visibleUntil <= now;
+		});
+		this.completionBatch = [];
+		for (
+			let index = 0;
+			index < ready.length;
+			index += MAX_COMPLETION_BATCH_SIZE
+		) {
+			this.runDelivery(ready.slice(index, index + MAX_COMPLETION_BATCH_SIZE));
+		}
+	}
+
+	private runDelivery(
+		event: PushNotificationEvent | PushNotificationEvent[],
+	): void {
+		void Promise.resolve(this.deliver(event)).catch((error) => {
 			console.error(
 				"[push] notification delivery failed:",
 				error instanceof Error ? error.message : String(error),

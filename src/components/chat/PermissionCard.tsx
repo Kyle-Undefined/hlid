@@ -79,10 +79,13 @@ export function PermissionCard({
 		);
 	}
 	return (
-		<div
+		<section
+			data-notification-attention="permission"
+			tabIndex={-1}
+			aria-label={`Pending approval: ${actionName}`}
 			className={`flex min-w-0 max-w-full gap-0 overflow-hidden ${
 				embedded ? "mx-3 mb-2 w-[calc(100%_-_1.5rem)]" : "w-full"
-			}`}
+			} scroll-mt-4 outline-none transition-[box-shadow,background-color] focus:ring-2 focus:ring-primary/60 data-[notification-highlight=true]:bg-primary/5 data-[notification-highlight=true]:ring-2 data-[notification-highlight=true]:ring-primary/60`}
 		>
 			{!embedded && (
 				<div className="w-12 shrink-0 pt-0.5 text-[9px] tracking-widest text-primary/60 uppercase">
@@ -97,6 +100,6 @@ export function PermissionCard({
 				/>
 				<PermissionCardControls message={message} onDecide={onDecide} />
 			</div>
-		</div>
+		</section>
 	);
 }

@@ -1,14 +1,18 @@
 import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+	clearPushSessionNotifyOnce,
 	deletePushSubscription,
 	disableExpiredPushSubscriptions,
 	getPushSessionOverride,
 	getPushSubscription,
 	listDeliverablePushSubscriptions,
+	listPushSubscriptionDevices,
 	pushSubscriptionWantsNotification,
 	recordPushDeliveryFailure,
 	recordPushDeliverySuccess,
+	renamePushSubscriptionDevice,
+	revokePushSubscriptionDevice,
 	setPushSessionOverride,
 	updatePushSubscriptionPreferences,
 	upsertPushSubscription,
@@ -18,6 +22,16 @@ import { getDb, initializeSchema, setDbForTest } from "./schema";
 const endpoint = "https://fcm.googleapis.com/fcm/send/device-one";
 const AUTH_ONE = "auth-session-one";
 const AUTH_TWO = "auth-session-two";
+
+const detailedPreferences = {
+	requests: true,
+	problems: false,
+	work_finished: true,
+	privacy: "detailed" as const,
+	completion_min_runtime_minutes: 5 as const,
+	paused_until: null,
+	paused_indefinitely: false,
+};
 
 function subscription(suffix = "one", expirationTime: number | null = null) {
 	return {
@@ -33,30 +47,40 @@ describe("Web Push subscription storage", () => {
 		setDbForTest(db);
 		db.run(
 			`INSERT INTO auth_sessions
-			 (token_hash, created_at, expires_at, last_used_at)
-			 VALUES (?, 1, 9999999999, 1), (?, 1, 9999999999, 1)`,
+			 (token_hash, created_at, expires_at, last_used_at, device_label)
+			 VALUES (?, 1, 9999999999, 1, 'Phone'),
+			        (?, 1, 9999999999, 1, 'Desktop')`,
 			[AUTH_ONE, AUTH_TWO],
 		);
 	});
 
-	it("opts a device into quiet defaults and preserves choices on key refresh", async () => {
+	it("uses quiet v2 defaults and preserves choices, names, and health on refresh", async () => {
 		const created = await upsertPushSubscription(subscription(), AUTH_ONE);
 		expect(created).toMatchObject({
 			authSessionHash: AUTH_ONE,
 			endpoint,
+			name: "Phone",
 			preferences: {
-				needs_attention: true,
+				requests: true,
+				problems: true,
 				work_finished: false,
 				privacy: "generic",
+				completion_min_runtime_minutes: 0,
+				paused_until: null,
+				paused_indefinitely: false,
 			},
 			enabled: true,
 		});
 
 		await updatePushSubscriptionPreferences(endpoint, AUTH_ONE, {
-			needs_attention: false,
+			requests: false,
 			work_finished: true,
 			privacy: "detailed",
+			completion_min_runtime_minutes: 5,
+			paused_until: 5_000,
 		});
+		await renamePushSubscriptionDevice(created.id, "Kyle's phone", AUTH_ONE);
+		await recordPushDeliveryFailure(endpoint, false);
 		await upsertPushSubscription(
 			{
 				...subscription(),
@@ -66,67 +90,113 @@ describe("Web Push subscription storage", () => {
 		);
 
 		expect(await getPushSubscription(endpoint)).toMatchObject({
+			name: "Kyle's phone",
 			keys: { p256dh: "rotated-public", auth: "rotated-auth" },
+			failureCount: 1,
 			preferences: {
-				needs_attention: false,
+				requests: false,
+				problems: true,
 				work_finished: true,
 				privacy: "detailed",
+				completion_min_runtime_minutes: 5,
+				paused_until: 5_000,
+				paused_indefinitely: false,
 			},
 		});
+		const db = await getDb();
+		expect(
+			db
+				.query<{ needs_attention: number }, [string]>(
+					`SELECT needs_attention FROM push_subscriptions WHERE endpoint = ?`,
+				)
+				.get(endpoint)?.needs_attention,
+		).toBe(1);
 	});
 
-	it("updates preferences, disables expired devices, and removes revoked keys", async () => {
+	it("carries a bounded custom name onto an endpoint replacement", async () => {
+		const original = await upsertPushSubscription(subscription(), AUTH_ONE);
+		await renamePushSubscriptionDevice(original.id, "Kyle's phone", AUTH_ONE);
+		const replacement = await upsertPushSubscription(
+			subscription("replacement"),
+			AUTH_ONE,
+			undefined,
+			"Kyle's phone",
+		);
+		expect(replacement.name).toBe("Kyle's phone");
+		expect(replacement.name.length).toBeLessThanOrEqual(80);
+	});
+
+	it("records provider health and retains expired or gone devices disabled", async () => {
 		await upsertPushSubscription(subscription("one", Date.now() - 1), AUTH_ONE);
 		await upsertPushSubscription(
 			subscription("two", Date.now() + 60_000),
 			AUTH_ONE,
 		);
-		expect(await disableExpiredPushSubscriptions()).toBe(1);
+		// The upsert readback already evaluates effective expiration, so a later
+		// cleanup pass has nothing left to change.
+		expect(await disableExpiredPushSubscriptions()).toBe(0);
 		expect(await listDeliverablePushSubscriptions()).toHaveLength(1);
-
-		await recordPushDeliveryFailure(
-			"https://fcm.googleapis.com/fcm/send/device-two",
+		const devices = await listPushSubscriptionDevices(AUTH_ONE);
+		expect(devices).toHaveLength(2);
+		const expired = await getPushSubscription(endpoint);
+		expect(expired?.enabled).toBe(false);
+		expect(devices.find((device) => device.id === expired?.id)?.enabled).toBe(
 			false,
 		);
-		expect(
-			await getPushSubscription(
-				"https://fcm.googleapis.com/fcm/send/device-two",
-			),
-		).toMatchObject({ failureCount: 1, enabled: true });
-		await recordPushDeliverySuccess(
-			"https://fcm.googleapis.com/fcm/send/device-two",
-		);
-		expect(
-			await getPushSubscription(
-				"https://fcm.googleapis.com/fcm/send/device-two",
-			),
-		).toMatchObject({ failureCount: 0 });
 
-		await upsertPushSubscription(subscription("three"), AUTH_ONE);
-		await recordPushDeliveryFailure(
-			"https://fcm.googleapis.com/fcm/send/device-three",
-			true,
-		);
-		expect(
-			await getPushSubscription(
-				"https://fcm.googleapis.com/fcm/send/device-three",
-			),
-		).toBeNull();
+		const two = "https://fcm.googleapis.com/fcm/send/device-two";
+		await recordPushDeliveryFailure(two, false);
+		expect(await getPushSubscription(two)).toMatchObject({ failureCount: 1 });
+		await recordPushDeliverySuccess(two);
+		expect(await getPushSubscription(two)).toMatchObject({ failureCount: 0 });
 
-		expect(
-			await deletePushSubscription(
-				"https://fcm.googleapis.com/fcm/send/device-two",
-				AUTH_ONE,
-			),
-		).toBe(true);
-		expect(
-			await getPushSubscription(
-				"https://fcm.googleapis.com/fcm/send/device-two",
-			),
-		).toBeNull();
+		await recordPushDeliveryFailure(two, true);
+		expect(await getPushSubscription(two)).toMatchObject({
+			enabled: false,
+			name: "Phone",
+			failureCount: 1,
+		});
 	});
 
-	it("scopes device mutations and cascades the owning auth session", async () => {
+	it("lists, renames, and remotely revokes opaque devices without secret fields", async () => {
+		const phone = await upsertPushSubscription(
+			subscription(),
+			AUTH_ONE,
+			undefined,
+			"My phone",
+		);
+		const desktop = await upsertPushSubscription(subscription("two"), AUTH_TWO);
+		const devices = await listPushSubscriptionDevices(AUTH_ONE, endpoint);
+		expect(devices).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					id: phone.id,
+					name: "My phone",
+					current: true,
+				}),
+				expect.objectContaining({
+					id: desktop.id,
+					name: "Desktop",
+					current: false,
+				}),
+			]),
+		);
+		expect(JSON.stringify(devices)).not.toContain("fcm.googleapis.com");
+		expect(JSON.stringify(devices)).not.toContain("public-two");
+
+		expect(
+			await renamePushSubscriptionDevice(
+				phone.id,
+				"Renamed phone",
+				AUTH_TWO,
+				endpoint,
+			),
+		).toMatchObject({ name: "Renamed phone", current: true });
+		expect(await revokePushSubscriptionDevice(desktop.id, AUTH_ONE)).toBe(true);
+		expect(await getPushSubscription(subscription("two").endpoint)).toBeNull();
+	});
+
+	it("scopes endpoint mutations to their owner while allowing install management", async () => {
 		await upsertPushSubscription(subscription(), AUTH_ONE);
 		expect(await getPushSubscription(endpoint, AUTH_TWO)).toBeNull();
 		expect(
@@ -136,42 +206,21 @@ describe("Web Push subscription storage", () => {
 		).toBeNull();
 		expect(await deletePushSubscription(endpoint, AUTH_TWO)).toBe(false);
 
-		// Re-authenticating the same browser claims its stable endpoint for the new
-		// durable trusted-device session.
 		await upsertPushSubscription(subscription(), AUTH_TWO);
 		expect(await getPushSubscription(endpoint)).toMatchObject({
 			authSessionHash: AUTH_TWO,
 		});
 		const db = await getDb();
-		db.run(`DELETE FROM auth_sessions WHERE token_hash = ?`, [AUTH_ONE]);
-		expect(await getPushSubscription(endpoint)).not.toBeNull();
 		db.run(`DELETE FROM auth_sessions WHERE token_hash = ?`, [AUTH_TWO]);
 		expect(await getPushSubscription(endpoint)).toBeNull();
 	});
 
-	it("keeps nullable v1 subscriptions readable until a browser claims them", async () => {
-		const db = await getDb();
-		db.run(
-			`INSERT INTO push_subscriptions
-			 (id, endpoint, p256dh, auth)
-			 VALUES ('legacy-device', ?, 'public', 'auth')`,
-			[endpoint],
-		);
-		expect(await getPushSubscription(endpoint)).toMatchObject({
-			authSessionHash: null,
-			enabled: true,
-		});
-
-		await upsertPushSubscription(subscription(), AUTH_ONE);
-		expect(await getPushSubscription(endpoint)).toMatchObject({
-			authSessionHash: AUTH_ONE,
-		});
-	});
-
-	it("upgrades the v1 subscription table without dropping existing devices", async () => {
+	it("migrates legacy needs-attention choices into both v2 categories", async () => {
 		const db = await getDb();
 		db.run(`DROP INDEX idx_push_subscriptions_auth_session`);
+		db.run(`DROP INDEX idx_push_subscriptions_delivery`);
 		db.run(`DROP TABLE push_subscriptions`);
+		db.run(`DROP TABLE push_session_overrides`);
 		db.run(`
 			CREATE TABLE push_subscriptions (
 				id TEXT PRIMARY KEY,
@@ -187,32 +236,55 @@ describe("Web Push subscription storage", () => {
 				updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
 				last_success_at INTEGER,
 				last_failure_at INTEGER,
-				failure_count INTEGER NOT NULL DEFAULT 0
+				failure_count INTEGER NOT NULL DEFAULT 0,
+				auth_session_hash TEXT REFERENCES auth_sessions(token_hash)
 			)
 		`);
 		db.run(
-			`INSERT INTO push_subscriptions (id, endpoint, p256dh, auth)
-			 VALUES ('legacy-device', ?, 'public', 'auth')`,
-			[endpoint],
+			`CREATE INDEX idx_push_subscriptions_delivery
+			 ON push_subscriptions(enabled, expiration_time_ms)`,
 		);
 		db.run(
-			`DELETE FROM settings WHERE key = '_migrated_web_push_auth_session_v2'`,
+			`CREATE INDEX idx_push_subscriptions_auth_session
+			 ON push_subscriptions(auth_session_hash)`,
+		);
+		db.run(`
+			CREATE TABLE push_session_overrides (
+				session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+				mode TEXT NOT NULL CHECK(mode IN ('notify', 'mute')),
+				updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+			)
+		`);
+		db.run(
+			`INSERT INTO push_subscriptions
+			 (id, endpoint, p256dh, auth, needs_attention, auth_session_hash)
+			 VALUES ('legacy-device', ?, 'public', 'auth', 0, ?)`,
+			[endpoint, AUTH_ONE],
+		);
+		db.run(`UPDATE auth_sessions SET device_label = ? WHERE token_hash = ?`, [
+			`${"Phone".repeat(25)}\nspoofed`,
+			AUTH_ONE,
+		]);
+		db.run(
+			`DELETE FROM settings WHERE key = '_migrated_web_push_preferences_v3'`,
+		);
+		db.run(
+			`DELETE FROM settings WHERE key = '_migrated_web_push_manual_pause_v4'`,
 		);
 
 		initializeSchema(db);
-		expect(
-			db
-				.query<{ name: string }, []>(`PRAGMA table_info(push_subscriptions)`)
-				.all()
-				.map((column) => column.name),
-		).toContain("auth_session_hash");
 		expect(await getPushSubscription(endpoint)).toMatchObject({
 			id: "legacy-device",
-			authSessionHash: null,
+			name: "Phone".repeat(16),
+			preferences: {
+				requests: false,
+				problems: false,
+				paused_indefinitely: false,
+			},
 		});
 	});
 
-	it("never delivers or claims through an expired auth session", async () => {
+	it("never delivers or mutates through an expired auth session", async () => {
 		await upsertPushSubscription(subscription(), AUTH_ONE);
 		const db = await getDb();
 		const nowMs = Date.now();
@@ -220,56 +292,94 @@ describe("Web Push subscription storage", () => {
 			Math.floor(nowMs / 1_000) + 60,
 			AUTH_ONE,
 		]);
-		// Delivery evaluates the event's supplied clock, rather than waiting for a
-		// later login to prune the otherwise-still-present auth row.
 		expect(await listDeliverablePushSubscriptions(nowMs + 120_000)).toEqual([]);
-		expect(await getPushSubscription(endpoint, AUTH_ONE)).not.toBeNull();
 
 		db.run(`UPDATE auth_sessions SET expires_at = 1 WHERE token_hash = ?`, [
 			AUTH_ONE,
 		]);
-
-		expect(await listDeliverablePushSubscriptions()).toEqual([]);
-		expect(await getPushSubscription(endpoint, AUTH_ONE)).toBeNull();
-		await expect(
-			upsertPushSubscription(subscription("expired-owner"), AUTH_ONE),
-		).rejects.toThrow("Authenticated browser session expired");
+		await expect(listPushSubscriptionDevices(AUTH_ONE)).rejects.toThrow(
+			"expired",
+		);
 	});
 
-	it("stores installation-wide session overrides and cascades deleted sessions", async () => {
+	it("stores and conditionally clears a one-shot session override", async () => {
 		const db = await getDb();
 		db.run(`INSERT INTO sessions (id, started_at) VALUES ('session-1', 1)`);
 
 		expect(await getPushSessionOverride("session-1")).toBe("default");
-		expect(await setPushSessionOverride("missing", "notify")).toBeNull();
-		expect(await setPushSessionOverride("session-1", "notify")).toBe("notify");
-		expect(await getPushSessionOverride("session-1")).toBe("notify");
-		expect(await setPushSessionOverride("session-1", "default")).toBe(
-			"default",
+		expect(await setPushSessionOverride("session-1", "notify_once")).toBe(
+			"notify_once",
 		);
+		expect(await clearPushSessionNotifyOnce("session-1")).toBe(true);
 		expect(await getPushSessionOverride("session-1")).toBe("default");
 
-		await setPushSessionOverride("session-1", "mute");
-		db.run(`DELETE FROM sessions WHERE id = 'session-1'`);
-		expect(await getPushSessionOverride("session-1")).toBe("default");
+		await setPushSessionOverride("session-1", "notify");
+		expect(await clearPushSessionNotifyOnce("session-1")).toBe(false);
+		expect(await getPushSessionOverride("session-1")).toBe("notify");
 	});
 
-	it("gives meaningful Notify and Mute semantics over device categories", () => {
-		const device = {
-			preferences: {
-				needs_attention: false,
-				work_finished: false,
-				privacy: "generic" as const,
-			},
-		};
+	it("applies split categories, pause, thresholds, and override precedence", () => {
+		const device = { preferences: detailedPreferences };
 		expect(
-			pushSubscriptionWantsNotification(device, "needs_attention", "default"),
-		).toBe(false);
-		expect(
-			pushSubscriptionWantsNotification(device, "work_finished", "notify"),
+			pushSubscriptionWantsNotification(device, "needs_attention", "default", {
+				reason: "permission",
+				nowMs: 1_000,
+			}),
 		).toBe(true);
 		expect(
-			pushSubscriptionWantsNotification(device, "needs_attention", "mute"),
+			pushSubscriptionWantsNotification(device, "needs_attention", "default", {
+				reason: "error",
+				nowMs: 1_000,
+			}),
+		).toBe(false);
+		expect(
+			pushSubscriptionWantsNotification(device, "work_finished", "default", {
+				runtimeMs: 299_999,
+				nowMs: 1_000,
+			}),
+		).toBe(false);
+		expect(
+			pushSubscriptionWantsNotification(device, "work_finished", "default", {
+				runtimeMs: 300_000,
+				nowMs: 1_000,
+			}),
+		).toBe(true);
+
+		const paused = {
+			preferences: { ...detailedPreferences, paused_until: 10 },
+		};
+		expect(
+			pushSubscriptionWantsNotification(
+				paused,
+				"needs_attention",
+				"notify_once",
+				{ reason: "error", nowMs: 1_000 },
+			),
+		).toBe(false);
+		const manuallyPaused = {
+			preferences: { ...detailedPreferences, paused_indefinitely: true },
+		};
+		expect(
+			pushSubscriptionWantsNotification(
+				manuallyPaused,
+				"needs_attention",
+				"notify",
+				{ reason: "permission", nowMs: 1_000 },
+			),
+		).toBe(false);
+		expect(
+			pushSubscriptionWantsNotification(
+				device,
+				"needs_attention",
+				"notify_once",
+				{ reason: "error", nowMs: 1_000 },
+			),
+		).toBe(true);
+		expect(
+			pushSubscriptionWantsNotification(device, "needs_attention", "mute", {
+				reason: "permission",
+				nowMs: 1_000,
+			}),
 		).toBe(false);
 	});
 });

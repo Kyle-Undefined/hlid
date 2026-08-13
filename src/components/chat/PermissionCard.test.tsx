@@ -21,6 +21,25 @@ function permission(
 }
 
 describe("PermissionCard", () => {
+	it("marks only a pending approval as notification-actionable", () => {
+		const { container, rerender } = render(
+			<PermissionCard message={permission()} onDecide={vi.fn()} />,
+		);
+		expect(
+			container.querySelector('[data-notification-attention="permission"]'),
+		).not.toBeNull();
+		expect(screen.getByLabelText(/Pending approval/i)).toBeTruthy();
+		rerender(
+			<PermissionCard
+				message={permission({ decision: "approved" })}
+				onDecide={vi.fn()}
+			/>,
+		);
+		expect(
+			container.querySelector('[data-notification-attention="permission"]'),
+		).toBeNull();
+	});
+
 	it("renders completed approvals and denials", () => {
 		const { rerender } = render(
 			<PermissionCard

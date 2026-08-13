@@ -790,14 +790,36 @@ LAN access for a network you actually trust.
 
 Open **FORGE → Experience → Notifications** on each device that should receive
 alerts. Notifications are off until you choose **Enable on this device**. That
-click is the only time `Hlið` asks the browser for permission. **Needs attention**
-starts on for approvals, questions, plan review, blocked work, and failures.
-**Work finished** starts off and is sent only when a top-level `Raven` session
-becomes ready. A delegated child's completion is internal progress owned by its
-parent and does not notify separately. Generic Lock Screen wording hides session
-names; Detailed wording includes the session name and a plain-language reason.
-Sound, Focus, summaries, and Lock Screen visibility remain under the device's
-own notification settings.
+click is the only time `Hlið` asks the browser for permission. **Requests** starts
+on for approvals, questions, plan review, and routines that need action.
+**Problems** starts on for blocked work and failures owned by a top-level
+session. **Work finished** starts off and is sent only when a top-level `Raven`
+session becomes ready. A delegated child's completion and ordinary failure are
+internal progress owned by its parent and do not notify separately. Completion
+alerts can require at least 1, 5, or 10 minutes of continuous work, and
+completions that land together are combined into one alert. Requests and
+problems remain immediate.
+
+Generic Lock Screen wording hides session names and reasons. Detailed wording
+uses the reason as the title, the session name as the body, and includes a work
+duration when `Hlið` has an authoritative continuous runtime. A device can pause
+session alerts for a chosen number of minutes, hours, or days; until an exact
+local date and time; or until you manually resume them. Pausing does not discard
+the device's choices. An explicit preview still runs while paused. Pause also
+wins over a per-session override. Sound, Focus, summaries, and Lock Screen
+visibility remain under the device's own notification settings.
+
+The test control can preview basic delivery, approval, question, plan review,
+problem, single-completion, and completion-batch forms. Each preview uses the
+current device's **Generic** or **Detailed** wording and traverses the complete
+encrypted delivery path, but does not alter session state, consume a session
+override, or add a session badge item. Success means the browser push service
+accepted the alert; the operating system can still delay or hide it because of
+Focus or notification settings. The same screen lists subscribed devices, lets
+you give each one a recognizable name, shows its latest provider acceptance or
+failure, and can revoke a device without exposing its push endpoint or
+encryption keys. Revoking this device also removes its browser subscription. A
+revoked remote device must be explicitly enabled again from that device.
 
 On `iPhone` and `iPad`, add the `HTTPS` site to the Home Screen and open it as a
 web app before enabling notifications. A supported installed `PWA` can receive
@@ -808,15 +830,37 @@ exact `Raven` session, preserving that destination through sign-in if needed.
 Approvals are always resolved inside `Raven`, where `Hlið` rechecks the current
 prompt instead of treating a Lock Screen action as authorization.
 
+On Android, install `Hlið` as an app and enable notifications from the same
+browser installation. `Hlið` records standalone app clients and prefers one over
+an ordinary same-origin tab when an alert is tapped; its manifest also asks
+Chromium to navigate the existing app window. A closed app still depends on the
+browser's installed-app link preference. If that preference is disabled, or the
+Home Screen icon is only a bookmark rather than an installed PWA, Android may
+open a browser tab instead.
+
 The notification control in a durable `Raven` session offers **Default**,
-**Notify**, and **Mute**. Default follows each subscribed device's two category
-switches. Notify sends every alert that session is eligible to produce even when
-a device category is off. Mute suppresses its alerts everywhere. Repeated state
-updates are grouped by session, brief transitions settle before delivery, and
-the session already visible in a focused `Raven` window does not notify you
-again. Delegated children can still send **Needs attention** when action must
+**Notify once**, **Always notify**, and **Mute**. Default follows each subscribed
+device's category and completion-runtime choices. Notify once sends the next
+eligible alert, then returns to Default after at least one push service accepts
+it. Always notify bypasses category and runtime choices for that session. Mute
+suppresses its alerts everywhere. A device-wide pause still suppresses both
+notify modes.
+
+Repeated state updates are grouped by session, brief transitions settle before
+delivery, and the session already visible in a focused `Raven` window does not
+notify you again. Delegated children can still send a request when action must
 happen in that exact child; their ordinary completion is represented by the
-eventual top-level session alert.
+eventual top-level session alert. Every alert opens the exact session. With
+Detailed wording, tapping an approval, question, or plan-review alert also
+highlights the still-pending card. If the request settled before the tap,
+`Raven` discards the stale hint instead of focusing later unrelated work.
+Approvals are always resolved inside `Raven`.
+
+On browsers that support app badging, `Hlið` counts the Hlid session alerts the
+browser is still displaying. A completion batch counts as one item and a test
+alert does not affect the badge. The service worker recalculates the badge after
+delivery, dismissal, navigation, expiry, and exact-session cleanup so it never
+guesses from server state the browser may not have shown.
 
 ## Voice and attachments
 

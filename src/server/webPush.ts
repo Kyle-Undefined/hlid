@@ -17,6 +17,7 @@ import {
 	MAX_PUSH_NOTIFICATION_FUTURE_SKEW_MS,
 	MAX_PUSH_NOTIFICATION_LIFETIME_MS,
 	MAX_PUSH_NOTIFICATION_PAYLOAD_BYTES,
+	PUSH_NOTIFICATION_TEST_URL,
 	safePushNotificationUrl,
 	type WebPushNotificationPayload,
 	webPushNotificationPayloadSchema,
@@ -254,10 +255,13 @@ function cachedVapidAuthorization(
 }
 
 function pushTopic(payload: WebPushNotificationPayload): string {
-	return createHash("sha256")
-		.update(payload.sessionId)
-		.digest("base64url")
-		.slice(0, 32);
+	const topic =
+		payload.kind === "test"
+			? "hlid-test"
+			: payload.sessionIds
+				? `hlid-work-finished-batch:${payload.batchId}`
+				: payload.sessionId;
+	return createHash("sha256").update(topic).digest("base64url").slice(0, 32);
 }
 
 function pushServiceUrl(endpoint: string): URL {
@@ -367,7 +371,18 @@ function serializePayload(
 	) {
 		throw new Error("Web Push notification payload is stale or future-dated");
 	}
-	const navigate = safePushNotificationUrl(parsed.sessionId, parsed.url);
+	const navigate =
+		parsed.kind === "test"
+			? PUSH_NOTIFICATION_TEST_URL
+			: parsed.sessionIds
+				? "/raven"
+				: safePushNotificationUrl(parsed.sessionId, parsed.url);
+	const tag =
+		parsed.kind === "test"
+			? "hlid-test"
+			: parsed.sessionIds
+				? `hlid-work-finished-batch:${parsed.batchId}`
+				: `hlid-session:${parsed.sessionId}`;
 	const serialized = Buffer.from(
 		JSON.stringify({
 			web_push: 8030,
@@ -376,12 +391,25 @@ function serializePayload(
 				body: parsed.body,
 				mutable: true,
 				navigate,
-				tag: `hlid-session:${parsed.sessionId}`,
+				tag,
 				timestamp: parsed.createdAt,
 				data: {
 					version: parsed.version,
 					kind: parsed.kind,
-					sessionId: parsed.sessionId,
+					...(parsed.kind === "test"
+						? {}
+						: {
+								sessionId: parsed.sessionId,
+								...(parsed.sessionIds ? { sessionIds: parsed.sessionIds } : {}),
+								...(parsed.batchId ? { batchId: parsed.batchId } : {}),
+								...(parsed.reason ? { reason: parsed.reason } : {}),
+								...(parsed.sessionLabel
+									? { sessionLabel: parsed.sessionLabel }
+									: {}),
+								...(parsed.durationMs !== undefined
+									? { durationMs: parsed.durationMs }
+									: {}),
+							}),
 					url: navigate,
 					createdAt: parsed.createdAt,
 					expiresAt: parsed.expiresAt,

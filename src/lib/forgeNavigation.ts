@@ -1370,10 +1370,16 @@ const SETTING_DESTINATIONS: readonly SettingDefinition[] = [
 			["blocked", "allowed", "browser"],
 		],
 		[
-			"notifications-needs-attention",
-			"Needs attention",
-			"Alert for approvals, questions, review, errors, and blocked work.",
-			["approval", "question", "plan", "failed"],
+			"notifications-requests",
+			"Requests",
+			"Alert for approvals, questions, plan reviews, and routines needing action.",
+			["approval", "question", "plan", "routine", "decision"],
+		],
+		[
+			"notifications-problems",
+			"Problems",
+			"Alert for blocked goals, errors, and failed background work.",
+			["blocked", "error", "failed", "background"],
 		],
 		[
 			"notifications-work-finished",
@@ -1382,10 +1388,34 @@ const SETTING_DESTINATIONS: readonly SettingDefinition[] = [
 			["done", "complete", "completion"],
 		],
 		[
+			"notifications-completion-runtime",
+			"Completion minimum runtime",
+			"Skip completion alerts for quick work.",
+			["threshold", "duration", "minute", "spam"],
+		],
+		[
 			"notifications-lock-screen",
 			"Lock Screen wording",
 			"Choose generic or detailed notification text.",
 			["privacy", "session name", "reason"],
+		],
+		[
+			"notifications-pause",
+			"Pause this device",
+			"Temporarily silence session alerts without revoking this device.",
+			["resume", "one hour", "8 am", "silence"],
+		],
+		[
+			"notifications-test",
+			"Test this device",
+			"Send a real notification and inspect push-service acceptance.",
+			["delivery", "health", "repair", "send test"],
+		],
+		[
+			"notifications-devices",
+			"Subscribed devices",
+			"Rename or revoke browsers and installed PWAs.",
+			["phone", "desktop", "rename", "revoke"],
 		],
 	]),
 	...staticSettings("experience", "read-aloud", [

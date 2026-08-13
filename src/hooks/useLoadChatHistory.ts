@@ -52,8 +52,17 @@ export function useLoadChatHistory({
 	const reconnectRequestRef = useRef<Promise<void> | null>(null);
 	const toolPageRequestsRef = useRef(new Map<string, Promise<number>>());
 	const loadGenerationRef = useRef(0);
+	const interactionMetadataGenerationRef = useRef(0);
 	const [hasOlderHistory, setHasOlderHistory] = useState(false);
 	const [isLoadingOlderHistory, setIsLoadingOlderHistory] = useState(false);
+	const [historyReady, setHistoryReady] = useState(!existingSessionId);
+	const [
+		interactionMetadataReadySessionId,
+		setInteractionMetadataReadySessionId,
+	] = useState<string | null>(null);
+	const interactionMetadataReady =
+		!existingSessionId ||
+		interactionMetadataReadySessionId === existingSessionId;
 
 	const applyPageState = useCallback(
 		(page: {
@@ -74,6 +83,7 @@ export function useLoadChatHistory({
 	// biome-ignore lint/correctness/useExhaustiveDependencies: dispatch/pendingIdRef/historyReadyRef are stable — refs and useReducer dispatch never change
 	useEffect(() => {
 		const generation = ++loadGenerationRef.current;
+		const metadataGeneration = ++interactionMetadataGenerationRef.current;
 		oldestSeqRef.current = null;
 		oldestIdRef.current = null;
 		hasOlderRef.current = false;
@@ -81,6 +91,9 @@ export function useLoadChatHistory({
 		toolPageRequestsRef.current.clear();
 		setHasOlderHistory(false);
 		setIsLoadingOlderHistory(false);
+		historyReadyRef.current = !existingSessionId;
+		setHistoryReady(!existingSessionId);
+		setInteractionMetadataReadySessionId(null);
 		// Enable buffering so events arriving before history loads are captured
 		// and can be replayed via drainMessageBuffer() after LOAD_HISTORY.
 		wsStore.setBufferingEnabled(true);
@@ -89,6 +102,7 @@ export function useLoadChatHistory({
 			const p = claimPendingPrompt();
 			if (p) dispatch({ type: "ADD_USER", id: uid(), text: p });
 			historyReadyRef.current = true;
+			setHistoryReady(true);
 			wsStore.setBufferingEnabled(false);
 			wsStore.send({ type: "sync" });
 			return () => {
@@ -116,6 +130,14 @@ export function useLoadChatHistory({
 			historyReadyRef,
 			handleWsMessage,
 			isCancelled: () => cancelled,
+			onInteractionMetadataReady: () => {
+				if (
+					cancelled ||
+					interactionMetadataGenerationRef.current !== metadataGeneration
+				)
+					return;
+				setInteractionMetadataReadySessionId(existingSessionId);
+			},
 		})
 			.then((result) => {
 				if (cancelled || !result) return;
@@ -132,13 +154,17 @@ export function useLoadChatHistory({
 				// reply can otherwise be gated out by useChatWsHandler, which loses the
 				// queued-turn promotion until a manual refresh.
 				historyReadyRef.current = true;
+				setHistoryReady(true);
 				wsStore.setBufferingEnabled(false);
 				// Sync with server to claim session ownership if not yet set
 				wsStore.send({ type: "sync" });
 			})
 			.catch(console.error)
 			.finally(() => {
-				if (!cancelled) historyReadyRef.current = true;
+				if (!cancelled) {
+					historyReadyRef.current = true;
+					setHistoryReady(true);
+				}
 			});
 
 		return () => {
@@ -185,6 +211,8 @@ export function useLoadChatHistory({
 			const olderRequest = olderRequestRef.current;
 			if (olderRequest) await olderRequest.catch(() => 0);
 			if (cancelled || sessionIdRef.current !== sid) return;
+			const metadataGeneration = ++interactionMetadataGenerationRef.current;
+			setInteractionMetadataReadySessionId(null);
 
 			pendingIdRef.current = null; // Discard any stale in-progress bubble
 			wsStore.setBufferingEnabled(true); // Capture live events during re-fetch
@@ -196,6 +224,15 @@ export function useLoadChatHistory({
 					historyReadyRef,
 					handleWsMessage,
 					isCancelled: () => cancelled,
+					onInteractionMetadataReady: () => {
+						if (
+							cancelled ||
+							sessionIdRef.current !== sid ||
+							interactionMetadataGenerationRef.current !== metadataGeneration
+						)
+							return;
+						setInteractionMetadataReadySessionId(sid);
+					},
 					pageSize: SESSION_HISTORY_PAGE_SIZE,
 					...(oldestSeqRef.current !== null && oldestIdRef.current !== null
 						? {
@@ -343,6 +380,8 @@ export function useLoadChatHistory({
 	);
 
 	return {
+		historyReady,
+		interactionMetadataReady,
 		hasOlderHistory,
 		isLoadingOlderHistory,
 		loadOlderHistory,

@@ -30,6 +30,25 @@ function makeMsg(
 }
 
 describe("AskUserQuestionCard — notes (user feedback)", () => {
+	it("marks only an unanswered question as notification-actionable", () => {
+		const { container, rerender } = render(
+			<AskUserQuestionCard message={makeMsg()} onSubmit={vi.fn()} />,
+		);
+		expect(
+			container.querySelector('[data-notification-attention="question"]'),
+		).not.toBeNull();
+		expect(screen.getByLabelText("Pending question")).toBeTruthy();
+		rerender(
+			<AskUserQuestionCard
+				message={makeMsg({ answers: { "Which library?": ["React"] } })}
+				onSubmit={vi.fn()}
+			/>,
+		);
+		expect(
+			container.querySelector('[data-notification-attention="question"]'),
+		).toBeNull();
+	});
+
 	it("does not render the notes textarea by default", () => {
 		const onSubmit = vi.fn();
 		render(<AskUserQuestionCard message={makeMsg()} onSubmit={onSubmit} />);

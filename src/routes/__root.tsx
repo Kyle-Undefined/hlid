@@ -22,8 +22,13 @@ import {
 	getDataRevisionSnapshot,
 	subscribeDataRevisionSnapshot,
 } from "#/hooks/wsDataRevisionStore";
+import { loginLocationForReturnTo } from "#/lib/authReturnTo";
 import { resolveNavigationLabels } from "#/lib/navigationNames";
-import { syncPushSubscription } from "#/lib/pushNotifications";
+import {
+	reconcilePushNotificationBadge,
+	reportPushClientPresentation,
+	syncPushSubscription,
+} from "#/lib/pushNotifications";
 import { shouldRevalidateRouteData } from "#/lib/routeDataRevalidation";
 import { isRavenPath } from "#/lib/scrollContainers";
 import { getConfig } from "#/lib/serverFns/config";
@@ -88,6 +93,7 @@ function RegisterSW() {
 			if (!isUpdate || reloaded) return;
 			const controller = navigator.serviceWorker.controller;
 			if (!controller) return;
+			reportPushClientPresentation();
 			const workerBuild = await serviceWorkerBuild(controller);
 			if (!shouldReloadForServiceWorkerBuild(__HLID_BUILD__, workerBuild))
 				return;
@@ -102,32 +108,57 @@ function RegisterSW() {
 		);
 
 		const registration = navigator.serviceWorker.register("/sw.js");
+		void registration
+			.then((registered) => reportPushClientPresentation(registered))
+			.catch(() => {});
+		let foregroundWork: Promise<void> | null = null;
+		let lastForegroundStartedAt = 0;
+		const reconcileForeground = (checkForUpdate: boolean) => {
+			const now = Date.now();
+			if (
+				foregroundWork ||
+				(checkForUpdate && now - lastForegroundStartedAt < 1_000)
+			)
+				return;
+			lastForegroundStartedAt = now;
+			foregroundWork = registration
+				.then(async (reg) => {
+					if (checkForUpdate) await reg.update().catch(() => {});
+					reportPushClientPresentation(reg);
+					await Promise.allSettled([
+						syncPushSubscription(),
+						reconcilePushNotificationBadge(),
+					]);
+				})
+				.catch(() => {})
+				.finally(() => {
+					foregroundWork = null;
+				});
+		};
 		// Project Preview intentionally rejects service-worker registration so
 		// one preview cannot install a root-scoped worker on the shared isolated
 		// origin. Treat that (and other unsupported-browser failures) as a
 		// non-fatal enhancement failure instead of an unhandled client error.
-		void registration.then(() => syncPushSubscription()).catch(() => {});
+		reconcileForeground(false);
 		// Installed PWAs can sit resumed for days without a navigation, which is
 		// what normally triggers the browser's sw.js update check. Re-check
 		// whenever the app comes back to the foreground.
 		const onVisible = () => {
 			if (document.visibilityState !== "visible") return;
-			void registration
-				.then(async (reg) => {
-					// Updating and push reconciliation are independent enhancements. An
-					// update-check failure must not prevent an opted-in endpoint rotation.
-					await reg.update().catch(() => {});
-					await syncPushSubscription();
-				})
-				.catch(() => {});
+			// Updating and push reconciliation are independent enhancements. The
+			// single-flight also collapses the visibility + focus pair emitted when a
+			// backgrounded PWA resumes into one status read.
+			reconcileForeground(true);
 		};
 		document.addEventListener("visibilitychange", onVisible);
+		window.addEventListener("focus", onVisible);
 		return () => {
 			navigator.serviceWorker.removeEventListener(
 				"controllerchange",
 				onControllerChange,
 			);
 			document.removeEventListener("visibilitychange", onVisible);
+			window.removeEventListener("focus", onVisible);
 		};
 	}, []);
 	return null;
@@ -163,15 +194,27 @@ function SyncServerData({ pathname }: { pathname: string }) {
 function AuthSessionGuard() {
 	useEffect(() => {
 		let active = true;
+		let checkWork: Promise<void> | null = null;
+		let lastCheckStartedAt = 0;
 		const check = () => {
-			fetch("/api/auth/status", { cache: "no-store" })
+			const now = Date.now();
+			if (checkWork || now - lastCheckStartedAt < 1_000) return;
+			lastCheckStartedAt = now;
+			checkWork = fetch("/api/auth/status", { cache: "no-store" })
 				.then((response) => (response.ok ? response.json() : null))
 				.then((status: { state?: string } | null) => {
 					if (active && status && status.state !== "authenticated") {
-						window.location.replace("/login");
+						window.location.replace(
+							loginLocationForReturnTo(
+								`${window.location.pathname}${window.location.search}`,
+							),
+						);
 					}
 				})
-				.catch(() => {});
+				.catch(() => {})
+				.finally(() => {
+					checkWork = null;
+				});
 		};
 		check();
 		const onVisible = () => {

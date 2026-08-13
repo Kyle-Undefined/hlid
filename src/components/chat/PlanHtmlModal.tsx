@@ -26,10 +26,12 @@ type ReadOnlyProps = {
 export function PlanHtmlModal({
 	relicId,
 	onClose,
+	notificationAttentionId,
 	...decision
 }: {
 	relicId: string;
 	onClose: () => void;
+	notificationAttentionId?: string;
 } & (DecisionProps | ReadOnlyProps)) {
 	const { dialogRef, onDialogKeyDown } =
 		useDialogFocus<HTMLDivElement>(onClose);
@@ -90,7 +92,13 @@ export function PlanHtmlModal({
 				role="dialog"
 				aria-modal="true"
 				aria-label="Plan document"
-				className="relative flex flex-col w-[92vw] max-w-5xl max-h-[90vh] bg-card border border-border shadow-2xl focus:outline-none"
+				{...(notificationAttentionId
+					? {
+							"data-notification-attention-dialog": "plan_review",
+							"data-notification-attention-id": notificationAttentionId,
+						}
+					: {})}
+				className="relative flex flex-col w-[92vw] max-w-5xl max-h-[90vh] bg-card border border-border shadow-2xl focus:outline-none data-[notification-highlight=true]:ring-2 data-[notification-highlight=true]:ring-primary/60"
 				onClick={(e) => e.stopPropagation()}
 				onKeyDown={onDialogKeyDown}
 			>

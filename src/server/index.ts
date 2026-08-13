@@ -122,7 +122,7 @@ import {
 } from "./providerCatalog";
 import { seedWindowMarks, startProviderProxy } from "./proxy";
 import { bootstrapPtyRuntime } from "./pty-bootstrap";
-import { deliverPushEvent } from "./pushDelivery";
+import { deliverPushEvents } from "./pushDelivery";
 import { PushNotificationCoordinator } from "./pushNotificationCoordinator";
 import { handlePushRoute } from "./pushRoutes";
 import { createReadAloudRouteHandler } from "./readAloudRoutes";
@@ -588,16 +588,22 @@ const broadcastLiveSessions = () => {
 	});
 };
 const pushNotificationCoordinator = new PushNotificationCoordinator({
-	deliver: async (event) => {
-		await deliverPushEvent({
-			kind: event.kind,
-			sessionId: event.sessionId,
-			label: event.label,
-			reason: event.reason,
-			url: event.url,
-			createdAt: event.occurredAt,
-			expiresAt: event.expiresAt,
-		});
+	deliver: async (eventOrEvents) => {
+		const events = Array.isArray(eventOrEvents)
+			? eventOrEvents
+			: [eventOrEvents];
+		await deliverPushEvents(
+			events.map((event) => ({
+				kind: event.kind,
+				sessionId: event.sessionId,
+				label: event.label,
+				reason: event.reason,
+				url: event.url,
+				runtimeMs: event.runtimeMs,
+				createdAt: event.occurredAt,
+				expiresAt: event.expiresAt,
+			})),
+		);
 	},
 });
 // Establish the current process state as a quiet baseline before observing

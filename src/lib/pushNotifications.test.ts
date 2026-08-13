@@ -2,12 +2,16 @@ import { Buffer } from "node:buffer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const serverFns = vi.hoisted(() => ({
+	deletePushDeviceFn: vi.fn(),
 	getPushConfigFn: vi.fn(),
 	getPushStatusFn: vi.fn(),
 	getSessionNotificationOverrideFn: vi.fn(),
+	listPushDevicesFn: vi.fn(),
+	sendTestPushNotificationFn: vi.fn(),
 	setSessionNotificationOverrideFn: vi.fn(),
 	subscribeToPushFn: vi.fn(),
 	unsubscribeFromPushFn: vi.fn(),
+	updatePushDeviceFn: vi.fn(),
 	updatePushPreferencesFn: vi.fn(),
 }));
 
@@ -17,9 +21,16 @@ import {
 	closePushNotificationsForSession,
 	disablePushNotifications,
 	enablePushNotifications,
+	getPushNotificationDevices,
 	getPushNotificationState,
 	getPushNotificationSupport,
 	getSessionNotificationOverride,
+	pausePushNotifications,
+	reconcilePushNotificationBadge,
+	renamePushNotificationDevice,
+	reportPushClientPresentation,
+	revokePushNotificationDevice,
+	sendTestPushNotification,
 	setSessionNotificationOverride,
 	syncPushSubscription,
 	updatePushNotificationPreferences,
@@ -51,10 +62,13 @@ function keyBuffer(seed: number): ArrayBuffer {
 	return Uint8Array.from({ length: 16 }, (_, index) => seed + index).buffer;
 }
 
-function fakeSubscription(applicationServerKey = PUBLIC_KEY_BYTES.buffer) {
+function fakeSubscription(
+	applicationServerKey = PUBLIC_KEY_BYTES.buffer,
+	endpoint = "https://push.test/subscription-1",
+) {
 	const unsubscribe = vi.fn().mockResolvedValue(true);
 	const subscription = {
-		endpoint: "https://push.test/subscription-1",
+		endpoint,
 		expirationTime: null,
 		options: { applicationServerKey, userVisibleOnly: true },
 		getKey: vi.fn((name: PushEncryptionKeyName) =>
@@ -127,11 +141,34 @@ function subscriptionResponse(
 	return {
 		ok: true,
 		preferences: {
-			needs_attention: true,
+			requests: true,
+			problems: true,
 			work_finished: false,
 			privacy: "generic",
+			completion_min_runtime_minutes: 0,
+			paused_until: null,
+			paused_indefinitely: false,
 			...overrides,
 		},
+	};
+}
+
+const DEVICE_ID = "11111111-1111-4111-8111-111111111111";
+
+function wireDevice(overrides: Record<string, unknown> = {}) {
+	return {
+		id: DEVICE_ID,
+		name: "Phone",
+		current: true,
+		enabled: true,
+		paused_until: null,
+		paused_indefinitely: false,
+		created_at: 1_700_000_000,
+		updated_at: 1_700_000_100,
+		last_success_at: 1_700_000_050,
+		last_failure_at: null,
+		failure_count: 0,
+		...overrides,
 	};
 }
 
@@ -139,11 +176,17 @@ beforeEach(() => {
 	for (const mock of Object.values(serverFns)) mock.mockReset();
 	serverFns.getPushConfigFn.mockResolvedValue(configResponse());
 	serverFns.getPushStatusFn.mockResolvedValue({
+		available: true,
 		subscribed: true,
+		device_name: "Hlid device",
 		preferences: {
-			needs_attention: true,
+			requests: true,
+			problems: true,
 			work_finished: false,
 			privacy: "generic",
+			completion_min_runtime_minutes: 0,
+			paused_until: null,
+			paused_indefinitely: false,
 		},
 	});
 	serverFns.subscribeToPushFn.mockResolvedValue(subscriptionResponse());
@@ -151,6 +194,7 @@ beforeEach(() => {
 		ok: true,
 		removed: true,
 	});
+	serverFns.listPushDevicesFn.mockResolvedValue({ devices: [] });
 });
 
 afterEach(() => {
@@ -159,6 +203,20 @@ afterEach(() => {
 });
 
 describe("push notification client", () => {
+	it("reports the installed standalone presentation to the worker", () => {
+		const { registration } = installBrowser();
+		vi.stubGlobal("window", {
+			matchMedia: vi.fn(() => ({ matches: true })),
+		});
+
+		reportPushClientPresentation(registration);
+
+		expect(registration.active?.postMessage).toHaveBeenCalledWith({
+			type: "hlid:client-presentation",
+			standalone: true,
+		});
+	});
+
 	it("detects missing browser capabilities without touching permission", () => {
 		vi.stubGlobal("isSecureContext", true);
 		vi.stubGlobal("navigator", {});
@@ -214,10 +272,15 @@ describe("push notification client", () => {
 					keys: { p256dh: expect.any(String), auth: expect.any(String) },
 				},
 				preferences: {
-					needs_attention: true,
+					requests: true,
+					problems: true,
 					work_finished: false,
 					privacy: "generic",
+					completion_min_runtime_minutes: 0,
+					paused_until: null,
+					paused_indefinitely: false,
 				},
+				device_name: "Hlid device",
 			},
 		});
 		expect(state).toMatchObject({
@@ -239,7 +302,7 @@ describe("push notification client", () => {
 		expect(serverFns.subscribeToPushFn).not.toHaveBeenCalled();
 	});
 
-	it("syncs an opted-in existing subscription without requesting permission", async () => {
+	it("syncs without overwriting a renamed device or active pause", async () => {
 		const existing = fakeSubscription();
 		const browser = installBrowser({
 			permission: "granted",
@@ -248,7 +311,10 @@ describe("push notification client", () => {
 		browser.local.setItem(ENABLED_KEY, "true");
 		serverFns.getPushConfigFn.mockResolvedValue(configResponse());
 		serverFns.subscribeToPushFn.mockResolvedValue(
-			subscriptionResponse({ work_finished: true }),
+			subscriptionResponse({
+				work_finished: true,
+				paused_until: 2_000_000_000,
+			}),
 		);
 
 		const state = await syncPushSubscription();
@@ -256,7 +322,15 @@ describe("push notification client", () => {
 		expect(browser.notification.requestPermission).not.toHaveBeenCalled();
 		expect(browser.subscribe).not.toHaveBeenCalled();
 		expect(serverFns.subscribeToPushFn).toHaveBeenCalledOnce();
+		expect(serverFns.subscribeToPushFn).toHaveBeenCalledWith({
+			data: {
+				subscription: expect.objectContaining({
+					endpoint: "https://push.test/subscription-1",
+				}),
+			},
+		});
 		expect(state.preferences.workFinished).toBe(true);
+		expect(state.pausedUntil).toBe(2_000_000_000_000);
 	});
 
 	it("never creates a missing subscription during silent sync", async () => {
@@ -273,6 +347,28 @@ describe("push notification client", () => {
 		expect(serverFns.subscribeToPushFn).not.toHaveBeenCalled();
 	});
 
+	it("migrates the prior local attention choice into both new categories", async () => {
+		const browser = installBrowser({ permission: "default" });
+		browser.local.setItem(
+			PREFERENCES_KEY,
+			JSON.stringify({
+				needsAttention: false,
+				workFinished: true,
+				detail: "detailed",
+			}),
+		);
+
+		await expect(syncPushSubscription()).resolves.toMatchObject({
+			preferences: {
+				requests: false,
+				problems: false,
+				workFinished: true,
+				detail: "detailed",
+				completionMinimumMinutes: 0,
+			},
+		});
+	});
+
 	it("leaves a server-disabled endpoint for an explicit re-enable tap", async () => {
 		const existing = fakeSubscription();
 		const browser = installBrowser({
@@ -281,7 +377,9 @@ describe("push notification client", () => {
 		});
 		browser.local.setItem(ENABLED_KEY, "true");
 		serverFns.getPushStatusFn.mockResolvedValue({
+			available: true,
 			subscribed: false,
+			device_name: null,
 			preferences: null,
 		});
 
@@ -318,16 +416,21 @@ describe("push notification client", () => {
 		expect(browser.subscribe).not.toHaveBeenCalled();
 	});
 
-	it("replaces a server-disabled endpoint from the next explicit tap", async () => {
+	it("repairs a server-disabled endpoint across two explicit taps", async () => {
 		const existing = fakeSubscription();
-		const replacement = fakeSubscription();
+		const replacement = fakeSubscription(
+			PUBLIC_KEY_BYTES.buffer,
+			"https://push.test/subscription-2",
+		);
 		const browser = installBrowser({
 			permission: "granted",
 			existingSubscription: existing.subscription,
 		});
 		browser.subscribe.mockResolvedValue(replacement.subscription);
 		serverFns.getPushStatusFn.mockResolvedValue({
+			available: true,
 			subscribed: false,
+			device_name: null,
 			preferences: null,
 		});
 
@@ -335,6 +438,12 @@ describe("push notification client", () => {
 			enabled: false,
 			reenableRequired: true,
 		});
+		await expect(enablePushNotifications()).rejects.toMatchObject({
+			code: "repair-ready",
+			message: "Old subscription removed. Tap Repair again to finish.",
+		});
+		expect(browser.subscribe).not.toHaveBeenCalled();
+		browser.getSubscription.mockResolvedValue(null);
 		await expect(enablePushNotifications()).resolves.toMatchObject({
 			enabled: true,
 		});
@@ -347,6 +456,98 @@ describe("push notification client", () => {
 		expect(serverFns.subscribeToPushFn).toHaveBeenCalledOnce();
 	});
 
+	it("preserves a retained device name and pause when repairing its row", async () => {
+		const existing = fakeSubscription();
+		const replacement = fakeSubscription(
+			PUBLIC_KEY_BYTES.buffer,
+			"https://push.test/subscription-2",
+		);
+		const browser = installBrowser({
+			permission: "granted",
+			existingSubscription: existing.subscription,
+		});
+		browser.subscribe.mockResolvedValue(replacement.subscription);
+		serverFns.getPushStatusFn.mockResolvedValue({
+			available: true,
+			subscribed: false,
+			device_name: "Kitchen iPad",
+			preferences: subscriptionResponse({
+				paused_until: 2_000_000_000,
+			}).preferences,
+		});
+
+		await getPushNotificationState();
+		await expect(enablePushNotifications()).rejects.toMatchObject({
+			code: "repair-ready",
+		});
+		browser.getSubscription.mockResolvedValue(null);
+		await enablePushNotifications();
+
+		const data = serverFns.subscribeToPushFn.mock.calls[0]?.[0]?.data;
+		expect(data).toMatchObject({
+			device_name: "Kitchen iPad",
+			preferences: { paused_until: 2_000_000_000 },
+		});
+	});
+
+	it("keeps repair metadata across reload and retries old endpoint cleanup", async () => {
+		const existing = fakeSubscription();
+		const replacement = fakeSubscription(
+			PUBLIC_KEY_BYTES.buffer,
+			"https://push.test/subscription-2",
+		);
+		const browser = installBrowser({
+			permission: "granted",
+			existingSubscription: existing.subscription,
+		});
+		browser.subscribe.mockResolvedValue(replacement.subscription);
+		serverFns.getPushStatusFn.mockResolvedValue({
+			available: true,
+			subscribed: false,
+			device_name: "Travel phone",
+			preferences: subscriptionResponse({
+				work_finished: true,
+				paused_until: 2_000_000_000,
+			}).preferences,
+		});
+		serverFns.unsubscribeFromPushFn
+			.mockRejectedValueOnce(new Error("temporary database error"))
+			.mockResolvedValue({ ok: true, removed: true });
+		serverFns.subscribeToPushFn.mockResolvedValue(
+			subscriptionResponse({
+				work_finished: true,
+				paused_until: 2_000_000_000,
+			}),
+		);
+
+		await getPushNotificationState();
+		await expect(enablePushNotifications()).rejects.toMatchObject({
+			code: "repair-ready",
+		});
+		browser.getSubscription.mockResolvedValue(null);
+		vi.resetModules();
+		const fresh = await import("./pushNotifications");
+		await fresh.getPushNotificationState();
+		await expect(fresh.enablePushNotifications()).resolves.toMatchObject({
+			enabled: true,
+			pausedUntil: 2_000_000_000_000,
+		});
+
+		expect(serverFns.subscribeToPushFn).toHaveBeenCalledWith({
+			data: expect.objectContaining({
+				device_name: "Travel phone",
+				preferences: expect.objectContaining({
+					work_finished: true,
+					paused_until: 2_000_000_000,
+				}),
+			}),
+		});
+		expect(serverFns.unsubscribeFromPushFn).toHaveBeenCalledTimes(2);
+		expect(serverFns.unsubscribeFromPushFn).toHaveBeenLastCalledWith({
+			data: { endpoint: "https://push.test/subscription-1" },
+		});
+	});
+
 	it("unsubscribes locally while retaining the user's category choices", async () => {
 		const existing = fakeSubscription();
 		const browser = installBrowser({
@@ -357,9 +558,11 @@ describe("push notification client", () => {
 		browser.local.setItem(
 			PREFERENCES_KEY,
 			JSON.stringify({
-				needsAttention: false,
+				requests: false,
+				problems: true,
 				workFinished: true,
 				detail: "detailed",
+				completionMinimumMinutes: 5,
 			}),
 		);
 		serverFns.unsubscribeFromPushFn.mockResolvedValue({
@@ -378,9 +581,11 @@ describe("push notification client", () => {
 		expect(state).toMatchObject({
 			enabled: false,
 			preferences: {
-				needsAttention: false,
+				requests: false,
+				problems: true,
 				workFinished: true,
 				detail: "detailed",
+				completionMinimumMinutes: 5,
 			},
 		});
 	});
@@ -431,47 +636,84 @@ describe("push notification client", () => {
 		browser.local.setItem(ENABLED_KEY, "true");
 		serverFns.getPushConfigFn.mockResolvedValue(configResponse());
 		serverFns.getPushStatusFn.mockResolvedValue({
+			available: true,
 			subscribed: true,
+			device_name: "Phone",
 			preferences: {
-				needs_attention: false,
+				requests: false,
+				problems: true,
 				work_finished: true,
 				privacy: "detailed",
+				completion_min_runtime_minutes: 5,
+				paused_until: 2_000_000_000,
+				paused_indefinitely: false,
 			},
 		});
 		serverFns.updatePushPreferencesFn.mockResolvedValue(
 			subscriptionResponse({
-				needs_attention: true,
+				requests: true,
+				problems: false,
 				work_finished: true,
 				privacy: "generic",
+				completion_min_runtime_minutes: 10,
+				paused_until: 2_000_000_000,
 			}),
 		);
 
 		const initial = await getPushNotificationState();
 		const updated = await updatePushNotificationPreferences({
-			needsAttention: true,
+			requests: true,
+			problems: false,
 			workFinished: true,
 			detail: "generic",
+			completionMinimumMinutes: 10,
 		});
 
 		expect(initial.preferences).toEqual({
-			needsAttention: false,
+			requests: false,
+			problems: true,
 			workFinished: true,
 			detail: "detailed",
+			completionMinimumMinutes: 5,
 		});
+		expect(initial.pausedUntil).toBe(2_000_000_000_000);
 		expect(serverFns.updatePushPreferencesFn).toHaveBeenCalledWith({
 			data: {
 				endpoint: "https://push.test/subscription-1",
 				preferences: {
-					needs_attention: true,
+					requests: true,
+					problems: false,
 					work_finished: true,
 					privacy: "generic",
+					completion_min_runtime_minutes: 10,
 				},
 			},
 		});
 		expect(updated.preferences).toEqual({
-			needsAttention: true,
+			requests: true,
+			problems: false,
 			workFinished: true,
 			detail: "generic",
+			completionMinimumMinutes: 10,
+		});
+		expect(updated.pausedUntil).toBe(2_000_000_000_000);
+	});
+
+	it("rejects an incoherent subscription status response", async () => {
+		const existing = fakeSubscription();
+		installBrowser({
+			permission: "granted",
+			existingSubscription: existing.subscription,
+		});
+		serverFns.getPushStatusFn.mockResolvedValue({
+			available: true,
+			subscribed: true,
+			preferences: null,
+			device_name: null,
+		});
+
+		await expect(getPushNotificationState()).rejects.toMatchObject({
+			code: "request-failed",
 		});
 	});
 
@@ -485,6 +727,216 @@ describe("push notification client", () => {
 		expect(browser.registration.active?.postMessage).toHaveBeenCalledWith({
 			type: "hlid:close-session-notifications",
 			sessionId: "session-1",
+		});
+	});
+
+	it("lists opaque device health with browser-friendly millisecond timestamps", async () => {
+		const existing = fakeSubscription();
+		installBrowser({
+			permission: "granted",
+			existingSubscription: existing.subscription,
+		});
+		serverFns.listPushDevicesFn.mockResolvedValue({
+			devices: [wireDevice({ paused_until: 1_700_000_200 })],
+		});
+
+		await expect(getPushNotificationDevices()).resolves.toEqual([
+			{
+				id: DEVICE_ID,
+				name: "Phone",
+				current: true,
+				enabled: true,
+				pausedUntil: 1_700_000_200_000,
+				pausedIndefinitely: false,
+				createdAt: 1_700_000_000_000,
+				lastSeenAt: 1_700_000_100_000,
+				lastAcceptedAt: 1_700_000_050_000,
+				lastFailureAt: null,
+				lastFailureMessage: null,
+				failureCount: 0,
+			},
+		]);
+		expect(serverFns.listPushDevicesFn).toHaveBeenCalledWith({
+			data: { endpoint: "https://push.test/subscription-1" },
+		});
+	});
+
+	it("rejects ambiguous current-device lists", async () => {
+		installBrowser();
+		serverFns.listPushDevicesFn.mockResolvedValue({
+			devices: [wireDevice(), wireDevice()],
+		});
+
+		await expect(getPushNotificationDevices()).rejects.toMatchObject({
+			code: "request-failed",
+		});
+	});
+
+	it("renames an opaque notification device", async () => {
+		const existing = fakeSubscription();
+		installBrowser({ existingSubscription: existing.subscription });
+		serverFns.updatePushDeviceFn.mockResolvedValue({
+			ok: true,
+			device: wireDevice({ name: "Desk" }),
+		});
+
+		await expect(
+			renamePushNotificationDevice(DEVICE_ID, "  Desk  "),
+		).resolves.toMatchObject({ id: DEVICE_ID, name: "Desk" });
+		expect(serverFns.updatePushDeviceFn).toHaveBeenCalledWith({
+			data: {
+				id: DEVICE_ID,
+				name: "Desk",
+				endpoint: "https://push.test/subscription-1",
+			},
+		});
+	});
+
+	it("revokes the current opaque device and its browser subscription", async () => {
+		const existing = fakeSubscription();
+		const browser = installBrowser({
+			permission: "granted",
+			existingSubscription: existing.subscription,
+		});
+		browser.local.setItem(ENABLED_KEY, "true");
+		serverFns.listPushDevicesFn.mockResolvedValue({ devices: [wireDevice()] });
+		serverFns.deletePushDeviceFn.mockResolvedValue({ ok: true, removed: true });
+
+		await expect(revokePushNotificationDevice(DEVICE_ID)).resolves.toBe(true);
+		expect(serverFns.deletePushDeviceFn).toHaveBeenCalledWith({
+			data: { id: DEVICE_ID },
+		});
+		expect(existing.unsubscribe).toHaveBeenCalledOnce();
+		expect(browser.local.getItem(ENABLED_KEY)).toBe("false");
+	});
+
+	it("revokes a remote device without touching the current subscription", async () => {
+		const existing = fakeSubscription();
+		installBrowser({
+			permission: "granted",
+			existingSubscription: existing.subscription,
+		});
+		serverFns.listPushDevicesFn.mockResolvedValue({
+			devices: [wireDevice({ current: false })],
+		});
+		serverFns.deletePushDeviceFn.mockResolvedValue({ ok: true, removed: true });
+
+		await expect(revokePushNotificationDevice(DEVICE_ID)).resolves.toBe(true);
+		expect(existing.unsubscribe).not.toHaveBeenCalled();
+	});
+
+	it("reports push-service acceptance without claiming delivery", async () => {
+		const existing = fakeSubscription();
+		installBrowser({
+			permission: "granted",
+			existingSubscription: existing.subscription,
+		});
+		serverFns.sendTestPushNotificationFn.mockResolvedValue({
+			accepted: true,
+			accepted_at: 1_700_000_000,
+			failure_at: null,
+			failure_count: 0,
+			subscription_removed: false,
+		});
+
+		await expect(sendTestPushNotification("plan_review")).resolves.toEqual({
+			accepted: true,
+			acceptedAt: 1_700_000_000_000,
+			failureAt: null,
+			failureCount: 0,
+			subscriptionRemoved: false,
+		});
+		expect(serverFns.sendTestPushNotificationFn).toHaveBeenCalledWith({
+			data: {
+				endpoint: existing.subscription.endpoint,
+				scenario: "plan_review",
+			},
+		});
+	});
+
+	it("rejects an incoherent push-service test result", async () => {
+		const existing = fakeSubscription();
+		installBrowser({ existingSubscription: existing.subscription });
+		serverFns.sendTestPushNotificationFn.mockResolvedValue({
+			accepted: true,
+			accepted_at: null,
+			failure_at: null,
+			failure_count: 0,
+			subscription_removed: false,
+		});
+
+		await expect(sendTestPushNotification()).rejects.toMatchObject({
+			code: "request-failed",
+		});
+	});
+
+	it("pauses the current device without changing category choices", async () => {
+		const existing = fakeSubscription();
+		installBrowser({
+			permission: "granted",
+			existingSubscription: existing.subscription,
+		});
+		serverFns.updatePushPreferencesFn.mockResolvedValue(
+			subscriptionResponse({ paused_until: 1_700_000_200 }),
+		);
+
+		const state = await pausePushNotifications(1_700_000_200_000);
+
+		expect(serverFns.updatePushPreferencesFn).toHaveBeenCalledWith({
+			data: {
+				endpoint: "https://push.test/subscription-1",
+				preferences: {
+					paused_until: 1_700_000_200,
+					paused_indefinitely: false,
+				},
+			},
+		});
+		expect(state).toMatchObject({
+			enabled: true,
+			pausedUntil: 1_700_000_200_000,
+			preferences: {
+				requests: true,
+				problems: true,
+				workFinished: false,
+			},
+		});
+	});
+
+	it("pauses the current device until manual resume", async () => {
+		const existing = fakeSubscription();
+		installBrowser({
+			permission: "granted",
+			existingSubscription: existing.subscription,
+		});
+		serverFns.updatePushPreferencesFn.mockResolvedValue(
+			subscriptionResponse({ paused_indefinitely: true }),
+		);
+
+		const state = await pausePushNotifications("indefinite");
+
+		expect(serverFns.updatePushPreferencesFn).toHaveBeenCalledWith({
+			data: {
+				endpoint: "https://push.test/subscription-1",
+				preferences: {
+					paused_until: null,
+					paused_indefinitely: true,
+				},
+			},
+		});
+		expect(state).toMatchObject({
+			enabled: true,
+			pausedUntil: null,
+			pausedIndefinitely: true,
+		});
+	});
+
+	it("asks the worker to reconcile its locally authoritative app badge", async () => {
+		const browser = installBrowser();
+
+		await expect(reconcilePushNotificationBadge()).resolves.toBeUndefined();
+
+		expect(browser.registration.active?.postMessage).toHaveBeenCalledWith({
+			type: "hlid:reconcile-notification-badge",
 		});
 	});
 

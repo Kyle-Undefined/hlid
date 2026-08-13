@@ -524,6 +524,7 @@ export async function loadSessionSnapshot({
 	historyReadyRef,
 	handleWsMessage,
 	isCancelled,
+	onInteractionMetadataReady,
 	pageSize = SESSION_HISTORY_PAGE_SIZE,
 	preserveFromSeq,
 	preserveFromId,
@@ -546,6 +547,12 @@ export async function loadSessionSnapshot({
 	preserveToolEventPages?: boolean;
 	/** Checked right after the fetch resolves; skips all dispatches if true (effect was cleaned up or superseded). */
 	isCancelled: () => boolean;
+	/**
+	 * Runs only after persisted permission, question, and plan rows have been
+	 * applied. Consumers that revalidate notification deep links use this later
+	 * boundary instead of treating the base transcript as authoritative.
+	 */
+	onInteractionMetadataReady?: () => void;
 }): Promise<SessionHistoryPage | null> {
 	// Context and persisted interaction cards are useful enrichment, but neither
 	// should hold the base transcript blank. Start context in parallel and hydrate
@@ -670,9 +677,11 @@ export async function loadSessionSnapshot({
 	);
 	void loadSessionMetadata(sessionId, page.rows).then(
 		(hydratedItems) => {
-			if (!isCancelled() && hydratedItems.length > 0) {
+			if (isCancelled()) return;
+			if (hydratedItems.length > 0) {
 				dispatch({ type: "HYDRATE_HISTORY", items: hydratedItems });
 			}
+			onInteractionMetadataReady?.();
 		},
 		(error) => console.error(error),
 	);

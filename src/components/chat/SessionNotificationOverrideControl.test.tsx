@@ -38,7 +38,7 @@ describe("SessionNotificationOverrideControl", () => {
 		await waitFor(() =>
 			expect(
 				screen
-					.getByRole("button", { name: /Default/ })
+					.getByRole("button", { name: "Default" })
 					.getAttribute("aria-pressed"),
 			).toBe("true"),
 		);
@@ -46,9 +46,20 @@ describe("SessionNotificationOverrideControl", () => {
 		expect(setSessionNotificationOverride).not.toHaveBeenCalled();
 	});
 
-	it("saves Notify as a session-global override", async () => {
+	it("saves Notify once and Always notify as session-global overrides", async () => {
 		render(<SessionNotificationOverrideControl sessionId="session-2" />);
-		const notify = await screen.findByRole("button", { name: /Notify/ });
+		const notifyOnce = await screen.findByRole("button", {
+			name: /Notify once/,
+		});
+		fireEvent.click(notifyOnce);
+		await waitFor(() =>
+			expect(setSessionNotificationOverride).toHaveBeenCalledWith(
+				"session-2",
+				"notify_once",
+			),
+		);
+
+		const notify = screen.getByRole("button", { name: /Always notify/ });
 		expect(
 			screen.getByText(
 				"Always send this session's eligible alerts to subscribed devices.",
@@ -72,6 +83,9 @@ describe("SessionNotificationOverrideControl", () => {
 				"Always send this session's eligible alerts to subscribed devices.",
 			),
 		).toBeTruthy();
+		expect(
+			screen.getByText("Send the next eligible alert, then return to Default."),
+		).toBeTruthy();
 	});
 
 	it("restores the previous choice when saving fails", async () => {
@@ -87,7 +101,7 @@ describe("SessionNotificationOverrideControl", () => {
 		expect(screen.getByRole("alert").textContent).toContain("Save failed");
 		expect(
 			screen
-				.getByRole("button", { name: /Default/ })
+				.getByRole("button", { name: "Default" })
 				.getAttribute("aria-pressed"),
 		).toBe("true");
 	});

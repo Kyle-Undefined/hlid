@@ -4,6 +4,8 @@
 // activate handler drops every previous cache — no manual cache clearing.
 const BUILD = "__HLID_BUILD__";
 const CACHE = `hlid-${BUILD}`;
+const CLIENT_PRESENTATION_CACHE = "hlid-client-presentation-v1";
+const STANDALONE_CLIENT_RECORD_PATH = "/__hlid-internal/standalone-client";
 const STATIC_EXTS = [".js", ".css", ".png", ".svg", ".ico", ".woff2"];
 const OFFLINE_URL = "/offline.html";
 const DYNAMIC_RETRY_DELAYS_MS = [150, 500];
@@ -16,6 +18,12 @@ const MAX_SESSION_ID_CHARS = 256;
 const MAX_NOTIFICATION_TITLE_CHARS = 160;
 const MAX_NOTIFICATION_BODY_CHARS = 500;
 const MAX_NOTIFICATION_URL_CHARS = 2048;
+const MAX_NOTIFICATION_REASON_CHARS = 64;
+const MAX_NOTIFICATION_LABEL_CHARS = 160;
+const MAX_BATCH_SESSION_IDS = 10;
+const MIN_BATCH_ID_CHARS = 8;
+const MAX_BATCH_ID_CHARS = 64;
+const FORGE_NOTIFICATIONS_URL = "/forge?category=experience&section=notifications";
 const FALLBACK_NOTIFICATION = Object.freeze({
 	title: "Hlid notification",
 	body: "Open Hlid to check for updates.",
@@ -54,18 +62,70 @@ function safeRavenTarget(sessionId, candidate) {
 			url.searchParams.get("session") !== sessionId
 		)
 			return `${fallback.pathname}${fallback.search}`;
-		return `${url.pathname}${url.search}`;
+		const attention = url.searchParams.get("attention");
+		if (
+			attention === "permission" ||
+			attention === "question" ||
+			attention === "plan_review"
+		)
+			fallback.searchParams.set("attention", attention);
+		return `${fallback.pathname}${fallback.search}`;
 	} catch {
 		return `${fallback.pathname}${fallback.search}`;
 	}
 }
 
+function safeRavenOverviewTarget() {
+	return "/raven";
+}
+
+function safeForgeNotificationsTarget() {
+	return FORGE_NOTIFICATIONS_URL;
+}
+
+function parseBatchSessionIds(value, primarySessionId) {
+	if (value === undefined) return null;
+	if (
+		!Array.isArray(value) ||
+		value.length < 2 ||
+		value.length > MAX_BATCH_SESSION_IDS ||
+		!value.every(isSafeSessionId) ||
+		new Set(value).size !== value.length ||
+		!value.includes(primarySessionId)
+	)
+		return undefined;
+	return value;
+}
+
+function parseBatchId(value) {
+	if (value === undefined) return null;
+	if (
+		typeof value !== "string" ||
+		value.length < MIN_BATCH_ID_CHARS ||
+		value.length > MAX_BATCH_ID_CHARS ||
+		!/^[A-Za-z0-9_-]+$/.test(value)
+	)
+		return undefined;
+	return value;
+}
+
+function boundedOptionalString(value, maxChars) {
+	if (value === undefined) return null;
+	if (typeof value !== "string" || value.length === 0 || value.length > maxChars)
+		return undefined;
+	return value;
+}
+
 function parsePayloadValue(value, now = Date.now()) {
+	const isTest = isRecord(value) && value.kind === "test";
 	if (
 		!isRecord(value) ||
 		value.version !== 1 ||
-		(value.kind !== "needs_attention" && value.kind !== "work_finished") ||
-		!isSafeSessionId(value.sessionId) ||
+		(value.kind !== "needs_attention" &&
+			value.kind !== "work_finished" &&
+			value.kind !== "test") ||
+		(!isTest && !isSafeSessionId(value.sessionId)) ||
+		(isTest && value.sessionId !== undefined) ||
 		typeof value.title !== "string" ||
 		value.title.length === 0 ||
 		value.title.length > MAX_NOTIFICATION_TITLE_CHARS ||
@@ -81,15 +141,54 @@ function parsePayloadValue(value, now = Date.now()) {
 		value.expiresAt <= now
 	)
 		return null;
+	if (isTest) {
+		return {
+			version: 1,
+			kind: "test",
+			title: value.title,
+			body: value.body,
+			createdAt: value.createdAt,
+			expiresAt: value.expiresAt,
+			url: safeForgeNotificationsTarget(),
+		};
+	}
+	const sessionIds = parseBatchSessionIds(value.sessionIds, value.sessionId);
+	const batchId = parseBatchId(value.batchId);
+	const reason = boundedOptionalString(value.reason, MAX_NOTIFICATION_REASON_CHARS);
+	const sessionLabel = boundedOptionalString(
+		value.sessionLabel,
+		MAX_NOTIFICATION_LABEL_CHARS,
+	);
+	if (
+		sessionIds === undefined ||
+		batchId === undefined ||
+		Boolean(sessionIds) !== Boolean(batchId) ||
+		(sessionIds && value.kind !== "work_finished")
+	)
+		return null;
+	if (
+		reason === undefined ||
+		sessionLabel === undefined ||
+		(value.durationMs !== undefined &&
+			(!Number.isSafeInteger(value.durationMs) || value.durationMs < 0))
+	)
+		return null;
 	return {
 		version: 1,
 		kind: value.kind,
 		sessionId: value.sessionId,
+		...(sessionIds ? { sessionIds } : {}),
+		...(batchId ? { batchId } : {}),
+		...(reason ? { reason } : {}),
+		...(sessionLabel ? { sessionLabel } : {}),
+		...(value.durationMs !== undefined ? { durationMs: value.durationMs } : {}),
 		title: value.title,
 		body: value.body,
 		createdAt: value.createdAt,
 		expiresAt: value.expiresAt,
-		url: safeRavenTarget(value.sessionId, value.url),
+		url: sessionIds
+			? safeRavenOverviewTarget()
+			: safeRavenTarget(value.sessionId, value.url),
 	};
 }
 
@@ -146,15 +245,28 @@ function parseDeclarativeNotification(notification, now = Date.now()) {
 }
 
 async function showPushNotification(payload) {
+	const tag =
+		payload.kind === "test"
+			? "hlid-test"
+			: payload.sessionIds
+				? `hlid-work-finished-batch:${payload.batchId}`
+				: `hlid-session:${payload.sessionId}`;
 	await self.registration.showNotification(payload.title, {
 		body: payload.body,
 		icon: "/logo192.png",
-		tag: `hlid-session:${payload.sessionId}`,
+		tag,
 		renotify: false,
 		timestamp: payload.createdAt,
 		data: {
 			kind: payload.kind,
-			sessionId: payload.sessionId,
+			...(payload.sessionId ? { sessionId: payload.sessionId } : {}),
+			...(payload.sessionIds ? { sessionIds: payload.sessionIds } : {}),
+			...(payload.batchId ? { batchId: payload.batchId } : {}),
+			...(payload.reason ? { reason: payload.reason } : {}),
+			...(payload.sessionLabel ? { sessionLabel: payload.sessionLabel } : {}),
+			...(payload.durationMs !== undefined
+				? { durationMs: payload.durationMs }
+				: {}),
 			url: payload.url,
 			createdAt: payload.createdAt,
 			expiresAt: payload.expiresAt,
@@ -183,17 +295,62 @@ async function showValidatedNotification(payload) {
 function notificationTarget(data) {
 	if (!isRecord(data)) return null;
 	if (data.fallback === true && data.url === "/") return "/";
+	if (data.kind === "test") return safeForgeNotificationsTarget();
 	if (!isSafeSessionId(data.sessionId)) return null;
+	const sessionIds = parseBatchSessionIds(data.sessionIds, data.sessionId);
+	const batchId = parseBatchId(data.batchId);
+	if (
+		sessionIds === undefined ||
+		batchId === undefined ||
+		Boolean(sessionIds) !== Boolean(batchId)
+	)
+		return null;
+	if (sessionIds && data.kind !== "work_finished") return null;
+	if (sessionIds) return safeRavenOverviewTarget();
 	return safeRavenTarget(data.sessionId, data.url);
+}
+
+function isBadgeHlidNotification(notification) {
+	const data = notification?.data;
+	if (!isRecord(data) || !isSafeSessionId(data.sessionId)) return false;
+	if (data.kind !== "needs_attention" && data.kind !== "work_finished")
+		return false;
+	const sessionIds = parseBatchSessionIds(data.sessionIds, data.sessionId);
+	const batchId = parseBatchId(data.batchId);
+	if (
+		sessionIds === undefined ||
+		batchId === undefined ||
+		Boolean(sessionIds) !== Boolean(batchId)
+	)
+		return false;
+	if (sessionIds && data.kind !== "work_finished") return false;
+	const expectedTag = sessionIds
+		? `hlid-work-finished-batch:${batchId}`
+		: `hlid-session:${data.sessionId}`;
+	return notification.tag === expectedTag;
+}
+
+async function reconcileNotificationBadge() {
+	try {
+		const notifications = await self.registration.getNotifications();
+		const count = notifications.filter(isBadgeHlidNotification).length;
+		if (count > 0 && typeof self.navigator?.setAppBadge === "function") {
+			await self.navigator.setAppBadge(count);
+			return;
+		}
+		if (typeof self.navigator?.clearAppBadge === "function")
+			await self.navigator.clearAppBadge();
+	} catch {
+		// Badging is a progressive enhancement and must never affect delivery.
+	}
 }
 
 function isExpiredHlidNotification(notification, now = Date.now()) {
 	const data = notification?.data;
 	return (
 		isRecord(data) &&
-		isSafeSessionId(data.sessionId) &&
-		notification.tag === `hlid-session:${data.sessionId}` &&
-		(data.kind === "needs_attention" || data.kind === "work_finished") &&
+		((data.kind === "test" && notification.tag === "hlid-test") ||
+			isBadgeHlidNotification(notification)) &&
 		Number.isSafeInteger(data.createdAt) &&
 		Number.isSafeInteger(data.expiresAt) &&
 		data.expiresAt > data.createdAt &&
@@ -238,12 +395,101 @@ function sameOriginWindow(client) {
 	}
 }
 
-async function focusNotificationTarget(target) {
+function isSafeClientId(value) {
+	return (
+		typeof value === "string" &&
+		value.length > 0 &&
+		value.length <= 256 &&
+		!/[\u0000-\u001f\u007f]/.test(value)
+	);
+}
+
+async function rememberClientPresentation(source, standalone) {
+	if (
+		!source ||
+		!isSafeClientId(source.id) ||
+		!sameOriginWindow(source) ||
+		typeof standalone !== "boolean"
+	)
+		return;
+	try {
+		const cache = await caches.open(CLIENT_PRESENTATION_CACHE);
+		const recordUrl = new URL(
+			STANDALONE_CLIENT_RECORD_PATH,
+			self.location.origin,
+		).href;
+		if (standalone) {
+			await cache.put(recordUrl, new Response(source.id));
+			return;
+		}
+		const current = await cache.match(recordUrl);
+		if (current && (await current.text()) === source.id) {
+			await cache.delete(recordUrl);
+		}
+	} catch {
+		// Client targeting is a best-effort launch enhancement.
+	}
+}
+
+async function knownStandaloneClient(windowClients) {
+	try {
+		const cache = await caches.open(CLIENT_PRESENTATION_CACHE);
+		const recordUrl = new URL(
+			STANDALONE_CLIENT_RECORD_PATH,
+			self.location.origin,
+		).href;
+		const stored = await cache.match(recordUrl);
+		if (!stored) return null;
+		const clientId = await stored.text();
+		if (!isSafeClientId(clientId)) {
+			await cache.delete(recordUrl);
+			return null;
+		}
+		const client = windowClients.find(
+			(candidate) => candidate.id === clientId && sameOriginWindow(candidate),
+		);
+		if (client) return client;
+		await cache.delete(recordUrl);
+	} catch {
+		// Continue through the browser's normal installed-app launch path.
+	}
+	return null;
+}
+
+async function navigateAndFocus(client, target) {
+	if (typeof client.navigate !== "function") return false;
+	try {
+		const navigated = await client.navigate(target);
+		const focused = navigated ?? client;
+		if (typeof focused.focus === "function") await focused.focus();
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function openNotificationTarget(target) {
 	const absoluteTarget = new URL(target, self.location.origin).href;
 	const windowClients = await self.clients.matchAll({
 		type: "window",
 		includeUncontrolled: true,
 	});
+	const standalone = await knownStandaloneClient(windowClients);
+	if (standalone && (await navigateAndFocus(standalone, target))) return;
+
+	try {
+		// Give the browser the first chance to launch or reuse the installed PWA.
+		// Chromium and WebKit associate this call with the installed web app, while
+		// manually navigating an arbitrary same-origin client can select a browser tab.
+		const opened = await self.clients.openWindow(target);
+		if (opened) {
+			if (typeof opened.focus === "function") await opened.focus();
+			return;
+		}
+	} catch {
+		// Fall back to an already open browser client when app launch is unavailable.
+	}
+
 	const exact = windowClients.find((client) => {
 		try {
 			return new URL(client.url).href === absoluteTarget;
@@ -257,17 +503,7 @@ async function focusNotificationTarget(target) {
 	}
 
 	const existing = windowClients.find(sameOriginWindow);
-	if (existing && typeof existing.navigate === "function") {
-		try {
-			const navigated = await existing.navigate(target);
-			const focused = navigated ?? existing;
-			if (typeof focused.focus === "function") await focused.focus();
-			return;
-		} catch {
-			// A stale or non-navigable window should not prevent a fresh app window.
-		}
-	}
-	await self.clients.openWindow(target);
+	if (existing) await navigateAndFocus(existing, target);
 }
 
 async function fetchDynamic(request) {
@@ -292,32 +528,53 @@ self.addEventListener("install", (e) => {
 
 self.addEventListener("activate", (e) => {
 	e.waitUntil(
-		Promise.all([
-			caches
+		(async () => {
+			await Promise.all([
+				caches
 				.keys()
 				.then((keys) =>
 					Promise.all(
-						keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)),
+						keys
+							.filter(
+								(k) => k !== CACHE && k !== CLIENT_PRESENTATION_CACHE,
+							)
+							.map((k) => caches.delete(k)),
 					),
 				),
-			self.registration.navigationPreload?.enable?.(),
-			self.clients.claim(),
-			pruneExpiredNotifications(),
-		]),
+				self.registration.navigationPreload?.enable?.(),
+				self.clients.claim(),
+			]);
+			await pruneExpiredNotifications();
+			await reconcileNotificationBadge();
+		})(),
 	);
 });
 
 self.addEventListener("message", (e) => {
+	if (e.data?.type === "hlid:client-presentation") {
+		e.waitUntil(rememberClientPresentation(e.source, e.data.standalone));
+		return;
+	}
 	if (e.data?.type === "hlid:get-build") {
 		e.ports[0]?.postMessage({ type: "hlid:build", build: BUILD });
 		return;
 	}
+	if (e.data?.type === "hlid:reconcile-notification-badge") {
+		e.waitUntil(
+			(async () => {
+				await pruneExpiredNotifications();
+				await reconcileNotificationBadge();
+			})(),
+		);
+		return;
+	}
 	if (e.data?.type !== "hlid:close-session-notifications") return;
 	e.waitUntil(
-		Promise.all([
-			pruneExpiredNotifications(),
-			closeSessionNotifications(e.data.sessionId),
-		]),
+		(async () => {
+			await pruneExpiredNotifications();
+			await closeSessionNotifications(e.data.sessionId);
+			await reconcileNotificationBadge();
+		})(),
 	);
 });
 
@@ -328,6 +585,7 @@ self.addEventListener("push", (e) => {
 			const declarativePayload = parseDeclarativeNotification(e.notification);
 			if (declarativePayload) {
 				await showValidatedNotification(declarativePayload);
+				await reconcileNotificationBadge();
 				return;
 			}
 			let raw;
@@ -335,6 +593,7 @@ self.addEventListener("push", (e) => {
 				raw = e.data?.text();
 			} catch {
 				await showFallbackNotification();
+				await reconcileNotificationBadge();
 				return;
 			}
 			const payload = parseRawPushPayload(raw);
@@ -343,9 +602,11 @@ self.addEventListener("push", (e) => {
 				// a visible notification. Never expose rejected payload content; show a
 				// bounded generic fallback that can only navigate to Hlid's root.
 				await showFallbackNotification();
+				await reconcileNotificationBadge();
 				return;
 			}
 			await showValidatedNotification(payload);
+			await reconcileNotificationBadge();
 		})(),
 	);
 });
@@ -354,10 +615,20 @@ self.addEventListener("notificationclick", (e) => {
 	e.notification.close();
 	const target = notificationTarget(e.notification.data);
 	e.waitUntil(
-		Promise.all([
-			pruneExpiredNotifications(),
-			target ? focusNotificationTarget(target) : Promise.resolve(),
-		]),
+		(async () => {
+			await pruneExpiredNotifications();
+			await reconcileNotificationBadge();
+			if (target) await openNotificationTarget(target);
+		})(),
+	);
+});
+
+self.addEventListener("notificationclose", (e) => {
+	e.waitUntil(
+		(async () => {
+			await pruneExpiredNotifications();
+			await reconcileNotificationBadge();
+		})(),
 	);
 });
 

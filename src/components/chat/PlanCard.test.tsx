@@ -41,6 +41,25 @@ function makeMsg(
 }
 
 describe("PlanCard — pending", () => {
+	it("marks only a pending plan as notification-actionable", () => {
+		const { container, rerender } = render(
+			<PlanCard message={makeMsg()} onDecide={vi.fn()} />,
+		);
+		expect(
+			container.querySelector('[data-notification-attention="plan_review"]'),
+		).not.toBeNull();
+		expect(screen.getByLabelText("Pending plan review")).toBeTruthy();
+		rerender(
+			<PlanCard
+				message={makeMsg({ decision: "approved" })}
+				onDecide={vi.fn()}
+			/>,
+		);
+		expect(
+			container.querySelector('[data-notification-attention="plan_review"]'),
+		).toBeNull();
+	});
+
 	it("renders plan content with markdown formatting", () => {
 		render(<PlanCard message={makeMsg()} onDecide={vi.fn()} />);
 		// markdown-rendered: <strong> for bold
@@ -98,6 +117,9 @@ describe("PlanCard — pending", () => {
 			/>,
 		);
 		const frame = await screen.findByTitle("Plan document");
+		const dialog = screen.getByRole("dialog", { name: "Plan document" });
+		expect(dialog.dataset.notificationAttentionDialog).toBe("plan_review");
+		expect(dialog.dataset.notificationAttentionId).toBe("pp1");
 		expect(fetch).toHaveBeenCalledWith(
 			"/api/attachments/att-html/raw",
 			expect.objectContaining({ cache: "no-store" }),

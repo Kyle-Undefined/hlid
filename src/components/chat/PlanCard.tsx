@@ -51,7 +51,13 @@ export function PlanCard({
 
 	if (message.htmlRelicId) {
 		return (
-			<div className="flex gap-0 py-3">
+			<section
+				data-notification-attention="plan_review"
+				data-notification-attention-id={message.id}
+				tabIndex={-1}
+				aria-label="Pending plan review"
+				className="flex scroll-mt-4 gap-0 py-3 outline-none transition-[box-shadow,background-color] focus:ring-2 focus:ring-primary/60 data-[notification-highlight=true]:bg-primary/5 data-[notification-highlight=true]:ring-2 data-[notification-highlight=true]:ring-primary/60"
+			>
 				<div className="w-12 shrink-0 text-[9px] tracking-widest text-primary/60 pt-0.5 uppercase">
 					PLAN
 				</div>
@@ -80,6 +86,7 @@ export function PlanCard({
 				{modalOpen && (
 					<PlanHtmlModal
 						relicId={message.htmlRelicId}
+						notificationAttentionId={message.id}
 						feedback={feedback}
 						onFeedbackChange={setFeedback}
 						onCancel={cancel}
@@ -88,12 +95,18 @@ export function PlanCard({
 						onClose={() => setModalOpen(false)}
 					/>
 				)}
-			</div>
+			</section>
 		);
 	}
 
 	return (
-		<div className="flex gap-0 py-3">
+		<section
+			data-notification-attention="plan_review"
+			data-notification-attention-id={message.id}
+			tabIndex={-1}
+			aria-label="Pending plan review"
+			className="flex scroll-mt-4 gap-0 py-3 outline-none transition-[box-shadow,background-color] focus:ring-2 focus:ring-primary/60 data-[notification-highlight=true]:bg-primary/5 data-[notification-highlight=true]:ring-2 data-[notification-highlight=true]:ring-primary/60"
+		>
 			<div className="w-12 shrink-0 text-[9px] tracking-widest text-primary/60 pt-0.5 uppercase">
 				PLAN
 			</div>
@@ -114,6 +127,6 @@ export function PlanCard({
 					onRevise={submitEdit}
 				/>
 			</div>
-		</div>
+		</section>
 	);
 }

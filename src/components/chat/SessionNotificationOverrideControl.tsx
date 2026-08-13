@@ -13,8 +13,13 @@ const OPTIONS = [
 		description: "Follow the normal notification rules.",
 	},
 	{
+		value: "notify_once",
+		label: "Notify once",
+		description: "Send the next eligible alert, then return to Default.",
+	},
+	{
 		value: "notify",
-		label: "Notify",
+		label: "Always notify",
 		description:
 			"Always send this session's eligible alerts to subscribed devices.",
 	},
@@ -99,6 +104,7 @@ export function SessionNotificationOverrideControl({
 					<button
 						key={option.value}
 						type="button"
+						aria-label={option.label}
 						disabled={saving !== null || mode === null}
 						aria-pressed={mode === option.value}
 						onClick={() => void select(option.value)}

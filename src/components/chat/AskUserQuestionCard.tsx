@@ -90,7 +90,12 @@ export function AskUserQuestionCard({
 	}
 
 	return (
-		<div className="flex gap-0">
+		<section
+			data-notification-attention="question"
+			tabIndex={-1}
+			aria-label="Pending question"
+			className="flex scroll-mt-4 gap-0 outline-none transition-[box-shadow,background-color] focus:ring-2 focus:ring-primary/60 data-[notification-highlight=true]:bg-primary/5 data-[notification-highlight=true]:ring-2 data-[notification-highlight=true]:ring-primary/60"
+		>
 			<div className="w-12 shrink-0 text-[9px] tracking-widest text-primary/60 pt-0.5 uppercase">
 				ASK
 			</div>
@@ -154,6 +159,6 @@ export function AskUserQuestionCard({
 					</div>
 				)}
 			</div>
-		</div>
+		</section>
 	);
 }
