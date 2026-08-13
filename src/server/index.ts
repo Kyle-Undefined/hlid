@@ -1,5 +1,6 @@
 import "./prelude";
 import type { Server, ServerWebSocket } from "bun";
+import type { HlidConfig } from "../config";
 import * as db from "../db";
 import { isAllowedOrigin, isAllowedOriginHeader } from "../lib/allowedOrigin";
 import { resolveClaudeExecutable } from "../lib/claudePath";
@@ -28,8 +29,9 @@ import {
 	windowsPathToWsl,
 } from "./acpExecutionAdapter";
 import { AcpManagedInstaller } from "./acpManagedInstall";
+import { persistedAcpTargetPlatformEvidenceStore } from "./acpPlatformEvidence";
 import { inspectAcpAgent } from "./acpProvider";
-import { AcpRegistry } from "./acpRegistry";
+import { type AcpCatalogItem, AcpRegistry } from "./acpRegistry";
 import { createAcpRouteHandler } from "./acpRoutes";
 import {
 	type AcpRuntimeSyncResult,
@@ -75,7 +77,11 @@ import {
 	resetCodexRealtimeBackendStatus,
 } from "./codexRealtimeStatus";
 import { loadConfig } from "./config";
-import { formatPersistentConsoleMessage } from "./consoleLog";
+import {
+	formatPersistentConsoleMessage,
+	HLID_SERVER_RUN_LOG_MESSAGE,
+	HLID_SERVER_RUN_LOG_SOURCE,
+} from "./consoleLog";
 import {
 	bumpDataRevision,
 	getDataRevisions,
@@ -118,6 +124,7 @@ import { seedWindowMarks, startProviderProxy } from "./proxy";
 import { bootstrapPtyRuntime } from "./pty-bootstrap";
 import { createReadAloudRouteHandler } from "./readAloudRoutes";
 import {
+	acpProviderOperationSlowRequestThreshold,
 	createRequestObserver,
 	projectPreviewSlowRequestThreshold,
 	startEventLoopLagMonitor,
@@ -203,11 +210,6 @@ if (process.execPath.endsWith(".exe")) {
 	console.debug = () => {};
 }
 
-// A clustered set of otherwise unrelated request timeouts usually means the
-// single server event loop was delayed. Log only material stalls, with a
-// cooldown and sleep-gap filter handled by the monitor.
-startEventLoopLagMonitor();
-
 // CLI flags. `--background` = silent boot (used by the autostart registry entry).
 // `--restart` = post-update relaunch and implies background. Compiled launches
 // still probe for a newer competing instance before doing any startup work.
@@ -264,6 +266,19 @@ if (process.execPath.endsWith(".exe")) {
 	}
 }
 
+await db.appendLog(
+	"info",
+	HLID_SERVER_RUN_LOG_SOURCE,
+	HLID_SERVER_RUN_LOG_MESSAGE,
+);
+
+// A clustered set of otherwise unrelated request timeouts usually means the
+// single server event loop was delayed. Log only material stalls, with a
+// cooldown and sleep-gap filter handled by the monitor. Start it only after the
+// competing-instance probe so a friendly second launch cannot write current-run
+// diagnostics into the active server's Event Log.
+startEventLoopLagMonitor();
+
 // Mutating startup work must happen only after the existing-instance probe.
 // A friendly second launch should not contend for Umbod's port, rewrite
 // wrappers, or start provider proxies before it exits.
@@ -281,7 +296,28 @@ await bootstrapUmbod().catch((error) => {
 	);
 });
 
-const acpRegistry = new AcpRegistry();
+let acpPlatformReconciliationReady = false;
+let acpPlatformReconciliationQueued = false;
+
+function requestAcpPlatformReconciliation(): void {
+	acpPlatformReconciliationQueued = true;
+	if (!acpPlatformReconciliationReady) return;
+	queueMicrotask(() => {
+		if (!acpPlatformReconciliationQueued) return;
+		acpPlatformReconciliationQueued = false;
+		void syncAcpRuntime(undefined, false).catch((error) => {
+			console.warn(
+				"[acp] platform reconciliation deferred:",
+				error instanceof Error ? error.message : String(error),
+			);
+		});
+	});
+}
+
+const acpRegistry = new AcpRegistry(undefined, undefined, {
+	platformEvidence: persistedAcpTargetPlatformEvidenceStore,
+	onPlatformChange: requestAcpPlatformReconciliation,
+});
 const acpManagedInstaller = new AcpManagedInstaller(ACP_MANAGED_DIR, {
 	toTargetPath: ({ hostPath, target }) => {
 		if (target.kind === "host") return hostPath;
@@ -335,7 +371,7 @@ const handleAcpRoute = createAcpRouteHandler({
 		if (result.created || result.rebound) bumpDataRevision("sessions");
 		return result;
 	},
-	syncRuntime: () => syncAcpRuntime(),
+	syncRuntime: (materialized) => syncAcpRuntime(materialized),
 	managedInstaller: acpManagedInstaller,
 	managedMutationAuthorized: (request) =>
 		verifyToken(request.headers.get("x-hlid-internal"), SERVER_TOKEN),
@@ -374,7 +410,9 @@ const handleExtensionRoute = createExtensionRouteHandler({
 		bumpDataRevision("providers", "mcp", "vault");
 	},
 });
-const acpCatalog = await acpRegistry.catalog(config);
+const acpCatalog = await acpRegistry.catalog(config, false, false, {
+	agentIds: ["opencode", ...(config.acp_agents ?? []).map((agent) => agent.id)],
+});
 const cliProxy = new CliProxyManager(config.cliproxy);
 const providers = new Map<string, AgentProvider>([
 	["claude", new ClaudeProvider()],
@@ -433,15 +471,15 @@ for (const provider of providers.values()) {
 // `listModels()` through its app-server, so warming this cache during boot
 // would retain a roughly 100 MB helper process before anyone selects Codex.
 let providerCatalogSnapshot: ProviderCatalogSnapshot;
-let providerMetadataRevisionInProgress = false;
 const publishProviderMetadataRevision = (providerId: string) => {
+	// Live model and capability discovery is observational metadata scoped by
+	// provider runtime and workspace. The request that performed the discovery
+	// receives that result directly, while the server snapshot is invalidated so
+	// later cached reads can consume it. Do not bump the global providers data
+	// revision here: a Windows OpenCode inspection must not invalidate an already
+	// current WSL catalog (or vice versa) and force another provider process when
+	// the user switches workspaces.
 	providerCatalogSnapshot.invalidateMetadata(providerId);
-	providerMetadataRevisionInProgress = true;
-	try {
-		bumpDataRevision("providers");
-	} finally {
-		providerMetadataRevisionInProgress = false;
-	}
 };
 const modelCatalog = createModelCatalog(providers, (providerId) => {
 	publishProviderMetadataRevision(providerId);
@@ -479,9 +517,7 @@ let providerCatalogRevision = getDataRevisions().providers;
 subscribeDataRevisions((revisions) => {
 	if (revisions.providers !== providerCatalogRevision) {
 		providerCatalogRevision = revisions.providers;
-		if (!providerMetadataRevisionInProgress) {
-			providerCatalogSnapshot.invalidate();
-		}
+		providerCatalogSnapshot.invalidate();
 	}
 	broadcast({ type: "data_revisions", revisions });
 });
@@ -569,10 +605,11 @@ const refreshDurableDelegationAttention = (): Promise<void> => {
 await refreshDurableDelegationAttention();
 const hlidDelegationManager = new HlidDelegationManager(
 	pool,
-	() =>
+	(cwd) =>
 		providerCatalogSnapshot.get({
 			refresh: true,
 			preferCachedModels: false,
+			discoveryCwd: cwd,
 		}),
 	() => {
 		bumpDataRevision("sessions");
@@ -593,6 +630,12 @@ const handleHlidDelegationRoute = createHlidDelegationRouteHandler(
 await startRoutineScheduler(
 	pool,
 	hlidDelegationManager,
+	(cwd) =>
+		providerCatalogSnapshot.get({
+			refresh: true,
+			preferCachedModels: false,
+			discoveryCwd: cwd,
+		}),
 	broadcastLiveSessions,
 ).catch((error) => {
 	console.error(
@@ -646,6 +689,8 @@ const observeApiRequest = createRequestObserver({
 		if (pathname.startsWith("/read-aloud/")) return 10_000;
 		if (pathname === "/api/attachments/upload") return 30_000;
 		if (pathname.startsWith("/api/attachments/")) return 10_000;
+		const acpThreshold = acpProviderOperationSlowRequestThreshold(pathname);
+		if (acpThreshold !== undefined) return acpThreshold;
 		const previewThreshold = projectPreviewSlowRequestThreshold(pathname);
 		if (previewThreshold !== undefined) return previewThreshold;
 		if (pathname.startsWith("/hlid-agents/") && pathname.endsWith("/wait")) {
@@ -1013,11 +1058,29 @@ let acpRuntimeSyncTail: Promise<AcpRuntimeSyncResult> = Promise.resolve({
 	added: [],
 	removed: [],
 	replaced: [],
+	availabilityUpdated: [],
 });
 
-async function applyAcpRuntimeConfig(): Promise<AcpRuntimeSyncResult> {
+type MaterializedAcpRuntimeCatalog = {
+	config: HlidConfig;
+	catalog: AcpCatalogItem[];
+};
+
+function sameConfigSnapshot(left: HlidConfig, right: HlidConfig): boolean {
+	return JSON.stringify(left) === JSON.stringify(right);
+}
+
+async function applyAcpRuntimeConfig(
+	materialized?: MaterializedAcpRuntimeCatalog,
+	refreshRuntimeEvidence = true,
+): Promise<AcpRuntimeSyncResult> {
 	const latest = loadConfig();
-	const catalog = await acpRegistry.catalog(latest, false, true);
+	const catalog =
+		materialized && sameConfigSnapshot(latest, materialized.config)
+			? materialized.catalog
+			: await acpRegistry.catalog(latest, false, refreshRuntimeEvidence, {
+					agentIds: (latest.acp_agents ?? []).map((agent) => agent.id),
+				});
 	const result = await syncAcpRuntimeProviders({
 		config: latest,
 		catalog,
@@ -1041,7 +1104,8 @@ async function applyAcpRuntimeConfig(): Promise<AcpRuntimeSyncResult> {
 	if (
 		result.added.length > 0 ||
 		result.removed.length > 0 ||
-		result.replaced.length > 0
+		result.replaced.length > 0 ||
+		result.availabilityUpdated.length > 0
 	) {
 		providerCatalogSnapshot.invalidate();
 		bumpDataRevision("providers");
@@ -1049,15 +1113,24 @@ async function applyAcpRuntimeConfig(): Promise<AcpRuntimeSyncResult> {
 	return result;
 }
 
-function syncAcpRuntime(): Promise<AcpRuntimeSyncResult> {
-	const pending = acpRuntimeSyncTail.then(() => applyAcpRuntimeConfig());
+function syncAcpRuntime(
+	materialized?: MaterializedAcpRuntimeCatalog,
+	refreshRuntimeEvidence = true,
+): Promise<AcpRuntimeSyncResult> {
+	const pending = acpRuntimeSyncTail.then(() =>
+		applyAcpRuntimeConfig(materialized, refreshRuntimeEvidence),
+	);
 	acpRuntimeSyncTail = pending.catch(() => ({
 		added: [],
 		removed: [],
 		replaced: [],
+		availabilityUpdated: [],
 	}));
 	return pending;
 }
+
+acpPlatformReconciliationReady = true;
+if (acpPlatformReconciliationQueued) requestAcpPlatformReconciliation();
 
 async function applyCliProxyRuntimeConfig(): Promise<void> {
 	const latest = loadConfig();

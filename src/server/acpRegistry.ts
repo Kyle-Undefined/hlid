@@ -19,6 +19,7 @@ import {
 	type AcpExecutionAdapterFactory,
 	createAcpExecutionAdapter,
 } from "./acpExecutionAdapter";
+import type { AcpTargetPlatformEvidenceStore } from "./acpPlatformEvidence";
 import {
 	type AcpExecutionTargetDescriptor,
 	configuredAcpExecutionTargets,
@@ -31,6 +32,9 @@ const ACP_REGISTRY_URL =
 	"https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 const ACP_AVAILABILITY_TTL_MS = 60_000;
 const ACP_AVAILABILITY_PROBE_TIMEOUT_MS = 1_000;
+const ACP_AVAILABILITY_SCAN_SLOW_MS = 1_000;
+const ACP_PLATFORM_SUCCESS_TTL_MS = 6 * 3600_000;
+const ACP_PLATFORM_FAILURE_TTL_MS = 5_000;
 
 async function boundedExecutableProbe<T>(
 	probe: Promise<T | null | undefined>,
@@ -118,6 +122,11 @@ export type AcpCatalogItem = AcpRegistryAgent & {
 	runtimeExecutableEvidence?: AcpRuntimeExecutableEvidence;
 };
 
+export type AcpCatalogOptions = {
+	/** Materialize only these registry ids. Omitted means the complete Forge catalog. */
+	agentIds?: Iterable<string>;
+};
+
 export type AcpRuntimeExecutableFileEvidence = {
 	pathKey: string;
 	size: string;
@@ -129,6 +138,23 @@ export type AcpRuntimeExecutableEvidence = {
 	/** Installed OpenCode package evidence when the launcher is a stable shim. */
 	packageManifest?: AcpRuntimeExecutableFileEvidence;
 };
+
+type AcpTargetPlatformSuccess = {
+	platform: NodeJS.Platform;
+	architecture: NodeJS.Architecture;
+	platformTarget: string;
+	/** Persisted architecture is known, but exact-target liveness is still pending. */
+	verificationPending?: boolean;
+	/** Latest exact-target liveness failure while retaining known architecture. */
+	error?: string;
+};
+
+type AcpTargetPlatformFailure = {
+	error: string;
+	platformTarget: string;
+};
+
+type AcpTargetPlatform = AcpTargetPlatformSuccess | AcpTargetPlatformFailure;
 
 async function executableFileEvidence(
 	path: string,
@@ -330,19 +356,48 @@ export class AcpRegistry {
 	private readonly now: () => number;
 	private readonly availabilityTtlMs: number;
 	private readonly availabilityProbeTimeoutMs: number;
+	private readonly platformSuccessTtlMs: number;
+	private readonly platformFailureTtlMs: number;
 	private readonly platform: NodeJS.Platform;
 	private readonly architecture: NodeJS.Architecture;
 	private readonly adapterFactory: AcpExecutionAdapterFactory;
+	private readonly platformEvidence: AcpTargetPlatformEvidenceStore | null;
 	private managed: AcpManagedCatalogSource | null;
 	private readonly observeAvailability: ReturnType<
 		typeof createSlowOperationObserver
 	>;
-	private materializedCatalog: {
-		registryKey: string;
-		configKey: string;
-		value: AcpCatalogItem[];
-		refreshedAt: number;
-	} | null = null;
+	private readonly observeFullAvailability: ReturnType<
+		typeof createSlowOperationObserver
+	>;
+	private readonly observePlatform: ReturnType<
+		typeof createSlowOperationObserver
+	>;
+	private readonly onPlatformChange: (() => void) | undefined;
+	private readonly materializedCatalogs = new Map<
+		string,
+		{
+			registryKey: string;
+			configKey: string;
+			value: AcpCatalogItem[];
+			refreshedAt: number;
+		}
+	>();
+	private readonly materializedCatalogInflight = new Map<
+		string,
+		Promise<AcpCatalogItem[]>
+	>();
+	private materializationGeneration = 0;
+	private readonly targetPlatformCache = new Map<
+		string,
+		{
+			value?: AcpTargetPlatform;
+			lastGood?: AcpTargetPlatformSuccess;
+			expiresAt: number;
+			generation: number;
+			inflight?: Promise<AcpTargetPlatform>;
+		}
+	>();
+	private readonly targetPlatformHydrations = new Map<string, Promise<void>>();
 
 	constructor(
 		fetcher: () => Promise<unknown> = async () => {
@@ -362,9 +417,13 @@ export class AcpRegistry {
 			now?: () => number;
 			availabilityTtlMs?: number;
 			availabilityProbeTimeoutMs?: number;
+			platformSuccessTtlMs?: number;
+			platformFailureTtlMs?: number;
 			platform?: NodeJS.Platform;
 			architecture?: NodeJS.Architecture;
 			adapterFactory?: AcpExecutionAdapterFactory;
+			platformEvidence?: AcpTargetPlatformEvidenceStore | null;
+			onPlatformChange?: () => void;
 			managed?: AcpManagedCatalogSource;
 		} = {},
 	) {
@@ -377,12 +436,25 @@ export class AcpRegistry {
 			options.availabilityTtlMs ?? ACP_AVAILABILITY_TTL_MS;
 		this.availabilityProbeTimeoutMs =
 			options.availabilityProbeTimeoutMs ?? ACP_AVAILABILITY_PROBE_TIMEOUT_MS;
+		this.platformSuccessTtlMs =
+			options.platformSuccessTtlMs ?? ACP_PLATFORM_SUCCESS_TTL_MS;
+		this.platformFailureTtlMs =
+			options.platformFailureTtlMs ?? ACP_PLATFORM_FAILURE_TTL_MS;
 		this.platform = options.platform ?? process.platform;
 		this.architecture = options.architecture ?? process.arch;
 		this.adapterFactory = options.adapterFactory ?? createAcpExecutionAdapter;
+		this.platformEvidence = options.platformEvidence ?? null;
+		this.onPlatformChange = options.onPlatformChange;
 		this.managed = options.managed ?? null;
 		this.observeAvailability = createSlowOperationObserver({
 			scope: "acp registry",
+		});
+		this.observeFullAvailability = createSlowOperationObserver({
+			scope: "acp registry",
+			thresholdMs: ACP_AVAILABILITY_SCAN_SLOW_MS,
+		});
+		this.observePlatform = createSlowOperationObserver({
+			scope: "acp registry platform",
 		});
 		this.cache = createCachedList({
 			persistKey: "acp_registry_catalog",
@@ -390,7 +462,7 @@ export class AcpRegistry {
 			fetcher: async () => AcpRegistrySchema.parse(await fetcher()),
 			fallback: FALLBACK,
 			onChange: () => {
-				this.materializedCatalog = null;
+				this.invalidateAvailability();
 				bumpDataRevision("providers");
 				onChange?.();
 			},
@@ -405,7 +477,20 @@ export class AcpRegistry {
 	}
 
 	invalidateAvailability(): void {
-		this.materializedCatalog = null;
+		this.materializationGeneration += 1;
+		this.materializedCatalogs.clear();
+		this.materializedCatalogInflight.clear();
+	}
+
+	private publishPlatformChange(): void {
+		this.invalidateAvailability();
+		bumpDataRevision("providers");
+		try {
+			this.onPlatformChange?.();
+		} catch {
+			// Platform evidence still remains authoritative when a consumer cannot
+			// schedule its optional runtime reconciliation.
+		}
 	}
 
 	async snapshot(refresh = false): Promise<AcpRegistrySnapshot> {
@@ -501,68 +586,205 @@ export class AcpRegistry {
 		};
 	}
 
+	private targetPlatform(
+		descriptor: AcpExecutionTargetDescriptor,
+		adapter: ReturnType<AcpExecutionAdapterFactory>,
+		force: boolean,
+	): Promise<AcpTargetPlatform> {
+		const key = acpExecutionTargetKey(descriptor.target);
+		const cached = this.targetPlatformCache.get(key);
+		const now = this.now();
+		if (cached?.inflight) {
+			return cached.lastGood
+				? Promise.resolve(cached.value ?? cached.lastGood)
+				: cached.inflight;
+		}
+		if (!force && cached?.value && cached.expiresAt > now) {
+			return Promise.resolve(cached.value);
+		}
+
+		const generation = (cached?.generation ?? 0) + 1;
+		const lastGood = cached?.lastGood;
+		const pending = this.observePlatform(
+			`platform:${key}`,
+			`platform discovery for ${descriptor.label}`,
+			() =>
+				adapter.registryPlatform({
+					timeoutMs: Math.max(this.availabilityProbeTimeoutMs, 2_500),
+				}),
+		).then<AcpTargetPlatform, AcpTargetPlatform>(
+			(runtime) => {
+				const success: AcpTargetPlatformSuccess = {
+					...runtime,
+					platformTarget: platformTarget(
+						runtime.platform,
+						runtime.architecture,
+					),
+				};
+				if (this.targetPlatformCache.get(key)?.generation === generation) {
+					const changed =
+						cached?.value?.error !== undefined ||
+						(cached?.value !== undefined &&
+							"verificationPending" in cached.value &&
+							cached.value.verificationPending === true) ||
+						(lastGood !== undefined &&
+							(lastGood.platform !== success.platform ||
+								lastGood.architecture !== success.architecture));
+					this.targetPlatformCache.set(key, {
+						value: success,
+						lastGood: success,
+						expiresAt: this.now() + this.platformSuccessTtlMs,
+						generation,
+					});
+					if (
+						runtime.platform === "linux" &&
+						(runtime.architecture === "x64" || runtime.architecture === "arm64")
+					) {
+						const evidenceStore = this.platformEvidence;
+						const evidencePlatform = runtime.platform;
+						const evidenceArchitecture = runtime.architecture;
+						void Promise.resolve()
+							.then(() =>
+								evidenceStore?.save({
+									targetKey: key,
+									targetId: descriptor.targetId,
+									platform: evidencePlatform,
+									architecture: evidenceArchitecture,
+									observedAt: this.now(),
+								}),
+							)
+							.catch(() => {
+								// Persistence is only a startup optimization. Live platform
+								// evidence remains authoritative when storage is unavailable.
+							});
+					}
+					if (changed) this.publishPlatformChange();
+				}
+				return success;
+			},
+			(error) => {
+				const failure: AcpTargetPlatformFailure = {
+					error:
+						error instanceof Error
+							? error.message
+							: "WSL target is unavailable",
+					platformTarget: "linux-unknown",
+				};
+				const value = lastGood
+					? { ...lastGood, error: failure.error }
+					: failure;
+				if (this.targetPlatformCache.get(key)?.generation === generation) {
+					this.targetPlatformCache.set(key, {
+						value,
+						lastGood,
+						expiresAt: this.now() + this.platformFailureTtlMs,
+						generation,
+					});
+					if (lastGood) this.publishPlatformChange();
+				}
+				return value;
+			},
+		);
+		this.targetPlatformCache.set(key, {
+			value: cached?.value,
+			lastGood,
+			expiresAt: 0,
+			generation,
+			inflight: pending,
+		});
+		// A previously observed architecture is stable for this exact target. A
+		// forced refresh may verify it in the background, but registry rendering
+		// should never block on a WSL startup timeout once last-good evidence exists.
+		return lastGood ? Promise.resolve(cached?.value ?? lastGood) : pending;
+	}
+
+	private hydrateTargetPlatform(
+		descriptor: AcpExecutionTargetDescriptor,
+	): Promise<void> {
+		const key = acpExecutionTargetKey(descriptor.target);
+		if (this.targetPlatformCache.has(key) || !this.platformEvidence)
+			return Promise.resolve();
+		const existing = this.targetPlatformHydrations.get(key);
+		if (existing) return existing;
+		const evidenceStore = this.platformEvidence;
+		const pending = Promise.resolve()
+			.then(() =>
+				evidenceStore.load({
+					targetKey: key,
+					targetId: descriptor.targetId,
+					now: this.now(),
+				}),
+			)
+			.then((evidence) => {
+				if (!evidence || this.targetPlatformCache.has(key)) return;
+				const lastGood: AcpTargetPlatformSuccess = {
+					platform: evidence.platform,
+					architecture: evidence.architecture,
+					platformTarget: platformTarget(
+						evidence.platform,
+						evidence.architecture,
+					),
+				};
+				this.targetPlatformCache.set(key, {
+					value: { ...lastGood, verificationPending: true },
+					lastGood,
+					// Persisted evidence supplies architecture, not current liveness.
+					// Expire it immediately so targetPlatform verifies in background.
+					expiresAt: 0,
+					generation: 0,
+				});
+			})
+			.catch(() => {
+				// A missing or inaccessible optimization must not block the catalog.
+			});
+		this.targetPlatformHydrations.set(key, pending);
+		return pending;
+	}
+
 	private async targetPlatforms(
 		descriptors: AcpExecutionTargetDescriptor[],
-	): Promise<
-		Map<
-			string,
-			| {
-					platform: NodeJS.Platform;
-					architecture: NodeJS.Architecture;
-					platformTarget: string;
-			  }
-			| { error: string; platformTarget: string }
-		>
-	> {
-		type TargetPlatform =
-			| {
-					platform: NodeJS.Platform;
-					architecture: NodeJS.Architecture;
-					platformTarget: string;
-			  }
-			| { error: string; platformTarget: string };
-		const entries: Array<readonly [string, TargetPlatform]> = await Promise.all(
-			descriptors.map(async (descriptor) => {
-				if (descriptor.target.kind === "host") {
-					return [
-						descriptor.targetId,
-						{
-							platform: this.platform,
-							architecture: this.architecture,
-							platformTarget: platformTarget(this.platform, this.architecture),
-						},
-					] as const;
-				}
-				try {
-					const runtime = await this.adapterFactory(
-						descriptor.target,
-					).registryPlatform({
-						timeoutMs: Math.max(this.availabilityProbeTimeoutMs, 2_500),
-					});
-					return [
-						descriptor.targetId,
-						{
-							...runtime,
-							platformTarget: platformTarget(
-								runtime.platform,
-								runtime.architecture,
-							),
-						},
-					] as const;
-				} catch (error) {
-					return [
-						descriptor.targetId,
-						{
-							error:
-								error instanceof Error
-									? error.message
-									: "WSL target is unavailable",
-							platformTarget: "linux-unknown",
-						},
-					] as const;
-				}
-			}),
-		);
+		adapters: Map<string, ReturnType<AcpExecutionAdapterFactory>>,
+		force: boolean,
+	): Promise<Map<string, AcpTargetPlatform>> {
+		const entries: Array<readonly [string, AcpTargetPlatform]> =
+			await Promise.all(
+				descriptors.map(async (descriptor) => {
+					if (descriptor.target.kind === "host") {
+						return [
+							descriptor.targetId,
+							{
+								platform: this.platform,
+								architecture: this.architecture,
+								platformTarget: platformTarget(
+									this.platform,
+									this.architecture,
+								),
+							},
+						] as const;
+					}
+					try {
+						const adapter = adapters.get(descriptor.targetId);
+						if (!adapter)
+							throw new Error("ACP execution target is unavailable");
+						await this.hydrateTargetPlatform(descriptor);
+						return [
+							descriptor.targetId,
+							await this.targetPlatform(descriptor, adapter, force),
+						] as const;
+					} catch (error) {
+						return [
+							descriptor.targetId,
+							{
+								error:
+									error instanceof Error
+										? error.message
+										: "WSL target is unavailable",
+								platformTarget: "linux-unknown",
+							},
+						] as const;
+					}
+				}),
+			);
 		return new Map(entries);
 	}
 
@@ -570,16 +792,28 @@ export class AcpRegistry {
 		config: HlidConfig,
 		refresh = false,
 		refreshRuntimeEvidence = false,
+		options: AcpCatalogOptions = {},
 	): Promise<AcpCatalogItem[]> {
-		if (refresh || refreshRuntimeEvidence) this.materializedCatalog = null;
+		if (refresh || refreshRuntimeEvidence) this.invalidateAvailability();
 		const value = await this.snapshot(refresh);
+		const scopedAgentIds = options.agentIds ? new Set(options.agentIds) : null;
+		const scopeKey = scopedAgentIds
+			? JSON.stringify([...scopedAgentIds].sort((a, b) => a.localeCompare(b)))
+			: "*";
+		const registryAgents = scopedAgentIds
+			? value.agents.filter((agent) => scopedAgentIds.has(agent.id))
+			: value.agents;
 		const registryKey = JSON.stringify(value);
 		const managedClaims = Array.from(
 			new Map(
-				(this.managed?.claimedTargets?.() ?? []).map((claim) => [
-					`${claim.agentId}\0${acpExecutionTargetKey(claim.target)}`,
-					claim,
-				]),
+				(this.managed?.claimedTargets?.() ?? [])
+					.filter(
+						(claim) => !scopedAgentIds || scopedAgentIds.has(claim.agentId),
+					)
+					.map((claim) => [
+						`${claim.agentId}\0${acpExecutionTargetKey(claim.target)}`,
+						claim,
+					]),
 			).values(),
 		);
 		const configKey = JSON.stringify({
@@ -588,7 +822,7 @@ export class AcpRegistry {
 			workspacePaths: config.agents.map((agent) => agent.path),
 			managedClaims,
 		});
-		const materialized = this.materializedCatalog;
+		const materialized = this.materializedCatalogs.get(scopeKey);
 		if (
 			materialized &&
 			materialized.registryKey === registryKey &&
@@ -597,279 +831,491 @@ export class AcpRegistry {
 		) {
 			return this.withLiveManagedState(materialized.value);
 		}
-		const descriptors = configuredAcpExecutionTargets(config, this.platform);
-		const platforms = await this.targetPlatforms(descriptors);
-		const catalog = await this.observeAvailability(
-			"availability",
-			`availability scan for ${value.agents.length} agents`,
-			async () => {
-				const items = await Promise.all(
-					value.agents.map(async (agent): Promise<AcpCatalogItem> => {
-						const override = (config.acp_agents ?? []).find(
-							(item) => item.id === agent.id,
-						);
-						const configuredTargetKey = acpExecutionTargetKey(override?.target);
-						const targetStatuses = await Promise.all(
-							descriptors.map(
-								async (descriptor): Promise<AcpCatalogTargetStatus> => {
-									const selected =
-										Boolean(override) &&
-										acpExecutionTargetKey(descriptor.target) ===
-											configuredTargetKey;
-									const runtime = platforms.get(descriptor.targetId);
-									const runtimeError =
-										runtime && "error" in runtime ? runtime.error : undefined;
-									const runtimePlatform =
-										runtime && !("error" in runtime)
-											? {
-													platform: runtime.platform,
-													architecture: runtime.architecture,
-												}
-											: {
-													platform:
-														descriptor.target.kind === "wsl"
-															? ("linux" as const)
-															: this.platform,
-													architecture: this.architecture,
-												};
-									const platformKey =
-										runtime?.platformTarget ??
-										platformTarget(
-											runtimePlatform.platform,
-											runtimePlatform.architecture,
-										);
-									const targetOverride = selected ? override : undefined;
-									const registryInvocation = resolveAcpInvocation(
-										agent,
-										targetOverride,
-										runtimePlatform,
-									);
-									const managedRecord =
-										this.managed?.managedRecord(agent.id, descriptor.target) ??
-										null;
-									const managedInvocation = managedRecord?.usable
-										? (this.managed?.resolveManagedInvocation(
-												agent.id,
-												descriptor.target,
-											) ?? null)
-										: null;
-									const invocation = managedRecord
-										? {
-												command: managedRecord.command,
-												args: targetOverride?.args ?? managedRecord.args,
-												env: {
-													...managedRecord.env,
-													...targetOverride?.env,
-												},
-												installGuidance: registryInvocation.installGuidance,
-											}
-										: registryInvocation;
-									const adapter = this.adapterFactory(descriptor.target);
-									const resolvedExecutable =
-										!runtimeError &&
-										invocation.command &&
-										(!managedRecord || managedInvocation)
-											? await boundedExecutableProbe(
-													Promise.resolve(
-														descriptor.target.kind === "host"
-															? this.which(invocation.command, {
-																	cwd: descriptor.cwd,
-																	env: { ...process.env, ...invocation.env },
-																})
-															: adapter.resolveExecutable(invocation.command, {
-																	hostCwd: descriptor.cwd,
-																	env: { ...process.env, ...invocation.env },
-																	forwardedEnvNames: Object.keys(
-																		invocation.env,
-																	),
-																	timeoutMs: this.availabilityProbeTimeoutMs,
-																}),
-													),
-													this.availabilityProbeTimeoutMs,
-												)
-											: null;
-									const available = Boolean(resolvedExecutable);
-									const provenance = managedRecord
-										? "managed"
-										: available
-											? "external"
-											: "missing";
-									const support = this.managed?.installSupport(
-										agent,
-										descriptor.target,
-										platformKey,
-									) ?? {
-										supported: false,
-										blockedReason: "Managed ACP installation is unavailable",
-									};
-									const canInstall =
-										!runtimeError &&
-										!targetOverride?.executable &&
-										provenance === "missing" &&
-										support.supported;
-									const canUpdate =
-										!runtimeError &&
-										!targetOverride?.executable &&
-										provenance === "managed" &&
-										support.supported &&
-										support.updateAvailable === true;
-									const canRemove = provenance === "managed";
-									const mutationRevision = managedMutationRevision({
-										schemaVersion: 1,
-										agentId: agent.id,
-										registryVersion: agent.version,
-										distribution: agent.distribution,
-										targetDescriptor: {
-											targetId: descriptor.targetId,
-											target: descriptor.target,
-											cwd: descriptor.cwd,
-										},
-										platformTarget: platformKey,
-										provenance,
-										available,
-										resolvedExecutable,
-										managedRecord,
-										canInstall,
-										canUpdate,
-										canRemove,
-									});
-									return {
-										targetId: descriptor.targetId,
-										target: descriptor.target,
-										label: descriptor.label,
-										recommended: descriptor.recommended,
-										selected,
-										platformTarget: platformKey,
-										provenance,
-										available,
-										canEnable: available,
-										canInstall,
-										canUpdate,
-										canRemove,
-										registryVersion: agent.version,
-										mutationRevision,
-										installedVersion: managedRecord?.installedVersion,
-										observedVersion: managedRecord?.observedVersion,
-										resolvedExecutable: resolvedExecutable ?? undefined,
-										command: invocation.command,
-										args: invocation.args,
-										env: invocation.env,
-										installGuidance: invocation.installGuidance,
-										blockedReason:
-											runtimeError ??
-											managedRecord?.error ??
-											(targetOverride?.executable && managedRecord
-												? "Remove this Hlid-managed installation before switching to a custom executable"
-												: undefined) ??
-											(provenance === "missing" && !support.supported
-												? support.blockedReason
-												: undefined),
-									};
-								},
-							),
-						);
-						const configuredTargetIds = new Set(
-							descriptors.map((descriptor) => descriptor.targetId),
-						);
-						for (const claim of managedClaims) {
-							if (
-								claim.agentId !== agent.id ||
-								configuredTargetIds.has(claim.targetId)
-							) {
-								continue;
+		if (registryAgents.length === 0 && managedClaims.length === 0) {
+			// Exact-id routes accept bounded user input. Do not retain a distinct
+			// cache entry for every unknown id; the registry snapshot itself remains
+			// cached, and an empty scope needs no execution-target work.
+			return [];
+		}
+		const generation = this.materializationGeneration;
+		const materializationIdentity = createHash("sha256")
+			.update(`${registryKey}\0${configKey}`)
+			.digest("hex");
+		const materializationKey = `${generation}\0${scopeKey}\0${materializationIdentity}`;
+		const inflight = this.materializedCatalogInflight.get(materializationKey);
+		if (inflight) {
+			return this.withLiveManagedState(await inflight);
+		}
+
+		const pending = (async (): Promise<AcpCatalogItem[]> => {
+			const descriptors = configuredAcpExecutionTargets(config, this.platform);
+			const adapters = new Map(
+				descriptors.map((descriptor) => [
+					descriptor.targetId,
+					this.adapterFactory(descriptor.target),
+				]),
+			);
+			const platforms = await this.targetPlatforms(
+				descriptors,
+				adapters,
+				refresh || refreshRuntimeEvidence,
+			);
+			const planKey = (agentId: string, targetId: string) =>
+				`${agentId}\0${targetId}`;
+			const createTargetPlan = (
+				agent: AcpRegistryAgent,
+				descriptor: AcpExecutionTargetDescriptor,
+			) => {
+				const override = (config.acp_agents ?? []).find(
+					(item) => item.id === agent.id,
+				);
+				const selected =
+					Boolean(override) &&
+					acpExecutionTargetKey(descriptor.target) ===
+						acpExecutionTargetKey(override?.target);
+				const runtime = platforms.get(descriptor.targetId);
+				const runtimeError =
+					runtime?.error ??
+					(runtime &&
+					"verificationPending" in runtime &&
+					runtime.verificationPending
+						? `Verifying ${descriptor.label} availability`
+						: undefined);
+				const runtimePlatform =
+					runtime && "platform" in runtime
+						? {
+								platform: runtime.platform,
+								architecture: runtime.architecture,
 							}
-							const cleanup = this.cleanupTarget(agent, claim);
-							if (cleanup) targetStatuses.push(cleanup);
+						: {
+								platform:
+									descriptor.target.kind === "wsl"
+										? ("linux" as const)
+										: this.platform,
+								architecture: this.architecture,
+							};
+				const platformKey =
+					runtime?.platformTarget ??
+					platformTarget(
+						runtimePlatform.platform,
+						runtimePlatform.architecture,
+					);
+				const targetOverride = selected ? override : undefined;
+				const registryInvocation = resolveAcpInvocation(
+					agent,
+					targetOverride,
+					runtimePlatform,
+				);
+				const managedRecord =
+					this.managed?.managedRecord(agent.id, descriptor.target) ?? null;
+				const managedInvocation = managedRecord?.usable
+					? (this.managed?.resolveManagedInvocation(
+							agent.id,
+							descriptor.target,
+						) ?? null)
+					: null;
+				const invocation = managedRecord
+					? {
+							command: managedRecord.command,
+							args: targetOverride?.args ?? managedRecord.args,
+							env: { ...managedRecord.env, ...targetOverride?.env },
+							installGuidance: registryInvocation.installGuidance,
 						}
-						const selected =
-							targetStatuses.find((target) => target.selected) ??
-							targetStatuses.find(
-								(target) =>
-									acpExecutionTargetKey(target.target) ===
-									acpExecutionTargetKey(HOST_ACP_EXECUTION_TARGET),
-							) ??
-							targetStatuses[0];
-						if (!selected)
-							throw new Error("ACP catalog has no execution target");
-						const selectedRuntimeEvidence =
-							selected.target.kind === "host" && selected.resolvedExecutable
+					: registryInvocation;
+				// A usable managed record has already passed Hlid's contained-file,
+				// receipt, and exact target-path validation. Do not make that owned
+				// installation depend on a second fallible PATH/WSL subprocess probe.
+				// Exact WSL liveness remains gated by the platform probe above.
+				const validatedManagedExecutable =
+					!runtimeError && managedRecord?.usable && managedInvocation
+						? managedInvocation.command
+						: undefined;
+				return {
+					selected,
+					runtimeError,
+					platformKey,
+					targetOverride,
+					managedRecord,
+					invocation,
+					validatedManagedExecutable,
+					probeEligible:
+						!validatedManagedExecutable &&
+						!runtimeError &&
+						Boolean(invocation.command) &&
+						(!managedRecord || Boolean(managedInvocation)),
+				};
+			};
+			type TargetPlan = ReturnType<typeof createTargetPlan>;
+			const targetPlans = new Map<string, TargetPlan>();
+			for (const agent of registryAgents) {
+				for (const descriptor of descriptors) {
+					targetPlans.set(
+						planKey(agent.id, descriptor.targetId),
+						createTargetPlan(agent, descriptor),
+					);
+				}
+			}
+			const observeAvailability = scopedAgentIds
+				? this.observeAvailability
+				: this.observeFullAvailability;
+			const catalog = await observeAvailability(
+				"availability",
+				`availability scan for ${registryAgents.length} agents`,
+				async () => {
+					type ProbeGroup = {
+						adapter: ReturnType<AcpExecutionAdapterFactory>;
+						descriptor: AcpExecutionTargetDescriptor;
+						environment: NodeJS.ProcessEnv;
+						forwardedEnvNames: string[];
+						requests: Map<string, string[]>;
+					};
+					const batchGroups = new Map<string, ProbeGroup>();
+					const directGroups = new Map<
+						string,
+						ProbeGroup & { command: string }
+					>();
+					const addProbeRequest = (
+						group: ProbeGroup,
+						command: string,
+						key: string,
+					) => {
+						const requests = group.requests.get(command) ?? [];
+						requests.push(key);
+						group.requests.set(command, requests);
+					};
+					for (const agent of registryAgents) {
+						for (const descriptor of descriptors) {
+							const key = planKey(agent.id, descriptor.targetId);
+							const plan = targetPlans.get(key);
+							const adapter = adapters.get(descriptor.targetId);
+							if (!plan?.probeEligible || !adapter) continue;
+							const environment = { ...process.env, ...plan.invocation.env };
+							const forwardedEnvNames = Object.keys(plan.invocation.env).sort(
+								(a, b) => a.localeCompare(b),
+							);
+							const environmentKey = createHash("sha256")
+								.update(
+									JSON.stringify({
+										target: descriptor.target,
+										hostCwd: descriptor.cwd,
+										environment: Object.entries(environment).sort(([a], [b]) =>
+											a.localeCompare(b),
+										),
+										forwardedEnvNames,
+									}),
+								)
+								.digest("hex");
+							const useBatch =
+								Boolean(adapter.resolveExecutables) &&
+								(descriptor.target.kind === "wsl" ||
+									this.which === findAcpExecutable);
+							const groupKey = useBatch
+								? environmentKey
+								: `${environmentKey}:${createHash("sha256")
+										.update(plan.invocation.command)
+										.digest("hex")}`;
+							if (useBatch) {
+								let group = batchGroups.get(groupKey);
+								if (!group) {
+									group = {
+										adapter,
+										descriptor,
+										environment,
+										forwardedEnvNames,
+										requests: new Map(),
+									};
+									batchGroups.set(groupKey, group);
+								}
+								addProbeRequest(group, plan.invocation.command, key);
+							} else {
+								let group = directGroups.get(groupKey);
+								if (!group) {
+									group = {
+										adapter,
+										descriptor,
+										environment,
+										forwardedEnvNames,
+										requests: new Map(),
+										command: plan.invocation.command,
+									};
+									directGroups.set(groupKey, group);
+								}
+								addProbeRequest(group, plan.invocation.command, key);
+							}
+						}
+					}
+					const resolvedExecutables = new Map<string, string | null>();
+					await Promise.all([
+						...[...batchGroups.values()].map(async (group) => {
+							const commands = [...group.requests.keys()];
+							const resolveMany = group.adapter.resolveExecutables;
+							const resolved = resolveMany
 								? await boundedExecutableProbe(
-										runtimeExecutableEvidence(
-											agent.id,
-											selected.resolvedExecutable,
+										Promise.resolve().then(() =>
+											resolveMany.call(group.adapter, commands, {
+												hostCwd: group.descriptor.cwd,
+												env: group.environment,
+												forwardedEnvNames: group.forwardedEnvNames,
+												timeoutMs: this.availabilityProbeTimeoutMs,
+											}),
 										),
 										this.availabilityProbeTimeoutMs,
 									)
-								: undefined;
-						return {
-							...agent,
-							providerId: `acp:${agent.id}`,
-							enabled: Boolean(override),
-							available: selected.available,
-							resolvedExecutable: selected.resolvedExecutable,
-							runtimeExecutableEvidence: selectedRuntimeEvidence ?? undefined,
-							unavailableReason: selected.available
-								? undefined
-								: (selected.blockedReason ??
-									(selected.command
-										? `${selected.command} is not installed in ${selected.label}`
-										: `No distribution for ${selected.platformTarget}`)),
-							command: selected.command,
-							args: selected.args,
-							env: selected.env,
-							installGuidance: selected.installGuidance,
-							targets: targetStatuses,
-						};
-					}),
-				);
-				const registryAgentIds = new Set(value.agents.map((agent) => agent.id));
-				const missingAgentClaims = new Map<string, typeof managedClaims>();
-				for (const claim of managedClaims) {
-					if (registryAgentIds.has(claim.agentId)) continue;
-					const claims = missingAgentClaims.get(claim.agentId) ?? [];
-					claims.push(claim);
-					missingAgentClaims.set(claim.agentId, claims);
-				}
-				for (const [agentId, claims] of missingAgentClaims) {
-					const targets = claims.flatMap((claim) => {
-						const target = this.cleanupTarget(undefined, claim);
-						return target ? [target] : [];
-					});
-					const target = targets[0];
-					if (!target) continue;
-					items.push({
-						id: agentId,
-						name: agentId,
-						version: target.registryVersion,
-						description: "Hlid-managed ACP installation retained for cleanup.",
-						distribution: {},
-						providerId: `acp:${agentId}`,
-						enabled: false,
-						available: false,
-						unavailableReason: target.blockedReason,
-						command: target.command,
-						args: target.args,
-						env: target.env,
-						installGuidance: target.installGuidance,
-						targets,
-					});
-				}
-				return items;
-			},
-		);
-		catalog.sort((a, b) => {
-			const featured = ["opencode", "pi-acp"];
-			const ai = featured.indexOf(a.id);
-			const bi = featured.indexOf(b.id);
-			if (ai >= 0 || bi >= 0) return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
-			return a.name.localeCompare(b.name);
-		});
-		this.materializedCatalog = {
-			registryKey,
-			configKey,
-			value: catalog,
-			refreshedAt: this.now(),
-		};
-		return this.withLiveManagedState(catalog);
+								: null;
+							for (const [command, keys] of group.requests) {
+								for (const key of keys) {
+									resolvedExecutables.set(key, resolved?.get(command) ?? null);
+								}
+							}
+						}),
+						...[...directGroups.values()].map(async (group) => {
+							const resolved = await boundedExecutableProbe(
+								Promise.resolve().then(() =>
+									group.descriptor.target.kind === "host"
+										? this.which(group.command, {
+												cwd: group.descriptor.cwd,
+												env: group.environment,
+											})
+										: group.adapter.resolveExecutable(group.command, {
+												hostCwd: group.descriptor.cwd,
+												env: group.environment,
+												forwardedEnvNames: group.forwardedEnvNames,
+												timeoutMs: this.availabilityProbeTimeoutMs,
+											}),
+								),
+								this.availabilityProbeTimeoutMs,
+							);
+							for (const keys of group.requests.values()) {
+								for (const key of keys) resolvedExecutables.set(key, resolved);
+							}
+						}),
+					]);
+					const items = await Promise.all(
+						registryAgents.map(async (agent): Promise<AcpCatalogItem> => {
+							const override = (config.acp_agents ?? []).find(
+								(item) => item.id === agent.id,
+							);
+							const targetStatuses = await Promise.all(
+								descriptors.map(
+									async (descriptor): Promise<AcpCatalogTargetStatus> => {
+										const plan = targetPlans.get(
+											planKey(agent.id, descriptor.targetId),
+										);
+										if (!plan)
+											throw new Error("ACP target plan is unavailable");
+										const {
+											selected,
+											runtimeError,
+											platformKey,
+											targetOverride,
+											managedRecord,
+											invocation,
+										} = plan;
+										const resolvedExecutable =
+											resolvedExecutables.get(
+												planKey(agent.id, descriptor.targetId),
+											) ??
+											plan.validatedManagedExecutable ??
+											null;
+										const available = Boolean(resolvedExecutable);
+										const provenance = managedRecord
+											? "managed"
+											: available
+												? "external"
+												: "missing";
+										const support = this.managed?.installSupport(
+											agent,
+											descriptor.target,
+											platformKey,
+										) ?? {
+											supported: false,
+											blockedReason: "Managed ACP installation is unavailable",
+										};
+										const canInstall =
+											!runtimeError &&
+											!targetOverride?.executable &&
+											provenance === "missing" &&
+											support.supported;
+										const canUpdate =
+											!runtimeError &&
+											!targetOverride?.executable &&
+											provenance === "managed" &&
+											support.supported &&
+											support.updateAvailable === true;
+										const canRemove = provenance === "managed";
+										const mutationRevision = managedMutationRevision({
+											schemaVersion: 1,
+											agentId: agent.id,
+											registryVersion: agent.version,
+											distribution: agent.distribution,
+											targetDescriptor: {
+												targetId: descriptor.targetId,
+												target: descriptor.target,
+												cwd: descriptor.cwd,
+											},
+											platformTarget: platformKey,
+											provenance,
+											available,
+											resolvedExecutable,
+											managedRecord,
+											canInstall,
+											canUpdate,
+											canRemove,
+										});
+										return {
+											targetId: descriptor.targetId,
+											target: descriptor.target,
+											label: descriptor.label,
+											recommended: descriptor.recommended,
+											selected,
+											platformTarget: platformKey,
+											provenance,
+											available,
+											canEnable: available,
+											canInstall,
+											canUpdate,
+											canRemove,
+											registryVersion: agent.version,
+											mutationRevision,
+											installedVersion: managedRecord?.installedVersion,
+											observedVersion: managedRecord?.observedVersion,
+											resolvedExecutable: resolvedExecutable ?? undefined,
+											command: invocation.command,
+											args: invocation.args,
+											env: invocation.env,
+											installGuidance: invocation.installGuidance,
+											blockedReason:
+												runtimeError ??
+												managedRecord?.error ??
+												(targetOverride?.executable && managedRecord
+													? "Remove this Hlid-managed installation before switching to a custom executable"
+													: undefined) ??
+												(provenance === "missing" && !support.supported
+													? support.blockedReason
+													: undefined),
+										};
+									},
+								),
+							);
+							const configuredTargetIds = new Set(
+								descriptors.map((descriptor) => descriptor.targetId),
+							);
+							for (const claim of managedClaims) {
+								if (
+									claim.agentId !== agent.id ||
+									configuredTargetIds.has(claim.targetId)
+								) {
+									continue;
+								}
+								const cleanup = this.cleanupTarget(agent, claim);
+								if (cleanup) targetStatuses.push(cleanup);
+							}
+							const selected =
+								targetStatuses.find((target) => target.selected) ??
+								targetStatuses.find(
+									(target) =>
+										acpExecutionTargetKey(target.target) ===
+										acpExecutionTargetKey(HOST_ACP_EXECUTION_TARGET),
+								) ??
+								targetStatuses[0];
+							if (!selected)
+								throw new Error("ACP catalog has no execution target");
+							const selectedRuntimeEvidence =
+								selected.target.kind === "host" && selected.resolvedExecutable
+									? await boundedExecutableProbe(
+											runtimeExecutableEvidence(
+												agent.id,
+												selected.resolvedExecutable,
+											),
+											this.availabilityProbeTimeoutMs,
+										)
+									: undefined;
+							return {
+								...agent,
+								providerId: `acp:${agent.id}`,
+								enabled: Boolean(override),
+								available: selected.available,
+								resolvedExecutable: selected.resolvedExecutable,
+								runtimeExecutableEvidence: selectedRuntimeEvidence ?? undefined,
+								unavailableReason: selected.available
+									? undefined
+									: (selected.blockedReason ??
+										(selected.command
+											? `${selected.command} is not installed in ${selected.label}`
+											: `No distribution for ${selected.platformTarget}`)),
+								command: selected.command,
+								args: selected.args,
+								env: selected.env,
+								installGuidance: selected.installGuidance,
+								targets: targetStatuses,
+							};
+						}),
+					);
+					const registryAgentIds = new Set(
+						registryAgents.map((agent) => agent.id),
+					);
+					const missingAgentClaims = new Map<string, typeof managedClaims>();
+					for (const claim of managedClaims) {
+						if (registryAgentIds.has(claim.agentId)) continue;
+						const claims = missingAgentClaims.get(claim.agentId) ?? [];
+						claims.push(claim);
+						missingAgentClaims.set(claim.agentId, claims);
+					}
+					for (const [agentId, claims] of missingAgentClaims) {
+						const targets = claims.flatMap((claim) => {
+							const target = this.cleanupTarget(undefined, claim);
+							return target ? [target] : [];
+						});
+						const target = targets[0];
+						if (!target) continue;
+						items.push({
+							id: agentId,
+							name: agentId,
+							version: target.registryVersion,
+							description:
+								"Hlid-managed ACP installation retained for cleanup.",
+							distribution: {},
+							providerId: `acp:${agentId}`,
+							enabled: false,
+							available: false,
+							unavailableReason: target.blockedReason,
+							command: target.command,
+							args: target.args,
+							env: target.env,
+							installGuidance: target.installGuidance,
+							targets,
+						});
+					}
+					return items;
+				},
+			);
+			catalog.sort((a, b) => {
+				const featured = ["opencode", "pi-acp"];
+				const ai = featured.indexOf(a.id);
+				const bi = featured.indexOf(b.id);
+				if (ai >= 0 || bi >= 0) return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+				return a.name.localeCompare(b.name);
+			});
+			return catalog;
+		})();
+		this.materializedCatalogInflight.set(materializationKey, pending);
+		try {
+			const catalog = await pending;
+			if (this.materializationGeneration === generation) {
+				this.materializedCatalogs.set(scopeKey, {
+					registryKey,
+					configKey,
+					value: catalog,
+					refreshedAt: this.now(),
+				});
+			}
+			return this.withLiveManagedState(catalog);
+		} finally {
+			if (
+				this.materializedCatalogInflight.get(materializationKey) === pending
+			) {
+				this.materializedCatalogInflight.delete(materializationKey);
+			}
+		}
 	}
 }

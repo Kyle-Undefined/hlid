@@ -844,6 +844,28 @@ describe("generateTurnRecap — recap model", () => {
 		});
 		expect(capturedParams?.model).toBe("gpt-4o-mini");
 	});
+
+	it("runs the recap in the exact provider workspace runtime", async () => {
+		const provider = makeProvider("recapped");
+		await generateTurnRecap({
+			sessionId: null,
+			assistantSeq: -1,
+			userMessage: "test",
+			toolEvents: [],
+			assistantText: "done",
+			emit: vi.fn(),
+			vaultPath: "C:\\Users\\kyle\\Vault",
+			runtimeCwd:
+				"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\development\\repos\\hlid",
+			provider,
+		});
+
+		expect(capturedParams).toEqual(
+			expect.objectContaining({
+				cwd: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\development\\repos\\hlid",
+			}),
+		);
+	});
 });
 
 // ── returns early when no provider ───────────────────────────────────────────

@@ -140,8 +140,11 @@ describe("buildApiIndex", () => {
 		expect(skillImport?.desc).toContain("configured-agent-discovered");
 		expect(skillImport?.desc).toContain("1 to 100");
 
-		const acpSessions = endpoint("GET", "/acp/sessions?id=opencode&cursor=");
-		expect(acpSessions?.desc).toContain("exact configured vault workspace");
+		const acpSessions = endpoint(
+			"GET",
+			"/acp/sessions?id=opencode&cwd=&cursor=",
+		);
+		expect(acpSessions?.desc).toContain("exact configured workspace");
 		expect(acpSessions?.desc).toContain("does not load");
 		const acpSessionImport = endpoint("POST", "/acp/sessions/import");
 		expect(acpSessionImport?.desc).toContain("provider-native continuity");
@@ -170,8 +173,8 @@ describe("buildApiIndex", () => {
 			["POST", "/skills/refresh"],
 			["GET", "/voice?refresh=1"],
 			["POST", "/acp/preflight"],
-			["GET", "/acp/models?id=opencode"],
-			["GET", "/acp/sessions?id=opencode&cursor="],
+			["GET", "/acp/models?id=opencode&cwd="],
+			["GET", "/acp/sessions?id=opencode&cwd=&cursor="],
 			["POST", "/acp/sessions/import"],
 			["POST", "/voice/sync"],
 			["POST", "/voice/download"],

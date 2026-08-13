@@ -1,4 +1,5 @@
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -34,6 +35,7 @@ import {
 	findAcpProviderSession,
 	inspectAcpAgent,
 	listAcpProviderSessions,
+	workspacePathIdentity,
 } from "./acpProvider";
 import type {
 	AgentEvent,
@@ -78,6 +80,59 @@ function behaviorProvider(
 		env: { HLID_FAKE_ACP_BEHAVIOR: behavior },
 		timeouts,
 	});
+}
+
+function trackedBehaviorAdapter(hangingStarts: ReadonlySet<number>) {
+	const base = createAcpExecutionAdapter({ kind: "host" });
+	const starts: Array<{ cwd: string; activeBefore: number }> = [];
+	const terminateCalls: Array<{
+		index: number;
+		graceMs: number;
+		immediate: boolean | undefined;
+	}> = [];
+	let active = 0;
+	let peak = 0;
+	const adapter: AcpExecutionAdapter = {
+		...base,
+		start: async (input) => {
+			const index = starts.length;
+			starts.push({ cwd: input.hostCwd, activeBefore: active });
+			const started = await base.start({
+				...input,
+				hostCwd: process.cwd(),
+				env: {
+					...input.env,
+					HLID_FAKE_ACP_BEHAVIOR: hangingStarts.has(index)
+						? "hang-initialize"
+						: "",
+				},
+			});
+			let stopped = false;
+			const markStopped = () => {
+				if (stopped) return;
+				stopped = true;
+				active -= 1;
+			};
+			active += 1;
+			peak = Math.max(peak, active);
+			started.child.once("exit", markStopped);
+			return {
+				...started,
+				terminate: async (graceMs, immediate) => {
+					terminateCalls.push({ index, graceMs, immediate });
+					await started.terminate(graceMs, immediate);
+					markStopped();
+				},
+			};
+		},
+	};
+	return {
+		adapter,
+		starts,
+		terminateCalls,
+		active: () => active,
+		peak: () => peak,
+	};
 }
 
 function params(
@@ -197,6 +252,28 @@ describe("AcpProvider — interface compliance", () => {
 			reason: "registry snapshot",
 		});
 		await expect(provider.check()).resolves.toEqual({ available: true });
+		expect(provider.cachedAvailability()).toEqual({ available: true });
+	});
+
+	it("does not let an older executable check overwrite newer model validation", async () => {
+		const base = createAcpExecutionAdapter({ kind: "host" });
+		let resolveExecutable: (value: string | null) => void = () => {};
+		const executable = new Promise<string | null>((resolve) => {
+			resolveExecutable = resolve;
+		});
+		const adapter: AcpExecutionAdapter = {
+			...base,
+			resolveExecutable: () => executable,
+		};
+		const provider = makeProvider({ executionAdapter: () => adapter });
+
+		const staleCheck = provider.check();
+		await expect(provider.listModels()).resolves.not.toHaveLength(0);
+		resolveExecutable(null);
+		await expect(staleCheck).resolves.toEqual({
+			available: false,
+			reason: "bun is not installed",
+		});
 		expect(provider.cachedAvailability()).toEqual({ available: true });
 	});
 
@@ -1566,6 +1643,54 @@ describe("AcpProvider — session lifecycle", () => {
 		session.cancel();
 	});
 
+	it("omits a carried startup effort that the selected model does not advertise", async () => {
+		const session = behaviorProvider("dependent-config").query(
+			params("allow", { model: "fake-smart", effort: "medium" }),
+		);
+		await session.send("report-config");
+		const events: AgentEvent[] = [];
+		for await (const event of session) {
+			events.push(event);
+			if (event.type === "done") break;
+		}
+		expect(events).toContainEqual({
+			type: "text_delta",
+			text: "fake-smart/high",
+		});
+		expect(session.sessionConfig?.()).toEqual(
+			expect.objectContaining({
+				activeModel: "fake-smart",
+				activeEffort: "high",
+			}),
+		);
+
+		await expect(session.setEffort?.("medium")).rejects.toThrow(
+			'does not advertise thought level "medium" for the active model',
+		);
+		await session.send("report-config");
+		const recovered: AgentEvent[] = [];
+		for await (const event of session) {
+			recovered.push(event);
+			if (event.type === "done") break;
+		}
+		expect(recovered).toContainEqual({
+			type: "text_delta",
+			text: "fake-smart/high",
+		});
+		session.cancel();
+	});
+
+	it("fails closed when a dependent effort response changes the selected model", async () => {
+		const session = behaviorProvider("dependent-config-model-drift").query(
+			params("allow", { model: "fake-smart", effort: "high" }),
+		);
+		await expect(session.send("report-config")).rejects.toThrow(
+			'activated model "fake-fast" after Hlid requested "fake-smart"',
+		);
+		expect(session.sessionConfig?.()).toBeNull();
+		session.cancel();
+	});
+
 	it("restores the initially advertised model when live selection is cleared", async () => {
 		const session = makeProvider().query(params());
 		await session.send("report-config");
@@ -1970,6 +2095,63 @@ describe("AcpProvider — model catalog", () => {
 		expect(terminate).toHaveBeenCalledTimes(4);
 	});
 
+	it.each([
+		[
+			"a same-distro UNC cwd",
+			"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\repo",
+			"/home/kyle/repo",
+		],
+		["a Windows cwd", "C:\\Users\\kyle\\repo", "/mnt/c/Users/kyle/repo"],
+	])("sends the exact WSL session/new cwd and MCP configuration from %s", async (_label, hostCwd, providerCwd) => {
+		const hostAdapter = createAcpExecutionAdapter({ kind: "host" });
+		const targetAdapter = createAcpExecutionAdapter({
+			kind: "wsl",
+			distro: "Ubuntu-24.04",
+		});
+		const adaptedMcpServers: Array<{ name: string; hostCwd: string }> = [];
+		const adaptMcpServer: AcpExecutionAdapter["adaptMcpServer"] = (
+			server,
+			exactHostCwd,
+		) => {
+			adaptedMcpServers.push({ name: server.name, hostCwd: exactHostCwd });
+			return server;
+		};
+		const adapter: AcpExecutionAdapter = {
+			...hostAdapter,
+			target: targetAdapter.target,
+			key: targetAdapter.key,
+			providerPath: targetAdapter.providerPath,
+			pathAccessible: targetAdapter.pathAccessible,
+			adaptMcpServer,
+			start: (input) => hostAdapter.start({ ...input, hostCwd: process.cwd() }),
+		};
+		const provider = makeProvider({
+			target: { kind: "wsl", distro: "Ubuntu-24.04" },
+			executionAdapter: () => adapter,
+			env: { HLID_FAKE_ACP_BEHAVIOR: "cwd-model" },
+			timeouts: processTestTimeouts,
+		});
+		const session = provider.query(params("allow", { cwd: hostCwd }));
+		await session.send("report-session-inputs");
+		const events: AgentEvent[] = [];
+		for await (const event of session) {
+			events.push(event);
+			if (event.type === "done") break;
+		}
+		expect(session.sessionConfig?.()).toEqual(
+			expect.objectContaining({ activeModel: providerCwd }),
+		);
+		expect(events).toContainEqual({
+			type: "text_delta",
+			text: JSON.stringify({
+				additionalDirectories: [],
+				mcpTransports: ["stdio"],
+			}),
+		});
+		expect(adaptedMcpServers).toContainEqual({ name: "hlid", hostCwd });
+		await session.cancelAndWait?.();
+	});
+
 	it("surfaces ACP model and thought-level config options", async () => {
 		const models = await makeProvider().listModels();
 		expect(models).toEqual([
@@ -1981,9 +2163,223 @@ describe("AcpProvider — model catalog", () => {
 					expect.objectContaining({ value: "high", label: "High" }),
 				]),
 			}),
-			expect.objectContaining({ value: "fake-smart", label: "Fake Smart" }),
+			expect.objectContaining({
+				value: "fake-smart",
+				label: "Fake Smart",
+				efforts: expect.arrayContaining([
+					expect.objectContaining({ value: "high", label: "High" }),
+				]),
+			}),
 		]);
+	});
+
+	it("discovers distinct effort menus for every visible model while preserving the original default", async () => {
+		const models = await behaviorProvider("dependent-config").listModels();
+
+		expect(models).toEqual([
+			expect.objectContaining({
+				value: "fake-fast",
+				isDefault: true,
+				efforts: [
+					expect.objectContaining({ value: "low", isDefault: false }),
+					expect.objectContaining({ value: "medium", isDefault: true }),
+					expect.objectContaining({ value: "high", isDefault: false }),
+				],
+			}),
+			expect.objectContaining({
+				value: "fake-smart",
+				isDefault: false,
+				efforts: [
+					expect.objectContaining({ value: "high" }),
+					expect.objectContaining({ value: "xhigh" }),
+				],
+			}),
+		]);
+		for (const effort of models[1]?.efforts ?? []) {
+			expect(effort).not.toHaveProperty("isDefault");
+		}
+	});
+
+	it("keeps a successfully inspected model without an effort menu effort-free", async () => {
+		const models = await behaviorProvider(
+			"dependent-config-none-smart",
+		).listModels();
+
+		expect(models[0]).toEqual(
+			expect.objectContaining({
+				value: "fake-fast",
+				efforts: expect.any(Array),
+			}),
+		);
+		expect(models[1]).toEqual(expect.objectContaining({ value: "fake-smart" }));
 		expect(models[1]).not.toHaveProperty("efforts");
+	});
+
+	it("keeps provider metadata available when one model rejects effort inspection", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "hlid-acp-effort-rejection-"));
+		const configMarker = join(cwd, "config.log");
+		try {
+			const provider = makeProvider({
+				discoveryCwd: cwd,
+				env: {
+					HLID_FAKE_ACP_BEHAVIOR: "metadata-efforts-many-fail-second",
+					HLID_FAKE_ACP_CONFIG_MARKER: configMarker,
+				},
+				timeouts: processTestTimeouts,
+			});
+			const models = await provider.listModels();
+
+			expect(models[0]).toHaveProperty("efforts");
+			expect(models[1]).not.toHaveProperty("efforts");
+			expect(models[2]).toHaveProperty("efforts");
+			expect(
+				readFileSync(configMarker, "utf8").trim().split("\n"),
+			).toHaveLength(32);
+			expect(provider.cachedAvailability()).toEqual({ available: true });
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("uses one throwaway process and session and cleans it up without prompting", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "hlid-acp-effort-metadata-"));
+		const initializeMarker = join(cwd, "initialize.log");
+		const sessionMarker = join(cwd, "session.log");
+		const configMarker = join(cwd, "config.log");
+		const deleteMarker = join(cwd, "delete.log");
+		const promptMarker = join(cwd, "prompt.log");
+		try {
+			const provider = makeProvider({
+				discoveryCwd: cwd,
+				env: {
+					HLID_FAKE_ACP_BEHAVIOR: "dependent-config",
+					HLID_FAKE_ACP_INITIALIZE_MARKER: initializeMarker,
+					HLID_FAKE_ACP_SESSION_MARKER: sessionMarker,
+					HLID_FAKE_ACP_CONFIG_MARKER: configMarker,
+					HLID_FAKE_ACP_DELETE_MARKER: deleteMarker,
+					HLID_FAKE_ACP_PROMPT_MARKER: promptMarker,
+				},
+				timeouts: processTestTimeouts,
+			});
+			const models = await provider.listModels({ cwd });
+
+			expect(models[0]).toEqual(
+				expect.objectContaining({ value: "fake-fast", isDefault: true }),
+			);
+			expect(models[1]).toEqual(
+				expect.objectContaining({ value: "fake-smart", isDefault: false }),
+			);
+			expect(readFileSync(initializeMarker, "utf8")).toBe("initialize\n");
+			expect(readFileSync(sessionMarker, "utf8")).toBe("fake-session\n");
+			expect(readFileSync(configMarker, "utf8")).toBe(
+				"fake-session:model:fake-smart\n",
+			);
+			expect(readFileSync(deleteMarker, "utf8")).toBe("fake-session\n");
+			expect(existsSync(promptMarker)).toBe(false);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps capability discovery on the original snapshot without model mutations", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "hlid-acp-capability-only-"));
+		const configMarker = join(cwd, "config.log");
+		try {
+			const capabilities = await makeProvider({
+				discoveryCwd: cwd,
+				env: {
+					HLID_FAKE_ACP_BEHAVIOR: "dependent-config",
+					HLID_FAKE_ACP_CONFIG_MARKER: configMarker,
+				},
+			}).discoverCapabilities({ cwd });
+
+			expect(capabilities.evidence).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ label: "Model configuration (2)" }),
+					expect.objectContaining({
+						label: "Session mode configuration (2)",
+					}),
+				]),
+			);
+			expect(existsSync(configMarker)).toBe(false);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("bounds model effort probes but still reaches an exact only-filter model", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "hlid-acp-effort-bound-"));
+		const broadMarker = join(cwd, "broad.log");
+		const onlyMarker = join(cwd, "only.log");
+		try {
+			const broadModels = await makeProvider({
+				discoveryCwd: cwd,
+				env: {
+					HLID_FAKE_ACP_BEHAVIOR: "metadata-efforts-many",
+					HLID_FAKE_ACP_CONFIG_MARKER: broadMarker,
+				},
+				timeouts: processTestTimeouts,
+			}).listModels();
+			expect(broadModels).toHaveLength(40);
+			expect(broadModels[32]).toHaveProperty("efforts");
+			expect(broadModels[33]).not.toHaveProperty("efforts");
+			expect(readFileSync(broadMarker, "utf8").trim().split("\n")).toHaveLength(
+				32,
+			);
+
+			const onlyModels = await makeProvider({
+				discoveryCwd: cwd,
+				env: {
+					HLID_FAKE_ACP_BEHAVIOR: "metadata-efforts-many",
+					HLID_FAKE_ACP_CONFIG_MARKER: onlyMarker,
+				},
+				modelFilter: { mode: "only", models: ["fake-model-39"] },
+				timeouts: processTestTimeouts,
+			}).listModels();
+			expect(onlyModels).toEqual([
+				expect.objectContaining({
+					value: "fake-model-39",
+					efforts: [expect.objectContaining({ value: "low" })],
+				}),
+			]);
+			expect(readFileSync(onlyMarker, "utf8")).toBe(
+				"fake-session:model:fake-model-39\n",
+			);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("retires an uncertain model probe without continuing or publishing partial enrichment", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "hlid-acp-effort-timeout-"));
+		const configMarker = join(cwd, "config.log");
+		const deleteMarker = join(cwd, "delete.log");
+		try {
+			const provider = makeProvider({
+				discoveryCwd: cwd,
+				env: {
+					HLID_FAKE_ACP_BEHAVIOR: "metadata-efforts-many-hang-second",
+					HLID_FAKE_ACP_CONFIG_MARKER: configMarker,
+					HLID_FAKE_ACP_DELETE_MARKER: deleteMarker,
+				},
+				timeouts: {
+					...processTestTimeouts,
+					configMs: 100,
+				},
+			});
+			const models = await provider.listModels();
+
+			expect(models).toHaveLength(40);
+			expect(models[0]).toHaveProperty("efforts");
+			expect(models[1]).not.toHaveProperty("efforts");
+			expect(readFileSync(configMarker, "utf8")).toBe(
+				"fake-session:model:fake-model-1\n",
+			);
+			expect(existsSync(deleteMarker)).toBe(false);
+			expect(provider.cachedAvailability()).toEqual({ available: true });
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
 	});
 
 	it("enforces Hlid model visibility on metadata and live ACP sessions", async () => {
@@ -2118,6 +2514,28 @@ describe("AcpProvider — model catalog", () => {
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
+	});
+
+	it("retires an active prompt when a config notification drifts from the explicit model", async () => {
+		const provider = makeProvider({ timeouts: processTestTimeouts });
+		const session = provider.query(params("allow", { model: "fake-smart" }));
+
+		await session.send("exclude-model-active");
+		const events: AgentEvent[] = [];
+		for await (const event of session) {
+			events.push(event);
+			if (event.type === "done") break;
+		}
+
+		expect(events).toContainEqual(
+			expect.objectContaining({ type: "done", stopReason: "cancelled" }),
+		);
+		expect(events).not.toContainEqual({
+			type: "text_delta",
+			text: "post-fault-output",
+		});
+		expect(session.sessionConfig?.()).toBeNull();
+		session.cancel();
 	});
 
 	it("retires when a config notification omits the model required by visibility", async () => {
@@ -2338,30 +2756,31 @@ describe("AcpProvider — model catalog", () => {
 		}
 	});
 
-	it("coalesces metadata discovery and deletes its throwaway session", async () => {
+	it("separates model enrichment from coalesced capability metadata and cleans up both", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "hlid-acp-metadata-"));
 		const initializeMarker = join(cwd, "initialize.log");
 		const deleteMarker = join(cwd, "delete.log");
 		try {
 			const provider = makeProvider({
-				discoveryCwd: cwd,
+				discoveryCwd: process.cwd(),
 				env: {
+					HLID_FAKE_ACP_BEHAVIOR: "cwd-model",
 					HLID_FAKE_ACP_INITIALIZE_MARKER: initializeMarker,
 					HLID_FAKE_ACP_DELETE_MARKER: deleteMarker,
 				},
 			});
 			const [models, forkCapability, capabilities] = await Promise.all([
-				provider.listModels(),
-				provider.resolveForkCapability(),
+				provider.listModels({ cwd }),
+				provider.resolveForkCapability({ cwd }),
 				provider.discoverCapabilities({ cwd }),
 			]);
-			expect(models).not.toHaveLength(0);
+			expect(models[0]).toMatchObject({ value: cwd, label: "Discovery CWD" });
 			expect(forkCapability).toMatchObject({ kind: "exact" });
 			expect(capabilities.context).toEqual({ cwd });
 			expect(capabilities.evidence).toEqual(
 				expect.arrayContaining([
 					expect.objectContaining({
-						label: "Model configuration (2)",
+						label: "Model configuration (1)",
 						integration: "integrated",
 					}),
 					expect.objectContaining({
@@ -2371,10 +2790,350 @@ describe("AcpProvider — model catalog", () => {
 					}),
 				]),
 			);
-			expect(readFileSync(initializeMarker, "utf8")).toBe("initialize\n");
-			expect(readFileSync(deleteMarker, "utf8")).toBe("fake-session\n");
+			expect(readFileSync(initializeMarker, "utf8")).toBe(
+				"initialize\ninitialize\n",
+			);
+			expect(readFileSync(deleteMarker, "utf8")).toBe(
+				"fake-session\nfake-session\n",
+			);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("preempts matching model and fork inspections before starting a live session", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "hlid-acp-live-preemption-"));
+		const tracked = trackedBehaviorAdapter(new Set([0, 1]));
+		try {
+			const provider = makeProvider({
+				executionAdapter: () => tracked.adapter,
+				timeouts: {
+					...processTestTimeouts,
+					initializeMs: 10_000,
+					inspectionMs: 10_000,
+				},
+			});
+			const models = provider.listModels({ cwd });
+			const fork = provider.resolveForkCapability({ cwd });
+			void models.catch(() => {});
+			void fork.catch(() => {});
+			await vi.waitFor(() => expect(tracked.active()).toBe(2));
+
+			const session = provider.query(params("allow", { cwd }));
+			await session.send("test");
+
+			await expect(models).rejects.toThrow(/preempted by a live session/);
+			await expect(fork).rejects.toThrow(/preempted by a live session/);
+			expect(tracked.starts).toHaveLength(3);
+			expect(tracked.starts[2]).toEqual({ cwd, activeBefore: 0 });
+			expect(tracked.peak()).toBe(2);
+			expect(
+				tracked.terminateCalls
+					.filter((call) => call.index < 2)
+					.map((call) => ({ index: call.index, immediate: call.immediate }))
+					.sort((left, right) => left.index - right.index),
+			).toEqual([
+				{ index: 0, immediate: true },
+				{ index: 1, immediate: true },
+			]);
+
+			for await (const event of session) {
+				if (event.type === "done") break;
+			}
+			await session.cancelAndWait?.();
+			expect(tracked.active()).toBe(0);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("defers reverse-order background discovery for the full live prompt", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "hlid-acp-foreground-lease-"));
+		const tracked = trackedBehaviorAdapter(new Set());
+		const provider = makeProvider({
+			executionAdapter: () => tracked.adapter,
+			timeouts: processTestTimeouts,
+		});
+		const session = provider.query(params("allow", { cwd }));
+		try {
+			await session.send("slow");
+			await vi.waitFor(() => expect(tracked.active()).toBe(1));
+
+			await expect(provider.listModels({ cwd })).rejects.toThrow(
+				/deferred while a live session owns/,
+			);
+			await expect(provider.discoverCapabilities({ cwd })).rejects.toThrow(
+				/deferred while a live session owns/,
+			);
+			await expect(provider.resolveForkCapability({ cwd })).rejects.toThrow(
+				/deferred while a live session owns/,
+			);
+			expect(tracked.starts).toEqual([{ cwd, activeBefore: 0 }]);
+			expect(tracked.peak()).toBe(1);
+		} finally {
+			await session.cancelAndWait?.();
+			rmSync(cwd, { recursive: true, force: true });
+		}
+		expect(tracked.active()).toBe(0);
+	});
+
+	it("matches WSL foreground aliases without blocking a Windows workspace", async () => {
+		const liveCwd = "\\\\wsl$\\ubuntu-24.04\\home\\kyle\\project\\.";
+		const aliasCwd = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\project";
+		const windowsCwd = "C:\\Users\\kyle\\project";
+		const tracked = trackedBehaviorAdapter(new Set());
+		const provider = makeProvider({
+			executionAdapter: () => tracked.adapter,
+			timeouts: processTestTimeouts,
+		});
+		const session = provider.query(params("allow", { cwd: liveCwd }));
+		try {
+			await session.send("slow");
+			await vi.waitFor(() => expect(tracked.active()).toBe(1));
+
+			await expect(provider.listModels({ cwd: aliasCwd })).rejects.toThrow(
+				/deferred while a live session owns/,
+			);
+			await expect(
+				provider.listModels({ cwd: windowsCwd }),
+			).resolves.not.toHaveLength(0);
+			expect(tracked.starts).toEqual([
+				{ cwd: liveCwd, activeBefore: 0 },
+				{ cwd: windowsCwd, activeBefore: 1 },
+			]);
+			expect(tracked.peak()).toBe(2);
+		} finally {
+			await session.cancelAndWait?.();
+		}
+		expect(tracked.active()).toBe(0);
+	});
+
+	it("preempts matching refreshes before dispatching on a warm live session", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "hlid-acp-warm-preemption-"));
+		const tracked = trackedBehaviorAdapter(new Set([1, 2]));
+		try {
+			const provider = makeProvider({
+				executionAdapter: () => tracked.adapter,
+				timeouts: {
+					...processTestTimeouts,
+					initializeMs: 10_000,
+					inspectionMs: 10_000,
+				},
+			});
+			const session = provider.query(params("allow", { cwd }));
+			await session.send("test");
+			for await (const event of session) {
+				if (event.type === "done") break;
+			}
+			await vi.waitFor(() => expect(tracked.active()).toBe(1));
+
+			const models = provider.listModels({ cwd });
+			const fork = provider.resolveForkCapability({ cwd });
+			void models.catch(() => {});
+			void fork.catch(() => {});
+			await vi.waitFor(() => expect(tracked.active()).toBe(3));
+
+			await session.send("test");
+			await expect(models).rejects.toThrow(/preempted by a live session/);
+			await expect(fork).rejects.toThrow(/preempted by a live session/);
+			expect(tracked.starts).toHaveLength(3);
+			expect(tracked.active()).toBe(1);
+			expect(
+				tracked.terminateCalls
+					.filter((call) => call.index > 0)
+					.map((call) => ({ index: call.index, immediate: call.immediate }))
+					.sort((left, right) => left.index - right.index),
+			).toEqual([
+				{ index: 1, immediate: true },
+				{ index: 2, immediate: true },
+			]);
+
+			for await (const event of session) {
+				if (event.type === "done") break;
+			}
+			await session.cancelAndWait?.();
+			expect(tracked.active()).toBe(0);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("retires synchronously and awaits every background inspection", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "hlid-acp-provider-retirement-"));
+		const tracked = trackedBehaviorAdapter(new Set([0, 1]));
+		try {
+			const provider = makeProvider({
+				executionAdapter: () => tracked.adapter,
+				timeouts: {
+					...processTestTimeouts,
+					initializeMs: 10_000,
+					inspectionMs: 10_000,
+				},
+			});
+			const models = provider.listModels({ cwd });
+			const fork = provider.resolveForkCapability({ cwd });
+			void models.catch(() => {});
+			void fork.catch(() => {});
+			await vi.waitFor(() => expect(tracked.active()).toBe(2));
+
+			const retirement = provider.retireRuntime();
+			expect(provider.retireRuntime("ignored replacement reason")).toBe(
+				retirement,
+			);
+			expect(() => provider.query(params("allow", { cwd }))).toThrow(
+				/Fake ACP runtime is updating; try again shortly/,
+			);
+			await expect(provider.check()).rejects.toThrow(/runtime is updating/);
+			await expect(provider.listModels({ cwd })).rejects.toThrow(
+				/runtime is updating/,
+			);
+			await expect(provider.discoverCapabilities({ cwd })).rejects.toThrow(
+				/runtime is updating/,
+			);
+			await expect(provider.resolveForkCapability({ cwd })).rejects.toThrow(
+				/runtime is updating/,
+			);
+			await expect(
+				provider.forkSession({ cwd, sessionId: "provider-session" }),
+			).rejects.toThrow(/runtime is updating/);
+			expect(provider.cachedAvailability()).toEqual({
+				available: false,
+				reason: "Fake ACP runtime is updating; try again shortly.",
+			});
+
+			await retirement;
+			await expect(models).rejects.toThrow(/runtime is updating/);
+			await expect(fork).rejects.toThrow(/runtime is updating/);
+			expect(tracked.active()).toBe(0);
+			expect(
+				tracked.terminateCalls
+					.filter((call) => call.index < 2)
+					.map((call) => ({ index: call.index, immediate: call.immediate }))
+					.sort((left, right) => left.index - right.index),
+			).toEqual([
+				{ index: 0, immediate: true },
+				{ index: 1, immediate: true },
+			]);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("preempts an exact WSL workspace across equivalent UNC aliases", async () => {
+		const inspectionCwd =
+			"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\project";
+		const liveCwd = "\\\\wsl$\\ubuntu-24.04\\home\\kyle\\project\\.";
+		const tracked = trackedBehaviorAdapter(new Set([0]));
+		const provider = makeProvider({
+			executionAdapter: () => tracked.adapter,
+			timeouts: {
+				...processTestTimeouts,
+				initializeMs: 10_000,
+				inspectionMs: 10_000,
+			},
+		});
+		const session = provider.query(params("allow", { cwd: liveCwd }));
+		try {
+			const models = provider.listModels({ cwd: inspectionCwd });
+			void models.catch(() => {});
+			await vi.waitFor(() => expect(tracked.active()).toBe(1));
+
+			await session.send("test");
+			await expect(models).rejects.toThrow(/preempted by a live session/);
+			expect(tracked.starts).toEqual([
+				{ cwd: inspectionCwd, activeBefore: 0 },
+				{ cwd: liveCwd, activeBefore: 0 },
+			]);
+
+			for await (const event of session) {
+				if (event.type === "done") break;
+			}
+		} finally {
+			await session.cancelAndWait?.();
+		}
+		expect(tracked.active()).toBe(0);
+	});
+
+	it("leaves other workspaces running when a live session preempts its exact cwd", async () => {
+		const root = mkdtempSync(join(tmpdir(), "hlid-acp-cwd-preemption-"));
+		const firstCwd = join(root, "first");
+		const secondCwd = join(root, "second");
+		mkdirSync(firstCwd);
+		mkdirSync(secondCwd);
+		const tracked = trackedBehaviorAdapter(new Set([0, 1]));
+		try {
+			const provider = makeProvider({
+				executionAdapter: () => tracked.adapter,
+				timeouts: {
+					...processTestTimeouts,
+					initializeMs: 10_000,
+					inspectionMs: 10_000,
+				},
+			});
+			const firstInspection = provider.listModels({ cwd: firstCwd });
+			const secondInspection = provider.resolveForkCapability({
+				cwd: secondCwd,
+			});
+			void firstInspection.catch(() => {});
+			void secondInspection.catch(() => {});
+			await vi.waitFor(() => expect(tracked.active()).toBe(2));
+
+			const firstSession = provider.query(params("allow", { cwd: firstCwd }));
+			await firstSession.send("test");
+			await expect(firstInspection).rejects.toThrow(
+				/preempted by a live session/,
+			);
+			expect(tracked.starts[2]).toEqual({
+				cwd: firstCwd,
+				activeBefore: 1,
+			});
+			expect(tracked.terminateCalls.filter((call) => call.index < 2)).toEqual([
+				expect.objectContaining({ index: 0, immediate: true }),
+			]);
+
+			const secondSession = provider.query(params("allow", { cwd: secondCwd }));
+			await secondSession.send("test");
+			await expect(secondInspection).rejects.toThrow(
+				/preempted by a live session/,
+			);
+			expect(tracked.starts[3]).toEqual({
+				cwd: secondCwd,
+				activeBefore: 1,
+			});
+
+			await Promise.all([
+				firstSession.cancelAndWait?.(),
+				secondSession.cancelAndWait?.(),
+			]);
+			expect(tracked.active()).toBe(0);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("scopes negotiated fork metadata to the exact discovery workspace", async () => {
+		const root = mkdtempSync(join(tmpdir(), "hlid-acp-fork-workspaces-"));
+		const firstCwd = join(root, "first");
+		const secondCwd = join(root, "second");
+		const initializeMarker = join(root, "initialize.log");
+		try {
+			mkdirSync(firstCwd);
+			mkdirSync(secondCwd);
+			const provider = makeProvider({
+				discoveryCwd: root,
+				env: { HLID_FAKE_ACP_INITIALIZE_MARKER: initializeMarker },
+			});
+
+			await provider.resolveForkCapability({ cwd: firstCwd });
+			await provider.resolveForkCapability({ cwd: firstCwd });
+			await provider.resolveForkCapability({ cwd: secondCwd });
+			await provider.resolveForkCapability({ cwd: secondCwd });
+
+			expect(readFileSync(initializeMarker, "utf8")).toBe(
+				"initialize\ninitialize\n",
+			);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
 		}
 	});
 });
@@ -2487,18 +3246,33 @@ describe("AcpProvider — error handling", () => {
 	});
 
 	it("hard cancellation settles initialization and tears down its process", async () => {
-		const session = behaviorProvider("hang-initialize", {
-			...processTestTimeouts,
-			initializeMs: 10_000,
-		}).query(params());
-		const pending = session.send("test");
-		await new Promise((resolve) => setTimeout(resolve, 40));
-		await session.cancelAndWait?.();
-		await expect(pending).rejects.toThrow(/ACP initialize cancelled/);
-		expect(await session[Symbol.asyncIterator]().next()).toEqual({
-			done: true,
-			value: undefined,
-		});
+		const directory = mkdtempSync(join(tmpdir(), "hlid-acp-cancel-init-"));
+		const marker = join(directory, "initialize.log");
+		try {
+			const session = makeProvider({
+				env: {
+					HLID_FAKE_ACP_BEHAVIOR: "hang-initialize",
+					HLID_FAKE_ACP_INITIALIZE_MARKER: marker,
+				},
+				timeouts: {
+					...processTestTimeouts,
+					initializeMs: 10_000,
+				},
+			}).query(params());
+			const pending = session.send("test");
+			await vi.waitFor(
+				() => expect(readFileSync(marker, "utf8")).toBe("initialize\n"),
+				{ timeout: processTestTimeouts.spawnMs },
+			);
+			await session.cancelAndWait?.();
+			await expect(pending).rejects.toThrow(/ACP initialize cancelled/);
+			expect(await session[Symbol.asyncIterator]().next()).toEqual({
+				done: true,
+				value: undefined,
+			});
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
 	});
 
 	it("bounds inspection initialization, reports stderr, and cleans up", async () => {
@@ -2623,6 +3397,145 @@ describe("AcpProvider — error handling", () => {
 			],
 			canImportSessions: true,
 		});
+	});
+
+	it("uses provider path syntax for workspace case sensitivity on a Windows host", () => {
+		const platform = vi
+			.spyOn(process, "platform", "get")
+			.mockReturnValue("win32");
+		try {
+			expect(workspacePathIdentity("/home/kyle/Repo")).not.toBe(
+				workspacePathIdentity("/home/kyle/repo"),
+			);
+			expect(workspacePathIdentity("/home/kyle/repo\\child")).not.toBe(
+				workspacePathIdentity("/home/kyle/repo/child"),
+			);
+			expect(workspacePathIdentity("C:\\Users\\Kyle\\Repo")).toBe(
+				workspacePathIdentity("c:/users/kyle/repo"),
+			);
+			expect(workspacePathIdentity("C:\\")).toBe(workspacePathIdentity("c:/"));
+			expect(workspacePathIdentity("\\\\Server\\Share\\Repo")).toBe(
+				workspacePathIdentity("//server/share/repo"),
+			);
+		} finally {
+			platform.mockRestore();
+		}
+	});
+
+	it("excludes WSL sessions whose POSIX workspace differs only by case", async () => {
+		const hostAdapter = createAcpExecutionAdapter({ kind: "host" });
+		const targetAdapter = createAcpExecutionAdapter({
+			kind: "wsl",
+			distro: "Ubuntu-24.04",
+		});
+		const adapter: AcpExecutionAdapter = {
+			...hostAdapter,
+			target: targetAdapter.target,
+			key: targetAdapter.key,
+			providerPath: targetAdapter.providerPath,
+			pathAccessible: targetAdapter.pathAccessible,
+			start: (input) => hostAdapter.start({ ...input, hostCwd: process.cwd() }),
+		};
+		const provider = makeProvider({
+			target: { kind: "wsl", distro: "Ubuntu-24.04" },
+			executionAdapter: () => adapter,
+			env: {
+				HLID_FAKE_ACP_BEHAVIOR: "list-sessions-posix-case",
+				HLID_FAKE_ACP_CASE_CWD: "/home/kyle/repo",
+			},
+			timeouts: processTestTimeouts,
+		});
+
+		await expect(
+			listAcpProviderSessions(
+				provider.options,
+				"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\Repo",
+			),
+		).resolves.toEqual({
+			sessions: [
+				{
+					sessionId: "native-1",
+					title: "First provider session",
+					updatedAt: "2026-08-12T12:00:00.000Z",
+				},
+			],
+			canImportSessions: true,
+			nextCursor: "next-page",
+		});
+	});
+
+	it("does not import a WSL session whose POSIX workspace differs only by case", async () => {
+		const hostAdapter = createAcpExecutionAdapter({ kind: "host" });
+		const targetAdapter = createAcpExecutionAdapter({
+			kind: "wsl",
+			distro: "Ubuntu-24.04",
+		});
+		const adapter: AcpExecutionAdapter = {
+			...hostAdapter,
+			target: targetAdapter.target,
+			key: targetAdapter.key,
+			providerPath: targetAdapter.providerPath,
+			pathAccessible: targetAdapter.pathAccessible,
+			start: (input) => hostAdapter.start({ ...input, hostCwd: process.cwd() }),
+		};
+		const provider = makeProvider({
+			target: { kind: "wsl", distro: "Ubuntu-24.04" },
+			executionAdapter: () => adapter,
+			env: {
+				HLID_FAKE_ACP_BEHAVIOR: "list-sessions-posix-case",
+				HLID_FAKE_ACP_CASE_CWD: "/home/kyle/repo",
+			},
+			timeouts: processTestTimeouts,
+		});
+		const hostCwd = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\Repo";
+
+		await expect(
+			findAcpProviderSession(provider.options, hostCwd, "case-only-page-2"),
+		).resolves.toBeUndefined();
+		await expect(
+			findAcpProviderSession(provider.options, hostCwd, "native-2"),
+		).resolves.toMatchObject({ sessionId: "native-2" });
+	});
+
+	it.each([
+		[
+			"same-distro UNC",
+			"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\repo",
+			"/home/kyle/repo",
+		],
+		["Windows", "C:\\Users\\kyle\\repo", "/mnt/c/Users/kyle/repo"],
+	])("uses the provider-visible cwd for WSL session listing and import from a %s workspace", async (_label, hostCwd, providerCwd) => {
+		const hostAdapter = createAcpExecutionAdapter({ kind: "host" });
+		const targetAdapter = createAcpExecutionAdapter({
+			kind: "wsl",
+			distro: "Ubuntu-24.04",
+		});
+		const adapter: AcpExecutionAdapter = {
+			...hostAdapter,
+			target: targetAdapter.target,
+			key: targetAdapter.key,
+			providerPath: targetAdapter.providerPath,
+			pathAccessible: targetAdapter.pathAccessible,
+			start: (input) => hostAdapter.start({ ...input, hostCwd: process.cwd() }),
+		};
+		const provider = makeProvider({
+			target: { kind: "wsl", distro: "Ubuntu-24.04" },
+			executionAdapter: () => adapter,
+			env: {
+				HLID_FAKE_ACP_BEHAVIOR: "list-sessions-exact-cwd",
+				HLID_FAKE_ACP_EXPECT_CWD: providerCwd,
+			},
+			timeouts: processTestTimeouts,
+		});
+
+		await expect(
+			listAcpProviderSessions(provider.options, hostCwd),
+		).resolves.toMatchObject({
+			sessions: [expect.objectContaining({ sessionId: "native-1" })],
+		});
+		await expect(
+			findAcpProviderSession(provider.options, hostCwd, "native-2"),
+		).resolves.toMatchObject({ sessionId: "native-2" });
 	});
 
 	it("keeps list-only provider sessions metadata-only and rejects import", async () => {

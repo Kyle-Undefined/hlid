@@ -721,7 +721,7 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 	{
 		name: "inspect_hlid_diagnostics",
 		description:
-			"Inspect a bounded, redacted page of Hlid Event Log diagnostics. Paths, URLs, UUIDs, control characters, and stored detail payloads are omitted or redacted.",
+			"Inspect a bounded, redacted page of Hlid Event Log diagnostics from the current Hlid server run by default. Set scope=retained only for historical investigation. Paths, URLs, UUIDs, control characters, and stored detail payloads are omitted or redacted.",
 		readOnly: true,
 		deferLoading: true,
 		searchHint:
@@ -732,6 +732,7 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 				level: { type: "string", enum: ["all", "error", "warn", "info"] },
 				query: { type: "string" },
 				limit: { type: "number" },
+				scope: { type: "string", enum: ["current", "retained"] },
 			},
 			additionalProperties: false,
 		},

@@ -160,9 +160,12 @@ function timeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 	});
 }
 
-async function assertProviderAvailable(provider: AgentProvider): Promise<void> {
+async function assertProviderAvailable(
+	provider: AgentProvider,
+	cwd: string,
+): Promise<void> {
 	const availability = provider.check
-		? await timeout(provider.check(), PROVIDER_CHECK_TIMEOUT_MS)
+		? await timeout(provider.check({ cwd }), PROVIDER_CHECK_TIMEOUT_MS)
 		: { available: true };
 	if (!availability.available) {
 		throw new Error(
@@ -264,9 +267,11 @@ export function childPermissionModeAllowed(
 	return Boolean(parent?.has(childMode as PermissionMode));
 }
 
-function validateProviderSelection(
+type ProviderSelectionInput = Partial<DelegateHlidAgentInput>;
+
+export function validateProviderSelection(
 	provider: ProviderInfo,
-	input: DelegateHlidAgentInput,
+	input: ProviderSelectionInput,
 	permissionMode: PermissionMode,
 ): void {
 	if (provider?.available === false) {
@@ -278,26 +283,33 @@ function validateProviderSelection(
 	}
 	if (
 		input.model &&
-		provider?.models &&
-		provider.models.length > 0 &&
-		!provider.models.some((model) => model.value === input.model)
+		((provider.effortScope === "model" &&
+			!provider.models?.some((model) => model.value === input.model)) ||
+			(provider.models &&
+				provider.models.length > 0 &&
+				!provider.models.some((model) => model.value === input.model)))
 	) {
 		throw new Error(
 			`Model ${input.model} is not in ${provider.label}'s current model catalog.`,
 		);
 	}
 	if (input.effort && provider) {
-		const modelEfforts = provider.models?.find(
-			(model) => model.value === input.model,
-		)?.efforts;
+		const selectedModel =
+			provider.models?.find((model) => model.value === input.model) ??
+			(!input.model
+				? provider.models?.find((model) => model.isDefault)
+				: undefined);
+		const modelEfforts = selectedModel?.efforts;
 		const efforts =
-			modelEfforts && modelEfforts.length > 0
+			provider.effortScope === "model"
 				? modelEfforts
-				: provider.effortLevels;
+				: modelEfforts && modelEfforts.length > 0
+					? modelEfforts
+					: provider.effortLevels;
 		if (
-			efforts &&
-			efforts.length > 0 &&
-			!efforts.some((effort) => effort.value === input.effort)
+			(provider.effortScope === "model" && !efforts?.length) ||
+			(efforts?.length &&
+				!efforts.some((effort) => effort.value === input.effort))
 		) {
 			throw new Error(
 				`Effort ${input.effort} is not available for the selected ${provider.label} model.`,
@@ -347,7 +359,7 @@ export class HlidDelegationManager {
 
 	constructor(
 		private readonly pool: SessionPool,
-		private readonly providerCatalog: () => Promise<ProviderInfo[]>,
+		private readonly providerCatalog: (cwd: string) => Promise<ProviderInfo[]>,
 		private readonly onStatusChange: () => void,
 	) {}
 
@@ -451,6 +463,16 @@ export class HlidDelegationManager {
 		// PoolEntry retains the client-supplied creation cwd, so use it only as the
 		// vault/root fallback when the active manager has no agent workspace.
 		return parent.manager.getAgentCwd() ?? parent.agentCwd;
+	}
+
+	private providerRuntimeCwd(workspace: string): string {
+		const runtimeCwd = this.pool.providerRuntimeCwd(workspace);
+		if (!runtimeCwd) {
+			throw new Error(
+				"The delegation workspace no longer has a configured provider runtime.",
+			);
+		}
+		return runtimeCwd;
 	}
 
 	private assertSameRunningParentTurn(
@@ -589,7 +611,8 @@ export class HlidDelegationManager {
 		if (!provider) {
 			throw new Error(`Provider ${input.provider} is not registered.`);
 		}
-		await assertProviderAvailable(provider);
+		const runtimeCwd = this.providerRuntimeCwd(workspace);
+		await assertProviderAvailable(provider, runtimeCwd);
 
 		const parentPermissionMode =
 			parent.manager.getCurrentTurnPermissionMode() ??
@@ -608,7 +631,7 @@ export class HlidDelegationManager {
 		const effort =
 			input.effort ??
 			(sameProvider && parentStatus.effort ? parentStatus.effort : undefined);
-		const providerInfo = (await this.providerCatalog()).find(
+		const providerInfo = (await this.providerCatalog(runtimeCwd)).find(
 			(candidate) => candidate.id === input.provider,
 		);
 		if (!providerInfo) {
@@ -1085,7 +1108,19 @@ export class HlidDelegationManager {
 				`Provider ${current.provider_id} is no longer registered for this continuation.`,
 			);
 		}
-		const providerInfo = (await this.providerCatalog()).find(
+		const childCwd = await db.getSessionAgentCwd(current.child_session_id);
+		const workspace = this.pool.resolveDelegationWorkspace(current.workspace);
+		const childWorkspace = childCwd
+			? this.pool.resolveDelegationWorkspace(childCwd)
+			: null;
+		if (!workspace || childWorkspace !== workspace) {
+			throw new Error(
+				"The delegated child no longer resolves to its recorded configured workspace.",
+			);
+		}
+		const runtimeCwd = this.providerRuntimeCwd(workspace);
+		await assertProviderAvailable(provider, runtimeCwd);
+		const providerInfo = (await this.providerCatalog(runtimeCwd)).find(
 			(candidate) => candidate.id === current.provider_id,
 		);
 		if (!providerInfo) {
@@ -1105,17 +1140,6 @@ export class HlidDelegationManager {
 			},
 			permissionMode,
 		);
-		await assertProviderAvailable(provider);
-		const childCwd = await db.getSessionAgentCwd(current.child_session_id);
-		const workspace = this.pool.resolveDelegationWorkspace(current.workspace);
-		const childWorkspace = childCwd
-			? this.pool.resolveDelegationWorkspace(childCwd)
-			: null;
-		if (!workspace || childWorkspace !== workspace) {
-			throw new Error(
-				"The delegated child no longer resolves to its recorded configured workspace.",
-			);
-		}
 		const transcript = boundedVisibleTranscript(
 			await db.getSessionMessages(
 				current.child_session_id,

@@ -141,9 +141,12 @@ import {
 	isCodexRuntimeProvider,
 } from "#/lib/providerRuntime";
 import {
+	getRavenProviderCacheSnapshot,
+	hasFreshRavenProviderModels,
 	loadRavenProviders,
 	loadRavenProvidersForNavigation,
 	refreshRavenProviderForSession,
+	subscribeRavenProviderCache,
 } from "#/lib/ravenProviderCache";
 import {
 	createAnimationFrameCoalescer,
@@ -2388,6 +2391,7 @@ function deriveRavenComposerState({
 	providerIdentity,
 	acpModelCatalogCurrent,
 	forceAcpProviderDefaults,
+	acpModelCatalogStatus,
 	agentSkillContext,
 	input,
 	activeSkills,
@@ -2406,6 +2410,7 @@ function deriveRavenComposerState({
 	providerIdentity: RavenProviderIdentity;
 	acpModelCatalogCurrent: boolean;
 	forceAcpProviderDefaults: boolean;
+	acpModelCatalogStatus: "loading" | "failed" | null;
 	agentSkillContext: string | undefined;
 	input: string;
 	activeSkills: ActiveRavenSkill[];
@@ -2447,10 +2452,7 @@ function deriveRavenComposerState({
 	const provider = providers.find(
 		(candidate) => candidate.id === activeProviderId,
 	);
-	const advertisedModels =
-		provider?.id.startsWith("acp:") && !acpModelCatalogCurrent
-			? []
-			: modelOptions(provider);
+	const advertisedModels = modelOptions(provider);
 	const desiredModelAdvertised =
 		desiredModel !== undefined &&
 		desiredModel !== "" &&
@@ -2463,37 +2465,62 @@ function deriveRavenComposerState({
 		);
 	const currentAcpCatalog =
 		provider?.id.startsWith("acp:") && acpModelCatalogCurrent;
+	const acceptedLiveAcpModel = provider?.id.startsWith("acp:")
+		? provider.liveSessionConfig?.activeModel
+		: undefined;
 	const selectedModel =
-		provider?.id.startsWith("acp:") && forceAcpProviderDefaults
-			? ""
-			: desiredModel === "" && provider?.id.startsWith("acp:")
+		acceptedLiveAcpModel !== undefined
+			? acceptedLiveAcpModel
+			: provider?.id.startsWith("acp:") && forceAcpProviderDefaults
 				? ""
-				: !currentAcpCatalog ||
-						advertisedModels.length === 0 ||
-						desiredModelAdvertised
-					? desiredModel
-					: (advertisedModels.find((candidate) => candidate.isDefault)?.value ??
-						advertisedModels[0]?.value);
+				: desiredModel === "" && provider?.id.startsWith("acp:")
+					? ""
+					: !currentAcpCatalog ||
+							advertisedModels.length === 0 ||
+							desiredModelAdvertised
+						? desiredModel
+						: (advertisedModels.find((candidate) => candidate.isDefault)
+								?.value ?? advertisedModels[0]?.value);
 	const desiredEffort =
 		selection.effort ??
 		(providerUsesConfiguredDefaults ? configuredSelection.effort : null) ??
 		null;
-	const liveEfforts = effortOptionsFor(provider, selectedModel ?? "", planMode);
-	const liveConfigApplies =
-		provider?.liveSessionConfig?.activeModel === undefined ||
-		!selectedModel ||
-		provider.liveSessionConfig.activeModel === selectedModel;
-	const selectedEffort =
-		provider?.id.startsWith("acp:") &&
-		(forceAcpProviderDefaults || selection.model === "")
+	const exactLiveAcpConfig =
+		acceptedLiveAcpModel !== undefined &&
+		acceptedLiveAcpModel === selectedModel;
+	const selectedAcpModelEfforts = provider?.models?.find(
+		(candidate) => candidate.value === selectedModel,
+	)?.efforts;
+	// ACP effort choices may depend on the selected model. An absent model effort
+	// list means the provider has not advertised an effort control for that model;
+	// falling back to a provider-wide list would make Raven promise a control that
+	// the agent may reject.
+	const liveEfforts = provider?.id.startsWith("acp:")
+		? // ACP's top-level effort list describes only the model that was active
+			// during inspection. Reuse it only through that model's annotated row;
+			// another model with no row-level efforts advertises no truthful picker.
+			(selectedAcpModelEfforts ?? [])
+		: effortOptionsFor(provider, selectedModel ?? "", planMode);
+	const defaultLiveEffort =
+		liveEfforts.find((candidate) => candidate.isDefault)?.value ?? null;
+	const acceptedLiveEffort =
+		provider?.liveSessionConfig?.activeEffort &&
+		liveEfforts.some(
+			(candidate) =>
+				candidate.value === provider.liveSessionConfig?.activeEffort,
+		)
+			? provider.liveSessionConfig.activeEffort
+			: null;
+	const selectedEffort = provider?.id.startsWith("acp:")
+		? liveEfforts.length === 0
 			? null
-			: liveConfigApplies &&
-					provider?.liveSessionConfig?.activeEffort &&
-					liveEfforts.length > 0 &&
-					(!desiredEffort ||
-						!liveEfforts.some((candidate) => candidate.value === desiredEffort))
-				? provider.liveSessionConfig.activeEffort
-				: desiredEffort;
+			: exactLiveAcpConfig
+				? (acceptedLiveEffort ?? defaultLiveEffort)
+				: desiredEffort &&
+						liveEfforts.some((candidate) => candidate.value === desiredEffort)
+					? desiredEffort
+					: defaultLiveEffort
+		: desiredEffort;
 	const selectedPermissionMode =
 		selection.permissionMode ??
 		(providerUsesConfiguredDefaults
@@ -2549,7 +2576,11 @@ function deriveRavenComposerState({
 					description:
 						advertisedModels.length > 0
 							? "Let the ACP agent choose its configured default model."
-							: "This ACP agent has not advertised model choices.",
+							: acpModelCatalogStatus === "loading"
+								? "This ACP agent has not advertised model choices yet; live choices are loading and Provider default remains usable."
+								: acpModelCatalogStatus === "failed"
+									? "Live model discovery is unavailable; Provider default remains usable."
+									: "This ACP agent has not advertised model choices.",
 				},
 				...advertisedModels,
 			]
@@ -2579,7 +2610,7 @@ function deriveRavenComposerState({
 			? reviewerOptions.filter((candidate) => candidate.value === "user")
 			: reviewerOptions,
 		approvalsReviewerUnavailableReason,
-		effortOptions: effortOptionsFor(provider, selectedModel ?? "", planMode),
+		effortOptions: liveEfforts,
 		providerModeOptions: provider?.liveSessionConfig?.modes ?? [],
 		activeProviderMode: provider?.liveSessionConfig?.activeMode ?? null,
 		providerPlanModeValue: provider?.liveSessionConfig?.planModeValue ?? null,
@@ -2655,6 +2686,11 @@ export function ChatPage() {
 	const sessionsDataRevision = useSyncExternalStore(
 		subscribeDataRevisionSnapshot,
 		() => getDataRevisionSnapshot().sessions,
+		() => 0,
+	);
+	const providersDataRevision = useSyncExternalStore(
+		subscribeDataRevisionSnapshot,
+		() => getDataRevisionSnapshot().providers,
 		() => 0,
 	);
 	const [delegationControlOwned, setDelegationControlOwned] = useState(
@@ -2879,6 +2915,24 @@ export function ChatPage() {
 		config,
 		agentSkillContext,
 	);
+	const sharedProviderCatalog = useSyncExternalStore(
+		subscribeRavenProviderCache,
+		() => getRavenProviderCacheSnapshot(activeProviderDiscoveryCwd),
+		() => null,
+	);
+	useEffect(() => {
+		// A scoped refresh that does not contain the provider Raven currently owns
+		// is not an accepted replacement for this composer. In particular, keep a
+		// live session's options intact when a failed/partial refresh returns an
+		// empty catalog.
+		if (
+			sharedProviderCatalog?.some(
+				(provider) => provider.id === activeProviderId,
+			)
+		) {
+			setProviderCatalog(sharedProviderCatalog);
+		}
+	}, [activeProviderId, sharedProviderCatalog]);
 	const providerCatalogRefreshSequenceRef = useRef(0);
 	const providerCatalogRefreshContext = `${sessionId}\0${activeProviderDiscoveryCwd ?? ""}\0${activeProviderId}\0${configuredProviderId}\0${agentSkillContext ?? ""}`;
 	const providerCatalogRefreshContextRef = useRef(
@@ -2916,32 +2970,86 @@ export function ChatPage() {
 	);
 	const [currentAcpModelCatalogContext, setCurrentAcpModelCatalogContext] =
 		useState<string | null>(null);
+	const [acpModelCatalogRefresh, setAcpModelCatalogRefresh] = useState<{
+		context: string;
+		phase: "loading" | "current" | "failed";
+	} | null>(null);
+	const [acpModelCatalogRefreshAttempt, setAcpModelCatalogRefreshAttempt] =
+		useState(0);
+	const handledAcpModelCatalogRefreshAttemptRef = useRef(0);
+	const refreshingAcpModelCatalogContextRef = useRef<string | null>(null);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: retry state deliberately restarts the exact refresh
 	useEffect(() => {
 		if (!activeProviderId.startsWith("acp:")) {
+			refreshingAcpModelCatalogContextRef.current = null;
 			setCurrentAcpModelCatalogContext(null);
+			setAcpModelCatalogRefresh(null);
 			return;
 		}
 		let cancelled = false;
 		const context = providerCatalogRefreshContext;
-		// Cached ACP options are useful presentation data, but they are not safe
-		// inputs for a fresh provider ownership change. Keep only the durable
-		// provider-default sentinel selectable until this exact session/workspace
-		// refresh returns current metadata.
+		const explicitRetry =
+			acpModelCatalogRefreshAttempt >
+			handledAcpModelCatalogRefreshAttemptRef.current;
+		if (explicitRetry) {
+			handledAcpModelCatalogRefreshAttemptRef.current =
+				acpModelCatalogRefreshAttempt;
+		}
+		const refreshAlreadyStartedForContext =
+			refreshingAcpModelCatalogContextRef.current === context;
+		// Keep the durable provider-default sentinel authoritative for a fresh
+		// ownership change while cached options remain visible. A fresh accepted
+		// exact-workspace cache needs no provider process on selection. If this
+		// effect already started a required refresh, keep joining it when its cache
+		// publication notifies React so the live result still becomes authoritative.
 		setCurrentAcpModelCatalogContext(null);
+		if (
+			!explicitRetry &&
+			!refreshAlreadyStartedForContext &&
+			hasFreshRavenProviderModels(activeProviderId, activeProviderDiscoveryCwd)
+		) {
+			setAcpModelCatalogRefresh(null);
+			return;
+		}
+		refreshingAcpModelCatalogContextRef.current = context;
+		setAcpModelCatalogRefresh({ context, phase: "loading" });
 		void refreshProviderCatalog(activeProviderId).then(
 			(catalog) => {
 				if (!cancelled && catalog) {
+					if (refreshingAcpModelCatalogContextRef.current === context) {
+						refreshingAcpModelCatalogContextRef.current = null;
+					}
 					setCurrentAcpModelCatalogContext(context);
+					setAcpModelCatalogRefresh({ context, phase: "current" });
+				} else if (!cancelled) {
+					if (refreshingAcpModelCatalogContextRef.current === context) {
+						refreshingAcpModelCatalogContextRef.current = null;
+					}
+					setAcpModelCatalogRefresh({ context, phase: "failed" });
 				}
 			},
 			() => {
-				// Provider default remains usable when live model discovery is unavailable.
+				if (!cancelled) {
+					if (refreshingAcpModelCatalogContextRef.current === context) {
+						refreshingAcpModelCatalogContextRef.current = null;
+					}
+					setAcpModelCatalogRefresh({ context, phase: "failed" });
+				}
 			},
 		);
 		return () => {
 			cancelled = true;
 		};
-	}, [activeProviderId, providerCatalogRefreshContext, refreshProviderCatalog]);
+	}, [
+		activeProviderId,
+		acpModelCatalogRefreshAttempt,
+		providersDataRevision,
+		providerCatalogRefreshContext,
+		refreshProviderCatalog,
+	]);
+	const retryAcpModelCatalog = useCallback(() => {
+		setAcpModelCatalogRefreshAttempt((attempt) => attempt + 1);
+	}, []);
 	const acpModelCatalogCurrent =
 		!activeProviderId.startsWith("acp:") ||
 		currentAcpModelCatalogContext === providerCatalogRefreshContext;
@@ -3258,6 +3366,20 @@ export function ChatPage() {
 		runtime.providerConfigOptions.models !== undefined;
 	const effectiveAcpModelCatalogCurrent =
 		acpModelCatalogCurrent || liveAcpModelCatalogCurrent;
+	const activeProviderCatalog = providers.find(
+		(provider) => provider.id === activeProviderId,
+	);
+	const acpModelCatalogRefreshPhase =
+		activeProviderId.startsWith("acp:") &&
+		acpModelCatalogRefresh?.context === providerCatalogRefreshContext
+			? acpModelCatalogRefresh.phase
+			: null;
+	const acpModelCatalogStatus =
+		acpModelCatalogRefreshPhase === "failed" ||
+		(acpModelCatalogRefreshPhase === "loading" &&
+			(activeProviderCatalog?.models?.length ?? 0) === 0)
+			? acpModelCatalogRefreshPhase
+			: null;
 
 	const {
 		canSend,
@@ -3291,6 +3413,7 @@ export function ChatPage() {
 			activeProviderId.startsWith("acp:") &&
 			!sessionPersisted &&
 			!effectiveAcpModelCatalogCurrent,
+		acpModelCatalogStatus,
 		agentSkillContext,
 		input,
 		activeSkills,
@@ -3441,6 +3564,8 @@ export function ChatPage() {
 		providerModeOptions,
 		activeProviderMode,
 		providerPlanModeValue,
+		acpModelCatalogStatus,
+		retryAcpModelCatalog,
 		canSend,
 		canQueue,
 		delegationSteering: delegationControlOwned,
@@ -4378,6 +4503,7 @@ function OptionGroup({
 	onSelect,
 	divider = false,
 	disabled = false,
+	status,
 }: {
 	label: string;
 	options: BadgeOption[];
@@ -4385,8 +4511,14 @@ function OptionGroup({
 	onSelect: (value: string) => void;
 	divider?: boolean;
 	disabled?: boolean;
+	status?: {
+		label: string;
+		loading?: boolean;
+		actionLabel?: string;
+		onAction?: () => void;
+	};
 }) {
-	if (options.length === 0) return null;
+	if (options.length === 0 && !status) return null;
 	return (
 		<div
 			className={`space-y-1${divider ? " pt-1 border-t border-border/50" : ""}`}
@@ -4409,6 +4541,31 @@ function OptionGroup({
 					{o.isDefault ? " (default)" : ""}
 				</button>
 			))}
+			{status && (
+				<output
+					aria-label={status.label}
+					aria-live="polite"
+					className="flex items-center gap-1.5 px-1.5 py-1 normal-case tracking-normal text-muted-foreground/60"
+				>
+					{status.loading && (
+						<LoaderCircle
+							aria-hidden
+							className="h-3 w-3 shrink-0 animate-spin"
+						/>
+					)}
+					<span>{status.label}</span>
+					{status.actionLabel && status.onAction && (
+						<button
+							type="button"
+							disabled={disabled}
+							onClick={status.onAction}
+							className="ml-auto text-primary/70 hover:text-primary disabled:opacity-40"
+						>
+							{status.actionLabel}
+						</button>
+					)}
+				</output>
+			)}
 		</div>
 	);
 }
@@ -4444,6 +4601,8 @@ function ChatModelBadge({
 	effortOptions,
 	providerModeOptions,
 	activeProviderMode,
+	acpModelCatalogStatus,
+	retryAcpModelCatalog,
 }: ChatComposerProps) {
 	const {
 		wsStatus,
@@ -4457,7 +4616,9 @@ function ChatModelBadge({
 	const { sessionId } = session;
 	const displayedModel = activeModel ?? model;
 	const liveActive = isRavenLiveInteractionLocked(voice.livePhase);
-	const displayedEffort = activeEffort ?? effort;
+	const displayedEffort = activeProviderId.startsWith("acp:")
+		? activeEffort
+		: (activeEffort ?? effort);
 	const displayedPermissionMode = activePermissionMode ?? permissionMode;
 	const displayedApprovalsReviewer =
 		approvalsReviewerOptions.length > 0
@@ -4649,6 +4810,23 @@ function ChatModelBadge({
 										: {}),
 								}))}
 								selectedValue={displayedModel ?? ""}
+								status={
+									acpModelCatalogStatus === "loading"
+										? {
+												label: `Loading ${activeProviderLabel} models…`,
+												loading: true,
+											}
+										: acpModelCatalogStatus === "failed"
+											? {
+													label:
+														modelPickerOptions.length > 1
+															? "Showing cached models"
+															: "Models unavailable",
+													actionLabel: "Retry",
+													onAction: retryAcpModelCatalog,
+												}
+											: undefined
+								}
 								onSelect={(value) => {
 									const delivered = send({
 										type: "set_model",
@@ -5756,6 +5934,8 @@ interface ChatComposerProps {
 	}>;
 	activeProviderMode: string | null;
 	providerPlanModeValue: string | null;
+	acpModelCatalogStatus: "loading" | "failed" | null;
+	retryAcpModelCatalog: () => void;
 	canSend: boolean;
 	canQueue: boolean;
 	delegationSteering: boolean;

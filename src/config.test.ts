@@ -13,7 +13,7 @@ function wslOpenCodeTarget() {
 }
 
 describe("HlidConfigSchema ACP WSL workspace targets", () => {
-	it("rejects an ACP-backed vault in a different distro even when an agent workspace matches", () => {
+	it("lets an ACP-backed vault select its own WSL distro independently of the Forge target", () => {
 		const result = HlidConfigSchema.safeParse({
 			vault: { name: "Fornbok", path: DEBIAN_WORKSPACE },
 			vault_provider: "acp:opencode",
@@ -21,29 +21,17 @@ describe("HlidConfigSchema ACP WSL workspace targets", () => {
 			acp_agents: [wslOpenCodeTarget()],
 		});
 
-		expect(result.success).toBe(false);
-		if (result.success) return;
-		expect(result.error.issues).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({ path: ["vault", "path"] }),
-			]),
-		);
+		expect(result.success).toBe(true);
 	});
 
-	it("rejects an ACP-backed agent in a different distro even when the vault matches", () => {
+	it("lets each ACP-backed agent select its exact WSL distro", () => {
 		const result = HlidConfigSchema.safeParse({
 			vault: { name: "Fornbok", path: UBUNTU_WORKSPACE },
 			agents: [{ path: DEBIAN_WORKSPACE, provider: "acp:opencode" }],
 			acp_agents: [wslOpenCodeTarget()],
 		});
 
-		expect(result.success).toBe(false);
-		if (result.success) return;
-		expect(result.error.issues).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({ path: ["agents", 0, "path"] }),
-			]),
-		);
+		expect(result.success).toBe(true);
 	});
 
 	it("accepts ACP-backed WSL paths in the provider target distro", () => {

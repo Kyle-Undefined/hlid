@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { safeRequestPath } from "../lib/httpDiagnostics";
 import {
+	acpProviderOperationSlowRequestThreshold,
 	createRequestObserver,
 	createSlowOperationObserver,
 	projectPreviewSlowRequestThreshold,
@@ -14,6 +15,44 @@ afterEach(() => {
 });
 
 describe("request diagnostics", () => {
+	it("allows bounded ACP provider operations before warning", () => {
+		expect(acpProviderOperationSlowRequestThreshold("/acp/models")).toBe(5_000);
+		expect(acpProviderOperationSlowRequestThreshold("/providers")).toBe(12_000);
+		expect(acpProviderOperationSlowRequestThreshold("/acp/sessions")).toBe(
+			5_000,
+		);
+		expect(
+			acpProviderOperationSlowRequestThreshold("/acp/sessions/import"),
+		).toBe(5_000);
+		expect(
+			acpProviderOperationSlowRequestThreshold(
+				"/_serverFn/:id",
+				"discoverAcpModelsFn",
+			),
+		).toBe(5_000);
+		expect(
+			acpProviderOperationSlowRequestThreshold(
+				"/_serverFn/:id",
+				"getProvidersFn",
+			),
+		).toBe(12_000);
+		expect(
+			acpProviderOperationSlowRequestThreshold(
+				"/_serverFn/:id",
+				"listAcpProviderSessionsFn",
+			),
+		).toBe(5_000);
+		expect(
+			acpProviderOperationSlowRequestThreshold(
+				"/_serverFn/:id",
+				"importAcpProviderSessionFn",
+			),
+		).toBe(5_000);
+		expect(acpProviderOperationSlowRequestThreshold("/acp/registry")).toBe(
+			undefined,
+		);
+	});
+
 	it("keeps only a sanitized route label", () => {
 		expect(
 			safeRequestPath(

@@ -57,6 +57,8 @@ export type ProviderInfo = {
 	};
 	/** Effort/thinking levels. Absent if the provider has no such concept. */
 	effortLevels?: Array<{ value: string; label: string; desc?: string }>;
+	/** Model-scoped providers must advertise effort on the exact selected model. */
+	effortScope?: "provider" | "model";
 	/**
 	 * Options and active values reported by one live provider session. These
 	 * refine the cached catalog for Raven only and must not be persisted as

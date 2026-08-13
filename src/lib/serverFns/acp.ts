@@ -115,8 +115,11 @@ export const getAcpRegistryFn = createServerFn({ method: "GET" })
 /** Live model inspection without Hlid's OpenCode visibility overlay. */
 export async function discoverAcpModels(
 	id: string,
+	cwd?: string,
 ): Promise<NonNullable<ProviderInfo["models"]>> {
-	const response = await dbFetch(`/acp/models?id=${encodeURIComponent(id)}`, {
+	const query = new URLSearchParams({ id });
+	if (cwd !== undefined) query.set("cwd", cwd);
+	const response = await dbFetch(`/acp/models?${query.toString()}`, {
 		signal: AbortSignal.timeout(ACP_MODEL_DISCOVERY_TIMEOUT_MS),
 	});
 	await requireDbOk(response, "discover ACP models");
@@ -129,15 +132,24 @@ export async function discoverAcpModels(
 }
 
 export const discoverAcpModelsFn = createServerFn({ method: "GET" })
-	.validator((raw) => z.object({ id: z.string().min(1).max(128) }).parse(raw))
-	.handler(({ data }) => discoverAcpModels(data.id));
+	.validator((raw) =>
+		z
+			.object({
+				id: z.string().min(1).max(128),
+				cwd: z.string().min(1).max(4_096).optional(),
+			})
+			.parse(raw),
+	)
+	.handler(({ data }) => discoverAcpModels(data.id, data.cwd));
 
 export async function listAcpProviderSessions(
 	id: string,
 	cursor?: string,
+	cwd?: string,
 ): Promise<AcpProviderNativeSessionPage> {
 	const query = new URLSearchParams({ id });
 	if (cursor !== undefined) query.set("cursor", cursor);
+	if (cwd !== undefined) query.set("cwd", cwd);
 	const response = await dbFetch(`/acp/sessions?${query.toString()}`, {
 		signal: AbortSignal.timeout(ACP_SESSION_LIST_TIMEOUT_MS),
 	});
@@ -157,19 +169,23 @@ export const listAcpProviderSessionsFn = createServerFn({ method: "GET" })
 			.object({
 				id: z.string().min(1).max(128),
 				cursor: z.string().min(1).max(2_048).optional(),
+				cwd: z.string().min(1).max(4_096).optional(),
 			})
 			.parse(raw),
 	)
-	.handler(({ data }) => listAcpProviderSessions(data.id, data.cursor));
+	.handler(({ data }) =>
+		listAcpProviderSessions(data.id, data.cursor, data.cwd),
+	);
 
 export async function importAcpProviderSession(
 	id: string,
 	providerSessionId: string,
+	cwd?: string,
 ): Promise<AcpProviderSessionImportResult> {
 	const response = await dbFetch("/acp/sessions/import", {
 		method: "POST",
 		headers: { "content-type": "application/json" },
-		body: JSON.stringify({ id, providerSessionId }),
+		body: JSON.stringify({ id, providerSessionId, ...(cwd ? { cwd } : {}) }),
 		signal: AbortSignal.timeout(ACP_SESSION_IMPORT_TIMEOUT_MS),
 	});
 	await requireDbOk(response, "import ACP provider session");
@@ -188,17 +204,22 @@ export const importAcpProviderSessionFn = createServerFn({ method: "POST" })
 			.object({
 				id: z.string().min(1).max(128),
 				providerSessionId: z.string().min(1).max(512),
+				cwd: z.string().min(1).max(4_096).optional(),
 			})
 			.parse(raw),
 	)
 	.handler(({ data }) =>
-		importAcpProviderSession(data.id, data.providerSessionId),
+		importAcpProviderSession(data.id, data.providerSessionId, data.cwd),
 	);
 
 export const authenticateAcpFn = createServerFn({ method: "POST" })
 	.validator((raw) =>
 		z
-			.object({ id: z.string().min(1), methodId: z.string().optional() })
+			.object({
+				id: z.string().min(1),
+				methodId: z.string().optional(),
+				cwd: z.string().min(1).max(4_096).optional(),
+			})
 			.parse(raw),
 	)
 	.handler(async ({ data }) => {

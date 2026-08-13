@@ -3,9 +3,11 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	acpExecutableInternals,
 	acpExecutableNames,
 	acpExecutablePathCandidates,
 	findAcpExecutable,
+	findAcpExecutables,
 } from "./acpExecutable";
 
 const originalPath = process.env.PATH;
@@ -123,6 +125,107 @@ describe.sequential("findAcpExecutable", () => {
 		const directory = mkdtempSync(join(tmpdir(), "hlid-acp-directory-"));
 		try {
 			await expect(findAcpExecutable(directory)).resolves.toBeNull();
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("resolves a batch against one PATH group while preserving explicit paths and misses", async () => {
+		const first = mkdtempSync(join(tmpdir(), "hlid-acp-batch-first-"));
+		const second = mkdtempSync(join(tmpdir(), "hlid-acp-batch-second-"));
+		try {
+			const firstCommand = `hlid-acp-batch-first-${process.pid}`;
+			const secondCommand = `hlid-acp-batch-second-${process.pid}`;
+			const firstExecutable = installExecutable(first, firstCommand);
+			const secondExecutable = installExecutable(second, secondCommand);
+			const explicitExecutable = installExecutable(second, "explicit-agent");
+			const missing = `hlid-acp-batch-missing-${process.pid}`;
+			const commands = [
+				secondCommand,
+				firstCommand,
+				explicitExecutable,
+				missing,
+				secondCommand,
+			];
+
+			await expect(
+				findAcpExecutables(commands, {
+					env: {
+						PATH: [first, second].join(delimiter),
+						PATHEXT: process.platform === "win32" ? ".CMD" : undefined,
+					},
+				}),
+			).resolves.toEqual(
+				new Map([
+					[secondCommand, secondExecutable],
+					[firstCommand, firstExecutable],
+					[explicitExecutable, explicitExecutable],
+					[missing, null],
+				]),
+			);
+		} finally {
+			rmSync(first, { recursive: true, force: true });
+			rmSync(second, { recursive: true, force: true });
+		}
+	});
+
+	it("re-probes fresh higher-priority and previously missing commands in a batch", async () => {
+		const first = mkdtempSync(join(tmpdir(), "hlid-acp-batch-fresh-first-"));
+		const second = mkdtempSync(join(tmpdir(), "hlid-acp-batch-fresh-second-"));
+		const command = `hlid-acp-batch-priority-${process.pid}`;
+		const lateCommand = `hlid-acp-batch-late-${process.pid}`;
+		const env = {
+			PATH: [first, second].join(delimiter),
+			PATHEXT: process.platform === "win32" ? ".CMD" : undefined,
+		};
+		try {
+			const lowerPriority = installExecutable(second, command);
+			await expect(
+				findAcpExecutables([command, lateCommand], { env }),
+			).resolves.toEqual(
+				new Map([
+					[command, lowerPriority],
+					[lateCommand, null],
+				]),
+			);
+
+			const higherPriority = installExecutable(first, command);
+			const lateExecutable = installExecutable(first, lateCommand);
+			await expect(
+				findAcpExecutables([command, lateCommand], { env }),
+			).resolves.toEqual(
+				new Map([
+					[command, higherPriority],
+					[lateCommand, lateExecutable],
+				]),
+			);
+		} finally {
+			rmSync(first, { recursive: true, force: true });
+			rmSync(second, { recursive: true, force: true });
+		}
+	});
+
+	it("uses one fresh PATH index and no candidate probes for a batch of misses", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "hlid-acp-batch-bounded-"));
+		try {
+			acpExecutableInternals.resetIoCounters();
+			const commands = Array.from(
+				{ length: 38 },
+				(_value, index) => `missing-acp-agent-${process.pid}-${index}`,
+			);
+			await expect(
+				findAcpExecutables(commands, {
+					env: {
+						PATH: directory,
+						PATHEXT:
+							process.platform === "win32" ? ".EXE;.BAT;.CMD" : undefined,
+					},
+				}),
+			).resolves.toEqual(new Map(commands.map((command) => [command, null])));
+			expect(acpExecutableInternals.ioCounters()).toEqual({
+				pathIndexBuildCount: 1,
+				candidateValidationCount: 0,
+			});
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}

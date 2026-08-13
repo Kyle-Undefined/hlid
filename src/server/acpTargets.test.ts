@@ -50,6 +50,25 @@ describe("ACP execution target catalog", () => {
 				target: { kind: "wsl", distro: "Ubuntu-24.04" },
 			}),
 		]);
+		expect(targets.find((target) => target.target.kind === "host")?.cwd).toBe(
+			process.cwd(),
+		);
+	});
+
+	it("uses a native workspace cwd for the host target when the vault is WSL", () => {
+		const config = HlidConfigSchema.parse({
+			vault: { path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\vault" },
+			agents: [
+				{ path: "C:\\Users\\kyle\\project" },
+				{ path: "\\\\wsl.localhost\\Debian\\home\\kyle\\project" },
+			],
+		});
+
+		expect(
+			configuredAcpExecutionTargets(config, "win32").find(
+				(target) => target.target.kind === "host",
+			),
+		).toMatchObject({ cwd: "C:\\Users\\kyle\\project" });
 	});
 
 	it("does not expose WSL targets to a non-Windows host", () => {

@@ -175,6 +175,7 @@ function makePool(
 		close: (id: string) => void;
 		isVaultSession: (id: string) => boolean;
 		getProvider: (id: string) => unknown;
+		providerRuntimeCwd: (agentCwd: string | null | undefined) => string | null;
 		refreshDurableDelegationAttention: () => Promise<void>;
 	}> = {},
 ): SessionPool {
@@ -186,6 +187,7 @@ function makePool(
 		close: vi.fn(),
 		isVaultSession: vi.fn().mockReturnValue(false),
 		getProvider: vi.fn().mockReturnValue(undefined),
+		providerRuntimeCwd: vi.fn((agentCwd) => agentCwd ?? "/work/vault"),
 		refreshDurableDelegationAttention: vi.fn().mockResolvedValue(undefined),
 		...overrides,
 	} as unknown as SessionPool;
@@ -1263,6 +1265,83 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 			expect.any(String),
 			3,
 		);
+	});
+
+	it("uses the exact provider runtime cwd for fork negotiation and execution", async () => {
+		mockGetSessionById.mockResolvedValue({
+			...sampleRow,
+			provider_id: "acp:test",
+			agent_cwd: "/work/context-agent",
+			history_resume_mode: "native",
+		});
+		mockGetSessionProviderSession.mockResolvedValue("native-source-id");
+		const resolveForkCapability = vi.fn().mockResolvedValue({
+			kind: "exact",
+			wholeSession: true,
+			throughMessage: false,
+		});
+		const forkSession = vi
+			.fn()
+			.mockResolvedValue({ sessionId: "native-forked-id" });
+		const providerRuntimeCwd = vi
+			.fn()
+			.mockReturnValue("C:\\Users\\kyle\\Vault");
+		const pool = makePool({
+			providerRuntimeCwd,
+			getProvider: vi.fn().mockReturnValue({
+				providerId: "acp:test",
+				resolveForkCapability,
+				forkSession,
+			}),
+		});
+
+		const response = await handleDbRoute(
+			makeUrl("/db/session/fork"),
+			forkRequest({ id: "abc-123" }),
+			pool,
+		);
+
+		expect(response?.status).toBe(200);
+		expect(providerRuntimeCwd).toHaveBeenCalledWith("/work/context-agent");
+		expect(resolveForkCapability).toHaveBeenCalledWith({
+			cwd: "C:\\Users\\kyle\\Vault",
+		});
+		expect(forkSession).toHaveBeenCalledWith({
+			sessionId: "native-source-id",
+			cwd: "C:\\Users\\kyle\\Vault",
+			historyResumeMode: "native",
+			cutoff: undefined,
+		});
+	});
+
+	it("fails a fork closed when its persisted workspace is no longer configured", async () => {
+		mockGetSessionById.mockResolvedValue({
+			...sampleRow,
+			provider_id: "acp:test",
+			agent_cwd: "/work/removed-agent",
+		});
+		mockGetSessionProviderSession.mockResolvedValue("native-source-id");
+		const resolveForkCapability = vi.fn();
+		const forkSession = vi.fn();
+		const pool = makePool({
+			providerRuntimeCwd: vi.fn().mockReturnValue(null),
+			getProvider: vi.fn().mockReturnValue({
+				providerId: "acp:test",
+				resolveForkCapability,
+				forkSession,
+			}),
+		});
+
+		const response = await handleDbRoute(
+			makeUrl("/db/session/fork"),
+			forkRequest({ id: "abc-123" }),
+			pool,
+		);
+
+		expect(response?.status).toBe(409);
+		expect(await response?.text()).toContain("no longer configured");
+		expect(resolveForkCapability).not.toHaveBeenCalled();
+		expect(forkSession).not.toHaveBeenCalled();
 	});
 
 	it("rejects per-message forks when negotiated ACP support is whole-session only", async () => {

@@ -4,6 +4,8 @@ import { delimiter, isAbsolute, join, posix, resolve, win32 } from "node:path";
 
 let pathIndexKey = "";
 let pathIndexRead: Promise<Map<string, string[]>> | null = null;
+let pathIndexBuildCountForTests = 0;
+let candidateValidationCountForTests = 0;
 
 export function acpExecutableNames(
 	command: string,
@@ -61,6 +63,7 @@ async function withinPathIoBudget<T>(operation: Promise<T>): Promise<T | null> {
 }
 
 async function canAccess(candidate: string): Promise<boolean> {
+	candidateValidationCountForTests += 1;
 	const [accessible, metadata] = await Promise.all([
 		withinPathIoBudget(
 			access(
@@ -101,6 +104,7 @@ function pathDirectories(pathValue: string | undefined, cwd: string): string[] {
 async function buildPathIndex(
 	directories: string[],
 ): Promise<Map<string, string[]>> {
+	pathIndexBuildCountForTests += 1;
 	const listings = await Promise.all(
 		directories.map(async (directory) => {
 			const entries = await withinPathIoBudget(
@@ -133,9 +137,10 @@ async function buildPathIndex(
 async function pathIndex(
 	directories: string[],
 	pathExt: string | undefined,
+	fresh = false,
 ): Promise<Map<string, string[]>> {
 	const key = `${directories.join("\0")}\0${pathExt ?? ""}`;
-	if (!pathIndexRead || pathIndexKey !== key) {
+	if (fresh || !pathIndexRead || pathIndexKey !== key) {
 		pathIndexKey = key;
 		pathIndexRead = buildPathIndex(directories);
 	}
@@ -172,38 +177,23 @@ function rememberIndexedCandidate(
 	index.set(key, candidates);
 }
 
-/** Resolve an ACP executable without synchronous PATH filesystem work. */
-export async function findAcpExecutable(
+function indexedAcpExecutableCandidates(
 	command: string,
-	options: {
-		cwd?: string;
-		env?: Record<string, string | undefined>;
-	} = {},
-): Promise<string | null> {
-	if (!command) return null;
-	const cwd = options.cwd ?? process.cwd();
-	const pathValue =
-		environmentValue(options.env, "PATH") ??
-		environmentValue(process.env, "PATH");
-	const pathExt =
-		environmentValue(options.env, "PATHEXT") ??
-		environmentValue(process.env, "PATHEXT");
-	if (isAbsolute(command) || command.includes("/") || command.includes("\\")) {
-		const candidate = isAbsolute(command) ? command : resolve(cwd, command);
-		return (await canAccess(candidate)) ? candidate : null;
-	}
-	const directories = pathDirectories(pathValue, cwd);
-	const index = await pathIndex(directories, pathExt);
+	directories: string[],
+	pathExt: string | undefined,
+	index: Map<string, string[]>,
+): {
+	indexed: Map<string, string>;
+	orderedCandidates: string[];
+	orderedIndexed: string[];
+} {
 	const indexed = new Map<string, string>();
 	for (const name of acpExecutableNames(command, pathExt)) {
 		const candidates = index.get(
 			process.platform === "win32" ? name.toLowerCase() : name,
 		);
 		for (const candidate of candidates ?? []) {
-			indexed.set(
-				process.platform === "win32" ? candidate.toLowerCase() : candidate,
-				candidate,
-			);
+			indexed.set(executablePathKey(candidate), candidate);
 		}
 	}
 	const orderedCandidates = acpExecutablePathCandidates(
@@ -214,6 +204,119 @@ export async function findAcpExecutable(
 	const orderedIndexed = orderedCandidates
 		.map((candidate) => indexed.get(executablePathKey(candidate)))
 		.filter((candidate): candidate is string => Boolean(candidate));
+	return { indexed, orderedCandidates, orderedIndexed };
+}
+
+/** Resolve an ACP executable without synchronous PATH filesystem work. */
+async function resolveIndexedAcpExecutable(
+	command: string,
+	directories: string[],
+	pathExt: string | undefined,
+	index: Map<string, string[]>,
+): Promise<string | null> {
+	const { orderedIndexed } = indexedAcpExecutableCandidates(
+		command,
+		directories,
+		pathExt,
+		index,
+	);
+	for (const candidate of orderedIndexed) {
+		if (await canAccess(candidate)) return candidate;
+	}
+	return null;
+}
+
+export type FindAcpExecutablesOptions = {
+	cwd?: string;
+	env?: Record<string, string | undefined>;
+};
+
+function acpExecutableSearchContext(options: FindAcpExecutablesOptions): {
+	cwd: string;
+	pathExt: string | undefined;
+	directories: string[];
+} {
+	const cwd = options.cwd ?? process.cwd();
+	const pathValue =
+		environmentValue(options.env, "PATH") ??
+		environmentValue(process.env, "PATH");
+	const pathExt =
+		environmentValue(options.env, "PATHEXT") ??
+		environmentValue(process.env, "PATHEXT");
+	return {
+		cwd,
+		pathExt,
+		directories: pathDirectories(pathValue, cwd),
+	};
+}
+
+/**
+ * Resolve ACP executables against one exact cwd/environment group. PATH
+ * directories are freshly indexed once for the batch, preserving discovery
+ * freshness without a PATH x PATHEXT filesystem-probe fanout for misses.
+ */
+export async function findAcpExecutables(
+	commands: readonly string[],
+	options: FindAcpExecutablesOptions = {},
+): Promise<Map<string, string | null>> {
+	const uniqueCommands = [...new Set(commands)];
+	if (uniqueCommands.length === 0) return new Map();
+	const { cwd, pathExt, directories } = acpExecutableSearchContext(options);
+	const pathCommands = uniqueCommands.filter(
+		(command) =>
+			command.length > 0 &&
+			!isAbsolute(command) &&
+			!command.includes("/") &&
+			!command.includes("\\"),
+	);
+	// One fresh listing pass makes the whole group current and bounds misses to
+	// PATH directory reads rather than PATH x PATHEXT filesystem probes.
+	const index =
+		pathCommands.length > 0
+			? await pathIndex(directories, pathExt, true)
+			: null;
+	const resolved = await Promise.all(
+		uniqueCommands.map(async (command) => {
+			if (!command) return [command, null] as const;
+			if (
+				isAbsolute(command) ||
+				command.includes("/") ||
+				command.includes("\\")
+			) {
+				const candidate = isAbsolute(command) ? command : resolve(cwd, command);
+				return [
+					command,
+					(await canAccess(candidate)) ? candidate : null,
+				] as const;
+			}
+			return [
+				command,
+				await resolveIndexedAcpExecutable(
+					command,
+					directories,
+					pathExt,
+					index as Map<string, string[]>,
+				),
+			] as const;
+		}),
+	);
+	return new Map(resolved);
+}
+
+/** Resolve one ACP executable without synchronous PATH filesystem work. */
+export async function findAcpExecutable(
+	command: string,
+	options: FindAcpExecutablesOptions = {},
+): Promise<string | null> {
+	if (!command) return null;
+	const { cwd, pathExt, directories } = acpExecutableSearchContext(options);
+	if (isAbsolute(command) || command.includes("/") || command.includes("\\")) {
+		const candidate = isAbsolute(command) ? command : resolve(cwd, command);
+		return (await canAccess(candidate)) ? candidate : null;
+	}
+	const index = await pathIndex(directories, pathExt);
+	const { indexed, orderedCandidates, orderedIndexed } =
+		indexedAcpExecutableCandidates(command, directories, pathExt, index);
 	let indexedWinner: string | null = null;
 	for (const candidate of orderedIndexed) {
 		if (await canAccess(candidate)) {
@@ -241,8 +344,9 @@ export async function findAcpExecutable(
 		}
 		return indexedWinner;
 	}
-	// A miss must observe an executable installed after the directory index was
-	// created.
+	// A singleton miss must still observe a command installed after the cached
+	// directory index was built. Full registry inventory uses the fresh batch
+	// resolver above, while normal launches retain this cached fast path.
 	const discovered = await probePathCandidates(command, directories, pathExt);
 	if (discovered) rememberIndexedCandidate(index, discovered);
 	return discovered;
@@ -279,3 +383,15 @@ export function acpCmdShimCommand(
 	assertSafeAcpCmdShimInvocation(resolvedExecutable, args);
 	return [resolvedExecutable, ...args].map((value) => `"${value}"`).join(" ");
 }
+
+// fallow-ignore-next-line unused-export -- Vitest uses this seam to prove batch discovery bounds filesystem work.
+export const acpExecutableInternals = {
+	resetIoCounters: () => {
+		pathIndexBuildCountForTests = 0;
+		candidateValidationCountForTests = 0;
+	},
+	ioCounters: () => ({
+		pathIndexBuildCount: pathIndexBuildCountForTests,
+		candidateValidationCount: candidateValidationCountForTests,
+	}),
+};

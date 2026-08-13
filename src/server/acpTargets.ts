@@ -34,12 +34,23 @@ export function configuredAcpExecutionTargets(
 	config: HlidConfig,
 	platform: NodeJS.Platform = process.platform,
 ): AcpExecutionTargetDescriptor[] {
-	const hostCwd = config.vault.path || process.cwd();
-	const wslCwds = new Map<string, { distro: string; cwd: string }>();
-	for (const path of [
+	const configuredPaths = [
 		config.vault.path,
 		...(config.agents ?? []).map((agent) => agent.path),
-	]) {
+	].filter(Boolean);
+	// A host probe must never inherit a WSL UNC cwd merely because the vault is
+	// in WSL. Use an explicitly configured native workspace when one exists;
+	// otherwise the native Hlid process cwd is the only safe host fallback.
+	const hostCwd =
+		platform === "win32"
+			? (configuredPaths.find(
+					(path) =>
+						!parseWslUncSyntax(path) &&
+						(/^[a-z]:[\\/]/i.test(path) || path.startsWith("\\\\")),
+				) ?? process.cwd())
+			: config.vault.path || process.cwd();
+	const wslCwds = new Map<string, { distro: string; cwd: string }>();
+	for (const path of configuredPaths) {
 		const parsed = parseWslUncSyntax(path);
 		if (!parsed) continue;
 		if (

@@ -1044,6 +1044,13 @@ async function forkSession({
 	const providerId = source.provider_id ?? "claude";
 	const provider = pool?.getProvider(providerId);
 	const nativeId = await db.getSessionProviderSession(sourceId, providerId);
+	const runtimeCwd = pool?.providerRuntimeCwd(source.agent_cwd);
+	if (!runtimeCwd) {
+		return new Response(
+			"The source session workspace is no longer configured for provider runtime access",
+			{ status: 409 },
+		);
+	}
 
 	let forkMessage: Awaited<ReturnType<typeof db.getMessageForFork>> | undefined;
 	let throughSeq: number | undefined;
@@ -1069,7 +1076,8 @@ async function forkSession({
 	}
 
 	const forkCapability =
-		(await provider?.resolveForkCapability?.()) ?? provider?.forkCapability;
+		(await provider?.resolveForkCapability?.({ cwd: runtimeCwd })) ??
+		provider?.forkCapability;
 	if (!provider?.forkSession || !forkCapability || !nativeId) {
 		return new Response("Forking is not supported for this session", {
 			status: 422,
@@ -1105,7 +1113,7 @@ async function forkSession({
 
 	const { sessionId: newNativeId, messages } = await provider.forkSession({
 		sessionId: nativeId,
-		cwd: source.agent_cwd ?? undefined,
+		cwd: runtimeCwd,
 		historyResumeMode: source.history_resume_mode,
 		cutoff,
 	});

@@ -3,6 +3,7 @@ import { acpExecutionTargetLabel } from "../lib/acpExecutionTarget";
 import { parseAcpManagedMutationRequest } from "../lib/acpManagedTypes";
 import { AcpModelCatalogSchema } from "../lib/acpModelCatalog";
 import { acpRuntimeIdentity } from "../lib/acpRuntimeIdentity";
+import { declaredPathKey } from "../lib/paths";
 import type { AcpManagedInstaller } from "./acpManagedInstall";
 import {
 	AcpProvider,
@@ -14,12 +15,13 @@ import {
 	inspectAcpAgent,
 	listAcpProviderSessions,
 } from "./acpProvider";
-import type { AcpCatalogItem } from "./acpRegistry";
+import type { AcpCatalogItem, AcpCatalogOptions } from "./acpRegistry";
 import {
+	AcpWorkspaceRuntimeError,
 	acpDiscoveryCwd,
-	acpRuntimeFingerprint,
 	effectiveAcpEnvironment,
 	OpenCodeConfigOverlayError,
+	resolveAcpWorkspaceRuntime,
 } from "./acpRuntime";
 import {
 	type AcpExecutionTargetDescriptor,
@@ -43,6 +45,7 @@ type AcpRouteDependencies = {
 			config: HlidConfig,
 			refresh?: boolean,
 			refreshRuntimeEvidence?: boolean,
+			options?: AcpCatalogOptions,
 		) => Promise<AcpCatalogItem[]>;
 	};
 	loadConfig: () => HlidConfig;
@@ -59,7 +62,10 @@ type AcpRouteDependencies = {
 	logModelDiscoveryFailure?: (message: string) => void;
 	logSessionListFailure?: (message: string) => void;
 	logSessionImportFailure?: (message: string) => void;
-	syncRuntime?: () => Promise<unknown>;
+	syncRuntime?: (materialized?: {
+		config: HlidConfig;
+		catalog: AcpCatalogItem[];
+	}) => Promise<unknown>;
 	managedInstaller?: Pick<AcpManagedInstaller, "mutate"> &
 		Partial<Pick<AcpManagedInstaller, "claimedTargets">>;
 	managedMutationAuthorized?: (request: Request) => boolean;
@@ -88,21 +94,15 @@ async function resolveEnabledAcpItem(
 > {
 	const config = dependencies.loadConfig();
 	const item = (
-		await dependencies.registry.catalog(config, false, refreshRuntimeEvidence)
+		await dependencies.registry.catalog(config, false, refreshRuntimeEvidence, {
+			agentIds: [id],
+		})
 	).find((candidate) => candidate.id === id && candidate.enabled);
 	if (!item) {
 		return {
 			response: Response.json(
 				{ error: "ACP agent is not enabled" },
 				{ status: 404 },
-			),
-		};
-	}
-	if (!item.available) {
-		return {
-			response: Response.json(
-				{ error: item.unavailableReason },
-				{ status: 409 },
 			),
 		};
 	}
@@ -113,15 +113,61 @@ async function resolveEnabledAcpItem(
 	};
 }
 
+const MAX_ACP_ROUTE_WORKSPACE_CHARS = 4_096;
+
+function configuredAcpWorkspace(
+	rawCwd: unknown,
+	config: HlidConfig,
+	configured: NonNullable<HlidConfig["acp_agents"]>[number] | undefined,
+): { cwd: string; response?: never } | { cwd?: never; response: Response } {
+	if (rawCwd === undefined) {
+		return { cwd: acpDiscoveryCwd(config, configured) };
+	}
+	if (
+		typeof rawCwd !== "string" ||
+		rawCwd.length === 0 ||
+		rawCwd.length > MAX_ACP_ROUTE_WORKSPACE_CHARS ||
+		rawCwd.includes("\0")
+	) {
+		return {
+			response: Response.json(
+				{ error: "a valid cwd is required" },
+				{ status: 400 },
+			),
+		};
+	}
+	const requestedKey = declaredPathKey(rawCwd);
+	const cwd = [
+		config.vault.path,
+		...(config.agents ?? []).map((agent) => agent.path),
+	].find(
+		(candidate) =>
+			candidate.length > 0 && declaredPathKey(candidate) === requestedKey,
+	);
+	if (!cwd) {
+		return {
+			response: Response.json(
+				{ error: "cwd must be an exact configured workspace path" },
+				{ status: 400 },
+			),
+		};
+	}
+	return { cwd };
+}
+
 async function resolveEnabledAcpRuntime(
 	id: string,
 	dependencies: AcpRouteDependencies,
+	rawCwd?: unknown,
+	refreshRuntimeEvidence = false,
+	applyModelFilter = true,
 ): Promise<
 	| {
 			config: HlidConfig;
 			item: AcpCatalogItem;
 			cwd: string;
 			options: AcpProviderOptions;
+			providerRuntimeIdentity: string;
 			response?: never;
 	  }
 	| {
@@ -129,39 +175,67 @@ async function resolveEnabledAcpRuntime(
 			item?: never;
 			cwd?: never;
 			options?: never;
+			providerRuntimeIdentity?: never;
 			response: Response;
 	  }
 > {
-	const resolved = await resolveEnabledAcpItem(id, dependencies);
+	const resolved = await resolveEnabledAcpItem(
+		id,
+		dependencies,
+		refreshRuntimeEvidence,
+	);
 	if (resolved.response) return resolved;
 	const { config, configured, item } = resolved;
-	let environment: Record<string, string>;
+	const workspace = configuredAcpWorkspace(rawCwd, config, configured);
+	if (workspace.response) return workspace;
 	try {
-		environment = effectiveAcpEnvironment(item, config);
+		const runtime = resolveAcpWorkspaceRuntime(
+			item,
+			config,
+			workspace.cwd,
+			process.platform,
+			applyModelFilter,
+		);
+		if (!runtime.available) {
+			return {
+				response: Response.json(
+					{
+						error:
+							runtime.reason ??
+							`${item.name} is unavailable in ${runtime.label}`,
+					},
+					{ status: 409 },
+				),
+			};
+		}
+		return {
+			config,
+			item,
+			cwd: workspace.cwd,
+			options: {
+				id: item.providerId,
+				label: item.name,
+				command: runtime.command,
+				args: runtime.args,
+				env: runtime.env,
+				target: runtime.target,
+				discoveryCwd: runtime.discoveryCwd,
+				metadataCacheIdentity: runtime.metadataCacheIdentity,
+				initialAvailability: { available: true },
+			},
+			providerRuntimeIdentity: runtime.sessionContinuityIdentity,
+		};
 	} catch (error) {
-		if (error instanceof OpenCodeConfigOverlayError) {
+		if (
+			error instanceof OpenCodeConfigOverlayError ||
+			error instanceof AcpWorkspaceRuntimeError
+		) {
 			return {
 				response: Response.json({ error: error.message }, { status: 409 }),
 			};
 		}
 		throw error;
 	}
-	const cwd = acpDiscoveryCwd(config, configured);
-	return {
-		config,
-		item,
-		cwd,
-		options: {
-			id: item.providerId,
-			label: item.name,
-			command: item.command,
-			args: item.args,
-			env: environment,
-			target: configured?.target,
-			discoveryCwd: cwd,
-			initialAvailability: { available: true },
-		},
-	};
 }
 
 async function discoverAcpModels(
@@ -173,23 +247,19 @@ async function discoverAcpModels(
 		return Response.json({ error: "id is required" }, { status: 400 });
 	}
 
-	const resolved = await resolveEnabledAcpItem(id, dependencies);
+	const resolved = await resolveEnabledAcpRuntime(
+		id,
+		dependencies,
+		url.searchParams.get("cwd") ?? undefined,
+		false,
+		false,
+	);
 	if (resolved.response) return resolved.response;
-	const { config, configured, item } = resolved;
-	const targetCwd = acpDiscoveryCwd(config, configured);
+	const { cwd, options } = resolved;
 	try {
 		const models = await (dependencies.inspectModels ?? inspectAcpModels)(
-			{
-				id: item.providerId,
-				label: item.name,
-				command: item.command,
-				args: item.args,
-				env: item.env,
-				target: configured?.target,
-				discoveryCwd: targetCwd,
-				initialAvailability: { available: true },
-			},
-			targetCwd,
+			options,
+			cwd,
 		);
 		const parsed = AcpModelCatalogSchema.safeParse(models);
 		if (!parsed.success) throw new Error("invalid ACP model catalog");
@@ -210,18 +280,28 @@ async function authenticateAcpAgent(
 	dependencies: AcpRouteDependencies,
 ): Promise<Response> {
 	const body = (await request.json().catch(() => null)) as {
-		id?: string;
-		methodId?: string;
+		id?: unknown;
+		methodId?: unknown;
+		cwd?: unknown;
 	} | null;
-	if (!body?.id) {
+	if (
+		typeof body?.id !== "string" ||
+		body.id.length === 0 ||
+		body.id.length > 128 ||
+		(body.methodId !== undefined && typeof body.methodId !== "string")
+	) {
 		return Response.json({ error: "id is required" }, { status: 400 });
 	}
 
-	const resolved = await resolveEnabledAcpRuntime(body.id, dependencies);
+	const resolved = await resolveEnabledAcpRuntime(
+		body.id,
+		dependencies,
+		body.cwd,
+	);
 	if (resolved.response) return resolved.response;
 	const initialized = await (dependencies.inspectAgent ?? inspectAcpAgent)(
 		resolved.options,
-		body.methodId,
+		body.methodId as string | undefined,
 	);
 	return Response.json({
 		authMethods: initialized.authMethods ?? [],
@@ -256,7 +336,11 @@ async function listProviderNativeSessions(
 		);
 	}
 
-	const resolved = await resolveEnabledAcpRuntime(id, dependencies);
+	const resolved = await resolveEnabledAcpRuntime(
+		id,
+		dependencies,
+		url.searchParams.get("cwd") ?? undefined,
+	);
 	if (resolved.response) return resolved.response;
 	try {
 		const page = await (dependencies.listSessions ?? listAcpProviderSessions)(
@@ -289,6 +373,7 @@ async function importProviderNativeSession(
 	const body = (await request.json().catch(() => null)) as {
 		id?: unknown;
 		providerSessionId?: unknown;
+		cwd?: unknown;
 	} | null;
 	if (
 		typeof body?.id !== "string" ||
@@ -310,7 +395,12 @@ async function importProviderNativeSession(
 		);
 	}
 
-	const revalidated = await resolveEnabledAcpItem(body.id, dependencies, true);
+	const revalidated = await resolveEnabledAcpRuntime(
+		body.id,
+		dependencies,
+		body.cwd,
+		true,
+	);
 	if (revalidated.response) return revalidated.response;
 	try {
 		// Publish the freshly probed executable identity to live managers before
@@ -327,9 +417,13 @@ async function importProviderNativeSession(
 	}
 	// Runtime synchronization owns the authoritative materialized catalog. Read
 	// it back so validation and the persisted digest use that exact identity.
-	const resolved = await resolveEnabledAcpRuntime(body.id, dependencies);
+	const resolved = await resolveEnabledAcpRuntime(
+		body.id,
+		dependencies,
+		body.cwd,
+	);
 	if (resolved.response) return resolved.response;
-	const { config, item, cwd, options } = resolved;
+	const { item, cwd, options, providerRuntimeIdentity } = resolved;
 	let providerSession: AcpProviderNativeSession | undefined;
 	try {
 		// Re-read provider-owned metadata instead of trusting a title, cwd, or
@@ -370,11 +464,6 @@ async function importProviderNativeSession(
 	}
 
 	try {
-		const runtimeProvider = new AcpProvider({
-			...options,
-			metadataCacheIdentity: acpRuntimeFingerprint(item, config),
-		});
-		const providerRuntimeIdentity = runtimeProvider.sessionContinuityIdentity;
 		if (!providerRuntimeIdentity) {
 			throw new Error("ACP runtime continuity identity is unavailable");
 		}
@@ -476,9 +565,11 @@ async function mutateManagedAcpInstallation(
 			{ status: 404 },
 		);
 	}
-	const item = (await dependencies.registry.catalog(config)).find(
-		(agent) => agent.id === parsed.data.agentId,
-	);
+	const item = (
+		await dependencies.registry.catalog(config, false, false, {
+			agentIds: [parsed.data.agentId],
+		})
+	).find((agent) => agent.id === parsed.data.agentId);
 	const target = item?.targets.find(
 		(candidate) => candidate.targetId === descriptor.targetId,
 	);
@@ -585,7 +676,9 @@ async function preflightAcpConfig(
 	);
 	if (filteredAgents.length === 0) return Response.json({ ok: true });
 
-	const catalog = await dependencies.registry.catalog(config);
+	const catalog = await dependencies.registry.catalog(config, false, false, {
+		agentIds: filteredAgents.map((agent) => agent.id),
+	});
 	for (const configured of filteredAgents) {
 		const item = catalog.find(
 			(candidate) => candidate.id === configured.id && candidate.enabled,
@@ -597,7 +690,25 @@ async function preflightAcpConfig(
 			);
 		}
 		try {
-			effectiveAcpEnvironment(item, config);
+			const selectedTarget =
+				item.targets.find((target) => target.selected) ?? item.targets[0];
+			if (!selectedTarget) {
+				return Response.json(
+					{
+						error: `ACP agent ${JSON.stringify(configured.id)} has no execution target`,
+					},
+					{ status: 409 },
+				);
+			}
+			effectiveAcpEnvironment(
+				{ ...item, env: selectedTarget.env },
+				config,
+				process.env,
+				selectedTarget.target.kind === "wsl" ? "linux" : process.platform,
+				true,
+				selectedTarget.selected,
+				selectedTarget.target.kind !== "wsl",
+			);
 		} catch (error) {
 			if (error instanceof OpenCodeConfigOverlayError) {
 				return Response.json({ error: error.message }, { status: 409 });
@@ -624,12 +735,13 @@ export function createAcpRouteHandler(dependencies: AcpRouteDependencies) {
 		}
 		if (url.pathname === "/acp/registry" && request.method === "GET") {
 			const refresh = url.searchParams.get("refresh") === "1";
-			const agents = await dependencies.registry.catalog(
-				dependencies.loadConfig(),
-				refresh,
-			);
+			const config = dependencies.loadConfig();
+			const agents = await dependencies.registry.catalog(config, refresh);
 			if (refresh && dependencies.syncRuntime) {
-				await dependencies.syncRuntime();
+				// The explicit refresh already materialized executable evidence for this
+				// exact config snapshot. Hand it to runtime synchronization so it can
+				// reuse the scan when the snapshot is still current.
+				await dependencies.syncRuntime({ config, catalog: agents });
 			}
 			return Response.json({
 				agents: agents.map(

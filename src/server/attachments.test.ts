@@ -35,12 +35,8 @@ vi.mock("node:fs/promises", () => ({
 	readFile: vi.fn().mockResolvedValue(""),
 }));
 
-// realpathSync is only called inside resolveRegisteredAgent (when agent_cwd is
-// present). For tests without an agent, we don't need this mock, but provide it
-// to avoid "Bun.file" references pulling in unexpected module resolution.
 vi.mock("node:fs", () => ({
 	constants: { COPYFILE_EXCL: 1 },
-	realpathSync: vi.fn().mockImplementation((p: string) => p),
 }));
 
 vi.mock("node:crypto", () => {
@@ -59,6 +55,7 @@ import {
 	lstat,
 	mkdir,
 	readFile,
+	realpath,
 	rmdir,
 	unlink,
 	writeFile,
@@ -310,6 +307,31 @@ describe("handleUpload — configuration guards", () => {
 		);
 		const res = await handleUpload(makeRequest(form), config);
 		expect(res.status).toBe(200);
+	});
+
+	it("validates registered WSL upload metadata without probing its UNC share", async () => {
+		const config = makeConfig();
+		const configured =
+			"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\work\\project";
+		config.agents = [
+			{
+				path: configured,
+				mode: "cwd",
+				provider: "claude",
+			},
+		];
+		const form = makeFormData(
+			new File(["hello"], "test.txt", { type: "text/plain" }),
+			{ agent_cwd: "\\\\wsl$\\Ubuntu-24.04\\home\\kyle\\work\\project" },
+		);
+
+		const res = await handleUpload(makeRequest(form), config);
+
+		expect(res.status).toBe(200);
+		expect(realpath).not.toHaveBeenCalled();
+		expect(db.createAttachment).toHaveBeenCalledWith(
+			expect.objectContaining({ agent_cwd: configured }),
+		);
 	});
 });
 

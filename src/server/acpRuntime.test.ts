@@ -1,15 +1,22 @@
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type HlidConfig, HlidConfigSchema } from "../config";
 import type { AcpCatalogItem } from "./acpRegistry";
 import {
+	acpExecutionTargetForWorkspace,
 	acpRuntimeFingerprint,
 	createConfiguredAcpProvider,
 	effectiveAcpEnvironment,
 	OpenCodeConfigOverlayError,
 	preflightOpenCodeModelFilter,
+	resolveAcpWorkspaceRuntime,
 	syncAcpRuntimeProviders,
 } from "./acpRuntime";
 import type { AgentProvider } from "./agentProvider";
+
+const fakeAcpFixture = resolve("src/server/fixtures/fake-acp-agent.mjs");
 
 function config(
 	agents: NonNullable<HlidConfig["acp_agents"]> = [],
@@ -42,11 +49,381 @@ function item(
 	};
 }
 
+function target(
+	kind: "host" | "wsl",
+	options: {
+		distro?: string;
+		available?: boolean;
+		command?: string;
+		blockedReason?: string;
+		selected?: boolean;
+		env?: Record<string, string>;
+	} = {},
+): AcpCatalogItem["targets"][number] {
+	const executionTarget =
+		kind === "host"
+			? ({ kind: "host" } as const)
+			: ({ kind: "wsl", distro: options.distro ?? "Ubuntu-24.04" } as const);
+	const label = kind === "host" ? "Windows" : `WSL · ${executionTarget.distro}`;
+	const available = options.available ?? true;
+	return {
+		targetId: kind === "host" ? "host" : "wsl-ubuntu",
+		target: executionTarget,
+		label,
+		recommended: false,
+		selected: options.selected ?? kind === "wsl",
+		platformTarget: kind === "host" ? "win32-x64" : "linux-x64",
+		provenance: available ? "managed" : "missing",
+		available,
+		canEnable: available,
+		canInstall: !available,
+		canUpdate: false,
+		canRemove: available,
+		registryVersion: "1.0.0",
+		mutationRevision: `${kind}-revision`,
+		resolvedExecutable: available ? options.command : undefined,
+		command:
+			options.command ??
+			(kind === "host" ? "C:\\managed\\opencode.exe" : "/managed/opencode"),
+		args: ["acp"],
+		env: { RUNTIME_TARGET: kind, ...options.env },
+		installGuidance: `install for ${label}`,
+		...(options.blockedReason ? { blockedReason: options.blockedReason } : {}),
+	};
+}
+
 afterEach(() => {
 	vi.unstubAllEnvs();
 });
 
 describe("ACP runtime synchronization", () => {
+	it("routes exact Windows and WSL workspace syntax without cross-environment fallback", () => {
+		const runtimeConfig = HlidConfigSchema.parse({
+			vault: { name: "Vault", path: "C:\\Users\\kyle\\Vault" },
+			agents: [
+				{
+					name: "Hlid",
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\hlid",
+				},
+			],
+		});
+
+		expect(
+			acpExecutionTargetForWorkspace(
+				"C:\\Users\\kyle\\Vault",
+				runtimeConfig,
+				"win32",
+			),
+		).toEqual({ kind: "host" });
+		expect(
+			acpExecutionTargetForWorkspace(
+				"\\\\wsl$\\ubuntu-24.04\\home\\kyle\\hlid",
+				runtimeConfig,
+				"win32",
+			),
+		).toEqual({ kind: "wsl", distro: "ubuntu-24.04" });
+		expect(() =>
+			acpExecutionTargetForWorkspace(
+				"/home/kyle/hlid/src",
+				runtimeConfig,
+				"win32",
+			),
+		).toThrow("bare POSIX path on Windows");
+		expect(() =>
+			acpExecutionTargetForWorkspace(
+				"\\\\wsl.localhost\\Ubuntu-24.04",
+				runtimeConfig,
+				"win32",
+			),
+		).toThrow("not a valid WSL UNC path");
+		expect(
+			acpExecutionTargetForWorkspace("/home/kyle/hlid", runtimeConfig, "linux"),
+		).toEqual({ kind: "host" });
+	});
+
+	it("selects the exact target invocation and keys continuity to that runtime", () => {
+		const runtimeConfig = HlidConfigSchema.parse({
+			vault: { name: "Vault", path: "C:\\Users\\kyle\\Vault" },
+			agents: [
+				{
+					name: "Hlid",
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\hlid",
+				},
+			],
+			acp_agents: [
+				{ id: "opencode", target: { kind: "wsl", distro: "Ubuntu-24.04" } },
+			],
+		});
+		const catalogItem = item("opencode", {
+			targets: [
+				target("host", { command: "C:\\managed\\opencode.exe" }),
+				target("wsl", { command: "/managed/opencode" }),
+			],
+		});
+
+		const windows = resolveAcpWorkspaceRuntime(
+			catalogItem,
+			runtimeConfig,
+			"C:\\Users\\kyle\\Vault",
+			"win32",
+		);
+		const wsl = resolveAcpWorkspaceRuntime(
+			catalogItem,
+			runtimeConfig,
+			"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\hlid",
+			"win32",
+		);
+
+		expect(windows).toMatchObject({
+			target: { kind: "host" },
+			command: "C:\\managed\\opencode.exe",
+			env: { RUNTIME_TARGET: "host" },
+		});
+		expect(wsl).toMatchObject({
+			target: { kind: "wsl", distro: "Ubuntu-24.04" },
+			command: "/managed/opencode",
+			env: { RUNTIME_TARGET: "wsl" },
+		});
+		expect(windows.sessionContinuityIdentity).not.toBe(
+			wsl.sessionContinuityIdentity,
+		);
+		expect(windows.metadataCacheIdentity).not.toBe(wsl.metadataCacheIdentity);
+	});
+
+	it("keeps configured environment overrides in their selected execution target", () => {
+		const runtimeConfig = HlidConfigSchema.parse({
+			vault: { name: "Vault", path: "C:\\Users\\kyle\\Vault" },
+			agents: [
+				{
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\workspace",
+				},
+			],
+			acp_agents: [
+				{
+					id: "opencode",
+					target: { kind: "wsl", distro: "Ubuntu-24.04" },
+					env: {
+						PATH: "/opt/opencode/bin",
+						OPENCODE_CONFIG_CONTENT: '{"instructions":["wsl.md"]}',
+					},
+					model_filter: {
+						mode: "hide",
+						models: ["opencode/hidden"],
+					},
+				},
+			],
+		});
+		const catalogItem = item("opencode", {
+			targets: [
+				target("host", { selected: false }),
+				target("wsl", {
+					selected: true,
+					env: {
+						PATH: "/opt/opencode/bin",
+						OPENCODE_CONFIG_CONTENT: '{"instructions":["wsl.md"]}',
+					},
+				}),
+			],
+		});
+
+		const windows = resolveAcpWorkspaceRuntime(
+			catalogItem,
+			runtimeConfig,
+			"C:\\Users\\kyle\\Vault",
+			"win32",
+		);
+		const wsl = resolveAcpWorkspaceRuntime(
+			catalogItem,
+			runtimeConfig,
+			"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\workspace",
+			"win32",
+		);
+
+		expect(windows.env.PATH).toBeUndefined();
+		expect(
+			JSON.parse(windows.env.OPENCODE_CONFIG_CONTENT).instructions,
+		).toBeUndefined();
+		expect(wsl.env.PATH).toBe("/opt/opencode/bin");
+		expect(JSON.parse(wsl.env.OPENCODE_CONFIG_CONTENT).instructions).toEqual([
+			"wsl.md",
+		]);
+	});
+
+	it("does not merge the Windows host inline config into a WSL runtime", () => {
+		const runtimeConfig = config([
+			{
+				id: "opencode",
+				model_filter: { mode: "hide", models: ["opencode/hidden"] },
+			},
+		]);
+		const environment = effectiveAcpEnvironment(
+			item("opencode"),
+			runtimeConfig,
+			{ OPENCODE_CONFIG_CONTENT: '{"instructions":["windows.md"]}' },
+			"linux",
+			true,
+			false,
+			false,
+		);
+
+		expect(
+			JSON.parse(environment.OPENCODE_CONFIG_CONTENT).instructions,
+		).toBeUndefined();
+	});
+
+	it("keeps selected Windows executable evidence out of the WSL runtime identity", () => {
+		const runtimeConfig = HlidConfigSchema.parse({
+			vault: { name: "Vault", path: "C:\\Users\\kyle\\Vault" },
+			agents: [
+				{
+					name: "Hlid",
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\hlid",
+				},
+			],
+		});
+		const targets = [
+			{ ...target("host"), selected: true },
+			{ ...target("wsl"), selected: false },
+		];
+		const withEvidence = (size: string) =>
+			item("opencode", {
+				targets,
+				runtimeExecutableEvidence: {
+					launcher: {
+						pathKey: "native:C:/managed/opencode.exe",
+						size,
+						mtimeNs: "1",
+					},
+				},
+			});
+		const windowsCwd = "C:\\Users\\kyle\\Vault";
+		const wslCwd = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\hlid";
+
+		expect(
+			resolveAcpWorkspaceRuntime(
+				withEvidence("1"),
+				runtimeConfig,
+				wslCwd,
+				"win32",
+			).sessionContinuityIdentity,
+		).toBe(
+			resolveAcpWorkspaceRuntime(
+				withEvidence("2"),
+				runtimeConfig,
+				wslCwd,
+				"win32",
+			).sessionContinuityIdentity,
+		);
+		expect(
+			resolveAcpWorkspaceRuntime(
+				withEvidence("1"),
+				runtimeConfig,
+				windowsCwd,
+				"win32",
+			).sessionContinuityIdentity,
+		).not.toBe(
+			resolveAcpWorkspaceRuntime(
+				withEvidence("2"),
+				runtimeConfig,
+				windowsCwd,
+				"win32",
+			).sessionContinuityIdentity,
+		);
+	});
+
+	it("keeps Windows host config and roots out of the WSL runtime identity", () => {
+		const runtimeConfig = HlidConfigSchema.parse({
+			vault: { name: "Vault", path: "C:\\Users\\kyle\\Vault" },
+			agents: [
+				{
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\hlid",
+				},
+			],
+		});
+		const catalogItem = item("opencode", {
+			targets: [
+				{ ...target("host"), selected: true },
+				{ ...target("wsl"), selected: false },
+			],
+		});
+		const windowsCwd = "C:\\Users\\kyle\\Vault";
+		const wslCwd = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\hlid";
+		const identityFor = (cwd: string) =>
+			resolveAcpWorkspaceRuntime(catalogItem, runtimeConfig, cwd, "win32")
+				.sessionContinuityIdentity;
+
+		vi.stubEnv("XDG_CONFIG_HOME", "C:\\Users\\kyle\\config-one");
+		vi.stubEnv(
+			"OPENCODE_CONFIG_CONTENT",
+			'{"instructions":["windows-one.md"]}',
+		);
+		const initialWindowsIdentity = identityFor(windowsCwd);
+		const initialWslIdentity = identityFor(wslCwd);
+
+		vi.stubEnv("XDG_CONFIG_HOME", "C:\\Users\\kyle\\config-two");
+		vi.stubEnv(
+			"OPENCODE_CONFIG_CONTENT",
+			'{"instructions":["windows-two.md"]}',
+		);
+
+		expect(identityFor(wslCwd)).toBe(initialWslIdentity);
+		expect(identityFor(windowsCwd)).not.toBe(initialWindowsIdentity);
+	});
+
+	it("reports the exact workspace target unavailable instead of using another install", () => {
+		const runtimeConfig = HlidConfigSchema.parse({
+			vault: { name: "Vault", path: "C:\\Users\\kyle\\Vault" },
+			agents: [
+				{
+					name: "Hlid",
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\hlid",
+				},
+			],
+		});
+		const catalogItem = item("opencode", {
+			targets: [
+				target("host", {
+					available: false,
+					command: "opencode",
+					blockedReason: "OpenCode is not installed for Windows",
+				}),
+				target("wsl", { command: "/managed/opencode" }),
+			],
+		});
+
+		expect(
+			resolveAcpWorkspaceRuntime(
+				catalogItem,
+				runtimeConfig,
+				"C:\\Users\\kyle\\Vault",
+				"win32",
+			),
+		).toMatchObject({
+			target: { kind: "host" },
+			available: false,
+			reason: "OpenCode is not installed for Windows",
+			command: "opencode",
+		});
+	});
+
+	it("rejects an unconfigured exact WSL distro instead of falling back to Windows", () => {
+		const runtimeConfig = HlidConfigSchema.parse({
+			vault: { name: "Vault", path: "C:\\Users\\kyle\\Vault" },
+		});
+		const catalogItem = item("opencode", {
+			targets: [target("host")],
+		});
+
+		expect(() =>
+			resolveAcpWorkspaceRuntime(
+				catalogItem,
+				runtimeConfig,
+				"\\\\wsl.localhost\\Debian\\home\\kyle\\repo",
+				"win32",
+			),
+		).toThrow("has no WSL · Debian runtime configured");
+	});
+
 	it("merges a hide filter into JSONC without discarding existing config", () => {
 		const runtimeConfig = config([
 			{
@@ -258,6 +635,7 @@ describe("ACP runtime synchronization", () => {
 		expect(provider.providerId).toBe("acp:opencode");
 		expect(provider.label).toBe("OpenCode");
 		expect(provider.modelCatalogScope).toBe("workspace");
+		expect(provider.effortScope).toBe("model");
 		expect(provider.metadataCacheIdentity).toBe(
 			acpRuntimeFingerprint(
 				item("opencode", { command: "opencode.cmd" }),
@@ -317,13 +695,18 @@ describe("ACP runtime synchronization", () => {
 		expect(acpRuntimeFingerprint(base, runtimeConfig)).not.toBe(identity);
 	});
 
-	it("changes runtime identity and provider launch ownership with the execution target", () => {
-		const hostConfig = config([{ id: "opencode" }]);
-		const wslConfig = HlidConfigSchema.parse({
+	it("routes launch ownership independently of the Forge-selected target", () => {
+		const runtimeConfig = HlidConfigSchema.parse({
 			vault: {
 				name: "Vault",
-				path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\workspace",
+				path: "C:\\Users\\kyle\\Vault",
 			},
+			agents: [
+				{
+					name: "Workspace",
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\workspace",
+				},
+			],
 			acp_agents: [
 				{
 					id: "opencode",
@@ -331,19 +714,35 @@ describe("ACP runtime synchronization", () => {
 				},
 			],
 		});
-		const catalogItem = item("opencode");
-
-		expect(acpRuntimeFingerprint(catalogItem, hostConfig)).not.toBe(
-			acpRuntimeFingerprint(catalogItem, wslConfig),
-		);
-		const provider = createConfiguredAcpProvider(catalogItem, wslConfig);
-		expect(provider.options.target).toEqual({
-			kind: "wsl",
-			distro: "Ubuntu-24.04",
+		const catalogItem = item("opencode", {
+			targets: [target("host"), target("wsl")],
 		});
-		expect(provider.options.discoveryCwd).toBe(
-			"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\workspace",
+		const hostSelectedConfig = {
+			...runtimeConfig,
+			acp_agents: [{ id: "opencode" }] as HlidConfig["acp_agents"],
+		};
+
+		expect(acpRuntimeFingerprint(catalogItem, hostSelectedConfig)).toBe(
+			acpRuntimeFingerprint(catalogItem, runtimeConfig),
 		);
+		const provider = createConfiguredAcpProvider(catalogItem, runtimeConfig);
+		const workspace = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\workspace";
+		expect(provider.sessionContinuityIdentityFor(workspace)).toBe(
+			resolveAcpWorkspaceRuntime(catalogItem, runtimeConfig, workspace, "win32")
+				.sessionContinuityIdentity,
+		);
+		expect(provider.metadataCacheIdentityFor(workspace)).toBe(
+			resolveAcpWorkspaceRuntime(catalogItem, runtimeConfig, workspace, "win32")
+				.metadataCacheIdentity,
+		);
+		expect(provider.sessionContinuityIdentity).toBeUndefined();
+		expect(provider.cachedAvailability()).toEqual({
+			available: false,
+			reason: expect.stringContaining("requires an exact workspace cwd"),
+		});
+		expect(() =>
+			provider.metadataCacheIdentityFor("\\\\wsl.localhost\\Ubuntu-24.04"),
+		).toThrow("not a valid WSL UNC path");
 	});
 
 	it("marks a manually persisted invalid filter unavailable without crashing startup", () => {
@@ -358,7 +757,7 @@ describe("ACP runtime synchronization", () => {
 			]),
 		);
 
-		expect(provider.cachedAvailability()).toEqual({
+		expect(provider.cachedAvailability({ cwd: "/workspace" })).toEqual({
 			available: false,
 			reason: expect.stringContaining("OPENCODE_CONFIG_CONTENT is invalid"),
 		});
@@ -382,7 +781,12 @@ describe("ACP runtime synchronization", () => {
 				retireProviderSessions: retire,
 				registerProvider: register,
 			}),
-		).toEqual({ added: ["acp:opencode"], removed: [], replaced: [] });
+		).toEqual({
+			added: ["acp:opencode"],
+			removed: [],
+			replaced: [],
+			availabilityUpdated: [],
+		});
 		expect(providers.get("codex")).toBe(native);
 		expect(register).toHaveBeenCalledWith(
 			expect.objectContaining({ providerId: "acp:opencode" }),
@@ -404,7 +808,12 @@ describe("ACP runtime synchronization", () => {
 				retireProviderSessions: retire,
 				registerProvider: register,
 			}),
-		).toEqual({ added: [], removed: [], replaced: ["acp:opencode"] });
+		).toEqual({
+			added: [],
+			removed: [],
+			replaced: ["acp:opencode"],
+			availabilityUpdated: [],
+		});
 		expect(retire).toHaveBeenLastCalledWith(["acp:opencode"], {
 			preserveSelection: true,
 		});
@@ -418,7 +827,12 @@ describe("ACP runtime synchronization", () => {
 				retireProviderSessions: retire,
 				registerProvider: register,
 			}),
-		).toEqual({ added: [], removed: ["acp:opencode"], replaced: [] });
+		).toEqual({
+			added: [],
+			removed: ["acp:opencode"],
+			replaced: [],
+			availabilityUpdated: [],
+		});
 		expect(retire).toHaveBeenLastCalledWith(["acp:opencode"]);
 		expect(providers.get("codex")).toBe(native);
 		expect(providers.has("acp:opencode")).toBe(false);
@@ -445,7 +859,12 @@ describe("ACP runtime synchronization", () => {
 				retireProviderSessions: vi.fn(),
 				registerProvider: register,
 			}),
-		).toEqual({ added: [], removed: [], replaced: [] });
+		).toEqual({
+			added: [],
+			removed: [],
+			replaced: [],
+			availabilityUpdated: [],
+		});
 		expect(providers.get(provider.providerId)).toBe(provider);
 		expect(register).not.toHaveBeenCalled();
 	});
@@ -485,17 +904,39 @@ describe("ACP runtime synchronization", () => {
 		expect(retire).not.toHaveBeenCalled();
 	});
 
-	it("does not replace a live provider only because registry availability changed", async () => {
+	it("updates availability in place as WSL verification settles", async () => {
 		const activeConfig = config([{ id: "opencode" }]);
-		const availableItem = item("opencode");
-		const provider = createConfiguredAcpProvider(availableItem, activeConfig);
+		const pendingItem = item("opencode", {
+			available: false,
+			unavailableReason: "Verifying WSL availability",
+		});
+		const provider = createConfiguredAcpProvider(pendingItem, activeConfig);
 		const providers = new Map<string, AgentProvider>([
 			[provider.providerId, provider],
 		]);
 		const fingerprints = new Map([
-			[provider.providerId, acpRuntimeFingerprint(availableItem, activeConfig)],
+			[provider.providerId, acpRuntimeFingerprint(pendingItem, activeConfig)],
 		]);
 		const retire = vi.fn();
+
+		expect(
+			await syncAcpRuntimeProviders({
+				config: activeConfig,
+				catalog: [item("opencode")],
+				providers,
+				fingerprints,
+				retireProviderSessions: retire,
+				registerProvider: vi.fn(),
+			}),
+		).toEqual({
+			added: [],
+			removed: [],
+			replaced: [],
+			availabilityUpdated: ["acp:opencode"],
+		});
+		expect(provider.cachedAvailability({ cwd: "/workspace" })).toEqual({
+			available: true,
+		});
 
 		expect(
 			await syncAcpRuntimeProviders({
@@ -503,7 +944,7 @@ describe("ACP runtime synchronization", () => {
 				catalog: [
 					item("opencode", {
 						available: false,
-						unavailableReason: "temporary PATH lookup timeout",
+						unavailableReason: "WSL timed out",
 					}),
 				],
 				providers,
@@ -511,12 +952,77 @@ describe("ACP runtime synchronization", () => {
 				retireProviderSessions: retire,
 				registerProvider: vi.fn(),
 			}),
-		).toEqual({ added: [], removed: [], replaced: [] });
+		).toEqual({
+			added: [],
+			removed: [],
+			replaced: [],
+			availabilityUpdated: ["acp:opencode"],
+		});
+		expect(provider.cachedAvailability({ cwd: "/workspace" })).toEqual({
+			available: false,
+			reason: expect.stringContaining("WSL timed out"),
+		});
 		expect(retire).not.toHaveBeenCalled();
 		expect(providers.get(provider.providerId)).toBe(provider);
 	});
 
-	it("waits for retired runtime cleanup before registering its replacement", async () => {
+	it("cancels and awaits a hanging old inspection before swapping runtimes", async () => {
+		const root = mkdtempSync(join(tmpdir(), "hlid-acp-runtime-replace-"));
+		const initializeMarker = join(root, "initialize.log");
+		const activeConfig = HlidConfigSchema.parse({
+			vault: { name: "Vault", path: root },
+			acp_agents: [{ id: "opencode" }],
+		});
+		const activeItem = item("opencode", {
+			command: "bun",
+			args: [fakeAcpFixture],
+			env: {
+				HLID_FAKE_ACP_BEHAVIOR: "hang-initialize",
+				HLID_FAKE_ACP_INITIALIZE_MARKER: initializeMarker,
+			},
+		});
+		const provider = createConfiguredAcpProvider(activeItem, activeConfig);
+		const providers = new Map<string, AgentProvider>([
+			[provider.providerId, provider],
+		]);
+		const fingerprints = new Map([
+			[provider.providerId, acpRuntimeFingerprint(activeItem, activeConfig)],
+		]);
+		const models = provider.listModels({ cwd: root });
+		void models.catch(() => {});
+
+		try {
+			await vi.waitFor(() => expect(existsSync(initializeMarker)).toBe(true));
+			const replacement = item("opencode", {
+				command: "bun",
+				args: [fakeAcpFixture],
+				env: { HLID_FAKE_ACP_BEHAVIOR: "" },
+			});
+
+			await expect(
+				syncAcpRuntimeProviders({
+					config: activeConfig,
+					catalog: [replacement],
+					providers,
+					fingerprints,
+					retireProviderSessions: vi.fn(),
+					registerProvider: vi.fn(),
+				}),
+			).resolves.toEqual({
+				added: [],
+				removed: [],
+				replaced: ["acp:opencode"],
+				availabilityUpdated: [],
+			});
+			await expect(models).rejects.toThrow("runtime is updating");
+			expect(providers.get("acp:opencode")).not.toBe(provider);
+		} finally {
+			await provider.retireRuntime();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps a fail-closed runtime registered until replacement cleanup settles", async () => {
 		const activeConfig = config([{ id: "opencode" }]);
 		const activeItem = item("opencode");
 		const provider = createConfiguredAcpProvider(activeItem, activeConfig);
@@ -545,15 +1051,19 @@ describe("ACP runtime synchronization", () => {
 		});
 		await Promise.resolve();
 		expect(register).not.toHaveBeenCalled();
-		expect(providers.has("acp:opencode")).toBe(false);
+		expect(providers.get("acp:opencode")).toBe(provider);
+		expect(() => provider.query({ cwd: "/workspace" } as never)).toThrow(
+			"runtime is updating",
+		);
 
 		finishCleanup();
 		await expect(pending).resolves.toEqual({
 			added: [],
 			removed: [],
 			replaced: ["acp:opencode"],
+			availabilityUpdated: [],
 		});
 		expect(register).toHaveBeenCalledOnce();
-		expect(providers.has("acp:opencode")).toBe(true);
+		expect(providers.get("acp:opencode")).not.toBe(provider);
 	});
 });

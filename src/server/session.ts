@@ -78,6 +78,7 @@ import type {
 	ProviderRealtimeMode,
 	ProviderRealtimeStartResult,
 	ProviderSavedWorkflow,
+	ProviderSessionConfigSnapshot,
 	ProviderThreadGoal,
 	ProviderWorkflowCatalog,
 	ProviderWorkflowDeleteInput,
@@ -282,6 +283,14 @@ function hookToolContext(call: ToolCall): {
 /** Mutable accumulator for per-turn SDK event state, threaded through the event loop. */
 type TurnState = {
 	startedAtMs: number;
+	/** Exact normalized workspace passed to the provider runtime for this turn. */
+	runtimeCwd?: string;
+	/** Exact persisted user-turn receipt, revised by provider-authoritative callbacks. */
+	userContextManifest: HlidTurnContextManifest | null;
+	userContextManifestJson: string | null;
+	userContextManifestWriteTail: Promise<void>;
+	/** Provider configuration writes accepted while this turn owns the runtime. */
+	providerConfigPersistenceTail: Promise<void>;
 	/** Exact persisted provider/model selection that owns runtime observations. */
 	selectedModel: string;
 	/** In-memory provider ownership epoch captured before the provider turn. */
@@ -547,6 +556,7 @@ type ProviderContinuationJob = {
 	agentSettings: AgentSettings | undefined;
 	ownershipGeneration: number;
 	expectedSessionKey: string;
+	runtimeCwd: string;
 	peerOriginObserved: boolean;
 	consumerAttached: boolean;
 	abortController: AbortController;
@@ -780,6 +790,8 @@ type AgentSettings = {
 	recapModel?: string;
 };
 
+type SessionEffortOverride = { value: string | undefined } | null;
+
 type RealtimeControl =
 	| {
 			action: "start";
@@ -817,6 +829,7 @@ type PreparedRealtimeStart = {
 	ownershipGeneration: number;
 	agentSession: AgentSession;
 	startRealtime: NonNullable<AgentSession["startRealtime"]>;
+	runtimeCwd: string;
 };
 
 type RealtimeRequestIdentity = { request_id?: string };
@@ -903,7 +916,7 @@ function buildAgentQueryParams(options: {
 	signal: AbortSignal | undefined;
 	agentSettings: AgentSettings | undefined;
 	modelOverride: { value: string | undefined } | null;
-	effortOverride: string | null;
+	effortOverride: SessionEffortOverride;
 	serviceTierOverride: string | null;
 	defaultModel: string | undefined;
 	configuredPermissionMode: PermissionMode;
@@ -976,9 +989,9 @@ function buildAgentQueryParams(options: {
 				}
 			: {}),
 		effort:
-			options.effortOverride ??
-			options.agentSettings?.effort ??
-			options.defaultEffort,
+			options.effortOverride !== null
+				? options.effortOverride.value
+				: (options.agentSettings?.effort ?? options.defaultEffort) || undefined,
 		serviceTier: options.serviceTierOverride ?? undefined,
 		...(options.providerId.startsWith("acp:")
 			? {}
@@ -1074,17 +1087,20 @@ function agentMapKey(path: string): string {
 function buildAgentMaps(config: HlidConfig): {
 	providers: Map<string, string>;
 	settings: Map<string, AgentSettings>;
+	modes: Map<string, "cwd" | "context">;
 } {
 	const providers = new Map<string, string>();
 	const settings = new Map<string, AgentSettings>();
+	const modes = new Map<string, "cwd" | "context">();
 	for (const agent of config.agents ?? []) {
 		const identity = configuredAgentIdentity(agent.path);
 		if (!identity) continue;
 		providers.set(identity.mapKey, agent.provider ?? "claude");
+		modes.set(identity.mapKey, agent.mode === "context" ? "context" : "cwd");
 		const agentSettings = configuredAgentSettings(agent);
 		if (agentSettings) settings.set(identity.mapKey, agentSettings);
 	}
-	return { providers, settings };
+	return { providers, settings, modes };
 }
 
 function sessionDefaultsFromSelection(
@@ -1213,6 +1229,10 @@ function createTurnState(
 ): TurnState {
 	return {
 		startedAtMs: Date.now(),
+		userContextManifest: null,
+		userContextManifestJson: null,
+		userContextManifestWriteTail: Promise.resolve(),
+		providerConfigPersistenceTail: Promise.resolve(),
 		selectedModel,
 		providerOwnershipGeneration,
 		userSeq: null,
@@ -1372,7 +1392,8 @@ export class SessionManager {
 	private effort!: string;
 	/** Explicit Raven picker values, which outrank refreshed config and agent defaults. */
 	private modelOverride: { value: string | undefined } | null = null;
-	private effortOverride: string | null = null;
+	/** null uses configured context; undefined value explicitly selects the provider default. */
+	private effortOverride: SessionEffortOverride = null;
 	private serviceTierOverride: string | null = null;
 	private permissionModeOverride: PermissionMode | null = null;
 	private approvalsReviewerOverride: ProviderApprovalsReviewer | null = null;
@@ -1493,12 +1514,12 @@ export class SessionManager {
 	/** Pool-scoped agent path whose configured defaults seed live status. */
 	private configuredAgentCwd: string | undefined;
 	private agentMode: "cwd" | "context" = "cwd";
+	private agentModeMap = new Map<string, "cwd" | "context">();
 	private allowedAgentRealPaths: string[] = [];
-	/** Provider-owned recap defaults, resolved against the provider that ran the turn. */
-	private providerRecapSettings = new Map<
-		string,
-		{ turnRecaps: boolean; recapModel: string }
-	>();
+	/** Enablement belongs to the configured Raven context, not a temporary CLI choice. */
+	private turnRecaps!: boolean;
+	/** The recap model still follows the provider that actually answered the turn. */
+	private providerRecapModels = new Map<string, string>();
 	// Slice A: re-entrant runQuery. Concurrent calls (typed-while-running) are
 	// queued FIFO and drained serially. State stays "running" until the queue
 	// fully drains.
@@ -1589,8 +1610,8 @@ export class SessionManager {
 	/**
 	 * Resolves the provider to use for a given agentCwd. If agentCwd is set,
 	 * looks up the provider mapped for that path; otherwise uses the vault
-	 * provider. Falls back to the first provider in the map if the resolved id
-	 * is not found.
+	 * provider. Config-derived missing providers fall back to the first registered
+	 * provider, while an explicit Raven selection fails closed.
 	 */
 	private resolveProvider(agentCwd?: string): AgentProvider {
 		let providerId: string;
@@ -1603,13 +1624,43 @@ export class SessionManager {
 		} else {
 			providerId = this.vaultProviderId;
 		}
+		const provider = this.providers.get(providerId);
+		if (provider) return provider;
+		if (this.providerOverride) {
+			throw new Error(
+				`Explicitly selected provider ${this.providerOverride} is unavailable.`,
+			);
+		}
 		return (
-			this.providers.get(providerId) ??
 			this.providers.values().next().value ??
 			(() => {
 				throw new Error(`No providers registered`);
 			})()
 		);
+	}
+
+	/** Exact workspace that owns provider process state for this Raven context. */
+	private providerRuntimeCwd(
+		agentCwd: string | undefined = this.agentCwd,
+		mode?: "cwd" | "context",
+	): string {
+		const resolvedMode =
+			mode ??
+			(agentCwd === this.agentCwd
+				? this.agentMode
+				: agentCwd
+					? (this.agentModeMap.get(agentMapKey(agentCwd)) ?? "cwd")
+					: "cwd");
+		return resolvedMode === "context" || !agentCwd ? this.vaultPath : agentCwd;
+	}
+
+	private providerContinuityIdentity(
+		provider: AgentProvider,
+		runtimeCwd: string,
+	): string | undefined {
+		return provider.sessionContinuityIdentityFor
+			? provider.sessionContinuityIdentityFor(runtimeCwd)
+			: provider.sessionContinuityIdentity;
 	}
 
 	private defaultApprovalsReviewer(
@@ -1753,6 +1804,132 @@ export class SessionManager {
 		}
 	}
 
+	private updateUserTurnContextManifest(
+		turn: TurnState,
+		sessionId: string,
+		update: (manifest: HlidTurnContextManifest) => HlidTurnContextManifest,
+	): Promise<void> {
+		const apply = async () => {
+			const userSeq = turn.userSeq;
+			const currentManifest = turn.userContextManifest;
+			const currentJson = turn.userContextManifestJson;
+			if (userSeq === null || !currentManifest || !currentJson) return;
+
+			const nextManifest = update(currentManifest);
+			const nextJson = JSON.stringify(nextManifest);
+			if (nextJson === currentJson) return;
+			await db.replaceUserMessageContextManifest(
+				sessionId,
+				userSeq,
+				currentJson,
+				nextJson,
+			);
+			turn.userContextManifest = nextManifest;
+			turn.userContextManifestJson = nextJson;
+		};
+		const operation = turn.userContextManifestWriteTail.then(apply, apply);
+		turn.userContextManifestWriteTail = operation.then(
+			() => undefined,
+			() => undefined,
+		);
+		return operation;
+	}
+
+	/**
+	 * ACP configuration snapshots are complete provider authority. In particular,
+	 * changing models can replace the effort menu or remove it entirely. Keep the
+	 * selected session tuple, live status, and the active turn receipt aligned with
+	 * what the native runtime actually accepted.
+	 */
+	private reconcileProviderSessionConfig(
+		config: ProviderSessionConfigSnapshot,
+		context: {
+			sessionId: string;
+			providerId: string;
+			ownershipGeneration: number;
+			sessionControlGeneration: number;
+			expectedSessionKey: string;
+			sourceSession: AgentSession | undefined;
+			emit: (message: ServerMessage) => void;
+		},
+	): void {
+		const ownsRuntime = () =>
+			this.currentSessionId === context.sessionId &&
+			this.sessionControlGeneration === context.sessionControlGeneration &&
+			this.ownsProviderGeneration(
+				context.providerId,
+				context.ownershipGeneration,
+			) &&
+			Boolean(context.sourceSession) &&
+			this.agentSession === context.sourceSession &&
+			this.agentSessionKey === context.expectedSessionKey;
+		if (!ownsRuntime()) return;
+
+		let effortStatusChanged = false;
+		if (context.providerId.startsWith("acp:")) {
+			const acceptedEffort = config.activeEffort || undefined;
+			const acceptedStatus = acceptedEffort ?? "";
+			const selectionChanged =
+				this.effortOverride === null ||
+				this.effortOverride.value !== acceptedEffort ||
+				this.effort !== acceptedStatus;
+			if (selectionChanged) {
+				effortStatusChanged = this.effort !== acceptedStatus;
+				this.effortOverride = { value: acceptedEffort };
+				this.effort = acceptedStatus;
+
+				const ownsAcceptedEffort = () =>
+					ownsRuntime() &&
+					this.effortOverride !== null &&
+					this.effortOverride.value === acceptedEffort &&
+					this.effort === acceptedStatus;
+				const persistence = this.enqueueProviderOwnershipWrite(async () => {
+					if (!ownsAcceptedEffort()) return;
+					await db.setSessionEffort(context.sessionId, acceptedEffort ?? null, {
+						guard: ownsAcceptedEffort,
+					});
+				});
+				const settledPersistence = persistence.then(
+					() => undefined,
+					(error) => {
+						logDbError("reconcile provider-authoritative effort", error);
+					},
+				);
+
+				const turn = this.currentTurnState;
+				if (turn) {
+					turn.providerConfigPersistenceTail = Promise.all([
+						turn.providerConfigPersistenceTail,
+						settledPersistence,
+					]).then(() => undefined);
+					void this.updateUserTurnContextManifest(
+						turn,
+						context.sessionId,
+						(manifest) => {
+							const { effort: _priorEffort, ...withoutEffort } = manifest;
+							return acceptedEffort
+								? { ...withoutEffort, effort: acceptedEffort }
+								: withoutEffort;
+						},
+					).catch((error) =>
+						logDbError("replace user provider effort context receipt", error),
+					);
+				}
+			}
+		}
+
+		context.emit({
+			type: "provider_config_options",
+			provider_id: context.providerId,
+			session_id: context.sessionId,
+			...(this.agentCwd ? { agent_cwd: this.agentCwd } : {}),
+			...config,
+		});
+		if (effortStatusChanged) {
+			context.emit({ type: "status", ...this.getStatus() });
+		}
+	}
+
 	/** Apply runtime settings from config. Shared by constructor, reinitialize, and syncConfig. */
 	private applyConfig(
 		config: HlidConfig,
@@ -1772,12 +1949,13 @@ export class SessionManager {
 		const agentMaps = buildAgentMaps(config);
 		this.agentProviderMap = agentMaps.providers;
 		this.agentSettingsMap = agentMaps.settings;
+		this.agentModeMap = agentMaps.modes;
 		const configuredDefaults = configuredSessionDefaultsFromMaps(
 			config,
 			this.configuredAgentCwd,
 			agentMaps,
 		);
-		this.providerRecapSettings = new Map(
+		this.providerRecapModels = new Map(
 			[...this.providers.values()].map((provider) => {
 				const defaults = sessionDefaultsFromSelection(
 					config,
@@ -1785,13 +1963,7 @@ export class SessionManager {
 					provider.providerId,
 					undefined,
 				);
-				return [
-					provider.providerId,
-					{
-						turnRecaps: defaults.turnRecaps,
-						recapModel: defaults.recapModel,
-					},
-				];
+				return [provider.providerId, defaults.recapModel] as const;
 			}),
 		);
 		if (
@@ -1818,6 +1990,7 @@ export class SessionManager {
 			config.claude.agent_progress_summaries ?? false;
 		if (!preserveSessionOverrides || this.permissionModeOverride === null)
 			this.permissionMode = configuredDefaults.permissionMode;
+		this.turnRecaps = configuredDefaults.turnRecaps;
 		this.claudeExecutable = resolveClaudeExecutable();
 		this.codexExecutable = codexConfig.executable;
 		this.codexPermissionProfile = codexConfig.permission_profile;
@@ -2141,7 +2314,8 @@ export class SessionManager {
 			this.modelOverride = { value: undefined };
 			this.model = "";
 			this.modelGeneration += 1;
-			this.effortOverride = null;
+			this.effortOverride = { value: undefined };
+			this.effort = "";
 			this.serviceTierOverride = null;
 			this.restartAgentSessionForEffort = false;
 		}
@@ -2654,6 +2828,12 @@ export class SessionManager {
 			: "";
 	}
 
+	private selectedEffortFor(agentSettings?: AgentSettings): string {
+		return this.effortOverride !== null
+			? (this.effortOverride.value ?? "")
+			: (agentSettings?.effort ?? this.effort);
+	}
+
 	private modelOverrideForProvider(
 		providerId: string,
 	): { value: string | undefined } | null {
@@ -2982,8 +3162,7 @@ export class SessionManager {
 			? this.agentSettingsMap.get(agentMapKey(this.agentCwd))
 			: undefined;
 		const selectedModel = this.selectedModelFor(agentSettings);
-		const selectedEffort =
-			this.effortOverride ?? agentSettings?.effort ?? this.effort;
+		const selectedEffort = this.selectedEffortFor(agentSettings);
 		return this.setProvider(this.getProviderId(), {
 			model: selection.model ?? (selectedModel || undefined),
 			effort: selection.effort ?? (selectedEffort || undefined),
@@ -3090,17 +3269,11 @@ export class SessionManager {
 		}
 		if (!ownsInvocation()) throw new PermissionModeChangeSupersededError();
 		const previousPermissionMode = this.desiredPermissionMode();
-		const previousModel = this.selectedModelFor(
-			this.agentCwd
-				? this.agentSettingsMap.get(agentMapKey(this.agentCwd))
-				: undefined,
-		);
-		const previousEffort =
-			this.effortOverride ??
-			(this.agentCwd
-				? this.agentSettingsMap.get(agentMapKey(this.agentCwd))?.effort
-				: undefined) ??
-			this.effort;
+		const currentAgentSettings = this.agentCwd
+			? this.agentSettingsMap.get(agentMapKey(this.agentCwd))
+			: undefined;
+		const previousModel = this.selectedModelFor(currentAgentSettings);
+		const previousEffort = this.selectedEffortFor(currentAgentSettings);
 		const previousApprovalsReviewer = this.approvalsReviewer;
 		const liveSession = providerChanged ? null : this.agentSession;
 		const nextApprovalsReviewer = selection.approvalsReviewer
@@ -3131,7 +3304,7 @@ export class SessionManager {
 			this.modelOverride = { value: selection.model };
 			this.model = selection.model ?? "";
 			this.modelGeneration += 1;
-			this.effortOverride = selection.effort ?? null;
+			this.effortOverride = { value: selection.effort };
 			this.effort = selection.effort ?? "";
 			if (
 				!providerChanged &&
@@ -3967,7 +4140,7 @@ export class SessionManager {
 			if (!this.ownsEffortChangeTarget(target)) {
 				throw new EffortChangeSupersededError();
 			}
-			this.effortOverride = effort;
+			this.effortOverride = { value: effort };
 			this.effort = effort;
 			if (target.agentSession && !hasLiveSetter) {
 				// Rebuild at the next turn boundary and resume the captured provider
@@ -4304,6 +4477,7 @@ export class SessionManager {
 	): Promise<void> {
 		const run = async () => {
 			const provider = providerOverride ?? this.resolveProvider(agentCwd);
+			const runtimeCwd = this.providerRuntimeCwd(agentCwd);
 			// Providers such as Claude require an initialized chat process for these
 			// methods. Their no-session metadata is served from the startup cache.
 			if (provider.probeRequiresTurn) return;
@@ -4312,7 +4486,7 @@ export class SessionManager {
 			let session: AgentSession | undefined;
 			try {
 				session = provider.query({
-					cwd: agentCwd ?? this.agentCwd ?? this.vaultPath,
+					cwd: runtimeCwd,
 					signal: ac.signal,
 					permissionMode: "default",
 					effort: "low",
@@ -4412,8 +4586,15 @@ export class SessionManager {
 	private agentSessionMatchesProbeScope(providerId: string): boolean {
 		if (!this.agentSessionKey) return false;
 		const baseKey = `${providerId}|${this.currentSessionId ?? "ephemeral"}|${this.agentSessionContextKey()}`;
+		const provider = this.providers.get(providerId);
+		const runtimeIdentity = provider?.runtimeIdentityFor?.(
+			this.providerRuntimeCwd(),
+		);
+		const routedKey = runtimeIdentity
+			? `${baseKey}|provider-runtime:${runtimeIdentity}`
+			: baseKey;
 		return (
-			this.agentSessionKey === baseKey ||
+			this.agentSessionKey === routedKey ||
 			(providerId === "codex" &&
 				this.agentSessionKey.startsWith(`${baseKey}|codex-permissions:`))
 		);
@@ -4930,6 +5111,7 @@ export class SessionManager {
 				provider.providerId,
 				result.providerSessionId,
 				ownershipGeneration,
+				this.providerContinuityIdentity(provider, activeCwd),
 			);
 			if (!accepted) {
 				throw new Error(
@@ -4948,6 +5130,7 @@ export class SessionManager {
 					agentSettings,
 					ownershipGeneration,
 					objective: result.goal?.objective ?? "Goal continuation",
+					runtimeCwd: activeCwd,
 				});
 				continuationLaunched = true;
 			}
@@ -4990,6 +5173,7 @@ export class SessionManager {
 						onError: (message) => {
 							void publishRealtimeError(message);
 						},
+						runtimeCwd: prepared.runtimeCwd,
 					})
 				: null;
 		const terminal = this.createRealtimeTerminalLifecycle({
@@ -5127,6 +5311,7 @@ export class SessionManager {
 			ownershipGeneration: context.ownershipGeneration,
 			agentSession,
 			startRealtime,
+			runtimeCwd: activeCwd,
 		};
 	}
 
@@ -5226,6 +5411,7 @@ export class SessionManager {
 		agentSettings: AgentSettings | undefined;
 		ownershipGeneration: number;
 		onError: (message: string) => void;
+		runtimeCwd: string;
 	}): LiveRealtimeCoordination {
 		const realtimeSessionId = `raven-live-${randomUUID()}`;
 		let providerRealtimeSessionId: string | undefined;
@@ -5269,6 +5455,7 @@ export class SessionManager {
 				this.selectedModelFor(options.agentSettings),
 				options.ownershipGeneration,
 			);
+			turn.runtimeCwd = options.runtimeCwd;
 			// Live transcript persistence owns the messages row. Tool persistence can
 			// safely use the reserved sequence before that row is finalized.
 			turn.reservedAssistantSeq = utterance.transcriptSeq;
@@ -5942,6 +6129,7 @@ export class SessionManager {
 		agentSettings: AgentSettings | undefined;
 		ownershipGeneration: number;
 		expectedSessionKey: string;
+		runtimeCwd: string;
 	}): Promise<boolean> {
 		const duplicate = [
 			...(this.currentProviderContinuation
@@ -6010,6 +6198,7 @@ export class SessionManager {
 			this.selectedModelFor(job.agentSettings),
 			job.ownershipGeneration,
 		);
+		turn.runtimeCwd = job.runtimeCwd;
 		this.currentTurnState = turn;
 		this.currentTurnPermissionMode = "default";
 		this.currentDelegationHandoff = null;
@@ -6212,6 +6401,7 @@ export class SessionManager {
 		agentSettings: AgentSettings | undefined;
 		ownershipGeneration: number;
 		objective: string;
+		runtimeCwd: string;
 	}): void {
 		const {
 			agentSession,
@@ -6221,11 +6411,13 @@ export class SessionManager {
 			agentSettings,
 			ownershipGeneration,
 			objective,
+			runtimeCwd,
 		} = options;
 		const turn = createTurnState(
 			this.selectedModelFor(agentSettings),
 			ownershipGeneration,
 		);
+		turn.runtimeCwd = runtimeCwd;
 		void (async () => {
 			try {
 				await this.iterateConversation(
@@ -6660,8 +6852,19 @@ export class SessionManager {
 		const restoredProviderId =
 			savedProviderId ??
 			this.resolveProvider(savedAgentCwd ?? undefined).providerId;
-		const restoredProviderRuntimeIdentity =
-			this.providers.get(restoredProviderId)?.sessionContinuityIdentity ?? null;
+		const restoredProvider = this.providers.get(restoredProviderId);
+		const restoredRuntimeCwd = this.providerRuntimeCwd(
+			savedAgentCwd ?? undefined,
+			savedAgentCwd
+				? (this.agentModeMap.get(agentMapKey(savedAgentCwd)) ?? "cwd")
+				: "cwd",
+		);
+		const restoredProviderRuntimeIdentity = restoredProvider
+			? (this.providerContinuityIdentity(
+					restoredProvider,
+					restoredRuntimeCwd,
+				) ?? null)
+			: null;
 		const incompatibleAcpRuntime =
 			restoredProviderId.startsWith("acp:") &&
 			savedProviderSessionId !== null &&
@@ -6763,13 +6966,18 @@ export class SessionManager {
 				value: restoredSavedModel === "" ? undefined : restoredSavedModel,
 			};
 		}
-		if (
-			!savedModelExcluded &&
-			savedSession?.selected_effort &&
-			this.effortOverride === null
-		) {
-			this.effort = savedSession.selected_effort;
-			this.effortOverride = savedSession.selected_effort;
+		if (this.effortOverride === null) {
+			const restoredSavedEffort =
+				!savedModelExcluded && savedSession?.selected_effort
+					? savedSession.selected_effort
+					: undefined;
+			if (
+				restoredSavedEffort !== undefined ||
+				(savedSession !== null && restoredProviderId.startsWith("acp:"))
+			) {
+				this.effort = restoredSavedEffort ?? "";
+				this.effortOverride = { value: restoredSavedEffort };
+			}
 		}
 		if (incompatibleAcpRuntime || savedModelExcluded) {
 			const ownsRestore = () =>
@@ -7005,8 +7213,7 @@ export class SessionManager {
 				this.modelOverride !== null
 					? (this.modelOverride.value ?? "")
 					: (agentSettings?.model ?? this.model);
-			const selectedEffort =
-				this.effortOverride ?? agentSettings?.effort ?? this.effort;
+			const selectedEffort = this.selectedEffortFor(agentSettings);
 			const selectedPermissionMode =
 				this.permissionModeOverride ??
 				agentSettings?.permissionMode ??
@@ -7033,6 +7240,7 @@ export class SessionManager {
 		provider: AgentProvider,
 		ownershipGeneration: number,
 		emit: (msg: ServerMessage) => void,
+		runtimeCwd?: string,
 	): Promise<void> {
 		const newId = event.sessionId;
 		if (
@@ -7051,7 +7259,10 @@ export class SessionManager {
 						provider.providerId,
 						newId,
 						ownershipGeneration,
-						provider.sessionContinuityIdentity,
+						this.providerContinuityIdentity(
+							provider,
+							runtimeCwd ?? this.providerRuntimeCwd(),
+						),
 					).catch((e) => {
 						logDbError("setSessionProviderSession", e);
 						return false;
@@ -7112,6 +7323,7 @@ export class SessionManager {
 		provider: AgentProvider,
 		ownershipGeneration: number,
 		emit: (msg: ServerMessage) => void,
+		runtimeCwd?: string,
 	): Promise<void> {
 		const previousProviderSessionId =
 			this.providerSessionProviderId === provider.providerId
@@ -7123,6 +7335,7 @@ export class SessionManager {
 			provider,
 			ownershipGeneration,
 			emit,
+			runtimeCwd,
 		);
 		if (
 			!previousProviderSessionId ||
@@ -8980,6 +9193,7 @@ export class SessionManager {
 					provider,
 					turn.providerOwnershipGeneration,
 					emit,
+					turn.runtimeCwd,
 				);
 				break;
 			case "provider_context_reset":
@@ -8989,6 +9203,7 @@ export class SessionManager {
 					provider,
 					turn.providerOwnershipGeneration,
 					emit,
+					turn.runtimeCwd,
 				);
 				break;
 			case "provider_history_warning":
@@ -9630,9 +9845,10 @@ export class SessionManager {
 
 	private async toolLoadingFor(
 		provider: AgentProvider,
+		runtimeCwd: string,
 	): Promise<HlidToolLoadingSummary[] | undefined> {
 		return provider.hlidToolLoading
-			? await provider.hlidToolLoading()
+			? await provider.hlidToolLoading({ cwd: runtimeCwd })
 			: undefined;
 	}
 
@@ -9654,7 +9870,7 @@ export class SessionManager {
 			runtimeCwd,
 			this.permissionMode,
 		);
-		const toolLoading = await this.toolLoadingFor(provider);
+		const toolLoading = await this.toolLoadingFor(provider, runtimeCwd);
 		const built = await buildPromptAsync({
 			vaultPath: this.vaultPath,
 			providerId: provider.providerId,
@@ -11458,7 +11674,13 @@ export class SessionManager {
 		});
 		const codexPermissionProfileEligible = codexTarget.eligible;
 		const codexPermissionProfile = codexTarget.permissionProfile;
-		const desiredKey = codexTarget.key;
+		// A workspace-routed provider must never reuse an already-running child from
+		// another execution environment, even when the Raven session key is otherwise
+		// identical (notably vault chats, whose base key has no agent cwd).
+		const routedRuntimeIdentity = provider.runtimeIdentityFor?.(activeCwd);
+		const desiredKey = routedRuntimeIdentity
+			? `${codexTarget.key}|provider-runtime:${routedRuntimeIdentity}`
+			: codexTarget.key;
 		const targetIsPurposeBuiltCodex = codexTarget.purposeBuilt;
 		const hasRunningBackgroundActivity =
 			this.hasRunningProviderBackgroundActivities();
@@ -11534,6 +11756,7 @@ export class SessionManager {
 			!this.policyEnforced &&
 			this.usageGateEnforced;
 		const reviewerOwnershipGeneration = this.providerOwnershipGeneration;
+		const configSessionControlGeneration = this.sessionControlGeneration;
 		const peerInboxEnabled =
 			provider.providerId === "claude" &&
 			Boolean(sessionId) &&
@@ -11547,6 +11770,7 @@ export class SessionManager {
 		const codex = codexPermissionProfile
 			? { permissionProfile: codexPermissionProfile }
 			: undefined;
+		let sourceSession: AgentSession | undefined;
 		const session = provider.query(
 			buildAgentQueryParams({
 				activeCwd,
@@ -11584,24 +11808,16 @@ export class SessionManager {
 				windowsComputerUse: this.windowsComputerUse,
 				onGoalChange,
 				onSessionConfigChange: sessionId
-					? (config) => {
-							if (
-								this.currentSessionId !== sessionId ||
-								!this.ownsProviderGeneration(
-									provider.providerId,
-									ownershipGeneration,
-								)
-							) {
-								return;
-							}
-							emit({
-								type: "provider_config_options",
-								provider_id: provider.providerId,
-								session_id: sessionId,
-								...(this.agentCwd ? { agent_cwd: this.agentCwd } : {}),
-								...config,
-							});
-						}
+					? (config) =>
+							this.reconcileProviderSessionConfig(config, {
+								sessionId,
+								providerId: provider.providerId,
+								ownershipGeneration,
+								sessionControlGeneration: configSessionControlGeneration,
+								expectedSessionKey: desiredKey,
+								sourceSession,
+								emit,
+							})
 					: undefined,
 				onProviderInitiatedTurn:
 					peerInboxEnabled && sessionId
@@ -11614,6 +11830,7 @@ export class SessionManager {
 									agentSettings,
 									ownershipGeneration,
 									expectedSessionKey: desiredKey,
+									runtimeCwd: activeCwd,
 								})
 						: undefined,
 				claudeCrossSessionInbound: peerInboxEnabled ? "hold" : "refuse",
@@ -11642,6 +11859,7 @@ export class SessionManager {
 				),
 			}),
 		);
+		sourceSession = session;
 		this.agentSession = session;
 		this.agentSessionKey = desiredKey;
 		this.restartAgentSessionForEffort = false;
@@ -11714,17 +11932,7 @@ export class SessionManager {
 	}): void {
 		const { turn, sessionId, userMessage, emit, provider, agentSettings } =
 			options;
-		const recapSettings = this.providerRecapSettings.get(
-			provider.providerId,
-		) ?? {
-			turnRecaps: true,
-			recapModel: "",
-		};
-		if (
-			!turn.hadToolEvents ||
-			!recapSettings.turnRecaps ||
-			!turn.lastAssistantText
-		)
+		if (!turn.hadToolEvents || !this.turnRecaps || !turn.lastAssistantText)
 			return;
 		const executable = isClaudeRuntimeProvider(provider.providerId)
 			? this.claudeExecutable
@@ -11740,8 +11948,12 @@ export class SessionManager {
 			executable,
 			sdkSummary: turn.sdkSummary,
 			provider,
-			recapModel: agentSettings?.recapModel ?? recapSettings.recapModel,
+			recapModel:
+				agentSettings?.recapModel ??
+				this.providerRecapModels.get(provider.providerId) ??
+				"",
 			agentCwd: this.agentCwd ?? null,
+			runtimeCwd: turn.runtimeCwd,
 		}).catch(() => {});
 	}
 
@@ -12030,7 +12242,10 @@ export class SessionManager {
 						commandBlocks,
 					)
 				: contextManifest;
-			const toolLoading = await this.toolLoadingFor(currentProvider);
+			const toolLoading = await this.toolLoadingFor(
+				currentProvider,
+				runtimeCwd,
+			);
 			const finalizedTurnContextManifest = finalizeHlidTurnContextManifest(
 				deliveredContextManifest,
 				{
@@ -12070,6 +12285,8 @@ export class SessionManager {
 				undefined,
 				turnContextManifest,
 			);
+			turn.userContextManifest = turnContextManifest;
+			turn.userContextManifestJson = initialContextManifestJson;
 			const retainedRelics = (
 				await Promise.all(
 					safeAttachments
@@ -12120,6 +12337,7 @@ export class SessionManager {
 				safeAttachments,
 				resourcePaths,
 			});
+			turn.runtimeCwd = activeCwd;
 
 			if (commandAction === "computer-use") {
 				await this.authorizeWindowsComputerUseCommand({
@@ -12240,18 +12458,16 @@ export class SessionManager {
 						? {
 								structuredContent,
 								onStructuredContentAccepted: async (acceptedContent) => {
-									const userSeq = turn.userSeq;
-									if (!sessionId || userSeq === null) return;
+									if (!sessionId || turn.userSeq === null) return;
 									const structuredPrompt =
 										summarizeHlidStructuredPrompt(acceptedContent);
 									if (!structuredPrompt) return;
 									try {
-										await db.replaceUserMessageContextManifest(
+										await this.updateUserTurnContextManifest(
+											turn,
 											sessionId,
-											userSeq,
-											initialContextManifestJson,
-											JSON.stringify({
-												...turnContextManifest,
+											(manifest) => ({
+												...manifest,
 												structuredPrompt,
 											}),
 										);
@@ -12269,6 +12485,10 @@ export class SessionManager {
 					this.operatingBriefProviderKey = `${currentProvider.providerId}|${this.currentSessionId ?? "ephemeral"}`;
 				}
 			}
+			await Promise.all([
+				turn.providerConfigPersistenceTail,
+				turn.userContextManifestWriteTail,
+			]);
 			this.providerHandoffPending = false;
 
 			await this.iterateConversation(
@@ -12278,6 +12498,10 @@ export class SessionManager {
 				turn,
 				currentProvider,
 			);
+			await Promise.all([
+				turn.providerConfigPersistenceTail,
+				turn.userContextManifestWriteTail,
+			]);
 			// Per-turn success: drainTurnQueue settles the final session state
 			// after the queue empties. Successful turns leave state alone so the
 			// drain loop sees "running" → resets to "idle" at end.

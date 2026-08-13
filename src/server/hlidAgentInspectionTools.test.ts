@@ -281,16 +281,24 @@ describe("Hlid agent inspection tools", () => {
 		mocks.getLogs.mockResolvedValue({
 			logs: [
 				{
-					id: 1,
+					id: 2,
 					timestamp: 100,
 					level: "error",
 					source: "provider",
 					message: "failed at /home/user/secret.txt",
 					detail: '{"token":"secret"}',
 				},
+				{
+					id: 1,
+					timestamp: 90,
+					level: "info",
+					source: "server",
+					message: "Hlid server run started",
+					detail: null,
+				},
 			],
-			total: 1,
-			counts: { error: 1, warn: 0, info: 0 },
+			total: 2,
+			counts: { error: 1, warn: 0, info: 1 },
 		});
 
 		const result = JSON.parse(await executeInspectHlidDiagnostics({}));
@@ -299,6 +307,129 @@ describe("Hlid agent inspection tools", () => {
 		expect(serialized).toContain("<path>");
 		expect(serialized).not.toContain("secret.txt");
 		expect(serialized).not.toContain("token");
+		expect(result.logs[0].message).toBe("failed at <path>");
+		expect(result.logs[0].message).not.toMatch(/^Error:/);
+	});
+
+	it("defaults to the latest Hlid server run and exposes retained history explicitly", async () => {
+		mocks.getLogs.mockResolvedValue({
+			logs: [
+				{
+					id: 5,
+					timestamp: 300,
+					level: "warn",
+					source: "current",
+					message: "current warning",
+					detail: null,
+				},
+				{
+					id: 4,
+					timestamp: 250,
+					level: "info",
+					source: "server",
+					message: "Hlid server run started",
+					detail: null,
+				},
+				{
+					id: 3,
+					timestamp: 200,
+					level: "error",
+					source: "old",
+					message: "retained provider failure",
+					detail: null,
+				},
+			],
+			total: 3,
+			counts: { error: 1, warn: 1, info: 1 },
+		});
+
+		const current = JSON.parse(await executeInspectHlidDiagnostics({}));
+		const retained = JSON.parse(
+			await executeInspectHlidDiagnostics({ scope: "retained" }),
+		);
+
+		expect(current).toMatchObject({
+			scope: "current",
+			requested_scope: "current",
+			current_run_available: true,
+			since: 250,
+			counts: { error: 0, warn: 1, info: 1 },
+			filtered_total: 2,
+			retained_total: 3,
+		});
+		expect(JSON.stringify(current)).not.toContain("retained provider failure");
+		expect(retained).toMatchObject({
+			scope: "retained",
+			requested_scope: "retained",
+			counts: { error: 1, warn: 1, info: 1 },
+			filtered_total: 3,
+			retained_total: 3,
+		});
+		expect(JSON.stringify(retained)).toContain("retained provider failure");
+		expect(mocks.getLogs).toHaveBeenCalledWith(1, 1_000);
+	});
+
+	it("searches only redacted diagnostic text", async () => {
+		mocks.getLogs.mockResolvedValue({
+			logs: [
+				{
+					id: 2,
+					timestamp: 101,
+					level: "error",
+					source: "provider",
+					message: "failed at /home/user/private-membership-probe.txt",
+					detail: null,
+				},
+				{
+					id: 1,
+					timestamp: 100,
+					level: "info",
+					source: "server",
+					message: "Hlid server run started",
+					detail: null,
+				},
+			],
+			total: 2,
+			counts: { error: 1, warn: 0, info: 1 },
+		});
+
+		const result = JSON.parse(
+			await executeInspectHlidDiagnostics({
+				query: "private-membership-probe",
+			}),
+		);
+
+		expect(result).toMatchObject({ filtered_total: 0, returned: 0, logs: [] });
+	});
+
+	it("fails closed when the current-run boundary is unavailable", async () => {
+		mocks.getLogs.mockResolvedValue({
+			logs: [
+				{
+					id: 1,
+					timestamp: 100,
+					level: "error",
+					source: "old",
+					message: "retained failure",
+					detail: null,
+				},
+			],
+			total: 1,
+			counts: { error: 1, warn: 0, info: 0 },
+		});
+
+		const current = JSON.parse(await executeInspectHlidDiagnostics({}));
+
+		expect(current).toMatchObject({
+			scope: "current",
+			current_run_available: false,
+			since: null,
+			counts: { error: 0, warn: 0, info: 0 },
+			filtered_total: 0,
+			returned: 0,
+			retained_total: 1,
+			logs: [],
+		});
 	});
 
 	it("lists Routine metadata and history without prompts, paths, or grants", async () => {

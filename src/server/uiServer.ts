@@ -6,6 +6,7 @@ import { EMBEDDED_ASSETS } from "./embedded-client";
 import { SERVER_FN_NAMES } from "./embedded-server-fn-names";
 import { compressHttpResponse } from "./httpCompression";
 import {
+	acpProviderOperationSlowRequestThreshold,
 	createRequestObserver,
 	projectPreviewSlowRequestThreshold,
 } from "./requestDiagnostics";
@@ -54,9 +55,15 @@ const observeUiRequest = createRequestObserver({
 		const id = pathname.startsWith("/_serverFn/")
 			? pathname.slice("/_serverFn/".length).split("/")[0]
 			: undefined;
+		const requestName = id ? SERVER_FN_NAMES[id] : undefined;
+		const acpThreshold = acpProviderOperationSlowRequestThreshold(
+			pathname,
+			requestName,
+		);
+		if (acpThreshold !== undefined) return acpThreshold;
 		const previewThreshold = projectPreviewSlowRequestThreshold(
 			pathname,
-			id ? SERVER_FN_NAMES[id] : undefined,
+			requestName,
 		);
 		return previewThreshold ?? 1_000;
 	},

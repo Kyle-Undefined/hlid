@@ -1185,9 +1185,9 @@ export interface AgentProvider {
 	 * Describe the Hlid-owned tool schemas this provider transport registers.
 	 * The turn receipt uses this instead of assuming every transport is alike.
 	 */
-	hlidToolLoading?():
-		| HlidToolLoadingSummary[]
-		| Promise<HlidToolLoadingSummary[]>;
+	hlidToolLoading?(context?: {
+		cwd: string;
+	}): HlidToolLoadingSummary[] | Promise<HlidToolLoadingSummary[]>;
 	/**
 	 * Models this provider supports. UI uses this to populate the model picker.
 	 * Omit for providers with fully dynamic or unconstrained model lists.
@@ -1202,6 +1202,8 @@ export interface AgentProvider {
 		label: string;
 		desc?: string;
 	}>;
+	/** Whether effort choices are provider-wide or truthful only per model row. */
+	readonly effortScope?: "provider" | "model";
 	/**
 	 * Permission gate modes this provider honours.
 	 * Omit if the provider ignores permissionMode entirely.
@@ -1257,15 +1259,43 @@ export interface AgentProvider {
 	/** Exact native fork behavior, when the provider implements it. */
 	readonly forkCapability?: ProviderForkCapability;
 	/** Negotiate a runtime fork capability when the provider protocol requires it. */
-	resolveForkCapability?(): Promise<ProviderForkCapability | undefined>;
+	resolveForkCapability?(context?: {
+		/** Exact workspace used by provider-owned metadata discovery. */
+		cwd: string;
+	}): Promise<ProviderForkCapability | undefined>;
 	/** Optional availability check. Returns false + reason if provider can't run. */
-	check?(): Promise<{ available: boolean; reason?: string }>;
+	check?(context?: {
+		/** Exact workspace whose runtime availability is being requested. */
+		cwd: string;
+	}): Promise<{ available: boolean; reason?: string }>;
 	/**
 	 * Last known availability that can be read without filesystem, network, or
 	 * provider process work. Catalog navigation uses this instead of assuming an
 	 * unchecked provider is ready.
 	 */
-	cachedAvailability?(): { available: boolean; reason?: string } | undefined;
+	cachedAvailability?(context?: {
+		/** Exact workspace whose runtime availability is being requested. */
+		cwd: string;
+	}): { available: boolean; reason?: string } | undefined;
+	/** Refresh catalog-owned availability without replacing a compatible runtime. */
+	updateAvailabilitySnapshot?(snapshot: {
+		available: boolean;
+		reason?: string;
+	}): void;
+	/**
+	 * A forced listModels() call starts and initializes the provider runtime, so
+	 * an already-ready cached availability result can replace a redundant check()
+	 * during explicit refresh. Any non-live model result is then treated as an
+	 * availability failure; providers opting in must let listModels errors escape.
+	 */
+	readonly liveModelDiscoveryValidatesAvailability?: boolean;
+	/**
+	 * Stop admitting new work synchronously, then cancel and await any provider-owned
+	 * background runtime work. Runtime replacement calls this while the old provider
+	 * is still registered so an explicit selection fails closed instead of falling
+	 * through to another provider.
+	 */
+	retireRuntime?(reason?: string): Promise<void>;
 	/** Optional host-only capabilities surfaced in Forge diagnostics. */
 	hostCapabilities?(): Promise<
 		Record<string, { label: string; available: boolean; reason?: string }>
@@ -1291,6 +1321,8 @@ export interface AgentProvider {
 	 * hash this value before building cache keys; it must never be displayed.
 	 */
 	readonly metadataCacheIdentity?: string;
+	/** Workspace-specific metadata identity for providers that route runtimes by cwd. */
+	metadataCacheIdentityFor?(cwd: string): string | undefined;
 	/**
 	 * Opaque provider-runtime identity that owns resumable native sessions.
 	 * Hlid persists this with the native session id and retires continuity when
@@ -1298,6 +1330,14 @@ export interface AgentProvider {
 	 * displayed.
 	 */
 	readonly sessionContinuityIdentity?: string;
+	/** Workspace-specific native-session owner for providers that route by cwd. */
+	sessionContinuityIdentityFor?(cwd: string): string | undefined;
+	/**
+	 * Exact in-memory runtime owner for a workspace. Routed providers should throw
+	 * a target-specific error when that workspace cannot be resolved, so a live
+	 * session from another environment is never reused as a fallback.
+	 */
+	runtimeIdentityFor?(cwd: string): string;
 	/** Whether model options can vary with the requested working directory. */
 	readonly modelCatalogScope?: "provider" | "workspace";
 	/** Live-fetch the provider's model catalog for an optional exact workspace. */

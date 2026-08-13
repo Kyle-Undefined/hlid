@@ -42,7 +42,7 @@ export const TOPIC_GUIDANCE: Record<HlidHelpTopic, string[]> = {
 		"Use inspect_hlid_context to read the active session's persisted receipts without sending another provider prompt.",
 	],
 	diagnostics: [
-		"Use inspect_hlid_diagnostics for a bounded, redacted view of Hlid Event Log entries.",
+		"Use inspect_hlid_diagnostics for a bounded, redacted view of the current Hlid server run. Request scope=retained only when historical entries are relevant.",
 		"Paths, URLs, UUIDs, control characters, and stored detail payloads are omitted or redacted. Do not treat the result as a complete raw log export.",
 		"Diagnostic inspection is read-only and does not restart providers, repair integrations, or change Event Log retention.",
 	],

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import * as db from "../db";
+import type { ProviderInfo } from "../lib/providerTypes";
 import { bumpDataRevision } from "./dataRevision";
 import type { HlidDelegationManager } from "./hlidDelegation";
 import type { SessionPool } from "./sessionPool";
@@ -13,6 +14,7 @@ export class RoutineScheduler {
 	private readonly bootId = randomUUID();
 	private readonly pool: SessionPool;
 	private readonly delegations: HlidDelegationManager;
+	private readonly providerCatalog: (cwd: string) => Promise<ProviderInfo[]>;
 	private timer: ReturnType<typeof setInterval> | null = null;
 	private active = new Set<string>();
 	private pending: db.RoutineRunRow[] = [];
@@ -22,10 +24,12 @@ export class RoutineScheduler {
 	constructor(
 		pool: SessionPool,
 		delegations: HlidDelegationManager,
+		providerCatalog: (cwd: string) => Promise<ProviderInfo[]>,
 		onStatusChange?: () => void,
 	) {
 		this.pool = pool;
 		this.delegations = delegations;
+		this.providerCatalog = providerCatalog;
 		this.onStatusChange = onStatusChange;
 	}
 
@@ -115,6 +119,7 @@ export class RoutineScheduler {
 			const result = await runRoutineSession({
 				pool: this.pool,
 				delegations: this.delegations,
+				providerCatalog: this.providerCatalog,
 				routine,
 				run,
 				onStatusChange: this.onStatusChange,
@@ -157,10 +162,16 @@ let activeScheduler: RoutineScheduler | null = null;
 export async function startRoutineScheduler(
 	pool: SessionPool,
 	delegations: HlidDelegationManager,
+	providerCatalog: (cwd: string) => Promise<ProviderInfo[]>,
 	onStatusChange?: () => void,
 ): Promise<RoutineScheduler> {
 	activeScheduler?.stop();
-	const scheduler = new RoutineScheduler(pool, delegations, onStatusChange);
+	const scheduler = new RoutineScheduler(
+		pool,
+		delegations,
+		providerCatalog,
+		onStatusChange,
+	);
 	activeScheduler = scheduler;
 	await scheduler.start();
 	return scheduler;

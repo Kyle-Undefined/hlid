@@ -5,7 +5,10 @@ import {
 	AcpSessionListUnsupportedError,
 } from "./acpProvider";
 import { createAcpRouteHandler } from "./acpRoutes";
-import { OpenCodeConfigOverlayError } from "./acpRuntime";
+import {
+	OpenCodeConfigOverlayError,
+	resolveAcpWorkspaceRuntime,
+} from "./acpRuntime";
 import { acpExecutionTargetId } from "./acpTargets";
 
 const mutationRevision = "a".repeat(64);
@@ -27,10 +30,28 @@ const hostTarget = {
 	resolvedExecutable: "/usr/bin/opencode",
 	command: "opencode",
 	args: ["acp"],
-	env: { TARGET_SECRET: "redacted" },
+	env: { BASE: "registry", TARGET_SECRET: "redacted" },
 	installGuidance: "install",
 };
 const { env: _hostTargetEnvironment, ...publicHostTarget } = hostTarget;
+const wslWorkspace = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\workspace";
+const wslTargetDescriptor = {
+	kind: "wsl" as const,
+	distro: "Ubuntu-24.04",
+};
+const wslTargetId = acpExecutionTargetId(wslTargetDescriptor);
+const wslTarget = {
+	...hostTarget,
+	targetId: wslTargetId,
+	target: wslTargetDescriptor,
+	label: "WSL · Ubuntu-24.04",
+	recommended: false,
+	selected: false,
+	platformTarget: "linux-x86_64",
+	resolvedExecutable: "/opt/hlid/opencode",
+	command: "/opt/hlid/opencode",
+	env: { BASE: "wsl-registry", RUNTIME_TARGET: "wsl" },
+};
 const orphanTarget = { kind: "wsl" as const, distro: "Ubuntu-24.04" };
 const orphanTargetId = acpExecutionTargetId(orphanTarget);
 const orphanClaim = {
@@ -189,6 +210,12 @@ describe("ACP internal HTTP routes", () => {
 			{
 				...enabledAgent,
 				env: { OPENCODE_CONFIG_CONTENT: "{" },
+				targets: [
+					{
+						...hostTarget,
+						env: { OPENCODE_CONFIG_CONTENT: "{" },
+					},
+				],
 			},
 		]);
 
@@ -201,6 +228,9 @@ describe("ACP internal HTTP routes", () => {
 		expect(await conflict?.json()).toEqual({
 			error: expect.stringContaining("OPENCODE_CONFIG_CONTENT is invalid"),
 		});
+		expect(catalog).toHaveBeenLastCalledWith(filteredConfig, false, false, {
+			agentIds: ["opencode"],
+		});
 
 		catalog.mockResolvedValueOnce([enabledAgent]);
 		const accepted = await handle(
@@ -209,9 +239,12 @@ describe("ACP internal HTTP routes", () => {
 		);
 		expect(accepted?.status).toBe(200);
 		expect(await accepted?.json()).toEqual({ ok: true });
+		expect(catalog).toHaveBeenLastCalledWith(filteredConfig, false, false, {
+			agentIds: ["opencode"],
+		});
 	});
 
-	it("discovers the raw ACP model catalog without Hlid's visibility overlay", async () => {
+	it("discovers the exact target's raw models without Hlid's visibility overlay", async () => {
 		const inlineConfig = '{"instructions":["existing.md"]}';
 		loadConfig.mockReturnValue(
 			HlidConfigSchema.parse({
@@ -232,6 +265,12 @@ describe("ACP internal HTTP routes", () => {
 			{
 				...enabledAgent,
 				env: { OPENCODE_CONFIG_CONTENT: inlineConfig },
+				targets: [
+					{
+						...hostTarget,
+						env: { OPENCODE_CONFIG_CONTENT: inlineConfig },
+					},
+				],
 			},
 		]);
 
@@ -242,6 +281,12 @@ describe("ACP internal HTTP routes", () => {
 
 		expect(response?.status).toBe(200);
 		expect(loadConfig).toHaveBeenCalledOnce();
+		expect(catalog).toHaveBeenCalledWith(
+			loadConfig.mock.results[0]?.value,
+			false,
+			false,
+			{ agentIds: ["opencode"] },
+		);
 		expect(inspectModels).toHaveBeenCalledWith(
 			expect.objectContaining({
 				id: "acp:opencode",
@@ -333,7 +378,18 @@ describe("ACP internal HTTP routes", () => {
 		).toBe(404);
 
 		catalog.mockResolvedValueOnce([
-			{ ...enabledAgent, available: false, unavailableReason: "not installed" },
+			{
+				...enabledAgent,
+				available: false,
+				unavailableReason: "not installed",
+				targets: [
+					{
+						...hostTarget,
+						available: false,
+						blockedReason: "not installed",
+					},
+				],
+			},
 		]);
 		expect(
 			(
@@ -343,6 +399,123 @@ describe("ACP internal HTTP routes", () => {
 				)
 			)?.status,
 		).toBe(409);
+		expect(inspectModels).not.toHaveBeenCalled();
+	});
+
+	it("uses an available Windows runtime even when the Forge-selected WSL runtime is unavailable", async () => {
+		const windowsWorkspace = "C:\\Users\\kyle\\Vault";
+		const config = HlidConfigSchema.parse({
+			vault: { name: "Vault", path: windowsWorkspace },
+			agents: [{ path: wslWorkspace }],
+			acp_agents: [
+				{
+					id: "opencode",
+					target: wslTargetDescriptor,
+				},
+			],
+		});
+		loadConfig.mockReturnValue(config);
+		catalog.mockResolvedValue([
+			{
+				...enabledAgent,
+				available: false,
+				unavailableReason: "OpenCode is unavailable in WSL",
+				targets: [
+					{ ...hostTarget, selected: false },
+					{
+						...wslTarget,
+						selected: true,
+						available: false,
+						blockedReason: "OpenCode is unavailable in WSL",
+					},
+				],
+			},
+		]);
+		const query = new URLSearchParams({
+			id: "opencode",
+			cwd: windowsWorkspace,
+		});
+
+		const models = await handle(
+			new URL(`http://localhost/acp/models?${query}`),
+			request(`/acp/models?${query}`),
+		);
+		const authenticated = await handle(
+			new URL("http://localhost/acp/authenticate"),
+			request("/acp/authenticate", "POST", {
+				id: "opencode",
+				cwd: windowsWorkspace,
+			}),
+		);
+
+		expect(models?.status).toBe(200);
+		expect(authenticated?.status).toBe(200);
+		expect(inspectModels).toHaveBeenCalledWith(
+			expect.objectContaining({
+				command: "opencode",
+				target: { kind: "host" },
+				discoveryCwd: windowsWorkspace,
+			}),
+			windowsWorkspace,
+		);
+		expect(inspectAgent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				command: "opencode",
+				target: { kind: "host" },
+				discoveryCwd: windowsWorkspace,
+			}),
+			undefined,
+		);
+	});
+
+	it("fails closed when the requested WSL runtime is unavailable instead of using selected Windows", async () => {
+		const windowsWorkspace = "C:\\Users\\kyle\\Vault";
+		loadConfig.mockReturnValue(
+			HlidConfigSchema.parse({
+				vault: { name: "Vault", path: windowsWorkspace },
+				agents: [{ path: wslWorkspace }],
+				acp_agents: [{ id: "opencode" }],
+			}),
+		);
+		catalog.mockResolvedValueOnce([
+			{
+				...enabledAgent,
+				targets: [
+					{ ...hostTarget, selected: true },
+					{
+						...wslTarget,
+						available: false,
+						blockedReason: "OpenCode is not installed in WSL",
+					},
+				],
+			},
+		]);
+
+		const response = await handle(
+			new URL("http://localhost/acp/authenticate"),
+			request("/acp/authenticate", "POST", {
+				id: "opencode",
+				cwd: wslWorkspace,
+			}),
+		);
+
+		expect(response?.status).toBe(409);
+		expect(await response?.json()).toEqual({
+			error: "OpenCode is not installed in WSL",
+		});
+		expect(inspectAgent).not.toHaveBeenCalled();
+	});
+
+	it("rejects an unregistered workspace before launching an ACP process", async () => {
+		const response = await handle(
+			new URL("http://localhost/acp/models?id=opencode&cwd=%2Funregistered"),
+			request("/acp/models?id=opencode&cwd=%2Funregistered"),
+		);
+
+		expect(response?.status).toBe(400);
+		expect(await response?.json()).toEqual({
+			error: "cwd must be an exact configured workspace path",
+		});
 		expect(inspectModels).not.toHaveBeenCalled();
 	});
 
@@ -369,16 +542,31 @@ describe("ACP internal HTTP routes", () => {
 			nextCursor: "provider-cursor",
 		});
 
+		const query = new URLSearchParams({
+			id: "opencode",
+			cursor: "page-1",
+			cwd: "/vault",
+		});
 		const response = await handle(
-			new URL("http://localhost/acp/sessions?id=opencode&cursor=page-1"),
-			request("/acp/sessions?id=opencode&cursor=page-1"),
+			new URL(`http://localhost/acp/sessions?${query}`),
+			request(`/acp/sessions?${query}`),
 		);
 
 		expect(response?.status).toBe(200);
+		expect(catalog).toHaveBeenCalledWith(
+			loadConfig.mock.results[0]?.value,
+			false,
+			false,
+			{ agentIds: ["opencode"] },
+		);
 		expect(listSessions).toHaveBeenCalledWith(
 			expect.objectContaining({
 				id: "acp:opencode",
-				env: { BASE: "registry", TOKEN: "configured-secret" },
+				env: {
+					BASE: "registry",
+					TARGET_SECRET: "redacted",
+					TOKEN: "configured-secret",
+				},
 				discoveryCwd: "/vault",
 			}),
 			"/vault",
@@ -394,6 +582,39 @@ describe("ACP internal HTTP routes", () => {
 			],
 			nextCursor: "provider-cursor",
 		});
+	});
+
+	it("lists provider sessions through the exact WSL runtime for a WSL workspace", async () => {
+		const config = HlidConfigSchema.parse({
+			vault: { name: "Vault", path: "C:\\Users\\kyle\\Vault" },
+			agents: [{ path: wslWorkspace }],
+			acp_agents: [{ id: "opencode" }],
+		});
+		loadConfig.mockReturnValue(config);
+		catalog.mockResolvedValueOnce([
+			{
+				...enabledAgent,
+				targets: [hostTarget, wslTarget],
+			},
+		]);
+		const query = new URLSearchParams({ id: "opencode", cwd: wslWorkspace });
+
+		const response = await handle(
+			new URL(`http://localhost/acp/sessions?${query}`),
+			request(`/acp/sessions?${query}`),
+		);
+
+		expect(response?.status).toBe(200);
+		expect(listSessions).toHaveBeenCalledWith(
+			expect.objectContaining({
+				command: "/opt/hlid/opencode",
+				target: wslTargetDescriptor,
+				env: { BASE: "wsl-registry", RUNTIME_TARGET: "wsl" },
+				discoveryCwd: wslWorkspace,
+			}),
+			wslWorkspace,
+			undefined,
+		);
 	});
 
 	it("rejects invalid provider session list requests before inspection", async () => {
@@ -458,17 +679,29 @@ describe("ACP internal HTTP routes", () => {
 				id: "opencode",
 				providerSessionId: "native-2",
 				title: "untrusted title",
-				cwd: "/untrusted",
+				cwd: "/vault",
 			}),
 		);
 
 		expect(response?.status).toBe(200);
-		expect(catalog.mock.calls[0]?.slice(1)).toEqual([false, true]);
+		expect(catalog.mock.calls[0]?.slice(1)).toEqual([
+			false,
+			true,
+			{ agentIds: ["opencode"] },
+		]);
 		expect(syncRuntime).toHaveBeenCalledOnce();
-		expect(catalog.mock.calls[1]?.slice(1)).toEqual([false, false]);
+		expect(catalog.mock.calls[1]?.slice(1)).toEqual([
+			false,
+			false,
+			{ agentIds: ["opencode"] },
+		]);
 		expect(findSession).toHaveBeenCalledWith(
 			expect.objectContaining({
-				env: { BASE: "registry", TOKEN: "configured-secret" },
+				env: {
+					BASE: "registry",
+					TARGET_SECRET: "redacted",
+					TOKEN: "configured-secret",
+				},
 			}),
 			"/vault",
 			"native-2",
@@ -488,10 +721,61 @@ describe("ACP internal HTTP routes", () => {
 		expect(
 			importSession.mock.calls[0]?.[0].providerRuntimeIdentity,
 		).not.toContain("configured-secret");
+		expect(importSession.mock.calls[0]?.[0].providerRuntimeIdentity).toBe(
+			resolveAcpWorkspaceRuntime(
+				enabledAgent,
+				loadConfig.mock.results[0]?.value,
+				"/vault",
+			).sessionContinuityIdentity,
+		);
 		expect(await response?.json()).toEqual({
 			sessionId: "hlid-session-1",
 			created: true,
 		});
+	});
+
+	it("imports native continuity with the exact WSL runtime identity", async () => {
+		const windowsWorkspace = "C:\\Users\\kyle\\Vault";
+		const config = HlidConfigSchema.parse({
+			vault: { name: "Vault", path: windowsWorkspace },
+			agents: [{ path: wslWorkspace }],
+			acp_agents: [{ id: "opencode" }],
+		});
+		const mixedAgent = {
+			...enabledAgent,
+			targets: [hostTarget, wslTarget],
+		};
+		loadConfig.mockReturnValue(config);
+		catalog.mockResolvedValue([mixedAgent]);
+
+		const response = await handle(
+			new URL("http://localhost/acp/sessions/import"),
+			request("/acp/sessions/import", "POST", {
+				id: "opencode",
+				providerSessionId: "provider-session-1",
+				cwd: wslWorkspace,
+			}),
+		);
+
+		expect(response?.status).toBe(200);
+		expect(findSession).toHaveBeenCalledWith(
+			expect.objectContaining({
+				command: "/opt/hlid/opencode",
+				target: wslTargetDescriptor,
+			}),
+			wslWorkspace,
+			"provider-session-1",
+		);
+		const imported = importSession.mock.calls[0]?.[0];
+		expect(imported).toMatchObject({ cwd: wslWorkspace });
+		expect(imported.providerRuntimeIdentity).toBe(
+			resolveAcpWorkspaceRuntime(mixedAgent, config, wslWorkspace)
+				.sessionContinuityIdentity,
+		);
+		expect(imported.providerRuntimeIdentity).not.toBe(
+			resolveAcpWorkspaceRuntime(mixedAgent, config, windowsWorkspace)
+				.sessionContinuityIdentity,
+		);
 	});
 
 	it("fails closed when a requested native session is no longer listed", async () => {
@@ -550,7 +834,10 @@ describe("ACP internal HTTP routes", () => {
 			loadConfig.mock.results[0]?.value,
 			true,
 		);
-		expect(syncRuntime).toHaveBeenCalledOnce();
+		expect(syncRuntime).toHaveBeenCalledWith({
+			config: loadConfig.mock.results[0]?.value,
+			catalog: [expect.objectContaining({ id: "opencode" })],
+		});
 		const body = (await response?.json()) as { agents: unknown[] };
 		expect(body).toEqual({
 			agents: [
@@ -592,6 +879,12 @@ describe("ACP internal HTTP routes", () => {
 		);
 
 		expect(response?.status).toBe(202);
+		expect(catalog).toHaveBeenCalledWith(
+			loadConfig.mock.results[0]?.value,
+			false,
+			false,
+			{ agentIds: ["opencode"] },
+		);
 		expect(mutate).toHaveBeenCalledWith({
 			action: "install",
 			agent: enabledAgent,
@@ -828,7 +1121,18 @@ describe("ACP internal HTTP routes", () => {
 		).toBe(404);
 
 		catalog.mockResolvedValueOnce([
-			{ ...enabledAgent, available: false, unavailableReason: "not installed" },
+			{
+				...enabledAgent,
+				available: false,
+				unavailableReason: "not installed",
+				targets: [
+					{
+						...hostTarget,
+						available: false,
+						blockedReason: "not installed",
+					},
+				],
+			},
 		]);
 		expect(
 			(
@@ -850,10 +1154,20 @@ describe("ACP internal HTTP routes", () => {
 		);
 
 		expect(loadConfig).toHaveBeenCalledOnce();
+		expect(catalog).toHaveBeenCalledWith(
+			loadConfig.mock.results[0]?.value,
+			false,
+			false,
+			{ agentIds: ["opencode"] },
+		);
 		expect(inspectAgent).toHaveBeenCalledWith(
 			expect.objectContaining({
 				id: "acp:opencode",
-				env: { BASE: "configured", TOKEN: "secret" },
+				env: {
+					BASE: "configured",
+					TARGET_SECRET: "redacted",
+					TOKEN: "secret",
+				},
 			}),
 			"login",
 		);

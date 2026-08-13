@@ -16,6 +16,7 @@ import {
 	acpCmdShimCommand,
 	acpLaunchUsesShell,
 	findAcpExecutable,
+	findAcpExecutables,
 } from "./acpExecutable";
 import { childIsRunning, waitForChildExit } from "./childProcessLifecycle";
 
@@ -53,6 +54,15 @@ export type StartAcpTargetProcessInput = {
 	preparationTimeoutMs: number;
 };
 
+export type ResolveAcpTargetExecutablesOptions = {
+	hostCwd: string;
+	env: AcpTargetEnvironment;
+	/** Exact host values intentionally forwarded while resolving in WSL. */
+	forwardedEnvNames?: string[];
+	signal?: AbortSignal;
+	timeoutMs: number;
+};
+
 export interface AcpExecutionAdapter {
 	readonly target: AcpExecutionTarget;
 	readonly key: string;
@@ -67,15 +77,13 @@ export interface AcpExecutionAdapter {
 	pathAccessible(hostCwd: string, path: string): boolean;
 	resolveExecutable(
 		command: string,
-		options: {
-			hostCwd: string;
-			env: AcpTargetEnvironment;
-			/** Exact host values intentionally forwarded while resolving in WSL. */
-			forwardedEnvNames?: string[];
-			signal?: AbortSignal;
-			timeoutMs: number;
-		},
+		options: ResolveAcpTargetExecutablesOptions,
 	): Promise<string | null>;
+	/** Resolve several commands against one exact target environment and cwd. */
+	resolveExecutables?(
+		commands: readonly string[],
+		options: ResolveAcpTargetExecutablesOptions,
+	): Promise<Map<string, string | null>>;
 	start(input: StartAcpTargetProcessInput): Promise<AcpStartedProcess>;
 	adaptMcpServer<T extends AcpMcpServerLike>(server: T, hostCwd: string): T;
 }
@@ -373,6 +381,11 @@ function hostAdapter(target: AcpExecutionTarget): AcpExecutionAdapter {
 				cwd: options.hostCwd,
 				env: options.env,
 			}),
+		resolveExecutables: (commands, options) =>
+			findAcpExecutables(commands, {
+				cwd: options.hostCwd,
+				env: options.env,
+			}),
 		start: async (input) => {
 			const resolved = await findAcpExecutable(input.command, {
 				cwd: input.hostCwd,
@@ -426,6 +439,19 @@ export function wslArchitectureFromUname(value: string): NodeJS.Architecture {
 	throw new Error(`Unsupported WSL architecture: ${normalized || "unknown"}`);
 }
 
+const WSL_ACP_FILTER_INHERITED_WINDOWS_PATH =
+	'IFS=: read -r -a hlid_path_entries <<< "$PATH"; hlid_path=(); for hlid_dir in "$' +
+	'{hlid_path_entries[@]}"; do case "$hlid_dir" in /mnt/[A-Za-z]/*) ;; *) hlid_path+=("$hlid_dir") ;; esac; done; PATH=$(IFS=:; printf "%s" "$' +
+	'{hlid_path[*]}"); ';
+
+function wslExecutableSearchPathScript(forwardedEnvNames: string[]): string {
+	// Linux environment names are case-sensitive. Only an exact PATH override
+	// replaces the inherited WSL search path; `Path` remains a distinct variable.
+	return forwardedEnvNames.some((name) => name === "PATH")
+		? ""
+		: WSL_ACP_FILTER_INHERITED_WINDOWS_PATH;
+}
+
 function wslExecutableProbeLaunch(
 	distro: string,
 	command: string,
@@ -433,9 +459,11 @@ function wslExecutableProbeLaunch(
 	env: AcpTargetEnvironment,
 	forwardedEnvNames: string[],
 ): Pick<Launch, "executable" | "args" | "env"> {
+	const filterInheritedWindowsPath =
+		wslExecutableSearchPathScript(forwardedEnvNames);
 	const script = command.includes("/")
 		? 'candidate=$1; [ -f "$candidate" ] && [ -x "$candidate" ] && printf "%s\\n" "$candidate"'
-		: 'command -v -- "$1" 2>/dev/null || true';
+		: `${filterInheritedWindowsPath}command -v -- "$1" 2>/dev/null || true`;
 	return {
 		executable: "wsl.exe",
 		args: [
@@ -452,6 +480,51 @@ function wslExecutableProbeLaunch(
 		],
 		env: withWslEnvironment(env, forwardedEnvNames, "u"),
 	};
+}
+
+function wslExecutableBatchProbeLaunch(
+	distro: string,
+	commands: readonly string[],
+	providerCwd: string,
+	env: AcpTargetEnvironment,
+	forwardedEnvNames: string[],
+): Pick<Launch, "executable" | "args" | "env"> {
+	const filterInheritedWindowsPath =
+		wslExecutableSearchPathScript(forwardedEnvNames);
+	const script = `${filterInheritedWindowsPath}printf "\\0"; for candidate do resolved=; case "$candidate" in */*) [ -f "$candidate" ] && [ -x "$candidate" ] && resolved=$candidate ;; *) resolved=$(command -v -- "$candidate" 2>/dev/null || true) ;; esac; printf "%s\\0" "$resolved"; done`;
+	return {
+		executable: "wsl.exe",
+		args: [
+			"-d",
+			distro,
+			"--cd",
+			providerCwd,
+			"--exec",
+			"bash",
+			"-lc",
+			script,
+			"hlid-acp-resolve-batch",
+			...commands,
+		],
+		env: withWslEnvironment(env, forwardedEnvNames, "u"),
+	};
+}
+
+function parseWslExecutableBatchOutput(
+	commands: readonly string[],
+	output: string,
+): Map<string, string | null> {
+	const fields = output.split("\0");
+	const results = fields.slice(-(commands.length + 1), -1);
+	return new Map(
+		commands.map((command, index) => {
+			const candidate =
+				results.length === commands.length
+					? (results[index]?.trim() ?? "")
+					: "";
+			return [command, candidate.startsWith("/") ? candidate : null] as const;
+		}),
+	);
 }
 
 async function resolveWslExecutable(
@@ -484,6 +557,39 @@ async function resolveWslExecutable(
 			const candidate = output.trim().split(/\r?\n/).at(-1) ?? "";
 			return candidate.startsWith("/") ? candidate : null;
 		},
+	});
+}
+
+async function resolveWslExecutables(
+	distro: string,
+	commands: readonly string[],
+	hostCwd: string,
+	env: AcpTargetEnvironment,
+	forwardedEnvNames: string[],
+	timeoutMs: number,
+	signal?: AbortSignal,
+): Promise<Map<string, string | null>> {
+	const uniqueCommands = [...new Set(commands)];
+	if (uniqueCommands.length === 0) return new Map();
+	const providerCwd = wslProviderPath(distro, hostCwd, hostCwd);
+	if (!providerCwd.startsWith("/")) {
+		return new Map(uniqueCommands.map((command) => [command, null]));
+	}
+	const launch = wslExecutableBatchProbeLaunch(
+		distro,
+		uniqueCommands,
+		providerCwd,
+		env,
+		forwardedEnvNames,
+	);
+	return captureWslProcess({
+		launch,
+		signal,
+		timeoutMs,
+		maxOutput: Math.min(1_048_576, 1 + uniqueCommands.length * 4_097),
+		cancelledMessage: "WSL executable resolution cancelled",
+		timeoutMessage: `WSL executable resolution timed out after ${timeoutMs}ms`,
+		map: (output) => parseWslExecutableBatchOutput(uniqueCommands, output),
 	});
 }
 
@@ -675,6 +781,16 @@ function wslAdapter(
 				options.timeoutMs,
 				options.signal,
 			),
+		resolveExecutables: (commands, options) =>
+			resolveWslExecutables(
+				target.distro,
+				commands,
+				options.hostCwd,
+				options.env,
+				options.forwardedEnvNames ?? [],
+				options.timeoutMs,
+				options.signal,
+			),
 		start: async (input) => {
 			const executable = await resolveWslExecutable(
 				target.distro,
@@ -711,4 +827,6 @@ export const acpExecutionAdapterInternals = {
 	wslLaunch,
 	wslTerminationHelper,
 	wslExecutableProbeLaunch,
+	wslExecutableBatchProbeLaunch,
+	parseWslExecutableBatchOutput,
 };

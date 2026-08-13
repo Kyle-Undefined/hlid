@@ -528,6 +528,32 @@ describe("createModelCatalog", () => {
 		);
 	});
 
+	it("does not fall back to a global metadata identity for an unresolved workspace", async () => {
+		const metadataCacheIdentityFor = vi.fn().mockReturnValue(undefined);
+		const provider = makeProvider({
+			providerId: "acp:opencode",
+			metadataCacheIdentity: "selected-forge-target",
+			metadataCacheIdentityFor,
+			modelCatalogScope: "workspace",
+			listModels: vi
+				.fn()
+				.mockResolvedValue([{ value: "current", label: "Current" }]),
+		});
+		const catalog = createModelCatalog(
+			new Map([[provider.providerId, provider]]),
+		);
+
+		await catalog.refreshModelsFor(provider, "/work/unresolved");
+
+		expect(metadataCacheIdentityFor).toHaveBeenCalledWith("/work/unresolved");
+		expect(mockSaveSetting).toHaveBeenCalledWith(
+			expect.stringMatching(
+				/^model_catalog:acp%3Aopencode:default-runtime:[0-9a-f]{16}$/,
+			),
+			expect.any(String),
+		);
+	});
+
 	it("does not reuse a previous runtime's persisted models after restart", async () => {
 		let previousKey: string | undefined;
 		mockGetSetting.mockImplementation((key: string) => {
@@ -862,6 +888,26 @@ describe("createProviderCapabilityCatalog", () => {
 });
 
 describe("loadProviderCatalog", () => {
+	it("preserves model-scoped effort semantics in the provider catalog", async () => {
+		const provider = makeProvider({
+			providerId: "acp:opencode",
+			effortScope: "model",
+			effortLevels: [{ value: "medium", label: "Medium" }],
+		});
+
+		const result = await loadProviderCatalog([provider], {
+			modelsFor: vi
+				.fn()
+				.mockResolvedValue([{ value: "deepseek", label: "DeepSeek" }]),
+		});
+
+		expect(result[0]).toMatchObject({
+			id: "acp:opencode",
+			effortScope: "model",
+			effortLevels: [{ value: "medium", label: "Medium" }],
+		});
+	});
+
 	it("publishes exact fork capabilities to Raven and Ledger", async () => {
 		const provider = makeProvider({
 			providerId: "codex",
@@ -913,6 +959,123 @@ describe("loadProviderCatalog", () => {
 			throughMessage: false,
 		});
 		expect(provider.resolveForkCapability).toHaveBeenCalledOnce();
+		expect(provider.resolveForkCapability).toHaveBeenCalledWith({
+			cwd: process.cwd(),
+		});
+	});
+
+	it("reuses ready cached availability while exact-workspace metadata validates an ACP refresh", async () => {
+		const check = vi.fn().mockResolvedValue({ available: true });
+		const listModels = vi.fn();
+		const resolveForkCapability = vi.fn().mockResolvedValue({
+			kind: "exact" as const,
+			wholeSession: true,
+			throughMessage: false,
+		});
+		const provider = makeProvider({
+			providerId: "acp:opencode",
+			check,
+			cachedAvailability: () => ({ available: true }),
+			liveModelDiscoveryValidatesAvailability: true,
+			listModels,
+			resolveForkCapability,
+		});
+		const refreshModelsFor = vi.fn().mockResolvedValue({
+			models: [{ value: "opencode/default", label: "Default" }],
+			source: "live" as const,
+		});
+
+		const result = await loadProviderCatalog(
+			[provider],
+			{ modelsFor: vi.fn(), refreshModelsFor },
+			{
+				refresh: true,
+				refreshProviderId: provider.providerId,
+				discoveryCwd: "/work/exact-project",
+			},
+		);
+
+		expect(result[0]).toMatchObject({
+			available: true,
+			models: [{ value: "opencode/default", label: "Default" }],
+			modelCatalogRefresh: { status: "current", source: "live" },
+		});
+		expect(check).not.toHaveBeenCalled();
+		expect(refreshModelsFor).toHaveBeenCalledWith(
+			provider,
+			"/work/exact-project",
+		);
+		expect(resolveForkCapability).toHaveBeenCalledWith({
+			cwd: "/work/exact-project",
+		});
+	});
+
+	it("reports a failed validating model inspection without hiding runtime disappearance", async () => {
+		const check = vi.fn().mockResolvedValue({ available: true });
+		const provider = makeProvider({
+			providerId: "acp:opencode",
+			check,
+			cachedAvailability: () => ({ available: true }),
+			liveModelDiscoveryValidatesAvailability: true,
+			listModels: vi.fn(),
+		});
+
+		const result = await loadProviderCatalog(
+			[provider],
+			{
+				modelsFor: vi.fn(),
+				refreshModelsFor: vi.fn().mockResolvedValue({
+					models: [{ value: "cached", label: "Cached" }],
+					source: "memory" as const,
+					reason: "Live model discovery did not return current options",
+				}),
+			},
+			{
+				refresh: true,
+				refreshProviderId: provider.providerId,
+			},
+		);
+
+		expect(result[0]).toMatchObject({
+			available: false,
+			unavailableReason: "Live model discovery did not return current options",
+			models: [{ value: "cached", label: "Cached" }],
+			modelCatalogRefresh: {
+				status: "unavailable",
+				source: "fallback",
+				reason: "Live model discovery did not return current options",
+			},
+		});
+		expect(check).not.toHaveBeenCalled();
+	});
+
+	it("runs the availability check when the cached ACP state needs recovery", async () => {
+		const check = vi.fn().mockResolvedValue({ available: true });
+		const provider = makeProvider({
+			providerId: "acp:opencode",
+			check,
+			cachedAvailability: () => ({
+				available: false,
+				reason: "opencode is not installed",
+			}),
+			liveModelDiscoveryValidatesAvailability: true,
+			listModels: vi.fn(),
+		});
+
+		const result = await loadProviderCatalog(
+			[provider],
+			{
+				modelsFor: vi.fn(),
+				refreshModelsFor: vi.fn().mockResolvedValue({
+					models: [],
+					source: "live" as const,
+				}),
+			},
+			{ refresh: true, refreshProviderId: provider.providerId },
+		);
+
+		expect(check).toHaveBeenCalledOnce();
+		expect(result[0]).toMatchObject({ available: true });
 	});
 
 	it("lets an explicit refresh populate an empty ACP cache", async () => {
@@ -1624,6 +1787,49 @@ describe("createProviderCatalogSnapshot", () => {
 		expect(second[0]?.models?.[0]?.value).toBe("/work/two");
 		expect(repeated).toBe(first);
 		expect(load).toHaveBeenCalledTimes(2);
+	});
+
+	it("rematerializes another workspace from cached metadata after a live observation", async () => {
+		const windowsCwd = "C:\\Users\\Kyle\\project";
+		const wslCwd =
+			"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\development\\project";
+		const listModels = vi.fn(({ cwd }: { cwd: string }) =>
+			Promise.resolve([{ value: cwd, label: cwd }]),
+		);
+		const provider = makeProvider({
+			providerId: "acp:opencode",
+			modelCatalogScope: "workspace",
+			listModels,
+		});
+		let snapshot!: ReturnType<typeof createProviderCatalogSnapshot>;
+		const models = createModelCatalog(
+			new Map([[provider.providerId, provider]]),
+			(providerId) => snapshot.invalidateMetadata(providerId),
+		);
+		snapshot = createProviderCatalogSnapshot([provider], {
+			modelsFor: models.modelsFor,
+			refreshModelsFor: models.refreshModelsFor,
+			cachedModelsFor: models.cachedModelsFor,
+		});
+
+		await snapshot.get({
+			refresh: true,
+			refreshProviderId: provider.providerId,
+			discoveryCwd: wslCwd,
+		});
+		await snapshot.get({
+			refresh: true,
+			refreshProviderId: provider.providerId,
+			discoveryCwd: windowsCwd,
+		});
+		const rematerializedWsl = await snapshot.get({ discoveryCwd: wslCwd });
+
+		expect(rematerializedWsl[0]?.models).toEqual([
+			{ value: wslCwd, label: wslCwd },
+		]);
+		expect(listModels).toHaveBeenCalledTimes(2);
+		expect(listModels).toHaveBeenNthCalledWith(1, { cwd: wslCwd });
+		expect(listModels).toHaveBeenNthCalledWith(2, { cwd: windowsCwd });
 	});
 
 	it("reads a dynamic default capability workspace after a hot vault change", async () => {

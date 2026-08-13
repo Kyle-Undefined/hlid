@@ -6,11 +6,14 @@ import {
 } from "#/hooks/wsDataRevisionStore";
 import { getProvidersFn } from "#/lib/serverFns/providers";
 import {
+	getRavenProviderCacheSnapshot,
+	hasFreshRavenProviderModels,
 	loadRavenProviders,
 	loadRavenProvidersForNavigation,
 	refreshRavenProvider,
 	refreshRavenProviderForSession,
 	resetRavenProviderCacheForTesting,
+	subscribeRavenProviderCache,
 } from "./ravenProviderCache";
 
 vi.mock("#/lib/serverFns/providers", () => ({
@@ -40,6 +43,9 @@ const refreshedProvider = (
 		},
 	},
 ];
+
+const currentProvider = (model: string, revision?: number) =>
+	refreshedProvider(model, "current", revision);
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;
@@ -123,6 +129,38 @@ describe("loadRavenProviders", () => {
 		});
 	});
 
+	it("normalizes WSL UNC aliases while preserving distro and Linux path identity", async () => {
+		vi.mocked(getProvidersFn).mockImplementation((input) => {
+			const data = (input as { data?: { discoveryCwd?: string } }).data;
+			return Promise.resolve(provider(data?.discoveryCwd ?? "default"));
+		});
+		const localhost = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\Kyle\\Repo\\";
+		const dollarAlias = "\\\\wsl$\\ubuntu-24.04\\home\\Kyle\\Repo";
+		const otherDistro = "\\\\wsl.localhost\\Debian\\home\\Kyle\\Repo";
+
+		expect(await loadRavenProviders(localhost)).toEqual(provider(localhost));
+		expect(await loadRavenProviders(dollarAlias)).toEqual(provider(localhost));
+		expect(await loadRavenProviders(otherDistro)).toEqual(
+			provider(otherDistro),
+		);
+		expect(getProvidersFn).toHaveBeenCalledTimes(2);
+	});
+
+	it("keeps native Linux workspace paths case-sensitive", async () => {
+		vi.mocked(getProvidersFn).mockImplementation((input) => {
+			const data = (input as { data?: { discoveryCwd?: string } }).data;
+			return Promise.resolve(provider(data?.discoveryCwd ?? "default"));
+		});
+
+		expect(await loadRavenProviders("/home/Kyle/Repo")).toEqual(
+			provider("/home/Kyle/Repo"),
+		);
+		expect(await loadRavenProviders("/home/kyle/Repo")).toEqual(
+			provider("/home/kyle/Repo"),
+		);
+		expect(getProvidersFn).toHaveBeenCalledTimes(2);
+	});
+
 	it("does not let an older revision overwrite or clear the newer read", async () => {
 		let resolveOld: ((value: ReturnType<typeof provider>) => void) | undefined;
 		let resolveNew: ((value: ReturnType<typeof provider>) => void) | undefined;
@@ -171,6 +209,130 @@ describe("loadRavenProviders", () => {
 				discoveryCwd: "/vault",
 			},
 		});
+	});
+
+	it("publishes an accepted workspace refresh independently of its initiating UI context", async () => {
+		const listener = vi.fn();
+		const unsubscribe = subscribeRavenProviderCache(listener);
+		vi.mocked(getProvidersFn)
+			.mockResolvedValueOnce(provider("cached"))
+			.mockResolvedValueOnce(refreshedProvider("live", "current"));
+
+		expect(getRavenProviderCacheSnapshot("/vault")).toBeNull();
+		await loadRavenProviders("/vault");
+		expect(getRavenProviderCacheSnapshot("/vault")).toEqual(provider("cached"));
+
+		// The caller deliberately ignores the return value, as happens when Raven
+		// switches providers while the exact-workspace refresh is in flight.
+		await refreshRavenProvider("acp:opencode", "/vault");
+		expect(getRavenProviderCacheSnapshot("/vault")).toEqual(
+			refreshedProvider("live", "current"),
+		);
+		expect(listener).toHaveBeenCalledTimes(2);
+		unsubscribe();
+	});
+
+	it("keeps the external last-good snapshot stable until a notified publication", async () => {
+		const live = deferred<ReturnType<typeof refreshedProvider>>();
+		const listener = vi.fn();
+		const unsubscribe = subscribeRavenProviderCache(listener);
+		vi.mocked(getProvidersFn)
+			.mockResolvedValueOnce(provider("cached"))
+			.mockImplementationOnce(() => live.promise);
+
+		await loadRavenProviders("/vault");
+		listener.mockClear();
+		replaceDataRevisions({ ...EMPTY_DATA_REVISIONS, providers: 1 });
+		const refreshing = refreshRavenProvider("acp:opencode", "/vault");
+
+		// Revision and refresh-generation changes decide that work is due, but do
+		// not blank the external display snapshot without notifying React.
+		expect(getRavenProviderCacheSnapshot("/vault")).toEqual(provider("cached"));
+		expect(listener).not.toHaveBeenCalled();
+
+		live.resolve(refreshedProvider("live", "current"));
+		await refreshing;
+		expect(listener).toHaveBeenCalledOnce();
+		expect(getRavenProviderCacheSnapshot("/vault")).toEqual(
+			refreshedProvider("live", "current"),
+		);
+		unsubscribe();
+	});
+
+	it("retains an expired last-good external snapshot for background refresh display", async () => {
+		const now = vi.spyOn(Date, "now");
+		try {
+			now.mockReturnValue(1_000_000);
+			const listener = vi.fn();
+			const unsubscribe = subscribeRavenProviderCache(listener);
+			vi.mocked(getProvidersFn).mockResolvedValue(currentProvider("cached"));
+			await loadRavenProviders("/vault");
+			expect(hasFreshRavenProviderModels("acp:opencode", "/vault")).toBe(true);
+			listener.mockClear();
+
+			now.mockReturnValue(1_060_001);
+			expect(getRavenProviderCacheSnapshot("/vault")).toEqual(
+				currentProvider("cached"),
+			);
+			// Expiry alone is intentionally silent: mounted Raven must not start a
+			// provider process every TTL. The next selection evaluates freshness.
+			expect(listener).not.toHaveBeenCalled();
+			expect(hasFreshRavenProviderModels("acp:opencode", "/vault")).toBe(false);
+			unsubscribe();
+		} finally {
+			now.mockRestore();
+		}
+	});
+
+	it("requires the current provider revision and generation for a fresh model cache", async () => {
+		const live = deferred<ReturnType<typeof refreshedProvider>>();
+		const listener = vi.fn();
+		const unsubscribe = subscribeRavenProviderCache(listener);
+		vi.mocked(getProvidersFn)
+			.mockResolvedValueOnce(currentProvider("cached"))
+			.mockResolvedValueOnce(currentProvider("revision-one", 1))
+			.mockImplementationOnce(() => live.promise);
+
+		await loadRavenProviders("/vault");
+		expect(hasFreshRavenProviderModels("acp:opencode", "/vault")).toBe(true);
+		replaceDataRevisions({ ...EMPTY_DATA_REVISIONS, providers: 1 });
+		expect(hasFreshRavenProviderModels("acp:opencode", "/vault")).toBe(false);
+
+		// Rematerialize revision 1, then starting generation 1 immediately makes
+		// that display cache non-authoritative without disturbing display listeners.
+		await loadRavenProviders("/vault");
+		expect(hasFreshRavenProviderModels("acp:opencode", "/vault")).toBe(true);
+		listener.mockClear();
+		const refreshing = refreshRavenProvider("acp:opencode", "/vault");
+		expect(hasFreshRavenProviderModels("acp:opencode", "/vault")).toBe(false);
+		expect(listener).not.toHaveBeenCalled();
+
+		live.resolve(refreshedProvider("live", "current", 1));
+		await refreshing;
+		expect(hasFreshRavenProviderModels("acp:opencode", "/vault")).toBe(true);
+		expect(listener).toHaveBeenCalledOnce();
+		unsubscribe();
+	});
+
+	it("isolates fresh Windows and WSL model caches by exact workspace", async () => {
+		const windowsCwd = "C:\\Users\\Kyle\\repo";
+		const wslCwd = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\repo";
+		vi.mocked(getProvidersFn).mockResolvedValue(currentProvider("windows"));
+
+		await loadRavenProviders(windowsCwd);
+		expect(hasFreshRavenProviderModels("acp:opencode", windowsCwd)).toBe(true);
+		expect(hasFreshRavenProviderModels("acp:opencode", wslCwd)).toBe(false);
+		expect(hasFreshRavenProviderModels("acp:other", windowsCwd)).toBe(false);
+	});
+
+	it("does not accept non-empty unannotated cached models as live truth", async () => {
+		vi.mocked(getProvidersFn).mockResolvedValue(provider("persisted"));
+		await loadRavenProviders("/vault");
+
+		expect(getRavenProviderCacheSnapshot("/vault")).toEqual(
+			provider("persisted"),
+		);
+		expect(hasFreshRavenProviderModels("acp:opencode", "/vault")).toBe(false);
 	});
 
 	it("joins a live refresh across a revision change, then rematerializes that revision", async () => {

@@ -194,6 +194,42 @@ describe("SessionPool delegation workspaces", () => {
 	});
 });
 
+describe("SessionPool provider runtime workspaces", () => {
+	it("resolves vault, cwd-mode, and context-mode runtime ownership exactly", () => {
+		const vault = "C:\\Users\\kyle\\Vault";
+		const cwdAgent = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\cwd-agent";
+		const contextAgent =
+			"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\context-agent";
+		const config = makeConfig(vault);
+		config.agents = [
+			{
+				path: cwdAgent,
+				name: "Cwd agent",
+				mode: "cwd",
+				provider: "claude",
+			},
+			{
+				path: contextAgent,
+				name: "Context agent",
+				mode: "context",
+				provider: "claude",
+			},
+		];
+		const pool = new SessionPool(config, makeProviders());
+		const persistedCwdAlias = "\\\\wsl$\\ubuntu-24.04\\home\\kyle\\cwd-agent";
+
+		expect(pool.providerRuntimeCwd(null)).toBe(vault);
+		expect(pool.providerRuntimeCwd(vault.toLowerCase())).toBe(vault);
+		expect(pool.providerRuntimeCwd(persistedCwdAlias)).toBe(persistedCwdAlias);
+		expect(pool.providerRuntimeCwd(contextAgent)).toBe(vault);
+		expect(
+			pool.providerRuntimeCwd(
+				"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\removed-agent",
+			),
+		).toBeNull();
+	});
+});
+
 // ── create ────────────────────────────────────────────────────────────────────
 
 describe("SessionPool.create", () => {

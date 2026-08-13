@@ -1,17 +1,30 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import {
 	type ParseError,
 	parse as parseJsonc,
 	printParseErrorCode,
 } from "jsonc-parser";
 import type { HlidConfig } from "../config";
-import { acpExecutionTargetKey } from "../lib/acpExecutionTarget";
+import {
+	type AcpExecutionTarget,
+	acpExecutionTargetKey,
+	acpExecutionTargetLabel,
+	HOST_ACP_EXECUTION_TARGET,
+} from "../lib/acpExecutionTarget";
 import { declaredPathKey, parseWslUncSyntax } from "../lib/paths";
 import { AcpProvider } from "./acpProvider";
-import type { AcpCatalogItem } from "./acpRegistry";
-import type { AgentProvider } from "./agentProvider";
+import type { AcpCatalogItem, AcpCatalogTargetStatus } from "./acpRegistry";
+import type {
+	AgentProvider,
+	AgentQueryParams,
+	AgentSession,
+	ForkSessionParams,
+	ForkSessionResult,
+	ProviderForkCapability,
+	ProviderModelInfo,
+} from "./agentProvider";
 
 const OPENCODE_CONFIG_CONTENT = "OPENCODE_CONFIG_CONTENT";
 const MAX_OPENCODE_CONFIG_CONTENT_LENGTH = 24_000;
@@ -40,6 +53,45 @@ const PROTOTYPE_SPECIAL_PROVIDER_IDS = new Set([
 ]);
 
 type JsonObject = Record<string, unknown>;
+
+type ConfiguredAcpAgent = NonNullable<HlidConfig["acp_agents"]>[number];
+
+type AcpRuntimeTarget = Pick<
+	AcpCatalogTargetStatus,
+	| "targetId"
+	| "target"
+	| "label"
+	| "selected"
+	| "available"
+	| "resolvedExecutable"
+	| "command"
+	| "args"
+	| "env"
+	| "platformTarget"
+	| "blockedReason"
+	| "cleanupOnly"
+>;
+
+export type AcpWorkspaceRuntime = {
+	target: AcpExecutionTarget;
+	targetId: string;
+	label: string;
+	available: boolean;
+	reason?: string;
+	command: string;
+	args: string[];
+	env: Record<string, string>;
+	discoveryCwd: string;
+	metadataCacheIdentity: string;
+	sessionContinuityIdentity: string;
+};
+
+export class AcpWorkspaceRuntimeError extends Error {
+	constructor(detail: string) {
+		super(detail);
+		this.name = "AcpWorkspaceRuntimeError";
+	}
+}
 
 function isJsonObject(value: unknown): value is JsonObject {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -239,18 +291,25 @@ export function effectiveAcpEnvironment(
 		Record<string, string | undefined>
 	> = process.env,
 	platform?: NodeJS.Platform,
+	applyModelFilter = true,
+	applyConfiguredEnvironment = true,
+	useInheritedEnvironment = true,
 ): Record<string, string> {
 	const configured = (config.acp_agents ?? []).find(
 		(agent) => agent.id === item.id,
 	);
-	const targetPlatform = platform ?? acpTargetPlatform(configured);
-	const environment = { ...item.env, ...configured?.env };
-	if (item.id !== "opencode" || !configured?.model_filter) return environment;
+	const targetPlatform = platform ?? acpTargetPlatform(configured?.target);
+	const configuredEnvironment = applyConfiguredEnvironment
+		? configured?.env
+		: undefined;
+	const environment = { ...item.env, ...configuredEnvironment };
+	if (!applyModelFilter || item.id !== "opencode" || !configured?.model_filter)
+		return environment;
 	const { environment: normalizedEnvironment, content: existingContent } =
 		openCodeBaseEnvironment(
 			item.env,
-			configured.env,
-			inheritedEnvironment,
+			configuredEnvironment,
+			useInheritedEnvironment ? inheritedEnvironment : {},
 			targetPlatform,
 		);
 	return {
@@ -263,25 +322,78 @@ export function effectiveAcpEnvironment(
 }
 
 function acpTargetPlatform(
-	configured: NonNullable<HlidConfig["acp_agents"]>[number] | undefined,
+	target: AcpExecutionTarget | undefined,
 ): NodeJS.Platform {
-	return configured?.target?.kind === "wsl" ? "linux" : process.platform;
+	return target?.kind === "wsl" ? "linux" : process.platform;
+}
+
+function configuredWorkspacePaths(config: HlidConfig): string[] {
+	return [
+		config.vault.path,
+		...config.agents.map((agent) => agent.path),
+	].filter(Boolean);
+}
+
+/** Resolve an exact execution environment from workspace syntax without fallback. */
+export function acpExecutionTargetForWorkspace(
+	cwd: string,
+	_config: HlidConfig,
+	hostPlatform: NodeJS.Platform = process.platform,
+): AcpExecutionTarget {
+	const wsl = parseWslUncSyntax(cwd);
+	if (wsl) return { kind: "wsl", distro: wsl.distro };
+	if (/^(?:\\\\|\/\/)(?:wsl\$|wsl\.localhost)(?:[\\/]|$)/i.test(cwd)) {
+		throw new AcpWorkspaceRuntimeError(
+			`ACP workspace ${JSON.stringify(cwd)} is not a valid WSL UNC path. Use its exact \\wsl.localhost\\<distro>\\<path> workspace path.`,
+		);
+	}
+	if (/^[a-z]:[\\/]/i.test(cwd) || cwd.startsWith("\\\\")) {
+		return HOST_ACP_EXECUTION_TARGET;
+	}
+	if (posix.isAbsolute(cwd) && !cwd.startsWith("//")) {
+		if (hostPlatform !== "win32") return HOST_ACP_EXECUTION_TARGET;
+		throw new AcpWorkspaceRuntimeError(
+			`ACP workspace ${JSON.stringify(cwd)} is a bare POSIX path on Windows. Use its exact \\wsl.localhost\\<distro>\\<path> workspace path.`,
+		);
+	}
+	throw new AcpWorkspaceRuntimeError(
+		`ACP workspace ${JSON.stringify(cwd)} is not an absolute Windows or WSL path.`,
+	);
+}
+
+function acpTargetDiscoveryCwd(
+	config: HlidConfig,
+	target: AcpExecutionTarget,
+): string {
+	const paths = configuredWorkspacePaths(config);
+	if (target.kind === "wsl") {
+		const distro = target.distro.toLowerCase();
+		const workspace = paths.find(
+			(path) => parseWslUncSyntax(path)?.distro.toLowerCase() === distro,
+		);
+		if (workspace) return workspace;
+		throw new AcpWorkspaceRuntimeError(
+			`ACP has no configured workspace in ${acpExecutionTargetLabel(target)}.`,
+		);
+	}
+	const workspace = paths.find((path) => {
+		if (parseWslUncSyntax(path)) return false;
+		return process.platform === "win32"
+			? /^[a-z]:[\\/]/i.test(path) || path.startsWith("\\\\")
+			: posix.isAbsolute(path) && !path.startsWith("//");
+	});
+	// A same-environment host directory is valid for registry metadata when all
+	// configured workspaces belong to WSL. Never borrow one of those WSL roots.
+	return workspace ?? homedir();
 }
 
 export function acpDiscoveryCwd(
 	config: HlidConfig,
-	configured: NonNullable<HlidConfig["acp_agents"]>[number] | undefined,
+	configured: ConfiguredAcpAgent | undefined,
 ): string {
-	if (configured?.target?.kind !== "wsl") {
-		return config.vault.path || process.cwd();
-	}
-	const distro = configured.target.distro.toLowerCase();
-	return (
-		([config.vault.path, ...config.agents.map((agent) => agent.path)].find(
-			(path) => parseWslUncSyntax(path)?.distro.toLowerCase() === distro,
-		) ??
-			config.vault.path) ||
-		process.cwd()
+	return acpTargetDiscoveryCwd(
+		config,
+		configured?.target ?? HOST_ACP_EXECUTION_TARGET,
 	);
 }
 
@@ -395,41 +507,104 @@ export function preflightOpenCodeModelFilter(
 		(agent) => agent.id === "opencode",
 	);
 	if (!configured?.model_filter) return;
+	const targetPlatform = platform ?? acpTargetPlatform(configured?.target);
 	const { content } = openCodeBaseEnvironment(
 		{},
 		configured.env,
-		inheritedEnvironment,
-		platform ?? acpTargetPlatform(configured),
+		configured.target?.kind === "wsl" ? {} : inheritedEnvironment,
+		targetPlatform,
 	);
 	openCodeModelFilterContent(content, configured.model_filter);
 }
 
-export function acpRuntimeFingerprint(
+function validateSelectedAcpEnvironment(
 	item: AcpCatalogItem,
 	config: HlidConfig,
+): void {
+	const target = selectedTargetStatus(item);
+	effectiveAcpEnvironment(
+		{ ...item, env: target.env },
+		config,
+		process.env,
+		acpTargetPlatform(target.target),
+		true,
+		target.selected,
+		target.target.kind !== "wsl",
+	);
+}
+
+function targetStatusFor(
+	item: AcpCatalogItem,
+	target: AcpExecutionTarget,
+): AcpRuntimeTarget | undefined {
+	const key = acpExecutionTargetKey(target);
+	const status = item.targets.find(
+		(candidate) => acpExecutionTargetKey(candidate.target) === key,
+	);
+	if (status) return status;
+	if (item.targets.length > 0) return undefined;
+	const fallback = selectedTargetStatus(item);
+	return acpExecutionTargetKey(fallback.target) === key ? fallback : undefined;
+}
+
+function selectedTargetStatus(item: AcpCatalogItem): AcpRuntimeTarget {
+	const selected = item.targets.find((target) => target.selected);
+	if (selected) return selected;
+	const configuredFallback = item.targets.find(
+		(target) =>
+			acpExecutionTargetKey(target.target) ===
+			acpExecutionTargetKey(HOST_ACP_EXECUTION_TARGET),
+	);
+	return (
+		configuredFallback ?? {
+			targetId: "host",
+			target: HOST_ACP_EXECUTION_TARGET,
+			label: "Windows",
+			selected: true,
+			available: item.available,
+			resolvedExecutable: item.resolvedExecutable,
+			command: item.command,
+			args: item.args,
+			env: item.env,
+			platformTarget: `${process.platform}-${process.arch}`,
+			blockedReason: item.unavailableReason,
+		}
+	);
+}
+
+function runtimeTargetFingerprint(
+	item: AcpCatalogItem,
+	config: HlidConfig,
+	target: AcpRuntimeTarget,
+	discoveryCwd: string,
 ): string {
 	const configured = (config.acp_agents ?? []).find(
 		(agent) => agent.id === item.id,
 	);
-	const rawEnvironment = { ...item.env, ...configured?.env };
-	const targetPlatform = acpTargetPlatform(configured);
+	const targetPlatform = acpTargetPlatform(target.target);
+	const applyConfiguredEnvironment = target.selected;
+	const configuredEnvironment = applyConfiguredEnvironment
+		? configured?.env
+		: undefined;
+	const inheritedEnvironment = target.target.kind === "wsl" ? {} : process.env;
+	const rawEnvironment = { ...target.env, ...configuredEnvironment };
 	const environment = configured?.model_filter
 		? openCodeBaseEnvironment(
-				item.env,
-				configured.env,
-				process.env,
+				target.env,
+				configuredEnvironment,
+				inheritedEnvironment,
 				targetPlatform,
 			).environment
 		: rawEnvironment;
 	if (configured?.model_filter) {
 		const content =
-			openCodeEnvironmentValue(configured.env, targetPlatform) ??
-			openCodeEnvironmentValue(item.env, targetPlatform) ??
-			openCodeEnvironmentValue(process.env, targetPlatform);
+			openCodeEnvironmentValue(configuredEnvironment, targetPlatform) ??
+			openCodeEnvironmentValue(target.env, targetPlatform) ??
+			openCodeEnvironmentValue(inheritedEnvironment, targetPlatform);
 		if (content !== undefined) environment[OPENCODE_CONFIG_CONTENT] = content;
 	}
 	const inheritedRuntimeEnvironment = {
-		...process.env,
+		...inheritedEnvironment,
 		...environment,
 	};
 	const inlineConfig = runtimeEnvironmentValue(
@@ -438,12 +613,20 @@ export function acpRuntimeFingerprint(
 	);
 	return JSON.stringify({
 		providerId: item.providerId,
-		target: acpExecutionTargetKey(configured?.target),
+		target: acpExecutionTargetKey(target.target),
+		targetId: target.targetId,
 		platform: targetPlatform,
+		platformTarget: target.platformTarget,
 		architecture: process.arch,
-		command: item.command,
-		args: item.args,
-		executable: item.runtimeExecutableEvidence,
+		command: target.command,
+		args: target.args,
+		executable: {
+			resolved: target.resolvedExecutable,
+			selectedRuntimeEvidence:
+				target.target.kind === "host" && target.selected
+					? item.runtimeExecutableEvidence
+					: undefined,
+		},
 		env: Object.fromEntries(
 			Object.entries(environment)
 				.sort(([a], [b]) => a.localeCompare(b))
@@ -464,55 +647,352 @@ export function acpRuntimeFingerprint(
 					),
 				}
 			: undefined,
-		discoveryCwd: declaredPathKey(acpDiscoveryCwd(config, configured)),
+		discoveryCwd: declaredPathKey(discoveryCwd),
 	});
+}
+
+/** Build one exact target invocation for a concrete ACP workspace. */
+export function resolveAcpWorkspaceRuntime(
+	item: AcpCatalogItem,
+	config: HlidConfig,
+	cwd: string,
+	hostPlatform: NodeJS.Platform = process.platform,
+	applyModelFilter = true,
+): AcpWorkspaceRuntime {
+	const target = acpExecutionTargetForWorkspace(cwd, config, hostPlatform);
+	const status = targetStatusFor(item, target);
+	const label = acpExecutionTargetLabel(target);
+	if (!status) {
+		throw new AcpWorkspaceRuntimeError(
+			`${item.name} has no ${label} runtime configured for workspace ${JSON.stringify(cwd)}. Install or configure ${item.name} for ${label}.`,
+		);
+	}
+	const discoveryCwd = cwd || acpTargetDiscoveryCwd(config, target);
+	const fingerprint = runtimeTargetFingerprint(
+		item,
+		config,
+		status,
+		discoveryCwd,
+	);
+	const reason = status.available
+		? undefined
+		: (status.blockedReason ??
+			(status.command
+				? `${status.command} is not installed in ${status.label}`
+				: `No distribution for ${status.platformTarget}`));
+	return {
+		target: status.target,
+		targetId: status.targetId,
+		label: status.label,
+		available: status.available,
+		...(reason ? { reason } : {}),
+		command: status.command,
+		args: [...status.args],
+		env: effectiveAcpEnvironment(
+			{ ...item, env: status.env },
+			config,
+			process.env,
+			acpTargetPlatform(status.target),
+			applyModelFilter,
+			status.selected,
+			status.target.kind !== "wsl",
+		),
+		discoveryCwd,
+		metadataCacheIdentity: fingerprint,
+		sessionContinuityIdentity: createHash("sha256")
+			.update(fingerprint)
+			.digest("hex"),
+	};
+}
+
+export function acpRuntimeFingerprint(
+	item: AcpCatalogItem,
+	config: HlidConfig,
+): string {
+	const targets =
+		item.targets.length > 0 ? item.targets : [selectedTargetStatus(item)];
+	return JSON.stringify({
+		providerId: item.providerId,
+		runtimes: targets
+			.filter((target) => !target.cleanupOnly)
+			.map((target) => ({
+				key: acpExecutionTargetKey(target.target),
+				fingerprint: runtimeTargetFingerprint(
+					item,
+					config,
+					target,
+					acpTargetDiscoveryCwd(config, target.target),
+				),
+			}))
+			.sort((left, right) => left.key.localeCompare(right.key)),
+	});
+}
+
+function workspaceRuntimeUnavailableMessage(
+	item: AcpCatalogItem,
+	runtime: AcpWorkspaceRuntime,
+	cwd: string,
+): string {
+	return `${item.name} is unavailable in ${runtime.label} for workspace ${JSON.stringify(cwd)}${runtime.reason ? `: ${runtime.reason}` : ""}`;
+}
+
+/** One provider identity that dispatches each exact workspace to its own runtime. */
+export class WorkspaceRoutedAcpProvider implements AgentProvider {
+	readonly providerId: string;
+	readonly label: string;
+	readonly modelCatalogScope = "workspace" as const;
+	readonly effortScope = "model" as const;
+	readonly liveModelDiscoveryValidatesAvailability = true;
+	readonly permissionModes = [
+		{
+			value: "default",
+			label: "Review requested approvals",
+			desc: "Hlid asks when the ACP agent sends an approval request",
+		},
+		{
+			value: "bypassPermissions",
+			label: "Allow requested approvals",
+			desc: "automatically accepts approval requests sent by the ACP agent",
+		},
+	] as const;
+	private catalogItem: AcpCatalogItem;
+	private readonly children = new Map<
+		string,
+		{ fingerprint: string; provider: AcpProvider }
+	>();
+	private retirementError: AcpWorkspaceRuntimeError | null = null;
+	private retirementPromise: Promise<void> | null = null;
+
+	constructor(
+		item: AcpCatalogItem,
+		private readonly config: HlidConfig,
+	) {
+		this.catalogItem = item;
+		this.providerId = item.providerId;
+		this.label = item.name;
+	}
+
+	get metadataCacheIdentity(): string {
+		return acpRuntimeFingerprint(this.catalogItem, this.config);
+	}
+
+	get sessionContinuityIdentity(): undefined {
+		return undefined;
+	}
+
+	metadataCacheIdentityFor(cwd: string): string {
+		return resolveAcpWorkspaceRuntime(this.catalogItem, this.config, cwd)
+			.metadataCacheIdentity;
+	}
+
+	sessionContinuityIdentityFor(cwd: string): string {
+		return resolveAcpWorkspaceRuntime(this.catalogItem, this.config, cwd)
+			.sessionContinuityIdentity;
+	}
+
+	runtimeIdentityFor(cwd: string): string {
+		return resolveAcpWorkspaceRuntime(this.catalogItem, this.config, cwd)
+			.sessionContinuityIdentity;
+	}
+
+	updateCatalog(item: AcpCatalogItem): boolean {
+		const priorTargets =
+			this.catalogItem.targets.length > 0
+				? this.catalogItem.targets
+				: [selectedTargetStatus(this.catalogItem)];
+		const nextTargets =
+			item.targets.length > 0 ? item.targets : [selectedTargetStatus(item)];
+		const before = new Map(
+			priorTargets.map((target) => [
+				acpExecutionTargetKey(target.target),
+				{ available: target.available, reason: target.blockedReason },
+			]),
+		);
+		this.catalogItem = item;
+		let changed = before.size !== nextTargets.length;
+		for (const target of nextTargets) {
+			const key = acpExecutionTargetKey(target.target);
+			const prior = before.get(key);
+			if (
+				prior?.available !== target.available ||
+				prior?.reason !== target.blockedReason
+			) {
+				changed = true;
+			}
+		}
+		for (const [key, child] of this.children) {
+			const targetKey = key.slice(0, key.indexOf("\0"));
+			const status = nextTargets.find(
+				(candidate) => acpExecutionTargetKey(candidate.target) === targetKey,
+			);
+			child.provider.updateAvailabilitySnapshot(
+				status?.available
+					? { available: true }
+					: {
+							available: false,
+							reason:
+								status?.blockedReason ??
+								`${this.label} runtime is unavailable in ${status?.label ?? targetKey}`,
+						},
+			);
+		}
+		return changed;
+	}
+
+	/**
+	 * Close admission before runtime replacement and drain every Windows/WSL child
+	 * that this routed provider has materialized. The provider remains registered
+	 * until the caller atomically swaps it after this promise settles.
+	 */
+	retireRuntime(reason?: string): Promise<void> {
+		if (this.retirementPromise) return this.retirementPromise;
+		this.retirementError = new AcpWorkspaceRuntimeError(
+			reason ?? `${this.label} runtime is updating; try again shortly.`,
+		);
+		const cleanups = [...this.children.values()].map(({ provider }) =>
+			provider.retireRuntime(this.retirementError?.message),
+		);
+		this.retirementPromise = Promise.allSettled(cleanups).then(() => undefined);
+		return this.retirementPromise;
+	}
+
+	private assertAcceptingWork(): void {
+		if (this.retirementError) throw this.retirementError;
+	}
+
+	private runtime(cwd: string): AcpWorkspaceRuntime {
+		return resolveAcpWorkspaceRuntime(this.catalogItem, this.config, cwd);
+	}
+
+	private child(cwd: string, requireAvailable = true): AcpProvider {
+		this.assertAcceptingWork();
+		const runtime = this.runtime(cwd);
+		if (requireAvailable && !runtime.available) {
+			throw new AcpWorkspaceRuntimeError(
+				workspaceRuntimeUnavailableMessage(this.catalogItem, runtime, cwd),
+			);
+		}
+		const key = `${acpExecutionTargetKey(runtime.target)}\0${declaredPathKey(cwd)}`;
+		const existing = this.children.get(key);
+		if (existing?.fingerprint === runtime.metadataCacheIdentity) {
+			return existing.provider;
+		}
+		const provider = new AcpProvider({
+			id: this.providerId,
+			label: this.label,
+			command: runtime.command,
+			args: runtime.args,
+			target: runtime.target,
+			env: runtime.env,
+			modelFilter: (this.config.acp_agents ?? []).find(
+				(agent) => agent.id === this.catalogItem.id,
+			)?.model_filter,
+			discoveryCwd: cwd,
+			metadataCacheIdentity: runtime.metadataCacheIdentity,
+			initialAvailability: {
+				available: runtime.available,
+				...(runtime.reason ? { reason: runtime.reason } : {}),
+			},
+		});
+		this.children.set(key, {
+			fingerprint: runtime.metadataCacheIdentity,
+			provider,
+		});
+		return provider;
+	}
+
+	async hlidToolLoading(context?: { cwd: string }) {
+		return this.child(this.requiredCwd(context), false).hlidToolLoading();
+	}
+
+	private requiredCwd(context?: { cwd: string }): string {
+		if (context?.cwd.trim()) return context.cwd;
+		throw new AcpWorkspaceRuntimeError(
+			`${this.label} requires an exact workspace cwd to select its Windows or WSL runtime.`,
+		);
+	}
+
+	private workspaceAvailability(context?: {
+		cwd: string;
+	}): { available: true; cwd: string } | { available: false; reason: string } {
+		if (this.retirementError) {
+			return { available: false, reason: this.retirementError.message };
+		}
+		try {
+			const cwd = this.requiredCwd(context);
+			const runtime = this.runtime(cwd);
+			return runtime.available
+				? { available: true, cwd }
+				: {
+						available: false,
+						reason: workspaceRuntimeUnavailableMessage(
+							this.catalogItem,
+							runtime,
+							cwd,
+						),
+					};
+		} catch (error) {
+			return {
+				available: false,
+				reason: error instanceof Error ? error.message : String(error),
+			};
+		}
+	}
+
+	async check(context?: { cwd: string }) {
+		const availability = this.workspaceAvailability(context);
+		if (!availability.available) return availability;
+		return this.child(availability.cwd).check();
+	}
+
+	cachedAvailability(context?: { cwd: string }) {
+		const availability = this.workspaceAvailability(context);
+		if (!availability.available) return availability;
+		return (
+			this.child(availability.cwd, false).cachedAvailability() ?? {
+				available: true,
+			}
+		);
+	}
+
+	async listModels(context?: { cwd: string }): Promise<ProviderModelInfo[]> {
+		const cwd = this.requiredCwd(context);
+		return this.child(cwd).listModels({ cwd });
+	}
+
+	discoverCapabilities(context: { cwd: string }) {
+		return this.child(context.cwd).discoverCapabilities(context);
+	}
+
+	resolveForkCapability(context?: {
+		cwd: string;
+	}): Promise<ProviderForkCapability | undefined> {
+		const cwd = this.requiredCwd(context);
+		return this.child(cwd).resolveForkCapability({ cwd });
+	}
+
+	forkSession(params: ForkSessionParams): Promise<ForkSessionResult> {
+		const cwd = this.requiredCwd(params.cwd ? { cwd: params.cwd } : undefined);
+		return this.child(cwd).forkSession({ ...params, cwd });
+	}
+
+	query(params: AgentQueryParams): AgentSession {
+		return this.child(params.cwd).query(params);
+	}
 }
 
 export function createConfiguredAcpProvider(
 	item: AcpCatalogItem,
 	config: HlidConfig,
-): AcpProvider {
-	const configured = (config.acp_agents ?? []).find(
-		(agent) => agent.id === item.id,
-	);
-	let overlayError: OpenCodeConfigOverlayError | undefined;
-	try {
-		effectiveAcpEnvironment(item, config);
-	} catch (error) {
-		if (!(error instanceof OpenCodeConfigOverlayError)) throw error;
-		overlayError = error;
-	}
-	return new AcpProvider({
-		id: item.providerId,
-		label: item.name,
-		command: item.command,
-		args: item.args,
-		target: configured?.target,
-		env: () =>
-			effectiveAcpEnvironment(
-				item,
-				config,
-				process.env,
-				acpTargetPlatform(configured),
-			),
-		modelFilter: configured?.model_filter,
-		initialAvailability: {
-			available: overlayError ? false : item.available,
-			...(overlayError
-				? { reason: overlayError.message }
-				: item.unavailableReason
-					? { reason: item.unavailableReason }
-					: {}),
-		},
-		discoveryCwd: acpDiscoveryCwd(config, configured),
-		metadataCacheIdentity: acpRuntimeFingerprint(item, config),
-	});
+): WorkspaceRoutedAcpProvider {
+	return new WorkspaceRoutedAcpProvider(item, config);
 }
 
 export type AcpRuntimeSyncResult = {
 	added: string[];
 	removed: string[];
 	replaced: string[];
+	availabilityUpdated: string[];
 };
 
 /** Reconcile only Hlid-managed registry ACP providers, preserving native providers. */
@@ -542,33 +1022,114 @@ export async function syncAcpRuntimeProviders(options: {
 	// conflicting inline OpenCode config should produce a save warning while the
 	// previous runtime remains available.
 	for (const { item } of desired.values()) {
-		effectiveAcpEnvironment(item, options.config);
+		validateSelectedAcpEnvironment(item, options.config);
 	}
 	const removed: string[] = [];
 	const replaced: string[] = [];
+	const availabilityUpdated: string[] = [];
 	for (const [providerId, fingerprint] of options.fingerprints) {
 		const next = desired.get(providerId);
 		if (!next) removed.push(providerId);
 		else if (next.fingerprint !== fingerprint) replaced.push(providerId);
+		else {
+			const provider = options.providers.get(providerId);
+			if (provider instanceof WorkspaceRoutedAcpProvider) {
+				if (provider.updateCatalog(next.item)) {
+					availabilityUpdated.push(providerId);
+				}
+			} else {
+				const nextAvailability = {
+					available: next.item.available,
+					...(next.item.unavailableReason
+						? { reason: next.item.unavailableReason }
+						: {}),
+				};
+				const currentAvailability = provider?.cachedAvailability?.();
+				if (
+					provider?.updateAvailabilitySnapshot &&
+					(currentAvailability?.available !== nextAvailability.available ||
+						currentAvailability?.reason !== nextAvailability.reason)
+				) {
+					provider.updateAvailabilitySnapshot(nextAvailability);
+					availabilityUpdated.push(providerId);
+				}
+			}
+		}
 	}
-	for (const providerId of [...removed, ...replaced]) {
-		options.providers.delete(providerId);
+	const retiringIds = [...removed, ...replaced];
+	const retiringProviders = new Map(
+		retiringIds.flatMap((providerId) => {
+			const provider = options.providers.get(providerId);
+			return provider ? ([[providerId, provider]] as const) : [];
+		}),
+	);
+	const replacementProviders = new Map(
+		replaced.flatMap((providerId) => {
+			const next = desired.get(providerId);
+			return next
+				? ([
+						[
+							providerId,
+							createConfiguredAcpProvider(next.item, options.config),
+						],
+					] as const)
+				: [];
+		}),
+	);
+
+	// Transition every old runtime synchronously while it is still the registered
+	// provider. New explicit selections now fail closed on that exact provider
+	// instead of observing a missing map entry and falling through elsewhere.
+	const providerCleanup = [...retiringProviders.entries()].map(
+		([providerId, provider]) =>
+			provider.retireRuntime?.(
+				replaced.includes(providerId)
+					? `${provider.label ?? providerId} runtime is updating; try again shortly.`
+					: `${provider.label ?? providerId} runtime is being removed.`,
+			) ?? Promise.resolve(),
+	);
+	const sessionCleanup: Promise<void>[] = [];
+	if (removed.length > 0) {
+		sessionCleanup.push(
+			Promise.resolve(options.retireProviderSessions(removed)),
+		);
+	}
+	if (replaced.length > 0) {
+		sessionCleanup.push(
+			Promise.resolve(
+				options.retireProviderSessions(replaced, { preserveSelection: true }),
+			),
+		);
+	}
+	await Promise.all([...providerCleanup, ...sessionCleanup]);
+
+	// No await occurs between these mutations: consumers see either the retired
+	// provider or its replacement, never a transient missing provider identity.
+	for (const providerId of removed) {
+		if (
+			options.providers.get(providerId) === retiringProviders.get(providerId)
+		) {
+			options.providers.delete(providerId);
+		}
 		options.fingerprints.delete(providerId);
 	}
-	if (removed.length > 0) await options.retireProviderSessions(removed);
-	if (replaced.length > 0) {
-		await options.retireProviderSessions(replaced, { preserveSelection: true });
+	for (const providerId of replaced) {
+		const provider = replacementProviders.get(providerId);
+		const next = desired.get(providerId);
+		if (!provider || !next) continue;
+		options.providers.set(providerId, provider);
+		options.fingerprints.set(providerId, next.fingerprint);
+		options.registerProvider(provider, true);
 	}
 
 	const added: string[] = [];
 	for (const [providerId, next] of desired) {
 		if (options.fingerprints.has(providerId)) continue;
-		const wasReplaced = replaced.includes(providerId);
 		const provider = createConfiguredAcpProvider(next.item, options.config);
 		options.providers.set(providerId, provider);
 		options.fingerprints.set(providerId, next.fingerprint);
-		options.registerProvider(provider, wasReplaced);
-		if (!wasReplaced) added.push(providerId);
+		options.registerProvider(provider, false);
+		added.push(providerId);
 	}
-	return { added, removed, replaced };
+	return { added, removed, replaced, availabilityUpdated };
 }

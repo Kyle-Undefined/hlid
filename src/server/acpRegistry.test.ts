@@ -35,6 +35,17 @@ const registry = {
 };
 const temporaryDirectories: string[] = [];
 
+function deferred<T>(): {
+	promise: Promise<T>;
+	resolve: (value: T) => void;
+} {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((resolvePromise) => {
+		resolve = resolvePromise;
+	});
+	return { promise, resolve };
+}
+
 afterEach(async () => {
 	await Promise.all(
 		temporaryDirectories
@@ -162,6 +173,762 @@ describe("AcpRegistry", () => {
 			}),
 		);
 		expect(which).toHaveBeenCalledTimes(registry.agents.length * 2);
+	});
+
+	it("warns only when a full availability scan reaches one second", async () => {
+		let now = 0;
+		const performanceNow = vi
+			.spyOn(performance, "now")
+			.mockImplementation(() => now);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const scanAt = async (elapsedMs: number) => {
+				const instance = new AcpRegistry(async () => registry, undefined, {
+					which: async () => {
+						now = elapsedMs;
+						return null;
+					},
+				});
+				await instance.catalog(HlidConfigSchema.parse({}), true);
+			};
+
+			await scanAt(999);
+			expect(warn).not.toHaveBeenCalled();
+
+			now = 0;
+			await scanAt(1_000);
+			expect(warn).toHaveBeenCalledWith(
+				"[acp registry] availability scan for 2 agents took 1000ms",
+			);
+		} finally {
+			performanceNow.mockRestore();
+			warn.mockRestore();
+		}
+	});
+
+	it("keeps targeted availability scans on the fast-path warning threshold", async () => {
+		let now = 0;
+		const performanceNow = vi
+			.spyOn(performance, "now")
+			.mockImplementation(() => now);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const scanAt = async (elapsedMs: number) => {
+				const instance = new AcpRegistry(async () => registry, undefined, {
+					which: async () => {
+						now = elapsedMs;
+						return null;
+					},
+				});
+				await instance.catalog(HlidConfigSchema.parse({}), true, false, {
+					agentIds: ["opencode"],
+				});
+			};
+
+			await scanAt(249);
+			expect(warn).not.toHaveBeenCalled();
+
+			now = 0;
+			await scanAt(250);
+			expect(warn).toHaveBeenCalledWith(
+				"[acp registry] availability scan for 1 agents took 250ms",
+			);
+		} finally {
+			performanceNow.mockRestore();
+			warn.mockRestore();
+		}
+	});
+
+	it("single-flights concurrent materialization for the same exact inputs", async () => {
+		getSetting.mockResolvedValue(JSON.stringify(registry));
+		const executable = deferred<string | null>();
+		const which = vi.fn(() => executable.promise);
+		const instance = new AcpRegistry(() => new Promise(() => {}), undefined, {
+			which,
+		});
+		const config = HlidConfigSchema.parse({});
+		const options = { agentIds: ["opencode"] };
+
+		const first = instance.catalog(config, false, false, options);
+		const second = instance.catalog(config, false, false, options);
+		await vi.waitFor(() => expect(which).toHaveBeenCalledOnce());
+
+		executable.resolve("/bin/opencode");
+		const [firstCatalog, secondCatalog] = await Promise.all([first, second]);
+
+		expect(firstCatalog[0]?.resolvedExecutable).toBe("/bin/opencode");
+		expect(secondCatalog[0]?.resolvedExecutable).toBe("/bin/opencode");
+		expect(which).toHaveBeenCalledOnce();
+	});
+
+	it("does not let an older materialization overwrite an explicit refresh", async () => {
+		const staleExecutable = deferred<string | null>();
+		const freshExecutable = deferred<string | null>();
+		let probe = 0;
+		const which = vi.fn(() => {
+			probe += 1;
+			return probe === 1 ? staleExecutable.promise : freshExecutable.promise;
+		});
+		const instance = new AcpRegistry(async () => registry, undefined, {
+			which,
+		});
+		const config = HlidConfigSchema.parse({});
+		const options = { agentIds: ["opencode"] };
+
+		const stale = instance.catalog(config, true, false, options);
+		await vi.waitFor(() => expect(which).toHaveBeenCalledTimes(1));
+		const fresh = instance.catalog(config, true, false, options);
+		await vi.waitFor(() => expect(which).toHaveBeenCalledTimes(2));
+
+		freshExecutable.resolve("/bin/fresh-opencode");
+		expect((await fresh)[0]?.resolvedExecutable).toBe("/bin/fresh-opencode");
+		staleExecutable.resolve("/bin/stale-opencode");
+		expect((await stale)[0]?.resolvedExecutable).toBe("/bin/stale-opencode");
+
+		const cached = await instance.catalog(config, false, false, options);
+		expect(cached[0]?.resolvedExecutable).toBe("/bin/fresh-opencode");
+		expect(which).toHaveBeenCalledTimes(2);
+	});
+
+	it("materializes runtime agent scopes without replacing the full catalog cache", async () => {
+		const which = vi.fn(async (command: string) => `/bin/${command}`);
+		const instance = new AcpRegistry(async () => registry, undefined, {
+			which,
+		});
+		const config = HlidConfigSchema.parse({});
+
+		const scoped = await instance.catalog(config, true, false, {
+			agentIds: ["opencode"],
+		});
+		const cachedScoped = await instance.catalog(config, false, false, {
+			agentIds: ["opencode"],
+		});
+		const complete = await instance.catalog(config);
+		const cachedComplete = await instance.catalog(config);
+
+		expect(scoped.map((item) => item.id)).toEqual(["opencode"]);
+		expect(cachedScoped.map((item) => item.id)).toEqual(["opencode"]);
+		expect(complete.map((item) => item.id)).toEqual(["opencode", "other"]);
+		expect(cachedComplete.map((item) => item.id)).toEqual([
+			"opencode",
+			"other",
+		]);
+		expect(which).toHaveBeenCalledTimes(3);
+	});
+
+	it("does not probe execution targets for an empty runtime scope", async () => {
+		const adapterFactory = vi.fn();
+		const instance = new AcpRegistry(async () => registry, undefined, {
+			platform: "win32",
+			adapterFactory,
+		});
+
+		const catalog = await instance.catalog(
+			HlidConfigSchema.parse({
+				vault: {
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\vault",
+				},
+			}),
+			true,
+			false,
+			{ agentIds: [] },
+		);
+
+		expect(catalog).toEqual([]);
+		expect(adapterFactory).not.toHaveBeenCalled();
+	});
+
+	it("does not retain materialized cache entries for unknown agent scopes", async () => {
+		const instance = new AcpRegistry(async () => registry);
+		const config = HlidConfigSchema.parse({});
+
+		for (let index = 0; index < 200; index += 1) {
+			await expect(
+				instance.catalog(config, false, false, {
+					agentIds: [`unknown-${index}`],
+				}),
+			).resolves.toEqual([]);
+		}
+
+		const materializedCatalogs = (
+			instance as unknown as {
+				materializedCatalogs: Map<string, unknown>;
+			}
+		).materializedCatalogs;
+		expect(materializedCatalogs.size).toBe(0);
+	});
+
+	it("deduplicates identical executable probes within one availability scan", async () => {
+		const which = vi.fn(
+			async (
+				_command: string,
+				_options?: { cwd?: string; env?: Record<string, string | undefined> },
+			) => "/bin/shared-acp",
+		);
+		const sharedRegistry = {
+			version: "1",
+			agents: ["first", "second"].map((id) => ({
+				id,
+				name: id,
+				version: "1.0.0",
+				description: "Shared launcher",
+				distribution: { npx: { package: "shared-acp@1.0.0" } },
+			})),
+		};
+		const instance = new AcpRegistry(async () => sharedRegistry, undefined, {
+			which,
+		});
+
+		const catalog = await instance.catalog(HlidConfigSchema.parse({}), true);
+
+		expect(catalog).toHaveLength(2);
+		expect(which).toHaveBeenCalledOnce();
+	});
+
+	it("batches production host executable discovery once per exact environment", async () => {
+		const resolveExecutables = vi.fn(
+			async (commands: readonly string[]) =>
+				new Map(commands.map((command) => [command, `/host/${command}`])),
+		);
+		const instance = new AcpRegistry(async () => registry, undefined, {
+			adapterFactory: (target) =>
+				({
+					target: target ?? { kind: "host" },
+					key: "host",
+					registryPlatform: async () => ({
+						platform: process.platform,
+						architecture: process.arch,
+					}),
+					providerPath: (_cwd: string, path: string) => path,
+					pathAccessible: () => true,
+					resolveExecutable: vi.fn(async () => null),
+					resolveExecutables,
+					start: vi.fn(),
+					adaptMcpServer: <T>(server: T) => server,
+				}) as never,
+		});
+
+		const catalog = await instance.catalog(HlidConfigSchema.parse({}), true);
+
+		expect(resolveExecutables).toHaveBeenCalledOnce();
+		expect(resolveExecutables.mock.calls[0]?.[0]).toEqual([
+			"other-acp",
+			"opencode-ai",
+		]);
+		expect(catalog.every((item) => item.available)).toBe(true);
+	});
+
+	it("keeps executable probes separate when their exact environments differ", async () => {
+		const which = vi.fn(
+			async (
+				_command: string,
+				_options?: { cwd?: string; env?: Record<string, string | undefined> },
+			) => "/bin/shared-acp",
+		);
+		const sharedRegistry = {
+			version: "1",
+			agents: ["first", "second"].map((id, index) => ({
+				id,
+				name: id,
+				version: "1.0.0",
+				description: "Shared launcher",
+				distribution: {
+					npx: {
+						package: "shared-acp@1.0.0",
+						env: { ACP_ENV: index === 0 ? "one" : "two" },
+					},
+				},
+			})),
+		};
+		const instance = new AcpRegistry(async () => sharedRegistry, undefined, {
+			which,
+		});
+
+		await instance.catalog(HlidConfigSchema.parse({}), true);
+
+		expect(which).toHaveBeenCalledTimes(2);
+		expect(
+			which.mock.calls.map(([, options]) => options?.env?.ACP_ENV),
+		).toEqual(["one", "two"]);
+	});
+
+	it("batches WSL executable probes sharing an exact target environment", async () => {
+		const resolveExecutable = vi.fn(async () => null);
+		const resolveExecutables = vi.fn(
+			async (commands: readonly string[], _options?: unknown) =>
+				new Map(
+					commands.map((command) => [command, `/usr/local/bin/${command}`]),
+				),
+		);
+		const instance = new AcpRegistry(async () => registry, undefined, {
+			platform: "win32",
+			architecture: "x64",
+			which: () => null,
+			adapterFactory: (target) =>
+				({
+					target: target ?? { kind: "host" },
+					key: target?.kind === "wsl" ? `wsl:${target.distro}` : "host",
+					registryPlatform: async () => ({
+						platform: target?.kind === "wsl" ? "linux" : "win32",
+						architecture: "x64",
+					}),
+					providerPath: (_cwd: string, path: string) => path,
+					pathAccessible: () => true,
+					resolveExecutable,
+					resolveExecutables,
+					start: vi.fn(),
+					adaptMcpServer: <T>(server: T) => server,
+				}) as never,
+		});
+
+		const catalog = await instance.catalog(
+			HlidConfigSchema.parse({
+				vault: {
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\vault",
+				},
+			}),
+			true,
+		);
+
+		expect(resolveExecutables).toHaveBeenCalledOnce();
+		expect(resolveExecutables.mock.calls[0]?.[0]).toEqual([
+			"other-acp",
+			"opencode-ai",
+		]);
+		expect(resolveExecutables.mock.calls[0]?.[1]).toEqual(
+			expect.objectContaining({
+				hostCwd: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\vault",
+				forwardedEnvNames: [],
+			}),
+		);
+		expect(resolveExecutable).not.toHaveBeenCalled();
+		expect(
+			catalog.every(
+				(item) =>
+					item.targets.find((target) => target.target.kind === "wsl")
+						?.available === true,
+			),
+		).toBe(true);
+	});
+
+	it("reuses one exact-target WSL platform discovery across catalog scopes", async () => {
+		const registryPlatform = vi.fn(async () => ({
+			platform: "linux" as const,
+			architecture: "x64" as const,
+		}));
+		const instance = new AcpRegistry(async () => registry, undefined, {
+			platform: "win32",
+			architecture: "x64",
+			which: () => null,
+			adapterFactory: (target) =>
+				({
+					target: target ?? { kind: "host" },
+					key: target?.kind === "wsl" ? `wsl:${target.distro}` : "host",
+					registryPlatform,
+					providerPath: (_cwd: string, path: string) => path,
+					pathAccessible: () => true,
+					resolveExecutable: vi.fn(async () => null),
+					resolveExecutables: vi.fn(async () => new Map()),
+					start: vi.fn(),
+					adaptMcpServer: <T>(server: T) => server,
+				}) as never,
+		});
+		const config = HlidConfigSchema.parse({
+			vault: {
+				path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\vault",
+			},
+		});
+
+		await instance.catalog(config, false, false, { agentIds: ["opencode"] });
+		await instance.catalog(config);
+
+		expect(registryPlatform).toHaveBeenCalledOnce();
+	});
+
+	it("retries a failed WSL platform discovery after the short failure TTL", async () => {
+		let now = 1_000;
+		const registryPlatform = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("WSL is starting"))
+			.mockResolvedValue({ platform: "linux", architecture: "x64" });
+		const instance = new AcpRegistry(async () => registry, undefined, {
+			now: () => now,
+			platform: "win32",
+			platformFailureTtlMs: 10,
+			which: () => null,
+			adapterFactory: (target) =>
+				({
+					target: target ?? { kind: "host" },
+					key: target?.kind === "wsl" ? `wsl:${target.distro}` : "host",
+					registryPlatform,
+					providerPath: (_cwd: string, path: string) => path,
+					pathAccessible: () => true,
+					resolveExecutable: vi.fn(async () => null),
+					start: vi.fn(),
+					adaptMcpServer: <T>(server: T) => server,
+				}) as never,
+		});
+		const config = HlidConfigSchema.parse({
+			vault: {
+				path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\vault",
+			},
+		});
+		const first = await instance.catalog(config, false, false, {
+			agentIds: ["opencode"],
+		});
+		expect(
+			first[0]?.targets.find((target) => target.target.kind === "wsl"),
+		).toMatchObject({ platformTarget: "linux-unknown" });
+		now += 11;
+		const second = await instance.catalog(config, false, false, {
+			agentIds: ["other"],
+		});
+
+		expect(registryPlatform).toHaveBeenCalledTimes(2);
+		expect(
+			second[0]?.targets.find((target) => target.target.kind === "wsl"),
+		).toMatchObject({ platformTarget: "linux-x86_64" });
+	});
+
+	it("preserves last-good WSL platform evidence after a forced retry fails", async () => {
+		const registryPlatform = vi
+			.fn()
+			.mockResolvedValueOnce({ platform: "linux", architecture: "x64" })
+			.mockRejectedValueOnce(new Error("WSL timed out"));
+		const instance = new AcpRegistry(async () => registry, undefined, {
+			platform: "win32",
+			which: () => null,
+			managed: {
+				managedRecord: () => null,
+				resolveManagedInvocation: () => null,
+				targetState: () => ({}),
+				installSupport: () => ({ supported: true }),
+			},
+			adapterFactory: (target) =>
+				({
+					target: target ?? { kind: "host" },
+					key: target?.kind === "wsl" ? `wsl:${target.distro}` : "host",
+					registryPlatform,
+					providerPath: (_cwd: string, path: string) => path,
+					pathAccessible: () => true,
+					resolveExecutable: vi.fn(async () => null),
+					start: vi.fn(),
+					adaptMcpServer: <T>(server: T) => server,
+				}) as never,
+		});
+		const config = HlidConfigSchema.parse({
+			vault: {
+				path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\vault",
+			},
+		});
+
+		await instance.catalog(config, false, false, { agentIds: ["opencode"] });
+		const refreshed = await instance.catalog(config, true, false, {
+			agentIds: ["other"],
+		});
+		await vi.waitFor(() => expect(registryPlatform).toHaveBeenCalledTimes(2));
+
+		expect(
+			refreshed[0]?.targets.find((target) => target.target.kind === "wsl"),
+		).toMatchObject({ platformTarget: "linux-x86_64" });
+
+		const afterFailure = await instance.catalog(config, false, false, {
+			agentIds: ["opencode"],
+		});
+		expect(
+			afterFailure[0]?.targets.find((target) => target.target.kind === "wsl"),
+		).toMatchObject({
+			platformTarget: "linux-x86_64",
+			available: false,
+			canInstall: false,
+			canUpdate: false,
+			blockedReason: "WSL timed out",
+		});
+	});
+
+	it("returns last-good platform evidence while one forced refresh runs", async () => {
+		const background = deferred<{
+			platform: "linux";
+			architecture: "arm64";
+		}>();
+		const registryPlatform = vi
+			.fn()
+			.mockResolvedValueOnce({ platform: "linux", architecture: "x64" })
+			.mockImplementation(() => background.promise);
+		const instance = new AcpRegistry(async () => registry, undefined, {
+			platform: "win32",
+			which: () => null,
+			adapterFactory: (target) =>
+				({
+					target: target ?? { kind: "host" },
+					key: target?.kind === "wsl" ? `wsl:${target.distro}` : "host",
+					registryPlatform,
+					providerPath: (_cwd: string, path: string) => path,
+					pathAccessible: () => true,
+					resolveExecutable: vi.fn(async () => null),
+					start: vi.fn(),
+					adaptMcpServer: <T>(server: T) => server,
+				}) as never,
+		});
+		const config = HlidConfigSchema.parse({
+			vault: {
+				path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\vault",
+			},
+		});
+
+		await instance.catalog(config, false, false, { agentIds: ["opencode"] });
+		const firstRefresh = instance.catalog(config, true, false, {
+			agentIds: ["other"],
+		});
+		const secondRefresh = instance.catalog(config, true, false, {
+			agentIds: ["other"],
+		});
+		const [first, second] = await Promise.all([firstRefresh, secondRefresh]);
+
+		expect(registryPlatform).toHaveBeenCalledTimes(2);
+		expect(
+			first[0]?.targets.find((target) => target.target.kind === "wsl"),
+		).toMatchObject({ platformTarget: "linux-x86_64" });
+		expect(
+			second[0]?.targets.find((target) => target.target.kind === "wsl"),
+		).toMatchObject({ platformTarget: "linux-x86_64" });
+
+		background.resolve({ platform: "linux", architecture: "arm64" });
+		await vi.waitFor(async () => {
+			const next = await instance.catalog(config, false, false, {
+				agentIds: ["opencode"],
+			});
+			expect(
+				next[0]?.targets.find((target) => target.target.kind === "wsl"),
+			).toMatchObject({ platformTarget: "linux-aarch64" });
+		});
+	});
+
+	it("hydrates persisted WSL platform evidence once and verifies it in the background", async () => {
+		const target = { kind: "wsl" as const, distro: "Ubuntu-24.04" };
+		const targetKey = "wsl:ubuntu-24.04";
+		const targetId = acpExecutionTargetId(target);
+		const hydration = deferred<{
+			targetKey: string;
+			targetId: string;
+			platform: "linux";
+			architecture: "x64";
+			observedAt: number;
+		} | null>();
+		const verification = deferred<{
+			platform: "linux";
+			architecture: "arm64";
+		}>();
+		const load = vi.fn(() => hydration.promise);
+		const save = vi.fn(async () => {});
+		const onPlatformChange = vi.fn();
+		const registryPlatform = vi.fn(() => verification.promise);
+		const instance = new AcpRegistry(async () => registry, undefined, {
+			platform: "win32",
+			which: () => null,
+			platformEvidence: { load, save },
+			onPlatformChange,
+			adapterFactory: (adapterTarget) =>
+				({
+					target: adapterTarget ?? { kind: "host" },
+					key:
+						adapterTarget?.kind === "wsl"
+							? `wsl:${adapterTarget.distro}`
+							: "host",
+					registryPlatform,
+					providerPath: (_cwd: string, path: string) => path,
+					pathAccessible: () => true,
+					resolveExecutable: vi.fn(async () => null),
+					resolveExecutables: vi.fn(async () => new Map()),
+					start: vi.fn(),
+					adaptMcpServer: <T>(server: T) => server,
+				}) as never,
+		});
+		const config = HlidConfigSchema.parse({
+			vault: {
+				path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\vault",
+			},
+		});
+		await instance.snapshot(true);
+
+		const first = instance.catalog(config, false, false, {
+			agentIds: ["opencode"],
+		});
+		const second = instance.catalog(config, false, false, {
+			agentIds: ["other"],
+		});
+		await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
+		hydration.resolve({
+			targetKey,
+			targetId,
+			platform: "linux",
+			architecture: "x64",
+			observedAt: 1,
+		});
+		const catalogs = await Promise.all([first, second]);
+
+		expect(registryPlatform).toHaveBeenCalledOnce();
+		expect(
+			catalogs.map((catalog) =>
+				catalog.map((item) => ({
+					id: item.id,
+					platformTargets: item.targets.map((status) => status.platformTarget),
+				})),
+			),
+		).toEqual([
+			[{ id: "opencode", platformTargets: ["windows-x86_64", "linux-x86_64"] }],
+			[{ id: "other", platformTargets: ["windows-x86_64", "linux-x86_64"] }],
+		]);
+		expect(save).not.toHaveBeenCalled();
+		expect(
+			catalogs[0]?.[0]?.targets.find((status) => status.target.kind === "wsl"),
+		).toMatchObject({
+			available: false,
+			canEnable: false,
+			canInstall: false,
+			canUpdate: false,
+			blockedReason: "Verifying WSL · Ubuntu-24.04 availability",
+		});
+		expect(onPlatformChange).not.toHaveBeenCalled();
+
+		verification.resolve({ platform: "linux", architecture: "arm64" });
+		await vi.waitFor(() =>
+			expect(save).toHaveBeenCalledWith({
+				targetKey,
+				targetId,
+				platform: "linux",
+				architecture: "arm64",
+				observedAt: expect.any(Number),
+			}),
+		);
+		expect(onPlatformChange).toHaveBeenCalledOnce();
+	});
+
+	it("surfaces a failed background WSL verification after persisted reuse", async () => {
+		const target = { kind: "wsl" as const, distro: "Ubuntu-24.04" };
+		const targetId = acpExecutionTargetId(target);
+		const registryPlatform = vi.fn(async () => {
+			throw new Error("WSL timed out");
+		});
+		const onPlatformChange = vi.fn();
+		const instance = new AcpRegistry(async () => registry, undefined, {
+			platform: "win32",
+			which: () => null,
+			platformEvidence: {
+				load: vi.fn(async () => ({
+					targetKey: "wsl:ubuntu-24.04",
+					targetId,
+					platform: "linux" as const,
+					architecture: "x64" as const,
+					observedAt: 1,
+				})),
+				save: vi.fn(async () => {
+					throw new Error("storage unavailable");
+				}),
+			},
+			onPlatformChange,
+			adapterFactory: (adapterTarget) =>
+				({
+					target: adapterTarget ?? { kind: "host" },
+					key:
+						adapterTarget?.kind === "wsl"
+							? `wsl:${adapterTarget.distro}`
+							: "host",
+					registryPlatform,
+					providerPath: (_cwd: string, path: string) => path,
+					pathAccessible: () => true,
+					resolveExecutable: vi.fn(async () => null),
+					resolveExecutables: vi.fn(async () => new Map()),
+					start: vi.fn(),
+					adaptMcpServer: <T>(server: T) => server,
+				}) as never,
+		});
+		const config = HlidConfigSchema.parse({
+			vault: {
+				path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\vault",
+			},
+		});
+		await instance.snapshot(true);
+
+		const first = await instance.catalog(config, false, false, {
+			agentIds: ["opencode"],
+		});
+		expect(
+			first[0]?.targets.find((status) => status.target.kind === "wsl"),
+		).toMatchObject({
+			platformTarget: "linux-x86_64",
+			available: false,
+			canEnable: false,
+			blockedReason: "Verifying WSL · Ubuntu-24.04 availability",
+		});
+		await vi.waitFor(() => expect(registryPlatform).toHaveBeenCalledOnce());
+		await vi.waitFor(async () => {
+			const afterFailure = await instance.catalog(config, false, false, {
+				agentIds: ["other"],
+			});
+			expect(
+				afterFailure[0]?.targets.find((status) => status.target.kind === "wsl"),
+			).toMatchObject({
+				platformTarget: "linux-x86_64",
+				available: false,
+				blockedReason: "WSL timed out",
+			});
+		});
+		expect(onPlatformChange).toHaveBeenCalledOnce();
+	});
+
+	it("does not batch WSL probes across different forwarded environments", async () => {
+		const resolveExecutables = vi.fn(
+			async (commands: readonly string[], _options?: unknown) =>
+				new Map(commands.map((command) => [command, `/usr/bin/${command}`])),
+		);
+		const instance = new AcpRegistry(async () => registry, undefined, {
+			platform: "win32",
+			which: () => null,
+			adapterFactory: (target) =>
+				({
+					target: target ?? { kind: "host" },
+					key: target?.kind === "wsl" ? `wsl:${target.distro}` : "host",
+					registryPlatform: async () => ({
+						platform: target?.kind === "wsl" ? "linux" : "win32",
+						architecture: "x64",
+					}),
+					providerPath: (_cwd: string, path: string) => path,
+					pathAccessible: () => true,
+					resolveExecutable: vi.fn(async () => null),
+					resolveExecutables,
+					start: vi.fn(),
+					adaptMcpServer: <T>(server: T) => server,
+				}) as never,
+		});
+		const target = { kind: "wsl" as const, distro: "Ubuntu-24.04" };
+
+		await instance.catalog(
+			HlidConfigSchema.parse({
+				vault: {
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\vault",
+				},
+				acp_agents: [
+					{ id: "other", target, env: { AGENT_TOKEN: "one" } },
+					{ id: "opencode", target, env: { AGENT_TOKEN: "two" } },
+				],
+			}),
+			true,
+		);
+
+		expect(resolveExecutables).toHaveBeenCalledTimes(2);
+		expect(
+			resolveExecutables.mock.calls.map(
+				([, options]) =>
+					(options as { env: Record<string, string> }).env.AGENT_TOKEN,
+			),
+		).toEqual(["one", "two"]);
+		expect(
+			resolveExecutables.mock.calls.map(
+				([, options]) =>
+					(options as { forwardedEnvNames: string[] }).forwardedEnvNames,
+			),
+		).toEqual([["AGENT_TOKEN"], ["AGENT_TOKEN"]]);
 	});
 
 	it("refreshes local executable evidence without refreshing registry metadata", async () => {
@@ -379,6 +1146,133 @@ describe("AcpRegistry", () => {
 			blockedReason:
 				"Remove this Hlid-managed installation before switching to a custom executable",
 		});
+	});
+
+	it("trusts a validated managed Windows receipt without a fallible PATH probe", async () => {
+		const target = { kind: "host" as const };
+		const managedRecord = {
+			target,
+			command: "C:\\Hlid\\integrations\\acp\\opencode.exe",
+			args: ["acp"],
+			env: {},
+			installedVersion: "1.0.0",
+			usable: true,
+		};
+		const which = vi.fn(() => new Promise<null>(() => {}));
+		const instance = new AcpRegistry(async () => registry, undefined, {
+			platform: "win32",
+			architecture: "x64",
+			availabilityProbeTimeoutMs: 5,
+			which,
+			managed: {
+				managedRecord: (agentId) =>
+					agentId === "opencode" ? managedRecord : null,
+				resolveManagedInvocation: (agentId) =>
+					agentId === "opencode" ? managedRecord : null,
+				targetState: () => ({}),
+				installSupport: () => ({ supported: true }),
+			},
+		});
+
+		const catalog = await instance.catalog(
+			HlidConfigSchema.parse({ acp_agents: [{ id: "opencode" }] }),
+			true,
+		);
+
+		expect(catalog[0]).toMatchObject({
+			id: "opencode",
+			available: true,
+			resolvedExecutable: managedRecord.command,
+		});
+		expect(
+			catalog[0]?.targets.find((status) => status.target.kind === "host"),
+		).toMatchObject({
+			provenance: "managed",
+			available: true,
+			resolvedExecutable: managedRecord.command,
+		});
+		expect(which).toHaveBeenCalledOnce();
+		expect(which).toHaveBeenCalledWith("other-acp", expect.any(Object));
+	});
+
+	it("trusts a validated managed WSL receipt after exact-target liveness succeeds", async () => {
+		const target = { kind: "wsl" as const, distro: "Ubuntu-24.04" };
+		const managedRecord = {
+			target,
+			command: "/mnt/c/Hlid/integrations/acp/opencode",
+			args: ["acp"],
+			env: {},
+			installedVersion: "1.0.0",
+			usable: true,
+		};
+		const resolveExecutable = vi.fn(async () => {
+			throw new Error("managed WSL receipts must not use a second probe");
+		});
+		const resolveExecutables = vi.fn(
+			async (_commands: readonly string[]) => new Map<string, string | null>(),
+		);
+		const instance = new AcpRegistry(async () => registry, undefined, {
+			platform: "win32",
+			architecture: "x64",
+			which: () => null,
+			adapterFactory: (adapterTarget) =>
+				({
+					target: adapterTarget ?? { kind: "host" },
+					key:
+						adapterTarget?.kind === "wsl"
+							? `wsl:${adapterTarget.distro}`
+							: "host",
+					registryPlatform: async () => ({
+						platform: "linux",
+						architecture: "x64",
+					}),
+					providerPath: (_cwd: string, path: string) => path,
+					pathAccessible: () => true,
+					resolveExecutable,
+					resolveExecutables,
+					start: vi.fn(),
+					adaptMcpServer: <T>(server: T) => server,
+				}) as never,
+			managed: {
+				managedRecord: (agentId, managedTarget) =>
+					agentId === "opencode" && managedTarget.kind === "wsl"
+						? managedRecord
+						: null,
+				resolveManagedInvocation: (agentId, managedTarget) =>
+					agentId === "opencode" && managedTarget.kind === "wsl"
+						? managedRecord
+						: null,
+				targetState: () => ({}),
+				installSupport: () => ({ supported: true }),
+			},
+		});
+
+		const [item] = await instance.catalog(
+			HlidConfigSchema.parse({
+				vault: {
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\vault",
+				},
+				acp_agents: [{ id: "opencode", target }],
+			}),
+			true,
+		);
+
+		expect(item).toMatchObject({
+			available: true,
+			resolvedExecutable: managedRecord.command,
+			unavailableReason: undefined,
+		});
+		expect(item?.targets.find((status) => status.selected)).toMatchObject({
+			provenance: "managed",
+			available: true,
+			canEnable: true,
+			resolvedExecutable: managedRecord.command,
+		});
+		expect(resolveExecutable).not.toHaveBeenCalled();
+		expect(resolveExecutables).toHaveBeenCalledOnce();
+		expect(resolveExecutables.mock.calls[0]?.[0]).not.toContain(
+			managedRecord.command,
+		);
 	});
 
 	it("binds managed confirmation to the exact target working directory", async () => {

@@ -13,6 +13,7 @@ const deliverRoutineResult = vi.hoisted(() => vi.fn());
 vi.mock("./routineDelivery", () => ({ deliverRoutineResult }));
 
 import type { RoutineRunRow } from "../db";
+import type { ProviderInfo } from "../lib/providerTypes";
 import type { RoutinePermissionContext } from "../lib/routinePermissions";
 import type { RoutineSummary } from "../lib/routines";
 import type { HlidDelegationManager } from "./hlidDelegation";
@@ -132,7 +133,13 @@ function child(
 describe("Routine detached delegation ownership", () => {
 	let routineContext: RoutinePermissionContext | undefined;
 	let inputOrigin: string | undefined;
+	let queryAgentCwd: string | undefined;
 	let close: ReturnType<typeof vi.fn>;
+	let check: ReturnType<typeof vi.fn>;
+	let providerRuntimeCwd: ReturnType<typeof vi.fn>;
+	let providerCatalog: ReturnType<
+		typeof vi.fn<(cwd: string) => Promise<ProviderInfo[]>>
+	>;
 	let waitForRoutineRun: ReturnType<typeof vi.fn>;
 	let cancelRoutineRun: ReturnType<typeof vi.fn>;
 	let pool: SessionPool;
@@ -141,7 +148,31 @@ describe("Routine detached delegation ownership", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		inputOrigin = undefined;
+		queryAgentCwd = undefined;
 		close = vi.fn();
+		check = vi.fn().mockResolvedValue({ available: true });
+		providerRuntimeCwd = vi.fn((cwd: string) => cwd);
+		providerCatalog = vi.fn(
+			async (_cwd: string) =>
+				[
+					{
+						id: "codex",
+						label: "Codex",
+						available: true,
+						models: [
+							{
+								value: routine.model,
+								label: routine.model,
+								efforts: [{ value: routine.effort, label: "High" }],
+							},
+						],
+						permissionModes: [
+							{ value: "default", label: "Default" },
+							{ value: "bypassPermissions", label: "Bypass" },
+						],
+					},
+				] satisfies ProviderInfo[],
+		);
 		waitForRoutineRun = vi.fn().mockResolvedValue([child("completed")]);
 		cancelRoutineRun = vi.fn().mockResolvedValue(undefined);
 		const manager = {
@@ -152,17 +183,20 @@ describe("Routine detached delegation ownership", () => {
 					const runOptions = options as {
 						routineContext?: RoutinePermissionContext;
 						inputOrigin?: string;
+						agentCwd?: string;
 					};
 					routineContext = runOptions?.routineContext;
 					inputOrigin = runOptions?.inputOrigin;
+					queryAgentCwd = runOptions?.agentCwd;
 				},
 			),
 			getStatus: vi.fn().mockReturnValue({ state: "idle" }),
 		};
 		pool = {
+			providerRuntimeCwd,
 			getProvider: vi.fn().mockReturnValue({
 				providerId: "codex",
-				check: vi.fn().mockResolvedValue({ available: true }),
+				check,
 			}),
 			create: vi.fn().mockReturnValue({
 				sessionId: "routine-session",
@@ -190,11 +224,15 @@ describe("Routine detached delegation ownership", () => {
 		const result = await runRoutineSession({
 			pool,
 			delegations,
+			providerCatalog,
 			routine,
 			run,
 		});
 
 		expect(result.status).toBe("succeeded");
+		expect(providerRuntimeCwd).toHaveBeenCalledWith(routine.agentCwd);
+		expect(check).toHaveBeenCalledWith({ cwd: routine.agentCwd });
+		expect(providerCatalog).toHaveBeenCalledWith(routine.agentCwd);
 		expect(waitForRoutineRun).toHaveBeenCalledWith(run.id);
 		expect(inputOrigin).toBe("scheduled-task");
 		expect(routineContext).toMatchObject({
@@ -203,6 +241,89 @@ describe("Routine detached delegation ownership", () => {
 			profileId: run.profile_id,
 			authorizationFingerprint: run.authorization_fingerprint,
 		});
+	});
+
+	it("checks a context-mode WSL Routine against its Windows vault runtime", async () => {
+		const agentCwd =
+			"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\context-agent";
+		const vaultCwd = "C:\\Users\\kyle\\Fornbok";
+		providerRuntimeCwd.mockReturnValue(vaultCwd);
+
+		const result = await runRoutineSession({
+			pool,
+			delegations,
+			providerCatalog,
+			routine: { ...routine, agentCwd },
+			run,
+		});
+
+		expect(result.status).toBe("succeeded");
+		expect(providerRuntimeCwd).toHaveBeenCalledWith(agentCwd);
+		expect(check).toHaveBeenCalledWith({ cwd: vaultCwd });
+		expect(providerCatalog).toHaveBeenCalledWith(vaultCwd);
+		expect(pool.create).toHaveBeenCalledWith(agentCwd, routine.name, true);
+		expect(queryAgentCwd).toBe(agentCwd);
+	});
+
+	it("rejects a Routine effort absent from the exact ACP model row", async () => {
+		providerCatalog.mockResolvedValue([
+			{
+				id: "codex",
+				label: "OpenCode",
+				available: true,
+				effortScope: "model",
+				models: [{ value: routine.model, label: routine.model }],
+				effortLevels: [{ value: routine.effort, label: "High" }],
+				permissionModes: [{ value: "default", label: "Default" }],
+			},
+		]);
+
+		const result = await runRoutineSession({
+			pool,
+			delegations,
+			providerCatalog,
+			routine,
+			run,
+		});
+
+		expect(result).toMatchObject({
+			status: "provider_unavailable",
+			sessionId: null,
+			error: expect.stringContaining(
+				`Effort ${routine.effort} is not available for the selected OpenCode model`,
+			),
+		});
+		expect(pool.create).not.toHaveBeenCalled();
+	});
+
+	it("rejects an explicit Routine model when the exact ACP catalog is empty", async () => {
+		providerCatalog.mockResolvedValue([
+			{
+				id: "codex",
+				label: "OpenCode",
+				available: true,
+				effortScope: "model",
+				models: [],
+				permissionModes: [{ value: "default", label: "Default" }],
+			},
+		]);
+
+		const result = await runRoutineSession({
+			pool,
+			delegations,
+			providerCatalog,
+			routine: { ...routine, effort: "" },
+			run,
+		});
+
+		expect(result).toMatchObject({
+			status: "provider_unavailable",
+			sessionId: null,
+			error: expect.stringContaining(
+				`Model ${routine.model} is not in OpenCode's current model catalog`,
+			),
+		});
+		expect(pool.create).not.toHaveBeenCalled();
 	});
 
 	it("handles a late child approval boundary as Routine action required", async () => {
@@ -218,6 +339,7 @@ describe("Routine detached delegation ownership", () => {
 		const result = await runRoutineSession({
 			pool,
 			delegations,
+			providerCatalog,
 			routine,
 			run,
 		});

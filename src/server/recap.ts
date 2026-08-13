@@ -11,6 +11,8 @@ export type GenerateTurnRecapOptions = {
 	assistantText: string;
 	emit: (msg: ServerMessage) => void;
 	vaultPath: string;
+	/** Exact execution cwd used by the provider that answered the turn. */
+	runtimeCwd?: string;
 	executable?: string;
 	sdkSummary?: string | null;
 	provider?: AgentProvider;
@@ -73,6 +75,7 @@ export async function generateTurnRecap({
 	assistantText,
 	emit,
 	vaultPath,
+	runtimeCwd,
 	executable,
 	sdkSummary = null,
 	provider,
@@ -126,7 +129,7 @@ export async function generateTurnRecap({
 	const timeout = setTimeout(() => ac.abort(), 30_000);
 	try {
 		const session = provider.query({
-			cwd: vaultPath,
+			cwd: runtimeCwd ?? vaultPath,
 			model: recapModel,
 			effort: "low",
 			maxTurns: 1,

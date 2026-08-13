@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { constants, realpathSync } from "node:fs";
+import { constants } from "node:fs";
 import {
 	copyFile,
 	lstat,
@@ -19,12 +19,8 @@ import {
 	configuredObsidianCapture,
 	obsidianCaptureTimestamp,
 } from "../lib/obsidianCapture";
-import {
-	expandTilde,
-	pathStartsWith,
-	samePath,
-	toHostRuntimePath,
-} from "../lib/paths";
+import { expandTilde, pathStartsWith, toHostRuntimePath } from "../lib/paths";
+import { resolveAgentMetadataPath } from "./agentPaths";
 import { optimizeManagedImage } from "./imageOptimization";
 import {
 	artifactDirectory,
@@ -41,27 +37,6 @@ import {
 	payloadTooLarge,
 	readRequestBodyLimited,
 } from "./requestLimits";
-
-function resolveRegisteredAgent(
-	config: HlidConfig,
-	requested: string,
-): string | null {
-	let real: string;
-	try {
-		real = realpathSync(resolve(expandTilde(requested)));
-	} catch {
-		return null;
-	}
-	for (const a of config.agents ?? []) {
-		try {
-			const candidate = realpathSync(resolve(expandTilde(a.path)));
-			if (samePath(candidate, real)) return real;
-		} catch {
-			// skip missing
-		}
-	}
-	return null;
-}
 
 const FILENAME_SAFE = /[^a-zA-Z0-9._-]+/g;
 
@@ -627,7 +602,7 @@ export async function handleUpload(
 			? agentCwdField
 			: null;
 	const agentRoot = agentCwdRaw
-		? resolveRegisteredAgent(config, agentCwdRaw)
+		? (resolveAgentMetadataPath(config, agentCwdRaw) ?? null)
 		: null;
 	if (agentCwdRaw && !agentRoot) {
 		return new Response("Agent path is not registered", { status: 403 });

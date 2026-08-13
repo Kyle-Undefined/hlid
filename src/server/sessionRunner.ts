@@ -2,13 +2,17 @@ import { randomUUID } from "node:crypto";
 import type { RoutineRunRow } from "../db";
 import * as db from "../db";
 import { routineProviderCommandText } from "../lib/commands";
+import type { ProviderInfo } from "../lib/providerTypes";
 import type {
 	RoutineGrant,
 	RoutinePermissionContext,
 } from "../lib/routinePermissions";
 import type { RoutineSummary } from "../lib/routines";
 import { bumpDataRevision } from "./dataRevision";
-import type { HlidDelegationManager } from "./hlidDelegation";
+import {
+	type HlidDelegationManager,
+	validateProviderSelection,
+} from "./hlidDelegation";
 import type { ChatAttachment, ServerMessage } from "./protocol";
 import { deliverRoutineResult } from "./routineDelivery";
 import type { SessionPool } from "./sessionPool";
@@ -60,11 +64,13 @@ async function routineAttachments(
 export async function runRoutineSession(options: {
 	pool: SessionPool;
 	delegations: HlidDelegationManager;
+	providerCatalog: (cwd: string) => Promise<ProviderInfo[]>;
 	routine: RoutineSummary;
 	run: RoutineRunRow;
 	onStatusChange?: () => void;
 }): Promise<RoutineSessionResult> {
-	const { pool, delegations, routine, run, onStatusChange } = options;
+	const { pool, delegations, providerCatalog, routine, run, onStatusChange } =
+		options;
 	const provider = pool.getProvider(routine.providerId);
 	if (!provider) {
 		return {
@@ -73,10 +79,19 @@ export async function runRoutineSession(options: {
 			error: `Provider ${routine.providerId} is not registered`,
 		};
 	}
+	const runtimeCwd = pool.providerRuntimeCwd(routine.agentCwd);
+	if (!runtimeCwd) {
+		return {
+			status: "provider_unavailable",
+			sessionId: null,
+			error:
+				"The Routine workspace no longer has a configured provider runtime.",
+		};
+	}
 	let availability: { available: boolean; reason?: string };
 	try {
 		availability = provider.check
-			? await provider.check()
+			? await provider.check({ cwd: runtimeCwd })
 			: { available: true };
 	} catch (error) {
 		return {
@@ -93,6 +108,34 @@ export async function runRoutineSession(options: {
 			sessionId: null,
 			error:
 				availability.reason ?? `Provider ${routine.providerId} is unavailable`,
+		};
+	}
+	const permissionMode =
+		routine.permissionMode === "full_access" ? "bypassPermissions" : "default";
+	try {
+		const providerInfo = (await providerCatalog(runtimeCwd)).find(
+			(candidate) => candidate.id === routine.providerId,
+		);
+		if (!providerInfo) {
+			throw new Error(
+				`Provider ${routine.providerId} is missing from the current provider catalog.`,
+			);
+		}
+		validateProviderSelection(
+			providerInfo,
+			{
+				model: routine.model || undefined,
+				effort: routine.effort || undefined,
+			},
+			permissionMode,
+		);
+	} catch (error) {
+		return {
+			status: "provider_unavailable",
+			sessionId: null,
+			error: `${routine.providerId} catalog validation failed: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
 		};
 	}
 	const attachments = await routineAttachments(routine);
@@ -153,10 +196,7 @@ export async function runRoutineSession(options: {
 		await entry.manager.setProvider(routine.providerId, {
 			model: routine.model || undefined,
 			effort: routine.effort || undefined,
-			permissionMode:
-				routine.permissionMode === "full_access"
-					? "bypassPermissions"
-					: "default",
+			permissionMode,
 		});
 		if (entry.manager.getProviderId() !== routine.providerId) {
 			throw new Error(

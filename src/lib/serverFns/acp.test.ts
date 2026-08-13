@@ -91,6 +91,22 @@ describe("ACP registry server function", () => {
 		);
 	});
 
+	it("forwards an exact workspace to ACP model discovery", async () => {
+		const response = Response.json({ models: [] });
+		vi.mocked(dbFetch).mockResolvedValue(response);
+		vi.mocked(requireDbOk).mockResolvedValue(response);
+
+		await discoverAcpModels(
+			"opencode",
+			"C:\\Users\\kyle\\Documents\\Obsidian\\Fornbok",
+		);
+
+		expect(dbFetch).toHaveBeenCalledWith(
+			"/acp/models?id=opencode&cwd=C%3A%5CUsers%5Ckyle%5CDocuments%5CObsidian%5CFornbok",
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
+		);
+	});
+
 	it("lists one bounded provider-native session page", async () => {
 		const response = Response.json({
 			sessions: [

@@ -92,7 +92,7 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		method: "POST",
 		path: "/acp/authenticate",
 		server: "api",
-		desc: 'Inspect or authenticate an enabled ACP agent. Body: {"id": string, "methodId"?: string}.',
+		desc: 'Inspect or authenticate an enabled ACP agent in one exact configured workspace. Body: {"id": string, "methodId"?: string, "cwd"?: string}. When cwd is omitted, Forge uses the configured inspection target.',
 	},
 	{
 		method: "POST",
@@ -102,9 +102,9 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 	},
 	{
 		method: "GET",
-		path: "/acp/models?id=opencode",
+		path: "/acp/models?id=opencode&cwd=",
 		server: "api",
-		desc: "Inspect an enabled ACP agent's live model catalog without Hlid's OpenCode model-visibility overlay. Used on demand by Forge so filtered-out models remain editable.",
+		desc: "Inspect an enabled ACP agent's live model catalog in an optional exact configured workspace, without Hlid's OpenCode model-visibility overlay. Used on demand by Forge so filtered-out models remain editable.",
 	},
 	{
 		method: "POST",
@@ -114,15 +114,15 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 	},
 	{
 		method: "GET",
-		path: "/acp/sessions?id=opencode&cursor=",
+		path: "/acp/sessions?id=opencode&cwd=&cursor=",
 		server: "api",
-		desc: "List one bounded page of provider-native session metadata for an enabled ACP agent and the exact configured vault workspace. The optional cursor is opaque. This read does not load, resume, fork, import, or return conversation history.",
+		desc: "List one bounded page of provider-native session metadata for an enabled ACP agent in an optional exact configured workspace. The optional cursor is opaque. This read does not load, resume, fork, import, or return conversation history.",
 	},
 	{
 		method: "POST",
 		path: "/acp/sessions/import",
 		server: "api",
-		desc: 'Explicitly create or reopen a Hlid entry with provider-native continuity after revalidating the session against the agent\'s current workspace-scoped catalog. Body: {"id": string, "providerSessionId": string}. Earlier transcript remains provider-owned and is not copied; this is never a fork.',
+		desc: 'Explicitly create or reopen a Hlid entry with provider-native continuity after revalidating the session against the agent\'s current workspace-scoped catalog. Body: {"id": string, "providerSessionId": string, "cwd"?: string}. Earlier transcript remains provider-owned and is not copied; this is never a fork.',
 	},
 	{
 		method: "GET",

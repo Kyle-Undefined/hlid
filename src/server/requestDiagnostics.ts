@@ -6,6 +6,8 @@ const MAX_DIAGNOSTIC_KEYS = 200;
 const MAX_ERROR_SUMMARY_CHARS = 400;
 const REQUEST_ID_HEADER = "x-hlid-request-id";
 const PROJECT_PREVIEW_LIFECYCLE_SLOW_MS = 5_000;
+const ACP_TEMPORARY_PROVIDER_OPERATION_SLOW_MS = 5_000;
+const ACP_PROVIDER_CATALOG_REQUEST_SLOW_MS = 12_000;
 
 type DiagnosticLevel = "warn" | "error";
 type DiagnosticLogger = (level: DiagnosticLevel, message: string) => void;
@@ -25,6 +27,28 @@ export function projectPreviewSlowRequestThreshold(
 		pathname,
 	)
 		? PROJECT_PREVIEW_LIFECYCLE_SLOW_MS
+		: undefined;
+}
+
+/** ACP discovery/import operations start a temporary provider process. */
+export function acpProviderOperationSlowRequestThreshold(
+	pathname: string,
+	requestName?: string,
+): number | undefined {
+	// Provider catalog refreshes already emit phase-specific diagnostics for
+	// availability, model, and capability discovery. Give the aggregate route its
+	// full server-side discovery budget so one slow phase is not repeated as three
+	// apparent hangs at the provider, internal API, and server-function layers.
+	if (pathname === "/providers" || requestName === "getProvidersFn") {
+		return ACP_PROVIDER_CATALOG_REQUEST_SLOW_MS;
+	}
+	return pathname === "/acp/models" ||
+		pathname === "/acp/sessions" ||
+		pathname === "/acp/sessions/import" ||
+		requestName === "discoverAcpModelsFn" ||
+		requestName === "listAcpProviderSessionsFn" ||
+		requestName === "importAcpProviderSessionFn"
+		? ACP_TEMPORARY_PROVIDER_OPERATION_SLOW_MS
 		: undefined;
 }
 
@@ -53,6 +77,25 @@ function stripControlCharacters(value: string): string {
 	return result;
 }
 
+function redactDiagnosticText(value: string): string {
+	return stripControlCharacters(value)
+		.replace(/https?:\/\/\S+/gi, "<url>")
+		.replace(/(?:[A-Za-z]:\\|\\\\)[^\s"']+/g, "<path>")
+		.replace(/\/(?:home|Users|mnt\/c\/Users|tmp)\/[^\s"']+/g, "<path>")
+		.replace(
+			/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
+			"<id>",
+		)
+		.replace(/\s+/g, " ")
+		.trim()
+		.slice(0, MAX_ERROR_SUMMARY_CHARS);
+}
+
+/** Remove paths, URLs, IDs, control characters, and excessive detail. */
+export function safeDiagnosticText(value: string): string {
+	return redactDiagnosticText(value);
+}
+
 /** Remove paths, URLs, IDs, control characters, and excessive detail. */
 export function safeErrorSummary(error: unknown): string {
 	const record =
@@ -73,17 +116,7 @@ export function safeErrorSummary(error: unknown): string {
 				: typeof error === "string"
 					? error
 					: "request handler failed";
-	return stripControlCharacters(`${name}: ${message}`)
-		.replace(/https?:\/\/\S+/gi, "<url>")
-		.replace(/(?:[A-Za-z]:\\|\\\\)[^\s"']+/g, "<path>")
-		.replace(/\/(?:home|Users|mnt\/c\/Users|tmp)\/[^\s"']+/g, "<path>")
-		.replace(
-			/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
-			"<id>",
-		)
-		.replace(/\s+/g, " ")
-		.trim()
-		.slice(0, MAX_ERROR_SUMMARY_CHARS);
+	return redactDiagnosticText(`${name}: ${message}`);
 }
 
 function safeRequestId(request: Request): string | null {

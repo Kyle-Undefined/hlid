@@ -151,6 +151,7 @@ describe("Hlid delegation manager", () => {
 	let pool: {
 		findByDbSessionId: ReturnType<typeof vi.fn>;
 		getProvider: ReturnType<typeof vi.fn>;
+		providerRuntimeCwd: ReturnType<typeof vi.fn>;
 		resolveDelegationWorkspace: ReturnType<typeof vi.fn>;
 		create: ReturnType<typeof vi.fn>;
 		claimDbSessionId: ReturnType<typeof vi.fn>;
@@ -169,9 +170,11 @@ describe("Hlid delegation manager", () => {
 		setPermissionMode: ReturnType<typeof vi.fn>;
 		steerActiveTurn: ReturnType<typeof vi.fn>;
 	};
+	let childEntryCwd: string;
 	let broadcast: ReturnType<typeof vi.fn>;
 	let childSubscriberCount: number;
 	let statusChangedCalls: number;
+	let codexCheck: ReturnType<typeof vi.fn>;
 	let catalog: ProviderInfo[];
 
 	beforeEach(() => {
@@ -205,7 +208,9 @@ describe("Hlid delegation manager", () => {
 		};
 		broadcast = vi.fn();
 		childSubscriberCount = 0;
+		childEntryCwd = "/work/project";
 		statusChangedCalls = 0;
+		codexCheck = vi.fn().mockResolvedValue({ available: true });
 		childManager = {
 			validatePermissionMode: vi.fn().mockResolvedValue(undefined),
 			setProvider: vi.fn().mockResolvedValue(undefined),
@@ -249,7 +254,9 @@ describe("Hlid delegation manager", () => {
 		};
 		const child = {
 			sessionId: "child-1",
-			agentCwd: "/work/project",
+			get agentCwd() {
+				return childEntryCwd;
+			},
 			manager: childManager,
 			runState: {
 				broadcast,
@@ -260,7 +267,7 @@ describe("Hlid delegation manager", () => {
 			codex: {
 				providerId: "codex",
 				label: "Codex",
-				check: vi.fn().mockResolvedValue({ available: true }),
+				check: codexCheck,
 			},
 			claude: {
 				providerId: "claude",
@@ -278,8 +285,12 @@ describe("Hlid delegation manager", () => {
 				id === "parent-1" ? parent : id === "child-1" ? child : undefined,
 			),
 			getProvider: vi.fn((id: keyof typeof providers) => providers[id]),
+			providerRuntimeCwd: vi.fn((cwd: string) => cwd),
 			resolveDelegationWorkspace: vi.fn((cwd: string) => cwd),
-			create: vi.fn().mockReturnValue(child),
+			create: vi.fn((cwd: string) => {
+				childEntryCwd = cwd;
+				return child;
+			}),
 			claimDbSessionId: vi.fn().mockReturnValue(child),
 			close: vi.fn(),
 		};
@@ -497,9 +508,10 @@ describe("Hlid delegation manager", () => {
 	});
 
 	it("creates a normal child, inherits same-provider settings, and retains a bounded result", async () => {
+		const providerCatalog = vi.fn(async (_cwd: string) => catalog);
 		const manager = new HlidDelegationManager(
 			pool as unknown as SessionPool,
-			async () => catalog,
+			providerCatalog,
 			() => {
 				statusChangedCalls++;
 			},
@@ -571,6 +583,139 @@ describe("Hlid delegation manager", () => {
 			db.createSession.mock.invocationCallOrder[0] ?? 0,
 		);
 		expect(statusChangedCalls).toBeGreaterThan(0);
+		expect(providerCatalog).toHaveBeenCalledWith("/work/project");
+	});
+
+	it("validates model and effort against the requested child workspace catalog", async () => {
+		const childWorkspace = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\child";
+		const vaultRuntime = "C:\\Users\\kyle\\Fornbok";
+		pool.providerRuntimeCwd.mockImplementation((cwd: string) =>
+			cwd === childWorkspace ? vaultRuntime : cwd,
+		);
+		const childCatalog = catalog.map((provider) =>
+			provider.id === "codex"
+				? {
+						...provider,
+						effortScope: "model" as const,
+						models: [
+							{
+								value: "wsl-only-model",
+								label: "WSL only",
+								efforts: [{ value: "medium", label: "Medium" }],
+							},
+						],
+					}
+				: provider,
+		) as ProviderInfo[];
+		const providerCatalog = vi.fn(async (cwd: string) =>
+			cwd === vaultRuntime ? childCatalog : [],
+		);
+		const manager = new HlidDelegationManager(
+			pool as unknown as SessionPool,
+			providerCatalog,
+			() => {
+				statusChangedCalls++;
+			},
+		);
+
+		const created = await manager.delegate("parent-1", {
+			task: "Use the child runtime model",
+			provider: "codex",
+			cwd: childWorkspace,
+			model: "wsl-only-model",
+			effort: "medium",
+		});
+		await manager.wait("parent-1", created.id, 1);
+
+		expect(pool.providerRuntimeCwd).toHaveBeenCalledWith(childWorkspace);
+		expect(codexCheck).toHaveBeenCalledWith({ cwd: vaultRuntime });
+		expect(providerCatalog).toHaveBeenCalledWith(vaultRuntime);
+		expect(pool.create).toHaveBeenCalledWith(
+			childWorkspace,
+			"Codex delegate",
+			true,
+		);
+		expect(childManager.runQuery).toHaveBeenCalledWith(
+			"Use the child runtime model",
+			expect.any(Function),
+			expect.objectContaining({ agentCwd: childWorkspace }),
+		);
+		expect(childManager.setProvider).toHaveBeenCalledWith("codex", {
+			model: "wsl-only-model",
+			effort: "medium",
+			serviceTier: undefined,
+			permissionMode: "acceptEdits",
+		});
+	});
+
+	it("does not use provider-wide effort as a fallback for an ACP default model", async () => {
+		parentProviderId = "claude";
+		const acpCatalog = catalog.map((provider) =>
+			provider.id === "codex"
+				? {
+						...provider,
+						label: "OpenCode",
+						effortScope: "model" as const,
+						effortLevels: [{ value: "medium", label: "Medium" }],
+						models: [
+							{
+								value: "default-model",
+								label: "Default model",
+								isDefault: true,
+							},
+						],
+					}
+				: provider,
+		) as ProviderInfo[];
+		const manager = new HlidDelegationManager(
+			pool as unknown as SessionPool,
+			async () => acpCatalog,
+			() => {
+				statusChangedCalls++;
+			},
+		);
+
+		await expect(
+			manager.delegate("parent-1", {
+				task: "Reject a fabricated default effort",
+				provider: "codex",
+				effort: "medium",
+			}),
+		).rejects.toThrow(
+			"Effort medium is not available for the selected OpenCode model",
+		);
+		expect(pool.create).not.toHaveBeenCalled();
+	});
+
+	it("rejects an explicit ACP model when the exact catalog is empty", async () => {
+		const emptyAcpCatalog = catalog.map((provider) =>
+			provider.id === "codex"
+				? {
+						...provider,
+						label: "OpenCode",
+						effortScope: "model" as const,
+						models: [],
+					}
+				: provider,
+		) as ProviderInfo[];
+		const manager = new HlidDelegationManager(
+			pool as unknown as SessionPool,
+			async () => emptyAcpCatalog,
+			() => {
+				statusChangedCalls++;
+			},
+		);
+
+		await expect(
+			manager.delegate("parent-1", {
+				task: "Do not fabricate a model",
+				provider: "codex",
+				model: "missing-model",
+			}),
+		).rejects.toThrow(
+			"Model missing-model is not in OpenCode's current model catalog",
+		);
+		expect(pool.create).not.toHaveBeenCalled();
 	});
 
 	it("fails a provider turn that completes without an assistant result", async () => {
@@ -2029,8 +2174,13 @@ describe("Hlid delegation manager", () => {
 		}
 	});
 
-	it("continues only a restart-interrupted child as an explicit new turn", async () => {
+	it("continues a context-mode WSL child through its Windows vault runtime", async () => {
+		const childWorkspace =
+			"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\context-agent";
+		const vaultRuntime = "C:\\Users\\kyle\\Fornbok";
+		childEntryCwd = childWorkspace;
 		persisted = snapshot({
+			workspace: childWorkspace,
 			status: "interrupted",
 			complete: true,
 			resumable: true,
@@ -2040,15 +2190,20 @@ describe("Hlid delegation manager", () => {
 			cost_budget: 0.01,
 			cost_used: 0.01,
 		});
+		db.getSessionAgentCwd.mockResolvedValue(childWorkspace);
+		pool.providerRuntimeCwd.mockImplementation((cwd: string) =>
+			cwd === childWorkspace ? vaultRuntime : cwd,
+		);
 		db.getSessionNextMessageSeq.mockResolvedValue(4);
 		db.getSessionMessages.mockResolvedValue([
 			{ seq: 1, role: "user", text: "Original task" },
 			{ seq: 2, role: "assistant", text: "Partial work" },
 			{ seq: 5, role: "assistant", text: "Continued result" },
 		]);
+		const providerCatalog = vi.fn(async (_cwd: string) => catalog);
 		const manager = new HlidDelegationManager(
 			pool as unknown as SessionPool,
-			async () => catalog,
+			providerCatalog,
 			() => {
 				statusChangedCalls++;
 			},
@@ -2083,6 +2238,10 @@ describe("Hlid delegation manager", () => {
 		expect(options.vaultReferences).toEqual([]);
 		expect(options.workspaceReferences).toEqual([]);
 		expect(options.delegationContext).toContain("Original task");
+		expect(options.agentCwd).toBe(childWorkspace);
+		expect(pool.providerRuntimeCwd).toHaveBeenCalledWith(childWorkspace);
+		expect(codexCheck).toHaveBeenCalledWith({ cwd: vaultRuntime });
+		expect(providerCatalog).toHaveBeenCalledWith(vaultRuntime);
 	});
 
 	it("rolls back continuation admission when the parent turn ends during its CAS", async () => {

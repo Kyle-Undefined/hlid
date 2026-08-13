@@ -223,6 +223,12 @@ describe("effortOptionsFor", () => {
 		expect(result).toEqual(provider.effortLevels);
 	});
 
+	it("does not backfill another model's effort list for model-scoped providers", () => {
+		const modelScoped = { ...provider, effortScope: "model" as const };
+		expect(effortOptionsFor(modelScoped, "sonnet")).toEqual([]);
+		expect(effortOptionsFor(modelScoped, "missing")).toEqual([]);
+	});
+
 	it("returns [] when neither the model nor the provider declare efforts", () => {
 		const bare: ProviderInfo = { id: "x", label: "X", available: true };
 		expect(effortOptionsFor(bare, "anything")).toEqual([]);

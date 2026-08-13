@@ -15,6 +15,7 @@ import {
 	ndJsonStream,
 	type PermissionOption,
 	PROTOCOL_VERSION,
+	RequestError,
 	type SessionConfigOption,
 	type SessionModeState,
 	type SessionUpdate,
@@ -28,6 +29,7 @@ import {
 } from "../lib/acpModelFilter";
 import { describeHlidToolLoading } from "../lib/hlidContext";
 import { legacyProjectMcpAdapter } from "../lib/mcpConfig";
+import { declaredPathKey } from "../lib/paths";
 import { replacementUnifiedDiff } from "../lib/unifiedDiff";
 import { discoverAcpProviderCapabilities } from "./acpCapabilityDiscovery";
 import {
@@ -48,6 +50,7 @@ import type {
 	ForkSessionParams,
 	ForkSessionResult,
 	McpServerStatus,
+	ProviderEffortInfo,
 	ProviderForkCapability,
 	ProviderModelInfo,
 	ProviderPromptContent,
@@ -67,6 +70,7 @@ import { getObsidianCliStatus } from "./obsidianCli";
 import { isObsidianRunCommandRequest } from "./obsidianCommandApproval";
 import { obsidianMcpProcessCommand } from "./obsidianMcpServer";
 import { providerElicitationQuestions } from "./providerElicitation";
+import { createSlowOperationObserver } from "./requestDiagnostics";
 
 export type AcpLifecycleTimeouts = {
 	preparationMs: number;
@@ -95,6 +99,14 @@ const DEFAULT_ACP_TIMEOUTS: AcpLifecycleTimeouts = {
 	interruptGraceMs: 1_500,
 	terminateGraceMs: 750,
 };
+const MAX_ACP_FORK_CAPABILITY_WORKSPACES = 64;
+const ACP_FORK_CAPABILITY_TTL_MS = 60_000;
+const MAX_ACP_MODEL_EFFORT_PROBES = 32;
+const MAX_ACP_MODEL_EFFORT_PROBE_MS = 750;
+const observeAcpStartup = createSlowOperationObserver({
+	scope: "acp startup",
+	thresholdMs: 500,
+});
 
 function acpTimeouts(options: AcpProviderOptions): AcpLifecycleTimeouts {
 	return { ...DEFAULT_ACP_TIMEOUTS, ...options.timeouts };
@@ -124,6 +136,17 @@ function appendAcpStderr(error: unknown, stderr: string): Error {
 	return new Error(`${message}\nACP stderr: ${detail}`, {
 		cause: error,
 	});
+}
+
+function causedByRequestError(error: unknown): boolean {
+	let current = error;
+	const seen = new Set<unknown>();
+	while (current instanceof Error && !seen.has(current)) {
+		if (current instanceof RequestError) return true;
+		seen.add(current);
+		current = current.cause;
+	}
+	return false;
 }
 
 async function runAcpPhase<T>(options: {
@@ -1083,6 +1106,11 @@ type AcpMetadataInspection = {
 	modes: SessionModeState | null;
 };
 
+type ManagedAcpInspection<T> = {
+	controller: AbortController;
+	promise: Promise<T>;
+};
+
 class AcpSession implements AgentSession {
 	private readonly events = new AsyncEventQueue<AgentEvent>();
 	private readonly timeouts: AcpLifecycleTimeouts;
@@ -1121,6 +1149,8 @@ class AcpSession implements AgentSession {
 	private configOptions: SessionConfigOption[] = [];
 	private liveControlTail: Promise<void> = Promise.resolve();
 	private liveControlsPending = 0;
+	private modelControlActive = false;
+	private modelControlExpectedValue: string | undefined;
 	private initialConfigValues = new Map<string, string>();
 	private configNotificationsReady = false;
 	private lastConfigSnapshot = "";
@@ -1161,6 +1191,9 @@ class AcpSession implements AgentSession {
 	constructor(
 		private readonly options: AcpProviderOptions,
 		private readonly params: AgentQueryParams,
+		private readonly beforePromptDispatch?: (
+			signal: AbortSignal,
+		) => Promise<() => void>,
 	) {
 		this.timeouts = acpTimeouts(options);
 		this.mcpConfigPromise = configuredMcpServers(params.cwd).then((mcp) => {
@@ -1414,6 +1447,12 @@ class AcpSession implements AgentSession {
 		expectedActiveModel?: string,
 	): Promise<void> {
 		if (option.type !== "select" || !this.connection || !this.sessionId) return;
+		const currentModel = configOption(this.configOptions, "model", /model/i);
+		const preservedActiveModel =
+			expectedActiveModel ??
+			(currentModel?.type === "select" && currentModel.id !== option.id
+				? currentModel.currentValue
+				: undefined);
 		const identity: AcpRuntimeIdentity = {
 			generation: this.runtimeGeneration,
 			connection: this.connection,
@@ -1441,7 +1480,7 @@ class AcpSession implements AgentSession {
 			throw error;
 		}
 		try {
-			this.adoptConfigOptions(response.configOptions, expectedActiveModel);
+			this.adoptConfigOptions(response.configOptions, preservedActiveModel);
 		} catch (error) {
 			void this.beginRuntimeRetirement(
 				error,
@@ -1499,6 +1538,13 @@ class AcpSession implements AgentSession {
 		}
 	}
 
+	private requestedModelValue(): string | undefined {
+		const requested = this.params.model;
+		return requested && this.options.requestModel
+			? this.options.requestModel(requested)
+			: requested;
+	}
+
 	private adoptConfigOptions(
 		options: SessionConfigOption[],
 		expectedActiveModel?: string,
@@ -1519,7 +1565,12 @@ class AcpSession implements AgentSession {
 			return false;
 		}
 		try {
-			this.adoptConfigOptions(options);
+			this.adoptConfigOptions(
+				options,
+				this.modelControlActive
+					? this.modelControlExpectedValue
+					: this.requestedModelValue(),
+			);
 			return true;
 		} catch (error) {
 			void this.beginRuntimeRetirement(error, observedGeneration, true).catch(
@@ -1737,6 +1788,7 @@ class AcpSession implements AgentSession {
 		category: "model" | "thought_level",
 		value: string | undefined,
 		resetToInitial = false,
+		ignoreUnsupportedValue = false,
 	): Promise<void> {
 		if (!this.connection || !this.sessionId) return;
 		if (value === undefined && !resetToInitial) return;
@@ -1751,6 +1803,11 @@ class AcpSession implements AgentSession {
 					"ACP agent does not advertise selectable model control",
 				);
 			}
+			if (value !== undefined && !ignoreUnsupportedValue) {
+				throw new Error(
+					"ACP agent does not advertise selectable thought-level control",
+				);
+			}
 			return;
 		}
 		const resolvedValue = value ?? this.initialConfigValues.get(option.id);
@@ -1760,12 +1817,34 @@ class AcpSession implements AgentSession {
 			}
 			return;
 		}
+		if (
+			category === "thought_level" &&
+			!selectOptions(option).some(
+				(candidate) => candidate.value === resolvedValue,
+			)
+		) {
+			if (ignoreUnsupportedValue) return;
+			throw new Error(
+				`ACP agent does not advertise thought level ${JSON.stringify(resolvedValue)} for the active model`,
+			);
+		}
+		const activeModelOption = configOption(
+			this.configOptions,
+			"model",
+			/model/i,
+		);
+		const expectedActiveModel =
+			category === "model"
+				? resolvedValue
+				: activeModelOption?.type === "select"
+					? activeModelOption.currentValue
+					: undefined;
 		await this.applyConfigOption(
 			option,
 			resolvedValue,
 			`${category === "model" ? "model" : "thought-level"} configuration`,
 			this.timeouts.configMs,
-			category === "model" ? resolvedValue : undefined,
+			expectedActiveModel,
 		);
 	}
 
@@ -1926,17 +2005,22 @@ class AcpSession implements AgentSession {
 		const runtimeGeneration = ++this.runtimeGeneration;
 		const adapter = acpAdapter(this.options);
 		const providerCwd = adapter.providerPath(this.params.cwd, this.params.cwd);
-		const [providerEnv, obsidianStatus] = await this.runPhase(
-			"startup preparation",
-			this.timeouts.preparationMs,
-			async () => {
-				const [env, obsidian] = await Promise.all([
-					resolveAcpEnv(this.options.env),
-					getObsidianCliStatus(),
-					this.mcpConfigPromise,
-				]);
-				return [env, obsidian] as const;
-			},
+		const [providerEnv, obsidianStatus] = await observeAcpStartup(
+			`preparation:${this.options.id}:${adapter.key}`,
+			`${this.options.label} ${adapter.key} startup preparation`,
+			() =>
+				this.runPhase(
+					"startup preparation",
+					this.timeouts.preparationMs,
+					async () => {
+						const [env, obsidian] = await Promise.all([
+							resolveAcpEnv(this.options.env),
+							getObsidianCliStatus(),
+							this.mcpConfigPromise,
+						]);
+						return [env, obsidian] as const;
+					},
+				),
 		);
 		if (
 			!this.mcpServers.some((server) => server.name === HLID_AGENT_NAMESPACE)
@@ -1989,12 +2073,17 @@ class AcpSession implements AgentSession {
 			});
 		}
 		this.resetObservableMcpStatuses();
-		const started = await startAcpProcess({
-			provider: this.options,
-			cwd: this.params.cwd,
-			env: providerEnv,
-			signal: this.runtimeAbortController.signal,
-		});
+		const started = await observeAcpStartup(
+			`spawn:${this.options.id}:${adapter.key}`,
+			`${this.options.label} ${adapter.key} executable resolution and process spawn`,
+			() =>
+				startAcpProcess({
+					provider: this.options,
+					cwd: this.params.cwd,
+					env: providerEnv,
+					signal: this.runtimeAbortController.signal,
+				}),
+		);
 		const { child } = started;
 		this.ownedProcess = started;
 		this.process = child;
@@ -2350,7 +2439,22 @@ class AcpSession implements AgentSession {
 				? this.options.requestModel(requestedModel)
 				: requestedModel,
 		);
-		await this.setConfigValue("thought_level", this.params.effort);
+		// Model selection can replace the effort menu. A carried selection from a
+		// different provider, workspace, or model is not provider authority: omit it
+		// when the refreshed ACP options do not advertise the exact value.
+		const requestedEffort = this.params.effort;
+		await this.setConfigValue("thought_level", this.params.effort, false, true);
+		const authoritativeThought = configOption(
+			this.configOptions,
+			"thought_level",
+			/thought|reason|effort/i,
+		);
+		if (requestedEffort !== undefined) {
+			this.params.effort =
+				authoritativeThought?.type === "select"
+					? authoritativeThought.currentValue
+					: undefined;
+		}
 		await this.syncPermissionMode(this.params.permissionMode ?? "default");
 		this.configNotificationsReady = true;
 		this.publishSessionConfig();
@@ -2359,60 +2463,70 @@ class AcpSession implements AgentSession {
 
 	async send(message: string, opts?: SendOptions): Promise<void> {
 		this.assertPromptAdmission();
-		await this.initialize();
-		this.assertPromptAdmission();
-		if (this.cancelled || !this.connection || !this.sessionId) return;
-		if (this.activePrompt && !this.activePrompt.settled) {
-			throw new Error("ACP session already has an active prompt");
-		}
-		const active: ActiveAcpPrompt = {
-			promise: Promise.resolve(),
-			startedAt: Date.now(),
-			settled: false,
-			controlsLocked: true,
-			suppressError: false,
-		};
-		this.activePrompt = active;
-		let receiptSettled: () => void = () => {};
-		const receiptComplete = new Promise<void>((resolve) => {
-			receiptSettled = resolve;
-		});
-		const acceptedContent = this.acceptedStructuredContent(
-			opts?.structuredContent ?? [],
-		);
-		active.promise = (async () => {
-			try {
-				await opts?.onStructuredContentAccepted?.(acceptedContent);
-			} catch (error) {
-				console.error(
-					"[acp] structured prompt receipt callback failed:",
-					error,
-				);
-			} finally {
-				receiptSettled();
-			}
+		const releaseForeground =
+			(await this.beforePromptDispatch?.(this.runtimeSignal())) ?? (() => {});
+		let promptOwnsForeground = false;
+		try {
+			this.assertPromptAdmission();
+			await this.initialize();
 			this.assertPromptAdmission();
 			if (this.cancelled || !this.connection || !this.sessionId) return;
-			await this.runPrompt(message, acceptedContent);
-		})();
-		void active.promise
-			.then(
-				() => {
-					active.settled = true;
-				},
-				(error) => {
-					active.settled = true;
-					if (!active.suppressError && !this.cancelled) {
-						this.flushThoughts(true);
-						this.resetObservableMcpStatuses(true);
-						this.events.end(appendAcpStderr(error, this.stderr()));
-					}
-				},
-			)
-			.finally(() => {
-				if (this.activePrompt === active) this.activePrompt = null;
+			if (this.activePrompt && !this.activePrompt.settled) {
+				throw new Error("ACP session already has an active prompt");
+			}
+			const active: ActiveAcpPrompt = {
+				promise: Promise.resolve(),
+				startedAt: Date.now(),
+				settled: false,
+				controlsLocked: true,
+				suppressError: false,
+			};
+			this.activePrompt = active;
+			let receiptSettled: () => void = () => {};
+			const receiptComplete = new Promise<void>((resolve) => {
+				receiptSettled = resolve;
 			});
-		await receiptComplete;
+			const acceptedContent = this.acceptedStructuredContent(
+				opts?.structuredContent ?? [],
+			);
+			active.promise = (async () => {
+				try {
+					await opts?.onStructuredContentAccepted?.(acceptedContent);
+				} catch (error) {
+					console.error(
+						"[acp] structured prompt receipt callback failed:",
+						error,
+					);
+				} finally {
+					receiptSettled();
+				}
+				this.assertPromptAdmission();
+				if (this.cancelled || !this.connection || !this.sessionId) return;
+				await this.runPrompt(message, acceptedContent);
+			})();
+			promptOwnsForeground = true;
+			void active.promise
+				.then(
+					() => {
+						active.settled = true;
+					},
+					(error) => {
+						active.settled = true;
+						if (!active.suppressError && !this.cancelled) {
+							this.flushThoughts(true);
+							this.resetObservableMcpStatuses(true);
+							this.events.end(appendAcpStderr(error, this.stderr()));
+						}
+					},
+				)
+				.finally(() => {
+					releaseForeground();
+					if (this.activePrompt === active) this.activePrompt = null;
+				});
+			await receiptComplete;
+		} finally {
+			if (!promptOwnsForeground) releaseForeground();
+		}
 	}
 
 	private acceptedStructuredContent(
@@ -2503,6 +2617,12 @@ class AcpSession implements AgentSession {
 		},
 	): Promise<void> {
 		if (!this.connection || !this.sessionId) return;
+		// Dependent config mutations are allowed to replace the option catalog, but
+		// they must not silently replace the model Hlid shows as selected.
+		this.assertActiveModelVisible(
+			this.configOptions,
+			this.requestedModelValue(),
+		);
 		const identity: AcpRuntimeIdentity = {
 			generation: this.runtimeGeneration,
 			connection: this.connection,
@@ -2781,13 +2901,23 @@ class AcpSession implements AgentSession {
 			return;
 		}
 		await this.runLiveControl(async () => {
-			await this.setConfigValue(
-				"model",
+			const requested =
 				model && this.options.requestModel
 					? this.options.requestModel(model)
-					: model,
-				true,
-			);
+					: model;
+			const option = configOption(this.configOptions, "model", /model/i);
+			this.modelControlActive = true;
+			this.modelControlExpectedValue =
+				requested ??
+				(option?.type === "select"
+					? this.initialConfigValues.get(option.id)
+					: undefined);
+			try {
+				await this.setConfigValue("model", requested, true);
+			} finally {
+				this.modelControlActive = false;
+				this.modelControlExpectedValue = undefined;
+			}
 			this.params.model = model;
 		});
 	}
@@ -2797,6 +2927,23 @@ class AcpSession implements AgentSession {
 		if (!this.connection || !this.sessionId) {
 			this.params.effort = effort;
 			return;
+		}
+		const option = configOption(
+			this.configOptions,
+			"thought_level",
+			/thought|reason|effort/i,
+		);
+		if (option?.type !== "select") {
+			throw new Error(
+				"ACP agent does not advertise selectable thought-level control",
+			);
+		}
+		if (
+			!selectOptions(option).some((candidate) => candidate.value === effort)
+		) {
+			throw new Error(
+				`ACP agent does not advertise thought level ${JSON.stringify(effort)} for the active model`,
+			);
 		}
 		await this.runLiveControl(async () => {
 			await this.setConfigValue("thought_level", effort);
@@ -2939,6 +3086,8 @@ export class AcpProvider implements AgentProvider {
 	readonly metadataCacheIdentity?: string;
 	readonly sessionContinuityIdentity?: string;
 	readonly modelCatalogScope = "workspace" as const;
+	// fallow-ignore-next-line unused-class-member -- Read through AgentProvider during explicit catalog refresh.
+	readonly liveModelDiscoveryValidatesAvailability = true;
 	readonly permissionModes = [
 		{
 			value: "default",
@@ -2951,16 +3100,27 @@ export class AcpProvider implements AgentProvider {
 			desc: "automatically accepts approval requests sent by the ACP agent",
 		},
 	] as const;
-	private forkCapabilityCache:
-		| { value: ProviderForkCapability | undefined; expiresAt: number }
-		| undefined;
-	private forkCapabilityProbe: Promise<
-		ProviderForkCapability | undefined
-	> | null = null;
+	private forkCapabilityCache = new Map<
+		string,
+		{ value: ProviderForkCapability | undefined; expiresAt: number }
+	>();
+	private forkCapabilityProbes = new Map<
+		string,
+		Promise<ProviderForkCapability | undefined>
+	>();
 	private metadataInspections = new Map<
 		string,
-		Promise<AcpMetadataInspection>
+		ManagedAcpInspection<AcpMetadataInspection>
 	>();
+	private modelCatalogInspections = new Map<
+		string,
+		ManagedAcpInspection<ProviderModelInfo[]>
+	>();
+	/** Exact workspaces with a prompt admitted ahead of background discovery. */
+	private foregroundPrompts = new Map<string, number>();
+	private availabilityValidationGeneration = 0;
+	private retiredError: Error | null = null;
+	private retirementPromise: Promise<void> | null = null;
 	private availabilitySnapshot:
 		| { available: boolean; reason?: string }
 		| undefined;
@@ -2973,6 +3133,38 @@ export class AcpProvider implements AgentProvider {
 			? createHash("sha256").update(options.metadataCacheIdentity).digest("hex")
 			: undefined;
 		this.availabilitySnapshot = options.initialAvailability;
+	}
+
+	private assertRuntimeActive(): void {
+		if (this.retiredError) throw this.retiredError;
+	}
+
+	/** Permanently fail closed and drain every provider-owned background inspection. */
+	retireRuntime(reason?: string): Promise<void> {
+		if (this.retirementPromise) return this.retirementPromise;
+		const error = new Error(
+			reason?.trim() || `${this.label} runtime is updating; try again shortly.`,
+		);
+		error.name = "AcpProviderRetiredError";
+		// This assignment must remain synchronous: callers remove/replace the provider
+		// immediately after invoking this method, and no stale reference may admit work
+		// during the asynchronous process-cleanup window.
+		this.retiredError = error;
+		this.availabilityValidationGeneration += 1;
+		this.availabilitySnapshot = { available: false, reason: error.message };
+
+		const pending = new Set<Promise<unknown>>();
+		for (const inspection of this.modelCatalogInspections.values()) {
+			inspection.controller.abort(error);
+			pending.add(inspection.promise);
+		}
+		for (const inspection of this.metadataInspections.values()) {
+			inspection.controller.abort(error);
+			pending.add(inspection.promise);
+		}
+		for (const probe of this.forkCapabilityProbes.values()) pending.add(probe);
+		this.retirementPromise = Promise.allSettled(pending).then(() => undefined);
+		return this.retirementPromise;
 	}
 
 	async hlidToolLoading() {
@@ -2998,6 +3190,8 @@ export class AcpProvider implements AgentProvider {
 	}
 
 	async check(): Promise<{ available: boolean; reason?: string }> {
+		this.assertRuntimeActive();
+		const availabilityGeneration = ++this.availabilityValidationGeneration;
 		try {
 			const resolved = await runAcpPhase({
 				phase: "availability check",
@@ -3022,40 +3216,193 @@ export class AcpProvider implements AgentProvider {
 						available: false,
 						reason: `${this.options.command} is not installed`,
 					};
-			this.availabilitySnapshot = result;
+			if (availabilityGeneration === this.availabilityValidationGeneration) {
+				this.availabilitySnapshot = result;
+			}
 			return result;
 		} catch (error) {
 			const result = { available: false, reason: errorText(error) };
-			this.availabilitySnapshot = result;
+			if (availabilityGeneration === this.availabilityValidationGeneration) {
+				this.availabilitySnapshot = result;
+			}
 			return result;
 		}
 	}
 
-	// fallow-ignore-next-line unused-class-member -- Read through AgentProvider by the process-free provider catalog.
 	cachedAvailability(): { available: boolean; reason?: string } | undefined {
 		return this.availabilitySnapshot;
+	}
+
+	updateAvailabilitySnapshot(snapshot: {
+		available: boolean;
+		reason?: string;
+	}): void {
+		if (this.retiredError) return;
+		this.availabilityValidationGeneration += 1;
+		this.availabilitySnapshot = snapshot;
 	}
 
 	private inspectMetadata(
 		cwd = this.options.discoveryCwd ?? process.cwd(),
 	): Promise<AcpMetadataInspection> {
-		const existing = this.metadataInspections.get(cwd);
-		if (existing) return existing;
-		const pending = inspectAcpMetadata(this.options, cwd).finally(() => {
-			if (this.metadataInspections.get(cwd) === pending) {
-				this.metadataInspections.delete(cwd);
+		this.assertRuntimeActive();
+		const key = declaredPathKey(cwd);
+		this.assertBackgroundInspectionAdmission(key, cwd, "metadata");
+		const existing = this.metadataInspections.get(key);
+		if (existing) return existing.promise;
+		const controller = new AbortController();
+		const pending = inspectAcpMetadata(
+			this.options,
+			cwd,
+			controller.signal,
+		).finally(() => {
+			if (this.metadataInspections.get(key)?.promise === pending) {
+				this.metadataInspections.delete(key);
 			}
 		});
-		this.metadataInspections.set(cwd, pending);
+		this.metadataInspections.set(key, { controller, promise: pending });
 		return pending;
 	}
 
-	async listModels(context?: { cwd: string }): Promise<ProviderModelInfo[]> {
-		const { configOptions: options } = await this.inspectMetadata(context?.cwd);
-		return (
-			sessionConfigSnapshot(options, null, this.options.modelFilter).models ??
-			[]
+	private inspectModelCatalog(
+		cwd = this.options.discoveryCwd ?? process.cwd(),
+	): Promise<ProviderModelInfo[]> {
+		this.assertRuntimeActive();
+		const key = declaredPathKey(cwd);
+		this.assertBackgroundInspectionAdmission(key, cwd, "model catalog");
+		const existing = this.modelCatalogInspections.get(key);
+		if (existing) return existing.promise;
+		const controller = new AbortController();
+		const availabilityGeneration = ++this.availabilityValidationGeneration;
+		const pending = inspectAcpModelCatalog(this.options, cwd, controller.signal)
+			.then(
+				(models) => {
+					if (
+						availabilityGeneration === this.availabilityValidationGeneration
+					) {
+						this.availabilitySnapshot = { available: true };
+					}
+					return models;
+				},
+				(error) => {
+					if (
+						availabilityGeneration === this.availabilityValidationGeneration
+					) {
+						this.availabilitySnapshot = {
+							available: false,
+							reason: errorText(error),
+						};
+					}
+					throw error;
+				},
+			)
+			.finally(() => {
+				if (this.modelCatalogInspections.get(key)?.promise === pending) {
+					this.modelCatalogInspections.delete(key);
+				}
+			});
+		this.modelCatalogInspections.set(key, { controller, promise: pending });
+		return pending;
+	}
+
+	private assertBackgroundInspectionAdmission(
+		key: string,
+		cwd: string,
+		kind: string,
+	): void {
+		if ((this.foregroundPrompts.get(key) ?? 0) === 0) return;
+		throw new AcpPhaseError(
+			`${kind} inspection`,
+			`deferred while a live session owns ${JSON.stringify(cwd)}`,
 		);
+	}
+
+	private async acquireForegroundPrompt(
+		cwd: string,
+		signal: AbortSignal,
+	): Promise<() => void> {
+		this.assertRuntimeActive();
+		const key = declaredPathKey(cwd);
+		this.foregroundPrompts.set(key, (this.foregroundPrompts.get(key) ?? 0) + 1);
+		let released = false;
+		const release = () => {
+			if (released) return;
+			released = true;
+			const remaining = (this.foregroundPrompts.get(key) ?? 1) - 1;
+			if (remaining > 0) this.foregroundPrompts.set(key, remaining);
+			else this.foregroundPrompts.delete(key);
+		};
+		try {
+			const adapter = acpAdapter(this.options);
+			await observeAcpStartup(
+				`admission:${this.options.id}:${adapter.key}`,
+				`${this.options.label} ${adapter.key} foreground admission`,
+				() => this.preemptBackgroundInspections(cwd, signal),
+			);
+			return release;
+		} catch (error) {
+			release();
+			throw error;
+		}
+	}
+
+	private async preemptBackgroundInspections(
+		cwd: string,
+		signal: AbortSignal,
+	): Promise<void> {
+		const key = declaredPathKey(cwd);
+		const modelCatalog = this.modelCatalogInspections.get(key);
+		const metadata = this.metadataInspections.get(key);
+		const managed: ManagedAcpInspection<unknown>[] = [];
+		if (modelCatalog) managed.push(modelCatalog);
+		if (metadata) managed.push(metadata);
+		if (managed.length === 0) return;
+
+		// A deliberately cancelled catalog refresh is not evidence that the agent is
+		// unavailable. Supersede its availability write before aborting the process.
+		if (modelCatalog) this.availabilityValidationGeneration += 1;
+		const reason = new AcpPhaseError(
+			"background inspection",
+			`preempted by a live session for ${JSON.stringify(cwd)}`,
+		);
+		for (const inspection of managed) inspection.controller.abort(reason);
+
+		const pending = new Set<Promise<unknown>>(
+			managed.map((inspection) => inspection.promise),
+		);
+		const forkProbe = this.forkCapabilityProbes.get(key);
+		if (forkProbe) pending.add(forkProbe);
+		const timeouts = acpTimeouts(this.options);
+		await runAcpPhase({
+			phase: "background inspection cleanup",
+			timeoutMs: Math.max(1, timeouts.inspectionMs + timeouts.terminateGraceMs),
+			signal,
+			run: async () => {
+				await Promise.allSettled(pending);
+			},
+		});
+	}
+
+	private rememberForkCapability(
+		cwd: string,
+		value: ProviderForkCapability | undefined,
+	): void {
+		const key = declaredPathKey(cwd);
+		if (
+			!this.forkCapabilityCache.has(key) &&
+			this.forkCapabilityCache.size >= MAX_ACP_FORK_CAPABILITY_WORKSPACES
+		) {
+			const oldest = this.forkCapabilityCache.keys().next().value;
+			if (oldest !== undefined) this.forkCapabilityCache.delete(oldest);
+		}
+		this.forkCapabilityCache.set(key, {
+			value,
+			expiresAt: Date.now() + ACP_FORK_CAPABILITY_TTL_MS,
+		});
+	}
+
+	async listModels(context?: { cwd: string }): Promise<ProviderModelInfo[]> {
+		return this.inspectModelCatalog(context?.cwd);
 	}
 
 	// fallow-ignore-next-line unused-class-member -- Invoked through AgentProvider by explicit capability discovery.
@@ -3073,16 +3420,21 @@ export class AcpProvider implements AgentProvider {
 	}
 
 	// fallow-ignore-next-line unused-class-member -- Invoked through AgentProvider by explicit provider refresh.
-	async resolveForkCapability(): Promise<ProviderForkCapability | undefined> {
-		if (
-			this.forkCapabilityCache &&
-			this.forkCapabilityCache.expiresAt > Date.now()
-		) {
-			return this.forkCapabilityCache.value;
+	async resolveForkCapability(context?: {
+		cwd: string;
+	}): Promise<ProviderForkCapability | undefined> {
+		this.assertRuntimeActive();
+		const cwd = context?.cwd ?? this.options.discoveryCwd ?? process.cwd();
+		const key = declaredPathKey(cwd);
+		const cached = this.forkCapabilityCache.get(key);
+		if (cached?.expiresAt && cached.expiresAt > Date.now()) {
+			return cached.value;
 		}
-		if (this.forkCapabilityProbe) return this.forkCapabilityProbe;
-		this.forkCapabilityProbe = (async () => {
-			const { initialized } = await this.inspectMetadata();
+		if (cached) this.forkCapabilityCache.delete(key);
+		const existingProbe = this.forkCapabilityProbes.get(key);
+		if (existingProbe) return existingProbe;
+		const pending = (async () => {
+			const { initialized } = await this.inspectMetadata(cwd);
 			const value = initialized.agentCapabilities?.sessionCapabilities?.fork
 				? ({
 						kind: "exact",
@@ -3090,19 +3442,20 @@ export class AcpProvider implements AgentProvider {
 						throughMessage: false,
 					} satisfies ProviderForkCapability)
 				: undefined;
-			this.forkCapabilityCache = {
-				value,
-				expiresAt: Date.now() + 60_000,
-			};
+			this.rememberForkCapability(cwd, value);
 			return value;
 		})().finally(() => {
-			this.forkCapabilityProbe = null;
+			if (this.forkCapabilityProbes.get(key) === pending) {
+				this.forkCapabilityProbes.delete(key);
+			}
 		});
-		return this.forkCapabilityProbe;
+		this.forkCapabilityProbes.set(key, pending);
+		return pending;
 	}
 
 	// fallow-ignore-next-line unused-class-member -- Called through AgentProvider by dbRoutes after capability negotiation.
 	async forkSession(params: ForkSessionParams): Promise<ForkSessionResult> {
+		this.assertRuntimeActive();
 		if (params.cutoff) {
 			throw new Error("ACP session/fork only supports whole-session forks");
 		}
@@ -3126,10 +3479,7 @@ export class AcpProvider implements AgentProvider {
 				timeouts.initializeMs,
 			);
 			if (!initialized.agentCapabilities?.sessionCapabilities?.fork) {
-				this.forkCapabilityCache = {
-					value: undefined,
-					expiresAt: Date.now() + 60_000,
-				};
+				this.rememberForkCapability(hostCwd, undefined);
 				throw new Error("The ACP agent did not advertise session/fork support");
 			}
 			const result = await runInspectionPhase(
@@ -3143,14 +3493,11 @@ export class AcpProvider implements AgentProvider {
 						mcpServers: [],
 					}),
 			);
-			this.forkCapabilityCache = {
-				value: {
-					kind: "exact",
-					wholeSession: true,
-					throughMessage: false,
-				},
-				expiresAt: Date.now() + 60_000,
-			};
+			this.rememberForkCapability(hostCwd, {
+				kind: "exact",
+				wholeSession: true,
+				throughMessage: false,
+			});
 			return { sessionId: result.sessionId };
 		} finally {
 			if (inspection) await inspection.cleanup(deadline.signal.aborted);
@@ -3159,12 +3506,15 @@ export class AcpProvider implements AgentProvider {
 	}
 
 	query(params: AgentQueryParams): AgentSession {
+		this.assertRuntimeActive();
 		if (!acpModelVisible(params.model, this.options.modelFilter)) {
 			throw new Error(
 				`Model ${JSON.stringify(params.model)} is excluded by Hlid's ACP model visibility`,
 			);
 		}
-		return new AcpSession(this.options, params);
+		return new AcpSession(this.options, params, (signal) =>
+			this.acquireForegroundPrompt(params.cwd, signal),
+		);
 	}
 }
 
@@ -3258,6 +3608,38 @@ function initializeInspection(
 	);
 }
 
+async function releaseInspectionSession(input: {
+	inspection: AcpInspectionConnection;
+	initialized: InitializeResponse | null;
+	sessionId: string;
+	timeoutMs: number;
+	phase: string;
+}): Promise<void> {
+	const sessionCapabilities =
+		input.initialized?.agentCapabilities?.sessionCapabilities;
+	if (sessionCapabilities?.delete) {
+		await runInspectionPhase(
+			input.inspection,
+			`${input.phase} deletion`,
+			input.timeoutMs,
+			() =>
+				input.inspection.connection.deleteSession({
+					sessionId: input.sessionId,
+				}),
+		).catch(() => {});
+	} else if (sessionCapabilities?.close) {
+		await runInspectionPhase(
+			input.inspection,
+			`${input.phase} close`,
+			input.timeoutMs,
+			() =>
+				input.inspection.connection.closeSession({
+					sessionId: input.sessionId,
+				}),
+		).catch(() => {});
+	}
+}
+
 function createInspectionDeadline(
 	timeoutMs: number,
 	phase: string,
@@ -3290,15 +3672,213 @@ function createInspectionDeadline(
 	};
 }
 
+function withoutModelEfforts(model: ProviderModelInfo): ProviderModelInfo {
+	const { efforts: _efforts, ...original } = model;
+	return original;
+}
+
+function effortLevelsForOptions(
+	options: SessionConfigOption[],
+): ProviderEffortInfo[] {
+	const thought = configOption(
+		options,
+		"thought_level",
+		/thought|reason|effort/i,
+	);
+	if (thought?.type !== "select") return [];
+	return selectOptions(thought).map((effort) => ({
+		value: effort.value,
+		label: effort.label,
+		...(effort.description ? { desc: effort.description } : {}),
+		...(effort.isDefault !== undefined ? { isDefault: effort.isDefault } : {}),
+	}));
+}
+
+async function inspectModelEfforts(input: {
+	inspection: AcpInspectionConnection;
+	sessionId: string;
+	initialOptions: SessionConfigOption[];
+	initialModes: SessionModeState | null;
+	modelFilter?: AcpModelVisibilityFilter;
+	timeouts: AcpLifecycleTimeouts;
+	inspectionStartedAt: number;
+}): Promise<{ models: ProviderModelInfo[]; forceCleanup: boolean }> {
+	const initialSnapshot = sessionConfigSnapshot(
+		input.initialOptions,
+		input.initialModes,
+		input.modelFilter,
+	);
+	const originalModels = initialSnapshot.models ?? [];
+	const modelOption = configOption(input.initialOptions, "model", /model/i);
+	if (modelOption?.type !== "select" || originalModels.length === 0) {
+		return { models: originalModels, forceCleanup: false };
+	}
+
+	const seenModels = new Set<string>();
+	const candidates = originalModels
+		.filter((model) => {
+			if (model.value === initialSnapshot.activeModel) return false;
+			if (seenModels.has(model.value)) return false;
+			seenModels.add(model.value);
+			return true;
+		})
+		.slice(0, MAX_ACP_MODEL_EFFORT_PROBES);
+	const observedEfforts = new Map<string, ProviderEffortInfo[]>();
+	for (const [index, model] of candidates.entries()) {
+		if (input.inspection.signal?.aborted) break;
+		const remainingInspectionMs = Math.max(
+			1,
+			input.timeouts.inspectionMs -
+				(Date.now() - input.inspectionStartedAt) -
+				input.timeouts.terminateGraceMs,
+		);
+		const remainingModels = candidates.length - index;
+		const timeoutMs = Math.max(
+			1,
+			Math.min(
+				input.timeouts.configMs,
+				MAX_ACP_MODEL_EFFORT_PROBE_MS,
+				Math.floor(remainingInspectionMs / Math.max(1, remainingModels)),
+			),
+		);
+		try {
+			const response = await runInspectionPhase(
+				input.inspection,
+				`model effort inspection for ${JSON.stringify(model.value)}`,
+				timeoutMs,
+				() =>
+					input.inspection.connection.setSessionConfigOption({
+						sessionId: input.sessionId,
+						configId: modelOption.id,
+						value: model.value,
+					}),
+			);
+			if (!response) {
+				return { models: originalModels, forceCleanup: true };
+			}
+			const activeModel = configOption(
+				response.configOptions,
+				"model",
+				/model/i,
+			);
+			if (
+				activeModel?.type !== "select" ||
+				activeModel.currentValue !== model.value
+			) {
+				continue;
+			}
+			const efforts = effortLevelsForOptions(response.configOptions).map(
+				(effort) => {
+					if (model.value === initialSnapshot.activeModel) return effort;
+					const { isDefault: _isDefault, ...advertised } = effort;
+					return advertised;
+				},
+			);
+			observedEfforts.set(model.value, efforts);
+		} catch (error) {
+			if (causedByRequestError(error)) continue;
+			// A rejected request leaves this row unknown; a timeout can also leave a
+			// late mutation in flight. Only a completed JSON-RPC rejection is safe to
+			// continue past; otherwise retire the throwaway process immediately and
+			// retain only the original, already-authoritative metadata.
+			return { models: originalModels, forceCleanup: true };
+		}
+	}
+	if (input.inspection.signal?.aborted) {
+		return { models: originalModels, forceCleanup: true };
+	}
+
+	return {
+		models: originalModels.map((model) => {
+			const efforts = observedEfforts.get(model.value);
+			if (efforts === undefined) return model;
+			const original = withoutModelEfforts(model);
+			return efforts.length ? { ...original, efforts } : original;
+		}),
+		forceCleanup: false,
+	};
+}
+
+async function inspectAcpModelCatalog(
+	options: AcpProviderOptions,
+	cwd = options.discoveryCwd ?? process.cwd(),
+	signal?: AbortSignal,
+): Promise<ProviderModelInfo[]> {
+	const inspectionStartedAt = Date.now();
+	const providerCwd = acpAdapter(options).providerPath(cwd, cwd);
+	const timeouts = acpTimeouts(options);
+	const deadline = createInspectionDeadline(
+		timeouts.inspectionMs,
+		"model catalog inspection",
+		signal,
+	);
+	let inspection: AcpInspectionConnection | null = null;
+	let initialized: InitializeResponse | null = null;
+	let createdSessionId: string | null = null;
+	let forceCleanup = false;
+	try {
+		inspection = await createInspectionConnection(
+			options,
+			cwd,
+			deadline.signal,
+		);
+		initialized = await initializeInspection(inspection, timeouts.initializeMs);
+		const created = await runInspectionPhase(
+			inspection,
+			"session creation",
+			timeouts.sessionMs,
+			() =>
+				inspection?.connection.newSession({
+					cwd: providerCwd,
+					mcpServers: [],
+				}),
+		);
+		if (!created) throw new Error("ACP agent returned no metadata session");
+		createdSessionId = created.sessionId;
+		const result = await inspectModelEfforts({
+			inspection,
+			sessionId: createdSessionId,
+			initialOptions: created.configOptions ?? [],
+			initialModes: created.modes ?? null,
+			modelFilter: options.modelFilter,
+			timeouts,
+			inspectionStartedAt,
+		});
+		forceCleanup = result.forceCleanup;
+		return result.models;
+	} finally {
+		if (
+			inspection &&
+			createdSessionId &&
+			!forceCleanup &&
+			!deadline.signal.aborted
+		) {
+			await releaseInspectionSession({
+				inspection,
+				initialized,
+				sessionId: createdSessionId,
+				timeoutMs: timeouts.sessionMs,
+				phase: "model catalog session",
+			});
+		}
+		if (inspection) {
+			await inspection.cleanup(forceCleanup || deadline.signal.aborted);
+		}
+		deadline.clear();
+	}
+}
+
 async function inspectAcpMetadata(
 	options: AcpProviderOptions,
 	cwd = options.discoveryCwd ?? process.cwd(),
+	signal?: AbortSignal,
 ): Promise<AcpMetadataInspection> {
 	const providerCwd = acpAdapter(options).providerPath(cwd, cwd);
 	const timeouts = acpTimeouts(options);
 	const deadline = createInspectionDeadline(
 		timeouts.inspectionMs,
 		"metadata inspection",
+		signal,
 	);
 	let inspection: AcpInspectionConnection | null = null;
 	let initialized: InitializeResponse | null = null;
@@ -3329,29 +3909,13 @@ async function inspectAcpMetadata(
 		};
 	} finally {
 		if (inspection && createdSessionId && !deadline.signal.aborted) {
-			const sessionCapabilities =
-				initialized?.agentCapabilities?.sessionCapabilities;
-			if (sessionCapabilities?.delete) {
-				await runInspectionPhase(
-					inspection,
-					"metadata session deletion",
-					timeouts.sessionMs,
-					() =>
-						inspection?.connection.deleteSession({
-							sessionId: createdSessionId ?? "",
-						}),
-				).catch(() => {});
-			} else if (sessionCapabilities?.close) {
-				await runInspectionPhase(
-					inspection,
-					"metadata session close",
-					timeouts.sessionMs,
-					() =>
-						inspection?.connection.closeSession({
-							sessionId: createdSessionId ?? "",
-						}),
-				).catch(() => {});
-			}
+			await releaseInspectionSession({
+				inspection,
+				initialized,
+				sessionId: createdSessionId,
+				timeoutMs: timeouts.sessionMs,
+				phase: "metadata session",
+			});
 		}
 		if (inspection) await inspection.cleanup(deadline.signal.aborted);
 		deadline.clear();
@@ -3452,11 +4016,18 @@ function providerSessionString(
 	return value;
 }
 
-function workspacePathIdentity(value: string): string {
-	const normalized = value.replaceAll("\\", "/").replace(/\/+$/, "") || "/";
-	return process.platform === "win32" || /^[a-z]:\//i.test(normalized)
-		? normalized.toLowerCase()
-		: normalized;
+/** @internal Exported for syntax-sensitive workspace filtering tests. */
+export function workspacePathIdentity(value: string): string {
+	// These are provider paths, so their syntax determines case sensitivity.
+	// A WSL provider's POSIX path remains case-sensitive on a Windows host.
+	const windowsSyntax =
+		/^[a-z]:(?:[\\/]|$)/i.test(value) ||
+		value.startsWith("\\\\") ||
+		value.startsWith("//");
+	const normalized = windowsSyntax
+		? value.replaceAll("\\", "/").replace(/\/+$/, "") || "/"
+		: value.replace(/\/+$/, "") || "/";
+	return windowsSyntax ? normalized.toLowerCase() : normalized;
 }
 
 async function readAcpProviderSessionPage(
@@ -3591,6 +4162,7 @@ export async function listAcpProviderSessions(
 		);
 	}
 	const timeouts = acpTimeouts(options);
+	const providerCwd = acpAdapter(options).providerPath(cwd, cwd);
 	const deadline = createInspectionDeadline(
 		timeouts.inspectionMs + timeouts.sessionMs,
 		"provider session listing",
@@ -3608,7 +4180,7 @@ export async function listAcpProviderSessions(
 		);
 		return await readAcpProviderSessionPage(
 			inspection,
-			cwd,
+			providerCwd,
 			timeouts,
 			canImportAcpProviderSessions(initialized),
 			cursor,
@@ -3635,6 +4207,7 @@ export async function findAcpProviderSession(
 		MAX_ACP_SESSION_ID_CHARS,
 	);
 	const timeouts = acpTimeouts(options);
+	const providerCwd = acpAdapter(options).providerPath(cwd, cwd);
 	const deadline = createInspectionDeadline(
 		timeouts.inspectionMs + timeouts.sessionMs,
 		"provider session validation",
@@ -3662,7 +4235,7 @@ export async function findAcpProviderSession(
 		) {
 			const page = await readAcpProviderSessionPage(
 				inspection,
-				cwd,
+				providerCwd,
 				timeouts,
 				true,
 				cursor,

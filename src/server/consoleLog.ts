@@ -1,5 +1,8 @@
 type ConsoleLevel = "info" | "warn" | "error";
 
+export const HLID_SERVER_RUN_LOG_SOURCE = "server";
+export const HLID_SERVER_RUN_LOG_MESSAGE = "Hlid server run started";
+
 function formatConsoleArg(value: unknown): string {
 	if (value instanceof Error)
 		return value.stack ?? `${value.name}: ${value.message}`;

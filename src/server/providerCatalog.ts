@@ -47,6 +47,10 @@ const MAX_PROVIDER_CAPABILITY_WORKSPACES = 64;
 const observeCatalogStep = createSlowOperationObserver({
 	scope: "provider catalog",
 });
+const observeModelDiscovery = createSlowOperationObserver({
+	scope: "provider catalog",
+	thresholdMs: 5_000,
+});
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
@@ -175,8 +179,15 @@ function staticModels(p: AgentProvider): ProviderModelInfo[] {
 	return (p.models ?? []).map((m) => ({ value: m.value, label: m.label }));
 }
 
-function metadataIdentityHash(provider: AgentProvider): string | undefined {
-	const identity = provider.metadataCacheIdentity?.trim();
+function metadataIdentityHash(
+	provider: AgentProvider,
+	cwd?: string,
+): string | undefined {
+	const identity = (
+		cwd && provider.metadataCacheIdentityFor
+			? provider.metadataCacheIdentityFor(cwd)
+			: provider.metadataCacheIdentity
+	)?.trim();
 	if (!identity) return undefined;
 	return createHash("sha256").update(identity).digest("hex").slice(0, 16);
 }
@@ -189,7 +200,7 @@ function workspaceHash(cwd: string): string {
 }
 
 function modelCatalogPersistKey(provider: AgentProvider, cwd: string): string {
-	const identity = metadataIdentityHash(provider);
+	const identity = metadataIdentityHash(provider, cwd);
 	const workspace =
 		provider.modelCatalogScope === "workspace" ? workspaceHash(cwd) : undefined;
 	if (!identity && !workspace) return `model_catalog:${provider.providerId}`;
@@ -382,7 +393,7 @@ export function createProviderCapabilityCatalog(
 			}
 		}
 		const discover = provider.discoverCapabilities.bind(provider);
-		const identity = metadataIdentityHash(provider);
+		const identity = metadataIdentityHash(provider, cwd);
 		const persistenceKey = [
 			"provider_capabilities",
 			encodeURIComponent(provider.providerId),
@@ -489,8 +500,9 @@ function boundedProviderDiscovery<T>(
 	label: string,
 	operation: () => Promise<T> | T,
 	fallback: T,
+	observe = observeCatalogStep,
 ): Promise<T> {
-	return observeCatalogStep(signature, label, () =>
+	return observe(signature, label, () =>
 		withTimeout(
 			Promise.resolve().then(operation),
 			PROVIDER_LIVE_DISCOVERY_TIMEOUT_MS,
@@ -528,6 +540,10 @@ export async function loadProviderCatalog(
 	return Promise.all(
 		[...providers].map(async (provider) => {
 			const discoveryCwd = options.discoveryCwd ?? process.cwd();
+			const observeRuntimeMetadata =
+				provider.liveModelDiscoveryValidatesAvailability === true
+					? observeModelDiscovery
+					: observeCatalogStep;
 			const refreshModelsFor = catalog.refreshModelsFor;
 			const liveRefresh =
 				options.refresh === true &&
@@ -543,25 +559,37 @@ export async function loadProviderCatalog(
 			const liveHostCapabilityRead =
 				options.includeHostCapabilities === true &&
 				options.awaitHostCapabilities === true;
-			const cachedAvailability = provider.cachedAvailability?.();
+			const cachedAvailability = provider.cachedAvailability?.({
+				cwd: discoveryCwd,
+			});
+			const modelDiscoveryValidatesAvailability =
+				liveRefresh &&
+				provider.liveModelDiscoveryValidatesAvailability === true &&
+				provider.listModels !== undefined &&
+				cachedAvailability?.available === true;
 			const declaredForkCapability =
 				options.providerCapabilityForkOverrides?.get(provider.providerId) ??
 				provider.forkCapability;
 			const check: { available: boolean; reason?: string } | null =
-				(liveRefresh || liveProviderCapabilityRead) && provider.check
+				(liveRefresh || liveProviderCapabilityRead) &&
+				provider.check &&
+				!modelDiscoveryValidatesAvailability
 					? await boundedProviderDiscovery(
 							`check:${provider.providerId}`,
 							`${provider.providerId} availability check`,
-							() => provider.check?.() ?? { available: true },
+							() =>
+								provider.check?.({ cwd: discoveryCwd }) ?? {
+									available: true,
+								},
 							{ available: false, reason: "check failed" },
 						)
 					: (cachedAvailability ?? null);
-			const providerAvailable = check?.available !== false;
+			const providerInitiallyAvailable = check?.available !== false;
 			const [modelRead, hostCapabilities, forkCapability, capabilityDiscovery] =
 				await Promise.all([
-					liveRefresh && providerAvailable
+					liveRefresh && providerInitiallyAvailable
 						? refreshModelsFor
-							? observeCatalogStep(
+							? observeModelDiscovery(
 									`models:${provider.providerId}`,
 									`${provider.providerId} model discovery`,
 									() => refreshModelsFor(provider, discoveryCwd),
@@ -582,6 +610,7 @@ export async function loadProviderCatalog(
 										source: "fallback",
 										reason: "Model discovery failed or timed out",
 									},
+									observeModelDiscovery,
 								)
 						: catalog.cachedModelsFor
 							? observeCatalogStep(
@@ -602,7 +631,7 @@ export async function loadProviderCatalog(
 					(liveRefresh || liveHostCapabilityRead) &&
 					options.includeHostCapabilities &&
 					provider.hostCapabilities &&
-					providerAvailable
+					providerInitiallyAvailable
 						? boundedProviderDiscovery(
 								`capabilities:${provider.providerId}`,
 								`${provider.providerId} host-capability discovery`,
@@ -610,15 +639,18 @@ export async function loadProviderCatalog(
 								{},
 							)
 						: undefined,
-					liveRefresh && provider.resolveForkCapability && providerAvailable
+					liveRefresh &&
+					provider.resolveForkCapability &&
+					providerInitiallyAvailable
 						? boundedProviderDiscovery(
 								`fork:${provider.providerId}`,
 								`${provider.providerId} fork-capability negotiation`,
-								() => provider.resolveForkCapability?.(),
+								() => provider.resolveForkCapability?.({ cwd: discoveryCwd }),
 								declaredForkCapability,
+								observeRuntimeMetadata,
 							).then((resolved) => resolved ?? declaredForkCapability)
 						: declaredForkCapability,
-					options.includeProviderCapabilities && providerAvailable
+					options.includeProviderCapabilities && providerInitiallyAvailable
 						? observeCatalogStep(
 								`provider-capabilities:${provider.providerId}`,
 								`${provider.providerId} provider-capability snapshot`,
@@ -664,6 +696,22 @@ export async function loadProviderCatalog(
 							)
 						: undefined,
 				]);
+			const latestAvailability = modelDiscoveryValidatesAvailability
+				? provider.cachedAvailability?.({ cwd: discoveryCwd })
+				: undefined;
+			const discoveryAvailability = modelDiscoveryValidatesAvailability
+				? modelRead.source === "live"
+					? { available: true }
+					: latestAvailability?.available === false
+						? latestAvailability
+						: {
+								available: false,
+								reason:
+									("reason" in modelRead ? modelRead.reason : undefined) ??
+									"Live model discovery did not validate provider availability",
+							}
+				: check;
+			const providerAvailable = discoveryAvailability?.available !== false;
 			const models = modelRead.models;
 			const modelCatalogRefresh =
 				liveRefresh && options.refreshProviderId
@@ -672,15 +720,18 @@ export async function loadProviderCatalog(
 						: {
 								status: "unavailable" as const,
 								source: "fallback" as const,
-								reason: check?.reason ?? "Provider is unavailable",
+								reason:
+									discoveryAvailability?.reason ?? "Provider is unavailable",
 							}
 					: undefined;
 			const capabilitySnapshot = options.includeProviderCapabilities
 				? buildProviderCapabilitySnapshot({
 						providerId: provider.providerId,
-						providerAvailable: check?.available ?? true,
+						providerAvailable: discoveryAvailability?.available ?? true,
 						providerUnavailableReason:
-							check?.available === false ? check.reason : undefined,
+							discoveryAvailability?.available === false
+								? discoveryAvailability.reason
+								: undefined,
 						capabilities: provider.capabilities,
 						forkCapability,
 						models,
@@ -703,14 +754,17 @@ export async function loadProviderCatalog(
 			return {
 				id: provider.providerId,
 				label: provider.label ?? provider.providerId,
-				available: check?.available ?? true,
+				available: discoveryAvailability?.available ?? true,
 				unavailableReason:
-					check?.available === false ? check.reason : undefined,
+					discoveryAvailability?.available === false
+						? discoveryAvailability.reason
+						: undefined,
 				models,
 				...(modelCatalogRefresh ? { modelCatalogRefresh } : {}),
 				effortLevels: provider.effortLevels
 					? [...provider.effortLevels]
 					: undefined,
+				effortScope: provider.effortScope,
 				permissionModes: provider.permissionModes
 					? [...provider.permissionModes]
 					: undefined,

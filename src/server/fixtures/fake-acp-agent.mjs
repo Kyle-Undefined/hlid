@@ -11,7 +11,8 @@ import {
 const sessions = new Map();
 const behavior = process.env.HLID_FAKE_ACP_BEHAVIOR ?? "";
 const stableModeBehavior = behavior.startsWith("stable-mode");
-const dependentConfigBehavior = behavior === "dependent-config";
+const dependentConfigBehavior = behavior.startsWith("dependent-config");
+const manyMetadataModels = behavior.startsWith("metadata-efforts-many");
 const supportsResume = ![
 	"hang-load",
 	"reject-load",
@@ -23,44 +24,65 @@ const stall = async (phase) => {
 	process.stderr.write(`fake ${phase} stalled\n`);
 	await never();
 };
+const modelOptions = (session) =>
+	behavior === "cwd-model"
+		? [{ value: session?.model ?? "unknown", name: "Discovery CWD" }]
+		: behavior === "model-plan-option"
+			? [
+					{ value: "code", name: "Code model" },
+					{ value: "plan", name: "Planning model" },
+				]
+			: manyMetadataModels
+				? Array.from({ length: 40 }, (_, index) => ({
+						value: `fake-model-${index}`,
+						name: `Fake Model ${index}`,
+					}))
+				: [
+						{ value: "fake-fast", name: "Fake Fast" },
+						{ value: "fake-smart", name: "Fake Smart" },
+					];
+const thoughtOptions = (session) => {
+	if (
+		behavior === "dependent-config-none-smart" &&
+		session?.model === "fake-smart"
+	) {
+		return null;
+	}
+	if (dependentConfigBehavior && session?.model === "fake-smart") {
+		return [
+			{ value: "high", name: "High" },
+			{ value: "xhigh", name: "Extra High" },
+		];
+	}
+	if (manyMetadataModels) return [{ value: "low", name: "Low" }];
+	return [
+		{ value: "low", name: "Low" },
+		{ value: "medium", name: "Medium" },
+		{ value: "high", name: "High" },
+	];
+};
 const configOptions = (session) => [
 	{
 		type: "select",
 		id: "model",
 		name: "Model",
 		category: "model",
-		currentValue: session?.model ?? "fake-fast",
-		options:
-			behavior === "cwd-model"
-				? [{ value: session?.model ?? "unknown", name: "Discovery CWD" }]
-				: behavior === "model-plan-option"
-					? [
-							{ value: "code", name: "Code model" },
-							{ value: "plan", name: "Planning model" },
-						]
-					: [
-							{ value: "fake-fast", name: "Fake Fast" },
-							{ value: "fake-smart", name: "Fake Smart" },
-						],
+		currentValue:
+			session?.model ?? (manyMetadataModels ? "fake-model-0" : "fake-fast"),
+		options: modelOptions(session),
 	},
-	{
-		type: "select",
-		id: "thought",
-		name: "Reasoning",
-		category: "thought_level",
-		currentValue: session?.effort ?? "medium",
-		options:
-			dependentConfigBehavior && session?.model === "fake-smart"
-				? [
-						{ value: "high", name: "High" },
-						{ value: "xhigh", name: "Extra High" },
-					]
-				: [
-						{ value: "low", name: "Low" },
-						{ value: "medium", name: "Medium" },
-						{ value: "high", name: "High" },
-					],
-	},
+	...(thoughtOptions(session)
+		? [
+				{
+					type: "select",
+					id: "thought",
+					name: "Reasoning",
+					category: "thought_level",
+					currentValue: session?.effort ?? "medium",
+					options: thoughtOptions(session),
+				},
+			]
+		: []),
 	...(stableModeBehavior || dependentConfigBehavior
 		? [
 				{
@@ -134,13 +156,13 @@ const stream = ndJsonStream(
 
 agent({ name: "hlid-fake-agent" })
 	.onRequest("initialize", async () => {
-		if (behavior === "hang-initialize") await stall("initialize");
 		if (process.env.HLID_FAKE_ACP_INITIALIZE_MARKER) {
 			appendFileSync(
 				process.env.HLID_FAKE_ACP_INITIALIZE_MARKER,
 				"initialize\n",
 			);
 		}
+		if (behavior === "hang-initialize") await stall("initialize");
 		return {
 			protocolVersion: PROTOCOL_VERSION,
 			agentCapabilities: {
@@ -174,6 +196,14 @@ agent({ name: "hlid-fake-agent" })
 		return {};
 	})
 	.onRequest("session/list", ({ params }) => {
+		if (
+			behavior === "list-sessions-exact-cwd" &&
+			params.cwd !== process.env.HLID_FAKE_ACP_EXPECT_CWD
+		) {
+			throw new Error(
+				`expected session/list cwd ${process.env.HLID_FAKE_ACP_EXPECT_CWD}, received ${params.cwd}`,
+			);
+		}
 		if (behavior === "list-sessions-oversized") {
 			return {
 				sessions: Array.from({ length: 101 }, (_, index) => ({
@@ -192,6 +222,42 @@ agent({ name: "hlid-fake-agent" })
 				10,
 			);
 			return { sessions: [], nextCursor: `page-${page + 1}` };
+		}
+		if (behavior === "list-sessions-posix-case") {
+			const caseVariant = process.env.HLID_FAKE_ACP_CASE_CWD;
+			if (params.cursor === "next-page") {
+				return {
+					sessions: [
+						{
+							sessionId: "case-only-page-2",
+							cwd: caseVariant,
+							title: "Case-only workspace mismatch",
+						},
+						{
+							sessionId: "native-2",
+							cwd: params.cwd,
+							title: "Second provider session",
+							updatedAt: "2026-08-12T13:00:00.000Z",
+						},
+					],
+				};
+			}
+			return {
+				sessions: [
+					{
+						sessionId: "native-1",
+						cwd: params.cwd,
+						title: "First provider session",
+						updatedAt: "2026-08-12T12:00:00.000Z",
+					},
+					{
+						sessionId: "case-only-page-1",
+						cwd: caseVariant,
+						title: "Case-only workspace mismatch",
+					},
+				],
+				nextCursor: "next-page",
+			};
 		}
 		if (params.cursor === "next-page") {
 			return {
@@ -226,6 +292,12 @@ agent({ name: "hlid-fake-agent" })
 		if (behavior === "hang-new") await stall("session creation");
 		validateSessionInputs(params);
 		const sessionId = "fake-session";
+		if (process.env.HLID_FAKE_ACP_SESSION_MARKER) {
+			appendFileSync(
+				process.env.HLID_FAKE_ACP_SESSION_MARKER,
+				`${sessionId}\n`,
+			);
+		}
 		const session = {
 			cancelled: false,
 			mode:
@@ -236,8 +308,13 @@ agent({ name: "hlid-fake-agent" })
 						: dependentConfigBehavior
 							? "build"
 							: "code",
-			model: behavior === "cwd-model" ? params.cwd : "fake-fast",
-			effort: "medium",
+			model:
+				behavior === "cwd-model"
+					? params.cwd
+					: manyMetadataModels
+						? "fake-model-0"
+						: "fake-fast",
+			effort: manyMetadataModels ? "low" : "medium",
 			mcpCount: params.mcpServers.length,
 			additionalDirectories: params.additionalDirectories ?? [],
 			mcpTransports: params.mcpServers.map((server) => server.type ?? "stdio"),
@@ -363,7 +440,31 @@ agent({ name: "hlid-fake-agent" })
 	.onRequest("session/set_config_option", async ({ params, client }) => {
 		if (behavior === "hang-config") await stall("config option");
 		const session = sessions.get(params.sessionId);
+		if (process.env.HLID_FAKE_ACP_CONFIG_MARKER) {
+			appendFileSync(
+				process.env.HLID_FAKE_ACP_CONFIG_MARKER,
+				`${params.sessionId}:${params.configId}:${params.value}\n`,
+			);
+		}
 		if (session && params.configId === "model") {
+			if (
+				behavior === "metadata-efforts-many-hang-second" &&
+				params.value === "fake-model-1"
+			) {
+				await stall("model effort inspection");
+			}
+			if (
+				behavior === "dependent-config-fail-smart" &&
+				params.value === "fake-smart"
+			) {
+				throw new Error("fake-smart model configuration rejected");
+			}
+			if (
+				behavior === "metadata-efforts-many-fail-second" &&
+				params.value === "fake-model-1"
+			) {
+				throw new Error("fake-model-1 configuration rejected");
+			}
 			session.model =
 				behavior === "misreport-model-selection"
 					? "fake-smart"
@@ -374,7 +475,16 @@ agent({ name: "hlid-fake-agent" })
 				session.effort = "high";
 			}
 		}
-		if (session && params.configId === "thought") session.effort = params.value;
+		if (session && params.configId === "thought") {
+			const advertised = configOptions(session)
+				.find((option) => option.id === "thought")
+				?.options.some((option) => option.value === params.value);
+			if (!advertised) throw new Error(`effort not found: ${params.value}`);
+			session.effort = params.value;
+			if (behavior === "dependent-config-model-drift") {
+				session.model = "fake-fast";
+			}
+		}
 		if (session && params.configId === "mode") session.mode = params.value;
 		if (dependentConfigBehavior) {
 			await client.notify(methods.client.session.update, {

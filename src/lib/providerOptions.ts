@@ -176,7 +176,8 @@ export function codexRealtimeAvailability(
 
 /**
  * Effort options for the currently selected model: the model's own declared
- * `efforts` if present, else the provider-level `effortLevels`, else [].
+ * `efforts` if present. Provider-scoped runtimes may fall back to their global
+ * list; model-scoped runtimes must advertise effort on the exact model.
  */
 export function effortOptionsFor(
 	p: ProviderInfo | undefined,
@@ -184,7 +185,8 @@ export function effortOptionsFor(
 	planMode = false,
 ): EffortOption[] {
 	const model = p?.models?.find((m) => m.value === modelValue);
-	const efforts = model?.efforts ?? p?.effortLevels ?? [];
+	const efforts =
+		model?.efforts ?? (p?.effortScope === "model" ? [] : p?.effortLevels) ?? [];
 	// Codex's native plan-mode override currently supports through xhigh.
 	// Claude's plan workflow has no equivalent plan-specific ceiling.
 	return planMode && p?.id === "codex"

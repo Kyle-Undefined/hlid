@@ -14,7 +14,7 @@ import {
 	type DelegatedLifecycleCounts,
 	withDelegatedAttentionRollups,
 } from "../lib/delegationAttention";
-import { expandTilde, samePath } from "../lib/paths";
+import { declaredPathKey, expandTilde, samePath } from "../lib/paths";
 import { deriveSessionAttention } from "../lib/sessionAttention";
 import type { AgentProvider } from "./agentProvider";
 import type { SessionAttentionSnapshot, SessionStatusEntry } from "./protocol";
@@ -185,6 +185,32 @@ export class SessionPool {
 	/** Look up a registered provider by id (e.g. "claude"). Returns undefined if not registered. */
 	getProvider(providerId: string): AgentProvider | undefined {
 		return this.providers.get(providerId);
+	}
+
+	/**
+	 * Resolve the exact cwd that owned a persisted session's provider runtime.
+	 * Context-mode agents run in the vault; cwd-mode agents run in their own
+	 * registered workspace. Removed or unknown agent workspaces fail closed.
+	 */
+	providerRuntimeCwd(agentCwd: string | null | undefined): string | null {
+		const vaultCwd = this.config.vault.path.trim();
+		if (!agentCwd) return vaultCwd || null;
+		let agentKey: string;
+		try {
+			agentKey = declaredPathKey(agentCwd);
+			if (vaultCwd && declaredPathKey(vaultCwd) === agentKey) return vaultCwd;
+		} catch {
+			return null;
+		}
+		const configured = (this.config.agents ?? []).find((agent) => {
+			try {
+				return declaredPathKey(agent.path) === agentKey;
+			} catch {
+				return false;
+			}
+		});
+		if (!configured) return null;
+		return configured.mode === "context" ? vaultCwd || null : agentCwd;
 	}
 
 	/** Validate an archived Raven selection without reviving a provider session. */

@@ -111,6 +111,8 @@ describe("SessionManager — setModel", () => {
 		const sm = new SessionManager(config, makeProviders(provider));
 
 		await sm.runQuery("hello", emit, { sessionId: "config-session" });
+		emit.mockClear();
+		vi.mocked(dbMock.setSessionEffort).mockClear();
 		captured.params?.onSessionConfigChange?.({
 			models: [{ value: "fake-smart", label: "Fake Smart" }],
 			activeModel: "fake-smart",
@@ -118,6 +120,7 @@ describe("SessionManager — setModel", () => {
 			activeEffort: "high",
 		});
 
+		expect(sm.getStatus().effort).toBe("high");
 		expect(emit).toHaveBeenCalledWith({
 			type: "provider_config_options",
 			provider_id: "acp:fake",
@@ -127,6 +130,149 @@ describe("SessionManager — setModel", () => {
 			effortLevels: [{ value: "high", label: "High" }],
 			activeEffort: "high",
 		});
+		expect(emit).toHaveBeenCalledWith({
+			type: "status",
+			state: "idle",
+			model: "",
+			permission_mode: "default",
+			effort: "high",
+		});
+		await vi.waitFor(() =>
+			expect(dbMock.setSessionEffort).toHaveBeenCalledWith(
+				"config-session",
+				"high",
+				{ guard: expect.any(Function) },
+			),
+		);
+	});
+
+	it("persists a model-dependent ACP effort reset before setModel resolves", async () => {
+		let params: AgentQueryParams | undefined;
+		const setModel = vi.fn(async (model?: string) => {
+			params?.onSessionConfigChange?.({
+				models: [{ value: model ?? "fake-default", label: "Fake" }],
+				activeModel: model ?? "fake-default",
+			});
+		});
+		const provider: AgentProvider = {
+			providerId: "acp:fake",
+			query(queryParams): AgentSession {
+				params = queryParams;
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "acp-native" };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					setModel,
+				};
+			},
+		};
+		const config = makeConfig("fake-old");
+		config.vault_provider = "acp:fake";
+		const emit = vi.fn();
+		const sm = new SessionManager(config, makeProviders(provider));
+		await sm.runQuery("first", emit, { sessionId: "model-effort-reset" });
+		params?.onSessionConfigChange?.({
+			models: [{ value: "fake-old", label: "Fake" }],
+			activeModel: "fake-old",
+			effortLevels: [{ value: "high", label: "High" }],
+			activeEffort: "high",
+		});
+		await vi.waitFor(() => expect(sm.getStatus().effort).toBe("high"));
+		vi.mocked(dbMock.setSessionEffort).mockClear();
+		vi.mocked(dbMock.setSessionModel).mockClear();
+		emit.mockClear();
+
+		await sm.setModel("fake-new");
+
+		expect(setModel).toHaveBeenCalledWith("fake-new");
+		expect(sm.getStatus()).toMatchObject({
+			model: "fake-new",
+			effort: "",
+		});
+		expect(dbMock.setSessionEffort).toHaveBeenCalledWith(
+			"model-effort-reset",
+			null,
+			{ guard: expect.any(Function) },
+		);
+		expect(dbMock.setSessionModel).toHaveBeenCalledWith(
+			"model-effort-reset",
+			"fake-new",
+			expect.objectContaining({
+				guard: expect.any(Function),
+				onCommitted: expect.any(Function),
+			}),
+		);
+		expect(
+			vi.mocked(dbMock.setSessionEffort).mock.invocationCallOrder[0] ??
+				Number.POSITIVE_INFINITY,
+		).toBeLessThan(
+			vi.mocked(dbMock.setSessionModel).mock.invocationCallOrder[0] ?? 0,
+		);
+		expect(emit).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "status", effort: "" }),
+		);
+	});
+
+	it("revises the active turn manifest to the effort ACP actually accepted", async () => {
+		const provider: AgentProvider = {
+			providerId: "acp:fake",
+			query(params): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "acp-native" };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn(async () => {
+						params.onSessionConfigChange?.({
+							models: [{ value: "fake-model", label: "Fake" }],
+							activeModel: "fake-model",
+							effortLevels: [{ value: "high", label: "High" }],
+							activeEffort: "high",
+						});
+					}),
+				};
+			},
+		};
+		const config = makeConfig("fake-model");
+		config.vault_provider = "acp:fake";
+		const sm = new SessionManager(config, makeProviders(provider));
+		await sm.setProvider("acp:fake", { effort: "medium" });
+		vi.mocked(dbMock.setSessionEffort).mockClear();
+		vi.mocked(dbMock.replaceUserMessageContextManifest).mockClear();
+
+		await sm.runQuery("first", vi.fn(), {
+			sessionId: "accepted-effort-manifest",
+		});
+
+		expect(sm.getStatus().effort).toBe("high");
+		expect(dbMock.setSessionEffort).toHaveBeenCalledWith(
+			"accepted-effort-manifest",
+			"high",
+			{ guard: expect.any(Function) },
+		);
+		expect(dbMock.replaceUserMessageContextManifest).toHaveBeenCalledOnce();
+		const manifestWrite = vi.mocked(dbMock.replaceUserMessageContextManifest)
+			.mock.calls[0];
+		expect(JSON.parse(manifestWrite?.[2] ?? "{}").effort).toBe("medium");
+		expect(JSON.parse(manifestWrite?.[3] ?? "{}").effort).toBe("high");
 	});
 
 	it("replays live dependent options without starting a provider and delegates mode changes", async () => {
@@ -538,6 +684,132 @@ describe("SessionManager — setModel", () => {
 		expect(captured.params?.effort).toBe("high");
 	});
 
+	it("uses the exact workspace runtime for ACP restore, persistence, and live reuse", async () => {
+		vi.mocked(dbMock.setSessionProviderSession).mockClear();
+		const { provider } = makeCaptureProvider("acp:opencode");
+		const query = vi.spyOn(provider, "query");
+		const sessionContinuityIdentityFor = vi.fn((cwd: string) =>
+			cwd === "/tmp/hlid-test-vault" ? "vault-runtime" : `runtime:${cwd}`,
+		);
+		const runtimeIdentityFor = vi.fn((cwd: string) => `runtime:${cwd}`);
+		const routedProvider: AgentProvider = {
+			...provider,
+			sessionContinuityIdentityFor,
+			runtimeIdentityFor,
+		};
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "workspace-routed-opencode",
+			label: "Workspace-routed OpenCode",
+		} as never);
+		vi.mocked(dbMock.getSessionProviderId).mockResolvedValueOnce(
+			"acp:opencode",
+		);
+		vi.mocked(dbMock.getSessionProviderSession).mockResolvedValueOnce(
+			"native-current",
+		);
+		vi.mocked(dbMock.getSessionProviderRuntimeIdentity).mockResolvedValueOnce(
+			"vault-runtime",
+		);
+		vi.mocked(resolveExecutionContext)
+			.mockReturnValueOnce({
+				activeCwd: "C:\\Users\\kyle\\Vault",
+				extraDirs: new Set(),
+				executable: undefined,
+			})
+			.mockReturnValueOnce({
+				activeCwd: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\vault",
+				extraDirs: new Set(),
+				executable: undefined,
+			});
+		const config = makeConfig("");
+		config.vault_provider = "acp:opencode";
+		const sm = new SessionManager(config, makeProviders(routedProvider));
+
+		await sm.runQuery("windows", () => {}, {
+			sessionId: "workspace-routed-opencode",
+		});
+		await sm.runQuery("wsl", () => {}, {
+			sessionId: "workspace-routed-opencode",
+		});
+
+		expect(query).toHaveBeenCalledTimes(2);
+		expect(runtimeIdentityFor).toHaveBeenNthCalledWith(
+			1,
+			"C:\\Users\\kyle\\Vault",
+		);
+		expect(runtimeIdentityFor).toHaveBeenNthCalledWith(
+			2,
+			"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\vault",
+		);
+		expect(sessionContinuityIdentityFor).toHaveBeenCalledWith(
+			"/tmp/hlid-test-vault",
+		);
+		expect(dbMock.setSessionProviderSession).toHaveBeenCalledWith(
+			"workspace-routed-opencode",
+			"acp:opencode",
+			"sdk-1",
+			"runtime:C:\\Users\\kyle\\Vault",
+		);
+	});
+
+	it("restores a context-mode WSL agent against the Windows vault runtime", async () => {
+		const agentCwd =
+			"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\development\\repos\\hlid";
+		const { provider, captured } = makeCaptureProvider("acp:opencode");
+		const sessionContinuityIdentityFor = vi.fn((cwd: string) =>
+			cwd === "/tmp/hlid-test-vault" ? "host-vault-runtime" : "wsl-runtime",
+		);
+		const routedProvider: AgentProvider = {
+			...provider,
+			sessionContinuityIdentityFor,
+			runtimeIdentityFor: (cwd) => `runtime:${cwd}`,
+		};
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "context-opencode",
+			label: "Context OpenCode",
+		} as never);
+		vi.mocked(dbMock.getSessionMessages).mockResolvedValueOnce([
+			{ role: "user", text: "prior" },
+		] as never);
+		vi.mocked(dbMock.getSessionAgentCwd).mockResolvedValueOnce(agentCwd);
+		vi.mocked(dbMock.getSessionProviderId).mockResolvedValueOnce(
+			"acp:opencode",
+		);
+		vi.mocked(dbMock.getSessionProviderSession).mockResolvedValueOnce(
+			"native-context",
+		);
+		vi.mocked(dbMock.getSessionProviderRuntimeIdentity).mockResolvedValueOnce(
+			"host-vault-runtime",
+		);
+		vi.mocked(agentPathsMock.resolveAgentMode).mockReturnValueOnce("context");
+		vi.mocked(resolveExecutionContext).mockReturnValueOnce({
+			activeCwd: "/tmp/hlid-test-vault",
+			extraDirs: new Set(),
+			executable: undefined,
+		});
+		const config = makeConfig("");
+		config.vault_provider = "acp:opencode";
+		config.agents = [
+			{
+				name: "Hlid",
+				path: agentCwd,
+				mode: "context",
+				provider: "acp:opencode",
+			},
+		];
+		const sm = new SessionManager(config, makeProviders(routedProvider));
+
+		await sm.runQuery("continue", vi.fn(), { sessionId: "context-opencode" });
+
+		expect(sessionContinuityIdentityFor).toHaveBeenCalledWith(
+			"/tmp/hlid-test-vault",
+		);
+		expect(captured.params).toMatchObject({
+			cwd: "/tmp/hlid-test-vault",
+			sessionId: "native-context",
+		});
+	});
+
 	it("resumes a provider-native ACP import only under its matching runtime", async () => {
 		const { provider, captured } = makeCaptureProvider("acp:opencode");
 		const continuityProvider: AgentProvider = {
@@ -863,6 +1135,44 @@ describe("SessionManager — setModel", () => {
 			effort: "high",
 			permission_mode: "bypassPermissions",
 		});
+	});
+
+	it("restores an ACP provider-default effort instead of the configured Codex effort", async () => {
+		const { provider: codexProvider } = makeCaptureProvider("codex");
+		const { provider: openCodeProvider, captured } =
+			makeCaptureProvider("acp:opencode");
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "saved-opencode-default-effort",
+			label: "Saved OpenCode",
+			selected_effort: null,
+		} as never);
+		vi.mocked(dbMock.getSessionMessages).mockResolvedValueOnce([
+			{ role: "user", text: "prior" },
+		] as never);
+		vi.mocked(dbMock.getSessionModel).mockResolvedValueOnce(
+			"opencode/deepseek-v4-flash-free",
+		);
+		vi.mocked(dbMock.getSessionProviderId).mockResolvedValueOnce(
+			"acp:opencode",
+		);
+		const config = makeConfig();
+		config.vault_provider = "codex";
+		config.codex.effort = "medium";
+		config.acp_agents = [{ id: "opencode" }];
+		const sm = new SessionManager(
+			config,
+			new Map([
+				["codex", codexProvider],
+				["acp:opencode", openCodeProvider],
+			]),
+		);
+
+		await sm.runQuery("continue", () => {}, {
+			sessionId: "saved-opencode-default-effort",
+		});
+
+		expect(captured.params?.effort).toBeUndefined();
+		expect(sm.getStatus().effort).toBe("");
 	});
 
 	it("restores a saved session label into live status", async () => {
@@ -1439,6 +1749,83 @@ describe("SessionManager — setProvider", () => {
 			sessionId: "replace-opencode-chat",
 		});
 		expect(replacement.getSession()).toBeDefined();
+	});
+
+	it("does not silently fall back when an explicitly selected ACP provider is temporarily absent", async () => {
+		const { provider: codexProvider } = makeCaptureProvider("codex");
+		const { provider: openCodeProvider } = makeCaptureProvider("acp:opencode");
+		const providers = new Map([
+			["codex", codexProvider],
+			["acp:opencode", openCodeProvider],
+		]);
+		const sm = new SessionManager(makeConfig("gpt-5.5"), providers);
+		await sm.setProvider("acp:opencode", { model: "open-model" });
+
+		providers.delete("acp:opencode");
+
+		expect(() => sm.getProviderId()).toThrow(
+			"Explicitly selected provider acp:opencode is unavailable",
+		);
+	});
+
+	it("keeps an omitted ACP effort on the provider default through first-chat configuration", async () => {
+		const agentPath = "/tmp/test-agent-acp-default-effort";
+		const config = makeConfigWithAgent(agentPath, {
+			provider: "codex",
+			effort: "high",
+		});
+		config.acp_agents = [{ id: "opencode" }];
+		const { provider: codexProvider } = makeCaptureProvider("codex");
+		const { provider: openCodeProvider, captured } =
+			makeCaptureProvider("acp:opencode");
+		const sm = new SessionManager(
+			config,
+			new Map([
+				["codex", codexProvider],
+				["acp:opencode", openCodeProvider],
+			]),
+			agentPath,
+		);
+
+		await sm.setProvider("acp:opencode");
+		await sm.setInitialChatSelection({});
+		await sm.runQuery("use OpenCode", () => {}, {
+			sessionId: "opencode-default-effort",
+			agentCwd: agentPath,
+		});
+
+		expect(captured.params?.effort).toBeUndefined();
+		expect(sm.getStatus().effort).toBe("");
+	});
+
+	it("preserves an explicit ACP effort through first-chat configuration", async () => {
+		const agentPath = "/tmp/test-agent-acp-explicit-effort";
+		const config = makeConfigWithAgent(agentPath, {
+			provider: "codex",
+			effort: "high",
+		});
+		config.acp_agents = [{ id: "opencode" }];
+		const { provider: codexProvider } = makeCaptureProvider("codex");
+		const { provider: openCodeProvider, captured } =
+			makeCaptureProvider("acp:opencode");
+		const sm = new SessionManager(
+			config,
+			new Map([
+				["codex", codexProvider],
+				["acp:opencode", openCodeProvider],
+			]),
+			agentPath,
+		);
+
+		await sm.setProvider("acp:opencode", { effort: "high" });
+		await sm.setInitialChatSelection({});
+		await sm.runQuery("use OpenCode", () => {}, {
+			sessionId: "opencode-explicit-effort",
+			agentCwd: agentPath,
+		});
+
+		expect(captured.params?.effort).toBe("high");
+		expect(sm.getStatus().effort).toBe("high");
 	});
 
 	it("resets a newly filtered model while preserving the OpenCode provider", async () => {
@@ -3417,51 +3804,60 @@ describe("SessionManager — recap model resolution", () => {
 	});
 });
 
-describe("SessionManager — provider-specific recap settings", () => {
+describe("SessionManager — configured-context recap policy", () => {
 	function recapTriggerProvider(providerId: string): AgentProvider {
 		return { ...makeRecapTriggerProvider(), providerId };
 	}
 
-	it("honors disabled recaps after switching to an ACP provider", async () => {
+	for (const [label, target] of [
+		["Windows", { kind: "host" }],
+		["WSL", { kind: "wsl", distro: "Ubuntu-24.04" }],
+	] as const) {
+		it(`keeps disabled vault recaps after a direct ${label} ACP switch`, async () => {
+			const config = makeConfig();
+			config.vault_provider = "codex";
+			config.codex.turn_recaps = false;
+			config.acp_agents = [
+				{
+					id: "opencode",
+					target,
+					// A temporary provider choice must not replace the Raven context policy.
+					turn_recaps: true,
+				},
+			];
+			const sm = new SessionManager(
+				config,
+				new Map([
+					["codex", recapTriggerProvider("codex")],
+					["acp:opencode", recapTriggerProvider("acp:opencode")],
+				]),
+			);
+
+			await sm.setProvider("acp:opencode");
+			vi.mocked(generateTurnRecap).mockClear();
+			await sm.runQuery(`use ${label} OpenCode`, () => {}, {
+				sessionId: `recap-switch-disabled-${label.toLowerCase()}`,
+			});
+
+			expect(generateTurnRecap).not.toHaveBeenCalled();
+		});
+	}
+
+	it("keeps enabled vault recaps while using the answering provider's recap model", async () => {
 		const config = makeConfig();
-		config.claude.turn_recaps = true;
+		config.vault_provider = "codex";
+		config.codex.turn_recaps = true;
 		config.acp_agents = [
 			{
 				id: "opencode",
 				turn_recaps: false,
-			},
-		];
-		const sm = new SessionManager(
-			config,
-			new Map([
-				["claude", recapTriggerProvider("claude")],
-				["acp:opencode", recapTriggerProvider("acp:opencode")],
-			]),
-		);
-
-		await sm.setProvider("acp:opencode");
-		vi.mocked(generateTurnRecap).mockClear();
-		await sm.runQuery("use OpenCode", () => {}, {
-			sessionId: "recap-switch-disabled",
-		});
-
-		expect(generateTurnRecap).not.toHaveBeenCalled();
-	});
-
-	it("honors enabled recaps and their model after switching providers", async () => {
-		const config = makeConfig();
-		config.claude.turn_recaps = false;
-		config.acp_agents = [
-			{
-				id: "opencode",
-				turn_recaps: true,
 				recap_model: "opencode/recap-model",
 			},
 		];
 		const sm = new SessionManager(
 			config,
 			new Map([
-				["claude", recapTriggerProvider("claude")],
+				["codex", recapTriggerProvider("codex")],
 				["acp:opencode", recapTriggerProvider("acp:opencode")],
 			]),
 		);
@@ -3477,6 +3873,31 @@ describe("SessionManager — provider-specific recap settings", () => {
 			recapModel: "opencode/recap-model",
 			provider: expect.objectContaining({ providerId: "acp:opencode" }),
 		});
+	});
+
+	it("uses the configured agent provider's policy across a direct ACP switch", async () => {
+		const agentPath = "/tmp/test-agent-recap-context";
+		const config = makeConfigWithAgent(agentPath, { provider: "codex" });
+		config.claude.turn_recaps = true;
+		config.codex.turn_recaps = false;
+		config.acp_agents = [{ id: "opencode", turn_recaps: true }];
+		const sm = new SessionManager(
+			config,
+			new Map([
+				["codex", recapTriggerProvider("codex")],
+				["acp:opencode", recapTriggerProvider("acp:opencode")],
+			]),
+			agentPath,
+		);
+
+		await sm.setProvider("acp:opencode");
+		vi.mocked(generateTurnRecap).mockClear();
+		await sm.runQuery("use OpenCode", () => {}, {
+			sessionId: "recap-agent-provider-policy",
+			agentCwd: agentPath,
+		});
+
+		expect(generateTurnRecap).not.toHaveBeenCalled();
 	});
 });
 
@@ -3612,9 +4033,9 @@ describe("SessionManager — provider resolution", () => {
 		expect(captured.params).toMatchObject({
 			providerId: "acp:pi-acp",
 			model: "",
-			effort: "",
 			permissionMode: "default",
 		});
+		expect(captured.params?.effort).toBeUndefined();
 		expect(captured.params?.model).not.toBe(config.claude.model);
 	});
 

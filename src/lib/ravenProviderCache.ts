@@ -36,6 +36,7 @@ const catalogRefreshes = new Map<string, RavenProviderRefresh>();
 const catalogCaches = new Map<string, RavenProviderCacheEntry>();
 const catalogGenerations = new Map<string, number>();
 const sessionRefreshes = new Map<string, RavenSessionRefresh>();
+const catalogCacheListeners = new Set<() => void>();
 
 function workspaceKey(discoveryCwd: string | undefined): string {
 	const cwd = discoveryCwd?.trim();
@@ -60,6 +61,70 @@ function rememberBounded<T>(map: Map<string, T>, key: string, value: T): void {
 		if (oldest !== undefined) map.delete(oldest);
 	}
 	map.set(key, value);
+}
+
+function publishCatalogCache(
+	key: string,
+	value: RavenProviderCacheEntry,
+): void {
+	rememberBounded(catalogCaches, key, value);
+	for (const listener of catalogCacheListeners) listener();
+}
+
+function deleteCatalogCache(key: string): void {
+	if (!catalogCaches.delete(key)) return;
+	for (const listener of catalogCacheListeners) listener();
+}
+
+/**
+ * Subscribe to accepted exact-workspace provider snapshots. Raven uses this
+ * to consume a live refresh even when the provider-selection effect that
+ * started it was superseded by an acknowledgement, navigation, or temporary
+ * provider change.
+ */
+export function subscribeRavenProviderCache(listener: () => void): () => void {
+	catalogCacheListeners.add(listener);
+	return () => catalogCacheListeners.delete(listener);
+}
+
+/**
+ * Return the last accepted exact-workspace snapshot without starting any work.
+ *
+ * This external-store view intentionally remains stable across TTL, revision,
+ * and in-flight generation changes. Those conditions decide when the next read
+ * or refresh must run; they must not make React's snapshot change without a
+ * matching subscriber notification. Cached rows are display-only until Raven's
+ * exact live refresh marks them current.
+ */
+export function getRavenProviderCacheSnapshot(
+	discoveryCwd?: string,
+): RavenProviders | null {
+	const key = workspaceKey(discoveryCwd);
+	return catalogCaches.get(key)?.value ?? null;
+}
+
+/**
+ * Whether one exact-workspace ACP provider has non-empty model metadata that
+ * is still accepted for the current provider revision and cache generation.
+ * A stale/unavailable explicit refresh remains last-good display data only.
+ */
+export function hasFreshRavenProviderModels(
+	providerId: string,
+	discoveryCwd?: string,
+): boolean {
+	const key = workspaceKey(discoveryCwd);
+	const entry = catalogCaches.get(key);
+	if (
+		entry === undefined ||
+		Date.now() >= entry.expiresAt ||
+		entry.revision < getDataRevisionSnapshot().providers ||
+		entry.generation !== currentGeneration(key)
+	) {
+		return false;
+	}
+	const provider = entry.value.find((candidate) => candidate.id === providerId);
+	if (!provider || (provider.models?.length ?? 0) === 0) return false;
+	return provider.modelCatalogRefresh?.status === "current";
 }
 
 function cacheLifetime(value: RavenProviders): number {
@@ -149,7 +214,7 @@ export function loadRavenProviders(
 					currentGeneration(key) === generation &&
 					catalogReads.get(key) === entry
 				) {
-					rememberBounded(catalogCaches, key, {
+					publishCatalogCache(key, {
 						revision,
 						generation,
 						value,
@@ -166,7 +231,7 @@ export function loadRavenProviders(
 					currentCache?.revision === revision &&
 					currentCache.generation === generation
 				) {
-					catalogCaches.delete(key);
+					deleteCatalogCache(key);
 				}
 				throw error;
 			},
@@ -283,7 +348,7 @@ export function refreshRavenProvider(
 					currentGeneration(key) === generation &&
 					catalogRefreshes.get(key) === entry
 				) {
-					rememberBounded(catalogCaches, key, {
+					publishCatalogCache(key, {
 						revision: responseRevision ?? revision,
 						generation,
 						value: effectiveValue,
@@ -307,7 +372,7 @@ export function refreshRavenProvider(
 						previous.value,
 						providerId,
 					);
-					rememberBounded(catalogCaches, key, {
+					publishCatalogCache(key, {
 						...previous,
 						generation,
 						value: fallbackValue,
@@ -392,4 +457,5 @@ export function resetRavenProviderCacheForTesting(): void {
 	catalogCaches.clear();
 	catalogGenerations.clear();
 	sessionRefreshes.clear();
+	catalogCacheListeners.clear();
 }

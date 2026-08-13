@@ -12,8 +12,12 @@ import { pathStartsWith } from "../lib/paths";
 import { previewRoutineOccurrences } from "../lib/routineSchedule";
 import { routineScheduleSchema } from "../lib/routines";
 import type { AgentToolPayload } from "./agentToolResult";
+import {
+	HLID_SERVER_RUN_LOG_MESSAGE,
+	HLID_SERVER_RUN_LOG_SOURCE,
+} from "./consoleLog";
 import { artifactDirectory } from "./libraryStore";
-import { safeErrorSummary } from "./requestDiagnostics";
+import { safeDiagnosticText, safeErrorSummary } from "./requestDiagnostics";
 
 const MAX_RELIC_RESULTS = 50;
 const MAX_RELIC_READ_BYTES = 20 * 1024 * 1024;
@@ -90,6 +94,7 @@ export const hlidInspectionSchemas = {
 		level: z.enum(["all", "error", "warn", "info"]).optional(),
 		query: z.string().trim().max(200).optional(),
 		limit: z.number().int().min(1).max(100).optional(),
+		scope: z.enum(["current", "retained"]).optional(),
 	}),
 	list_hlid_routines: z.object({
 		include_archived: z.boolean().optional(),
@@ -463,32 +468,64 @@ export async function executeInspectHlidDiagnostics(
 ): Promise<string> {
 	const parsed = hlidInspectionSchemas.inspect_hlid_diagnostics.parse(input);
 	const requested = parsed.limit ?? 30;
-	const result = await db.getLogs(
-		1,
-		parsed.query ? Math.min(200, requested * 4) : requested,
-		parsed.level && parsed.level !== "all" ? parsed.level : undefined,
-	);
+	// The Event Log intentionally survives restarts. Agent-facing inspection is
+	// current-run by default so a provider does not attribute an old tool failure
+	// or provider outage to the chat that happens to inspect it. Fetching the
+	// complete retained window is bounded by the database's 1,000-row cap and is
+	// also necessary to locate the latest authoritative server-start marker.
+	const result = await db.getLogs(1, 1_000);
+	const retainedLogs = result.logs;
+	const latestServerStart =
+		retainedLogs.find(
+			(row) =>
+				row.source === HLID_SERVER_RUN_LOG_SOURCE &&
+				row.message === HLID_SERVER_RUN_LOG_MESSAGE,
+		) ??
+		retainedLogs.find(
+			(row) =>
+				row.source === "console" && /\bHlid server on :\d+\b/.test(row.message),
+		);
+	const requestedScope = parsed.scope ?? "current";
+	const currentRunAvailable = Boolean(latestServerStart);
+	const scope = requestedScope;
+	const scopedLogs =
+		scope === "current" && latestServerStart
+			? retainedLogs.filter((row) => row.id >= latestServerStart.id)
+			: scope === "retained"
+				? retainedLogs
+				: [];
+	const counts = { error: 0, warn: 0, info: 0 };
+	for (const row of scopedLogs) counts[row.level] += 1;
 	const query = parsed.query?.toLowerCase();
-	const logs = result.logs
+	const matchingLogs = scopedLogs
 		.map((row) => ({
 			id: row.id,
 			timestamp: row.timestamp,
 			level: row.level,
-			source: row.source.slice(0, 120),
-			message: safeErrorSummary(row.message),
+			source: safeDiagnosticText(row.source).slice(0, 120),
+			message: safeDiagnosticText(row.message),
 		}))
 		.filter(
 			(row) =>
-				!query || `${row.source} ${row.message}`.toLowerCase().includes(query),
-		)
-		.slice(0, requested);
+				(!parsed.level ||
+					parsed.level === "all" ||
+					row.level === parsed.level) &&
+				(!query ||
+					`${row.source} ${row.message}`.toLowerCase().includes(query)),
+		);
+	const logs = matchingLogs.slice(0, requested);
 	return JSON.stringify({
-		counts: result.counts,
-		filtered_total: result.total,
+		scope,
+		requested_scope: requestedScope,
+		current_run_available: currentRunAvailable,
+		since: scope === "current" ? (latestServerStart?.timestamp ?? null) : null,
+		counts,
+		filtered_total: matchingLogs.length,
 		returned: logs.length,
 		logs,
+		retained_total: result.total,
 		redaction:
-			"Paths, URLs, UUIDs, control characters, and stored detail payloads are omitted or redacted.",
+			"Paths, URLs, UUIDs, control characters, and stored detail payloads are omitted or redacted. Current scope begins at the latest retained Hlid server-start marker and returns no rows when that boundary is unavailable; use scope=retained only for historical investigation.",
 	});
 }
 
