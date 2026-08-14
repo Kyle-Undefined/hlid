@@ -8,11 +8,17 @@ import {
 	modelOptions,
 } from "#/lib/providerOptions";
 import type { ProviderInfo } from "#/lib/providerTypes";
+import {
+	getPushNotificationDevices,
+	type PushNotificationDevice,
+} from "#/lib/pushNotifications";
 import { localTimeInTimezone } from "#/lib/routineSchedule";
 import type {
 	RoutineDefinition,
 	RoutineDelivery,
 	RoutineGrantCapability,
+	RoutineNotificationMode,
+	RoutineNotificationPolicy,
 	RoutinePermissionGrantInput,
 	RoutineSchedule,
 	RoutineSummary,
@@ -20,6 +26,7 @@ import type {
 import {
 	archiveRoutineFn,
 	createRoutineFn,
+	getRoutineRunFn,
 	getRoutineRunsFn,
 	previewRoutineScheduleFn,
 	runRoutineNowFn,
@@ -440,6 +447,250 @@ function DeliveryEditor({
 	);
 }
 
+const NOTIFICATION_MODE_OPTIONS: Array<{
+	value: RoutineNotificationMode;
+	label: string;
+}> = [
+	{ value: "default", label: "Follow device settings" },
+	{ value: "notify", label: "Always notify" },
+	{ value: "mute", label: "Mute" },
+];
+
+const ROUTINE_NOTIFICATION_DEVICE_ID =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function validNotificationTargets(policy: RoutineNotificationPolicy): boolean {
+	return (
+		policy.targets.kind === "all" ||
+		(policy.targets.deviceIds.length > 0 &&
+			policy.targets.deviceIds.length <= 32 &&
+			new Set(policy.targets.deviceIds).size ===
+				policy.targets.deviceIds.length &&
+			policy.targets.deviceIds.every((id) =>
+				ROUTINE_NOTIFICATION_DEVICE_ID.test(id),
+			))
+	);
+}
+
+function NotificationPolicyEditor({
+	policy,
+	onChange,
+}: {
+	policy: RoutineNotificationPolicy;
+	onChange: (policy: RoutineNotificationPolicy) => void;
+}) {
+	const [devices, setDevices] = useState<PushNotificationDevice[]>([]);
+	const [devicesLoading, setDevicesLoading] = useState(true);
+	const [deviceError, setDeviceError] = useState<string | null>(null);
+	const deviceRequest = useRef(0);
+	const loadDevices = useCallback(async () => {
+		const request = ++deviceRequest.current;
+		setDevicesLoading(true);
+		setDeviceError(null);
+		try {
+			const next = await getPushNotificationDevices();
+			if (deviceRequest.current !== request) return;
+			setDevices(
+				[...next].sort(
+					(left, right) =>
+						Number(right.current) - Number(left.current) ||
+						left.name.localeCompare(right.name),
+				),
+			);
+		} catch (cause) {
+			if (deviceRequest.current !== request) return;
+			setDeviceError(
+				cause instanceof Error
+					? cause.message
+					: "Could not load notification devices.",
+			);
+		} finally {
+			if (deviceRequest.current === request) setDevicesLoading(false);
+		}
+	}, []);
+	useEffect(() => {
+		void loadDevices();
+		return () => {
+			deviceRequest.current += 1;
+		};
+	}, [loadDevices]);
+	const updateMode = (
+		key: "success" | "actionRequired" | "failure",
+		value: RoutineNotificationMode,
+	) => onChange({ ...policy, [key]: value });
+	const targetsValid = validNotificationTargets(policy);
+	const targetIds =
+		policy.targets.kind === "devices" ? policy.targets.deviceIds : [];
+	const missingTargetIds = targetIds.filter(
+		(id) => !devices.some((device) => device.id === id),
+	);
+	const limitReached = targetIds.length >= 32;
+	const toggleDevice = (id: string, checked: boolean) => {
+		if (policy.targets.kind !== "devices") return;
+		if (checked && (policy.targets.deviceIds.includes(id) || limitReached))
+			return;
+		onChange({
+			...policy,
+			targets: {
+				kind: "devices",
+				deviceIds: checked
+					? [...policy.targets.deviceIds, id]
+					: policy.targets.deviceIds.filter((candidate) => candidate !== id),
+			},
+		});
+	};
+	return (
+		<div className="space-y-3 border border-border bg-secondary/20 p-3">
+			<div>
+				<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+					Notifications
+				</div>
+				<p className="mt-1 text-[10px] text-muted-foreground">
+					Choose alerts for this Routine. Default follows each target
+					device&apos;s notification settings.
+				</p>
+			</div>
+			<div className="grid gap-2 sm:grid-cols-3">
+				{(
+					[
+						["success", "Success"],
+						["actionRequired", "Action required"],
+						["failure", "Failure"],
+					] as const
+				).map(([key, label]) => (
+					<label
+						key={key}
+						className="space-y-1 text-[9px] tracking-widest text-muted-foreground uppercase"
+					>
+						{label}
+						<select
+							aria-label={`${label} notifications`}
+							value={policy[key]}
+							onChange={(event) =>
+								updateMode(key, event.target.value as RoutineNotificationMode)
+							}
+							className="mt-1 w-full border border-border bg-input px-2 py-2 text-xs normal-case tracking-normal text-foreground"
+						>
+							{NOTIFICATION_MODE_OPTIONS.map((option) => (
+								<option key={option.value} value={option.value}>
+									{option.label}
+								</option>
+							))}
+						</select>
+					</label>
+				))}
+			</div>
+			<label className="block space-y-1 text-[9px] tracking-widest text-muted-foreground uppercase">
+				Deliver to
+				<select
+					aria-label="Routine notification targets"
+					value={policy.targets.kind}
+					onChange={(event) => {
+						if (event.target.value === "all") {
+							onChange({ ...policy, targets: { kind: "all" } });
+							return;
+						}
+						onChange({
+							...policy,
+							targets: { kind: "devices", deviceIds: [] },
+						});
+					}}
+					className="mt-1 w-full border border-border bg-input px-2 py-2 text-xs normal-case tracking-normal text-foreground sm:max-w-xs"
+				>
+					<option value="all">All subscribed devices</option>
+					<option value="devices">Specific devices</option>
+				</select>
+			</label>
+			{policy.targets.kind === "devices" && (
+				<fieldset className="space-y-1.5 border border-border/60 p-2">
+					<legend className="px-1 text-[9px] tracking-widest text-muted-foreground uppercase">
+						Specific notification devices
+					</legend>
+					{devicesLoading && (
+						<div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+							Loading subscribed devices…
+						</div>
+					)}
+					{!devicesLoading && devices.length === 0 && !deviceError && (
+						<p className="text-[10px] text-muted-foreground">
+							No subscribed devices. Add one in Forge first.
+						</p>
+					)}
+					{devices.map((device) => {
+						const checked = targetIds.includes(device.id);
+						return (
+							<label
+								key={device.id}
+								title={device.id}
+								className="flex min-h-11 items-center gap-2 text-xs text-foreground/80 lg:min-h-0"
+							>
+								<input
+									type="checkbox"
+									checked={checked}
+									disabled={!checked && limitReached}
+									onChange={(event) =>
+										toggleDevice(device.id, event.target.checked)
+									}
+									className="h-4 w-4 accent-primary"
+								/>
+								<span>
+									{device.name}
+									{device.current ? " (this device)" : ""}
+									{!device.enabled ? " · disabled" : ""}
+								</span>
+							</label>
+						);
+					})}
+					{missingTargetIds.map((id) => (
+						<label
+							key={id}
+							className="flex min-h-11 items-center gap-2 text-[10px] text-muted-foreground lg:min-h-0"
+						>
+							<input
+								type="checkbox"
+								checked
+								onChange={() => toggleDevice(id, false)}
+								className="h-4 w-4 accent-primary"
+							/>
+							<span className="break-all">Unavailable device {id}</span>
+						</label>
+					))}
+					{deviceError && (
+						<div className="flex flex-wrap items-center gap-2">
+							<p role="alert" className="text-[10px] text-destructive">
+								{deviceError}
+							</p>
+							<button
+								type="button"
+								disabled={devicesLoading}
+								onClick={() => void loadDevices()}
+								className="min-h-11 border border-border px-2 py-1 text-[9px] tracking-wider uppercase lg:min-h-0"
+							>
+								Retry devices
+							</button>
+						</div>
+					)}
+					<p className="text-[10px] text-muted-foreground">
+						Choose up to 32 subscribed devices by name.
+					</p>
+					{limitReached && (
+						<p className="text-[10px] text-muted-foreground">
+							32-device limit reached. Remove one to choose another.
+						</p>
+					)}
+				</fieldset>
+			)}
+			{!targetsValid && (
+				<div role="alert" className="text-[10px] text-destructive">
+					{targetIds.length > 32
+						? "Choose no more than 32 exact notification devices."
+						: "Choose at least one available notification device."}
+				</div>
+			)}
+		</div>
+	);
+}
+
 function VaultNoteSelector({
 	value,
 	onSelect,
@@ -455,11 +706,12 @@ function VaultNoteSelector({
 	const requestId = useRef(0);
 	useEffect(() => {
 		if (!open) return;
-		const currentRequest = ++requestId.current;
 		setLoading(true);
 		setError(null);
-		const timer = window.setTimeout(
-			() => {
+		return scheduleRoutineReferenceSearch(
+			requestId,
+			query,
+			(currentRequest) => {
 				void searchVaultReferencesFn({
 					data: { query: query.trim(), limit: 40, notesOnly: true },
 				})
@@ -479,12 +731,7 @@ function VaultNoteSelector({
 						if (requestId.current === currentRequest) setLoading(false);
 					});
 			},
-			query.trim() ? 120 : 0,
 		);
-		return () => {
-			window.clearTimeout(timer);
-			if (requestId.current === currentRequest) requestId.current++;
-		};
 	}, [open, query]);
 	return (
 		<div className="space-y-2">
@@ -561,6 +808,22 @@ function VaultNoteSelector({
 	);
 }
 
+function scheduleRoutineReferenceSearch(
+	requestId: { current: number },
+	query: string,
+	search: (currentRequest: number) => void,
+): () => void {
+	const currentRequest = ++requestId.current;
+	const timer = window.setTimeout(
+		() => search(currentRequest),
+		query.trim() ? 120 : 0,
+	);
+	return () => {
+		window.clearTimeout(timer);
+		if (requestId.current === currentRequest) requestId.current++;
+	};
+}
+
 function RoutineInputSelector({
 	definition,
 	setDefinition,
@@ -600,11 +863,12 @@ function RoutineInputSelector({
 
 	useEffect(() => {
 		if (!open) return;
-		const currentRequest = ++requestId.current;
 		setLoading(true);
 		setError(null);
-		const timer = window.setTimeout(
-			() => {
+		return scheduleRoutineReferenceSearch(
+			requestId,
+			query,
+			(currentRequest) => {
 				void Promise.all([
 					searchVaultReferencesFn({
 						data: { query: query.trim(), limit: 32, notesOnly: true },
@@ -640,12 +904,7 @@ function RoutineInputSelector({
 						if (requestId.current === currentRequest) setLoading(false);
 					});
 			},
-			query.trim() ? 120 : 0,
 		);
-		return () => {
-			window.clearTimeout(timer);
-			if (requestId.current === currentRequest) requestId.current++;
-		};
 	}, [definition.relicIds, definition.vaultReferences, open, query]);
 
 	const addVault = (item: VaultReferenceItem) => {
@@ -1346,6 +1605,15 @@ function RoutineEditor({
 					setDefinition((current) => ({ ...current, deliveries }))
 				}
 			/>
+			<NotificationPolicyEditor
+				policy={definition.notificationPolicy}
+				onChange={(notificationPolicy) =>
+					setDefinition((current) => ({
+						...current,
+						notificationPolicy,
+					}))
+				}
+			/>
 			{error && (
 				<div
 					role="alert"
@@ -1367,6 +1635,7 @@ function RoutineEditor({
 					disabled={
 						busy ||
 						!definition.name.trim() ||
+						!validNotificationTargets(definition.notificationPolicy) ||
 						(!definition.prompt.trim() &&
 							definition.skillContexts.length === 0 &&
 							definition.providerCommands.length === 0)
@@ -1383,6 +1652,9 @@ function RoutineEditor({
 
 export function RoutineManagerDialog({
 	routines,
+	initialRoutineId,
+	initialRunId,
+	notificationTargetStatus,
 	initialDefinition,
 	watchDefinition,
 	defaultDefinition,
@@ -1394,6 +1666,9 @@ export function RoutineManagerDialog({
 	onRefresh,
 }: {
 	routines: RoutineSummary[];
+	initialRoutineId?: string;
+	initialRunId?: string;
+	notificationTargetStatus?: "idle" | "loading" | "ready" | "unavailable";
 	initialDefinition: RoutineDefinition | null;
 	watchDefinition?: RoutineDefinition | null;
 	defaultDefinition: RoutineDefinition;
@@ -1415,6 +1690,8 @@ export function RoutineManagerDialog({
 	const [history, setHistory] = useState<
 		Record<string, Awaited<ReturnType<typeof getRoutineRunsFn>>>
 	>({});
+	const hasNotificationTarget = Boolean(initialRoutineId && initialRunId);
+	const notificationHistoryRequest = useRef<string | null>(null);
 	const close = useCallback(() => {
 		if (editing) {
 			setEditing(null);
@@ -1455,6 +1732,46 @@ export function RoutineManagerDialog({
 			setBusyId(null);
 		}
 	};
+	const loadHistory = useCallback(async (id: string, limit = 10) => {
+		setBusyId(id);
+		setError(null);
+		try {
+			const runs = await getRoutineRunsFn({ data: { id, limit } });
+			setHistory((current) => ({ ...current, [id]: runs }));
+		} catch (cause) {
+			setError(
+				cause instanceof Error ? cause.message : "Could not load run history",
+			);
+		} finally {
+			setBusyId(null);
+		}
+	}, []);
+	const loadNotificationHistory = useCallback(
+		async (routineId: string, runId: string) => {
+			setBusyId(routineId);
+			setError(null);
+			try {
+				const [recentRuns, exactRun] = await Promise.all([
+					getRoutineRunsFn({ data: { id: routineId, limit: 200 } }),
+					getRoutineRunFn({ data: { routineId, runId } }),
+				]);
+				const runs =
+					exactRun && !recentRuns.some((run) => run.id === exactRun.id)
+						? [...recentRuns, exactRun]
+						: recentRuns;
+				setHistory((current) => ({ ...current, [routineId]: runs }));
+			} catch (cause) {
+				setError(
+					cause instanceof Error
+						? cause.message
+						: "Could not load the notified run",
+				);
+			} finally {
+				setBusyId(null);
+			}
+		},
+		[],
+	);
 	const toggleHistory = async (id: string) => {
 		if (history[id]) {
 			setHistory((current) => {
@@ -1464,19 +1781,20 @@ export function RoutineManagerDialog({
 			});
 			return;
 		}
-		setBusyId(id);
-		setError(null);
-		try {
-			const runs = await getRoutineRunsFn({ data: { id, limit: 10 } });
-			setHistory((current) => ({ ...current, [id]: runs }));
-		} catch (cause) {
-			setError(
-				cause instanceof Error ? cause.message : "Could not load run history",
-			);
-		} finally {
-			setBusyId(null);
-		}
+		await loadHistory(id);
 	};
+	useEffect(() => {
+		if (
+			!initialRoutineId ||
+			!initialRunId ||
+			!routines.some((routine) => routine.id === initialRoutineId)
+		)
+			return;
+		const requestKey = `${initialRoutineId}:${initialRunId}`;
+		if (notificationHistoryRequest.current === requestKey) return;
+		notificationHistoryRequest.current = requestKey;
+		void loadNotificationHistory(initialRoutineId, initialRunId);
+	}, [initialRoutineId, initialRunId, loadNotificationHistory, routines]);
 	return (
 		// biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled by the focused dialog
 		// biome-ignore lint/a11y/noStaticElementInteractions: modal backdrop pattern
@@ -1555,26 +1873,64 @@ export function RoutineManagerDialog({
 									</button>
 								)}
 							</div>
+							{hasNotificationTarget &&
+								notificationTargetStatus === "loading" && (
+									<output className="block border border-border bg-secondary/20 p-3 text-xs text-muted-foreground">
+										Loading the Routine and exact run from this notification…
+									</output>
+								)}
+							{hasNotificationTarget &&
+								notificationTargetStatus === "unavailable" && (
+									<div
+										role="alert"
+										className="border border-status-warning/40 bg-status-warning/5 p-3 text-xs text-status-warning"
+									>
+										The Routine from this notification is unavailable. It may
+										have been removed, so the exact notified run cannot be
+										shown.
+									</div>
+								)}
 							{routines.length === 0 ? (
-								<div className="border border-dashed border-border p-8 text-center text-xs text-muted-foreground">
-									No Routines configured. Create one here or schedule the
-									current Watch prompt.
-								</div>
+								notificationTargetStatus !== "loading" &&
+								notificationTargetStatus !== "unavailable" ? (
+									<div className="border border-dashed border-border p-8 text-center text-xs text-muted-foreground">
+										No Routines configured. Create one here or schedule the
+										current Watch prompt.
+									</div>
+								) : null
 							) : (
 								routines.map((routine) => (
 									<article
 										key={routine.id}
-										className="border border-border p-3"
+										className={`border p-3 ${routine.id === initialRoutineId ? "border-primary/60 bg-primary/5" : "border-border"}`}
 									>
+										{routine.id === initialRoutineId && (
+											<div className="mb-2 flex flex-wrap items-center gap-2 text-[9px] font-medium tracking-widest uppercase">
+												<span className="text-primary">
+													Opened from notification
+												</span>
+												{routine.archived && (
+													<span className="border border-border px-1.5 py-0.5 text-muted-foreground">
+														Archived Routine
+													</span>
+												)}
+											</div>
+										)}
 										<div className="flex flex-wrap items-start justify-between gap-3">
 											<div>
-												<button
-													type="button"
-													onClick={() => setEditing(routine)}
-													className="text-left text-sm font-medium hover:text-primary"
-												>
-													{routine.name}
-												</button>
+												{routine.archived ? (
+													<div className="text-sm font-medium text-foreground/80">
+														{routine.name}
+													</div>
+												) : (
+													<button
+														type="button"
+														onClick={() => setEditing(routine)}
+														className="text-left text-sm font-medium hover:text-primary"
+													>
+														{routine.name}
+													</button>
+												)}
 												<div className="mt-1 text-[10px] text-muted-foreground">
 													{scheduleLabel(routine.schedule, routine.timezone)} ·{" "}
 													{routine.providerId} · {routine.agentName}
@@ -1590,6 +1946,12 @@ export function RoutineManagerDialog({
 														Paused: {routine.pausedReason}
 													</div>
 												)}
+												{routine.archived && (
+													<div className="mt-2 text-[10px] text-muted-foreground">
+														This archived Routine is read-only. Its notified run
+														remains available in history.
+													</div>
+												)}
 											</div>
 											<div className="flex gap-2">
 												<button
@@ -1601,62 +1963,76 @@ export function RoutineManagerDialog({
 												>
 													<History className="h-3.5 w-3.5" />
 												</button>
-												<button
-													type="button"
-													disabled={busyId === routine.id}
-													onClick={() =>
-														void act(routine.id, () =>
-															runRoutineNowFn({ data: routine.id }),
-														)
-													}
-													className="border border-border p-2 hover:border-primary/50"
-													title="Run now"
-												>
-													<Play className="h-3.5 w-3.5" />
-												</button>
-												<button
-													type="button"
-													disabled={busyId === routine.id}
-													onClick={() =>
-														void act(routine.id, () =>
-															setRoutineEnabledFn({
-																data: {
-																	id: routine.id,
-																	enabled: !routine.enabled,
-																},
-															}),
-														)
-													}
-													className={`border px-2 py-1 text-[9px] tracking-widest uppercase ${routine.enabled ? "border-primary/50 text-primary" : "border-border text-muted-foreground"}`}
-												>
-													{routine.enabled ? "Enabled" : "Paused"}
-												</button>
-												<button
-													type="button"
-													disabled={busyId === routine.id}
-													onClick={() =>
-														void act(routine.id, () =>
-															archiveRoutineFn({ data: routine.id }),
-														)
-													}
-													className="border border-border p-2 text-muted-foreground hover:text-destructive"
-													title="Archive"
-												>
-													<Archive className="h-3.5 w-3.5" />
-												</button>
+												{!routine.archived && (
+													<>
+														<button
+															type="button"
+															disabled={busyId === routine.id}
+															onClick={() =>
+																void act(routine.id, () =>
+																	runRoutineNowFn({ data: routine.id }),
+																)
+															}
+															className="border border-border p-2 hover:border-primary/50"
+															title="Run now"
+														>
+															<Play className="h-3.5 w-3.5" />
+														</button>
+														<button
+															type="button"
+															disabled={busyId === routine.id}
+															onClick={() =>
+																void act(routine.id, () =>
+																	setRoutineEnabledFn({
+																		data: {
+																			id: routine.id,
+																			enabled: !routine.enabled,
+																		},
+																	}),
+																)
+															}
+															className={`border px-2 py-1 text-[9px] tracking-widest uppercase ${routine.enabled ? "border-primary/50 text-primary" : "border-border text-muted-foreground"}`}
+														>
+															{routine.enabled ? "Enabled" : "Paused"}
+														</button>
+														<button
+															type="button"
+															disabled={busyId === routine.id}
+															onClick={() =>
+																void act(routine.id, () =>
+																	archiveRoutineFn({ data: routine.id }),
+																)
+															}
+															className="border border-border p-2 text-muted-foreground hover:text-destructive"
+															title="Archive"
+														>
+															<Archive className="h-3.5 w-3.5" />
+														</button>
+													</>
+												)}
 											</div>
 										</div>
 										{history[routine.id] && (
 											<div className="mt-3 space-y-1 border-t border-border/60 pt-3">
 												{history[routine.id].length === 0 ? (
 													<div className="text-[10px] text-muted-foreground">
-														No runs yet.
+														{routine.id === initialRoutineId && initialRunId
+															? "The notified run is no longer available in history."
+															: "No runs yet."}
 													</div>
 												) : (
 													history[routine.id].map((run) => (
 														<div
 															key={run.id}
-															className="flex flex-wrap items-center justify-between gap-2 bg-secondary/30 px-2 py-1.5 text-[10px]"
+															ref={(node) => {
+																if (node && run.id === initialRunId) {
+																	node.scrollIntoView?.({ block: "nearest" });
+																}
+															}}
+															aria-current={
+																run.id === initialRunId ? "true" : undefined
+															}
+															className={`flex flex-wrap items-center justify-between gap-2 px-2 py-1.5 text-[10px] ${run.id === initialRunId ? "border border-primary/50 bg-primary/10" : "bg-secondary/30"}`}
 														>
 															<span>
 																<strong className="font-medium text-foreground">
@@ -1686,6 +2062,16 @@ export function RoutineManagerDialog({
 														</div>
 													))
 												)}
+												{routine.id === initialRoutineId &&
+													initialRunId &&
+													!history[routine.id].some(
+														(run) => run.id === initialRunId,
+													) &&
+													history[routine.id].length > 0 && (
+														<div className="text-[10px] text-muted-foreground">
+															The notified run is no longer available.
+														</div>
+													)}
 											</div>
 										)}
 									</article>

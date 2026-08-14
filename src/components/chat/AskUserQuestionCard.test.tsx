@@ -34,9 +34,11 @@ describe("AskUserQuestionCard — notes (user feedback)", () => {
 		const { container, rerender } = render(
 			<AskUserQuestionCard message={makeMsg()} onSubmit={vi.fn()} />,
 		);
-		expect(
-			container.querySelector('[data-notification-attention="question"]'),
-		).not.toBeNull();
+		const pending = container.querySelector<HTMLElement>(
+			'[data-notification-attention="question"]',
+		);
+		expect(pending).not.toBeNull();
+		expect(pending?.dataset.notificationAttentionId).toBe("aq-1");
 		expect(screen.getByLabelText("Pending question")).toBeTruthy();
 		rerender(
 			<AskUserQuestionCard

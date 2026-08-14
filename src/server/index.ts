@@ -126,9 +126,9 @@ import {
 } from "./providerCatalog";
 import { seedWindowMarks, startProviderProxy } from "./proxy";
 import { bootstrapPtyRuntime } from "./pty-bootstrap";
-import { deliverPushEvents } from "./pushDelivery";
 import { PushNotificationCoordinator } from "./pushNotificationCoordinator";
-import { handlePushRoute } from "./pushRoutes";
+import { PushNotificationOutbox } from "./pushNotificationOutbox";
+import { createPushRouteHandler } from "./pushRoutes";
 import { createReadAloudRouteHandler } from "./readAloudRoutes";
 import {
 	acpProviderOperationSlowRequestThreshold,
@@ -143,6 +143,7 @@ import {
 	payloadTooLarge,
 } from "./requestLimits";
 import {
+	type RoutineRunCompletionEvent,
 	runRoutineNow,
 	startRoutineScheduler,
 	stopRoutineScheduler,
@@ -593,28 +594,46 @@ const broadcastLiveSessions = () => {
 		sessions: getLiveSessionsStatus(pool, terminalPool),
 	});
 };
-const pushNotificationCoordinator = new PushNotificationCoordinator({
-	deliver: async (eventOrEvents) => {
-		const events = Array.isArray(eventOrEvents)
-			? eventOrEvents
-			: [eventOrEvents];
-		await deliverPushEvents(
-			events.map((event) => ({
-				kind: event.kind,
-				sessionId: event.sessionId,
-				label: event.label,
-				reason: event.reason,
-				url: event.url,
-				runtimeMs: event.runtimeMs,
-				createdAt: event.occurredAt,
-				expiresAt: event.expiresAt,
-			})),
-		);
+let pushNotificationCoordinator: PushNotificationCoordinator;
+const pushNotificationOutbox = new PushNotificationOutbox({
+	reconcileOneShots: db.reconcilePushNotificationOneShots,
+	isRelevant: (event) => {
+		if (event.sourceKind !== "session") return true;
+		const aliases = Array.isArray(event.metadata.sessionAliases)
+			? event.metadata.sessionAliases.filter(
+					(value): value is string => typeof value === "string",
+				)
+			: [event.sourceId];
+		return pushNotificationCoordinator.isEventStillRelevant({
+			kind:
+				event.category === "completion" ? "work_finished" : "needs_attention",
+			sessionId: event.sourceId,
+			sessionAliases: aliases,
+			reason: event.reason,
+			...(event.pendingCount > 0 ? { pendingCount: event.pendingCount } : {}),
+			...(typeof event.metadata.attentionSince === "number"
+				? { attentionSince: event.metadata.attentionSince }
+				: {}),
+			...(typeof event.metadata.attentionId === "string"
+				? { attentionId: event.metadata.attentionId }
+				: {}),
+			occurredAt: event.occurredAt,
+		});
 	},
+});
+pushNotificationCoordinator = new PushNotificationCoordinator({
+	persist: (event) => pushNotificationOutbox.persistSessionEvent(event),
+	cancelPersisted: (event) => pushNotificationOutbox.cancelSessionEvent(event),
+	deliver: () => pushNotificationOutbox.wake(),
+});
+const handlePushRoute = createPushRouteHandler({
+	onDeliveryStateChanged: () => pushNotificationOutbox.wake(),
 });
 // Establish the current process state as a quiet baseline before observing
 // later transitions. Restarting Hlid must not replay stale attention as push.
-pushNotificationCoordinator.observe(getLiveSessionsStatus(pool, terminalPool));
+pushNotificationCoordinator.observeStartup(
+	getLiveSessionsStatus(pool, terminalPool),
+);
 const unsubscribePushNotifications = subscribeSessionsStatusBroadcast(
 	(sessions) => pushNotificationCoordinator.observe(sessions),
 );
@@ -661,6 +680,129 @@ const hlidDelegationManager = new HlidDelegationManager(
 const handleHlidDelegationRoute = createHlidDelegationRouteHandler(
 	hlidDelegationManager,
 );
+const enqueueRoutineNotification = async (
+	event: RoutineRunCompletionEvent,
+): Promise<void> => {
+	const notificationPolicy = event.notificationPolicy;
+	const outcome =
+		event.status === "succeeded"
+			? notificationPolicy.success
+			: event.status === "action_required"
+				? notificationPolicy.actionRequired
+				: notificationPolicy.failure;
+	const category =
+		event.status === "succeeded"
+			? ("completion" as const)
+			: event.status === "action_required"
+				? ("request" as const)
+				: ("problem" as const);
+	const occurredAt = event.finishedAt * 1_000;
+	const stored = await db.enqueuePushNotificationEvent({
+		sourceKind: "routine",
+		sourceId: event.runId,
+		category,
+		reason: event.reason,
+		label: event.routine?.name ?? "Routine",
+		url: event.url,
+		occurredAt,
+		expiresAt: occurredAt + 24 * 60 * 60_000,
+		runtimeMs:
+			event.startedAt === null
+				? null
+				: Math.max(0, (event.finishedAt - event.startedAt) * 1_000),
+		groupKey: `routine:${event.routineId}`,
+		metadata: {
+			routineId: event.routineId,
+			routineRunId: event.runId,
+			rootSessionId: event.rootSessionId,
+			...(event.rootSessionId ? { sessionAliases: [event.rootSessionId] } : {}),
+			status: event.status,
+			message: event.message,
+			notificationMode: outcome,
+			targetDeviceIds:
+				notificationPolicy.targets.kind === "all"
+					? null
+					: notificationPolicy.targets.deviceIds,
+			createdAt: event.createdAt,
+			scheduledAt: event.scheduledAt,
+			claimedAt: event.claimedAt,
+			startedAt: event.startedAt,
+			finishedAt: event.finishedAt,
+		},
+		dedupeKey: `routine:${event.runId}:${event.reason}`,
+	});
+	await db.markRoutineRunNotificationRecorded({
+		runId: event.runId,
+		eventId: stored.id,
+		recordedAt: event.finishedAt,
+	});
+	pushNotificationOutbox.wake();
+};
+const recoverRoutineNotifications = async (): Promise<void> => {
+	const finishedSince = Math.floor(Date.now() / 1_000) - 24 * 60 * 60;
+	for (;;) {
+		const runs = await db.listRoutineRunsNeedingNotification({
+			finishedSince,
+			limit: 100,
+		});
+		if (runs.length === 0) return;
+		for (const run of runs) {
+			const routine = await db.getRoutine(run.routine_id);
+			const reason: RoutineRunCompletionEvent["reason"] =
+				run.status === "succeeded"
+					? "routine_succeeded"
+					: run.status === "action_required"
+						? "routine_action_required"
+						: run.status === "delivery_error"
+							? "routine_delivery_error"
+							: run.status === "provider_unavailable"
+								? "routine_provider_unavailable"
+								: "routine_failed";
+			await enqueueRoutineNotification({
+				routine,
+				notificationPolicy: db.routineRunNotificationPolicy(run),
+				routineId: run.routine_id,
+				runId: run.id,
+				rootSessionId: run.session_id,
+				status:
+					run.status === "interrupted"
+						? "failed"
+						: (run.status as RoutineRunCompletionEvent["status"]),
+				reason,
+				message: (
+					run.action_required ??
+					run.error ??
+					`${routine?.name ?? "Routine"} ${run.status.replaceAll("_", " ")}`
+				).slice(0, 500),
+				createdAt: run.created_at,
+				scheduledAt: run.scheduled_for,
+				claimedAt: run.claimed_at,
+				startedAt: run.started_at,
+				finishedAt: run.finished_at as number,
+				url: `/?${new URLSearchParams({
+					routine: run.routine_id,
+					routine_run: run.id,
+				})}`,
+			});
+		}
+		if (runs.length < 100) return;
+	}
+};
+let routineNotificationRecovery: Promise<void> | null = null;
+const runRoutineNotificationRecovery = (): Promise<void> => {
+	if (routineNotificationRecovery) return routineNotificationRecovery;
+	routineNotificationRecovery = recoverRoutineNotifications()
+		.catch((error) => {
+			console.error(
+				"[routines] failed to recover notification outcomes:",
+				error instanceof Error ? error.message : String(error),
+			);
+		})
+		.finally(() => {
+			routineNotificationRecovery = null;
+		});
+	return routineNotificationRecovery;
+};
 await startRoutineScheduler(
 	pool,
 	hlidDelegationManager,
@@ -671,12 +813,20 @@ await startRoutineScheduler(
 			discoveryCwd: cwd,
 		}),
 	broadcastLiveSessions,
+	enqueueRoutineNotification,
 ).catch((error) => {
 	console.error(
 		"[routines] failed to initialize:",
 		error instanceof Error ? error.message : String(error),
 	);
 });
+// Scheduler startup first marks runs owned by a previous process interrupted;
+// recovery can then durably enqueue those failures in the same startup pass.
+await runRoutineNotificationRecovery();
+const routineNotificationRecoveryTimer = setInterval(() => {
+	void runRoutineNotificationRecovery();
+}, 30_000);
+routineNotificationRecoveryTimer.unref?.();
 const shellPool = new ShellSessionPool(ptyWorkerPath);
 const SERVER_TOKEN = loadToken();
 const MAX_ACTIVE_VOICE_REQUESTS = 2;
@@ -693,8 +843,10 @@ void db.getSetting("mcp_status_cache").then((cached) => {
 });
 
 async function cleanupForShutdown(): Promise<void> {
+	clearInterval(routineNotificationRecoveryTimer);
 	unsubscribePushNotifications();
 	pushNotificationCoordinator.close();
+	pushNotificationOutbox.close();
 	stopRoutineScheduler();
 	cliProxy.close();
 	voice.close();
@@ -1691,6 +1843,11 @@ const restoredPendingTurns = await pool.restoreDurableTurns(() => {
 		sessions: getLiveSessionsStatus(pool, terminalPool),
 	});
 });
+pushNotificationCoordinator.completeStartup(
+	getLiveSessionsStatus(pool, terminalPool),
+);
+await db.reconcilePushNotificationOneShots();
+pushNotificationOutbox.start();
 if (restoredPendingTurns.restored > 0 || restoredPendingTurns.discarded > 0) {
 	bumpDataRevision("sessions");
 }

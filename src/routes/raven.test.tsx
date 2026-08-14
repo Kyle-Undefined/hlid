@@ -11,6 +11,7 @@ import {
 import { hydrateRoot } from "react-dom/client";
 import { renderToString } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ChatMessage } from "#/components/chat/chatReducer";
 import { LiveSessionSwitcherBoundary } from "#/components/chat/LiveSessionSwitcher";
 import {
 	getDataRevisionSnapshot,
@@ -138,11 +139,42 @@ vi.mock("#/components/chat/MessageList", () => ({
 	),
 }));
 vi.mock("#/components/chat/SessionNotificationOverrideControl", () => ({
-	SessionNotificationOverrideControl: ({
-		sessionId,
+	SessionNotificationOverrideButton: ({ sessionId }: { sessionId: string }) => (
+		<div data-testid="session-notification-override">
+			<button
+				type="button"
+				aria-label="Session notifications"
+				className="px-2 py-2 md:py-3"
+			>
+				{sessionId}
+			</button>
+		</div>
+	),
+}));
+vi.mock("#/components/chat/NotificationBatchDrawer", () => ({
+	NotificationBatchDrawer: ({
+		batchId,
+		onClose,
+		onOpenSession,
 	}: {
-		sessionId: string;
-	}) => <div data-testid="session-notification-override">{sessionId}</div>,
+		batchId: string;
+		onClose: () => void;
+		onOpenSession: (sessionId: string) => void;
+	}) => (
+		<div
+			role="dialog"
+			aria-label="Finished work"
+			data-testid="notification-batch-drawer"
+		>
+			<span>{batchId}</span>
+			<button type="button" onClick={() => onOpenSession("member-session")}>
+				Open batch member
+			</button>
+			<button type="button" onClick={onClose}>
+				Close batch
+			</button>
+		</div>
+	),
 }));
 vi.mock("#/components/cockpit/SlashPicker", () => ({
 	SlashPicker: ({
@@ -363,9 +395,12 @@ import {
 	ChatPage,
 	focusRavenNotificationAttention,
 	isNewProjectPreviewPresentationRequest,
+	isPendingRavenNotificationAttention,
 	providerBackgroundOperationAvailable,
 	Route,
 	ravenNotificationAttention,
+	ravenNotificationAttentionId,
+	ravenNotificationBatchId,
 	ravenSleepDetail,
 	ravenTabAfterProjectPreviewStops,
 } from "./raven";
@@ -885,16 +920,17 @@ describe("Raven composed submission behavior", () => {
 		state.sessions = [];
 		render(<ChatPage />);
 
-		const settings = screen.getByRole("button", {
-			name: /Claude.*Sonnet 4\.6.*session model and notification settings/i,
-		});
-		fireEvent.click(settings);
 		expect(
-			screen.getByTestId("session-notification-override").textContent,
+			screen.getByRole("button", { name: "Session notifications" }).textContent,
 		).toBe("saved-session");
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: /Claude.*Sonnet 4\.6.*session model settings/i,
+			}),
+		);
 		expect(
 			screen.getByRole("dialog", {
-				name: "Session model and notification settings",
+				name: "Session model settings",
 			}),
 		).toBeTruthy();
 	});
@@ -905,10 +941,9 @@ describe("Raven composed submission behavior", () => {
 		state.sessions = [];
 		render(<ChatPage />);
 
-		fireEvent.click(
-			screen.getByRole("button", { name: /Claude.*Sonnet 4\.6/i }),
-		);
-		expect(screen.queryByTestId("session-notification-override")).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: "Session notifications" }),
+		).toBeNull();
 	});
 
 	it("does not offer notification overrides for an undurable live identity", () => {
@@ -924,10 +959,9 @@ describe("Raven composed submission behavior", () => {
 		}));
 		render(<ChatPage />);
 
-		fireEvent.click(
-			screen.getByRole("button", { name: /Claude.*Sonnet 4\.6/i }),
-		);
-		expect(screen.queryByTestId("session-notification-override")).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: "Session notifications" }),
+		).toBeNull();
 	});
 
 	it("inserts dictated text at the active Raven selection", () => {
@@ -1835,29 +1869,36 @@ describe("Raven composed submission behavior", () => {
 	});
 
 	it("keeps composer controls in DOM order inside the mobile grid", () => {
+		state.loaderData = { ...state.loaderData, sessionPersisted: true };
 		render(<ChatPage />);
 
 		const attach = screen.getByRole("button", { name: "Attach file" });
 		const voice = screen.getByRole("button", { name: "Dictate with Whisper" });
+		const notifications = screen.getByRole("button", {
+			name: "Session notifications",
+		});
 		const activeNote = screen.getByRole("button", {
 			name: "Attach active Obsidian note",
 		});
 		const controlGrid = attach.parentElement;
 		const activeNoteContainer = activeNote.parentElement as HTMLElement;
+		const notificationContainer = notifications.parentElement as HTMLElement;
 
 		expect(voice.parentElement).toBe(controlGrid);
+		expect(notificationContainer.parentElement).toBe(controlGrid);
 		expect(activeNoteContainer?.parentElement).toBe(controlGrid);
 		expect(controlGrid?.className).toContain("grid-cols-2");
 		expect(controlGrid?.className).toContain("gap-y-1");
 		expect(controlGrid?.className).toContain("md:contents");
 		expect(attach.className).toContain("py-2");
 		expect(voice.className).toContain("py-2");
-		for (const control of [attach, activeNote, voice]) {
+		for (const control of [attach, activeNote, voice, notifications]) {
 			expect(control.className).not.toContain("min-h-11");
 			expect(control.className).not.toContain("min-w-11");
 		}
 		expect(attach.className).not.toContain("md:order");
 		expect(voice.className).not.toContain("md:order");
+		expect(notifications.className).not.toContain("md:order");
 		expect(activeNoteContainer?.className).not.toContain("md:order");
 		expect(
 			attach.compareDocumentPosition(activeNoteContainer) &
@@ -1865,6 +1906,10 @@ describe("Raven composed submission behavior", () => {
 		).toBeTruthy();
 		expect(
 			activeNoteContainer.compareDocumentPosition(voice) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(
+			voice.compareDocumentPosition(notificationContainer) &
 				Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
 	});
@@ -1886,7 +1931,8 @@ describe("Raven composed submission behavior", () => {
 		expect(send.className).toContain("md:min-h-0");
 	});
 
-	it("places Fork in the left control cluster next to voice", () => {
+	it("places notifications and Fork in the left control cluster", () => {
+		state.loaderData = { ...state.loaderData, sessionPersisted: true };
 		render(<ChatPage />);
 		fireEvent.change(screen.getByRole("combobox"), {
 			target: { value: "create a forkable turn" },
@@ -1895,14 +1941,27 @@ describe("Raven composed submission behavior", () => {
 
 		const attach = screen.getByRole("button", { name: "Attach file" });
 		const voice = screen.getByRole("button", { name: "Dictate with Whisper" });
+		const notifications = screen.getByRole("button", {
+			name: "Session notifications",
+		});
 		const newChat = screen.getByRole("button", { name: "New chat" });
 		const fork = screen.getByRole("button", { name: "Fork session" });
+		const notificationContainer = notifications.parentElement as HTMLElement;
 
+		expect(notificationContainer.parentElement).toBe(attach.parentElement);
 		expect(fork.parentElement).toBe(attach.parentElement);
 		expect(fork.parentElement).not.toBe(newChat.parentElement);
 		expect(
-			voice.compareDocumentPosition(fork) & Node.DOCUMENT_POSITION_FOLLOWING,
+			voice.compareDocumentPosition(notificationContainer) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
+		expect(
+			notificationContainer.compareDocumentPosition(fork) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(notifications.className).toContain("px-2");
+		expect(notifications.className).not.toContain("min-h-11");
+		expect(notifications.className).not.toContain("min-w-11");
 		expect(fork.className).toContain("px-2");
 		expect(fork.className).not.toContain("min-h-11");
 		expect(fork.className).not.toContain("min-w-11");
@@ -2555,12 +2614,17 @@ describe("Raven composed submission behavior", () => {
 
 		render(<ChatPage />);
 		fireEvent.click(screen.getByRole("button", { name: /Codex.*gpt-5\.4/i }));
-		expect(screen.queryByTestId("session-notification-override")).toBeNull();
+		const modelDialog = screen.getByRole("dialog", {
+			name: "Session model settings",
+		});
+		expect(
+			within(modelDialog).queryByTestId("session-notification-override"),
+		).toBeNull();
 
 		fireEvent.click(screen.getByRole("button", { name: "GPT-5.5" }));
 		expect(
 			screen.getByRole("dialog", {
-				name: "Session model and notification settings",
+				name: "Session model settings",
 			}),
 		).toBeTruthy();
 		expect(state.send).toHaveBeenCalledWith({
@@ -2572,7 +2636,7 @@ describe("Raven composed submission behavior", () => {
 		fireEvent.click(screen.getByRole("button", { name: "High" }));
 		expect(
 			screen.getByRole("dialog", {
-				name: "Session model and notification settings",
+				name: "Session model settings",
 			}),
 		).toBeTruthy();
 		expect(state.send).toHaveBeenCalledWith({
@@ -2584,7 +2648,7 @@ describe("Raven composed submission behavior", () => {
 		fireEvent.focus(screen.getByRole("combobox"));
 		expect(
 			screen.queryByRole("dialog", {
-				name: "Session model and notification settings",
+				name: "Session model settings",
 			}),
 		).toBeNull();
 	});
@@ -2694,7 +2758,7 @@ describe("Raven composed submission behavior", () => {
 		});
 		expect(
 			screen.getByRole("button", {
-				name: /^OpenCode · ask · Open session model and notification settings$/i,
+				name: /^OpenCode · ask · Open session model settings$/i,
 			}),
 		).toBeTruthy();
 	});
@@ -4466,7 +4530,7 @@ describe("Raven composed submission behavior", () => {
 		);
 		expect(
 			screen.queryByRole("dialog", {
-				name: "Session model and notification settings",
+				name: "Session model settings",
 			}),
 		).toBeNull();
 		expect(
@@ -6191,6 +6255,14 @@ describe("raven route search/deps", () => {
 		expect(ravenNotificationAttention("question")).toBe("question");
 		expect(ravenNotificationAttention("plan_review")).toBe("plan_review");
 		expect(ravenNotificationAttention("error")).toBeUndefined();
+		expect(ravenNotificationAttentionId("codex-request:string:42")).toBe(
+			"codex-request:string:42",
+		);
+		expect(ravenNotificationAttentionId("a".repeat(128))).toBe("a".repeat(128));
+		expect(ravenNotificationAttentionId("a".repeat(129))).toBeUndefined();
+		expect(ravenNotificationAttentionId("request/42")).toBeUndefined();
+		expect(ravenNotificationAttentionId("request 42")).toBeUndefined();
+		expect(ravenNotificationAttentionId(42)).toBeUndefined();
 
 		const root = document.createElement("div");
 		const target = document.createElement("div");
@@ -6209,6 +6281,69 @@ describe("raven route search/deps", () => {
 		expect(focusRavenNotificationAttention(root, "permission")).toBeNull();
 	});
 
+	it("focuses an exact pending card by both attention type and ID", () => {
+		const root = document.createElement("div");
+		const first = document.createElement("div");
+		first.tabIndex = -1;
+		first.dataset.notificationAttention = "question";
+		first.dataset.notificationAttentionId = "question-1";
+		first.scrollIntoView = vi.fn();
+		const exact = document.createElement("div");
+		exact.tabIndex = -1;
+		exact.dataset.notificationAttention = "question";
+		exact.dataset.notificationAttentionId = "question-2";
+		exact.scrollIntoView = vi.fn();
+		root.append(first, exact);
+		document.body.append(root);
+
+		expect(
+			focusRavenNotificationAttention(root, "question", "question-2"),
+		).toBe(exact);
+		expect(first.dataset.notificationHighlight).toBeUndefined();
+		expect(exact.dataset.notificationHighlight).toBe("true");
+		expect(
+			focusRavenNotificationAttention(root, "question", "question-missing"),
+		).toBeNull();
+		expect(first.dataset.notificationHighlight).toBeUndefined();
+		expect(focusRavenNotificationAttention(root, "question")).toBe(first);
+	});
+
+	it("requires the exact pending message when an attention ID is present", () => {
+		const pendingQuestion: Extract<ChatMessage, { role: "ask_user_question" }> =
+			{
+				id: "question-1",
+				role: "ask_user_question",
+				questions: [],
+				answers: null,
+			};
+
+		expect(
+			isPendingRavenNotificationAttention(pendingQuestion, "question"),
+		).toBe(true);
+		expect(
+			isPendingRavenNotificationAttention(
+				pendingQuestion,
+				"question",
+				"question-1",
+			),
+		).toBe(true);
+		expect(
+			isPendingRavenNotificationAttention(
+				pendingQuestion,
+				"question",
+				"question-2",
+			),
+		).toBe(false);
+	});
+
+	it("bounds exact notification batch identifiers", () => {
+		expect(ravenNotificationBatchId("batch-one")).toBe("batch-one");
+		expect(ravenNotificationBatchId("batch_12345678")).toBe("batch_12345678");
+		expect(ravenNotificationBatchId("short")).toBeUndefined();
+		expect(ravenNotificationBatchId("batch with spaces")).toBeUndefined();
+		expect(ravenNotificationBatchId(1)).toBeUndefined();
+	});
+
 	it("keeps notification focus inside an open HTML plan modal", () => {
 		const root = document.createElement("div");
 		const card = document.createElement("div");
@@ -6224,7 +6359,9 @@ describe("raven route search/deps", () => {
 		dialog.dataset.notificationAttentionId = "plan-1";
 		document.body.append(dialog);
 
-		expect(focusRavenNotificationAttention(root, "plan_review")).toBe(dialog);
+		expect(focusRavenNotificationAttention(root, "plan_review", "plan-1")).toBe(
+			dialog,
+		);
 		expect(document.activeElement).toBe(dialog);
 		expect(dialog.dataset.notificationHighlight).toBe("true");
 		expect(card.scrollIntoView).not.toHaveBeenCalled();
@@ -6253,12 +6390,90 @@ describe("raven route search/deps", () => {
 			prompt: "p",
 		});
 		expect(
-			route.validateSearch({ session: "s", attention: "plan_review" }),
-		).toEqual({ session: "s", attention: "plan_review" });
+			route.validateSearch({
+				session: "s",
+				attention: "plan_review",
+				attention_id: "plan:request_1",
+			}),
+		).toEqual({
+			session: "s",
+			attention: "plan_review",
+			attention_id: "plan:request_1",
+		});
+		expect(
+			route.validateSearch({ session: "s", attention: "question" }),
+		).toEqual({ session: "s", attention: "question" });
 		expect(route.validateSearch({ attention: "permission" })).toEqual({});
 		expect(
-			route.validateSearch({ session: "s", attention: "not-real" }),
+			route.validateSearch({ session: "s", attention_id: "permission-1" }),
 		).toEqual({ session: "s" });
+		expect(
+			route.validateSearch({
+				session: "s",
+				attention: "permission",
+				attention_id: "permission/1",
+			}),
+		).toEqual({ session: "s" });
+		expect(
+			route.validateSearch({
+				session: "s",
+				attention: "not-real",
+				attention_id: "permission-1",
+			}),
+		).toEqual({ session: "s" });
+		expect(route.validateSearch({ notification_batch: "batch-one" })).toEqual({
+			notification_batch: "batch-one",
+		});
+		expect(
+			route.validateSearch({ notification_batch: "invalid batch" }),
+		).toEqual({});
+	});
+
+	it("opens and closes an exact completion batch without disturbing other search state", async () => {
+		state.search = {
+			session: "current-session",
+			agent: "/workspace",
+			prompt: "draft",
+			attention: "question",
+			attention_id: "question-1",
+			notification_batch: "batch-one",
+		};
+		render(<ChatPage />);
+
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("notification-batch-drawer").textContent,
+			).toContain("batch-one"),
+		);
+		state.navigate.mockClear();
+		fireEvent.click(screen.getByRole("button", { name: "Open batch member" }));
+		await waitFor(() => expect(state.navigate).toHaveBeenCalledOnce());
+		const openNavigation = state.navigate.mock.calls[0]?.[0] as {
+			to: string;
+			search: (previous: Record<string, unknown>) => Record<string, unknown>;
+		};
+		expect(openNavigation.to).toBe("/raven");
+		expect(openNavigation.search(state.search)).toEqual({
+			session: "member-session",
+			agent: undefined,
+			prompt: undefined,
+			attention: undefined,
+			attention_id: undefined,
+			notification_batch: undefined,
+		});
+
+		state.navigate.mockClear();
+		fireEvent.click(screen.getByRole("button", { name: "Close batch" }));
+		expect(state.navigate).toHaveBeenCalledOnce();
+		const closeNavigation = state.navigate.mock.calls[0]?.[0] as {
+			replace: boolean;
+			search: (previous: Record<string, unknown>) => Record<string, unknown>;
+		};
+		expect(closeNavigation.replace).toBe(true);
+		expect(closeNavigation.search(state.search)).toEqual({
+			...state.search,
+			notification_batch: undefined,
+		});
 	});
 
 	it("loaderDeps extracts session and agent", () => {

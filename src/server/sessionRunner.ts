@@ -25,6 +25,8 @@ export type RoutineSessionResult = {
 		| "provider_unavailable"
 		| "failed";
 	sessionId: string | null;
+	/** Exact Unix timestamp persisted when the root Routine session started. */
+	startedAt?: number;
 	error?: string;
 	actionRequired?: string;
 	delivery?: unknown;
@@ -145,6 +147,7 @@ export async function runRoutineSession(options: {
 		(grant): RoutineGrant => ({ ...grant, id: grant.id ?? randomUUID() }),
 	);
 	let actionRequiredWork: Promise<void> | null = null;
+	let startedAt: number | null = null;
 	const routineContext: RoutinePermissionContext = {
 		routineId: routine.id,
 		runId: run.id,
@@ -203,12 +206,14 @@ export async function runRoutineSession(options: {
 				`Routine provider drifted from ${routine.providerId} to ${entry.manager.getProviderId()}`,
 			);
 		}
+		const runStartedAt = Math.floor(Date.now() / 1_000);
 		await db.markRoutineRunRunning({
 			runId: run.id,
 			sessionId,
 			providerUsed: routine.providerId,
-			now: Math.floor(Date.now() / 1_000),
+			now: runStartedAt,
 		});
+		startedAt = runStartedAt;
 		bumpDataRevision("routines", "sessions");
 		await entry.manager.runQuery(
 			routineProviderCommandText(
@@ -239,6 +244,7 @@ export async function runRoutineSession(options: {
 			return {
 				status: "action_required",
 				sessionId,
+				startedAt,
 				actionRequired: routineContext.actionRequired.reason,
 			};
 		}
@@ -246,6 +252,7 @@ export async function runRoutineSession(options: {
 			return {
 				status: "failed",
 				sessionId,
+				startedAt,
 				error: "The provider session ended in an error state",
 			};
 		}
@@ -254,6 +261,7 @@ export async function runRoutineSession(options: {
 			return {
 				status: "failed",
 				sessionId,
+				startedAt,
 				error:
 					failedChild.error ??
 					`Delegated child ${failedChild.id} ended with ${failedChild.status}.`,
@@ -270,6 +278,7 @@ export async function runRoutineSession(options: {
 				? "delivery_error"
 				: "succeeded",
 			sessionId,
+			startedAt,
 			delivery,
 		};
 	} catch (error) {
@@ -277,6 +286,7 @@ export async function runRoutineSession(options: {
 		return {
 			status: routineContext.actionRequired ? "action_required" : "failed",
 			sessionId,
+			...(startedAt !== null ? { startedAt } : {}),
 			...(routineContext.actionRequired
 				? { actionRequired: routineContext.actionRequired.reason }
 				: {

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
 	serviceWorkerBuild,
+	serviceWorkerNotificationTarget,
 	shouldReloadForServiceWorkerBuild,
 } from "./serviceWorkerUpdate";
 
@@ -20,5 +21,32 @@ describe("service worker updates", () => {
 		};
 
 		await expect(serviceWorkerBuild(worker, 100)).resolves.toBe("build-2");
+	});
+
+	it("accepts only a bounded same-origin notification navigation", () => {
+		expect(
+			serviceWorkerNotificationTarget(
+				{
+					type: "hlid:navigate-notification",
+					url: "/raven?session=session-1",
+				},
+				"https://hlid.test",
+			),
+		).toBe("/raven?session=session-1");
+		expect(
+			serviceWorkerNotificationTarget(
+				{
+					type: "hlid:navigate-notification",
+					url: "//attacker.test/raven",
+				},
+				"https://hlid.test",
+			),
+		).toBeNull();
+		expect(
+			serviceWorkerNotificationTarget(
+				{ type: "other", url: "/raven" },
+				"https://hlid.test",
+			),
+		).toBeNull();
 	});
 });

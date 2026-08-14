@@ -19,6 +19,10 @@ import {
 } from "./webPush";
 
 const NOW = Date.UTC(2026, 7, 13, 12, 0, 0);
+const BATCH_DELIVERY_IDS = [
+	"019ffa8b-0df1-7c63-8d03-e428cbae240f",
+	"019ffa8b-0df1-7c63-9d03-e428cbae240f",
+];
 
 function keyPair(privateByte: number) {
 	const ecdh = createECDH("prime256v1");
@@ -59,6 +63,7 @@ function fixture() {
 			completion_min_runtime_minutes: 0,
 			paused_until: null,
 			paused_indefinitely: false,
+			quiet_hours: null,
 		},
 		enabled: true,
 		createdAt: 1,
@@ -279,6 +284,7 @@ describe("standards-only Web Push sender", () => {
 			...payload,
 			kind: "work_finished",
 			sessionIds: ["session-1", "session-2"],
+			deliveryIds: BATCH_DELIVERY_IDS,
 			batchId: "batch-test-123",
 			url: "/raven",
 		};
@@ -297,16 +303,25 @@ describe("standards-only Web Push sender", () => {
 			batchPlain.subarray(0, -1).toString("utf8"),
 		);
 		expect(batchEnvelope.notification).toMatchObject({
-			navigate: "/raven",
+			navigate: "/raven?notification_batch=batch-test-123",
 			tag: "hlid-work-finished-batch:batch-test-123",
 			data: {
 				kind: "work_finished",
 				sessionId: "session-1",
 				sessionIds: ["session-1", "session-2"],
+				deliveryIds: BATCH_DELIVERY_IDS,
 				batchId: "batch-test-123",
-				url: "/raven",
+				url: "/raven?notification_batch=batch-test-123",
 			},
 		});
+		expect(() =>
+			prepareWebPushRequest(
+				subscription,
+				{ ...batch, deliveryIds: [BATCH_DELIVERY_IDS[0] ?? ""] },
+				vapidKeys(),
+				{ nowMs: NOW },
+			),
+		).toThrow();
 
 		const testPayload: WebPushNotificationPayload = {
 			version: 1,
@@ -405,5 +420,23 @@ describe("standards-only Web Push sender", () => {
 				nowMs: NOW,
 			}),
 		).toEqual({ outcome: "gone", statusCode: 410 });
+	});
+
+	it("carries a bounded provider Retry-After delay", async () => {
+		const { payload, subscription } = fixture();
+		const throttledFetch = vi.fn(
+			async () =>
+				new Response(null, {
+					status: 429,
+					headers: { "retry-after": "120" },
+				}),
+		);
+		expect(
+			await sendWebPush(subscription, payload, {
+				fetch: throttledFetch as unknown as typeof fetch,
+				vapidKeys: vapidKeys(),
+				nowMs: NOW,
+			}),
+		).toEqual({ outcome: "failed", statusCode: 429, retryAfterMs: 120_000 });
 	});
 });

@@ -1,14 +1,134 @@
 import { randomUUID } from "node:crypto";
 import * as db from "../db";
 import type { ProviderInfo } from "../lib/providerTypes";
+import type {
+	RoutineNotificationPolicy,
+	RoutineSummary,
+} from "../lib/routines";
 import { bumpDataRevision } from "./dataRevision";
 import type { HlidDelegationManager } from "./hlidDelegation";
 import type { SessionPool } from "./sessionPool";
-import { runRoutineSession } from "./sessionRunner";
+import { type RoutineSessionResult, runRoutineSession } from "./sessionRunner";
 
 const POLL_MS = 15_000;
 const LEASE_SECONDS = 120;
 const LEASE_REFRESH_MS = 30_000;
+const MAX_COMPLETION_MESSAGE_CHARS = 500;
+
+export type RoutineRunCompletionReason =
+	| "routine_succeeded"
+	| "routine_action_required"
+	| "routine_failed"
+	| "routine_delivery_error"
+	| "routine_provider_unavailable";
+
+/** Durable terminal Routine outcome emitted only after its run row is finished.
+ * Timestamps use the same Unix-second unit as Routine persistence. */
+export type RoutineRunCompletionEvent = {
+	routine: RoutineSummary | null;
+	notificationPolicy: RoutineNotificationPolicy;
+	routineId: string;
+	runId: string;
+	rootSessionId: string | null;
+	status: RoutineSessionResult["status"];
+	reason: RoutineRunCompletionReason;
+	message: string;
+	createdAt: number;
+	scheduledAt: number;
+	claimedAt: number | null;
+	startedAt: number | null;
+	finishedAt: number;
+	url: string;
+};
+
+export type RoutineRunCompletionCallback = (
+	event: RoutineRunCompletionEvent,
+) => void | Promise<void>;
+
+function completionReason(
+	status: RoutineSessionResult["status"],
+): RoutineRunCompletionReason {
+	switch (status) {
+		case "succeeded":
+			return "routine_succeeded";
+		case "action_required":
+			return "routine_action_required";
+		case "delivery_error":
+			return "routine_delivery_error";
+		case "provider_unavailable":
+			return "routine_provider_unavailable";
+		case "failed":
+			return "routine_failed";
+	}
+}
+
+function boundedCompletionMessage(value: string, fallback: string): string {
+	let safe = "";
+	for (const character of value) {
+		const code = character.charCodeAt(0);
+		safe += code <= 31 || code === 127 ? " " : character;
+	}
+	const normalized = safe.replace(/\s+/g, " ").trim();
+	return (normalized || fallback).slice(0, MAX_COMPLETION_MESSAGE_CHARS);
+}
+
+function deliveryError(result: RoutineSessionResult): string | null {
+	if (!Array.isArray(result.delivery)) return null;
+	for (const item of result.delivery) {
+		if (
+			typeof item === "object" &&
+			item !== null &&
+			!Array.isArray(item) &&
+			"ok" in item &&
+			item.ok === false &&
+			"error" in item &&
+			typeof item.error === "string"
+		)
+			return item.error;
+	}
+	return null;
+}
+
+function completionMessage(
+	routine: RoutineSummary | null,
+	result: RoutineSessionResult,
+): string {
+	const name = routine?.name ?? "Routine";
+	switch (result.status) {
+		case "succeeded":
+			return boundedCompletionMessage(
+				`${name} finished successfully.`,
+				"Routine finished successfully.",
+			);
+		case "action_required":
+			return boundedCompletionMessage(
+				`${name} needs action: ${result.actionRequired ?? result.error ?? "Open Hlid to continue."}`,
+				"Routine needs action.",
+			);
+		case "delivery_error":
+			return boundedCompletionMessage(
+				`${name} finished, but delivery failed: ${deliveryError(result) ?? result.error ?? "One or more destinations could not be updated."}`,
+				"Routine delivery failed.",
+			);
+		case "provider_unavailable":
+			return boundedCompletionMessage(
+				`${name} could not start: ${result.error ?? "The configured provider is unavailable."}`,
+				"Routine provider is unavailable.",
+			);
+		case "failed":
+			return boundedCompletionMessage(
+				`${name} failed: ${result.error ?? "The run did not complete."}`,
+				"Routine failed.",
+			);
+	}
+}
+
+function routineRunUrl(routineId: string, runId: string): string {
+	const search = new URLSearchParams();
+	search.set("routine", routineId);
+	search.set("routine_run", runId);
+	return `/?${search}`;
+}
 
 export class RoutineScheduler {
 	private readonly bootId = randomUUID();
@@ -20,17 +140,20 @@ export class RoutineScheduler {
 	private pending: db.RoutineRunRow[] = [];
 	private ticking = false;
 	private readonly onStatusChange?: () => void;
+	private readonly onRunComplete?: RoutineRunCompletionCallback;
 
 	constructor(
 		pool: SessionPool,
 		delegations: HlidDelegationManager,
 		providerCatalog: (cwd: string) => Promise<ProviderInfo[]>,
 		onStatusChange?: () => void,
+		onRunComplete?: RoutineRunCompletionCallback,
 	) {
 		this.pool = pool;
 		this.delegations = delegations;
 		this.providerCatalog = providerCatalog;
 		this.onStatusChange = onStatusChange;
+		this.onRunComplete = onRunComplete;
 	}
 
 	async start(): Promise<void> {
@@ -105,8 +228,10 @@ export class RoutineScheduler {
 				),
 			LEASE_REFRESH_MS,
 		);
+		let routine: RoutineSummary | null = null;
+		let result: RoutineSessionResult;
 		try {
-			const routine = await db.getRoutine(run.routine_id);
+			routine = await db.getRoutine(run.routine_id);
 			if (!routine) throw new Error("Routine definition was removed");
 			if (
 				routine.revision !== run.routine_revision ||
@@ -116,7 +241,7 @@ export class RoutineScheduler {
 					"Routine authorization changed after this run was claimed",
 				);
 			}
-			const result = await runRoutineSession({
+			result = await runRoutineSession({
 				pool: this.pool,
 				delegations: this.delegations,
 				providerCatalog: this.providerCatalog,
@@ -124,10 +249,19 @@ export class RoutineScheduler {
 				run,
 				onStatusChange: this.onStatusChange,
 			});
+		} catch (error) {
+			result = {
+				status: "failed",
+				sessionId: null,
+				error: error instanceof Error ? error.message : String(error),
+			};
+		}
+		try {
+			const finishedAt = Math.floor(Date.now() / 1_000);
 			await db.finishRoutineRun({
 				runId: run.id,
 				status: result.status,
-				now: Math.floor(Date.now() / 1_000),
+				now: finishedAt,
 				error: result.error,
 				actionRequired: result.actionRequired,
 				delivery: result.delivery,
@@ -136,6 +270,8 @@ export class RoutineScheduler {
 				result.status === "action_required" ||
 				result.status === "provider_unavailable"
 			) {
+				// Pause is part of the terminal Routine state, not notification side
+				// effect. Persist it before a callback that may be slow or crash.
 				await db.pauseRoutine(
 					run.routine_id,
 					result.actionRequired ??
@@ -143,13 +279,31 @@ export class RoutineScheduler {
 						"A scheduled action needs approval",
 				);
 			}
-		} catch (error) {
-			await db.finishRoutineRun({
-				runId: run.id,
-				status: "failed",
-				now: Math.floor(Date.now() / 1_000),
-				error: error instanceof Error ? error.message : String(error),
-			});
+			if (this.onRunComplete) {
+				try {
+					await this.onRunComplete({
+						routine,
+						notificationPolicy: db.routineRunNotificationPolicy(run),
+						routineId: run.routine_id,
+						runId: run.id,
+						rootSessionId: result.sessionId ?? run.session_id,
+						status: result.status,
+						reason: completionReason(result.status),
+						message: completionMessage(routine, result),
+						createdAt: run.created_at,
+						scheduledAt: run.scheduled_for,
+						claimedAt: run.claimed_at,
+						startedAt: result.startedAt ?? run.started_at,
+						finishedAt,
+						url: routineRunUrl(run.routine_id, run.id),
+					});
+				} catch (error) {
+					console.error(
+						`[routine ${run.id}] completion callback failed:`,
+						error instanceof Error ? error.message : String(error),
+					);
+				}
+			}
 		} finally {
 			clearInterval(lease);
 			bumpDataRevision("routines", "sessions", "stats");
@@ -164,6 +318,7 @@ export async function startRoutineScheduler(
 	delegations: HlidDelegationManager,
 	providerCatalog: (cwd: string) => Promise<ProviderInfo[]>,
 	onStatusChange?: () => void,
+	onRunComplete?: RoutineRunCompletionCallback,
 ): Promise<RoutineScheduler> {
 	activeScheduler?.stop();
 	const scheduler = new RoutineScheduler(
@@ -171,6 +326,7 @@ export async function startRoutineScheduler(
 		delegations,
 		providerCatalog,
 		onStatusChange,
+		onRunComplete,
 	);
 	activeScheduler = scheduler;
 	await scheduler.start();

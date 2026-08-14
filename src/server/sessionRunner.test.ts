@@ -54,6 +54,12 @@ const routine: RoutineSummary = {
 		},
 	],
 	deliveries: [],
+	notificationPolicy: {
+		success: "default",
+		actionRequired: "default",
+		failure: "default",
+		targets: { kind: "all" },
+	},
 	catchUpWindowMinutes: 60,
 	noOverlap: true,
 	pausedReason: null,
@@ -81,6 +87,7 @@ const run: RoutineRunRow = {
 	error: null,
 	action_required: null,
 	delivery_json: null,
+	notification_policy_json: JSON.stringify(routine.notificationPolicy),
 	created_at: 1,
 };
 
@@ -229,7 +236,16 @@ describe("Routine detached delegation ownership", () => {
 			run,
 		});
 
-		expect(result.status).toBe("succeeded");
+		expect(result).toMatchObject({
+			status: "succeeded",
+			startedAt: expect.any(Number),
+		});
+		expect(db.markRoutineRunRunning).toHaveBeenCalledWith({
+			runId: run.id,
+			sessionId: "routine-session",
+			providerUsed: routine.providerId,
+			now: result.startedAt,
+		});
 		expect(providerRuntimeCwd).toHaveBeenCalledWith(routine.agentCwd);
 		expect(check).toHaveBeenCalledWith({ cwd: routine.agentCwd });
 		expect(providerCatalog).toHaveBeenCalledWith(routine.agentCwd);

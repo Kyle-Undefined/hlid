@@ -23,6 +23,10 @@ const historySchema = z.object({
 	id: routineIdSchema,
 	limit: z.number().int().min(1).max(200).optional(),
 });
+const exactRunSchema = z.object({
+	routineId: routineIdSchema,
+	runId: routineIdSchema,
+});
 
 async function validateRoutineTarget(agentCwd: string): Promise<void> {
 	const { loadConfig } = await import("#/server/config");
@@ -71,6 +75,13 @@ export const listRoutinesFn = createServerFn({ method: "GET" })
 	.handler(async ({ data }) => {
 		const { listRoutines } = await import("#/db");
 		return listRoutines(data);
+	});
+
+export const getRoutineFn = createServerFn({ method: "GET" })
+	.validator((raw) => routineIdSchema.parse(raw))
+	.handler(async ({ data }) => {
+		const { getRoutine } = await import("#/db/routines");
+		return getRoutine(data);
 	});
 
 export const createRoutineFn = createServerFn({ method: "POST" })
@@ -130,4 +141,11 @@ export const getRoutineRunsFn = createServerFn({ method: "GET" })
 	.handler(async ({ data }) => {
 		const { listRoutineRuns } = await import("#/db/routines");
 		return listRoutineRuns(data.id, data.limit);
+	});
+
+export const getRoutineRunFn = createServerFn({ method: "GET" })
+	.validator((raw) => exactRunSchema.parse(raw))
+	.handler(async ({ data }) => {
+		const { getRoutineRun } = await import("#/db/routines");
+		return getRoutineRun(data.routineId, data.runId);
 	});

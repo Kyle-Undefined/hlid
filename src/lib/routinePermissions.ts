@@ -225,8 +225,12 @@ function stable(value: unknown): unknown {
 export function routineAuthorizationFingerprint(
 	definition: RoutineDefinition,
 ): string {
+	const {
+		notificationPolicy: _notificationPolicy,
+		...authorizationDefinition
+	} = definition;
 	const withoutGrantIds = {
-		...definition,
+		...authorizationDefinition,
 		grants: definition.grants.map(({ id: _id, ...grant }) => grant),
 	};
 	return createHash("sha256")

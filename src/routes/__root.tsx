@@ -35,6 +35,7 @@ import { getConfig } from "#/lib/serverFns/config";
 import { logClientErrorFn } from "#/lib/serverFns/logging";
 import {
 	serviceWorkerBuild,
+	serviceWorkerNotificationTarget,
 	shouldReloadForServiceWorkerBuild,
 } from "#/lib/serviceWorkerUpdate";
 import { themeBootstrapConfig, themeBootstrapScript } from "#/lib/theme";
@@ -84,6 +85,14 @@ export const Route = createRootRoute({
 function RegisterSW() {
 	useEffect(() => {
 		if (!("serviceWorker" in navigator)) return;
+		const onWorkerMessage = (event: MessageEvent) => {
+			const target = serviceWorkerNotificationTarget(
+				event.data,
+				window.location.origin,
+			);
+			if (target) window.location.assign(target);
+		};
+		navigator.serviceWorker.addEventListener("message", onWorkerMessage);
 		// True only when a worker already controls this page — i.e. this is an
 		// update, not the very first install (clients.claim also fires
 		// controllerchange on first install; reloading then would be a loop risk).
@@ -153,6 +162,7 @@ function RegisterSW() {
 		document.addEventListener("visibilitychange", onVisible);
 		window.addEventListener("focus", onVisible);
 		return () => {
+			navigator.serviceWorker.removeEventListener("message", onWorkerMessage);
 			navigator.serviceWorker.removeEventListener(
 				"controllerchange",
 				onControllerChange,

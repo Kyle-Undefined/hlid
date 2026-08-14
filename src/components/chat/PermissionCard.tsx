@@ -81,6 +81,7 @@ export function PermissionCard({
 	return (
 		<section
 			data-notification-attention="permission"
+			data-notification-attention-id={message.id}
 			tabIndex={-1}
 			aria-label={`Pending approval: ${actionName}`}
 			className={`flex min-w-0 max-w-full gap-0 overflow-hidden ${

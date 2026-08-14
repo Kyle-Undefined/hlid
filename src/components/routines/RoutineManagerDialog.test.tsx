@@ -8,7 +8,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProviderInfo } from "#/lib/providerTypes";
-import type { RoutineDefinition } from "#/lib/routines";
+import type { RoutineDefinition, RoutineSummary } from "#/lib/routines";
 import type { Skill } from "#/lib/skills";
 import {
 	RoutineManagerDialog,
@@ -18,6 +18,7 @@ import {
 const serverFns = vi.hoisted(() => ({
 	archiveRoutineFn: vi.fn(),
 	createRoutineFn: vi.fn(),
+	getRoutineRunFn: vi.fn(),
 	getRoutineRunsFn: vi.fn(),
 	previewRoutineScheduleFn: vi.fn().mockResolvedValue([]),
 	runRoutineNowFn: vi.fn(),
@@ -53,14 +54,20 @@ const vaultFns = vi.hoisted(() => ({
 		truncated: false,
 	}),
 }));
+const pushFns = vi.hoisted(() => ({
+	getPushNotificationDevices: vi.fn().mockResolvedValue([]),
+}));
 
 vi.mock("#/lib/serverFns/routines", () => serverFns);
 vi.mock("#/lib/serverFns/vaultReferences", () => vaultFns);
+vi.mock("#/lib/pushNotifications", () => pushFns);
 
 afterEach(() => {
 	cleanup();
 	vi.clearAllMocks();
 	serverFns.previewRoutineScheduleFn.mockResolvedValue([]);
+	serverFns.getRoutineRunFn.mockResolvedValue(null);
+	pushFns.getPushNotificationDevices.mockResolvedValue([]);
 });
 
 const targets: RoutineTarget[] = [
@@ -155,11 +162,253 @@ const defaultDefinition: RoutineDefinition = {
 	permissionMode: "read_only",
 	grants: [],
 	deliveries: [],
+	notificationPolicy: {
+		success: "default",
+		actionRequired: "default",
+		failure: "default",
+		targets: { kind: "all" },
+	},
 	catchUpWindowMinutes: 360,
 	noOverlap: true,
 };
 
+const notificationRoutine: RoutineSummary = {
+	...defaultDefinition,
+	id: "11111111-1111-4111-8111-111111111111",
+	name: "Daily review",
+	enabled: true,
+	archived: false,
+	revision: 1,
+	nextRunAt: null,
+	pausedReason: null,
+	authorizationFingerprint: "fingerprint",
+	createdAt: 1_786_550_400,
+	updatedAt: 1_786_550_400,
+	lastRun: null,
+};
+
+const archivedNotificationRoutine: RoutineSummary = {
+	...notificationRoutine,
+	enabled: false,
+	archived: true,
+	nextRunAt: null,
+};
+
+function notificationDevice(index: number) {
+	const id = `${index.toString(16).padStart(8, "0")}-1111-4111-8111-111111111111`;
+	return {
+		id,
+		name: `Device ${index}`,
+		current: index === 1,
+		enabled: true,
+		createdAt: 1_786_550_400,
+		lastSeenAt: 1_786_550_400,
+		pausedUntil: null,
+		pausedIndefinitely: false,
+		preferences: {
+			requests: true,
+			problems: true,
+			workFinished: false,
+			detail: "generic" as const,
+			completionMinimumMinutes: 0 as const,
+			quietHours: null,
+		},
+		lastAcceptedAt: null,
+		lastFailureAt: null,
+		lastFailureMessage: null,
+		failureCount: 0,
+	};
+}
+
 describe("RoutineManagerDialog", () => {
+	it("opens and highlights the exact run selected by a notification", async () => {
+		const runId = "22222222-2222-4222-8222-222222222222";
+		serverFns.getRoutineRunsFn.mockResolvedValue([
+			{
+				id: runId,
+				routine_id: notificationRoutine.id,
+				routine_revision: 1,
+				profile_id: null,
+				authorization_fingerprint: "fingerprint",
+				trigger: "scheduled",
+				scheduled_for: 1_786_550_400,
+				claimed_at: 1_786_550_400,
+				lease_owner: null,
+				lease_expires_at: null,
+				started_at: 1_786_550_401,
+				finished_at: 1_786_550_410,
+				status: "action_required",
+				session_id: "session-1",
+				provider_used: "codex",
+				error: null,
+				action_required: "Approve filesystem access",
+				delivery_json: null,
+				created_at: 1_786_550_400,
+			},
+		]);
+		render(
+			<RoutineManagerDialog
+				routines={[notificationRoutine]}
+				initialRoutineId={notificationRoutine.id}
+				initialRunId={runId}
+				initialDefinition={null}
+				defaultDefinition={defaultDefinition}
+				targets={targets}
+				providers={providers}
+				skills={skills}
+				commands={[]}
+				onClose={vi.fn()}
+				onRefresh={vi.fn().mockResolvedValue(undefined)}
+			/>,
+		);
+
+		expect(screen.getByText("Opened from notification")).toBeDefined();
+		await waitFor(() =>
+			expect(serverFns.getRoutineRunsFn).toHaveBeenCalledWith({
+				data: { id: notificationRoutine.id, limit: 200 },
+			}),
+		);
+		expect(serverFns.getRoutineRunFn).toHaveBeenCalledWith({
+			data: { routineId: notificationRoutine.id, runId },
+		});
+		const selected = await screen.findByText("action_required");
+		expect(selected.closest('[aria-current="true"]')).not.toBeNull();
+	});
+
+	it("opens an archived Routine read-only and highlights its notified run", async () => {
+		const runId = "33333333-3333-4333-8333-333333333333";
+		serverFns.getRoutineRunsFn.mockResolvedValue([
+			{
+				id: runId,
+				routine_id: archivedNotificationRoutine.id,
+				routine_revision: 1,
+				profile_id: null,
+				authorization_fingerprint: "fingerprint",
+				trigger: "scheduled",
+				scheduled_for: 1_786_550_400,
+				claimed_at: 1_786_550_400,
+				lease_owner: null,
+				lease_expires_at: null,
+				started_at: 1_786_550_401,
+				finished_at: 1_786_550_410,
+				status: "succeeded",
+				session_id: "session-archived",
+				provider_used: "codex",
+				error: null,
+				action_required: null,
+				delivery_json: null,
+				created_at: 1_786_550_400,
+			},
+		]);
+		render(
+			<RoutineManagerDialog
+				routines={[archivedNotificationRoutine]}
+				initialRoutineId={archivedNotificationRoutine.id}
+				initialRunId={runId}
+				notificationTargetStatus="ready"
+				initialDefinition={null}
+				defaultDefinition={defaultDefinition}
+				targets={targets}
+				providers={providers}
+				skills={skills}
+				commands={[]}
+				onClose={vi.fn()}
+				onRefresh={vi.fn().mockResolvedValue(undefined)}
+			/>,
+		);
+
+		expect(screen.getByText("Archived Routine")).toBeTruthy();
+		expect(
+			screen.getByText(
+				"This archived Routine is read-only. Its notified run remains available in history.",
+			),
+		).toBeTruthy();
+		expect(screen.queryByTitle("Run now")).toBeNull();
+		expect(screen.queryByTitle("Archive")).toBeNull();
+		const selected = await screen.findByText("succeeded");
+		expect(selected.closest('[aria-current="true"]')).not.toBeNull();
+		expect(serverFns.getRoutineRunsFn).toHaveBeenCalledWith({
+			data: { id: archivedNotificationRoutine.id, limit: 200 },
+		});
+		expect(serverFns.getRoutineRunFn).toHaveBeenCalledWith({
+			data: { routineId: archivedNotificationRoutine.id, runId },
+		});
+	});
+
+	it("merges an exact notified run that fell outside recent history", async () => {
+		const runId = "55555555-5555-4555-8555-555555555555";
+		serverFns.getRoutineRunsFn.mockResolvedValue([]);
+		serverFns.getRoutineRunFn.mockResolvedValue({
+			id: runId,
+			routine_id: notificationRoutine.id,
+			routine_revision: 1,
+			profile_id: null,
+			authorization_fingerprint: "fingerprint",
+			trigger: "scheduled",
+			scheduled_for: 1_786_000_000,
+			claimed_at: 1_786_000_000,
+			lease_owner: null,
+			lease_expires_at: null,
+			started_at: 1_786_000_001,
+			finished_at: 1_786_000_010,
+			status: "succeeded",
+			session_id: "session-old",
+			provider_used: "codex",
+			error: null,
+			action_required: null,
+			delivery_json: null,
+			notification_policy_json: null,
+			created_at: 1_786_000_000,
+		});
+
+		render(
+			<RoutineManagerDialog
+				routines={[notificationRoutine]}
+				initialRoutineId={notificationRoutine.id}
+				initialRunId={runId}
+				initialDefinition={null}
+				defaultDefinition={defaultDefinition}
+				targets={targets}
+				providers={providers}
+				skills={skills}
+				commands={[]}
+				onClose={vi.fn()}
+				onRefresh={vi.fn().mockResolvedValue(undefined)}
+			/>,
+		);
+
+		const selected = await screen.findByText("succeeded");
+		expect(selected.closest('[aria-current="true"]')).not.toBeNull();
+		expect(
+			screen.queryByText(/notified run is no longer available/i),
+		).toBeNull();
+	});
+
+	it("shows an explicit fallback when a notified Routine is unavailable", () => {
+		render(
+			<RoutineManagerDialog
+				routines={[]}
+				initialRoutineId={notificationRoutine.id}
+				initialRunId="44444444-4444-4444-8444-444444444444"
+				notificationTargetStatus="unavailable"
+				initialDefinition={null}
+				defaultDefinition={defaultDefinition}
+				targets={targets}
+				providers={providers}
+				skills={skills}
+				commands={[]}
+				onClose={vi.fn()}
+				onRefresh={vi.fn().mockResolvedValue(undefined)}
+			/>,
+		);
+
+		expect(
+			screen.getByText(/The Routine from this notification is unavailable/),
+		).toBeTruthy();
+		expect(screen.queryByText(/No Routines configured/)).toBeNull();
+		expect(serverFns.getRoutineRunsFn).not.toHaveBeenCalled();
+	});
+
 	it("uses backdrop dismissal with the same editor-to-overview close semantics", () => {
 		const onClose = vi.fn();
 		render(
@@ -371,6 +620,109 @@ describe("RoutineManagerDialog", () => {
 				}),
 			}),
 		);
+	});
+
+	it("edits outcome policies and exact notification device targets", async () => {
+		const devices = [notificationDevice(1), notificationDevice(2)];
+		pushFns.getPushNotificationDevices.mockResolvedValue(devices);
+		render(
+			<RoutineManagerDialog
+				routines={[]}
+				initialDefinition={{
+					...defaultDefinition,
+					prompt: "Send the daily report",
+				}}
+				defaultDefinition={defaultDefinition}
+				targets={targets}
+				providers={providers}
+				skills={skills}
+				commands={[]}
+				onClose={vi.fn()}
+				onRefresh={vi.fn().mockResolvedValue(undefined)}
+			/>,
+		);
+
+		const success = screen.getByLabelText("Success notifications");
+		const action = screen.getByLabelText("Action required notifications");
+		const failure = screen.getByLabelText("Failure notifications");
+		expect((success as HTMLSelectElement).value).toBe("default");
+		expect((action as HTMLSelectElement).value).toBe("default");
+		expect((failure as HTMLSelectElement).value).toBe("default");
+
+		fireEvent.change(success, { target: { value: "notify" } });
+		fireEvent.change(action, { target: { value: "mute" } });
+		fireEvent.change(failure, { target: { value: "notify" } });
+		fireEvent.change(screen.getByLabelText("Routine notification targets"), {
+			target: { value: "devices" },
+		});
+		const create = screen.getByRole("button", { name: "Create Routine" });
+		expect((create as HTMLButtonElement).disabled).toBe(true);
+
+		fireEvent.click(
+			await screen.findByRole("checkbox", { name: "Device 1 (this device)" }),
+		);
+		fireEvent.click(screen.getByRole("checkbox", { name: "Device 2" }));
+		expect((create as HTMLButtonElement).disabled).toBe(false);
+		fireEvent.click(create);
+
+		await waitFor(() =>
+			expect(serverFns.createRoutineFn).toHaveBeenCalledWith({
+				data: expect.objectContaining({
+					notificationPolicy: {
+						success: "notify",
+						actionRequired: "mute",
+						failure: "notify",
+						targets: {
+							kind: "devices",
+							deviceIds: devices.map((device) => device.id),
+						},
+					},
+				}),
+			}),
+		);
+	});
+
+	it("rejects more than 32 exact devices without silently truncating targets", async () => {
+		const devices = Array.from({ length: 33 }, (_, index) =>
+			notificationDevice(index + 1),
+		);
+		pushFns.getPushNotificationDevices.mockResolvedValue(devices);
+		render(
+			<RoutineManagerDialog
+				routines={[]}
+				initialDefinition={{
+					...defaultDefinition,
+					prompt: "Send the daily report",
+					notificationPolicy: {
+						...defaultDefinition.notificationPolicy,
+						targets: {
+							kind: "devices",
+							deviceIds: devices.map((device) => device.id),
+						},
+					},
+				}}
+				defaultDefinition={defaultDefinition}
+				targets={targets}
+				providers={providers}
+				skills={skills}
+				commands={[]}
+				onClose={vi.fn()}
+				onRefresh={vi.fn().mockResolvedValue(undefined)}
+			/>,
+		);
+
+		const thirtyThird = await screen.findByRole("checkbox", {
+			name: "Device 33",
+		});
+		expect((thirtyThird as HTMLInputElement).checked).toBe(true);
+		expect(
+			screen.getByText("Choose no more than 32 exact notification devices."),
+		).toBeTruthy();
+		const create = screen.getByRole("button", { name: "Create Routine" });
+		expect((create as HTMLButtonElement).disabled).toBe(true);
+
+		fireEvent.click(thirtyThird);
+		expect((create as HTMLButtonElement).disabled).toBe(false);
 	});
 
 	it("orders skills as Vault, Hlid, then the selected provider", () => {

@@ -92,6 +92,7 @@ export function AskUserQuestionCard({
 	return (
 		<section
 			data-notification-attention="question"
+			data-notification-attention-id={message.id}
 			tabIndex={-1}
 			aria-label="Pending question"
 			className="flex scroll-mt-4 gap-0 outline-none transition-[box-shadow,background-color] focus:ring-2 focus:ring-primary/60 data-[notification-highlight=true]:bg-primary/5 data-[notification-highlight=true]:ring-2 data-[notification-highlight=true]:ring-primary/60"

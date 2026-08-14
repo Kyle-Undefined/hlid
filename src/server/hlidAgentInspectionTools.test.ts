@@ -111,6 +111,12 @@ function routineSummary() {
 		permissionMode: "read_only" as const,
 		grants: [{ capability: "fs.read" as const, path: "/private" }],
 		deliveries: [{ kind: "relic" as const }],
+		notificationPolicy: {
+			success: "default" as const,
+			actionRequired: "default" as const,
+			failure: "default" as const,
+			targets: { kind: "all" as const },
+		},
 		catchUpWindowMinutes: 60,
 		noOverlap: true,
 		pausedReason: null,

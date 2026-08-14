@@ -12,12 +12,15 @@ import {
 	disablePushNotifications,
 	enablePushNotifications,
 	getPushNotificationDevices,
+	getPushNotificationHistory,
 	getPushNotificationState,
 	getPushNotificationSupport,
+	type PushNotificationQuietHours,
 	pausePushNotifications,
 	renamePushNotificationDevice,
 	revokePushNotificationDevice,
 	sendTestPushNotification,
+	updatePushNotificationDevice,
 	updatePushNotificationPreferences,
 } from "#/lib/pushNotifications";
 import {
@@ -30,12 +33,14 @@ vi.mock("#/lib/pushNotifications", () => ({
 	disablePushNotifications: vi.fn(),
 	enablePushNotifications: vi.fn(),
 	getPushNotificationDevices: vi.fn(),
+	getPushNotificationHistory: vi.fn(),
 	getPushNotificationState: vi.fn(),
 	getPushNotificationSupport: vi.fn(),
 	pausePushNotifications: vi.fn(),
 	renamePushNotificationDevice: vi.fn(),
 	revokePushNotificationDevice: vi.fn(),
 	sendTestPushNotification: vi.fn(),
+	updatePushNotificationDevice: vi.fn(),
 	updatePushNotificationPreferences: vi.fn(),
 }));
 
@@ -51,6 +56,7 @@ const disabledState = {
 		workFinished: false,
 		detail: "generic" as const,
 		completionMinimumMinutes: 0 as const,
+		quietHours: null,
 	},
 };
 
@@ -69,6 +75,7 @@ const phone = {
 	lastSeenAt: new Date(2026, 0, 2, 12).getTime(),
 	pausedUntil: null,
 	pausedIndefinitely: false,
+	preferences: enabledState.preferences,
 	lastAcceptedAt: new Date(2026, 0, 2, 12).getTime(),
 	lastFailureAt: null,
 	lastFailureMessage: null,
@@ -95,6 +102,7 @@ beforeEach(() => {
 	vi.mocked(getPushNotificationSupport).mockReturnValue({ supported: true });
 	vi.mocked(getPushNotificationState).mockResolvedValue(disabledState);
 	vi.mocked(getPushNotificationDevices).mockResolvedValue([]);
+	vi.mocked(getPushNotificationHistory).mockResolvedValue([]);
 	vi.mocked(enablePushNotifications).mockResolvedValue(enabledState);
 	vi.mocked(disablePushNotifications).mockResolvedValue({
 		...enabledState,
@@ -117,6 +125,19 @@ beforeEach(() => {
 	});
 	vi.mocked(renamePushNotificationDevice).mockImplementation(
 		async (id, name) => ({ ...(id === phone.id ? phone : desktop), name }),
+	);
+	vi.mocked(updatePushNotificationDevice).mockImplementation(
+		async (id, patch) => {
+			const device = id === phone.id ? phone : desktop;
+			return {
+				...device,
+				...(patch.name === undefined ? {} : { name: patch.name.trim() }),
+				preferences: {
+					...device.preferences,
+					...patch.preferences,
+				},
+			};
+		},
 	);
 	vi.mocked(revokePushNotificationDevice).mockResolvedValue(true);
 });
@@ -150,6 +171,135 @@ describe("notification pause values", () => {
 });
 
 describe("NotificationsSection", () => {
+	it("shows recent notification decisions and per-device delivery state", async () => {
+		vi.mocked(getPushNotificationHistory).mockResolvedValue([
+			{
+				id: "33333333-3333-4333-8333-333333333333",
+				sourceKind: "session",
+				sourceId: "session-1",
+				category: "completion",
+				reason: "work_finished",
+				label: "Compile release",
+				url: "/raven?session=session-1",
+				runtimeMs: 30_000,
+				pendingCount: 0,
+				occurredAt: new Date(2026, 0, 2, 12).getTime(),
+				expiresAt: new Date(2026, 0, 3, 12).getTime(),
+				groupKey: "completion",
+				batchId: "batch-one",
+				status: "processed",
+				statusReason: "delivery_complete",
+				nextAttemptAt: null,
+				deliveries: [
+					{
+						id: "44444444-4444-4444-8444-444444444444",
+						deviceId: phone.id,
+						device: { id: phone.id, name: "Phone", privacy: "generic" },
+						status: "sent",
+						reason: null,
+						nextAttemptAt: null,
+						attemptCount: 1,
+						providerStatus: 201,
+						receiptAt: new Date(2026, 0, 2, 12, 0, 1).getTime(),
+						displayedAt: new Date(2026, 0, 2, 12, 0, 2).getTime(),
+						openedAt: null,
+						dismissedAt: null,
+						createdAt: new Date(2026, 0, 2, 12).getTime(),
+						updatedAt: new Date(2026, 0, 2, 12, 0, 2).getTime(),
+					},
+					{
+						id: "55555555-5555-4555-8555-555555555555",
+						deviceId: desktop.id,
+						device: {
+							id: desktop.id,
+							name: "Desktop",
+							privacy: "detailed",
+						},
+						status: "suppressed",
+						reason: "quiet_hours",
+						nextAttemptAt: null,
+						attemptCount: 0,
+						providerStatus: null,
+						receiptAt: null,
+						displayedAt: null,
+						openedAt: null,
+						dismissedAt: null,
+						createdAt: new Date(2026, 0, 2, 12).getTime(),
+						updatedAt: new Date(2026, 0, 2, 12).getTime(),
+					},
+					{
+						id: "66666666-6666-4666-8666-666666666666",
+						deviceId: "77777777-7777-4777-8777-777777777777",
+						device: {
+							id: "77777777-7777-4777-8777-777777777777",
+							name: "Tablet",
+							privacy: "generic",
+						},
+						status: "queued",
+						reason: "quiet_hours",
+						nextAttemptAt: new Date(2026, 0, 2, 22).getTime(),
+						attemptCount: 0,
+						providerStatus: null,
+						receiptAt: null,
+						displayedAt: null,
+						openedAt: null,
+						dismissedAt: null,
+						createdAt: new Date(2026, 0, 2, 12).getTime(),
+						updatedAt: new Date(2026, 0, 2, 12).getTime(),
+					},
+				],
+			},
+		]);
+
+		render(<NotificationsSection />);
+
+		expect(await screen.findByText("Completion · session")).toBeTruthy();
+		expect(screen.getByText("Compile release")).toBeTruthy();
+		expect(
+			screen.getByText("processed · delivery complete · work finished"),
+		).toBeTruthy();
+		expect(screen.getByText("Phone: displayed")).toBeTruthy();
+		expect(screen.getByText("Desktop: suppressed · quiet hours")).toBeTruthy();
+		expect(
+			screen.getByText((content) =>
+				content.startsWith("Tablet: queued · quiet hours · next "),
+			),
+		).toBeTruthy();
+		expect(getPushNotificationHistory).toHaveBeenCalledWith(20);
+		expect(
+			screen.getByText("Compile release").closest("li")?.className,
+		).toContain("min-w-0");
+	});
+
+	it("keeps history retry separate from device and opt-in controls", async () => {
+		vi.mocked(getPushNotificationHistory)
+			.mockRejectedValueOnce(new Error("History unavailable."))
+			.mockResolvedValueOnce([]);
+
+		render(<NotificationsSection />);
+
+		expect(await screen.findByText("History unavailable.")).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "REFRESH HISTORY" }));
+		await waitFor(() =>
+			expect(getPushNotificationHistory).toHaveBeenCalledTimes(2),
+		);
+		expect(
+			screen.getByRole("button", { name: "ENABLE ON THIS DEVICE" }),
+		).toBeTruthy();
+	});
+
+	it("refreshes notification history while the settings are healthy", async () => {
+		render(<NotificationsSection />);
+
+		expect(
+			await screen.findByText("No notification history yet."),
+		).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "REFRESH HISTORY" }));
+		await waitFor(() =>
+			expect(getPushNotificationHistory).toHaveBeenCalledTimes(2),
+		);
+	});
+
 	it("stays off and does not prompt until Enable is clicked", async () => {
 		render(<NotificationsSection />);
 
@@ -177,9 +327,15 @@ describe("NotificationsSection", () => {
 	it("saves request, problem, completion, and detail controls", async () => {
 		vi.mocked(getPushNotificationState).mockResolvedValue(enabledState);
 		render(<NotificationsSection />);
+		const completionMinimum = await screen.findByRole("combobox", {
+			name: /Completion minimum runtime/i,
+		});
+		expect(
+			(completionMinimum as HTMLSelectElement).selectedOptions[0]?.textContent,
+		).toBe("No minimum");
 
 		fireEvent.click(
-			await screen.findByRole("checkbox", { name: "Request notifications" }),
+			screen.getByRole("checkbox", { name: "Request notifications" }),
 		);
 		await waitFor(() =>
 			expect(updatePushNotificationPreferences).toHaveBeenLastCalledWith({
@@ -225,6 +381,210 @@ describe("NotificationsSection", () => {
 				detail: "detailed",
 			}),
 		);
+	});
+
+	it("preserves an unsaved quiet-hours draft across equal server refreshes", async () => {
+		const quietHours: PushNotificationQuietHours = {
+			timezone: "America/New_York",
+			start: "22:00",
+			end: "07:00",
+			weekdays: [1, 2, 3, 4, 5],
+			allowRequests: true,
+			allowProblems: true,
+		};
+		const quietState = {
+			...enabledState,
+			preferences: { ...enabledState.preferences, quietHours },
+		};
+		vi.mocked(getPushNotificationState).mockResolvedValue(quietState);
+		vi.mocked(updatePushNotificationPreferences).mockImplementation(
+			async (preferences) => ({
+				...quietState,
+				preferences: {
+					...preferences,
+					quietHours: preferences.quietHours
+						? {
+								...preferences.quietHours,
+								weekdays: [...preferences.quietHours.weekdays],
+							}
+						: null,
+				},
+			}),
+		);
+		render(<NotificationsSection />);
+
+		const start = await screen.findByLabelText(
+			"Current device quiet hours start",
+		);
+		fireEvent.change(start, { target: { value: "23:00" } });
+		fireEvent.click(
+			screen.getByRole("checkbox", { name: "Request notifications" }),
+		);
+
+		await waitFor(() =>
+			expect(updatePushNotificationPreferences).toHaveBeenCalled(),
+		);
+		expect((start as HTMLInputElement).value).toBe("23:00");
+		expect(
+			screen.getByRole("button", { name: "SAVE QUIET HOURS" }),
+		).toBeTruthy();
+	});
+
+	it("saves recurring quiet hours without catch-up controls", async () => {
+		vi.mocked(getPushNotificationState).mockResolvedValue(enabledState);
+		render(<NotificationsSection />);
+
+		expect(
+			await screen.findByRole("checkbox", {
+				name: "Current device quiet hours",
+			}),
+		).toBeTruthy();
+		expect(
+			screen.queryByRole("checkbox", { name: "Catch up after a pause" }),
+		).toBeNull();
+
+		fireEvent.click(
+			screen.getByRole("checkbox", { name: "Current device quiet hours" }),
+		);
+		fireEvent.change(
+			screen.getByLabelText("Current device quiet hours timezone"),
+			{ target: { value: "America/New_York" } },
+		);
+		fireEvent.change(
+			screen.getByLabelText("Current device quiet hours start"),
+			{
+				target: { value: "23:00" },
+			},
+		);
+		fireEvent.change(screen.getByLabelText("Current device quiet hours end"), {
+			target: { value: "06:00" },
+		});
+		fireEvent.click(
+			screen.getByRole("checkbox", { name: "Current device quiet hours Sun" }),
+		);
+		fireEvent.click(
+			screen.getByRole("checkbox", {
+				name: "Current device allow requests during quiet hours",
+			}),
+		);
+		expect(
+			screen.queryByRole("checkbox", {
+				name: "Current device catch up after quiet hours",
+			}),
+		).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "SAVE QUIET HOURS" }));
+
+		await waitFor(() =>
+			expect(updatePushNotificationPreferences).toHaveBeenLastCalledWith({
+				...enabledState.preferences,
+				quietHours: {
+					timezone: "America/New_York",
+					start: "23:00",
+					end: "06:00",
+					weekdays: [1, 2, 3, 4, 5, 6],
+					allowRequests: false,
+					allowProblems: true,
+				},
+			}),
+		);
+	});
+
+	it("edits a remote device's complete notification profile without endpoint data", async () => {
+		vi.mocked(getPushNotificationState).mockResolvedValue(enabledState);
+		vi.mocked(getPushNotificationDevices).mockResolvedValue([desktop]);
+		render(<NotificationsSection />);
+
+		fireEvent.click(await screen.findByText("EDIT NOTIFICATION PROFILE"));
+		fireEvent.click(
+			screen.getByRole("checkbox", { name: "Desktop request notifications" }),
+		);
+		fireEvent.click(
+			screen.getByRole("checkbox", {
+				name: "Desktop work finished notifications",
+			}),
+		);
+		fireEvent.change(
+			screen.getByRole("combobox", {
+				name: "Desktop completion minimum runtime",
+			}),
+			{ target: { value: "5" } },
+		);
+		fireEvent.change(
+			screen.getByRole("combobox", { name: "Desktop lock screen wording" }),
+			{ target: { value: "detailed" } },
+		);
+		fireEvent.click(
+			screen.getByRole("checkbox", { name: "Desktop quiet hours" }),
+		);
+		fireEvent.change(screen.getByLabelText("Desktop quiet hours timezone"), {
+			target: { value: "UTC" },
+		});
+		fireEvent.click(
+			screen.getByRole("checkbox", {
+				name: "Desktop allow problems during quiet hours",
+			}),
+		);
+		const save = screen.getByRole("button", {
+			name: "Save notification profile for Desktop",
+		});
+		expect(save.className).toContain("min-h-11");
+		fireEvent.click(save);
+
+		await waitFor(() =>
+			expect(updatePushNotificationDevice).toHaveBeenCalledWith(desktop.id, {
+				preferences: {
+					requests: false,
+					problems: true,
+					workFinished: true,
+					detail: "detailed",
+					completionMinimumMinutes: 5,
+					quietHours: {
+						timezone: "UTC",
+						start: "22:00",
+						end: "07:00",
+						weekdays: [1, 2, 3, 4, 5, 6, 7],
+						allowRequests: true,
+						allowProblems: false,
+					},
+				},
+			}),
+		);
+		expect(
+			JSON.stringify(vi.mocked(updatePushNotificationDevice).mock.calls),
+		).not.toContain("endpoint");
+	});
+
+	it("preserves an unsaved remote profile across an equal server refresh", async () => {
+		const renamedDesktop = {
+			...desktop,
+			name: "Desk",
+			preferences: { ...desktop.preferences },
+		};
+		vi.mocked(getPushNotificationState).mockResolvedValue(enabledState);
+		vi.mocked(getPushNotificationDevices)
+			.mockResolvedValueOnce([desktop])
+			.mockResolvedValue([renamedDesktop]);
+		render(<NotificationsSection />);
+
+		fireEvent.click(await screen.findByText("EDIT NOTIFICATION PROFILE"));
+		fireEvent.click(
+			screen.getByRole("checkbox", { name: "Desktop request notifications" }),
+		);
+		fireEvent.change(
+			screen.getByRole("textbox", { name: "Name for Desktop" }),
+			{
+				target: { value: "Desk" },
+			},
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: "Save name for Desktop" }),
+		);
+
+		const requestToggle = await screen.findByRole("checkbox", {
+			name: "Desk request notifications",
+		});
+		expect((requestToggle as HTMLInputElement).checked).toBe(false);
+		expect(getPushNotificationDevices).toHaveBeenCalledTimes(2);
 	});
 
 	it("pauses for a chosen duration, exact time, or manual resume", async () => {

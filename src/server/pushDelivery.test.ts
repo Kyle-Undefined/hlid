@@ -23,6 +23,7 @@ function preferences(patch: Partial<PushPreferences> = {}): PushPreferences {
 		completion_min_runtime_minutes: 0,
 		paused_until: null,
 		paused_indefinitely: false,
+		quiet_hours: null,
 		...patch,
 	};
 }
@@ -57,8 +58,16 @@ const detailedDevice = device(
 function dependencies(
 	options: {
 		devices?: StoredPushSubscription[];
-		mode?: "default" | "notify" | "notify_once" | "mute";
-		modes?: Record<string, "default" | "notify" | "notify_once" | "mute">;
+		mode?:
+			| "default"
+			| "notify"
+			| "notify_once"
+			| "notify_completion_once"
+			| "mute";
+		modes?: Record<
+			string,
+			"default" | "notify" | "notify_once" | "notify_completion_once" | "mute"
+		>;
 		results?: Record<string, "delivered" | "gone" | "failed">;
 	} = {},
 ) {
@@ -86,7 +95,7 @@ function dependencies(
 			async (sessionId: string) =>
 				options.modes?.[sessionId] ?? options.mode ?? "default",
 		),
-		clearNotifyOnce: vi.fn(async () => true),
+		clearOneShot: vi.fn(async () => true),
 		loadVapidKeys: vi.fn(() => ({
 			publicKey: "vapid-public",
 			privateKey: "vapid-private",
@@ -132,7 +141,7 @@ describe("Web Push event delivery", () => {
 		expect(genericPayload).toMatchObject({
 			title: "Hlid needs your attention",
 			body: "Open Hlid to continue.",
-			url: "/raven?session=session-1",
+			url: "/raven?session=session-1&attention=permission",
 		});
 		expect(JSON.stringify(genericPayload)).not.toContain("Private workspace");
 		expect(detailedPayload).toMatchObject({
@@ -202,17 +211,22 @@ describe("Web Push event delivery", () => {
 			preferences({ work_finished: true, completion_min_runtime_minutes: 5 }),
 		);
 		const deps = dependencies({ devices: [all, longOnly] });
+		const durableBatchId = "11111111-1111-4111-8111-111111111111";
 		const summary = await deliverPushEvents(
 			[
 				{
 					kind: "work_finished",
 					sessionId: "short",
+					deliveryId: "11111111-1111-4111-8111-111111111111",
+					batchId: durableBatchId,
 					label: "Short",
 					runtimeMs: 60_000,
 				},
 				{
 					kind: "work_finished",
 					sessionId: "long",
+					deliveryId: "22222222-2222-4222-8222-222222222222",
+					batchId: durableBatchId,
 					label: "Long",
 					runtimeMs: 600_000,
 				},
@@ -229,11 +243,32 @@ describe("Web Push event delivery", () => {
 		expect(allPayload).toMatchObject({
 			sessionId: "short",
 			sessionIds: ["short", "long"],
-			url: "/raven",
+			deliveryIds: [
+				"11111111-1111-4111-8111-111111111111",
+				"22222222-2222-4222-8222-222222222222",
+			],
+			batchId: durableBatchId,
+			url: `/raven?notification_batch=${durableBatchId}`,
 		});
 		expect(allPayload).toHaveProperty("batchId");
 		expect(longPayload).toMatchObject({ sessionId: "long" });
 		expect(longPayload).not.toHaveProperty("sessionIds");
+	});
+
+	it("rejects a multi-event completion without one durable batch ID", async () => {
+		const deps = dependencies({
+			devices: [device("batch", preferences({ work_finished: true }))],
+		});
+		await expect(
+			deliverPushEvents(
+				[
+					{ kind: "work_finished", sessionId: "session-one" },
+					{ kind: "work_finished", sessionId: "session-two" },
+				],
+				deps,
+			),
+		).rejects.toThrow("durable batch ID");
+		expect(deps.send).not.toHaveBeenCalled();
 	});
 
 	it("makes Notify bypass preferences, Mute suppress, and pause win", async () => {
@@ -298,7 +333,10 @@ describe("Web Push event delivery", () => {
 			},
 			accepted,
 		);
-		expect(accepted.clearNotifyOnce).toHaveBeenCalledWith("session-1");
+		expect(accepted.clearOneShot).toHaveBeenCalledWith(
+			"session-1",
+			"notify_once",
+		);
 
 		const failed = dependencies({
 			devices: [genericDevice],
@@ -309,7 +347,7 @@ describe("Web Push event delivery", () => {
 			{ kind: "work_finished", sessionId: "session-1" },
 			failed,
 		);
-		expect(failed.clearNotifyOnce).not.toHaveBeenCalled();
+		expect(failed.clearOneShot).not.toHaveBeenCalled();
 	});
 
 	it("serializes overlapping Notify once delivery for the same session", async () => {
@@ -324,7 +362,7 @@ describe("Web Push event delivery", () => {
 		);
 		const deps = dependencies({ devices: [optedOut] });
 		deps.getOverride.mockImplementation(async () => mode);
-		deps.clearNotifyOnce.mockImplementation(async () => {
+		deps.clearOneShot.mockImplementation(async () => {
 			mode = "default";
 			return true;
 		});
@@ -340,12 +378,12 @@ describe("Web Push event delivery", () => {
 		const first = deliverPushEvent(event, deps);
 		await vi.waitFor(() => expect(deps.send).toHaveBeenCalledOnce());
 		const second = deliverPushEvent(event, deps);
-		expect(deps.getOverride).toHaveBeenCalledOnce();
+		expect(deps.getOverride).toHaveBeenCalledTimes(2);
 		acceptFirst?.();
 		expect(await first).toMatchObject({ delivered: 1 });
 		expect(await second).toMatchObject({ attempted: 0, suppressed: 1 });
 		expect(deps.send).toHaveBeenCalledOnce();
-		expect(deps.clearNotifyOnce).toHaveBeenCalledOnce();
+		expect(deps.clearOneShot).toHaveBeenCalledOnce();
 	});
 
 	it("marks gone subscriptions permanent and records transient failures", async () => {
@@ -371,18 +409,50 @@ describe("Web Push event delivery", () => {
 
 	it("retries a transient failure without duplicating bookkeeping", async () => {
 		const deps = dependencies({ devices: [genericDevice] });
+		const onAttempt = vi.fn();
 		deps.send
 			.mockResolvedValueOnce({ outcome: "failed", statusCode: 503 })
 			.mockResolvedValueOnce({ outcome: "delivered", statusCode: 201 });
 		expect(
 			await deliverPushEvent(
 				{ kind: "needs_attention", sessionId: "session-1" },
-				deps,
+				{ ...deps, onAttempt },
 			),
 		).toMatchObject({ delivered: 1, failed: 0 });
 		expect(deps.sleep).toHaveBeenCalledWith(1_000);
 		expect(deps.recordSuccess).toHaveBeenCalledOnce();
 		expect(deps.recordFailure).not.toHaveBeenCalled();
+		expect(
+			onAttempt.mock.calls.map(([, , result, context]) => ({
+				result,
+				context,
+			})),
+		).toEqual([
+			{
+				result: { outcome: "failed", statusCode: 503 },
+				context: { attempt: 1, attemptedAt: NOW },
+			},
+			{
+				result: { outcome: "delivered", statusCode: 201 },
+				context: { attempt: 2, attemptedAt: NOW },
+			},
+		]);
+	});
+
+	it("honors a longer provider Retry-After delay", async () => {
+		const deps = dependencies({ devices: [genericDevice] });
+		deps.send
+			.mockResolvedValueOnce({
+				outcome: "failed",
+				statusCode: 429,
+				retryAfterMs: 4_000,
+			})
+			.mockResolvedValueOnce({ outcome: "delivered", statusCode: 201 });
+		await deliverPushEvent(
+			{ kind: "needs_attention", sessionId: "session-1" },
+			deps,
+		);
+		expect(deps.sleep).toHaveBeenCalledWith(4_000);
 	});
 
 	it("sends a distinct test payload despite categories and pause", async () => {
@@ -452,6 +522,64 @@ describe("Web Push event delivery", () => {
 			deps,
 		);
 		const payload = deps.send.mock.calls[0]?.[1] as WebPushNotificationPayload;
-		expect(payload.url).toBe("/raven?session=session+%26+one");
+		expect(payload.url).toBe(
+			"/raven?session=session+%26+one&attention=permission",
+		);
+	});
+
+	it("delivers a Routine outcome without inventing a Raven session", async () => {
+		const deps = dependencies({ devices: [detailedDevice] });
+		await deliverPushEvent(
+			{
+				kind: "needs_attention",
+				sourceKind: "routine",
+				sessionId: "22222222-2222-4222-8222-222222222222",
+				routineId: "11111111-1111-4111-8111-111111111111",
+				routineRunId: "22222222-2222-4222-8222-222222222222",
+				reason: "routine_provider_unavailable",
+				label: "Morning brief",
+				url: "/?routine=11111111-1111-4111-8111-111111111111&routine_run=22222222-2222-4222-8222-222222222222",
+			},
+			deps,
+		);
+		const payload = deps.send.mock.calls[0]?.[1] as WebPushNotificationPayload;
+		expect(payload).toMatchObject({
+			source: "routine",
+			routineId: "11111111-1111-4111-8111-111111111111",
+			routineRunId: "22222222-2222-4222-8222-222222222222",
+			url: "/?routine=11111111-1111-4111-8111-111111111111&routine_run=22222222-2222-4222-8222-222222222222",
+		});
+		expect(payload).not.toHaveProperty("sessionId");
+	});
+
+	it("consumes completion-only one-shot only for a completion", async () => {
+		const optedOut = device(
+			"completion-once",
+			preferences({ requests: false, problems: false, work_finished: false }),
+		);
+		const attention = dependencies({
+			devices: [optedOut],
+			mode: "notify_completion_once",
+		});
+		await deliverPushEvent(
+			{ kind: "needs_attention", sessionId: "session-1", reason: "error" },
+			attention,
+		);
+		expect(attention.send).not.toHaveBeenCalled();
+		expect(attention.clearOneShot).not.toHaveBeenCalled();
+
+		const completion = dependencies({
+			devices: [optedOut],
+			mode: "notify_completion_once",
+		});
+		await deliverPushEvent(
+			{ kind: "work_finished", sessionId: "session-1" },
+			completion,
+		);
+		expect(completion.send).toHaveBeenCalledOnce();
+		expect(completion.clearOneShot).toHaveBeenCalledWith(
+			"session-1",
+			"notify_completion_once",
+		);
 	});
 });

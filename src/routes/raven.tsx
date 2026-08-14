@@ -18,9 +18,11 @@ import {
 } from "lucide-react";
 import {
 	type Dispatch,
+	lazy,
 	type KeyboardEvent as ReactKeyboardEvent,
 	type PointerEvent as ReactPointerEvent,
 	type SetStateAction,
+	Suspense,
 	useCallback,
 	useEffect,
 	useLayoutEffect,
@@ -34,7 +36,7 @@ import { AgentSelect } from "#/components/AgentSelect";
 import { AttachmentStrip } from "#/components/AttachmentStrip";
 import { ActiveCommandBadges } from "#/components/chat/ActiveCommandBadge";
 import { ContextInspectorDialog } from "#/components/chat/ContextInspectorDialog";
-import { reducer } from "#/components/chat/chatReducer";
+import { type ChatMessage, reducer } from "#/components/chat/chatReducer";
 import { FileRewindDialog } from "#/components/chat/FileRewindDialog";
 import {
 	LiveSessionSwitcher,
@@ -43,7 +45,7 @@ import {
 import { MessageList } from "#/components/chat/MessageList";
 import { ProjectPreviewPane } from "#/components/chat/ProjectPreviewPane";
 import { RavenGoalStrip } from "#/components/chat/RavenGoalStrip";
-import { SessionNotificationOverrideControl } from "#/components/chat/SessionNotificationOverrideControl";
+import { SessionNotificationOverrideButton } from "#/components/chat/SessionNotificationOverrideControl";
 import {
 	VaultReferenceBadges,
 	VaultReferencePicker,
@@ -202,6 +204,12 @@ import {
 	type WorkflowSourceResultMessage,
 } from "#/server/protocol";
 
+const NotificationBatchDrawer = lazy(() =>
+	import("#/components/chat/NotificationBatchDrawer").then((module) => ({
+		default: module.NotificationBatchDrawer,
+	})),
+);
+
 type RavenPaneTab = "chat" | "terminal" | "preview";
 export type RavenNotificationAttention =
 	| "permission"
@@ -218,6 +226,20 @@ export function ravenNotificationAttention(
 		: undefined;
 }
 
+export function ravenNotificationAttentionId(
+	value: unknown,
+): string | undefined {
+	return typeof value === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(value)
+		? value
+		: undefined;
+}
+
+export function ravenNotificationBatchId(value: unknown): string | undefined {
+	return typeof value === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(value)
+		? value
+		: undefined;
+}
+
 /**
  * Focuses only a card that is still rendered as pending. Resolved cards do not
  * retain this marker, so a notification can never revive or target stale work.
@@ -225,20 +247,31 @@ export function ravenNotificationAttention(
 export function focusRavenNotificationAttention(
 	root: ParentNode,
 	attention: RavenNotificationAttention,
+	attentionId?: string,
 ): HTMLElement | null {
-	const card = root.querySelector<HTMLElement>(
-		`[data-notification-attention="${attention}"]`,
+	const cards = Array.from(
+		root.querySelectorAll<HTMLElement>(
+			`[data-notification-attention="${attention}"]`,
+		),
 	);
+	const card =
+		attentionId === undefined
+			? cards[0]
+			: cards.find(
+					(candidate) =>
+						candidate.dataset.notificationAttentionId === attentionId,
+				);
 	if (!card) return null;
-	const attentionId = card.dataset.notificationAttentionId;
-	const dialog = attentionId
+	const matchedAttentionId =
+		attentionId ?? card.dataset.notificationAttentionId;
+	const dialog = matchedAttentionId
 		? Array.from(
 				document.querySelectorAll<HTMLElement>(
 					`[data-notification-attention-dialog="${attention}"]`,
 				),
 			).find(
 				(candidate) =>
-					candidate.dataset.notificationAttentionId === attentionId,
+					candidate.dataset.notificationAttentionId === matchedAttentionId,
 			)
 		: undefined;
 	const target = dialog ?? card;
@@ -246,6 +279,26 @@ export function focusRavenNotificationAttention(
 	if (!dialog) target.scrollIntoView?.({ behavior: "smooth", block: "center" });
 	target.focus({ preventScroll: true });
 	return target;
+}
+
+export function isPendingRavenNotificationAttention(
+	message: ChatMessage,
+	attention: RavenNotificationAttention,
+	attentionId?: string,
+): boolean {
+	if (attentionId !== undefined && message.id !== attentionId) return false;
+	switch (attention) {
+		case "permission":
+			return (
+				message.role === "permission" &&
+				message.decision === "pending" &&
+				message.providerOutcome !== "blocked"
+			);
+		case "question":
+			return message.role === "ask_user_question" && message.answers === null;
+		case "plan_review":
+			return message.role === "plan_proposal" && message.decision === "pending";
+	}
 }
 
 export function ravenTabAfterProjectPreviewStops(
@@ -510,18 +563,35 @@ export const Route = createFileRoute("/raven")({
 		agent?: string;
 		prompt?: string;
 		attention?: RavenNotificationAttention;
+		attention_id?: string;
+		notification_batch?: string;
 	} => {
 		const out: {
 			session?: string;
 			agent?: string;
 			prompt?: string;
 			attention?: RavenNotificationAttention;
+			attention_id?: string;
+			notification_batch?: string;
 		} = {};
 		if (typeof search.session === "string") out.session = search.session;
 		if (typeof search.agent === "string") out.agent = search.agent;
 		if (typeof search.prompt === "string") out.prompt = search.prompt;
 		const attention = ravenNotificationAttention(search.attention);
-		if (out.session && attention) out.attention = attention;
+		const attentionIdProvided = search.attention_id !== undefined;
+		const attentionId = ravenNotificationAttentionId(search.attention_id);
+		if (
+			out.session &&
+			attention &&
+			(!attentionIdProvided || attentionId !== undefined)
+		) {
+			out.attention = attention;
+			if (attentionId) out.attention_id = attentionId;
+		}
+		const notificationBatchId = ravenNotificationBatchId(
+			search.notification_batch,
+		);
+		if (notificationBatchId) out.notification_batch = notificationBatchId;
 		return out;
 	},
 	loaderDeps: ({ search: { session, agent } }) => ({ session, agent }),
@@ -3346,32 +3416,53 @@ export function ChatPage() {
 	});
 	const { focusSkillOnNextRender } = viewport;
 	const notificationAttention = ravenSearch.attention;
+	const notificationAttentionId = ravenSearch.attention_id;
+	const notificationBatchId = ravenSearch.notification_batch;
+	const closeNotificationBatch = useCallback(() => {
+		void navigate({
+			to: "/raven",
+			search: (previous) => ({
+				...previous,
+				notification_batch: undefined,
+			}),
+			replace: true,
+		});
+	}, [navigate]);
+	const openNotificationBatchSession = useCallback(
+		(memberSessionId: string) => {
+			void navigate({
+				to: "/raven",
+				search: (previous) => ({
+					...previous,
+					session: memberSessionId,
+					agent: undefined,
+					prompt: undefined,
+					attention: undefined,
+					attention_id: undefined,
+					notification_batch: undefined,
+				}),
+			});
+		},
+		[navigate],
+	);
 	const hasPendingNotificationAttention = useMemo(() => {
 		if (!notificationAttention) return false;
-		return runtime.messages.some((message) => {
-			switch (notificationAttention) {
-				case "permission":
-					return (
-						message.role === "permission" &&
-						message.decision === "pending" &&
-						message.providerOutcome !== "blocked"
-					);
-				case "question":
-					return (
-						message.role === "ask_user_question" && message.answers === null
-					);
-				case "plan_review":
-					return (
-						message.role === "plan_proposal" && message.decision === "pending"
-					);
-			}
-			return false;
-		});
-	}, [notificationAttention, runtime.messages]);
+		return runtime.messages.some((message) =>
+			isPendingRavenNotificationAttention(
+				message,
+				notificationAttention,
+				notificationAttentionId,
+			),
+		);
+	}, [notificationAttention, notificationAttentionId, runtime.messages]);
 	const consumeNotificationAttention = useCallback(() => {
 		void navigate({
 			to: "/raven",
-			search: (previous) => ({ ...previous, attention: undefined }),
+			search: (previous) => ({
+				...previous,
+				attention: undefined,
+				attention_id: undefined,
+			}),
 			replace: true,
 		});
 	}, [navigate]);
@@ -3385,6 +3476,7 @@ export function ChatPage() {
 		const target = focusRavenNotificationAttention(
 			viewport.transcriptContentRef.current ?? document,
 			notificationAttention,
+			notificationAttentionId,
 		);
 		if (!target) return;
 		consumeNotificationAttention();
@@ -3395,6 +3487,7 @@ export function ChatPage() {
 		consumeNotificationAttention,
 		hasPendingNotificationAttention,
 		notificationAttention,
+		notificationAttentionId,
 		runtime.interactionMetadataReady,
 		viewport.transcriptContentRef,
 	]);
@@ -3659,6 +3752,7 @@ export function ChatPage() {
 		interactiveMode,
 		savedSession: restoredSession,
 		sessionPersisted,
+		notificationSessionId,
 		config,
 		agentList,
 		session,
@@ -3727,36 +3821,47 @@ export function ChatPage() {
 	// ─── Render ───────────────────────────────────────────────────────────────
 
 	return (
-		<ChatPageContent
-			config={config}
-			initialProviderUsages={initialProviderUsages}
-			liveStats={liveStats}
-			rateLimit={rateLimit}
-			forkParentSessionId={forkParentSessionId}
-			forkKind={forkKind}
-			delegationParentSessionId={delegationParentSessionId}
-			delegationParentLabel={delegationParentLabel}
-			delegationDepth={delegationDepth}
-			delegationControlOwned={delegationControlOwned}
-			interactiveMode={interactiveMode}
-			terminalOpen={terminalOpen}
-			terminalClosingSessionId={terminalClosingSessionId}
-			shellTab={shellTab}
-			setShellTab={setShellTab}
-			session={session}
-			runtime={runtime}
-			chatQueue={chatQueue}
-			viewport={viewport}
-			actions={{
-				handleDecide,
-				handleSubmitAnswers,
-				handlePlanDecide,
-				handleCancelQueued,
-				handlePromoteQueued,
-				handleSteerQueued,
-			}}
-			composerProps={composerProps}
-		/>
+		<>
+			<ChatPageContent
+				config={config}
+				initialProviderUsages={initialProviderUsages}
+				liveStats={liveStats}
+				rateLimit={rateLimit}
+				forkParentSessionId={forkParentSessionId}
+				forkKind={forkKind}
+				delegationParentSessionId={delegationParentSessionId}
+				delegationParentLabel={delegationParentLabel}
+				delegationDepth={delegationDepth}
+				delegationControlOwned={delegationControlOwned}
+				interactiveMode={interactiveMode}
+				terminalOpen={terminalOpen}
+				terminalClosingSessionId={terminalClosingSessionId}
+				shellTab={shellTab}
+				setShellTab={setShellTab}
+				session={session}
+				runtime={runtime}
+				chatQueue={chatQueue}
+				viewport={viewport}
+				actions={{
+					handleDecide,
+					handleSubmitAnswers,
+					handlePlanDecide,
+					handleCancelQueued,
+					handlePromoteQueued,
+					handleSteerQueued,
+				}}
+				composerProps={composerProps}
+			/>
+			{notificationBatchId && (
+				<Suspense fallback={null}>
+					<NotificationBatchDrawer
+						batchId={notificationBatchId}
+						onClose={closeNotificationBatch}
+						onOpenSession={openNotificationBatchSession}
+					/>
+				</Suspense>
+			)}
+		</>
 	);
 }
 
@@ -4720,7 +4825,6 @@ function OptionGroup({
 
 function ChatModelBadge({
 	config,
-	sessionPersisted,
 	session,
 	runtime,
 	voice,
@@ -4763,9 +4867,6 @@ function ChatModelBadge({
 		send,
 	} = runtime;
 	const { sessionId } = session;
-	const notificationSessionId =
-		session.liveSessionStatus?.db_session_id ??
-		(sessionPersisted ? sessionId : null);
 	const displayedModel = activeModel ?? model;
 	const liveActive = isRavenLiveInteractionLocked(voice.livePhase);
 	const displayedEffort = activeProviderId.startsWith("acp:")
@@ -4829,7 +4930,7 @@ function ChatModelBadge({
 						disabled={liveActive}
 						aria-haspopup="dialog"
 						aria-expanded={showModelPopup}
-						aria-label={`${badgeParts.join(" · ")} · Open session model and notification settings`}
+						aria-label={`${badgeParts.join(" · ")} · Open session model settings`}
 						onClick={(e) => {
 							e.stopPropagation();
 							setShowModelPopup((v) => !v);
@@ -4860,7 +4961,7 @@ function ChatModelBadge({
 							ref={popupRef}
 							tabIndex={-1}
 							role="dialog"
-							aria-label="Session model and notification settings"
+							aria-label="Session model settings"
 							onKeyDown={(e) => {
 								if (e.key === "Escape") {
 									e.stopPropagation();
@@ -5093,11 +5194,6 @@ function ChatModelBadge({
 										excludes it.
 									</div>
 								)}
-							{notificationSessionId && (
-								<SessionNotificationOverrideControl
-									sessionId={notificationSessionId}
-								/>
-							)}
 							<div className="normal-case tracking-normal text-muted-foreground/30 pt-1 border-t border-border/50">
 								session only — not saved to config
 							</div>
@@ -5497,8 +5593,9 @@ function ChatInputControls(props: ChatComposerProps) {
 	const { uploadFiles } = upload;
 	const { fileInputRef } = viewport;
 	const sessionFork = useChatSessionFork(props);
+	const layoutRef = useRef<HTMLDivElement>(null);
 	return (
-		<div className="flex min-w-0 items-start">
+		<div ref={layoutRef} className="flex min-w-0 items-start">
 			<LiveSessionToggle />
 			<div className="grid shrink-0 grid-cols-2 gap-y-1 md:contents">
 				<input
@@ -5526,6 +5623,12 @@ function ChatInputControls(props: ChatComposerProps) {
 					className="px-2 py-2 md:py-3"
 				/>
 				<ChatVoiceControls {...props} />
+				{props.notificationSessionId && (
+					<SessionNotificationOverrideButton
+						sessionId={props.notificationSessionId}
+						trackingRef={layoutRef}
+					/>
+				)}
 				{sessionFork.canFork && (
 					<button
 						type="button"
@@ -6035,6 +6138,7 @@ interface ChatComposerProps {
 	interactiveMode: boolean;
 	savedSession: boolean;
 	sessionPersisted: boolean;
+	notificationSessionId: string | null;
 	config: RavenConfig;
 	agentList: RavenAgentList;
 	session: RavenSessionIdentity;

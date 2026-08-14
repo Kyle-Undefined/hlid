@@ -262,6 +262,15 @@ Inbox or Raw folder. **Run now** is there for the sensible test before trusting
 a schedule. The manager also shows run history and lets you pause, resume, or
 archive the definition.
 
+Each routine has separate notification choices for **Success**, **Action
+required**, and **Failure**. An outcome can follow the target device's settings,
+always notify, or stay muted. Delivery can go to every subscribed device or up
+to 32 subscribed devices chosen by name. The default is to follow each device:
+success uses **Work finished**, action required uses **Requests**, and failure
+uses **Problems**. Tapping a routine alert opens `Watch` with the exact routine
+and run highlighted in the manager. If that run has a `Raven` session, its
+history row has the link.
+
 Unattended access is explicit. A routine can be read-only, use a reviewed set
 of exact grants, or run with full access when `Umbod` also allows it. Exact
 grants can cover a file operation, shell command, `Obsidian` action, `MCP` call,
@@ -794,22 +803,30 @@ Open **FORGE → Experience → Notifications** on each device that should recei
 alerts. Notifications are off until you choose **Enable on this device**. That
 click is the only time `Hlið` asks the browser for permission. **Requests** starts
 on for approvals, questions, plan review, and routines that need action.
-**Problems** starts on for blocked work and failures owned by a top-level
-session. **Work finished** starts off and is sent only when a top-level `Raven`
-session becomes ready. A delegated child's completion and ordinary failure are
-internal progress owned by its parent and do not notify separately. Completion
-alerts can require at least 1, 5, or 10 minutes of continuous work, and
-completions that land together are combined into one alert. Requests and
-problems remain immediate.
+**Problems** starts on for blocked work, errors, and failed background work.
+**Work finished** starts off. It covers a top-level `Raven` session becoming
+ready and successful routines whose own policy follows the device. A delegated
+child's completion and ordinary failure are internal progress owned by its
+parent and do not notify separately. Completion alerts can require at least 1,
+5, or 10 minutes of continuous work. Eligible `Raven` session completions that
+settle together are combined into one alert, while requests, problems, and
+Routine outcomes remain exact to their source.
 
 Generic Lock Screen wording hides session names and reasons. Detailed wording
 uses the reason as the title, the session name as the body, and includes a work
-duration when `Hlið` has an authoritative continuous runtime. A device can pause
-session alerts for a chosen number of minutes, hours, or days; until an exact
-local date and time; or until you manually resume them. Pausing does not discard
-the device's choices. An explicit preview still runs while paused. Pause also
-wins over a per-session override. Sound, Focus, summaries, and Lock Screen
-visibility remain under the device's own notification settings.
+duration when `Hlið` has an authoritative continuous runtime. Both wording
+settings retain the same exact, encrypted tap destination.
+
+Quiet hours use an exact timezone, start and end time, and selected weekdays.
+Requests and problems can each be allowed through that schedule. Other eligible
+alerts during quiet hours are suppressed instead of being sent later. A device
+can also pause alerts for a chosen number of minutes, hours, or days; until an
+exact local date and time; or until you manually resume them. Alerts that occur
+while paused are suppressed, and only new alerts resume afterward. Pausing does
+not discard the device's choices. An explicit preview still runs while paused.
+Pause and quiet hours also win over a per-session override. Sound, Focus,
+summaries, and Lock Screen visibility remain under the device's own notification
+settings.
 
 The test control can preview basic delivery, approval, question, plan review,
 problem, single-completion, and completion-batch forms. Each preview uses the
@@ -820,15 +837,24 @@ accepted the alert; the operating system can still delay or hide it because of
 Focus or notification settings. The same screen lists subscribed devices, lets
 you give each one a recognizable name, shows its latest provider acceptance or
 failure, and can revoke a device without exposing its push endpoint or
-encryption keys. Revoking this device also removes its browser subscription. A
-revoked remote device must be explicitly enabled again from that device.
+encryption keys. For another subscribed device, **Edit notification profile**
+can change its categories, completion minimum, wording, and quiet hours without
+making those settings global. Revoking this device also removes its browser
+subscription. A revoked remote device must be explicitly enabled again from
+that device.
+
+**Recent notification history** records the latest notification decisions and
+the result for each target device. It distinguishes queued, suppressed, sent,
+failed, gone, and expired delivery, then adds displayed, opened, or dismissed
+receipts when the browser reports them. This is delivery history, not another
+source of approvals or session state.
 
 On `iPhone` and `iPad`, add the `HTTPS` site to the Home Screen and open it as a
 web app before enabling notifications. A supported installed `PWA` can receive
 them while backgrounded or while the phone is locked. The `Hlið` host needs
 outbound internet access to the browser's push service, and the device still
-needs a route back to the `Hlið` address when you tap the alert. A tap opens the
-exact `Raven` session, preserving that destination through sign-in if needed.
+needs a route back to the `Hlið` address when you tap the alert. A `Raven` alert
+opens the exact session, preserving that destination through sign-in if needed.
 Approvals are always resolved inside `Raven`, where `Hlið` rechecks the current
 prompt instead of treating a Lock Screen action as authorization.
 
@@ -840,29 +866,47 @@ browser's installed-app link preference. If that preference is disabled, or the
 Home Screen icon is only a bookmark rather than an installed PWA, Android may
 open a browser tab instead.
 
-The notification control in a durable `Raven` session offers **Default**,
-**Notify once**, **Always notify**, and **Mute**. Default follows each subscribed
-device's category and completion-runtime choices. Notify once sends the next
-eligible alert, then returns to Default after at least one push service accepts
-it. Always notify bypasses category and runtime choices for that session. Mute
-suppresses its alerts everywhere. A device-wide pause still suppresses both
-notify modes.
+The bell beside Raven's attachment and voice controls appears once a session is
+durable. It offers **Default**, **Notify when finished**, **Always notify**, and
+**Mute**. Default uses the effective device and inherited session rules. Notify
+when finished sends one completion alert, then returns that setting to Default
+after at least one push service accepts it. Always notify bypasses the device's
+category and completion minimum for eligible alerts. Mute suppresses alerts
+covered by the setting. An older session can still show **Next alert once
+(legacy)** until its next eligible alert is accepted. Device pause and quiet
+hours still win over every notify mode.
+
+A non-default session setting can cover **This session** or **This session and
+delegated sessions**, and can target all subscribed devices or an exact checked
+set. A delegation-tree setting is inherited by descendants unless a closer
+session has its own setting. The control shows the effective mode, scope,
+targets, and parent source before you save a change. Missing or revoked exact
+targets remain visible as unavailable and are not widened to other devices.
 
 Repeated state updates are grouped by session, brief transitions settle before
 delivery, and the session already visible in a focused `Raven` window does not
 notify you again. Delegated children can still send a request when action must
 happen in that exact child; their ordinary completion is represented by the
-eventual top-level session alert. Every alert opens the exact session. With
-Detailed wording, tapping an approval, question, or plan-review alert also
-highlights the still-pending card. If the request settled before the tap,
-`Raven` discards the stale hint instead of focusing later unrelated work.
-Approvals are always resolved inside `Raven`.
+eventual top-level session alert. Every alert opens the exact session.
+Tapping an approval, question, or plan-review alert also highlights the exact
+still-pending card that produced it. This exact tap destination is retained for
+both Generic and Detailed wording. Older alerts without an exact card ID can
+still focus the first pending card of the same type. If the request settled
+before the tap, `Raven` discards the stale hint instead of focusing later
+unrelated work.
 
-On browsers that support app badging, `Hlið` counts the Hlid session alerts the
-browser is still displaying. A completion batch counts as one item and a test
-alert does not affect the badge. The service worker recalculates the badge after
-delivery, dismissal, navigation, expiry, and exact-session cleanup so it never
-guesses from server state the browser may not have shown.
+Approvals are always resolved inside `Raven`. A grouped completion alert opens
+the **Finished work** drawer instead of guessing which session you wanted. Its
+rows stay in batch order and show **Unread** or **Read**. Opening a row marks
+only that member read, opens its exact session, and closes the batch view.
+**Mark all read** marks the whole batch, while closing the drawer only removes
+the batch view.
+
+On browsers that support app badging, `Hlið` counts the Hlid alerts the browser
+is still displaying. A completion batch counts as one item and a test alert does
+not affect the badge. The service worker recalculates the badge after delivery,
+dismissal, navigation, expiry, and exact-session cleanup so it never guesses
+from server state the browser may not have shown.
 
 ## Voice and attachments
 

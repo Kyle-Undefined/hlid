@@ -43,6 +43,51 @@ export const routineDeliverySchema = z.discriminatedUnion("kind", [
 ]);
 export type RoutineDelivery = z.infer<typeof routineDeliverySchema>;
 
+export const routineNotificationModeSchema = z.enum([
+	"default",
+	"notify",
+	"mute",
+]);
+export type RoutineNotificationMode = z.infer<
+	typeof routineNotificationModeSchema
+>;
+
+const routineNotificationTargetsSchema = z.discriminatedUnion("kind", [
+	z.object({ kind: z.literal("all") }).strict(),
+	z
+		.object({
+			kind: z.literal("devices"),
+			deviceIds: z
+				.array(z.string().uuid())
+				.min(1)
+				.max(32)
+				.refine((ids) => new Set(ids).size === ids.length, {
+					message: "notification device IDs must be unique",
+				}),
+		})
+		.strict(),
+]);
+
+export const routineNotificationPolicySchema = z
+	.object({
+		success: routineNotificationModeSchema,
+		actionRequired: routineNotificationModeSchema,
+		failure: routineNotificationModeSchema,
+		targets: routineNotificationTargetsSchema,
+	})
+	.strict();
+export type RoutineNotificationPolicy = z.infer<
+	typeof routineNotificationPolicySchema
+>;
+
+export const DEFAULT_ROUTINE_NOTIFICATION_POLICY: RoutineNotificationPolicy =
+	Object.freeze({
+		success: "default",
+		actionRequired: "default",
+		failure: "default",
+		targets: Object.freeze({ kind: "all" }),
+	});
+
 export const routineGrantCapabilitySchema = z.enum([
 	"fs.read",
 	"fs.write",
@@ -103,6 +148,9 @@ export const routineDefinitionSchema = z
 		permissionMode: routinePermissionModeSchema.default("preapproved"),
 		grants: z.array(routinePermissionGrantInputSchema).max(128).default([]),
 		deliveries: z.array(routineDeliverySchema).max(8).default([]),
+		notificationPolicy: routineNotificationPolicySchema.default(
+			DEFAULT_ROUTINE_NOTIFICATION_POLICY,
+		),
 		catchUpWindowMinutes: z.number().int().min(0).max(10_080).default(360),
 		noOverlap: z.boolean().default(true),
 	})
@@ -170,6 +218,7 @@ export type RoutineSummary = {
 	permissionMode: RoutinePermissionMode;
 	grants: RoutinePermissionGrantInput[];
 	deliveries: RoutineDelivery[];
+	notificationPolicy: RoutineNotificationPolicy;
 	catchUpWindowMinutes: number;
 	noOverlap: boolean;
 	pausedReason: string | null;

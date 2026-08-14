@@ -11,40 +11,56 @@ export type AnchoredPopoverPosition = {
 
 type AnchorRect = Pick<DOMRect, "top" | "right" | "bottom">;
 
+type AnchoredPopoverMeasurement = {
+	contentHeight?: number;
+	viewportLeft?: number;
+	viewportTop?: number;
+};
+
 export function calculateAnchoredPopoverPosition(
 	anchor: AnchorRect,
 	viewportWidth: number,
 	viewportHeight: number,
 	preferredWidth: number,
 	preferredHeight: number,
+	measurement: AnchoredPopoverMeasurement = {},
 ): AnchoredPopoverPosition {
 	const margin = 12;
 	const gap = 8;
+	const viewportLeft = measurement.viewportLeft ?? 0;
+	const viewportTop = measurement.viewportTop ?? 0;
+	const viewportRight = viewportLeft + viewportWidth;
+	const viewportBottom = viewportTop + viewportHeight;
 	const width = Math.max(
 		0,
 		Math.min(preferredWidth, viewportWidth - margin * 2),
 	);
 	const left = Math.max(
-		margin,
-		Math.min(anchor.right - width, viewportWidth - width - margin),
+		viewportLeft + margin,
+		Math.min(anchor.right - width, viewportRight - width - margin),
 	);
 	const belowTop = anchor.bottom + gap;
-	const belowSpace = viewportHeight - margin - belowTop;
-	const aboveSpace = anchor.top - gap - margin;
+	const belowSpace = Math.max(0, viewportBottom - margin - belowTop);
+	const aboveSpace = Math.max(0, anchor.top - gap - (viewportTop + margin));
+	const desiredHeight = Math.min(
+		preferredHeight,
+		Math.max(0, viewportHeight - margin * 2),
+	);
 	const placement =
-		belowSpace >= Math.min(preferredHeight, viewportHeight / 2) ||
-		belowSpace >= aboveSpace
+		belowSpace >= desiredHeight ||
+		(aboveSpace < desiredHeight && belowSpace >= aboveSpace)
 			? "below"
 			: "above";
-	const availableHeight = Math.max(
-		96,
-		placement === "below" ? belowSpace : aboveSpace,
-	);
-	const height = Math.min(preferredHeight, availableHeight);
+	const availableHeight = placement === "below" ? belowSpace : aboveSpace;
+	const contentHeight =
+		measurement.contentHeight && measurement.contentHeight > 0
+			? measurement.contentHeight
+			: preferredHeight;
+	const height = Math.min(contentHeight, availableHeight);
 	const top =
 		placement === "below"
 			? belowTop
-			: Math.max(margin, anchor.top - gap - height);
+			: Math.max(viewportTop + margin, anchor.top - gap - height);
 
 	return { left, top, width, maxHeight: availableHeight, placement };
 }
@@ -55,6 +71,7 @@ export function useAnchoredPopover(
 	preferredWidth: number,
 	preferredHeight: number,
 	popoverRef?: RefObject<HTMLElement | null>,
+	trackingRef?: RefObject<HTMLElement | null>,
 ): AnchoredPopoverPosition | null {
 	const [position, setPosition] = useState<AnchoredPopoverPosition | null>(
 		null,
@@ -69,7 +86,12 @@ export function useAnchoredPopover(
 			viewport?.width ?? window.innerWidth,
 			viewport?.height ?? window.innerHeight,
 			preferredWidth,
-			measuredHeight && measuredHeight > 0 ? measuredHeight : preferredHeight,
+			preferredHeight,
+			{
+				contentHeight: measuredHeight,
+				viewportLeft: viewport?.offsetLeft ?? 0,
+				viewportTop: viewport?.offsetTop ?? 0,
+			},
 		);
 		setPosition((current) =>
 			current &&
@@ -93,10 +115,12 @@ export function useAnchoredPopover(
 		window.addEventListener("resize", update);
 		window.addEventListener("scroll", update, true);
 		window.visualViewport?.addEventListener("resize", update);
+		window.visualViewport?.addEventListener("scroll", update);
 		return () => {
 			window.removeEventListener("resize", update);
 			window.removeEventListener("scroll", update, true);
 			window.visualViewport?.removeEventListener("resize", update);
+			window.visualViewport?.removeEventListener("scroll", update);
 		};
 	}, [open, update]);
 
@@ -108,8 +132,10 @@ export function useAnchoredPopover(
 		if (typeof ResizeObserver === "undefined") return;
 		const observer = new ResizeObserver(update);
 		observer.observe(popover);
+		if (anchorRef.current) observer.observe(anchorRef.current);
+		if (trackingRef?.current) observer.observe(trackingRef.current);
 		return () => observer.disconnect();
-	}, [open, popoverRef, positioned, update]);
+	}, [anchorRef, open, popoverRef, positioned, trackingRef, update]);
 
 	return position;
 }

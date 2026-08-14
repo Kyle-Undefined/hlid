@@ -19,6 +19,12 @@ const base = {
 	permissionMode: "read_only" as const,
 	grants: [],
 	deliveries: [],
+	notificationPolicy: {
+		success: "default" as const,
+		actionRequired: "default" as const,
+		failure: "default" as const,
+		targets: { kind: "all" as const },
+	},
 	catchUpWindowMinutes: 360,
 	noOverlap: true,
 };
@@ -38,5 +44,43 @@ describe("routineDefinitionSchema", () => {
 				providerCommands: ["research"],
 			}).success,
 		).toBe(true);
+	});
+
+	it("backfills the legacy notification policy and validates exact targets", () => {
+		const { notificationPolicy: _notificationPolicy, ...legacy } = base;
+		const parsed = routineDefinitionSchema.parse({
+			...legacy,
+			prompt: "Review the project",
+		});
+		expect(parsed.notificationPolicy).toEqual({
+			success: "default",
+			actionRequired: "default",
+			failure: "default",
+			targets: { kind: "all" },
+		});
+
+		const deviceId = "11111111-1111-4111-8111-111111111111";
+		expect(
+			routineDefinitionSchema.safeParse({
+				...base,
+				prompt: "Review the project",
+				notificationPolicy: {
+					success: "notify",
+					actionRequired: "mute",
+					failure: "default",
+					targets: { kind: "devices", deviceIds: [deviceId] },
+				},
+			}).success,
+		).toBe(true);
+		expect(
+			routineDefinitionSchema.safeParse({
+				...base,
+				prompt: "Review the project",
+				notificationPolicy: {
+					...base.notificationPolicy,
+					targets: { kind: "devices", deviceIds: [deviceId, deviceId] },
+				},
+			}).success,
+		).toBe(false);
 	});
 });

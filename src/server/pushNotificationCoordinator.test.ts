@@ -81,12 +81,100 @@ describe("PushNotificationTransitionTracker", () => {
 		).toEqual([]);
 	});
 
+	it("re-alerts when another request joins the same attention state", () => {
+		const tracker = new PushNotificationTransitionTracker();
+		tracker.observe([session("working", "provider_turn")], 1_000);
+		const firstRequest = session("needs_attention", "permission", 1_100);
+		expect(tracker.observe([firstRequest], 1_100)).toMatchObject([
+			{ category: "request", pendingCount: 1 },
+		]);
+
+		const secondRequest = structuredClone(firstRequest);
+		if (!secondRequest.attention) throw new Error("attention is required");
+		secondRequest.attention.pending_count = 2;
+		secondRequest.attention.last_activity_at = 1_200;
+		expect(tracker.observe([secondRequest], 1_200)).toMatchObject([
+			{ category: "request", pendingCount: 2 },
+		]);
+		expect(tracker.observe([secondRequest], 1_300)).toEqual([]);
+	});
+
+	it("tracks equal-count request replacements by exact pending identity", () => {
+		const tracker = new PushNotificationTransitionTracker();
+		tracker.observe([session("working", "provider_turn")], 1_000);
+		const first = session("needs_attention", "permission", 1_100);
+		if (!first.attention) throw new Error("attention is required");
+		first.attention.pending_ids = ["permission-1"];
+		expect(tracker.observe([first], 1_100)).toMatchObject([
+			{
+				attentionId: "permission-1",
+				url: "/raven?session=db-1&attention=permission&attention_id=permission-1",
+			},
+		]);
+
+		const replacement = structuredClone(first);
+		if (!replacement.attention) throw new Error("attention is required");
+		replacement.attention.pending_ids = ["permission-2"];
+		replacement.attention.last_activity_at = 1_200;
+		expect(tracker.observe([replacement], 1_200)).toMatchObject([
+			{
+				pendingCount: 1,
+				attentionId: "permission-2",
+				url: "/raven?session=db-1&attention=permission&attention_id=permission-2",
+			},
+		]);
+		expect(tracker.observe([replacement], 1_300)).toEqual([]);
+	});
+
+	it("re-alerts the remaining request when the selected exact request resolves", () => {
+		const tracker = new PushNotificationTransitionTracker();
+		tracker.observe([session("working", "provider_turn")], 1_000);
+		const pair = session("needs_attention", "question", 1_100);
+		if (!pair.attention) throw new Error("attention is required");
+		pair.attention.pending_count = 2;
+		pair.attention.pending_ids = ["question-1", "question-2"];
+		expect(tracker.observe([pair], 1_100)).toMatchObject([
+			{ attentionId: "question-2" },
+		]);
+
+		const remaining = structuredClone(pair);
+		if (!remaining.attention) throw new Error("attention is required");
+		remaining.attention.pending_count = 1;
+		remaining.attention.pending_ids = ["question-1"];
+		remaining.attention.last_activity_at = 1_200;
+		expect(tracker.observe([remaining], 1_200)).toMatchObject([
+			{
+				attentionId: "question-1",
+				url: "/raven?session=db-1&attention=question&attention_id=question-1",
+			},
+		]);
+	});
+
+	it("does not degrade an explicitly unusable request identity to a type-only hint", () => {
+		const tracker = new PushNotificationTransitionTracker();
+		tracker.observe([session("working", "provider_turn")], 1_000);
+		const current = session("needs_attention", "plan_review", 1_100);
+		if (!current.attention) throw new Error("attention is required");
+		current.attention.pending_ids = [];
+		const [event] = tracker.observe([current], 1_100);
+		expect(event).toMatchObject({ url: "/raven?session=db-1" });
+		expect(event).not.toHaveProperty("attentionId");
+	});
+
+	it("classifies operational attention separately from requests", () => {
+		const tracker = new PushNotificationTransitionTracker();
+		tracker.observe([session("working", "provider_turn")], 1_000);
+		expect(
+			tracker.observe([session("needs_attention", "error", 1_100)], 1_100),
+		).toMatchObject([{ category: "problem" }]);
+	});
+
 	it("emits completion only for a top-level completed working transition", () => {
 		const tracker = new PushNotificationTransitionTracker();
 		tracker.observe([session("working", "provider_turn")], 1_000);
 		expect(
 			tracker.observe([session("recent", "ready", 1_100)], 1_100),
-		).toMatchObject([{ kind: "work_finished" }]);
+		).toMatchObject([{ kind: "work_finished", category: "completion" }]);
 
 		const paused = new PushNotificationTransitionTracker();
 		paused.observe([session("working", "goal_active")], 2_000);
@@ -101,6 +189,27 @@ describe("PushNotificationTransitionTracker", () => {
 		const childDone = session("recent", "ready", 3_100);
 		childDone.delegation_parent_session_id = "db-parent";
 		expect(delegated.observe([childDone], 3_100)).toEqual([]);
+	});
+
+	it("leaves all Routine-owned outcomes to the scheduler notification path", () => {
+		for (const terminal of [
+			["recent", "ready"],
+			["needs_attention", "permission"],
+			["needs_attention", "error"],
+		] as const) {
+			const tracker = new PushNotificationTransitionTracker();
+			const started = session("working", "routine_running", 1_000);
+			started.routine_owned = true;
+			tracker.observe([started], 1_000);
+
+			const providerActivity = session("working", "provider_activity", 1_050);
+			providerActivity.routine_owned = true;
+			expect(tracker.observe([providerActivity], 1_050)).toEqual([]);
+
+			const settled = session(terminal[0], terminal[1], 1_100);
+			settled.routine_owned = true;
+			expect(tracker.observe([settled], 1_100)).toEqual([]);
+		}
 	});
 
 	it("measures runtime from the continuous working epoch across reason churn", () => {
@@ -492,6 +601,103 @@ describe("PushNotificationTransitionTracker", () => {
 });
 
 describe("PushNotificationCoordinator", () => {
+	it("reconciles restored startup attention only after restoration completes", async () => {
+		let now = 10_000;
+		const callbacks: Array<() => void> = [];
+		const persist = vi.fn();
+		const deliver = vi.fn();
+		const coordinator = new PushNotificationCoordinator({
+			deliver,
+			persist,
+			now: () => now,
+			visibleUntil: () => null,
+			schedule: (next) => {
+				callbacks.push(next);
+				return callbacks.length as unknown as ReturnType<typeof setTimeout>;
+			},
+			cancel: () => {},
+		});
+		const recent = session("recent", "ready", 9_000);
+		const restored = session("needs_attention", "permission", 9_500);
+		if (!restored.attention) throw new Error("attention is required");
+		restored.attention.pending_ids = ["permission-restored"];
+
+		coordinator.observeStartup([recent]);
+		coordinator.observe([restored]);
+		expect(persist).not.toHaveBeenCalled();
+		expect(deliver).not.toHaveBeenCalled();
+		expect(
+			coordinator.isEventStillRelevant({
+				kind: "needs_attention",
+				sessionId: "db-1",
+				sessionAliases: ["pool-1", "db-1"],
+				reason: "permission",
+				pendingCount: 1,
+				attentionSince: 9_500,
+				attentionId: "permission-restored",
+				occurredAt: 9_500,
+			}),
+		).toBe(true);
+
+		coordinator.completeStartup([restored]);
+		expect(persist).toHaveBeenCalledOnce();
+		expect(persist).toHaveBeenCalledWith(
+			expect.objectContaining({
+				attentionId: "permission-restored",
+				attentionSince: 9_500,
+			}),
+		);
+		coordinator.observe([restored]);
+		expect(persist).toHaveBeenCalledOnce();
+
+		now = 10_751;
+		callbacks.at(-1)?.();
+		await Promise.resolve();
+		expect(deliver).toHaveBeenCalledOnce();
+	});
+
+	it("treats missing or resolved startup attention as stale after completion", () => {
+		const persisted = {
+			kind: "needs_attention" as const,
+			sessionId: "db-1",
+			sessionAliases: ["pool-1", "db-1"],
+			reason: "question",
+			pendingCount: 1,
+			attentionSince: 9_500,
+			attentionId: "question-restored",
+			occurredAt: 9_500,
+		};
+		const missing = new PushNotificationCoordinator({ deliver: vi.fn() });
+		missing.observeStartup([]);
+		expect(missing.isEventStillRelevant(persisted)).toBe(true);
+		missing.completeStartup([]);
+		expect(missing.isEventStillRelevant(persisted)).toBe(false);
+
+		const resolved = new PushNotificationCoordinator({ deliver: vi.fn() });
+		const pending = session("needs_attention", "question", 9_500);
+		if (!pending.attention) throw new Error("attention is required");
+		pending.attention.pending_ids = ["question-restored"];
+		resolved.observeStartup([pending]);
+		resolved.completeStartup([session("recent", "ready", 10_000)]);
+		expect(resolved.isEventStillRelevant(persisted)).toBe(false);
+	});
+
+	it("ignores startup attention older than the durable event lifetime", () => {
+		const persist = vi.fn();
+		const now = 2 * 24 * 60 * 60_000;
+		const coordinator = new PushNotificationCoordinator({
+			deliver: vi.fn(),
+			persist,
+			now: () => now,
+		});
+		const stale = session("needs_attention", "permission", 1);
+		if (!stale.attention) throw new Error("attention is required");
+		stale.attention.pending_ids = ["permission-stale"];
+		coordinator.observeStartup([stale]);
+		coordinator.completeStartup([stale]);
+		expect(persist).not.toHaveBeenCalled();
+	});
+
 	it("replaces a settling permission with the current pending question", async () => {
 		let now = 1_000;
 		const callbacks: Array<() => void> = [];

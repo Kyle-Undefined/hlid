@@ -212,4 +212,33 @@ describe("deriveSessionAttention", () => {
 			last_activity_at: 40,
 		});
 	});
+
+	it("filters request identities individually and preserves an explicit empty identity set", () => {
+		const mixed = deriveSessionAttention(
+			{
+				...idle,
+				permissionCount: 3,
+				permissionIds: ["permission-1", "not safe/for a URL", "permission-2"],
+			},
+			undefined,
+			10,
+		);
+		expect(mixed).toMatchObject({
+			pending_count: 3,
+			pending_reason_count: 3,
+			pending_ids: ["permission-1", "permission-2"],
+		});
+
+		expect(
+			deriveSessionAttention(
+				{
+					...idle,
+					questionCount: 1,
+					questionIds: ["unsafe question id"],
+				},
+				undefined,
+				20,
+			),
+		).toMatchObject({ pending_ids: [] });
+	});
 });

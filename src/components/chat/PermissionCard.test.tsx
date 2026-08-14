@@ -25,9 +25,11 @@ describe("PermissionCard", () => {
 		const { container, rerender } = render(
 			<PermissionCard message={permission()} onDecide={vi.fn()} />,
 		);
-		expect(
-			container.querySelector('[data-notification-attention="permission"]'),
-		).not.toBeNull();
+		const pending = container.querySelector<HTMLElement>(
+			'[data-notification-attention="permission"]',
+		);
+		expect(pending).not.toBeNull();
+		expect(pending?.dataset.notificationAttentionId).toBe("permission-1");
 		expect(screen.getByLabelText(/Pending approval/i)).toBeTruthy();
 		rerender(
 			<PermissionCard

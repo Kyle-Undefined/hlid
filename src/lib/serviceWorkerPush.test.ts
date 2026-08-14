@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { webPushNotificationPayloadSchema } from "./pushNotificationSchemas";
 
 type WaitableEvent = {
 	waitUntil(promise: Promise<unknown>): void;
@@ -16,6 +17,11 @@ type NotificationClickEvent = WaitableEvent & {
 	notification: { tag?: string; data: unknown; close(): void };
 };
 
+type PushSubscriptionChangeEvent = WaitableEvent & {
+	oldSubscription?: { endpoint?: string };
+	newSubscription?: unknown;
+};
+
 type HandlerMap = {
 	activate?: (event: WaitableEvent) => void;
 	message?: (
@@ -26,6 +32,7 @@ type HandlerMap = {
 		},
 	) => void;
 	push?: (event: PushEvent) => void;
+	pushsubscriptionchange?: (event: PushSubscriptionChangeEvent) => void;
 	notificationclick?: (event: NotificationClickEvent) => void;
 	notificationclose?: (event: NotificationClickEvent) => void;
 };
@@ -64,6 +71,13 @@ function loadWorker(
 	const openWindow = vi.fn().mockResolvedValue(undefined);
 	const setAppBadge = vi.fn().mockResolvedValue(undefined);
 	const clearAppBadge = vi.fn().mockResolvedValue(undefined);
+	const pushSubscribe = vi.fn();
+	const fetchMock = vi.fn().mockResolvedValue(
+		new Response("{}", {
+			status: 200,
+			headers: { "content-type": "application/json" },
+		}),
+	);
 	const getNotifications = vi.fn(async ({ tag }: { tag?: string } = {}) =>
 		tag
 			? activeNotifications.filter((notification) => notification.tag === tag)
@@ -96,7 +110,8 @@ function loadWorker(
 		URL,
 		Response,
 		Promise,
-		fetch: vi.fn(),
+		atob,
+		fetch: fetchMock,
 		setTimeout,
 		clearTimeout,
 		caches: {
@@ -115,6 +130,7 @@ function loadWorker(
 			registration: {
 				getNotifications,
 				showNotification,
+				pushManager: { subscribe: pushSubscribe },
 				navigationPreload: { enable: vi.fn() },
 			},
 			navigator: { setAppBadge, clearAppBadge },
@@ -131,6 +147,7 @@ function loadWorker(
 	});
 	if (
 		!handlers.push ||
+		!handlers.pushsubscriptionchange ||
 		!handlers.notificationclick ||
 		!handlers.notificationclose
 	)
@@ -138,10 +155,12 @@ function loadWorker(
 	return {
 		handlers: handlers as Required<HandlerMap>,
 		showNotification,
+		fetchMock,
 		getNotifications,
 		openWindow,
 		setAppBadge,
 		clearAppBadge,
+		pushSubscribe,
 		activeNotifications,
 	};
 }
@@ -247,6 +266,23 @@ async function dispatchClose(
 	if (work) await work;
 }
 
+async function dispatchSubscriptionChange(
+	handler: NonNullable<HandlerMap["pushsubscriptionchange"]>,
+	oldSubscription?: { endpoint?: string },
+	newSubscription?: unknown,
+): Promise<void> {
+	let work: Promise<unknown> | undefined;
+	handler({
+		...(oldSubscription ? { oldSubscription } : {}),
+		...(newSubscription ? { newSubscription } : {}),
+		waitUntil(promise) {
+			work = promise;
+		},
+	});
+	if (!work) throw new Error("subscription change did not extend its lifetime");
+	await work;
+}
+
 function validPayload(overrides: Record<string, unknown> = {}) {
 	const now = Date.now();
 	return {
@@ -256,6 +292,30 @@ function validPayload(overrides: Record<string, unknown> = {}) {
 		title: "Hlid needs your attention",
 		body: "A session is waiting for you.",
 		url: "/raven?session=session-1",
+		createdAt: now - 1_000,
+		expiresAt: now + 60_000,
+		...overrides,
+	};
+}
+
+const DELIVERY_ID = "019ffa8b-0df1-7c63-8d03-e428cbae240f";
+const DELIVERY_ID_2 = "019ffa8b-0df1-7c63-bd03-e428cbae240f";
+const DELIVERY_ID_3 = "019ffa8b-0df1-7c63-ad04-e428cbae240f";
+const ROUTINE_ID = "019ffa8b-0df1-7c63-9d03-e428cbae240f";
+const ROUTINE_RUN_ID = "019ffa8b-0df1-7c63-ad03-e428cbae240f";
+
+function validRoutinePayload(overrides: Record<string, unknown> = {}) {
+	const now = Date.now();
+	return {
+		version: 1,
+		source: "routine",
+		kind: "needs_attention",
+		routineId: ROUTINE_ID,
+		routineRunId: ROUTINE_RUN_ID,
+		title: "Routine unavailable",
+		body: "Daily review could not start.",
+		reason: "routine_provider_unavailable",
+		url: `/?routine=${ROUTINE_ID}&routine_run=${ROUTINE_RUN_ID}`,
 		createdAt: now - 1_000,
 		expiresAt: now + 60_000,
 		...overrides,
@@ -288,7 +348,10 @@ describe("service worker push notifications", () => {
 		await dispatchPush(worker.handlers.push, validPayload());
 		await dispatchPush(
 			worker.handlers.push,
-			validPayload({ body: "The same session still needs attention." }),
+			validPayload({
+				body: "The same session still needs attention.",
+				reminder: true,
+			}),
 		);
 
 		expect(worker.showNotification).toHaveBeenCalledTimes(2);
@@ -296,6 +359,7 @@ describe("service worker push notifications", () => {
 		expect(title).toBe("Hlid needs your attention");
 		expect(options).toMatchObject({
 			body: "A session is waiting for you.",
+			badge: "/notification-badge.svg",
 			tag: "hlid-session:session-1",
 			renotify: false,
 			data: {
@@ -304,10 +368,174 @@ describe("service worker push notifications", () => {
 			},
 		});
 		expect(options).not.toHaveProperty("actions");
-		expect(worker.showNotification.mock.calls[1]?.[1]?.tag).toBe(
-			"hlid-session:session-1",
-		);
+		const replacementOptions = worker.showNotification.mock.calls[1]?.[1];
+		expect(replacementOptions).toMatchObject({
+			tag: "hlid-session:session-1",
+			renotify: false,
+		});
+		expect(replacementOptions?.data).not.toHaveProperty("reminder");
 		expect(worker.setAppBadge).toHaveBeenLastCalledWith(1);
+	});
+
+	it("reports validated delivery lifecycle receipts without gating notification UX", async () => {
+		const focusedClient = { focus: vi.fn().mockResolvedValue(undefined) };
+		const existingClient = {
+			url: "https://hlid.test/forge",
+			navigate: vi.fn().mockResolvedValue(focusedClient),
+		};
+		const worker = loadWorker([existingClient]);
+
+		await dispatchPush(
+			worker.handlers.push,
+			validPayload({ deliveryId: DELIVERY_ID }),
+		);
+		const shown = worker.activeNotifications[0];
+		if (!shown) throw new Error("notification was not displayed");
+		expect(shown.data).toMatchObject({ deliveryId: DELIVERY_ID });
+
+		worker.fetchMock.mockRejectedValueOnce(new Error("receipt unavailable"));
+		await dispatchClick(worker.handlers.notificationclick, shown.data, shown);
+		await dispatchClose(worker.handlers.notificationclose, shown);
+
+		const receipts = worker.fetchMock.mock.calls
+			.filter(([path]) => path === "/api/push/receipts")
+			.map(([, init]) => JSON.parse(String(init?.body)));
+		expect(receipts).toEqual([
+			{ delivery_id: DELIVERY_ID, status: "displayed" },
+			{ delivery_id: DELIVERY_ID, status: "opened" },
+			{ delivery_id: DELIVERY_ID, status: "dismissed" },
+		]);
+		expect(existingClient.navigate).toHaveBeenCalledWith(
+			"/raven?session=session-1",
+		);
+		expect(focusedClient.focus).toHaveBeenCalledOnce();
+	});
+
+	it("opens a provider-unavailable Routine in Cockpit without fabricating a Raven session", async () => {
+		const focusedClient = { focus: vi.fn().mockResolvedValue(undefined) };
+		const existingClient = {
+			url: "https://hlid.test/raven?session=some-session",
+			navigate: vi.fn().mockResolvedValue(focusedClient),
+		};
+		const worker = loadWorker([existingClient]);
+
+		await dispatchPush(
+			worker.handlers.push,
+			validRoutinePayload({ deliveryId: DELIVERY_ID }),
+		);
+
+		const shown = worker.activeNotifications[0];
+		if (!shown) throw new Error("Routine notification was not displayed");
+		expect(worker.showNotification).toHaveBeenCalledWith(
+			"Routine unavailable",
+			expect.objectContaining({
+				tag: `hlid-routine:${ROUTINE_RUN_ID}`,
+				data: expect.objectContaining({
+					source: "routine",
+					routineId: ROUTINE_ID,
+					routineRunId: ROUTINE_RUN_ID,
+					deliveryId: DELIVERY_ID,
+					url: `/?routine=${ROUTINE_ID}&routine_run=${ROUTINE_RUN_ID}`,
+				}),
+			}),
+		);
+		expect(shown.data).not.toHaveProperty("sessionId");
+		expect(worker.setAppBadge).toHaveBeenLastCalledWith(1);
+
+		await dispatchClick(worker.handlers.notificationclick, shown.data, shown);
+
+		expect(existingClient.navigate).toHaveBeenCalledWith(
+			`/?routine=${ROUTINE_ID}&routine_run=${ROUTINE_RUN_ID}`,
+		);
+		expect(existingClient.navigate).not.toHaveBeenCalledWith(
+			expect.stringContaining("/raven"),
+		);
+		const receiptStatuses = worker.fetchMock.mock.calls
+			.filter(([path]) => path === "/api/push/receipts")
+			.map(([, init]) => JSON.parse(String(init?.body)).status);
+		expect(receiptStatuses).toEqual(["displayed", "opened"]);
+	});
+
+	it("accepts a successful Routine outcome with the same Routine-specific contract", async () => {
+		const worker = loadWorker();
+
+		await dispatchPush(
+			worker.handlers.push,
+			validRoutinePayload({
+				kind: "work_finished",
+				title: "Routine finished",
+				body: "Daily review finished successfully.",
+				reason: "routine_succeeded",
+			}),
+		);
+
+		expect(worker.showNotification).toHaveBeenCalledWith(
+			"Routine finished",
+			expect.objectContaining({
+				tag: `hlid-routine:${ROUTINE_RUN_ID}`,
+				data: expect.objectContaining({
+					source: "routine",
+					kind: "work_finished",
+				}),
+			}),
+		);
+	});
+
+	it("visibly rejects malformed or session-shaped Routine payloads", async () => {
+		const worker = loadWorker();
+		const invalidPayloads = [
+			validRoutinePayload({ routineId: undefined }),
+			validRoutinePayload({ routineRunId: "not-a-uuid" }),
+			validRoutinePayload({ url: undefined }),
+			validRoutinePayload({
+				url: `https://attacker.test/?routine=${ROUTINE_ID}&routine_run=${ROUTINE_RUN_ID}`,
+			}),
+			validRoutinePayload({
+				url: `/?routine_run=${ROUTINE_RUN_ID}&routine=${ROUTINE_ID}`,
+			}),
+			validRoutinePayload({
+				url: `/?routine=${ROUTINE_ID}&routine_run=${ROUTINE_RUN_ID}&extra=true`,
+			}),
+			validRoutinePayload({
+				url: `/?routine=${ROUTINE_ID}&routine_run=${ROUTINE_RUN_ID}#details`,
+			}),
+			validRoutinePayload({ sessionId: "fabricated-raven-session" }),
+			validRoutinePayload({ deliveryIds: [DELIVERY_ID, DELIVERY_ID_2] }),
+		];
+
+		for (const payload of invalidPayloads) {
+			await dispatchPush(worker.handlers.push, payload);
+		}
+
+		expect(worker.showNotification).toHaveBeenCalledTimes(
+			invalidPayloads.length,
+		);
+		for (const [title, options] of worker.showNotification.mock.calls) {
+			expect(title).toBe("Hlid notification");
+			expect(options).toMatchObject({
+				tag: "hlid-generic",
+				data: { fallback: true, url: "/" },
+			});
+		}
+		expect(worker.fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("rejects a malformed delivery id with the rest of its payload", async () => {
+		const worker = loadWorker();
+
+		await dispatchPush(
+			worker.handlers.push,
+			validPayload({ deliveryId: "not-a-delivery-id" }),
+		);
+
+		expect(worker.showNotification).toHaveBeenCalledWith(
+			"Hlid notification",
+			expect.objectContaining({
+				badge: "/notification-badge.svg",
+				tag: "hlid-generic",
+			}),
+		);
+		expect(worker.fetchMock).not.toHaveBeenCalled();
 	});
 
 	it("preserves bounded detailed metadata while using authoritative copy", async () => {
@@ -429,7 +657,7 @@ describe("service worker push notifications", () => {
 		expect(worker.clearAppBadge).toHaveBeenCalled();
 	});
 
-	it("groups a completion batch as one badge item and opens Raven overview", async () => {
+	it("groups a completion batch as one badge item and opens its exact Raven batch", async () => {
 		const existingClient = {
 			url: "https://hlid.test/forge",
 			navigate: vi.fn().mockResolvedValue({
@@ -443,6 +671,7 @@ describe("service worker push notifications", () => {
 			validPayload({
 				kind: "work_finished",
 				sessionIds: ["session-1", "session-2", "session-3"],
+				deliveryIds: [DELIVERY_ID, DELIVERY_ID_2, DELIVERY_ID_3],
 				batchId: "batch-test-123",
 				url: "https://attacker.test/raven?session=session-1",
 			}),
@@ -455,17 +684,100 @@ describe("service worker push notifications", () => {
 				tag: "hlid-work-finished-batch:batch-test-123",
 				data: expect.objectContaining({
 					sessionIds: ["session-1", "session-2", "session-3"],
+					deliveryIds: [DELIVERY_ID, DELIVERY_ID_2, DELIVERY_ID_3],
 					batchId: "batch-test-123",
-					url: "/raven",
+					url: "/raven?notification_batch=batch-test-123",
 				}),
 			}),
 		);
 		expect(worker.setAppBadge).toHaveBeenLastCalledWith(1);
 
 		await dispatchClick(worker.handlers.notificationclick, shown?.data, shown);
+		if (!shown) throw new Error("batch notification was not displayed");
+		await dispatchClose(worker.handlers.notificationclose, shown);
 
-		expect(existingClient.navigate).toHaveBeenCalledWith("/raven");
+		expect(existingClient.navigate).toHaveBeenCalledWith(
+			"/raven?notification_batch=batch-test-123",
+		);
 		expect(worker.clearAppBadge).toHaveBeenCalled();
+		const receipts = worker.fetchMock.mock.calls
+			.filter(([path]) => path === "/api/push/receipts")
+			.map(([, init]) => JSON.parse(String(init?.body)));
+		expect(receipts).toEqual(
+			["displayed", "opened", "dismissed"].flatMap((status) =>
+				[DELIVERY_ID, DELIVERY_ID_2, DELIVERY_ID_3].map((delivery_id) => ({
+					delivery_id,
+					status,
+				})),
+			),
+		);
+	});
+
+	it("keeps lifecycle receipt compatibility for an older batch with one delivery id", async () => {
+		const worker = loadWorker();
+
+		await dispatchPush(
+			worker.handlers.push,
+			validPayload({
+				kind: "work_finished",
+				sessionIds: ["session-1", "session-2"],
+				batchId: "batch-legacy-123",
+				deliveryId: DELIVERY_ID,
+			}),
+		);
+		const shown = worker.activeNotifications[0];
+		if (!shown) throw new Error("legacy batch notification was not displayed");
+		await dispatchClick(worker.handlers.notificationclick, shown.data, shown);
+		await dispatchClose(worker.handlers.notificationclose, shown);
+
+		expect(
+			worker.fetchMock.mock.calls
+				.filter(([path]) => path === "/api/push/receipts")
+				.map(([, init]) => JSON.parse(String(init?.body))),
+		).toEqual(
+			["displayed", "opened", "dismissed"].map((status) => ({
+				delivery_id: DELIVERY_ID,
+				status,
+			})),
+		);
+	});
+
+	it("preserves grouped completion batches when one member becomes visible", async () => {
+		const matchingDirect = {
+			tag: "hlid-session:session-1",
+			data: validPayload({ sessionId: "session-1" }),
+			close: vi.fn(),
+		};
+		const matchingBatch = {
+			tag: "hlid-work-finished-batch:batch-test-123",
+			data: validPayload({
+				kind: "work_finished",
+				sessionIds: ["session-1", "session-2"],
+				batchId: "batch-test-123",
+			}),
+			close: vi.fn(),
+		};
+		const otherBatch = {
+			tag: "hlid-work-finished-batch:batch-other-456",
+			data: validPayload({
+				kind: "work_finished",
+				sessionId: "session-2",
+				sessionIds: ["session-2", "session-3"],
+				batchId: "batch-other-456",
+			}),
+			close: vi.fn(),
+		};
+		const worker = loadWorker([], [matchingDirect, matchingBatch, otherBatch]);
+
+		await dispatchMessage(worker.handlers.message, {
+			type: "hlid:close-session-notifications",
+			sessionId: "session-1",
+		});
+
+		expect(matchingDirect.close).toHaveBeenCalledOnce();
+		expect(matchingBatch.close).not.toHaveBeenCalled();
+		expect(otherBatch.close).not.toHaveBeenCalled();
+		expect(worker.setAppBadge).toHaveBeenLastCalledWith(2);
 	});
 
 	it("replaces retries of one batch without replacing independent batches", async () => {
@@ -499,18 +811,43 @@ describe("service worker push notifications", () => {
 	it("rejects malformed completion batches without exposing their content", async () => {
 		const worker = loadWorker();
 
-		await dispatchPush(
-			worker.handlers.push,
-			validPayload({
+		for (const malformed of [
+			{
 				kind: "work_finished",
 				sessionIds: ["session-2", "session-2"],
-			}),
-		);
+			},
+			{
+				kind: "work_finished",
+				sessionIds: ["session-1", "session-2"],
+				deliveryIds: [DELIVERY_ID, DELIVERY_ID_2, DELIVERY_ID_3],
+				batchId: "batch-test-123",
+			},
+			{
+				kind: "work_finished",
+				sessionIds: ["session-1", "session-2"],
+				deliveryIds: [DELIVERY_ID, DELIVERY_ID],
+				batchId: "batch-test-123",
+			},
+			{
+				kind: "work_finished",
+				sessionIds: ["session-1", "session-2"],
+				deliveryIds: [DELIVERY_ID, DELIVERY_ID_2],
+				deliveryId: DELIVERY_ID,
+				batchId: "batch-test-123",
+			},
+			{
+				kind: "work_finished",
+				deliveryIds: [DELIVERY_ID, DELIVERY_ID_2],
+			},
+		]) {
+			await dispatchPush(worker.handlers.push, validPayload(malformed));
+		}
 
-		expect(worker.showNotification).toHaveBeenCalledWith(
-			"Hlid notification",
-			expect.objectContaining({ tag: "hlid-generic" }),
-		);
+		expect(worker.showNotification).toHaveBeenCalledTimes(5);
+		for (const [title, options] of worker.showNotification.mock.calls) {
+			expect(title).toBe("Hlid notification");
+			expect(options).toMatchObject({ tag: "hlid-generic" });
+		}
 	});
 
 	it("falls back when displaying validated content fails", async () => {
@@ -714,30 +1051,56 @@ describe("service worker push notifications", () => {
 		expect(standaloneClient.navigate).toHaveBeenCalledWith(
 			"/raven?session=session-1",
 		);
+		expect(standaloneClient.focus).toHaveBeenCalledOnce();
 		expect(focusedPwa.focus).toHaveBeenCalledOnce();
 		expect(websiteClient.navigate).not.toHaveBeenCalled();
 		expect(worker.openWindow).not.toHaveBeenCalled();
 	});
 
-	it("lets the browser launch or reuse the installed PWA before a website tab", async () => {
-		const installedClient = { focus: vi.fn().mockResolvedValue(undefined) };
+	it("reuses an existing Hlid window before asking the browser to open one", async () => {
 		const websiteClient = {
 			url: "https://hlid.test/forge",
-			navigate: vi.fn(),
-			focus: vi.fn(),
+			navigate: vi.fn().mockResolvedValue(undefined),
+			focus: vi.fn().mockResolvedValue(undefined),
 		};
 		const worker = loadWorker([websiteClient]);
-		worker.openWindow.mockResolvedValue(installedClient);
 
 		await dispatchClick(worker.handlers.notificationclick, {
 			sessionId: "session-1",
 			url: "/raven?session=session-1",
 		});
 
-		expect(worker.openWindow).toHaveBeenCalledWith("/raven?session=session-1");
-		expect(installedClient.focus).toHaveBeenCalledOnce();
-		expect(websiteClient.navigate).not.toHaveBeenCalled();
-		expect(websiteClient.focus).not.toHaveBeenCalled();
+		expect(websiteClient.focus).toHaveBeenCalledOnce();
+		expect(websiteClient.navigate).toHaveBeenCalledWith(
+			"/raven?session=session-1",
+		);
+		expect(worker.openWindow).not.toHaveBeenCalled();
+	});
+
+	it("keeps a background PWA focused when its direct navigation handle is stale", async () => {
+		const backgroundPwa = {
+			url: "https://hlid.test/forge",
+			focus: vi.fn(),
+			navigate: vi.fn().mockRejectedValue(new Error("stale window handle")),
+			postMessage: vi.fn(),
+		};
+		backgroundPwa.focus.mockResolvedValue(backgroundPwa);
+		const worker = loadWorker([backgroundPwa]);
+
+		await dispatchClick(worker.handlers.notificationclick, {
+			sessionId: "session-1",
+			url: "/raven?session=session-1",
+		});
+
+		expect(backgroundPwa.focus).toHaveBeenCalledOnce();
+		expect(backgroundPwa.navigate).toHaveBeenCalledWith(
+			"/raven?session=session-1",
+		);
+		expect(backgroundPwa.postMessage).toHaveBeenCalledWith({
+			type: "hlid:navigate-notification",
+			url: "/raven?session=session-1",
+		});
+		expect(worker.openWindow).not.toHaveBeenCalled();
 	});
 
 	it("falls back to navigating and focusing an existing Hlid website", async () => {
@@ -759,7 +1122,7 @@ describe("service worker push notifications", () => {
 			"/raven?session=session-1",
 		);
 		expect(focusedClient.focus).toHaveBeenCalledOnce();
-		expect(worker.openWindow).toHaveBeenCalledWith("/raven?session=session-1");
+		expect(worker.openWindow).not.toHaveBeenCalled();
 		expect(worker.clearAppBadge).toHaveBeenCalled();
 	});
 
@@ -778,7 +1141,7 @@ describe("service worker push notifications", () => {
 
 		expect(existingClient.navigate).toHaveBeenCalledWith("/");
 		expect(focusedClient.focus).toHaveBeenCalledOnce();
-		expect(worker.openWindow).toHaveBeenCalledWith("/");
+		expect(worker.openWindow).not.toHaveBeenCalled();
 	});
 
 	it("opens a new exact Raven window when no Hlid window exists", async () => {
@@ -792,8 +1155,217 @@ describe("service worker push notifications", () => {
 		});
 
 		expect(worker.openWindow).toHaveBeenCalledWith(
-			"/raven?session=session+%2F+two",
+			"https://hlid.test/raven?session=session+%2F+two",
 		);
+	});
+
+	it("best-effort resubscribes after a browser subscription rotation", async () => {
+		const worker = loadWorker();
+		const publicKeyBytes = Uint8Array.from({ length: 65 }, (_, index) =>
+			index === 0 ? 4 : index,
+		);
+		const publicKey = Buffer.from(publicKeyBytes).toString("base64url");
+		const replacement = {
+			toJSON: () => ({
+				endpoint: "https://push.test/replacement",
+				expirationTime: null,
+				keys: { p256dh: "new-p256dh", auth: "new-auth" },
+			}),
+		};
+		worker.pushSubscribe.mockResolvedValue(replacement);
+		worker.fetchMock.mockImplementation(async (path) => {
+			if (path === "/api/push/config") {
+				return new Response(JSON.stringify({ available: true, publicKey }), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				});
+			}
+			return new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		});
+
+		await dispatchSubscriptionChange(worker.handlers.pushsubscriptionchange, {
+			endpoint: "https://push.test/original",
+		});
+
+		const subscribeOptions = worker.pushSubscribe.mock.calls[0]?.[0];
+		expect(subscribeOptions?.userVisibleOnly).toBe(true);
+		expect(
+			Array.from(
+				new Uint8Array(subscribeOptions?.applicationServerKey as ArrayBuffer),
+			),
+		).toEqual(Array.from(publicKeyBytes));
+		const postCall = worker.fetchMock.mock.calls.find(
+			([path]) => path === "/api/push/subscriptions",
+		);
+		expect(postCall?.[1]).toMatchObject({
+			method: "POST",
+			credentials: "same-origin",
+		});
+		expect(JSON.parse(String(postCall?.[1]?.body))).toEqual({
+			subscription: {
+				endpoint: "https://push.test/replacement",
+				expirationTime: null,
+				keys: { p256dh: "new-p256dh", auth: "new-auth" },
+			},
+			replaces_endpoint: "https://push.test/original",
+		});
+	});
+
+	it("registers a browser-provided replacement when old details are unavailable", async () => {
+		const worker = loadWorker();
+		const replacement = {
+			toJSON: () => ({
+				endpoint: "https://push.test/replacement",
+				expirationTime: null,
+				keys: { p256dh: "new-p256dh", auth: "new-auth" },
+			}),
+		};
+		worker.fetchMock.mockResolvedValue(
+			Response.json({ ok: true }, { status: 200 }),
+		);
+
+		await dispatchSubscriptionChange(
+			worker.handlers.pushsubscriptionchange,
+			undefined,
+			replacement,
+		);
+
+		expect(worker.pushSubscribe).not.toHaveBeenCalled();
+		expect(worker.fetchMock).toHaveBeenCalledTimes(1);
+		const postCall = worker.fetchMock.mock.calls[0];
+		expect(postCall?.[0]).toBe("/api/push/subscriptions");
+		expect(JSON.parse(String(postCall?.[1]?.body))).toEqual({
+			subscription: {
+				endpoint: "https://push.test/replacement",
+				expirationTime: null,
+				keys: { p256dh: "new-p256dh", auth: "new-auth" },
+			},
+		});
+	});
+
+	it("prefers a browser-provided replacement over creating another one", async () => {
+		const worker = loadWorker();
+		const replacement = {
+			endpoint: "https://push.test/replacement",
+			expirationTime: null,
+			keys: { p256dh: "new-p256dh", auth: "new-auth" },
+		};
+		worker.fetchMock.mockResolvedValue(
+			Response.json({ ok: true }, { status: 200 }),
+		);
+
+		await dispatchSubscriptionChange(
+			worker.handlers.pushsubscriptionchange,
+			{ endpoint: "https://push.test/original" },
+			replacement,
+		);
+
+		expect(worker.pushSubscribe).not.toHaveBeenCalled();
+		expect(worker.fetchMock).toHaveBeenCalledTimes(1);
+		expect(
+			JSON.parse(String(worker.fetchMock.mock.calls[0]?.[1]?.body)),
+		).toEqual({
+			subscription: replacement,
+			replaces_endpoint: "https://push.test/original",
+		});
+	});
+
+	it.each([
+		undefined,
+		{},
+		{ endpoint: "http://push.test/original" },
+		{ endpoint: "https://user:secret@push.test/original" },
+		{ endpoint: "https://push.test/original#fragment" },
+	])("does not rotate without a validated old endpoint", async (oldSubscription) => {
+		const worker = loadWorker();
+
+		await dispatchSubscriptionChange(
+			worker.handlers.pushsubscriptionchange,
+			oldSubscription,
+		);
+
+		expect(worker.fetchMock).not.toHaveBeenCalled();
+		expect(worker.pushSubscribe).not.toHaveBeenCalled();
+	});
+
+	it("checks a failed replacement response before leaving foreground repair in charge", async () => {
+		const worker = loadWorker();
+		const publicKeyBytes = Uint8Array.from({ length: 65 }, (_, index) =>
+			index === 0 ? 4 : index,
+		);
+		const publicKey = Buffer.from(publicKeyBytes).toString("base64url");
+		let registrationStatusChecked = false;
+		worker.pushSubscribe.mockResolvedValue({
+			toJSON: () => ({
+				endpoint: "https://push.test/replacement",
+				expirationTime: null,
+				keys: { p256dh: "new-p256dh", auth: "new-auth" },
+			}),
+		});
+		worker.fetchMock.mockImplementation(async (path) => {
+			if (path === "/api/push/config") {
+				return new Response(JSON.stringify({ available: true, publicKey }), {
+					status: 200,
+				});
+			}
+			return {
+				get ok() {
+					registrationStatusChecked = true;
+					return false;
+				},
+			} as Response;
+		});
+
+		await dispatchSubscriptionChange(worker.handlers.pushsubscriptionchange, {
+			endpoint: "https://push.test/original",
+		});
+
+		expect(registrationStatusChecked).toBe(true);
+		expect(worker.fetchMock).toHaveBeenCalledWith(
+			"/api/push/subscriptions",
+			expect.objectContaining({ method: "POST" }),
+		);
+	});
+
+	it("keeps the shared schema aligned with the worker's session source contract", () => {
+		expect(
+			webPushNotificationPayloadSchema.safeParse(validPayload()).success,
+		).toBe(true);
+		expect(
+			webPushNotificationPayloadSchema.safeParse(
+				validPayload({ source: "session" }),
+			).success,
+		).toBe(false);
+		expect(
+			webPushNotificationPayloadSchema.safeParse(
+				validPayload({ reminder: true }),
+			).success,
+		).toBe(false);
+	});
+
+	it("leaves subscription rotation to foreground reconciliation after failures", async () => {
+		const worker = loadWorker();
+		worker.fetchMock.mockRejectedValue(new Error("offline"));
+
+		await expect(
+			dispatchSubscriptionChange(worker.handlers.pushsubscriptionchange, {
+				endpoint: "https://push.test/original",
+			}),
+		).resolves.toBeUndefined();
+		expect(worker.pushSubscribe).not.toHaveBeenCalled();
+	});
+
+	it("ships a transparent monochrome badge asset", () => {
+		const badge = readFileSync(
+			resolve(process.cwd(), "public/notification-badge.svg"),
+			"utf8",
+		);
+
+		expect(badge).toContain("<svg");
+		expect(badge).not.toMatch(/(?:fill|stroke)=["']#[0-9a-f]+["']/i);
 	});
 
 	it("declares navigate-existing launch handling for installed PWAs", () => {

@@ -8,11 +8,14 @@ import {
 } from "../lib/routinePermissions";
 import { nextRoutineOccurrence } from "../lib/routineSchedule";
 import {
+	DEFAULT_ROUTINE_NOTIFICATION_POLICY,
 	type RoutineDefinition,
+	type RoutineNotificationPolicy,
 	type RoutinePermissionGrantInput,
 	type RoutineStatus,
 	type RoutineSummary,
 	routineDefinitionSchema,
+	routineNotificationPolicySchema,
 } from "../lib/routines";
 import { type Db, getDb } from "./schema";
 
@@ -37,6 +40,7 @@ type RoutineRow = {
 	relic_ids_json: string;
 	permission_mode: RoutineDefinition["permissionMode"];
 	deliveries_json: string;
+	notification_policy_json: string;
 	catch_up_window_minutes: number;
 	no_overlap: number;
 	paused_reason: string | null;
@@ -64,8 +68,22 @@ export type RoutineRunRow = {
 	error: string | null;
 	action_required: string | null;
 	delivery_json: string | null;
+	notification_policy_json: string;
 	created_at: number;
 };
+
+/** Immutable delivery policy captured when the run is claimed. */
+export function routineRunNotificationPolicy(
+	run: Pick<RoutineRunRow, "notification_policy_json">,
+): RoutineNotificationPolicy {
+	try {
+		return routineNotificationPolicySchema.parse(
+			parseObject(run.notification_policy_json),
+		);
+	} catch {
+		return DEFAULT_ROUTINE_NOTIFICATION_POLICY;
+	}
+}
 
 type GrantRow = {
 	id: string;
@@ -181,6 +199,9 @@ function toSummary(
 		permissionMode: row.permission_mode,
 		grants: profile ? profileGrants(db, profile.id) : [],
 		deliveries: parseArray(row.deliveries_json),
+		notificationPolicy: routineNotificationPolicySchema.parse(
+			parseObject(row.notification_policy_json),
+		),
 		catchUpWindowMinutes: row.catch_up_window_minutes,
 		noOverlap: row.no_overlap === 1,
 		pausedReason: row.paused_reason,
@@ -250,9 +271,10 @@ export async function createRoutine(
 			  provider_id, model, effort, agent_cwd, agent_name, skill_contexts_json,
 			  provider_commands_json,
 			  vault_references_json, relic_ids_json, permission_mode, deliveries_json,
-			  catch_up_window_minutes, no_overlap, authorization_fingerprint,
+			  notification_policy_json, catch_up_window_minutes, no_overlap,
+			  authorization_fingerprint,
 			  created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				id,
 				definition.name,
@@ -272,6 +294,7 @@ export async function createRoutine(
 				JSON.stringify(definition.relicIds),
 				definition.permissionMode,
 				JSON.stringify(definition.deliveries),
+				JSON.stringify(definition.notificationPolicy),
 				definition.catchUpWindowMinutes,
 				definition.noOverlap ? 1 : 0,
 				fingerprint,
@@ -307,7 +330,8 @@ export async function updateRoutine(
 				 agent_cwd = ?, agent_name = ?, skill_contexts_json = ?,
 				 provider_commands_json = ?,
 				 vault_references_json = ?, relic_ids_json = ?, permission_mode = ?,
-			 deliveries_json = ?, catch_up_window_minutes = ?, no_overlap = ?,
+			 deliveries_json = ?, notification_policy_json = ?,
+			 catch_up_window_minutes = ?, no_overlap = ?,
 			 paused_reason = NULL, authorization_fingerprint = ?, updated_at = ?
 			 WHERE id = ?`,
 			[
@@ -329,6 +353,7 @@ export async function updateRoutine(
 				JSON.stringify(definition.relicIds),
 				definition.permissionMode,
 				JSON.stringify(definition.deliveries),
+				JSON.stringify(definition.notificationPolicy),
 				definition.catchUpWindowMinutes,
 				definition.noOverlap ? 1 : 0,
 				fingerprint,
@@ -426,8 +451,9 @@ function insertClaim(
 		db.run(
 			`INSERT INTO routine_runs
 			 (id, routine_id, routine_revision, profile_id, authorization_fingerprint,
-			  trigger, scheduled_for, claimed_at, lease_owner, lease_expires_at, status)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'claimed')`,
+			  trigger, scheduled_for, claimed_at, lease_owner, lease_expires_at,
+			  notification_policy_json, status)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'claimed')`,
 			[
 				id,
 				routine.id,
@@ -439,6 +465,7 @@ function insertClaim(
 				now,
 				leaseOwner,
 				now + leaseSeconds,
+				routine.notification_policy_json,
 			],
 		);
 	} catch (error) {
@@ -579,6 +606,97 @@ export async function listRoutineRuns(
 			 ORDER BY scheduled_for DESC, created_at DESC LIMIT ?`,
 		)
 		.all(routineId, limit);
+}
+
+export async function getRoutineRun(
+	routineId: string,
+	runId: string,
+): Promise<RoutineRunRow | null> {
+	const db = await getDb();
+	return db
+		.query<RoutineRunRow, [string, string]>(
+			`SELECT * FROM routine_runs WHERE routine_id = ? AND id = ?`,
+		)
+		.get(routineId, runId);
+}
+
+const MAX_ROUTINE_NOTIFICATION_RECOVERY_RUNS = 100;
+
+/**
+ * Return terminal Routine runs whose durable notification intent has not been
+ * acknowledged yet. Callers should enqueue with a stable dedupe key derived
+ * from the run ID, then mark that run recorded.
+ */
+export async function listRoutineRunsNeedingNotification(options: {
+	finishedSince: number;
+	limit?: number;
+}): Promise<RoutineRunRow[]> {
+	if (!Number.isSafeInteger(options.finishedSince)) {
+		throw new Error("Routine notification cutoff must be an integer timestamp");
+	}
+	const requestedLimit = options.limit ?? 50;
+	if (!Number.isSafeInteger(requestedLimit)) {
+		throw new Error("Routine notification recovery limit must be an integer");
+	}
+	const limit = Math.max(
+		1,
+		Math.min(MAX_ROUTINE_NOTIFICATION_RECOVERY_RUNS, requestedLimit),
+	);
+	const db = await getDb();
+	return db
+		.query<RoutineRunRow, [number, number]>(
+			`SELECT rr.*
+			 FROM routine_runs rr
+			 LEFT JOIN routine_run_notification_records nr ON nr.run_id = rr.id
+			 WHERE nr.run_id IS NULL
+			   AND rr.finished_at IS NOT NULL
+			   AND rr.finished_at >= ?
+			   AND rr.status IN (
+			     'succeeded', 'action_required', 'failed',
+			     'delivery_error', 'provider_unavailable', 'interrupted'
+			   )
+			 ORDER BY rr.finished_at, rr.created_at, rr.id
+			 LIMIT ?`,
+		)
+		.all(options.finishedSince, limit);
+}
+
+/**
+ * Acknowledge a Routine outcome only after its durable outbox event exists.
+ * The insert is idempotent, and refuses to mark a non-terminal or unfinished
+ * run so a premature call cannot hide later recovery work.
+ */
+export async function markRoutineRunNotificationRecorded(options: {
+	runId: string;
+	eventId?: string;
+	recordedAt: number;
+}): Promise<boolean> {
+	if (!Number.isSafeInteger(options.recordedAt) || options.recordedAt < 0) {
+		throw new Error(
+			"Routine notification recorded time must be a non-negative integer",
+		);
+	}
+	if (
+		options.eventId !== undefined &&
+		(options.eventId.length < 1 || options.eventId.length > 64)
+	) {
+		throw new Error(
+			"Routine notification event ID must contain 1-64 characters",
+		);
+	}
+	const db = await getDb();
+	return (
+		db.run(
+			`INSERT OR IGNORE INTO routine_run_notification_records
+			   (run_id, event_id, recorded_at)
+			 SELECT id, ?, ? FROM routine_runs
+			 WHERE id = ? AND finished_at IS NOT NULL AND status IN (
+			   'succeeded', 'action_required', 'failed',
+			   'delivery_error', 'provider_unavailable', 'interrupted'
+			 )`,
+			[options.eventId ?? null, options.recordedAt, options.runId],
+		).changes > 0
+	);
 }
 
 export async function markRoutineRunRunning(options: {

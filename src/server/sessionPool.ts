@@ -45,6 +45,7 @@ export class SessionPool {
 	private providers: Map<string, AgentProvider>;
 	private maxSize: number;
 	private attentionBySession = new Map<string, SessionAttentionSnapshot>();
+	private routineOwnedDbSessionByEntry = new Map<string, string>();
 	private durableDelegationAttention: SessionStatusEntry[] = [];
 	private durableDelegationLineage = new Map<string, string>();
 	private durableDelegationLifecycle = new Map<
@@ -293,6 +294,7 @@ export class SessionPool {
 		entry.manager.setBackgroundActivityChangeHandler(null);
 		this.entries.delete(sessionId);
 		this.attentionBySession.delete(sessionId);
+		this.routineOwnedDbSessionByEntry.delete(sessionId);
 		if (this._vaultSessionId === sessionId) {
 			this._vaultSessionId = null;
 		}
@@ -310,6 +312,7 @@ export class SessionPool {
 		}
 		this.entries.clear();
 		this.attentionBySession.clear();
+		this.routineOwnedDbSessionByEntry.clear();
 		this._vaultSessionId = null;
 	}
 
@@ -320,6 +323,7 @@ export class SessionPool {
 		const entries = [...this.entries.values()];
 		this.entries.clear();
 		this.attentionBySession.clear();
+		this.routineOwnedDbSessionByEntry.clear();
 		this._vaultSessionId = null;
 		for (const entry of entries) {
 			entry.manager.setBackgroundActivityChangeHandler(null);
@@ -433,15 +437,30 @@ export class SessionPool {
 			const sessionLabel = entry.manager.getSessionLabel();
 			const presentation = entry.manager.getSessionPresentation();
 			const backgroundActivities = entry.manager.getBackgroundActivities();
+			const activeRoutine = entry.manager.getActiveRoutine();
+			if (activeRoutine && dbSessionId) {
+				this.routineOwnedDbSessionByEntry.set(entry.sessionId, dbSessionId);
+			} else if (state === "running") {
+				// A later ordinary turn explicitly releases sticky Routine ownership.
+				this.routineOwnedDbSessionByEntry.delete(entry.sessionId);
+			}
+			const routineOwned =
+				activeRoutine !== null ||
+				(Boolean(dbSessionId) &&
+					this.routineOwnedDbSessionByEntry.get(entry.sessionId) ===
+						dbSessionId);
 			const attention = deriveSessionAttention(
 				{
 					state,
 					permissionCount: pendingPerms.length,
 					questionCount: pendingQuestions.length,
 					planReviewCount: pendingPlans.length,
+					permissionIds: pendingPerms.map((request) => request.id),
+					questionIds: pendingQuestions.map((request) => request.id),
+					planReviewIds: pendingPlans.map((request) => request.id),
 					queueCount,
 					goalStatus: entry.manager.getCurrentGoal()?.status,
-					routine: entry.manager.getActiveRoutine() !== null,
+					routine: routineOwned,
 					sleepState,
 					backgroundRunningCount: backgroundActivities.filter(
 						(activity) => activity.status === "running",
@@ -473,6 +492,7 @@ export class SessionPool {
 					pendingPerms.length > 0 ||
 					pendingQuestions.length > 0 ||
 					pendingPlans.length > 0,
+				routine_owned: routineOwned,
 				attention,
 				hasDbSession: dbSessionId !== null,
 				db_session_id: dbSessionId,

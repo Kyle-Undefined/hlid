@@ -11,6 +11,9 @@ export type SessionAttentionInput = {
 	permissionCount: number;
 	questionCount: number;
 	planReviewCount: number;
+	permissionIds?: string[];
+	questionIds?: string[];
+	planReviewIds?: string[];
 	queueCount: number;
 	goalStatus?: ProviderGoalStatus;
 	routine?: boolean;
@@ -94,13 +97,49 @@ export function deriveSessionAttention(
 	const classified = classifyAttention(input);
 	const pendingCount =
 		input.permissionCount + input.questionCount + input.planReviewCount;
+	const pendingReasonCount =
+		classified.reason === "permission"
+			? input.permissionCount
+			: classified.reason === "question"
+				? input.questionCount
+				: classified.reason === "plan_review"
+					? input.planReviewCount
+					: 0;
+	const rawPendingIds =
+		classified.reason === "permission"
+			? input.permissionIds
+			: classified.reason === "question"
+				? input.questionIds
+				: classified.reason === "plan_review"
+					? input.planReviewIds
+					: undefined;
+	const validPendingIds = Array.from(
+		new Set(
+			(rawPendingIds ?? []).filter(
+				(id) =>
+					typeof id === "string" &&
+					id.length >= 1 &&
+					id.length <= 128 &&
+					/^[A-Za-z0-9._:-]+$/.test(id),
+			),
+		),
+	).slice(0, 32);
+	const hasCurrentRequestIdentity =
+		classified.reason === "permission" ||
+		classified.reason === "question" ||
+		classified.reason === "plan_review";
+	const previousPendingIds = previous?.pending_ids ?? [];
+	const samePendingIds =
+		previousPendingIds.length === validPendingIds.length &&
+		previousPendingIds.every((id, index) => id === validPendingIds[index]);
 	const sameState =
 		previous?.bucket === classified.bucket &&
 		previous.reason === classified.reason;
 	const sameActivity =
 		sameState &&
 		previous.queue_count === input.queueCount &&
-		previous.pending_count === pendingCount;
+		previous.pending_count === pendingCount &&
+		samePendingIds;
 
 	return {
 		...classified,
@@ -108,6 +147,13 @@ export function deriveSessionAttention(
 		last_activity_at: sameActivity ? previous.last_activity_at : now,
 		queue_count: input.queueCount,
 		pending_count: pendingCount,
+		...(pendingReasonCount > 0
+			? { pending_reason_count: pendingReasonCount }
+			: {}),
+		// An empty array is meaningful for current request snapshots: the manager
+		// supplied identity data, but none of it was safe to expose. Undefined is
+		// reserved for legacy snapshots that predate exact request identities.
+		...(hasCurrentRequestIdentity ? { pending_ids: validPendingIds } : {}),
 		...(classified.bucket === "sleeping" && input.sleepState?.until != null
 			? { sleep_until: input.sleepState.until }
 			: {}),

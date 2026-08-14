@@ -1133,6 +1133,7 @@ describe("SessionPool.getSessionsStatus", () => {
 	it("derives blocked goals and active Routines from their owning manager", () => {
 		const pool = makePool();
 		pool.create("/code/proj", "Agent");
+		mockInstances[0]?.getCurrentSessionId.mockReturnValue("routine-session");
 		mockInstances[0]?.getCurrentGoal.mockReturnValue({
 			status: "blocked",
 		});
@@ -1151,9 +1152,31 @@ describe("SessionPool.getSessionsStatus", () => {
 			state: "running",
 			model: "claude-test",
 		});
-		expect(pool.getSessionsStatus()[0]?.attention).toMatchObject({
-			bucket: "working",
-			reason: "routine_running",
+		expect(pool.getSessionsStatus()[0]).toMatchObject({
+			routine_owned: true,
+			attention: { bucket: "working", reason: "routine_running" },
+		});
+
+		// SessionManager clears its active context before its final idle status.
+		// Ownership remains sticky until the pool entry closes or an ordinary turn
+		// explicitly starts on that entry.
+		mockInstances[0]?.getActiveRoutine.mockReturnValue(null);
+		mockInstances[0]?.getStatus.mockReturnValue({
+			state: "idle",
+			model: "claude-test",
+		});
+		expect(pool.getSessionsStatus()[0]).toMatchObject({
+			routine_owned: true,
+			attention: { bucket: "recent", reason: "ready" },
+		});
+
+		mockInstances[0]?.getStatus.mockReturnValue({
+			state: "running",
+			model: "claude-test",
+		});
+		expect(pool.getSessionsStatus()[0]).toMatchObject({
+			routine_owned: false,
+			attention: { bucket: "working", reason: "provider_turn" },
 		});
 	});
 

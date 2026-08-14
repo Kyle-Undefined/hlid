@@ -1,14 +1,18 @@
 import { createServerFn } from "@tanstack/react-start";
+import * as z from "zod";
 import { dbFetch, requireDbOk } from "#/lib/dbClient";
 import {
 	deletePushDeviceSchema,
 	listPushDevicesSchema,
 	type PushPreferences,
 	pushEndpointSchema,
+	pushNotificationBatchIdSchema,
+	pushNotificationBatchReadSchema,
 	pushSessionIdSchema,
 	pushStatusSchema,
 	pushTestSchema,
 	type SessionNotificationMode,
+	type SessionNotificationScope,
 	subscribePushSchema,
 	updatePushDeviceSchema,
 	updatePushSessionOverrideSchema,
@@ -31,6 +35,7 @@ export type PushDeviceResponse = {
 	name: string;
 	current: boolean;
 	enabled: boolean;
+	preferences: PushPreferences;
 	paused_until: number | null;
 	paused_indefinitely: boolean;
 	created_at: number;
@@ -39,6 +44,107 @@ export type PushDeviceResponse = {
 	last_failure_at: number | null;
 	failure_count: number;
 };
+
+export type PushSessionPolicyResponse = {
+	session_id: string;
+	mode: Exclude<SessionNotificationMode, "default">;
+	scope: SessionNotificationScope;
+	target_device_ids: string[] | null;
+	updated_at: number;
+};
+
+export type EffectivePushSessionPolicyResponse = {
+	requested_session_id: string;
+	source_session_id: string | null;
+	mode: SessionNotificationMode;
+	scope: SessionNotificationScope;
+	target_device_ids: string[] | null;
+	inherited: boolean;
+};
+
+export type PushSessionPolicyStateResponse = {
+	policy: PushSessionPolicyResponse | null;
+	effective: EffectivePushSessionPolicyResponse;
+};
+
+export type PushNotificationEventSummaryResponse = {
+	id: string;
+	source_kind: "session" | "routine" | "system";
+	source_id: string;
+	category: "request" | "problem" | "completion";
+	reason: string | null;
+	label: string | null;
+	url: string | null;
+	runtime_ms: number | null;
+	pending_count: number;
+	occurred_at: number;
+	expires_at: number;
+	group_key: string | null;
+	batch_id: string | null;
+	status:
+		| "pending"
+		| "deferred"
+		| "batched"
+		| "processed"
+		| "expired"
+		| "cancelled";
+	status_reason: string | null;
+	next_attempt_at: number | null;
+};
+
+export type PushNotificationHistoryEventResponse =
+	PushNotificationEventSummaryResponse & {
+		deliveries: Array<{
+			id: string;
+			device_id: string;
+			device: {
+				id: string;
+				name: string;
+				privacy: "generic" | "detailed";
+				preferences?: PushPreferences;
+			};
+			status:
+				| "pending"
+				| "suppressed"
+				| "queued"
+				| "sent"
+				| "failed"
+				| "gone"
+				| "expired";
+			reason: string | null;
+			next_attempt_at: number | null;
+			attempt_count: number;
+			provider_status: number | null;
+			receipt_at: number | null;
+			displayed_at: number | null;
+			opened_at: number | null;
+			dismissed_at: number | null;
+			created_at: number;
+			updated_at: number;
+		}>;
+	};
+
+export type PushNotificationBatchResponse = {
+	id: string;
+	category: "request" | "problem" | "completion";
+	group_key: string | null;
+	status: "open" | "ready" | "sent" | "read" | "expired";
+	created_at: number;
+	updated_at: number;
+	sent_at: number | null;
+	read_at: number | null;
+};
+
+export type PushNotificationBatchMemberResponse = {
+	event_id: string;
+	session_id: string;
+	position: number;
+	added_at: number;
+	read_at: number | null;
+	event: PushNotificationEventSummaryResponse | null;
+};
+
+const pushNotificationHistoryLimitSchema = z.number().int().min(1).max(100);
 
 async function internalJson<T>(
 	path: string,
@@ -141,7 +247,7 @@ export const updatePushDeviceFn = createServerFn({ method: "POST" })
 	.handler(({ data }) =>
 		internalJson<{ ok: true; device: PushDeviceResponse }>(
 			"/api/push/devices",
-			"Rename notification device",
+			"Update notification device",
 			{
 				method: "PATCH",
 				headers: { "content-type": "application/json" },
@@ -158,6 +264,43 @@ export const deletePushDeviceFn = createServerFn({ method: "POST" })
 			"Revoke notification device",
 			{
 				method: "DELETE",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(data),
+			},
+		),
+	);
+
+export const getPushNotificationHistoryFn = createServerFn({ method: "GET" })
+	.validator((raw) => pushNotificationHistoryLimitSchema.parse(raw ?? 20))
+	.handler(({ data }) =>
+		internalJson<{ events: PushNotificationHistoryEventResponse[] }>(
+			`/api/push/history?limit=${data}`,
+			"Read notification history",
+		),
+	);
+
+export const getPushNotificationBatchFn = createServerFn({ method: "GET" })
+	.validator((raw) => pushNotificationBatchIdSchema.parse(raw))
+	.handler(({ data }) =>
+		internalJson<{
+			batch: PushNotificationBatchResponse;
+			members: PushNotificationBatchMemberResponse[];
+		}>(
+			`/api/push/batches?batch_id=${encodeURIComponent(data)}`,
+			"Read notification batch",
+		),
+	);
+
+export const markPushNotificationBatchReadFn = createServerFn({
+	method: "POST",
+})
+	.validator((raw) => pushNotificationBatchReadSchema.parse(raw))
+	.handler(({ data }) =>
+		internalJson<{ ok: true; read_at: number }>(
+			"/api/push/batches",
+			"Mark notification batch read",
+			{
+				method: "POST",
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify(data),
 			},
@@ -185,7 +328,7 @@ export const getSessionNotificationOverrideFn = createServerFn({
 })
 	.validator((raw) => pushSessionIdSchema.parse(raw))
 	.handler(({ data }) =>
-		internalJson<{ mode: SessionNotificationMode }>(
+		internalJson<PushSessionPolicyStateResponse>(
 			`/api/push/session-overrides?session_id=${encodeURIComponent(data)}`,
 			"Read session notification preference",
 		),
@@ -196,7 +339,7 @@ export const setSessionNotificationOverrideFn = createServerFn({
 })
 	.validator((raw) => updatePushSessionOverrideSchema.parse(raw))
 	.handler(({ data }) =>
-		internalJson<{ ok: true; mode: SessionNotificationMode }>(
+		internalJson<{ ok: true } & PushSessionPolicyStateResponse>(
 			"/api/push/session-overrides",
 			"Update session notification preference",
 			{

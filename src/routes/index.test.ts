@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { RoutineSummary } from "#/lib/routines";
 
 const mocks = vi.hoisted(() => ({
 	getConfig: vi.fn().mockResolvedValue({}),
@@ -49,12 +50,61 @@ vi.mock("#/lib/serverFns/voice", () => ({
 import {
 	cacheCockpitOptionalData,
 	clearCockpitOptionalDataCacheForTesting,
+	loadRoutinesForWatchNotification,
+	mergeNotifiedRoutine,
+	parseCockpitSearch,
 	preserveCockpitDataDuringFallback,
 	Route,
 	restoreCachedCockpitOptionalData,
 } from "./index";
 
 describe("Watch route loader", () => {
+	it("accepts only an exact Routine and run notification pair", () => {
+		const routine = "11111111-1111-4111-8111-111111111111";
+		const routineRun = "22222222-2222-4222-8222-222222222222";
+		expect(
+			parseCockpitSearch({
+				routine,
+				routine_run: routineRun,
+				ignored: "value",
+			}),
+		).toEqual({ routine, routine_run: routineRun });
+		expect(parseCockpitSearch({ routine })).toEqual({});
+		expect(
+			parseCockpitSearch({ routine: "../routines", routine_run: routineRun }),
+		).toEqual({});
+	});
+
+	it("loads and adds the exact archived Routine to the active Watch list", async () => {
+		const active = {
+			id: "55555555-5555-4555-8555-555555555555",
+			name: "Active Routine",
+			archived: false,
+		} as RoutineSummary;
+		const archived = {
+			id: "11111111-1111-4111-8111-111111111111",
+			name: "Archived Routine",
+			archived: true,
+		} as RoutineSummary;
+		const listActive = vi.fn().mockResolvedValue([active]);
+		const getExact = vi.fn().mockResolvedValue(archived);
+		const loaded = await loadRoutinesForWatchNotification(archived.id, {
+			listActive,
+			getExact,
+		});
+
+		expect(listActive).toHaveBeenCalledOnce();
+		expect(getExact).toHaveBeenCalledWith(archived.id);
+		expect(loaded.notified).toBe(archived);
+		expect(mergeNotifiedRoutine(loaded.active ?? [], loaded.notified)).toEqual([
+			archived,
+			active,
+		]);
+		expect(
+			mergeNotifiedRoutine([{ ...archived, archived: false }], archived),
+		).toEqual([archived]);
+	});
+
 	it("restores the last complete dashboard snapshot across navigation", () => {
 		vi.stubGlobal("window", {});
 		try {

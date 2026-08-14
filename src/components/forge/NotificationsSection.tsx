@@ -1,14 +1,27 @@
 import { LoaderCircle } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import {
+	type Dispatch,
+	type SetStateAction,
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
 import {
 	disablePushNotifications,
 	enablePushNotifications,
 	getPushNotificationDevices,
+	getPushNotificationHistory,
 	getPushNotificationState,
 	getPushNotificationSupport,
 	type PushCompletionMinimumMinutes,
+	type PushIsoWeekday,
 	type PushNotificationDevice,
+	type PushNotificationDevicePatch,
+	type PushNotificationHistoryDelivery,
+	type PushNotificationHistoryEvent,
 	type PushNotificationPreferences,
+	type PushNotificationQuietHours,
 	type PushNotificationState,
 	type PushNotificationSupport,
 	type PushNotificationTestScenario,
@@ -17,6 +30,7 @@ import {
 	renamePushNotificationDevice,
 	revokePushNotificationDevice,
 	sendTestPushNotification,
+	updatePushNotificationDevice,
 	updatePushNotificationPreferences,
 } from "#/lib/pushNotifications";
 import { Field, Section } from "./fields";
@@ -118,26 +132,376 @@ function NotificationToggle({
 	);
 }
 
+const WEEKDAYS: Array<{ value: PushIsoWeekday; label: string }> = [
+	{ value: 1, label: "Mon" },
+	{ value: 2, label: "Tue" },
+	{ value: 3, label: "Wed" },
+	{ value: 4, label: "Thu" },
+	{ value: 5, label: "Fri" },
+	{ value: 6, label: "Sat" },
+	{ value: 7, label: "Sun" },
+];
+
+function currentTimezone(): string {
+	try {
+		return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+	} catch {
+		return "UTC";
+	}
+}
+
+function defaultQuietHours(): PushNotificationQuietHours {
+	return {
+		timezone: currentTimezone(),
+		start: "22:00",
+		end: "07:00",
+		weekdays: WEEKDAYS.map((day) => day.value),
+		allowRequests: true,
+		allowProblems: true,
+	};
+}
+
+function validTimezone(value: string): boolean {
+	try {
+		new Intl.DateTimeFormat("en-US", { timeZone: value }).format(0);
+		return value.length > 0 && value.length <= 64;
+	} catch {
+		return false;
+	}
+}
+
+export function notificationQuietHoursValid(
+	value: PushNotificationQuietHours | null,
+): boolean {
+	return (
+		value === null ||
+		(validTimezone(value.timezone) &&
+			/^([01]\d|2[0-3]):[0-5]\d$/.test(value.start) &&
+			/^([01]\d|2[0-3]):[0-5]\d$/.test(value.end) &&
+			value.weekdays.length >= 1 &&
+			value.weekdays.length <= 7 &&
+			new Set(value.weekdays).size === value.weekdays.length)
+	);
+}
+
+function QuietHoursFields({
+	value,
+	disabled,
+	name,
+	onChange,
+}: {
+	value: PushNotificationQuietHours | null;
+	disabled: boolean;
+	name: string;
+	onChange: (value: PushNotificationQuietHours | null) => void;
+}) {
+	const valid = notificationQuietHoursValid(value);
+	return (
+		<div className="w-full min-w-0 space-y-2">
+			<NotificationToggle
+				checked={value !== null}
+				disabled={disabled}
+				label={value === null ? "off" : "on"}
+				name={`${name} quiet hours`}
+				onChange={(enabled) => onChange(enabled ? defaultQuietHours() : null)}
+			/>
+			{value !== null && (
+				<div className="min-w-0 space-y-2 border border-border/60 bg-background/30 p-2.5">
+					<label className="block min-w-0 text-[10px] text-muted-foreground">
+						Timezone
+						<input
+							aria-label={`${name} quiet hours timezone`}
+							aria-invalid={!validTimezone(value.timezone)}
+							value={value.timezone}
+							maxLength={64}
+							disabled={disabled}
+							onChange={(event) =>
+								onChange({ ...value, timezone: event.target.value.trim() })
+							}
+							placeholder="America/New_York"
+							className="mt-1 min-h-11 w-full min-w-0 border border-border bg-input px-2.5 py-1.5 text-xs text-foreground focus:border-primary/50 focus:outline-none disabled:opacity-40 lg:min-h-0"
+						/>
+					</label>
+					<div className="grid min-w-0 grid-cols-1 gap-2 @xl:grid-cols-2">
+						<label className="text-[10px] text-muted-foreground">
+							Starts
+							<input
+								type="time"
+								aria-label={`${name} quiet hours start`}
+								value={value.start}
+								disabled={disabled}
+								onChange={(event) =>
+									onChange({ ...value, start: event.target.value })
+								}
+								className="mt-1 min-h-11 w-full min-w-0 border border-border bg-input px-2.5 py-1.5 text-xs text-foreground disabled:opacity-40 lg:min-h-0"
+							/>
+						</label>
+						<label className="text-[10px] text-muted-foreground">
+							Ends
+							<input
+								type="time"
+								aria-label={`${name} quiet hours end`}
+								value={value.end}
+								disabled={disabled}
+								onChange={(event) =>
+									onChange({ ...value, end: event.target.value })
+								}
+								className="mt-1 min-h-11 w-full min-w-0 border border-border bg-input px-2.5 py-1.5 text-xs text-foreground disabled:opacity-40 lg:min-h-0"
+							/>
+						</label>
+					</div>
+					<fieldset className="min-w-0 space-y-1">
+						<legend className="text-[10px] text-muted-foreground">Days</legend>
+						<div className="grid grid-cols-4 gap-1 @xl:grid-cols-7">
+							{WEEKDAYS.map((day) => (
+								<label
+									key={day.value}
+									className="flex min-h-11 items-center justify-center gap-1 border border-border px-1 text-[9px] text-muted-foreground lg:min-h-0 lg:py-1"
+								>
+									<input
+										type="checkbox"
+										aria-label={`${name} quiet hours ${day.label}`}
+										checked={value.weekdays.includes(day.value)}
+										disabled={disabled}
+										onChange={(event) => {
+											const weekdays = event.target.checked
+												? [...value.weekdays, day.value].sort()
+												: value.weekdays.filter(
+														(candidate) => candidate !== day.value,
+													);
+											onChange({ ...value, weekdays });
+										}}
+										className="h-3.5 w-3.5 accent-primary"
+									/>
+									{day.label}
+								</label>
+							))}
+						</div>
+					</fieldset>
+					<div className="space-y-1.5">
+						<NotificationToggle
+							checked={value.allowRequests}
+							disabled={disabled}
+							label="allow requests during quiet hours"
+							name={`${name} allow requests during quiet hours`}
+							onChange={(allowRequests) =>
+								onChange({ ...value, allowRequests })
+							}
+						/>
+						<NotificationToggle
+							checked={value.allowProblems}
+							disabled={disabled}
+							label="allow problems during quiet hours"
+							name={`${name} allow problems during quiet hours`}
+							onChange={(allowProblems) =>
+								onChange({ ...value, allowProblems })
+							}
+						/>
+					</div>
+					{!valid && (
+						<div role="alert" className="text-[10px] text-destructive/80">
+							Use a valid IANA timezone and choose at least one day.
+						</div>
+					)}
+				</div>
+			)}
+		</div>
+	);
+}
+
+function notificationProfileKey(preferences: PushNotificationPreferences) {
+	return JSON.stringify(preferences);
+}
+
+function notificationQuietHoursKey(
+	quietHours: PushNotificationQuietHours | null,
+): string {
+	return JSON.stringify(quietHours);
+}
+
+function CompactNotificationProfileEditor({
+	preferences,
+	disabled,
+	name,
+	onChange,
+}: {
+	preferences: PushNotificationPreferences;
+	disabled: boolean;
+	name: string;
+	onChange: Dispatch<SetStateAction<PushNotificationPreferences>>;
+}) {
+	return (
+		<div className="min-w-0 space-y-3">
+			<div className="grid gap-2 @xl:grid-cols-2">
+				<NotificationToggle
+					checked={preferences.requests}
+					disabled={disabled}
+					label="requests"
+					name={`${name} request notifications`}
+					onChange={(requests) =>
+						onChange((current) => ({ ...current, requests }))
+					}
+				/>
+				<NotificationToggle
+					checked={preferences.problems}
+					disabled={disabled}
+					label="problems"
+					name={`${name} problem notifications`}
+					onChange={(problems) =>
+						onChange((current) => ({ ...current, problems }))
+					}
+				/>
+				<NotificationToggle
+					checked={preferences.workFinished}
+					disabled={disabled}
+					label="work finished"
+					name={`${name} work finished notifications`}
+					onChange={(workFinished) =>
+						onChange((current) => ({ ...current, workFinished }))
+					}
+				/>
+			</div>
+			<div className="grid min-w-0 grid-cols-1 gap-2 @xl:grid-cols-2">
+				<label className="min-w-0 text-[10px] text-muted-foreground">
+					Completion minimum
+					<select
+						aria-label={`${name} completion minimum runtime`}
+						value={preferences.completionMinimumMinutes}
+						disabled={disabled || !preferences.workFinished}
+						onChange={(event) =>
+							onChange((current) => ({
+								...current,
+								completionMinimumMinutes: Number(
+									event.target.value,
+								) as PushCompletionMinimumMinutes,
+							}))
+						}
+						className="mt-1 min-h-11 w-full min-w-0 border border-border bg-input px-2 py-1.5 text-xs text-foreground disabled:opacity-40 lg:min-h-0"
+					>
+						<option value={0}>No minimum</option>
+						<option value={1}>1 minute</option>
+						<option value={5}>5 minutes</option>
+						<option value={10}>10 minutes</option>
+					</select>
+				</label>
+				<label className="min-w-0 text-[10px] text-muted-foreground">
+					Wording
+					<select
+						aria-label={`${name} lock screen wording`}
+						value={preferences.detail}
+						disabled={disabled}
+						onChange={(event) =>
+							onChange((current) => ({
+								...current,
+								detail: event.target
+									.value as PushNotificationPreferences["detail"],
+							}))
+						}
+						className="mt-1 min-h-11 w-full min-w-0 border border-border bg-input px-2 py-1.5 text-xs text-foreground disabled:opacity-40 lg:min-h-0"
+					>
+						<option value="generic">Generic</option>
+						<option value="detailed">Detailed</option>
+					</select>
+				</label>
+			</div>
+			<QuietHoursFields
+				value={preferences.quietHours}
+				disabled={disabled}
+				name={name}
+				onChange={(quietHours) =>
+					onChange((current) => ({ ...current, quietHours }))
+				}
+			/>
+		</div>
+	);
+}
+
+function CurrentQuietHoursEditor({
+	value,
+	disabled,
+	onSave,
+}: {
+	value: PushNotificationQuietHours | null;
+	disabled: boolean;
+	onSave: (value: PushNotificationQuietHours | null) => void;
+}) {
+	const [draft, setDraft] = useState(value);
+	const valueKey = notificationQuietHoursKey(value);
+	const acceptedValueKey = useRef(valueKey);
+	useEffect(() => {
+		setDraft((current) => {
+			const currentKey = notificationQuietHoursKey(current);
+			if (valueKey === acceptedValueKey.current) return current;
+			if (currentKey !== acceptedValueKey.current && currentKey !== valueKey)
+				return current;
+			acceptedValueKey.current = valueKey;
+			return value;
+		});
+	}, [value, valueKey]);
+	const dirty = notificationQuietHoursKey(draft) !== valueKey;
+	const valid = notificationQuietHoursValid(draft);
+	return (
+		<div className="w-full min-w-0 space-y-2 @4xl:w-[30rem]">
+			<QuietHoursFields
+				value={draft}
+				disabled={disabled}
+				name="Current device"
+				onChange={setDraft}
+			/>
+			{dirty && (
+				<button
+					type="button"
+					disabled={disabled || !valid}
+					onClick={() => onSave(draft)}
+					className="min-h-11 border border-border px-3 py-1.5 text-[9px] tracking-widest text-muted-foreground uppercase hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 lg:min-h-0"
+				>
+					SAVE QUIET HOURS
+				</button>
+			)}
+		</div>
+	);
+}
+
 function DeviceCard({
 	device,
 	disabled,
 	now,
 	onRename,
 	onRevoke,
+	onUpdate,
 }: {
 	device: PushNotificationDevice;
 	disabled: boolean;
 	now: number;
 	onRename: (id: string, name: string) => Promise<void>;
 	onRevoke: (device: PushNotificationDevice) => Promise<void>;
+	onUpdate: (id: string, patch: PushNotificationDevicePatch) => Promise<void>;
 }) {
 	const [name, setName] = useState(device.name);
+	const [profile, setProfile] = useState(device.preferences);
+	const acceptedProfileKey = useRef(notificationProfileKey(device.preferences));
 	const [confirmRevoke, setConfirmRevoke] = useState(false);
+	const deviceProfileKey = notificationProfileKey(device.preferences);
 	useEffect(() => {
 		setName(device.name);
+		setProfile((current) => {
+			const currentKey = notificationProfileKey(current);
+			if (deviceProfileKey === acceptedProfileKey.current) return current;
+			if (
+				currentKey !== acceptedProfileKey.current &&
+				currentKey !== deviceProfileKey
+			)
+				return current;
+			acceptedProfileKey.current = deviceProfileKey;
+			return device.preferences;
+		});
 		setConfirmRevoke(false);
-	}, [device.name]);
+	}, [device.name, device.preferences, deviceProfileKey]);
 	const cleanName = name.trim();
+	const profileDirty =
+		notificationProfileKey(profile) !==
+		notificationProfileKey(device.preferences);
+	const profileValid = notificationQuietHoursValid(profile.quietHours);
 	const latestWasFailure =
 		device.failureCount > 0 &&
 		device.lastFailureAt !== null &&
@@ -214,6 +578,37 @@ function DeviceCard({
 					)}
 				</div>
 			</div>
+			{!device.current && (
+				<details className="min-w-0 border-t border-border/50 pt-2">
+					<summary className="flex min-h-11 cursor-pointer items-center text-[9px] tracking-widest text-muted-foreground uppercase hover:text-foreground lg:min-h-0">
+						EDIT NOTIFICATION PROFILE
+					</summary>
+					<div className="min-w-0 space-y-3 pt-3">
+						<CompactNotificationProfileEditor
+							preferences={profile}
+							disabled={disabled}
+							name={device.name}
+							onChange={setProfile}
+						/>
+						<div className="flex flex-wrap items-center justify-between gap-2">
+							<span className="text-[10px] text-muted-foreground/60">
+								Changes affect only {device.name}.
+							</span>
+							<button
+								type="button"
+								aria-label={`Save notification profile for ${device.name}`}
+								disabled={disabled || !profileDirty || !profileValid}
+								onClick={() =>
+									void onUpdate(device.id, { preferences: profile })
+								}
+								className="min-h-11 border border-border px-3 py-1.5 text-[9px] tracking-widest text-muted-foreground uppercase hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 lg:min-h-0"
+							>
+								SAVE PROFILE
+							</button>
+						</div>
+					</div>
+				</details>
+			)}
 			<div className="space-y-0.5 text-[10px] text-muted-foreground/60">
 				<div>{health}</div>
 				{device.pausedIndefinitely ? (
@@ -228,15 +623,110 @@ function DeviceCard({
 	);
 }
 
+function historyCategoryLabel(
+	category: PushNotificationHistoryEvent["category"],
+): string {
+	if (category === "request") return "Request";
+	if (category === "problem") return "Problem";
+	return "Completion";
+}
+
+function historyDeliveryLabel(
+	delivery: PushNotificationHistoryDelivery,
+): string {
+	if (delivery.openedAt !== null) return "opened";
+	if (delivery.dismissedAt !== null) return "dismissed";
+	if (delivery.displayedAt !== null) return "displayed";
+	if (delivery.status === "suppressed" && delivery.reason)
+		return `suppressed · ${delivery.reason.replaceAll("_", " ")}`;
+	if (delivery.status === "failed" && delivery.reason)
+		return `failed · ${delivery.reason.replaceAll("_", " ")}`;
+	if (delivery.status === "queued") {
+		const details = [
+			delivery.reason?.replaceAll("_", " "),
+			delivery.nextAttemptAt === null
+				? null
+				: `next ${localDateTime(delivery.nextAttemptAt)}`,
+		].filter((detail): detail is string => Boolean(detail));
+		return ["queued", ...details].join(" · ");
+	}
+	return delivery.status;
+}
+
+function NotificationHistoryList({
+	events,
+}: {
+	events: PushNotificationHistoryEvent[];
+}) {
+	return (
+		<ol className="w-full min-w-0 space-y-2 @4xl:w-[30rem]">
+			{events.map((event) => (
+				<li
+					key={event.id}
+					className="min-w-0 border border-border bg-background/40 p-2.5"
+				>
+					<div className="flex min-w-0 flex-wrap items-start justify-between gap-x-3 gap-y-1">
+						<div className="min-w-0">
+							<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+								{historyCategoryLabel(event.category)} · {event.sourceKind}
+							</div>
+							<div className="mt-0.5 break-words text-xs text-foreground/85">
+								{event.label ?? event.sourceId}
+							</div>
+						</div>
+						<time
+							dateTime={new Date(event.occurredAt).toISOString()}
+							className="shrink-0 text-[9px] text-muted-foreground/60"
+						>
+							{localDateTime(event.occurredAt)}
+						</time>
+					</div>
+					<div className="mt-1 text-[10px] text-muted-foreground/60">
+						{event.status.replaceAll("_", " ")}
+						{event.statusReason
+							? ` · ${event.statusReason.replaceAll("_", " ")}`
+							: ""}
+						{event.reason && event.reason !== event.statusReason
+							? ` · ${event.reason.replaceAll("_", " ")}`
+							: ""}
+					</div>
+					{event.deliveries.length === 0 ? (
+						<div className="mt-1.5 text-[10px] text-muted-foreground/45">
+							No device delivery decision recorded.
+						</div>
+					) : (
+						<ul
+							aria-label={`Device delivery states for ${event.label ?? event.sourceId}`}
+							className="mt-1.5 flex min-w-0 flex-wrap gap-1"
+						>
+							{event.deliveries.map((delivery) => (
+								<li
+									key={delivery.id}
+									className="max-w-full break-words border border-border/60 bg-secondary/20 px-1.5 py-1 text-[9px] text-muted-foreground/75"
+								>
+									{delivery.device.name}: {historyDeliveryLabel(delivery)}
+								</li>
+							))}
+						</ul>
+					)}
+				</li>
+			))}
+		</ol>
+	);
+}
+
 export function NotificationsSection() {
 	const [support, setSupport] = useState<PushNotificationSupport | null>(null);
 	const [state, setState] = useState<PushNotificationState | null>(null);
 	const [devices, setDevices] = useState<PushNotificationDevice[]>([]);
+	const [history, setHistory] = useState<PushNotificationHistoryEvent[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [devicesLoading, setDevicesLoading] = useState(true);
+	const [historyLoading, setHistoryLoading] = useState(true);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [deviceError, setDeviceError] = useState<string | null>(null);
+	const [historyError, setHistoryError] = useState<string | null>(null);
 	const [notice, setNotice] = useState<string | null>(null);
 	const [currentTime, setCurrentTime] = useState(() => Date.now());
 	const [testScenario, setTestScenario] =
@@ -268,6 +758,22 @@ export function NotificationsSection() {
 		}
 	}, []);
 
+	const loadHistory = useCallback(async (): Promise<boolean> => {
+		setHistoryLoading(true);
+		setHistoryError(null);
+		try {
+			setHistory(await getPushNotificationHistory(20));
+			return true;
+		} catch (cause) {
+			setHistoryError(
+				failureMessage(cause, "Could not read notification history."),
+			);
+			return false;
+		} finally {
+			setHistoryLoading(false);
+		}
+	}, []);
+
 	async function load() {
 		if (!support?.supported) return;
 		setLoading(true);
@@ -285,6 +791,7 @@ export function NotificationsSection() {
 		let cancelled = false;
 		const detectedSupport = getPushNotificationSupport();
 		setSupport(detectedSupport);
+		void loadHistory();
 		void getPushNotificationDevices()
 			.then((nextDevices) => {
 				if (!cancelled) setDevices(nextDevices);
@@ -322,7 +829,7 @@ export function NotificationsSection() {
 		return () => {
 			cancelled = true;
 		};
-	}, [applyState]);
+	}, [applyState, loadHistory]);
 
 	async function run(
 		action: () => Promise<PushNotificationState>,
@@ -409,6 +916,26 @@ export function NotificationsSection() {
 			await loadDevices();
 		} catch (cause) {
 			setError(failureMessage(cause, "Could not rename this device."));
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function updateDevice(id: string, patch: PushNotificationDevicePatch) {
+		if (busy) return;
+		setBusy(true);
+		setError(null);
+		setNotice(null);
+		try {
+			const updated = await updatePushNotificationDevice(id, patch);
+			setDevices((current) =>
+				current.map((device) => (device.id === id ? updated : device)),
+			);
+			setNotice(`Updated ${updated.name}'s notification profile.`);
+		} catch (cause) {
+			setError(
+				failureMessage(cause, "Could not update this device's notifications."),
+			);
 		} finally {
 			setBusy(false);
 		}
@@ -591,7 +1118,7 @@ export function NotificationsSection() {
 					<Field
 						id="forge-setting-notifications-completion-runtime"
 						label="Completion minimum runtime"
-						hint="skip completion alerts for quick work; Always notify and Notify once bypass this threshold"
+						hint="skip completion alerts for quick work; Always notify and Notify when finished bypass this threshold"
 					>
 						<select
 							value={state.preferences.completionMinimumMinutes}
@@ -605,7 +1132,7 @@ export function NotificationsSection() {
 							}
 							className="min-h-11 w-40 border border-border bg-input px-2.5 py-1.5 text-xs text-foreground focus:border-primary/50 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 lg:min-h-0"
 						>
-							<option value={0}>Off</option>
+							<option value={0}>No minimum</option>
 							<option value={1}>1 minute</option>
 							<option value={5}>5 minutes</option>
 							<option value={10}>10 minutes</option>
@@ -614,7 +1141,7 @@ export function NotificationsSection() {
 					<Field
 						id="forge-setting-notifications-lock-screen"
 						label="Lock Screen wording"
-						hint="Generic hides session names, reasons, and exact-card links; Detailed can include the reason, session, completion duration, and exact pending card"
+						hint="Generic hides session names and reasons in the notification text; Detailed can include the reason, session, and completion duration. Both keep the exact safe tap destination"
 					>
 						<select
 							value={state.preferences.detail}
@@ -630,6 +1157,17 @@ export function NotificationsSection() {
 							<option value="generic">Generic</option>
 							<option value="detailed">Detailed</option>
 						</select>
+					</Field>
+					<Field
+						id="forge-setting-notifications-quiet-hours"
+						label="Quiet hours"
+						hint="schedule recurring local quiet time; requests and problems can bypass it"
+					>
+						<CurrentQuietHoursEditor
+							value={state.preferences.quietHours}
+							disabled={controlsDisabled}
+							onSave={(quietHours) => updatePreferences({ quietHours })}
+						/>
 					</Field>
 					<Field
 						id="forge-setting-notifications-pause"
@@ -826,6 +1364,7 @@ export function NotificationsSection() {
 								now={currentTime}
 								onRename={renameDevice}
 								onRevoke={revokeDevice}
+								onUpdate={updateDevice}
 							/>
 						))
 					)}
@@ -846,6 +1385,41 @@ export function NotificationsSection() {
 								RETRY DEVICES
 							</button>
 						</div>
+					)}
+				</div>
+			</Field>
+			<Field
+				id="forge-setting-notifications-history"
+				label="Recent notification history"
+				hint="the latest notification decisions and what happened on each target device"
+			>
+				<div className="w-full min-w-0 space-y-2 @4xl:w-[30rem]">
+					<div className="flex justify-end">
+						<button
+							type="button"
+							disabled={historyLoading}
+							onClick={() => void loadHistory()}
+							className="min-h-11 shrink-0 border border-border px-3 py-1.5 text-[9px] tracking-widest text-muted-foreground uppercase hover:bg-accent hover:text-foreground disabled:opacity-40 lg:min-h-0"
+						>
+							{historyLoading ? "REFRESHING…" : "REFRESH HISTORY"}
+						</button>
+					</div>
+					{historyLoading && history.length === 0 ? (
+						<output className="flex items-center gap-2 text-xs text-muted-foreground">
+							<LoaderCircle aria-hidden className="h-3.5 w-3.5 animate-spin" />
+							Loading notification history…
+						</output>
+					) : history.length === 0 ? (
+						<p className="text-xs text-muted-foreground">
+							No notification history yet.
+						</p>
+					) : (
+						<NotificationHistoryList events={history} />
+					)}
+					{historyError && (
+						<p role="alert" className="text-xs text-destructive/80">
+							{historyError}
+						</p>
 					)}
 				</div>
 			</Field>

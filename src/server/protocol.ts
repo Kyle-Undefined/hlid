@@ -811,6 +811,10 @@ export type SessionAttentionSnapshot = {
 	last_activity_at: number;
 	queue_count: number;
 	pending_count: number;
+	/** Count for the highest-priority direct request reason. */
+	pending_reason_count?: number;
+	/** Bounded opaque IDs for the current direct request category. */
+	pending_ids?: string[];
 	/** Epoch seconds when the current usage sleep is expected to end. */
 	sleep_until?: number;
 	/** Usage window responsible for the current sleep. */
@@ -861,6 +865,8 @@ export type SessionStatusEntry = {
 	/** Live and recently settled provider work that outlives its parent turn. */
 	background_activities?: import("./agentProvider").ProviderBackgroundActivity[];
 	hasPendingPermissions: boolean;
+	/** True while this pool entry is owned by the Routine scheduler's outcome path. */
+	routine_owned?: boolean;
 	/**
 	 * Rich attention state. Optional for compatibility with older connected
 	 * clients and deterministic fixtures; current servers always include it.

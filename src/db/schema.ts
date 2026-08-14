@@ -1375,6 +1375,66 @@ function applyMigrations(db: Db): void {
 		);
 	});
 
+	// Notification choices do not widen a Routine's unattended authority. Keep
+	// them on the mutable definition row, outside immutable permission profiles,
+	// with an explicit legacy-safe default that follows each target device.
+	runMigration(db, "_migrated_routines_notification_policy_v1", (db) => {
+		db.run(`
+			ALTER TABLE routines ADD COLUMN notification_policy_json TEXT NOT NULL
+			DEFAULT '{"success":"default","actionRequired":"default","failure":"default","targets":{"kind":"all"}}'
+		`);
+	});
+
+	// A completed run must retain the notification policy that was active when
+	// it was claimed; recovery must not consult a later mutable Routine edit.
+	runMigration(db, "_migrated_routine_run_notification_policy_v1", (db) => {
+		db.run(`
+			ALTER TABLE routine_runs ADD COLUMN notification_policy_json TEXT NOT NULL
+			DEFAULT '{"success":"default","actionRequired":"default","failure":"default","targets":{"kind":"all"}}'
+		`);
+	});
+
+	// Finishing a Routine run and recording its durable push intent are separate
+	// commits. Keep a compact acknowledgement keyed by run ID so startup can
+	// recover terminal outcomes after a crash without changing the run row.
+	runMigration(db, "_migrated_routine_run_notification_records_v1", (db) => {
+		db.run(`
+			CREATE TABLE IF NOT EXISTS routine_run_notification_records (
+				run_id TEXT PRIMARY KEY
+					REFERENCES routine_runs(id) ON DELETE CASCADE,
+				event_id TEXT
+					CHECK(event_id IS NULL OR length(event_id) BETWEEN 1 AND 64),
+				recorded_at INTEGER NOT NULL CHECK(recorded_at >= 0)
+			)
+		`);
+		db.run(`
+			CREATE INDEX IF NOT EXISTS idx_routine_runs_notification_recovery
+			ON routine_runs(finished_at, created_at, id)
+			WHERE finished_at IS NOT NULL AND status IN (
+				'succeeded', 'action_required', 'failed',
+				'delivery_error', 'provider_unavailable'
+			)
+		`);
+	});
+
+	// Restart interruption is also a terminal failure outcome. Rebuild the
+	// partial recovery index for databases that already applied the v1 ledger.
+	runMigration(
+		db,
+		"_migrated_routine_run_notification_interrupted_v2",
+		(db) => {
+			db.run(`DROP INDEX IF EXISTS idx_routine_runs_notification_recovery`);
+			db.run(`
+				CREATE INDEX idx_routine_runs_notification_recovery
+				ON routine_runs(finished_at, created_at, id)
+				WHERE finished_at IS NOT NULL AND status IN (
+					'succeeded', 'action_required', 'failed',
+					'delivery_error', 'provider_unavailable', 'interrupted'
+				)
+			`);
+		},
+	);
+
 	// Ledger analytics should read the immutable usage ledger for every split,
 	// but stop_reason previously lived only on queries — which cascade-delete
 	// with their session — so the stop-reason chart silently dropped deleted
@@ -2138,5 +2198,497 @@ function applyMigrations(db: Db): void {
 			ADD COLUMN paused_indefinitely INTEGER NOT NULL DEFAULT 0
 				CHECK(paused_indefinitely IN (0, 1))
 		`);
+	});
+
+	// Keep scheduled quiet-time behavior and prerelease notification policies
+	// with the device that owns the browser capability. Rebuild the compact
+	// override table so new one-shot completion and delegation-tree policies can
+	// coexist with every v3 row.
+	runMigration(db, "_migrated_web_push_policy_v5", (db) => {
+		db.run(`
+			ALTER TABLE push_subscriptions
+			ADD COLUMN quiet_hours_json TEXT
+				CHECK(quiet_hours_json IS NULL OR length(quiet_hours_json) <= 2048)
+		`);
+		db.run(`
+			ALTER TABLE push_subscriptions
+			ADD COLUMN catch_up_after_pause INTEGER NOT NULL DEFAULT 0
+				CHECK(catch_up_after_pause IN (0, 1))
+		`);
+		db.run(`
+			ALTER TABLE push_subscriptions
+			ADD COLUMN reminder_minutes INTEGER NOT NULL DEFAULT 0
+				CHECK(reminder_minutes IN (0, 5, 15, 30, 60))
+		`);
+		db.run(`
+			CREATE TABLE push_session_overrides_v5 (
+				session_id TEXT PRIMARY KEY
+					REFERENCES sessions(id) ON DELETE CASCADE,
+				mode TEXT NOT NULL CHECK(mode IN (
+					'notify', 'notify_once', 'notify_completion_once', 'mute'
+				)),
+				scope TEXT NOT NULL DEFAULT 'session'
+					CHECK(scope IN ('session', 'delegation_tree')),
+				target_device_ids_json TEXT
+					CHECK(target_device_ids_json IS NULL OR length(target_device_ids_json) <= 1408),
+				updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+			)
+		`);
+		db.run(`
+			INSERT INTO push_session_overrides_v5
+				(session_id, mode, scope, target_device_ids_json, updated_at)
+			SELECT session_id, mode, 'session', NULL, updated_at
+			FROM push_session_overrides
+		`);
+		db.run(`DROP TABLE push_session_overrides`);
+		db.run(
+			`ALTER TABLE push_session_overrides_v5 RENAME TO push_session_overrides`,
+		);
+		db.run(
+			`CREATE INDEX idx_push_session_overrides_tree
+			 ON push_session_overrides(scope, updated_at DESC)`,
+		);
+	});
+
+	// Notification intents and delivery decisions survive process restarts. The
+	// coordinator prunes terminal history to a bounded window; pending/deferred
+	// work is retained until it is delivered, expires, or is explicitly closed.
+	runMigration(db, "_migrated_web_push_outbox_v6", (db) => {
+		db.run(`
+			CREATE TABLE push_notification_batches (
+				id TEXT PRIMARY KEY CHECK(length(id) BETWEEN 1 AND 64),
+				category TEXT NOT NULL
+					CHECK(category IN ('request', 'problem', 'completion')),
+				group_key TEXT CHECK(group_key IS NULL OR length(group_key) <= 256),
+				status TEXT NOT NULL DEFAULT 'open'
+					CHECK(status IN ('open', 'ready', 'sent', 'read', 'expired')),
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL,
+				sent_at INTEGER,
+				read_at INTEGER
+			)
+		`);
+		db.run(`
+			CREATE TABLE push_notification_events (
+				id TEXT PRIMARY KEY CHECK(length(id) BETWEEN 1 AND 64),
+				source_kind TEXT NOT NULL
+					CHECK(source_kind IN ('session', 'routine', 'system')),
+				source_id TEXT NOT NULL CHECK(length(source_id) BETWEEN 1 AND 256),
+				category TEXT NOT NULL
+					CHECK(category IN ('request', 'problem', 'completion')),
+				reason TEXT CHECK(reason IS NULL OR length(reason) <= 64),
+				label TEXT CHECK(label IS NULL OR length(label) <= 160),
+				url TEXT CHECK(url IS NULL OR length(url) <= 2048),
+				runtime_ms INTEGER CHECK(runtime_ms IS NULL OR runtime_ms >= 0),
+				pending_count INTEGER NOT NULL DEFAULT 0 CHECK(pending_count >= 0),
+				occurred_at INTEGER NOT NULL,
+				expires_at INTEGER NOT NULL CHECK(expires_at > occurred_at),
+				group_key TEXT CHECK(group_key IS NULL OR length(group_key) <= 256),
+				batch_id TEXT REFERENCES push_notification_batches(id) ON DELETE SET NULL,
+				status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN (
+					'pending', 'deferred', 'batched', 'processed', 'expired', 'cancelled'
+				)),
+				status_reason TEXT CHECK(status_reason IS NULL OR length(status_reason) <= 128),
+				next_attempt_at INTEGER,
+				metadata_json TEXT NOT NULL DEFAULT '{}'
+					CHECK(length(metadata_json) <= 8192),
+				dedupe_key TEXT UNIQUE
+					CHECK(dedupe_key IS NULL OR length(dedupe_key) <= 256),
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL
+			)
+		`);
+		db.run(
+			`CREATE INDEX idx_push_notification_events_ready
+			 ON push_notification_events(status, next_attempt_at, occurred_at, id)`,
+		);
+		db.run(
+			`CREATE INDEX idx_push_notification_events_history
+			 ON push_notification_events(occurred_at DESC, id DESC)`,
+		);
+		db.run(`
+			CREATE TABLE push_notification_deliveries (
+				id TEXT PRIMARY KEY CHECK(length(id) BETWEEN 1 AND 64),
+				event_id TEXT NOT NULL
+					REFERENCES push_notification_events(id) ON DELETE CASCADE,
+				device_id TEXT NOT NULL CHECK(length(device_id) BETWEEN 1 AND 64),
+				device_snapshot_json TEXT NOT NULL
+					CHECK(length(device_snapshot_json) <= 2048),
+				status TEXT NOT NULL CHECK(status IN (
+					'pending', 'suppressed', 'queued', 'sent', 'failed', 'gone', 'expired'
+				)),
+				reason TEXT CHECK(reason IS NULL OR length(reason) <= 128),
+				next_attempt_at INTEGER,
+				attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
+				provider_status INTEGER,
+				receipt_at INTEGER,
+				displayed_at INTEGER,
+				opened_at INTEGER,
+				dismissed_at INTEGER,
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL,
+				UNIQUE(event_id, device_id)
+			)
+		`);
+		db.run(
+			`CREATE INDEX idx_push_notification_deliveries_ready
+			 ON push_notification_deliveries(status, next_attempt_at, event_id)`,
+		);
+		db.run(`
+			CREATE TABLE push_notification_batch_members (
+				batch_id TEXT NOT NULL
+					REFERENCES push_notification_batches(id) ON DELETE CASCADE,
+				event_id TEXT NOT NULL
+					REFERENCES push_notification_events(id) ON DELETE CASCADE,
+				session_id TEXT NOT NULL CHECK(length(session_id) BETWEEN 1 AND 256),
+				position INTEGER NOT NULL CHECK(position >= 0),
+				added_at INTEGER NOT NULL,
+				read_at INTEGER,
+				PRIMARY KEY(batch_id, event_id),
+				UNIQUE(batch_id, session_id)
+			)
+		`);
+		db.run(
+			`CREATE INDEX idx_push_notification_batch_members_read
+			 ON push_notification_batch_members(batch_id, read_at, position)`,
+		);
+	});
+
+	// Keep a privacy-safe record of each provider attempt beneath the durable
+	// per-device delivery. Event pruning deletes the delivery and cascades its
+	// attempt history without retaining endpoint, key, or notification content.
+	runMigration(db, "_migrated_web_push_delivery_attempts_v7", (db) => {
+		db.run(`
+			CREATE TABLE push_notification_delivery_attempts (
+				id TEXT PRIMARY KEY CHECK(length(id) BETWEEN 1 AND 64),
+				delivery_id TEXT NOT NULL
+					REFERENCES push_notification_deliveries(id) ON DELETE CASCADE,
+				attempted_at INTEGER NOT NULL CHECK(attempted_at >= 0),
+				outcome TEXT NOT NULL
+					CHECK(outcome IN ('delivered', 'failed', 'gone')),
+				provider_status INTEGER CHECK(
+					provider_status IS NULL OR provider_status BETWEEN 100 AND 599
+				),
+				retry_after_ms INTEGER CHECK(
+					retry_after_ms IS NULL OR retry_after_ms >= 0
+				),
+				reason_code TEXT CHECK(
+					reason_code IS NULL OR length(reason_code) BETWEEN 1 AND 64
+				)
+			)
+		`);
+		db.run(
+			`CREATE INDEX idx_push_notification_delivery_attempts_delivery
+			 ON push_notification_delivery_attempts(delivery_id, attempted_at, id)`,
+		);
+	});
+
+	// A provider-accepted one-shot must survive a crash between its receipt and
+	// the fan-out-wide policy clear. The receipt transaction records this marker.
+	runMigration(db, "_migrated_web_push_one_shot_consumptions_v8", (db) => {
+		db.run(`
+			CREATE TABLE push_notification_one_shot_consumptions (
+				event_id TEXT NOT NULL
+					REFERENCES push_notification_events(id) ON DELETE CASCADE,
+				source_session_id TEXT NOT NULL
+					CHECK(length(source_session_id) BETWEEN 1 AND 256),
+				mode TEXT NOT NULL
+					CHECK(mode IN ('notify_once', 'notify_completion_once')),
+				created_at INTEGER NOT NULL,
+				PRIMARY KEY(event_id, source_session_id, mode)
+			)
+		`);
+	});
+
+	// Bind provider acceptance to the exact one-shot revision that authorized
+	// it, so a slow old fan-out cannot clear a newer user re-arm (ABA).
+	runMigration(db, "_migrated_web_push_one_shot_policy_revision_v9", (db) => {
+		db.run(`
+			ALTER TABLE push_notification_one_shot_consumptions
+			ADD COLUMN policy_updated_at INTEGER NOT NULL DEFAULT 0
+				CHECK(policy_updated_at >= 0)
+		`);
+	});
+
+	// The same durable event may span a one-shot re-arm while another device is
+	// still queued. Keep acceptance markers distinct per observed policy revision.
+	runMigration(db, "_migrated_web_push_one_shot_revision_key_v10", (db) => {
+		db.run(`
+			CREATE TABLE push_notification_one_shot_consumptions_v10 (
+				event_id TEXT NOT NULL
+					REFERENCES push_notification_events(id) ON DELETE CASCADE,
+				source_session_id TEXT NOT NULL
+					CHECK(length(source_session_id) BETWEEN 1 AND 256),
+				mode TEXT NOT NULL
+					CHECK(mode IN ('notify_once', 'notify_completion_once')),
+				policy_updated_at INTEGER NOT NULL DEFAULT 0
+					CHECK(policy_updated_at >= 0),
+				created_at INTEGER NOT NULL,
+				PRIMARY KEY(event_id, source_session_id, mode, policy_updated_at)
+			)
+		`);
+		db.run(`
+			INSERT INTO push_notification_one_shot_consumptions_v10 (
+				event_id, source_session_id, mode, policy_updated_at, created_at
+			)
+			SELECT event_id, source_session_id, mode, policy_updated_at, created_at
+			FROM push_notification_one_shot_consumptions
+		`);
+		db.run(`DROP TABLE push_notification_one_shot_consumptions`);
+		db.run(`
+			ALTER TABLE push_notification_one_shot_consumptions_v10
+			RENAME TO push_notification_one_shot_consumptions
+		`);
+	});
+
+	// Reminder intervals were removed after their prerelease trial. Preserve the
+	// accepted delivery history while cancelling only repeat work, then recompute
+	// each affected event from any unrelated per-device retry or scheduled rows.
+	runMigration(db, "_migrated_web_push_remove_reminders_v11", (db) => {
+		db.run(`
+			CREATE TEMP TABLE push_notification_removed_reminder_events_v11 (
+				id TEXT PRIMARY KEY
+			)
+		`);
+		db.run(`
+			INSERT OR IGNORE INTO push_notification_removed_reminder_events_v11 (id)
+			SELECT DISTINCT event_id
+			FROM push_notification_deliveries
+			WHERE (status = 'sent' AND next_attempt_at IS NOT NULL)
+			   OR reason = 'reminder'
+			   OR reason GLOB 'reminder_*'
+			   OR reason GLOB 'reminder:*'
+		`);
+		db.run(`
+			UPDATE push_notification_deliveries
+			SET status = 'sent', reason = 'accepted', next_attempt_at = NULL
+			WHERE event_id IN (
+				SELECT id FROM push_notification_removed_reminder_events_v11
+			)
+			  AND (
+				(status = 'sent' AND next_attempt_at IS NOT NULL)
+				OR reason = 'reminder'
+				OR reason GLOB 'reminder_*'
+				OR reason GLOB 'reminder:*'
+			  )
+		`);
+		db.run(`
+			UPDATE push_notification_events AS event
+			SET status = 'deferred',
+				status_reason = CASE WHEN EXISTS (
+					SELECT 1 FROM push_notification_deliveries dormant
+					WHERE dormant.event_id = event.id
+					  AND dormant.status = 'queued'
+					  AND dormant.next_attempt_at IS NULL
+				) THEN 'pause' ELSE 'device_retry' END,
+				next_attempt_at = (
+					SELECT MIN(CASE
+						WHEN pending.status = 'pending'
+						THEN COALESCE(pending.next_attempt_at, pending.created_at)
+						ELSE pending.next_attempt_at
+					END)
+					FROM push_notification_deliveries pending
+					WHERE pending.event_id = event.id
+					  AND (
+						pending.status = 'pending'
+						OR pending.status = 'queued'
+						OR (pending.status = 'failed'
+							AND pending.next_attempt_at IS NOT NULL)
+					  )
+				)
+			WHERE event.id IN (
+				SELECT id FROM push_notification_removed_reminder_events_v11
+			)
+			  AND event.status IN ('pending', 'deferred', 'batched')
+			  AND EXISTS (
+				SELECT 1 FROM push_notification_deliveries pending
+				WHERE pending.event_id = event.id
+				  AND (
+					pending.status = 'pending'
+					OR pending.status = 'queued'
+					OR (pending.status = 'failed'
+						AND pending.next_attempt_at IS NOT NULL)
+				  )
+			  )
+		`);
+		db.run(`
+			UPDATE push_notification_events AS event
+			SET status = 'processed', status_reason = 'delivery_complete',
+				next_attempt_at = NULL
+			WHERE event.id IN (
+				SELECT id FROM push_notification_removed_reminder_events_v11
+			)
+			  AND event.status IN ('pending', 'deferred', 'batched')
+			  AND NOT EXISTS (
+				SELECT 1 FROM push_notification_deliveries pending
+				WHERE pending.event_id = event.id
+				  AND (
+					pending.status = 'pending'
+					OR pending.status = 'queued'
+					OR (pending.status = 'failed'
+						AND pending.next_attempt_at IS NOT NULL)
+				  )
+			  )
+		`);
+		db.run(`
+			UPDATE push_notification_events
+			SET status_reason = CASE status
+					WHEN 'cancelled' THEN 'state_resolved'
+					WHEN 'expired' THEN 'expired'
+					ELSE 'delivery_complete'
+				END,
+				next_attempt_at = NULL
+			WHERE id IN (
+				SELECT id FROM push_notification_removed_reminder_events_v11
+			)
+			  AND status IN ('processed', 'cancelled', 'expired')
+			  AND (
+				status_reason = 'reminder'
+				OR status_reason GLOB 'reminder_*'
+				OR status_reason GLOB 'reminder:*'
+			  )
+		`);
+		db.run(`DROP TABLE push_notification_removed_reminder_events_v11`);
+
+		const hasReminderColumn = db
+			.query<{ name: string }, []>(`PRAGMA table_info(push_subscriptions)`)
+			.all()
+			.some((column) => column.name === "reminder_minutes");
+		if (hasReminderColumn) {
+			db.run(`ALTER TABLE push_subscriptions DROP COLUMN reminder_minutes`);
+		}
+	});
+
+	// Pause and quiet-hours catch-up were removed after their prerelease trial.
+	// Existing delayed rows become terminal suppressions, while every affected
+	// event is recomputed from its other devices so provider retries and unrelated
+	// scheduled work remain intact.
+	runMigration(db, "_migrated_web_push_remove_catch_up_v12", (db) => {
+		db.run(`
+			CREATE TEMP TABLE push_notification_removed_catch_up_events_v12 (
+				id TEXT PRIMARY KEY
+			)
+		`);
+		db.run(`
+			INSERT OR IGNORE INTO push_notification_removed_catch_up_events_v12 (id)
+			SELECT DISTINCT event_id
+			FROM push_notification_deliveries
+			WHERE status = 'queued' AND reason IN ('pause', 'quiet_hours')
+		`);
+		db.run(`
+			INSERT OR IGNORE INTO push_notification_removed_catch_up_events_v12 (id)
+			SELECT id
+			FROM push_notification_events
+			WHERE status = 'deferred' AND status_reason IN ('pause', 'quiet_hours')
+		`);
+		db.run(`
+			UPDATE push_notification_deliveries
+			SET status = 'suppressed', next_attempt_at = NULL
+			WHERE status = 'queued' AND reason IN ('pause', 'quiet_hours')
+		`);
+		db.run(`
+			UPDATE push_notification_events AS event
+			SET status = 'deferred',
+				status_reason = COALESCE((
+					SELECT CASE
+						WHEN pending.status = 'failed' THEN 'device_retry'
+						ELSE pending.reason
+					END
+					FROM push_notification_deliveries pending
+					WHERE pending.event_id = event.id
+					  AND (
+						pending.status = 'pending'
+						OR pending.status = 'queued'
+						OR (pending.status = 'failed'
+							AND pending.next_attempt_at IS NOT NULL)
+					  )
+					ORDER BY CASE WHEN pending.next_attempt_at IS NULL THEN 0 ELSE 1 END,
+						COALESCE(pending.next_attempt_at, pending.created_at), pending.id
+					LIMIT 1
+				), 'device_retry'),
+				next_attempt_at = (
+					SELECT MIN(CASE
+						WHEN pending.status = 'pending'
+						THEN COALESCE(pending.next_attempt_at, pending.created_at)
+						ELSE pending.next_attempt_at
+					END)
+					FROM push_notification_deliveries pending
+					WHERE pending.event_id = event.id
+					  AND (
+						pending.status = 'pending'
+						OR pending.status = 'queued'
+						OR (pending.status = 'failed'
+							AND pending.next_attempt_at IS NOT NULL)
+					  )
+				)
+			WHERE event.id IN (
+				SELECT id FROM push_notification_removed_catch_up_events_v12
+			)
+			  AND event.status IN ('pending', 'deferred', 'batched')
+			  AND EXISTS (
+				SELECT 1 FROM push_notification_deliveries pending
+				WHERE pending.event_id = event.id
+				  AND (
+					pending.status = 'pending'
+					OR pending.status = 'queued'
+					OR (pending.status = 'failed'
+						AND pending.next_attempt_at IS NOT NULL)
+				  )
+			  )
+		`);
+		db.run(`
+			UPDATE push_notification_events AS event
+			SET status = 'processed', status_reason = 'delivery_complete',
+				next_attempt_at = NULL
+			WHERE event.id IN (
+				SELECT id FROM push_notification_removed_catch_up_events_v12
+			)
+			  AND event.status IN ('pending', 'deferred', 'batched')
+			  AND NOT EXISTS (
+				SELECT 1 FROM push_notification_deliveries pending
+				WHERE pending.event_id = event.id
+				  AND (
+					pending.status = 'pending'
+					OR pending.status = 'queued'
+					OR (pending.status = 'failed'
+						AND pending.next_attempt_at IS NOT NULL)
+				  )
+			  )
+		`);
+		db.run(`DROP TABLE push_notification_removed_catch_up_events_v12`);
+
+		for (const row of db
+			.query<{ id: string; quiet_hours_json: string }, []>(
+				`SELECT id, quiet_hours_json FROM push_subscriptions
+				 WHERE quiet_hours_json IS NOT NULL`,
+			)
+			.all()) {
+			try {
+				const profile = JSON.parse(row.quiet_hours_json) as unknown;
+				if (
+					typeof profile !== "object" ||
+					profile === null ||
+					Array.isArray(profile) ||
+					!Object.hasOwn(profile, "catch_up")
+				) {
+					continue;
+				}
+				delete (profile as Record<string, unknown>).catch_up;
+				db.run(
+					`UPDATE push_subscriptions SET quiet_hours_json = ? WHERE id = ?`,
+					[JSON.stringify(profile), row.id],
+				);
+			} catch {
+				// Preserve malformed legacy input; runtime parsing continues to fail closed.
+			}
+		}
+
+		const hasCatchUpColumn = db
+			.query<{ name: string }, []>(`PRAGMA table_info(push_subscriptions)`)
+			.all()
+			.some((column) => column.name === "catch_up_after_pause");
+		if (hasCatchUpColumn) {
+			db.run(`ALTER TABLE push_subscriptions DROP COLUMN catch_up_after_pause`);
+		}
 	});
 }

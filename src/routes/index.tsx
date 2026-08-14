@@ -73,7 +73,7 @@ import { getCockpitData } from "#/lib/serverFns/cockpit";
 import { getConfig } from "#/lib/serverFns/config";
 import { getMcpServersFn } from "#/lib/serverFns/mcp";
 import { getProvidersFn, loadProviderUsages } from "#/lib/serverFns/providers";
-import { listRoutinesFn } from "#/lib/serverFns/routines";
+import { getRoutineFn, listRoutinesFn } from "#/lib/serverFns/routines";
 import { getActiveSessionRowFn } from "#/lib/serverFns/sessions";
 import {
 	getCockpitStatsFn,
@@ -201,7 +201,81 @@ export function clearCockpitOptionalDataCacheForTesting(): void {
 	cachedCockpitOptionalData = null;
 }
 
+const UUID_SEARCH_PATTERN =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function parseCockpitSearch(search: Record<string, unknown>): {
+	routine?: string;
+	routine_run?: string;
+} {
+	if (
+		typeof search.routine !== "string" ||
+		typeof search.routine_run !== "string" ||
+		!UUID_SEARCH_PATTERN.test(search.routine) ||
+		!UUID_SEARCH_PATTERN.test(search.routine_run)
+	) {
+		return {};
+	}
+	return { routine: search.routine, routine_run: search.routine_run };
+}
+
+export type NotificationRoutineStatus =
+	| "idle"
+	| "loading"
+	| "ready"
+	| "unavailable";
+
+export function mergeNotifiedRoutine(
+	active: RoutineSummary[],
+	notified: RoutineSummary | null,
+): RoutineSummary[] {
+	if (!notified) return active;
+	const existingIndex = active.findIndex(
+		(routine) => routine.id === notified.id,
+	);
+	if (existingIndex < 0) return [notified, ...active];
+	return active.map((routine, index) =>
+		index === existingIndex ? notified : routine,
+	);
+}
+
+export async function loadRoutinesForWatchNotification(
+	routineId: string,
+	loaders: {
+		listActive: () => Promise<RoutineSummary[]>;
+		getExact: (id: string) => Promise<RoutineSummary | null>;
+	} = {
+		listActive: () => listRoutinesFn({ data: {} }),
+		getExact: (id) => getRoutineFn({ data: id }),
+	},
+): Promise<{
+	active: RoutineSummary[] | null;
+	notified: RoutineSummary | null;
+	activeError: unknown;
+	notifiedError: unknown;
+}> {
+	const [activeResult, notifiedResult] = await Promise.allSettled([
+		loaders.listActive(),
+		loaders.getExact(routineId),
+	]);
+	const active =
+		activeResult.status === "fulfilled" ? activeResult.value : null;
+	const exact =
+		notifiedResult.status === "fulfilled" ? notifiedResult.value : null;
+	const notified =
+		exact ?? active?.find((routine) => routine.id === routineId) ?? null;
+	return {
+		active,
+		notified,
+		activeError:
+			activeResult.status === "rejected" ? activeResult.reason : null,
+		notifiedError:
+			notifiedResult.status === "rejected" ? notifiedResult.reason : null,
+	};
+}
+
 export const Route = createFileRoute("/")({
+	validateSearch: parseCockpitSearch,
 	loader: async () => {
 		const [
 			config,
@@ -661,6 +735,7 @@ export function preserveCockpitDataDuringFallback<T>(
 
 function CockpitPage() {
 	const loader = Route.useLoaderData();
+	const notificationSearch = Route.useSearch();
 	const { config } = loader;
 	const [optionalData, setOptionalData] = useState(() =>
 		restoreCachedCockpitOptionalData({
@@ -679,19 +754,63 @@ function CockpitPage() {
 		"loading" | "ready" | "unavailable"
 	>(loader.optionalDataStatus);
 	const [routines, setRoutines] = useState<RoutineSummary[]>([]);
+	const [notificationRoutine, setNotificationRoutine] =
+		useState<RoutineSummary | null>(null);
 	const [routineDialogOpen, setRoutineDialogOpen] = useState(false);
+	const [notificationRoutineStatus, setNotificationRoutineStatus] =
+		useState<NotificationRoutineStatus>(
+			notificationSearch.routine && notificationSearch.routine_run
+				? "loading"
+				: "idle",
+		);
 	const [routineDraft, setRoutineDraft] = useState<RoutineDefinition | null>(
 		null,
 	);
 	const [routineProviders, setRoutineProviders] = useState<ProviderInfo[]>([]);
+	const routineRefreshRequest = useRef(0);
+	useEffect(() => {
+		if (notificationSearch.routine && notificationSearch.routine_run) {
+			setRoutineDialogOpen(true);
+			setNotificationRoutineStatus("loading");
+		} else {
+			setNotificationRoutineStatus("idle");
+			setNotificationRoutine(null);
+		}
+	}, [notificationSearch.routine, notificationSearch.routine_run]);
 	const routinesRevision = useSyncExternalStore(
 		subscribeDataRevisionSnapshot,
 		() => getDataRevisionSnapshot().routines,
 		() => 0,
 	);
 	const refreshRoutines = useCallback(async () => {
-		setRoutines(await listRoutinesFn({ data: {} }));
-	}, []);
+		const request = ++routineRefreshRequest.current;
+		const notificationRoutineId = notificationSearch.routine;
+		const notificationRunId = notificationSearch.routine_run;
+		if (!notificationRoutineId || !notificationRunId) {
+			const active = await listRoutinesFn({ data: {} });
+			if (routineRefreshRequest.current !== request) return;
+			setRoutines(active);
+			setNotificationRoutine(null);
+			setNotificationRoutineStatus("idle");
+			return;
+		}
+
+		setNotificationRoutineStatus("loading");
+		const { active, notified, activeError, notifiedError } =
+			await loadRoutinesForWatchNotification(notificationRoutineId);
+		if (routineRefreshRequest.current !== request) return;
+
+		if (active) setRoutines(active);
+		setNotificationRoutine(notified);
+		setNotificationRoutineStatus(notified ? "ready" : "unavailable");
+		if (notifiedError) {
+			console.error(
+				"[watch] unable to load the Routine from this notification",
+				notifiedError,
+			);
+		}
+		if (active === null) throw activeError;
+	}, [notificationSearch.routine, notificationSearch.routine_run]);
 	useEffect(() => {
 		// Re-fetch when the scheduler or another client advances this domain.
 		void routinesRevision;
@@ -929,6 +1048,12 @@ function CockpitPage() {
 			permissionMode: "read_only",
 			grants: [],
 			deliveries: [],
+			notificationPolicy: {
+				success: "default",
+				actionRequired: "default",
+				failure: "default",
+				targets: { kind: "all" },
+			},
 			catchUpWindowMinutes: 360,
 			noOverlap: true,
 		};
@@ -1094,7 +1219,10 @@ function CockpitPage() {
 			</div>
 			{routineDialogOpen && (
 				<RoutineManagerDialog
-					routines={routines}
+					routines={mergeNotifiedRoutine(routines, notificationRoutine)}
+					initialRoutineId={notificationSearch.routine}
+					initialRunId={notificationSearch.routine_run}
+					notificationTargetStatus={notificationRoutineStatus}
 					initialDefinition={null}
 					watchDefinition={routineDraft}
 					defaultDefinition={routineDefaultDefinition}
@@ -1105,6 +1233,9 @@ function CockpitPage() {
 					onClose={() => {
 						setRoutineDialogOpen(false);
 						setRoutineDraft(null);
+						if (notificationSearch.routine) {
+							void navigate({ to: "/", search: {}, replace: true });
+						}
 					}}
 					onRefresh={refreshRoutines}
 				/>

@@ -19,6 +19,7 @@ import {
 	MAX_PUSH_NOTIFICATION_PAYLOAD_BYTES,
 	PUSH_NOTIFICATION_TEST_URL,
 	safePushNotificationUrl,
+	safeRoutineNotificationUrl,
 	type WebPushNotificationPayload,
 	webPushNotificationPayloadSchema,
 } from "../lib/pushNotificationSchemas";
@@ -55,7 +56,7 @@ export type PreparedWebPushRequest = {
 export type WebPushSendResult =
 	| { outcome: "delivered"; statusCode: number }
 	| { outcome: "gone"; statusCode: 404 | 410 }
-	| { outcome: "failed"; statusCode: number | null };
+	| { outcome: "failed"; statusCode: number | null; retryAfterMs?: number };
 
 type WebPushCryptoOptions = {
 	nowMs?: number;
@@ -255,12 +256,14 @@ function cachedVapidAuthorization(
 }
 
 function pushTopic(payload: WebPushNotificationPayload): string {
-	const topic =
-		payload.kind === "test"
-			? "hlid-test"
-			: payload.sessionIds
-				? `hlid-work-finished-batch:${payload.batchId}`
-				: payload.sessionId;
+	let topic: string;
+	if (payload.kind === "test") topic = "hlid-test";
+	else if (isRoutinePushPayload(payload))
+		topic = `hlid-routine:${payload.routineRunId}`;
+	else
+		topic = payload.sessionIds
+			? `hlid-work-finished-batch:${payload.batchId}`
+			: payload.sessionId;
 	return createHash("sha256").update(topic).digest("base64url").slice(0, 32);
 }
 
@@ -359,6 +362,34 @@ function webPushInfo(
 	]);
 }
 
+type RoutinePushPayload = Extract<
+	WebPushNotificationPayload,
+	{ source: "routine" }
+>;
+type TestPushPayload = Extract<WebPushNotificationPayload, { kind: "test" }>;
+type SessionPushPayload = Exclude<
+	WebPushNotificationPayload,
+	RoutinePushPayload | TestPushPayload
+>;
+
+function isRoutinePushPayload(
+	payload: WebPushNotificationPayload,
+): payload is RoutinePushPayload {
+	return (
+		payload.kind !== "test" &&
+		"source" in payload &&
+		payload.source === "routine" &&
+		"routineId" in payload &&
+		"routineRunId" in payload
+	);
+}
+
+function isSessionPushPayload(
+	payload: WebPushNotificationPayload,
+): payload is SessionPushPayload {
+	return payload.kind !== "test" && !isRoutinePushPayload(payload);
+}
+
 function serializePayload(
 	payload: WebPushNotificationPayload,
 	nowMs: number,
@@ -371,18 +402,30 @@ function serializePayload(
 	) {
 		throw new Error("Web Push notification payload is stale or future-dated");
 	}
+	const routine = isRoutinePushPayload(parsed) ? parsed : null;
+	const session = isSessionPushPayload(parsed) ? parsed : null;
 	const navigate =
 		parsed.kind === "test"
 			? PUSH_NOTIFICATION_TEST_URL
-			: parsed.sessionIds
-				? "/raven"
-				: safePushNotificationUrl(parsed.sessionId, parsed.url);
+			: routine
+				? safeRoutineNotificationUrl(
+						routine.routineId,
+						routine.routineRunId,
+						routine.url,
+					)
+				: session?.sessionIds
+					? `/raven?${new URLSearchParams({
+							notification_batch: session.batchId ?? "",
+						})}`
+					: safePushNotificationUrl(session?.sessionId ?? "", parsed.url);
 	const tag =
 		parsed.kind === "test"
 			? "hlid-test"
-			: parsed.sessionIds
-				? `hlid-work-finished-batch:${parsed.batchId}`
-				: `hlid-session:${parsed.sessionId}`;
+			: routine
+				? `hlid-routine:${routine.routineRunId}`
+				: session?.sessionIds
+					? `hlid-work-finished-batch:${session.batchId}`
+					: `hlid-session:${session?.sessionId ?? ""}`;
 	const serialized = Buffer.from(
 		JSON.stringify({
 			web_push: 8030,
@@ -396,20 +439,33 @@ function serializePayload(
 				data: {
 					version: parsed.version,
 					kind: parsed.kind,
+					...(parsed.deliveryId ? { deliveryId: parsed.deliveryId } : {}),
 					...(parsed.kind === "test"
 						? {}
-						: {
-								sessionId: parsed.sessionId,
-								...(parsed.sessionIds ? { sessionIds: parsed.sessionIds } : {}),
-								...(parsed.batchId ? { batchId: parsed.batchId } : {}),
-								...(parsed.reason ? { reason: parsed.reason } : {}),
-								...(parsed.sessionLabel
-									? { sessionLabel: parsed.sessionLabel }
-									: {}),
-								...(parsed.durationMs !== undefined
-									? { durationMs: parsed.durationMs }
-									: {}),
-							}),
+						: routine
+							? {
+									source: "routine",
+									routineId: routine.routineId,
+									routineRunId: routine.routineRunId,
+									...(routine.reason ? { reason: routine.reason } : {}),
+								}
+							: {
+									sessionId: session?.sessionId,
+									...(session?.sessionIds
+										? { sessionIds: session.sessionIds }
+										: {}),
+									...(session?.deliveryIds
+										? { deliveryIds: session.deliveryIds }
+										: {}),
+									...(session?.batchId ? { batchId: session.batchId } : {}),
+									...(session?.reason ? { reason: session.reason } : {}),
+									...(session?.sessionLabel
+										? { sessionLabel: session.sessionLabel }
+										: {}),
+									...(session?.durationMs !== undefined
+										? { durationMs: session.durationMs }
+										: {}),
+								}),
 					url: navigate,
 					createdAt: parsed.createdAt,
 					expiresAt: parsed.expiresAt,
@@ -552,9 +608,27 @@ export async function sendWebPush(
 		if (response.status === 404 || response.status === 410) {
 			return { outcome: "gone", statusCode: response.status };
 		}
+		const retryAfter = response.headers.get("retry-after");
+		let retryAfterMs: number | undefined;
+		if (retryAfter) {
+			const seconds = Number(retryAfter);
+			const parsed = Number.isFinite(seconds)
+				? seconds * 1_000
+				: Date.parse(retryAfter) - (options.nowMs ?? Date.now());
+			if (Number.isFinite(parsed) && parsed > 0) {
+				retryAfterMs = Math.min(
+					Math.ceil(parsed),
+					MAX_WEB_PUSH_TTL_SECONDS * 1_000,
+				);
+			}
+		}
 		return response.ok
 			? { outcome: "delivered", statusCode: response.status }
-			: { outcome: "failed", statusCode: response.status };
+			: {
+					outcome: "failed",
+					statusCode: response.status,
+					...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+				};
 	} catch {
 		return { outcome: "failed", statusCode: null };
 	}

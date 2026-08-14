@@ -1,21 +1,52 @@
-import type { PushNotificationTestScenario } from "./pushNotificationSchemas";
+import type {
+	PushNotificationDeliveryState,
+	PushNotificationDeliveryStatus,
+	PushNotificationEventStatus,
+	PushNotificationEventSummary,
+	PushNotificationSourceKind,
+	PushNotificationTestScenario,
+	SessionNotificationMode,
+	SessionNotificationScope,
+	PushQuietHours as WirePushQuietHours,
+} from "./pushNotificationSchemas";
 import {
 	deletePushDeviceFn,
 	getPushConfigFn,
+	getPushNotificationBatchFn,
+	getPushNotificationHistoryFn,
 	getPushStatusFn,
 	getSessionNotificationOverrideFn,
 	listPushDevicesFn,
+	markPushNotificationBatchReadFn,
 	sendTestPushNotificationFn,
 	setSessionNotificationOverrideFn,
 	subscribeToPushFn,
 	unsubscribeFromPushFn,
 	updatePushDeviceFn,
 	updatePushPreferencesFn,
+	type PushNotificationBatchResponse as WirePushNotificationBatch,
+	type PushNotificationBatchMemberResponse as WirePushNotificationBatchMember,
+	type PushNotificationEventSummaryResponse as WirePushNotificationEventSummary,
+	type PushNotificationHistoryEventResponse as WirePushNotificationHistoryEvent,
 } from "./serverFns/pushNotifications";
 
-export type { PushNotificationTestScenario } from "./pushNotificationSchemas";
+export type {
+	PushNotificationEventSummary,
+	PushNotificationTestScenario,
+} from "./pushNotificationSchemas";
 
 export type PushCompletionMinimumMinutes = 0 | 1 | 5 | 10;
+
+export type PushIsoWeekday = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+
+export type PushNotificationQuietHours = {
+	timezone: string;
+	start: string;
+	end: string;
+	weekdays: PushIsoWeekday[];
+	allowRequests: boolean;
+	allowProblems: boolean;
+};
 
 export type PushNotificationPreferences = {
 	requests: boolean;
@@ -23,6 +54,7 @@ export type PushNotificationPreferences = {
 	workFinished: boolean;
 	detail: "generic" | "detailed";
 	completionMinimumMinutes: PushCompletionMinimumMinutes;
+	quietHours: PushNotificationQuietHours | null;
 };
 
 export type PushNotificationDevice = {
@@ -34,10 +66,53 @@ export type PushNotificationDevice = {
 	lastSeenAt: number;
 	pausedUntil: number | null;
 	pausedIndefinitely: boolean;
+	preferences: PushNotificationPreferences;
 	lastAcceptedAt: number | null;
 	lastFailureAt: number | null;
 	lastFailureMessage: string | null;
 	failureCount: number;
+};
+
+export type PushNotificationDevicePatch = {
+	name?: string;
+	preferences?: Partial<PushNotificationPreferences>;
+};
+
+export type PushNotificationCategory = "request" | "problem" | "completion";
+
+export type PushNotificationHistoryDelivery = {
+	id: string;
+	deviceId: string;
+	device: { id: string; name: string; privacy: "generic" | "detailed" };
+} & PushNotificationDeliveryState;
+
+export type PushNotificationHistoryEvent = PushNotificationEventSummary & {
+	deliveries: PushNotificationHistoryDelivery[];
+};
+
+export type PushNotificationBatch = {
+	id: string;
+	category: PushNotificationCategory;
+	groupKey: string | null;
+	status: "open" | "ready" | "sent" | "read" | "expired";
+	createdAt: number;
+	updatedAt: number;
+	sentAt: number | null;
+	readAt: number | null;
+};
+
+export type PushNotificationBatchMember = {
+	eventId: string;
+	sessionId: string;
+	position: number;
+	addedAt: number;
+	readAt: number | null;
+	event: PushNotificationEventSummary | null;
+};
+
+export type PushNotificationBatchState = {
+	batch: PushNotificationBatch;
+	members: PushNotificationBatchMember[];
 };
 
 export type PushNotificationTestResult = {
@@ -48,11 +123,36 @@ export type PushNotificationTestResult = {
 	subscriptionRemoved: boolean;
 };
 
-export type SessionNotificationOverride =
-	| "default"
-	| "notify"
-	| "notify_once"
-	| "mute";
+export type SessionNotificationOverride = SessionNotificationMode;
+
+export type SessionNotificationPolicy = {
+	sessionId: string;
+	mode: Exclude<SessionNotificationMode, "default">;
+	scope: SessionNotificationScope;
+	/** null means every subscribed device; an array is an exact target set. */
+	targetDeviceIds: string[] | null;
+	updatedAt: number;
+};
+
+export type EffectiveSessionNotificationPolicy = {
+	requestedSessionId: string;
+	sourceSessionId: string | null;
+	mode: SessionNotificationMode;
+	scope: SessionNotificationScope;
+	targetDeviceIds: string[] | null;
+	inherited: boolean;
+};
+
+export type SessionNotificationPolicyState = {
+	policy: SessionNotificationPolicy | null;
+	effective: EffectiveSessionNotificationPolicy;
+};
+
+export type SessionNotificationPolicyUpdate = {
+	mode: SessionNotificationMode;
+	scope: SessionNotificationScope;
+	targetDeviceIds: string[] | null;
+};
 
 export type PushNotificationUnsupportedReason =
 	| "not-browser"
@@ -104,6 +204,7 @@ type WirePreferences = {
 	completion_min_runtime_minutes: PushCompletionMinimumMinutes;
 	paused_until: number | null;
 	paused_indefinitely: boolean;
+	quiet_hours: WirePushQuietHours | null;
 };
 
 type WirePushDevice = {
@@ -113,11 +214,29 @@ type WirePushDevice = {
 	enabled: boolean;
 	paused_until: number | null;
 	paused_indefinitely: boolean;
+	preferences: WirePreferences;
 	created_at: number;
 	updated_at: number;
 	last_success_at: number | null;
 	last_failure_at: number | null;
 	failure_count: number;
+};
+
+type WireSessionNotificationPolicy = {
+	session_id: string;
+	mode: Exclude<SessionNotificationMode, "default">;
+	scope: SessionNotificationScope;
+	target_device_ids: string[] | null;
+	updated_at: number;
+};
+
+type WireEffectiveSessionNotificationPolicy = {
+	requested_session_id: string;
+	source_session_id: string | null;
+	mode: SessionNotificationMode;
+	scope: SessionNotificationScope;
+	target_device_ids: string[] | null;
+	inherited: boolean;
 };
 
 type PushConfig =
@@ -163,6 +282,7 @@ const DEFAULT_PREFERENCES: PushNotificationPreferences = {
 	workFinished: false,
 	detail: "generic",
 	completionMinimumMinutes: 0,
+	quietHours: null,
 };
 
 // WebKit requires PushManager.subscribe() to be called immediately from the
@@ -178,6 +298,48 @@ let pendingSubscriptionRepair: PendingSubscriptionRepair | null = null;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isIanaTimeZone(value: unknown): value is string {
+	if (typeof value !== "string" || value.length === 0 || value.length > 64)
+		return false;
+	try {
+		new Intl.DateTimeFormat("en-US", { timeZone: value }).format(0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function isQuietHoursCore(value: unknown): value is Record<string, unknown> & {
+	timezone: string;
+	start: string;
+	end: string;
+	weekdays: number[];
+} {
+	return (
+		isRecord(value) &&
+		isIanaTimeZone(value.timezone) &&
+		typeof value.start === "string" &&
+		/^([01]\d|2[0-3]):[0-5]\d$/.test(value.start) &&
+		typeof value.end === "string" &&
+		/^([01]\d|2[0-3]):[0-5]\d$/.test(value.end) &&
+		Array.isArray(value.weekdays) &&
+		value.weekdays.length >= 1 &&
+		value.weekdays.length <= 7 &&
+		value.weekdays.every(
+			(day) => Number.isInteger(day) && day >= 1 && day <= 7,
+		) &&
+		new Set(value.weekdays).size === value.weekdays.length
+	);
+}
+
+function isWireQuietHours(value: unknown): value is WirePushQuietHours {
+	return (
+		isQuietHoursCore(value) &&
+		typeof value.allow_requests === "boolean" &&
+		typeof value.allow_problems === "boolean"
+	);
 }
 
 function isWirePreferences(value: unknown): value is WirePreferences {
@@ -196,7 +358,8 @@ function isWirePreferences(value: unknown): value is WirePreferences {
 				Number.isSafeInteger(value.paused_until) &&
 				value.paused_until >= 0 &&
 				value.paused_until <= MAX_SAFE_EPOCH_SECONDS)) &&
-		typeof value.paused_indefinitely === "boolean"
+		typeof value.paused_indefinitely === "boolean" &&
+		(value.quiet_hours === null || isWireQuietHours(value.quiet_hours))
 	);
 }
 
@@ -217,6 +380,16 @@ function isWireDeviceName(value: unknown): value is string {
 	return true;
 }
 
+function isNotificationQuietHours(
+	value: unknown,
+): value is PushNotificationQuietHours {
+	return (
+		isQuietHoursCore(value) &&
+		typeof value.allowRequests === "boolean" &&
+		typeof value.allowProblems === "boolean"
+	);
+}
+
 function normalizePreferences(
 	value: unknown,
 ): PushNotificationPreferences | null {
@@ -232,7 +405,10 @@ function normalizePreferences(
 			value.completionMinimumMinutes !== 0 &&
 			value.completionMinimumMinutes !== 1 &&
 			value.completionMinimumMinutes !== 5 &&
-			value.completionMinimumMinutes !== 10)
+			value.completionMinimumMinutes !== 10) ||
+		(value.quietHours !== undefined &&
+			value.quietHours !== null &&
+			!isNotificationQuietHours(value.quietHours))
 	)
 		return null;
 	return {
@@ -248,6 +424,49 @@ function normalizePreferences(
 		detail: value.detail,
 		completionMinimumMinutes:
 			(value.completionMinimumMinutes as PushCompletionMinimumMinutes) ?? 0,
+		quietHours:
+			value.quietHours === undefined || value.quietHours === null
+				? null
+				: {
+						timezone: value.quietHours.timezone,
+						start: value.quietHours.start,
+						end: value.quietHours.end,
+						weekdays: [...value.quietHours.weekdays],
+						allowRequests: value.quietHours.allowRequests,
+						allowProblems: value.quietHours.allowProblems,
+					},
+	};
+}
+
+function normalizePreferencesPatch(
+	value: unknown,
+): Partial<PushNotificationPreferences> | null {
+	if (!isRecord(value)) return null;
+	const allowed = new Set([
+		"requests",
+		"problems",
+		"workFinished",
+		"detail",
+		"completionMinimumMinutes",
+		"quietHours",
+		// Accept the removed camelCase field from stale callers, then discard it.
+		"catchUpAfterPause",
+	]);
+	const keys = Object.keys(value);
+	if (keys.length === 0 || keys.some((key) => !allowed.has(key))) return null;
+	const normalized = normalizePreferences({ ...DEFAULT_PREFERENCES, ...value });
+	if (!normalized) return null;
+	return {
+		...("requests" in value ? { requests: normalized.requests } : {}),
+		...("problems" in value ? { problems: normalized.problems } : {}),
+		...("workFinished" in value
+			? { workFinished: normalized.workFinished }
+			: {}),
+		...("detail" in value ? { detail: normalized.detail } : {}),
+		...("completionMinimumMinutes" in value
+			? { completionMinimumMinutes: normalized.completionMinimumMinutes }
+			: {}),
+		...("quietHours" in value ? { quietHours: normalized.quietHours } : {}),
 	};
 }
 
@@ -260,7 +479,33 @@ function fromWirePreferences(
 		workFinished: preferences.work_finished,
 		detail: preferences.privacy,
 		completionMinimumMinutes: preferences.completion_min_runtime_minutes,
+		quietHours:
+			preferences.quiet_hours === null
+				? null
+				: {
+						timezone: preferences.quiet_hours.timezone,
+						start: preferences.quiet_hours.start,
+						end: preferences.quiet_hours.end,
+						weekdays: preferences.quiet_hours.weekdays as PushIsoWeekday[],
+						allowRequests: preferences.quiet_hours.allow_requests,
+						allowProblems: preferences.quiet_hours.allow_problems,
+					},
 	};
+}
+
+function toWireQuietHours(
+	quietHours: PushNotificationQuietHours | null,
+): WirePushQuietHours | null {
+	return quietHours === null
+		? null
+		: {
+				timezone: quietHours.timezone,
+				start: quietHours.start,
+				end: quietHours.end,
+				weekdays: [...quietHours.weekdays],
+				allow_requests: quietHours.allowRequests,
+				allow_problems: quietHours.allowProblems,
+			};
 }
 
 function toWirePreferences(
@@ -276,16 +521,34 @@ function toWirePreferences(
 		completion_min_runtime_minutes: preferences.completionMinimumMinutes,
 		paused_until: pausedUntil,
 		paused_indefinitely: pausedIndefinitely,
+		quiet_hours: toWireQuietHours(preferences.quietHours),
 	};
 }
 
-function toWirePreferencesPatch(preferences: PushNotificationPreferences) {
+function toWirePreferencesPatch(
+	preferences: Partial<PushNotificationPreferences>,
+) {
 	return {
-		requests: preferences.requests,
-		problems: preferences.problems,
-		work_finished: preferences.workFinished,
-		privacy: preferences.detail,
-		completion_min_runtime_minutes: preferences.completionMinimumMinutes,
+		...(preferences.requests === undefined
+			? {}
+			: { requests: preferences.requests }),
+		...(preferences.problems === undefined
+			? {}
+			: { problems: preferences.problems }),
+		...(preferences.workFinished === undefined
+			? {}
+			: { work_finished: preferences.workFinished }),
+		...(preferences.detail === undefined
+			? {}
+			: { privacy: preferences.detail }),
+		...(preferences.completionMinimumMinutes === undefined
+			? {}
+			: {
+					completion_min_runtime_minutes: preferences.completionMinimumMinutes,
+				}),
+		...(preferences.quietHours === undefined
+			? {}
+			: { quiet_hours: toWireQuietHours(preferences.quietHours) }),
 	};
 }
 
@@ -397,16 +660,11 @@ function clearSubscriptionRepair(): void {
 
 async function cleanUpReplacedSubscription(
 	repair: PendingSubscriptionRepair | null,
-	currentEndpoint: string,
 ): Promise<void> {
 	if (!repair) return;
-	if (repair.oldEndpoint === currentEndpoint) {
-		clearSubscriptionRepair();
-		return;
-	}
-	await removeServerSubscription(repair.oldEndpoint)
-		.then(clearSubscriptionRepair)
-		.catch(() => {});
+	// A successful replacement POST atomically retires the old server row. Only
+	// clear the durable handoff after that response has been validated.
+	clearSubscriptionRepair();
 }
 
 /** Browser-only capability detection. Server availability is included by the
@@ -761,6 +1019,7 @@ async function registerSubscription(
 		pausedUntil?: number | null;
 		pausedIndefinitely?: boolean;
 		deviceName?: string;
+		replacesEndpoint?: string;
 	} = {},
 ): Promise<WirePreferences> {
 	const payload: unknown = await pushRequest(() =>
@@ -777,6 +1036,11 @@ async function registerSubscription(
 						}
 					: {}),
 				...(options.deviceName ? { device_name: options.deviceName } : {}),
+				...(options.replacesEndpoint &&
+				isStoredPushEndpoint(options.replacesEndpoint) &&
+				options.replacesEndpoint !== subscription.endpoint
+					? { replaces_endpoint: options.replacesEndpoint }
+					: {}),
 			},
 		}),
 	);
@@ -841,8 +1105,8 @@ export async function enablePushNotifications(
 	const repair = cachedSubscriptionRepair();
 	const replaceExisting =
 		subscription !== null &&
-		(status?.subscribed !== true ||
-			!applicationServerKeyMatches(subscription, applicationServerKey));
+		(!applicationServerKeyMatches(subscription, applicationServerKey) ||
+			(status?.subscribed !== true && repair === null));
 	if (replaceExisting && subscription) {
 		const replacedEndpoint = subscription.endpoint;
 		const unsubscribed = await subscription.unsubscribe();
@@ -852,11 +1116,17 @@ export async function enablePushNotifications(
 				"The old notification subscription could not be replaced.",
 			);
 		subscription = null;
-		storeSubscriptionRepair({
-			oldEndpoint: replacedEndpoint,
-			preferences: status?.preferences ?? null,
-			deviceName: status?.deviceName ?? null,
-		});
+		// A locally created replacement can survive a failed registration POST and
+		// become visible again after reload. In that case the durable repair still
+		// names the original server-owned endpoint. Never replace that handoff with
+		// the server-unknown local endpoint or every retry will target the wrong row.
+		if (!repair) {
+			storeSubscriptionRepair({
+				oldEndpoint: replacedEndpoint,
+				preferences: status?.preferences ?? null,
+				deviceName: status?.deviceName ?? null,
+			});
+		}
 		storePrerequisites({
 			config,
 			registration,
@@ -864,10 +1134,9 @@ export async function enablePushNotifications(
 			status: null,
 		});
 		setLocallyEnabled(true);
-		await removeServerSubscription(replacedEndpoint).catch(() => {});
 		throw new PushNotificationError(
 			"repair-ready",
-			"Old subscription removed. Tap Repair again to finish.",
+			"Old browser subscription removed. Tap Repair again to finish.",
 		);
 	}
 	// Do not put Notification.requestPermission(), a server function, or service
@@ -906,9 +1175,10 @@ export async function enablePushNotifications(
 			: status === null || status.preferences === null
 				? { deviceName: defaultPushDeviceName() }
 				: {}),
+		...(repair ? { replacesEndpoint: repair.oldEndpoint } : {}),
 	});
 	const saved = fromWirePreferences(savedWire);
-	await cleanUpReplacedSubscription(repair, subscription.endpoint);
+	await cleanUpReplacedSubscription(repair);
 	storePreferences(saved);
 	setLocallyEnabled(true);
 	storePrerequisites({
@@ -948,8 +1218,9 @@ export async function syncPushSubscription(): Promise<PushNotificationState> {
 	if (!subscription)
 		return browserState(permission, false, preferences, isLocallyEnabled());
 	const applicationServerKey = decodeApplicationServerKey(config.publicKey);
+	const repair = cachedSubscriptionRepair();
 	if (
-		status?.subscribed !== true ||
+		(status?.subscribed !== true && !repair) ||
 		!applicationServerKeyMatches(subscription, applicationServerKey)
 	)
 		return browserState(permission, false, preferences, true);
@@ -960,12 +1231,13 @@ export async function syncPushSubscription(): Promise<PushNotificationState> {
 	// Omit preferences and a device name during foreground reconciliation. The
 	// server preserves its authoritative choices, including a pause and any user
 	// rename, while refreshing rotated key material for this endpoint.
-	const savedWire = await registerSubscription(subscription);
+	const savedWire = await registerSubscription(subscription, {
+		...(repair ? { replacesEndpoint: repair.oldEndpoint } : {}),
+	});
 	const saved = fromWirePreferences(savedWire);
 	storePreferences(saved);
 	setLocallyEnabled(true);
-	const repair = cachedSubscriptionRepair();
-	await cleanUpReplacedSubscription(repair, subscription.endpoint);
+	await cleanUpReplacedSubscription(repair);
 	storePrerequisites({
 		config,
 		registration,
@@ -973,7 +1245,7 @@ export async function syncPushSubscription(): Promise<PushNotificationState> {
 		status: {
 			subscribed: true,
 			preferences: savedWire,
-			deviceName: status.deviceName,
+			deviceName: status?.deviceName ?? repair?.deviceName ?? null,
 		},
 	});
 	return browserState(
@@ -1110,6 +1382,211 @@ function isNullableTimestamp(value: unknown): value is number | null {
 	);
 }
 
+function isNullableString(value: unknown): value is string | null {
+	return value === null || typeof value === "string";
+}
+
+function isNonnegativeInteger(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isPushNotificationCategory(
+	value: unknown,
+): value is PushNotificationCategory {
+	return value === "request" || value === "problem" || value === "completion";
+}
+
+function isPushNotificationSourceKind(
+	value: unknown,
+): value is PushNotificationSourceKind {
+	return value === "session" || value === "routine" || value === "system";
+}
+
+function isPushNotificationEventStatus(
+	value: unknown,
+): value is PushNotificationEventStatus {
+	return (
+		value === "pending" ||
+		value === "deferred" ||
+		value === "batched" ||
+		value === "processed" ||
+		value === "expired" ||
+		value === "cancelled"
+	);
+}
+
+function isPushNotificationDeliveryStatus(
+	value: unknown,
+): value is PushNotificationDeliveryStatus {
+	return (
+		value === "pending" ||
+		value === "suppressed" ||
+		value === "queued" ||
+		value === "sent" ||
+		value === "failed" ||
+		value === "gone" ||
+		value === "expired"
+	);
+}
+
+function isWireNotificationEventSummary(
+	value: unknown,
+): value is WirePushNotificationEventSummary {
+	return (
+		isRecord(value) &&
+		typeof value.id === "string" &&
+		UUID_PATTERN.test(value.id) &&
+		isPushNotificationSourceKind(value.source_kind) &&
+		isValidSessionId(value.source_id) &&
+		isPushNotificationCategory(value.category) &&
+		isNullableString(value.reason) &&
+		isNullableString(value.label) &&
+		isNullableString(value.url) &&
+		(value.runtime_ms === null || isNonnegativeInteger(value.runtime_ms)) &&
+		isNonnegativeInteger(value.pending_count) &&
+		isNullableTimestamp(value.occurred_at) &&
+		value.occurred_at !== null &&
+		isNullableTimestamp(value.expires_at) &&
+		value.expires_at !== null &&
+		isNullableString(value.group_key) &&
+		isNullableString(value.batch_id) &&
+		isPushNotificationEventStatus(value.status) &&
+		isNullableString(value.status_reason) &&
+		isNullableTimestamp(value.next_attempt_at)
+	);
+}
+
+function isWireNotificationHistoryDelivery(value: unknown): boolean {
+	return (
+		isRecord(value) &&
+		typeof value.id === "string" &&
+		UUID_PATTERN.test(value.id) &&
+		typeof value.device_id === "string" &&
+		value.device_id.length > 0 &&
+		isRecord(value.device) &&
+		typeof value.device.id === "string" &&
+		typeof value.device.name === "string" &&
+		(value.device.privacy === "generic" ||
+			value.device.privacy === "detailed") &&
+		isPushNotificationDeliveryStatus(value.status) &&
+		isNullableString(value.reason) &&
+		isNullableTimestamp(value.next_attempt_at) &&
+		isNonnegativeInteger(value.attempt_count) &&
+		(value.provider_status === null ||
+			isNonnegativeInteger(value.provider_status)) &&
+		isNullableTimestamp(value.receipt_at) &&
+		isNullableTimestamp(value.displayed_at) &&
+		isNullableTimestamp(value.opened_at) &&
+		isNullableTimestamp(value.dismissed_at) &&
+		isNullableTimestamp(value.created_at) &&
+		value.created_at !== null &&
+		isNullableTimestamp(value.updated_at) &&
+		value.updated_at !== null
+	);
+}
+
+function isWireNotificationHistoryEvent(
+	value: unknown,
+): value is WirePushNotificationHistoryEvent {
+	if (!isRecord(value)) return false;
+	const deliveries = value.deliveries;
+	return (
+		isWireNotificationEventSummary(value) &&
+		Array.isArray(deliveries) &&
+		deliveries.every(isWireNotificationHistoryDelivery)
+	);
+}
+
+function isWireNotificationBatch(
+	value: unknown,
+): value is WirePushNotificationBatch {
+	return (
+		isRecord(value) &&
+		typeof value.id === "string" &&
+		/^[A-Za-z0-9_-]{8,64}$/.test(value.id) &&
+		isPushNotificationCategory(value.category) &&
+		isNullableString(value.group_key) &&
+		(value.status === "open" ||
+			value.status === "ready" ||
+			value.status === "sent" ||
+			value.status === "read" ||
+			value.status === "expired") &&
+		isNullableTimestamp(value.created_at) &&
+		value.created_at !== null &&
+		isNullableTimestamp(value.updated_at) &&
+		value.updated_at !== null &&
+		isNullableTimestamp(value.sent_at) &&
+		isNullableTimestamp(value.read_at)
+	);
+}
+
+function isWireNotificationBatchMember(
+	value: unknown,
+): value is WirePushNotificationBatchMember {
+	return (
+		isRecord(value) &&
+		typeof value.event_id === "string" &&
+		UUID_PATTERN.test(value.event_id) &&
+		isValidSessionId(value.session_id) &&
+		isNonnegativeInteger(value.position) &&
+		isNullableTimestamp(value.added_at) &&
+		value.added_at !== null &&
+		isNullableTimestamp(value.read_at) &&
+		(value.event === null || isWireNotificationEventSummary(value.event))
+	);
+}
+
+function fromWireNotificationEventSummary(
+	event: WirePushNotificationEventSummary,
+): PushNotificationEventSummary {
+	return {
+		id: event.id,
+		sourceKind: event.source_kind,
+		sourceId: event.source_id,
+		category: event.category,
+		reason: event.reason,
+		label: event.label,
+		url: event.url,
+		runtimeMs: event.runtime_ms,
+		pendingCount: event.pending_count,
+		occurredAt: event.occurred_at,
+		expiresAt: event.expires_at,
+		groupKey: event.group_key,
+		batchId: event.batch_id,
+		status: event.status,
+		statusReason: event.status_reason,
+		nextAttemptAt: event.next_attempt_at,
+	};
+}
+
+function fromWireNotificationHistoryEvent(
+	event: WirePushNotificationHistoryEvent,
+): PushNotificationHistoryEvent {
+	return {
+		...fromWireNotificationEventSummary(event),
+		deliveries: event.deliveries.map((delivery) => ({
+			id: delivery.id,
+			deviceId: delivery.device_id,
+			device: {
+				id: delivery.device.id,
+				name: delivery.device.name,
+				privacy: delivery.device.privacy,
+			},
+			status: delivery.status,
+			reason: delivery.reason,
+			nextAttemptAt: delivery.next_attempt_at,
+			attemptCount: delivery.attempt_count,
+			providerStatus: delivery.provider_status,
+			receiptAt: delivery.receipt_at,
+			displayedAt: delivery.displayed_at,
+			openedAt: delivery.opened_at,
+			dismissedAt: delivery.dismissed_at,
+			createdAt: delivery.created_at,
+			updatedAt: delivery.updated_at,
+		})),
+	};
+}
+
 function isWirePushDevice(value: unknown): value is WirePushDevice {
 	return (
 		isRecord(value) &&
@@ -1118,6 +1595,7 @@ function isWirePushDevice(value: unknown): value is WirePushDevice {
 		isWireDeviceName(value.name) &&
 		typeof value.current === "boolean" &&
 		typeof value.enabled === "boolean" &&
+		isWirePreferences(value.preferences) &&
 		isNullableTimestamp(value.paused_until) &&
 		typeof value.paused_indefinitely === "boolean" &&
 		isNullableTimestamp(value.created_at) &&
@@ -1142,6 +1620,7 @@ function fromWirePushDevice(device: WirePushDevice): PushNotificationDevice {
 		lastSeenAt: device.updated_at * 1_000,
 		pausedUntil: secondsToMilliseconds(device.paused_until),
 		pausedIndefinitely: device.paused_indefinitely,
+		preferences: fromWirePreferences(device.preferences),
 		lastAcceptedAt: secondsToMilliseconds(device.last_success_at),
 		lastFailureAt: secondsToMilliseconds(device.last_failure_at),
 		lastFailureMessage: null,
@@ -1202,22 +1681,41 @@ export async function renamePushNotificationDevice(
 	id: string,
 	name: string,
 ): Promise<PushNotificationDevice> {
-	const normalized = name.trim();
+	return updatePushNotificationDevice(id, { name });
+}
+
+export async function updatePushNotificationDevice(
+	id: string,
+	patch: PushNotificationDevicePatch,
+): Promise<PushNotificationDevice> {
+	const name = patch.name?.trim();
+	const preferences =
+		patch.preferences === undefined
+			? undefined
+			: normalizePreferencesPatch(patch.preferences);
+	if (preferences === null)
+		throw new PushNotificationError(
+			"request-failed",
+			"The notification device update is invalid.",
+		);
 	if (
 		!UUID_PATTERN.test(id) ||
-		normalized.length === 0 ||
-		normalized.length > 80
+		(name !== undefined && !isWireDeviceName(name)) ||
+		(name === undefined && preferences === undefined)
 	)
 		throw new PushNotificationError(
 			"request-failed",
-			"The notification device name is invalid.",
+			"The notification device update is invalid.",
 		);
 	const subscription = await currentPushSubscription().catch(() => null);
 	const payload: unknown = await pushRequest(() =>
 		updatePushDeviceFn({
 			data: {
 				id,
-				name: normalized,
+				...(name === undefined ? {} : { name }),
+				...(preferences === undefined
+					? {}
+					: { preferences: toWirePreferencesPatch(preferences) }),
 				...(subscription ? { endpoint: subscription.endpoint } : {}),
 			},
 		}),
@@ -1365,6 +1863,115 @@ export async function pausePushNotifications(
 	);
 }
 
+export async function getPushNotificationHistory(
+	limit = 20,
+): Promise<PushNotificationHistoryEvent[]> {
+	if (!Number.isInteger(limit) || limit < 1 || limit > 100)
+		throw new PushNotificationError(
+			"request-failed",
+			"The notification history limit is invalid.",
+		);
+	const payload: unknown = await pushRequest(() =>
+		getPushNotificationHistoryFn({ data: limit }),
+	);
+	if (
+		!isRecord(payload) ||
+		!Array.isArray(payload.events) ||
+		!payload.events.every(isWireNotificationHistoryEvent)
+	)
+		throw new PushNotificationError(
+			"request-failed",
+			"Hlid returned invalid notification history.",
+		);
+	return payload.events.map(fromWireNotificationHistoryEvent);
+}
+
+export async function getPushNotificationBatch(
+	batchId: string,
+): Promise<PushNotificationBatchState> {
+	if (!/^[A-Za-z0-9_-]{8,64}$/.test(batchId))
+		throw new PushNotificationError(
+			"request-failed",
+			"The notification batch identifier is invalid.",
+		);
+	const payload: unknown = await pushRequest(() =>
+		getPushNotificationBatchFn({ data: batchId }),
+	);
+	if (
+		!isRecord(payload) ||
+		!isWireNotificationBatch(payload.batch) ||
+		payload.batch.id !== batchId ||
+		!Array.isArray(payload.members) ||
+		!payload.members.every(isWireNotificationBatchMember) ||
+		new Set(payload.members.map((member) => member.event_id)).size !==
+			payload.members.length ||
+		new Set(payload.members.map((member) => member.session_id)).size !==
+			payload.members.length
+	)
+		throw new PushNotificationError(
+			"request-failed",
+			"Hlid returned an invalid notification batch.",
+		);
+	return {
+		batch: {
+			id: payload.batch.id,
+			category: payload.batch.category,
+			groupKey: payload.batch.group_key,
+			status: payload.batch.status,
+			createdAt: payload.batch.created_at,
+			updatedAt: payload.batch.updated_at,
+			sentAt: payload.batch.sent_at,
+			readAt: payload.batch.read_at,
+		},
+		members: payload.members
+			.map((member) => ({
+				eventId: member.event_id,
+				sessionId: member.session_id,
+				position: member.position,
+				addedAt: member.added_at,
+				readAt: member.read_at,
+				event: member.event
+					? fromWireNotificationEventSummary(member.event)
+					: null,
+			}))
+			.sort(
+				(left, right) =>
+					left.position - right.position ||
+					left.eventId.localeCompare(right.eventId),
+			),
+	};
+}
+
+export async function markPushNotificationBatchRead(
+	batchId: string,
+	sessionId?: string,
+): Promise<number> {
+	if (!/^[A-Za-z0-9_-]{8,64}$/.test(batchId))
+		throw new PushNotificationError(
+			"request-failed",
+			"The notification batch identifier is invalid.",
+		);
+	if (sessionId !== undefined) assertSessionId(sessionId);
+	const payload: unknown = await pushRequest(() =>
+		markPushNotificationBatchReadFn({
+			data: {
+				batch_id: batchId,
+				...(sessionId === undefined ? {} : { session_id: sessionId }),
+			},
+		}),
+	);
+	if (
+		!isRecord(payload) ||
+		payload.ok !== true ||
+		!isNonnegativeInteger(payload.read_at)
+	)
+		throw new PushNotificationError(
+			"request-failed",
+			"Hlid returned an invalid notification read state.",
+		);
+	return payload.read_at;
+}
+
 /**
  * Best-effort dismissal for the exact session the user is currently viewing.
  * The worker validates the identifier again and closes only matching Hlid
@@ -1405,51 +2012,167 @@ export async function reconcilePushNotificationBadge(): Promise<void> {
 	}
 }
 
+function isSessionNotificationMode(
+	value: unknown,
+): value is SessionNotificationMode {
+	return (
+		value === "default" ||
+		value === "notify" ||
+		value === "notify_once" ||
+		value === "notify_completion_once" ||
+		value === "mute"
+	);
+}
+
+function isSessionNotificationScope(
+	value: unknown,
+): value is SessionNotificationScope {
+	return value === "session" || value === "delegation_tree";
+}
+
+function isValidSessionId(value: unknown): value is string {
+	if (typeof value !== "string") return false;
+	try {
+		assertSessionId(value);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function isWireTargetDeviceIds(value: unknown): value is string[] | null {
+	return (
+		value === null ||
+		(Array.isArray(value) &&
+			value.length <= 32 &&
+			value.every(
+				(id): id is string => typeof id === "string" && UUID_PATTERN.test(id),
+			) &&
+			new Set(value).size === value.length)
+	);
+}
+
+function isWireSessionNotificationPolicy(
+	value: unknown,
+): value is WireSessionNotificationPolicy {
+	return (
+		isRecord(value) &&
+		isValidSessionId(value.session_id) &&
+		isSessionNotificationMode(value.mode) &&
+		value.mode !== "default" &&
+		isSessionNotificationScope(value.scope) &&
+		isWireTargetDeviceIds(value.target_device_ids) &&
+		isNullableTimestamp(value.updated_at) &&
+		value.updated_at !== null
+	);
+}
+
+function isWireEffectiveSessionNotificationPolicy(
+	value: unknown,
+): value is WireEffectiveSessionNotificationPolicy {
+	return (
+		isRecord(value) &&
+		isValidSessionId(value.requested_session_id) &&
+		(value.source_session_id === null ||
+			isValidSessionId(value.source_session_id)) &&
+		isSessionNotificationMode(value.mode) &&
+		isSessionNotificationScope(value.scope) &&
+		isWireTargetDeviceIds(value.target_device_ids) &&
+		typeof value.inherited === "boolean"
+	);
+}
+
+function fromWireSessionNotificationPolicy(
+	policy: WireSessionNotificationPolicy,
+): SessionNotificationPolicy {
+	return {
+		sessionId: policy.session_id,
+		mode: policy.mode,
+		scope: policy.scope,
+		targetDeviceIds:
+			policy.target_device_ids === null ? null : [...policy.target_device_ids],
+		updatedAt: policy.updated_at * 1_000,
+	};
+}
+
+function fromWireEffectiveSessionNotificationPolicy(
+	policy: WireEffectiveSessionNotificationPolicy,
+): EffectiveSessionNotificationPolicy {
+	return {
+		requestedSessionId: policy.requested_session_id,
+		sourceSessionId: policy.source_session_id,
+		mode: policy.mode,
+		scope: policy.scope,
+		targetDeviceIds:
+			policy.target_device_ids === null ? null : [...policy.target_device_ids],
+		inherited: policy.inherited,
+	};
+}
+
+function parseSessionNotificationPolicyState(
+	payload: unknown,
+	sessionId: string,
+): SessionNotificationPolicyState {
+	if (
+		!isRecord(payload) ||
+		(payload.policy !== null &&
+			!isWireSessionNotificationPolicy(payload.policy)) ||
+		!isWireEffectiveSessionNotificationPolicy(payload.effective) ||
+		(payload.policy !== null && payload.policy.session_id !== sessionId) ||
+		payload.effective.requested_session_id !== sessionId
+	)
+		throw new PushNotificationError(
+			"request-failed",
+			"Hlid returned an invalid session notification policy.",
+		);
+	return {
+		policy:
+			payload.policy === null
+				? null
+				: fromWireSessionNotificationPolicy(payload.policy),
+		effective: fromWireEffectiveSessionNotificationPolicy(payload.effective),
+	};
+}
+
 export async function getSessionNotificationOverride(
 	sessionId: string,
-): Promise<SessionNotificationOverride> {
+): Promise<SessionNotificationPolicyState> {
 	assertSessionId(sessionId);
 	const payload: unknown = await pushRequest(() =>
 		getSessionNotificationOverrideFn({ data: sessionId }),
 	);
-	if (
-		!isRecord(payload) ||
-		(payload.mode !== "default" &&
-			payload.mode !== "notify" &&
-			payload.mode !== "notify_once" &&
-			payload.mode !== "mute")
-	)
-		throw new PushNotificationError(
-			"request-failed",
-			"Hlid returned an invalid session notification mode.",
-		);
-	return payload.mode;
+	return parseSessionNotificationPolicyState(payload, sessionId);
 }
 
 export async function setSessionNotificationOverride(
 	sessionId: string,
-	mode: SessionNotificationOverride,
-): Promise<SessionNotificationOverride> {
+	update: SessionNotificationPolicyUpdate,
+): Promise<SessionNotificationPolicyState> {
 	assertSessionId(sessionId);
 	if (
-		mode !== "default" &&
-		mode !== "notify" &&
-		mode !== "notify_once" &&
-		mode !== "mute"
+		!isSessionNotificationMode(update.mode) ||
+		!isSessionNotificationScope(update.scope) ||
+		!isWireTargetDeviceIds(update.targetDeviceIds) ||
+		(update.targetDeviceIds !== null && update.targetDeviceIds.length === 0)
 	)
 		throw new PushNotificationError(
 			"request-failed",
-			"The session notification mode is invalid.",
+			"The session notification policy is invalid.",
 		);
 	const payload: unknown = await pushRequest(() =>
 		setSessionNotificationOverrideFn({
-			data: { session_id: sessionId, mode },
+			data: {
+				session_id: sessionId,
+				mode: update.mode,
+				scope: update.scope,
+				target_device_ids: update.targetDeviceIds,
+			},
 		}),
 	);
-	if (!isRecord(payload) || payload.ok !== true || payload.mode !== mode)
+	if (!isRecord(payload) || payload.ok !== true)
 		throw new PushNotificationError(
 			"request-failed",
-			"Hlid returned an invalid session notification mode.",
+			"Hlid returned an invalid session notification policy.",
 		);
-	return mode;
+	return parseSessionNotificationPolicyState(payload, sessionId);
 }

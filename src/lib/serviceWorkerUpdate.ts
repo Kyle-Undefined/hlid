@@ -1,5 +1,6 @@
 const BUILD_REQUEST = "hlid:get-build";
 const BUILD_RESPONSE = "hlid:build";
+const NOTIFICATION_NAVIGATION = "hlid:navigate-notification";
 
 type BuildResponse = { type?: string; build?: string };
 type ServiceWorkerMessenger = {
@@ -45,4 +46,32 @@ export function shouldReloadForServiceWorkerBuild(
 	// A worker without the build handshake predates this safeguard. Preserve the
 	// old conservative behavior for that one-time upgrade.
 	return workerBuild === null || workerBuild !== pageBuild;
+}
+
+/** Accept only the same-origin path sent by Hlid's notification worker. */
+export function serviceWorkerNotificationTarget(
+	value: unknown,
+	origin: string,
+): string | null {
+	if (
+		typeof value !== "object" ||
+		value === null ||
+		(value as { type?: unknown }).type !== NOTIFICATION_NAVIGATION
+	)
+		return null;
+	const candidate = (value as { url?: unknown }).url;
+	if (
+		typeof candidate !== "string" ||
+		!candidate.startsWith("/") ||
+		candidate.length > 2_048
+	)
+		return null;
+	try {
+		const base = new URL(origin);
+		const target = new URL(candidate, base);
+		if (target.origin !== base.origin) return null;
+		return `${target.pathname}${target.search}${target.hash}`;
+	} catch {
+		return null;
+	}
 }
