@@ -188,6 +188,27 @@ const config = defineConfig({
 				codeSplitting: {
 					groups: [
 						{
+							// Transcript rendering and viewport restoration are a cohesive lazy
+							// boundary and otherwise push Raven's server route over its parse budget.
+							name: "raven-transcript",
+							test: /src[\\/]components[\\/]chat[\\/](?:MessageList\.tsx|useMessageListView\.ts)$/,
+							minSize: 1,
+							maxSize: 100 * 1024,
+							includeDependenciesRecursively: false,
+							priority: 21,
+						},
+						{
+							// Lifecycle and cold-restore code is shared by the root shell and
+							// Raven, but should not inflate Raven's already feature-dense route
+							// chunk. Keep this small first-party boundary independently cached.
+							name: "pwa-resilience",
+							test: /src[\\/](?:hooks[\\/](?:useDraft|useFileUpload|useRavenComposerCheckpoint|useVaultReferencePicker)|lib[\\/](?:pwaLifecycleDiagnostics|ravenScrollCheckpoint|serviceWorkerUpdate))\.ts$/,
+							minSize: 1,
+							maxSize: 100 * 1024,
+							includeDependenciesRecursively: false,
+							priority: 20,
+						},
+						{
 							name: "mermaid-vendor",
 							test: /node_modules[\\/](?:mermaid|@mermaid-js)/,
 							maxSize: 300 * 1024,

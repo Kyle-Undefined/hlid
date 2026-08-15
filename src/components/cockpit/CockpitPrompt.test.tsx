@@ -85,6 +85,7 @@ function makeProps(overrides?: Partial<Props>): Props {
 			remove: vi.fn(),
 			removeRelic: vi.fn(),
 			removeWorkspace: vi.fn(),
+			replaceSelections: vi.fn(),
 			clear: vi.fn(),
 		},
 		isConnected: true,

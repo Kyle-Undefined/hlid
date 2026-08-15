@@ -6425,6 +6425,12 @@ describe("raven route search/deps", () => {
 			notification_batch: "batch-one",
 		});
 		expect(
+			route.validateSearch({ session: "s", notification_open: "1" }),
+		).toEqual({ session: "s", notification_open: true });
+		expect(
+			route.validateSearch({ session: "s", notification_open: "yes" }),
+		).toEqual({ session: "s" });
+		expect(
 			route.validateSearch({ notification_batch: "invalid batch" }),
 		).toEqual({});
 	});
@@ -6437,6 +6443,7 @@ describe("raven route search/deps", () => {
 			attention: "question",
 			attention_id: "question-1",
 			notification_batch: "batch-one",
+			notification_open: true,
 		};
 		render(<ChatPage />);
 
@@ -6460,6 +6467,7 @@ describe("raven route search/deps", () => {
 			attention: undefined,
 			attention_id: undefined,
 			notification_batch: undefined,
+			notification_open: true,
 		});
 
 		state.navigate.mockClear();
@@ -6473,6 +6481,7 @@ describe("raven route search/deps", () => {
 		expect(closeNavigation.search(state.search)).toEqual({
 			...state.search,
 			notification_batch: undefined,
+			notification_open: undefined,
 		});
 	});
 

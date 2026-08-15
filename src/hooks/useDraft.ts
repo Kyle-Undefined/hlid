@@ -102,10 +102,23 @@ export function useDraft({
 
 	// A route change can happen before the debounce expires. Flush the latest
 	// value once on unmount so the draft remains durable without per-key writes.
-	useEffect(
-		() => () => persistDraft(activeDraftKeyRef.current, latestInputRef.current),
-		[],
-	);
+	useEffect(() => {
+		const flush = () =>
+			persistDraft(activeDraftKeyRef.current, latestInputRef.current);
+		const flushWhenHidden = () => {
+			if (document.visibilityState === "hidden") flush();
+		};
+
+		document.addEventListener("visibilitychange", flushWhenHidden);
+		window.addEventListener("pagehide", flush);
+		document.addEventListener("freeze", flush);
+		return () => {
+			document.removeEventListener("visibilitychange", flushWhenHidden);
+			window.removeEventListener("pagehide", flush);
+			document.removeEventListener("freeze", flush);
+			flush();
+		};
+	}, []);
 
 	/** Remove the persisted draft for the current session. Call on send or clear. */
 	function clearDraft() {

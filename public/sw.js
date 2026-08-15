@@ -9,6 +9,9 @@ const STANDALONE_CLIENT_RECORD_PATH = "/__hlid-internal/standalone-client";
 const STATIC_EXTS = [".js", ".css", ".png", ".svg", ".ico", ".woff2"];
 const OFFLINE_URL = "/offline.html";
 const DYNAMIC_RETRY_DELAYS_MS = [150, 500];
+const NOTIFICATION_NAVIGATION = "hlid:navigate-notification";
+const NOTIFICATION_NAVIGATION_ACK = "hlid:navigate-notification-ack";
+const NOTIFICATION_NAVIGATION_ACK_TIMEOUT_MS = 2_000;
 const MAX_PUSH_PAYLOAD_CHARS = 8 * 1024;
 const MAX_PUSH_AGE_MS = 24 * 60 * 60 * 1000;
 const MAX_PUSH_FUTURE_SKEW_MS = 5 * 60 * 1000;
@@ -809,6 +812,80 @@ async function knownStandaloneClient(windowClients) {
 	return null;
 }
 
+function isPositiveNotificationNavigationAck(value) {
+	return (
+		isRecord(value) &&
+		value.type === NOTIFICATION_NAVIGATION_ACK &&
+		value.accepted === true
+	);
+}
+
+async function requestLiveClientNavigation(client, target) {
+	if (
+		typeof client.postMessage !== "function" ||
+		typeof MessageChannel !== "function"
+	)
+		return false;
+	const channel = new MessageChannel();
+	return await new Promise((resolve) => {
+		let settled = false;
+		const finish = (accepted) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timeout);
+			try {
+				channel.port1.close();
+			} catch {
+				// The acknowledgement already settled this best-effort channel.
+			}
+			resolve(accepted);
+		};
+		const timeout = setTimeout(
+			() => finish(false),
+			NOTIFICATION_NAVIGATION_ACK_TIMEOUT_MS,
+		);
+		channel.port1.onmessage = (event) =>
+			finish(isPositiveNotificationNavigationAck(event.data));
+		try {
+			client.postMessage(
+				{ type: NOTIFICATION_NAVIGATION, version: 1, url: target },
+				[channel.port2],
+			);
+		} catch {
+			try {
+				channel.port2.close();
+			} catch {
+				// The port may already have transferred before the client disappeared.
+			}
+			finish(false);
+		}
+	});
+}
+
+function uniqueClients(clients) {
+	return clients.filter(
+		(client, index) =>
+			client &&
+			clients.findIndex(
+				(candidate) =>
+					candidate === client ||
+					(isSafeClientId(candidate?.id) && candidate.id === client.id),
+			) === index,
+	);
+}
+
+function notificationDocumentTarget(target) {
+	try {
+		const parsed = new URL(target, self.location.origin);
+		if (parsed.origin !== self.location.origin || parsed.pathname !== "/raven")
+			return target;
+		parsed.searchParams.set("notification_open", "1");
+		return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+	} catch {
+		return target;
+	}
+}
+
 async function navigateAndFocus(client, target) {
 	let focused = client;
 	let focusSucceeded = false;
@@ -818,12 +895,19 @@ async function navigateAndFocus(client, target) {
 			focusSucceeded = true;
 		}
 	} catch {
-		// Navigation below can still recover a stale focus handle.
+		// Messaging or navigation below can still recover a stale focus handle.
 	}
-	for (const candidate of focused === client ? [client] : [focused, client]) {
+	const candidates = uniqueClients([focused, client]);
+	for (const candidate of candidates) {
+		if (await requestLiveClientNavigation(candidate, target)) return true;
+	}
+	// An older page will not acknowledge the router message. Fall back to the
+	// WindowClient navigation contract only after the bounded handshake expires.
+	const documentTarget = notificationDocumentTarget(target);
+	for (const candidate of candidates) {
 		if (typeof candidate.navigate !== "function") continue;
 		try {
-			const navigated = await candidate.navigate(target);
+			const navigated = await candidate.navigate(documentTarget);
 			if (!navigated) continue;
 			if (navigated !== focused && typeof navigated.focus === "function") {
 				await navigated.focus();
@@ -833,27 +917,21 @@ async function navigateAndFocus(client, target) {
 			// A background client can expose a stale pre-focus navigation handle.
 		}
 	}
-	if (focusSucceeded && typeof client.postMessage === "function") {
-		try {
-			client.postMessage({ type: "hlid:navigate-notification", url: target });
-		} catch {
-			// The app is already foregrounded; do not open a competing browser tab.
-		}
-	}
-	// If the standalone app was successfully foregrounded, do not counteract
-	// that by opening the same target in a browser window. The message fallback
-	// above lets the resumed app perform the exact navigation itself.
+	// If the app was successfully foregrounded, do not counteract that by opening
+	// the same target in a competing browser tab after both navigation paths fail.
 	return focusSucceeded;
 }
 
 async function openNotificationTarget(target) {
-	const absoluteTarget = new URL(target, self.location.origin).href;
+	const absoluteTarget = new URL(
+		notificationDocumentTarget(target),
+		self.location.origin,
+	).href;
 	const windowClients = await self.clients.matchAll({
 		type: "window",
 		includeUncontrolled: true,
 	});
 	const standalone = await knownStandaloneClient(windowClients);
-	if (standalone && (await navigateAndFocus(standalone, target))) return;
 
 	// Notification clicks should reuse an existing Hlid window before asking the
 	// browser to create one. This is also the standards-recommended ordering, and
@@ -866,10 +944,10 @@ async function openNotificationTarget(target) {
 			return false;
 		}
 	});
-	if (exact && (await navigateAndFocus(exact, target))) return;
-
 	const existing = windowClients.find(sameOriginWindow);
-	if (existing && (await navigateAndFocus(existing, target))) return;
+	for (const client of uniqueClients([standalone, exact, existing])) {
+		if (await navigateAndFocus(client, target)) return;
+	}
 
 	try {
 		const opened = await self.clients.openWindow(absoluteTarget);

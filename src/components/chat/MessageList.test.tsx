@@ -271,6 +271,7 @@ type RenderListArgs = {
 	isLoadingOlderHistory?: boolean;
 	onLoadOlderHistory?: () => Promise<number>;
 	onBackgroundActivity?: () => void;
+	restoreMessageId?: string | null;
 };
 
 function listElement(args: RenderListArgs) {
@@ -285,6 +286,7 @@ function listElement(args: RenderListArgs) {
 			hasOlderHistory={args.hasOlderHistory}
 			isLoadingOlderHistory={args.isLoadingOlderHistory}
 			onLoadOlderHistory={args.onLoadOlderHistory}
+			restoreMessageId={args.restoreMessageId}
 			onBackgroundActivity={args.onBackgroundActivity}
 			handleDecide={vi.fn()}
 			handleSubmitAnswers={vi.fn()}
@@ -674,6 +676,60 @@ describe("MessageList — workflow approval placement", () => {
 });
 
 describe("MessageList — bounded history rendering", () => {
+	it("mounts a stable saved anchor outside the normal history window", () => {
+		const messages = Array.from({ length: 250 }, (_, index) =>
+			userMsg(`u${index}`, `message ${index}`),
+		);
+		const view = renderList({ messages, restoreMessageId: "u25" });
+
+		expect(screen.getByText("message 25")).toBeTruthy();
+		expect(screen.queryByText("message 24")).toBeNull();
+		expect(
+			screen
+				.getByTestId("message-u25")
+				.closest("[data-raven-message-id]")
+				?.getAttribute("data-raven-message-id"),
+		).toBe("u25");
+
+		view.rerender(
+			listElement({
+				messages: [...messages, userMsg("u250", "message 250")],
+				restoreMessageId: null,
+			}),
+		);
+		expect(screen.queryByText("message 25")).toBeNull();
+		expect(screen.getByText("message 26")).toBeTruthy();
+		expect(screen.getByText("message 250")).toBeTruthy();
+	});
+
+	it("retains the restored render bound when changing sessions", () => {
+		const view = renderList({
+			sessionId: "first",
+			messages: [userMsg("first", "first session")],
+		});
+		const messages = Array.from({ length: 250 }, (_, index) =>
+			userMsg(`second-${index}`, `second message ${index}`),
+		);
+		view.rerender(
+			listElement({
+				sessionId: "second",
+				messages,
+				restoreMessageId: "second-25",
+			}),
+		);
+		expect(screen.getByText("second message 25")).toBeTruthy();
+
+		view.rerender(
+			listElement({
+				sessionId: "second",
+				messages: [...messages, userMsg("second-250", "second message 250")],
+				restoreMessageId: null,
+			}),
+		);
+		expect(screen.queryByText("second message 25")).toBeNull();
+		expect(screen.getByText("second message 26")).toBeTruthy();
+	});
+
 	it("renders the latest 100 messages and reveals older history", () => {
 		const messages = Array.from({ length: 101 }, (_, index) =>
 			userMsg(`u${index}`, `message ${index}`),

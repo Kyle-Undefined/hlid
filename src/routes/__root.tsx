@@ -29,13 +29,21 @@ import {
 	reportPushClientPresentation,
 	syncPushSubscription,
 } from "#/lib/pushNotifications";
+import {
+	documentWasDiscarded,
+	recordPwaLifecycleEvent,
+} from "#/lib/pwaLifecycleDiagnostics";
 import { shouldRevalidateRouteData } from "#/lib/routeDataRevalidation";
 import { isRavenPath } from "#/lib/scrollContainers";
 import { getConfig } from "#/lib/serverFns/config";
 import { logClientErrorFn } from "#/lib/serverFns/logging";
 import {
+	consumeServiceWorkerNotificationNavigation,
+	handleServiceWorkerNotificationNavigation,
+	markServiceWorkerNotificationNavigation,
+	SERVICE_WORKER_NOTIFICATION_NAVIGATION_EVENT,
 	serviceWorkerBuild,
-	serviceWorkerNotificationTarget,
+	serviceWorkerNotificationRouteTarget,
 	shouldReloadForServiceWorkerBuild,
 } from "#/lib/serviceWorkerUpdate";
 import { themeBootstrapConfig, themeBootstrapScript } from "#/lib/theme";
@@ -83,14 +91,32 @@ export const Route = createRootRoute({
 });
 
 function RegisterSW() {
+	const router = useRouter();
 	useEffect(() => {
 		if (!("serviceWorker" in navigator)) return;
 		const onWorkerMessage = (event: MessageEvent) => {
-			const target = serviceWorkerNotificationTarget(
-				event.data,
+			handleServiceWorkerNotificationNavigation(
+				event,
 				window.location.origin,
+				(target) => {
+					const navigationTarget = serviceWorkerNotificationRouteTarget(
+						target,
+						window.location.origin,
+					);
+					markServiceWorkerNotificationNavigation();
+					recordPwaLifecycleEvent("notification_navigation");
+					window.dispatchEvent(
+						new CustomEvent(SERVICE_WORKER_NOTIFICATION_NAVIGATION_EVENT, {
+							detail: navigationTarget,
+						}),
+					);
+					const navigation = router.navigate({ href: navigationTarget });
+					void navigation.then(
+						() => consumeServiceWorkerNotificationNavigation(),
+						() => window.location.assign(navigationTarget),
+					);
+				},
 			);
-			if (target) window.location.assign(target);
 		};
 		navigator.serviceWorker.addEventListener("message", onWorkerMessage);
 		// True only when a worker already controls this page — i.e. this is an
@@ -107,6 +133,7 @@ function RegisterSW() {
 			if (!shouldReloadForServiceWorkerBuild(__HLID_BUILD__, workerBuild))
 				return;
 			reloaded = true;
+			recordPwaLifecycleEvent("service_worker_update");
 			// Only an older page needs to reload after the new worker evicts its
 			// cached lazy chunks. A page already served by this build stays put.
 			window.location.reload();
@@ -169,6 +196,49 @@ function RegisterSW() {
 			);
 			document.removeEventListener("visibilitychange", onVisible);
 			window.removeEventListener("focus", onVisible);
+		};
+	}, [router]);
+	return null;
+}
+
+function RegisterPwaLifecycleDiagnostics() {
+	useEffect(() => {
+		recordPwaLifecycleEvent("cold_boot", {
+			wasDiscarded: documentWasDiscarded(document),
+		});
+		let backgrounded = document.visibilityState === "hidden";
+		let frozen = false;
+		const onVisibilityChange = () => {
+			if (document.visibilityState === "hidden") {
+				backgrounded = true;
+				recordPwaLifecycleEvent("hidden");
+				return;
+			}
+			if (!backgrounded && !frozen) return;
+			backgrounded = false;
+			frozen = false;
+			recordPwaLifecycleEvent("resume");
+		};
+		const onFreeze = () => {
+			backgrounded = true;
+			frozen = true;
+			recordPwaLifecycleEvent("freeze");
+		};
+		const onResume = () => {
+			if (!backgrounded && !frozen) return;
+			backgrounded = false;
+			frozen = false;
+			recordPwaLifecycleEvent("resume");
+		};
+		document.addEventListener("visibilitychange", onVisibilityChange);
+		document.addEventListener("freeze", onFreeze);
+		document.addEventListener("resume", onResume);
+		window.addEventListener("pageshow", onResume);
+		return () => {
+			document.removeEventListener("visibilitychange", onVisibilityChange);
+			document.removeEventListener("freeze", onFreeze);
+			document.removeEventListener("resume", onResume);
+			window.removeEventListener("pageshow", onResume);
 		};
 	}, []);
 	return null;
@@ -302,6 +372,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 				<HeadContent />
 			</head>
 			<body>
+				<RegisterPwaLifecycleDiagnostics />
 				<NavigationNamesProvider initialLabels={navigationLabels}>
 					{pathname === "/login" || pathname === "/login/" ? (
 						children

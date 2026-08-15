@@ -6,6 +6,10 @@ import { useDraft } from "./useDraft";
 beforeEach(() => {
 	localStorage.clear();
 	vi.useFakeTimers();
+	Object.defineProperty(document, "visibilityState", {
+		configurable: true,
+		value: "visible",
+	});
 });
 
 afterEach(() => {
@@ -39,5 +43,28 @@ describe("useDraft", () => {
 		act(() => result.current.setInput(""));
 		unmount();
 		expect(localStorage.getItem("hlid:draft:watch")).toBeNull();
+	});
+
+	it.each([
+		["visibilitychange", document] as const,
+		["pagehide", window] as const,
+		["freeze", document] as const,
+	])("flushes synchronously on %s", (eventName, target) => {
+		const { result } = renderHook(() =>
+			useDraft({ existingSessionId: "watch", seededPrompt: undefined }),
+		);
+		act(() => result.current.setInput(`saved by ${eventName}`));
+		if (eventName === "visibilitychange") {
+			Object.defineProperty(document, "visibilityState", {
+				configurable: true,
+				value: "hidden",
+			});
+		}
+
+		act(() => target.dispatchEvent(new Event(eventName)));
+
+		expect(localStorage.getItem("hlid:draft:watch")).toBe(
+			`saved by ${eventName}`,
+		);
 	});
 });

@@ -141,6 +141,7 @@ export const MessageList = memo(function MessageList({
 	hasOlderHistory = false,
 	isLoadingOlderHistory = false,
 	onLoadOlderHistory,
+	restoreMessageId,
 	onLoadEarlierToolEvents,
 	canBranch,
 	forkingMessageId,
@@ -180,6 +181,7 @@ export const MessageList = memo(function MessageList({
 	hasOlderHistory?: boolean;
 	isLoadingOlderHistory?: boolean;
 	onLoadOlderHistory?: () => Promise<number>;
+	restoreMessageId?: string | null;
 	onLoadEarlierToolEvents?: LoadEarlierToolEvents;
 	/** "Branch from here" precondition (Claude-only, session idle). */
 	canBranch?: boolean;
@@ -204,6 +206,7 @@ export const MessageList = memo(function MessageList({
 		hasOlderHistory,
 		isLoadingOlderHistory,
 		onLoadOlderHistory,
+		restoreMessageId,
 	});
 	const latestActivityResponseId = useMemo(() => {
 		for (let index = visibleMessages.length - 1; index >= 0; index--) {
@@ -527,54 +530,56 @@ export const MessageList = memo(function MessageList({
 				</div>
 			)}
 			{visibleMessages.map((m) => (
-				<ChatMessageRow
-					key={m.id}
-					message={m}
-					acceptedSteers={
-						m.role === "assistant"
-							? acceptedSteersByAssistantId.get(m.id)
-							: undefined
-					}
-					sessionId={sessionId}
-					providerId={providerId}
-					expandedVisualizationEventId={expandedVisualizationEventId}
-					onToggleVisualization={handleToggleVisualization}
-					onVisualizationInactive={handleVisualizationInactive}
-					activityOpen={
-						m.role === "assistant" ? isActivityOpen(m.id) : undefined
-					}
-					onToggleActivity={handleToggleActivity}
-					onBackgroundActivity={
-						m.role === "assistant" && m.streaming
-							? onBackgroundActivity
-							: undefined
-					}
-					onSelectTool={handleSelectTool}
-					onLoadEarlierToolEvents={onLoadEarlierToolEvents}
-					permissionLabels={permissionLabels}
-					queueState={queueStateById.get(m.id)}
-					onDecide={handleDecide}
-					onSubmitAnswers={handleSubmitAnswers}
-					onPlanDecide={handlePlanDecide}
-					onCancelQueued={handleCancelQueued}
-					onPromoteQueued={handlePromoteQueued}
-					onSteerQueued={handleSteerQueued}
-					onViewContext={onViewContext}
-					onPreviewFileRewind={onPreviewFileRewind}
-					canSteerQueued={
-						canSteerQueued &&
-						chatQueue.find((queued) => queued.id === m.id)?.steerable !== false
-					}
-					canBranch={canBranch}
-					forkingMessageId={forkingMessageId}
-					onBranch={onBranch}
-					obsidianCapture={obsidianCapture}
-					groupedProjectPreviewEventIds={groupedProjectPreviewEventIds}
-					historicalProjectPreviewGroups={historicalProjectPreviewGroups}
-					requesterSubagents={permissionPlacement.subagents}
-					pendingPermissionsByWorkflow={permissionPlacement.byWorkflow}
-					embeddedPermissionIds={permissionPlacement.embeddedIds}
-				/>
+				<div key={m.id} className="contents" data-raven-message-id={m.id}>
+					<ChatMessageRow
+						message={m}
+						acceptedSteers={
+							m.role === "assistant"
+								? acceptedSteersByAssistantId.get(m.id)
+								: undefined
+						}
+						sessionId={sessionId}
+						providerId={providerId}
+						expandedVisualizationEventId={expandedVisualizationEventId}
+						onToggleVisualization={handleToggleVisualization}
+						onVisualizationInactive={handleVisualizationInactive}
+						activityOpen={
+							m.role === "assistant" ? isActivityOpen(m.id) : undefined
+						}
+						onToggleActivity={handleToggleActivity}
+						onBackgroundActivity={
+							m.role === "assistant" && m.streaming
+								? onBackgroundActivity
+								: undefined
+						}
+						onSelectTool={handleSelectTool}
+						onLoadEarlierToolEvents={onLoadEarlierToolEvents}
+						permissionLabels={permissionLabels}
+						queueState={queueStateById.get(m.id)}
+						onDecide={handleDecide}
+						onSubmitAnswers={handleSubmitAnswers}
+						onPlanDecide={handlePlanDecide}
+						onCancelQueued={handleCancelQueued}
+						onPromoteQueued={handlePromoteQueued}
+						onSteerQueued={handleSteerQueued}
+						onViewContext={onViewContext}
+						onPreviewFileRewind={onPreviewFileRewind}
+						canSteerQueued={
+							canSteerQueued &&
+							chatQueue.find((queued) => queued.id === m.id)?.steerable !==
+								false
+						}
+						canBranch={canBranch}
+						forkingMessageId={forkingMessageId}
+						onBranch={onBranch}
+						obsidianCapture={obsidianCapture}
+						groupedProjectPreviewEventIds={groupedProjectPreviewEventIds}
+						historicalProjectPreviewGroups={historicalProjectPreviewGroups}
+						requesterSubagents={permissionPlacement.subagents}
+						pendingPermissionsByWorkflow={permissionPlacement.byWorkflow}
+						embeddedPermissionIds={permissionPlacement.embeddedIds}
+					/>
+				</div>
 			))}
 			{orphanQueued.map((qm) => (
 				<UserMsg

@@ -49,11 +49,13 @@ export function useFileUpload({
 
 	// Auto-generated session ID for callers that don't have an existing session
 	const uploadSessionIdRef = useRef<string | null>(null);
+	const uploadGenerationRef = useRef(0);
 
 	const uploadFiles = useCallback(
 		async (files: FileList | File[]) => {
 			const list = Array.from(files);
 			if (list.length === 0) return;
+			const generation = uploadGenerationRef.current;
 			setUploadError(null);
 
 			// Resolve session ID: explicit > auto-generated
@@ -94,6 +96,7 @@ export function useFileUpload({
 							r.status === "fulfilled",
 					)
 					.map((r) => r.value);
+				if (uploadGenerationRef.current !== generation) return;
 
 				// Show gitignore hint once per agent root (can be dismissed)
 				const suggestion = fulfilled.find(
@@ -131,7 +134,9 @@ export function useFileUpload({
 					);
 				if (failed.length > 0) setUploadError(failed.join("; "));
 			} catch (err) {
-				setUploadError(err instanceof Error ? err.message : "upload failed");
+				if (uploadGenerationRef.current === generation) {
+					setUploadError(err instanceof Error ? err.message : "upload failed");
+				}
 			} finally {
 				setUploadingCount((c) => Math.max(0, c - list.length));
 			}
@@ -144,6 +149,7 @@ export function useFileUpload({
 	}, []);
 
 	const clearPending = useCallback(() => {
+		uploadGenerationRef.current += 1;
 		setPendingAttachments([]);
 		setUploadError(null);
 	}, []);

@@ -80,6 +80,7 @@ import { useDraft } from "#/hooks/useDraft";
 import { useFileUpload } from "#/hooks/useFileUpload";
 import { useLoadChatHistory } from "#/hooks/useLoadChatHistory";
 import { useNotificationPresence } from "#/hooks/useNotificationPresence";
+import { useRavenComposerCheckpoint } from "#/hooks/useRavenComposerCheckpoint";
 import { useSlashPicker } from "#/hooks/useSlashPicker";
 import { useVaultReferencePicker } from "#/hooks/useVaultReferencePicker";
 import { uploadVoiceRecording, useVoiceInput } from "#/hooks/useVoiceInput";
@@ -153,6 +154,14 @@ import {
 	subscribeRavenProviderCache,
 } from "#/lib/ravenProviderCache";
 import {
+	clearRavenScrollCheckpoint,
+	findRavenScrollAnchor,
+	RAVEN_SCROLL_RESTORE_MAX_PAGES,
+	readRavenScrollCheckpoint,
+	restoreRavenScrollAnchor,
+	writeRavenScrollCheckpoint,
+} from "#/lib/ravenScrollCheckpoint";
+import {
 	createAnimationFrameCoalescer,
 	isNearChatBottom,
 	loadOlderPreservingScroll,
@@ -179,6 +188,10 @@ import {
 	setSessionArchivedFn,
 } from "#/lib/serverFns/sessions";
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
+import {
+	consumeServiceWorkerNotificationNavigation,
+	SERVICE_WORKER_NOTIFICATION_NAVIGATION_EVENT,
+} from "#/lib/serviceWorkerUpdate";
 import { uid } from "#/lib/utils";
 import { voiceInputPresentation } from "#/lib/voiceInputPresentation";
 import type { ProviderApprovalsReviewer } from "#/server/agentProvider";
@@ -565,6 +578,7 @@ export const Route = createFileRoute("/raven")({
 		attention?: RavenNotificationAttention;
 		attention_id?: string;
 		notification_batch?: string;
+		notification_open?: true;
 	} => {
 		const out: {
 			session?: string;
@@ -573,6 +587,7 @@ export const Route = createFileRoute("/raven")({
 			attention?: RavenNotificationAttention;
 			attention_id?: string;
 			notification_batch?: string;
+			notification_open?: true;
 		} = {};
 		if (typeof search.session === "string") out.session = search.session;
 		if (typeof search.agent === "string") out.agent = search.agent;
@@ -592,6 +607,9 @@ export const Route = createFileRoute("/raven")({
 			search.notification_batch,
 		);
 		if (notificationBatchId) out.notification_batch = notificationBatchId;
+		if (search.notification_open === "1" || search.notification_open === true) {
+			out.notification_open = true;
+		}
 		return out;
 	},
 	loaderDeps: ({ search: { session, agent } }) => ({ session, agent }),
@@ -1556,13 +1574,23 @@ function useRavenViewport({
 	input,
 	messages,
 	sessionId,
+	historyReady,
+	hasOlderHistory,
+	isLoadingOlderHistory,
+	loadOlderHistory,
+	notificationTargeted,
 	activeSkills,
 	showModelPopup,
 	setShowModelPopup,
 }: {
 	input: string;
-	messages: unknown[];
+	messages: ChatMessage[];
 	sessionId: string;
+	historyReady: boolean;
+	hasOlderHistory: boolean;
+	isLoadingOlderHistory: boolean;
+	loadOlderHistory: () => Promise<number>;
+	notificationTargeted: boolean;
 	activeSkills: unknown;
 	showModelPopup: boolean;
 	setShowModelPopup: Dispatch<SetStateAction<boolean>>;
@@ -1583,16 +1611,171 @@ function useRavenViewport({
 	const pendingSkillFocusRef = useRef(false);
 	const scrollSessionRef = useRef(sessionId);
 	const needsInitialBottomRef = useRef(true);
+	const restoreScopeRef = useRef<string | null>(null);
+	const restoreCheckpointRef = useRef<ReturnType<
+		typeof readRavenScrollCheckpoint
+	> | null>(null);
+	const restoreAppliedRef = useRef(false);
+	const restoreLoadPagesRef = useRef(0);
+	const restoreLoadInFlightRef = useRef(false);
+	const [, refreshRestoreState] = useReducer(
+		(revision: number) => revision + 1,
+		0,
+	);
+	if (restoreScopeRef.current !== sessionId) {
+		restoreScopeRef.current = sessionId;
+		const notificationNavigation = consumeServiceWorkerNotificationNavigation();
+		const skipSavedAnchor = notificationTargeted || notificationNavigation;
+		if (skipSavedAnchor) clearRavenScrollCheckpoint(sessionId);
+		restoreCheckpointRef.current = skipSavedAnchor
+			? null
+			: readRavenScrollCheckpoint(sessionId);
+		restoreAppliedRef.current = restoreCheckpointRef.current === null;
+		restoreLoadPagesRef.current = 0;
+		restoreLoadInFlightRef.current = false;
+		needsInitialBottomRef.current = restoreCheckpointRef.current === null;
+		atBottomRef.current = restoreCheckpointRef.current === null;
+	}
+	const restoreMessageId = restoreCheckpointRef.current?.messageId ?? null;
 	const streamingScrollSchedulerRef = useRef<ReturnType<
 		typeof createAnimationFrameCoalescer
 	> | null>(null);
 	streamingScrollSchedulerRef.current ??= createAnimationFrameCoalescer();
 	if (scrollSessionRef.current !== sessionId) {
 		scrollSessionRef.current = sessionId;
-		needsInitialBottomRef.current = true;
-		atBottomRef.current = true;
+		needsInitialBottomRef.current = restoreMessageId === null;
+		atBottomRef.current = restoreMessageId === null;
 		wheelAwayRef.current = false;
 	}
+
+	const abandonSavedAnchor = useCallback(() => {
+		clearRavenScrollCheckpoint(sessionId);
+		restoreCheckpointRef.current = null;
+		restoreAppliedRef.current = true;
+		needsInitialBottomRef.current = true;
+		atBottomRef.current = true;
+		refreshRestoreState();
+	}, [sessionId]);
+
+	useEffect(() => {
+		const checkpoint = restoreCheckpointRef.current;
+		if (!checkpoint || restoreAppliedRef.current || !historyReady) return;
+		if (messages.some((message) => message.id === checkpoint.messageId)) return;
+		if (
+			!hasOlderHistory ||
+			restoreLoadPagesRef.current >= RAVEN_SCROLL_RESTORE_MAX_PAGES
+		) {
+			abandonSavedAnchor();
+			return;
+		}
+		if (isLoadingOlderHistory || restoreLoadInFlightRef.current) return;
+
+		restoreLoadInFlightRef.current = true;
+		const restoreSessionId = sessionId;
+		void loadOlderHistory()
+			.then((loaded) => {
+				if (restoreScopeRef.current !== restoreSessionId) return;
+				restoreLoadPagesRef.current += 1;
+				if (loaded === 0) abandonSavedAnchor();
+			})
+			.catch(() => {
+				if (restoreScopeRef.current === restoreSessionId) abandonSavedAnchor();
+			})
+			.finally(() => {
+				if (restoreScopeRef.current === restoreSessionId) {
+					restoreLoadInFlightRef.current = false;
+					refreshRestoreState();
+				}
+			});
+	}, [
+		messages,
+		sessionId,
+		historyReady,
+		hasOlderHistory,
+		isLoadingOlderHistory,
+		loadOlderHistory,
+		abandonSavedAnchor,
+	]);
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: session changes reset the pending stable anchor even when the message array identity is reused
+	useLayoutEffect(() => {
+		const checkpoint = restoreCheckpointRef.current;
+		if (!checkpoint || restoreAppliedRef.current) return;
+		if (!messages.some((message) => message.id === checkpoint.messageId))
+			return;
+		const scroller = scrollRef.current;
+		if (!scroller) return;
+		if (!restoreRavenScrollAnchor(scroller, checkpoint)) {
+			abandonSavedAnchor();
+			return;
+		}
+		restoreAppliedRef.current = true;
+		restoreCheckpointRef.current = null;
+		needsInitialBottomRef.current = false;
+		atBottomRef.current = false;
+		lastScrollTopRef.current = scroller.scrollTop;
+	}, [messages, sessionId, abandonSavedAnchor]);
+
+	useLayoutEffect(() => {
+		const persistReadingAnchor = () => {
+			if (!restoreAppliedRef.current) return;
+			const scroller = scrollRef.current;
+			if (!scroller || atBottomRef.current) {
+				clearRavenScrollCheckpoint(sessionId);
+				return;
+			}
+			const anchor = findRavenScrollAnchor(scroller);
+			if (anchor) writeRavenScrollCheckpoint(sessionId, anchor);
+		};
+		const onVisibilityChange = () => {
+			if (document.visibilityState === "hidden") persistReadingAnchor();
+		};
+		document.addEventListener("visibilitychange", onVisibilityChange);
+		window.addEventListener("pagehide", persistReadingAnchor);
+		document.addEventListener("freeze", persistReadingAnchor);
+		return () => {
+			document.removeEventListener("visibilitychange", onVisibilityChange);
+			window.removeEventListener("pagehide", persistReadingAnchor);
+			document.removeEventListener("freeze", persistReadingAnchor);
+			persistReadingAnchor();
+		};
+	}, [sessionId]);
+
+	useEffect(() => {
+		const onNotificationNavigation = (event: Event) => {
+			if (!(event instanceof CustomEvent) || typeof event.detail !== "string")
+				return;
+			try {
+				const target = new URL(event.detail, window.location.origin);
+				if (
+					target.origin !== window.location.origin ||
+					target.pathname !== "/raven" ||
+					target.searchParams.get("session") !== sessionId
+				)
+					return;
+			} catch {
+				return;
+			}
+			consumeServiceWorkerNotificationNavigation();
+			clearRavenScrollCheckpoint(sessionId);
+			restoreCheckpointRef.current = null;
+			restoreAppliedRef.current = true;
+			restoreLoadPagesRef.current = 0;
+			needsInitialBottomRef.current = false;
+			atBottomRef.current = true;
+			scrollChatToBottom(scrollRef.current, "auto");
+			refreshRestoreState();
+		};
+		window.addEventListener(
+			SERVICE_WORKER_NOTIFICATION_NAVIGATION_EVENT,
+			onNotificationNavigation,
+		);
+		return () =>
+			window.removeEventListener(
+				SERVICE_WORKER_NOTIFICATION_NAVIGATION_EVENT,
+				onNotificationNavigation,
+			);
+	}, [sessionId]);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: activeSkill triggers deferred focus
 	useEffect(() => {
@@ -1795,6 +1978,7 @@ function useRavenViewport({
 		textareaRef,
 		modelBadgeRef,
 		fileInputRef,
+		restoreMessageId,
 		focusSkillOnNextRender: () => {
 			pendingSkillFocusRef.current = true;
 		},
@@ -1809,6 +1993,9 @@ type RavenActionProps = {
 	input: string;
 	setInput: ReturnType<typeof useDraft>["setInput"];
 	clearDraft: ReturnType<typeof useDraft>["clearDraft"];
+	clearComposerCheckpoint: ReturnType<
+		typeof useRavenComposerCheckpoint
+	>["clear"];
 	activeSkills: ActiveRavenSkill[];
 	setActiveSkills: Dispatch<SetStateAction<ActiveRavenSkill[]>>;
 	commands: CommandDescriptor[];
@@ -1894,6 +2081,7 @@ function useRavenSend(props: RavenActionProps) {
 		input,
 		setInput,
 		clearDraft,
+		clearComposerCheckpoint,
 		activeSkills,
 		setActiveSkills,
 		commands,
@@ -1914,14 +2102,9 @@ function useRavenSend(props: RavenActionProps) {
 		openContext,
 		openWorkflows,
 	} = props.runtime;
-	const { pendingAttachments, clearPending: clearPendingAttachments } =
-		props.upload;
-	const {
-		referencePaths,
-		relicAttachments,
-		selectedWorkspace,
-		clear: clearVaultReferences,
-	} = props.vaultPicker;
+	const { pendingAttachments } = props.upload;
+	const { referencePaths, relicAttachments, selectedWorkspace } =
+		props.vaultPicker;
 	const { atBottomRef } = props.viewport;
 
 	return useCallback(
@@ -2087,10 +2270,9 @@ function useRavenSend(props: RavenActionProps) {
 			}
 			if (!voiceTurn) {
 				clearDraft();
+				clearComposerCheckpoint();
 				setInput("");
 				setActiveSkills([]);
-				clearPendingAttachments();
-				clearVaultReferences();
 			}
 		},
 		[
@@ -2107,8 +2289,7 @@ function useRavenSend(props: RavenActionProps) {
 			selectedWorkspace,
 			agentSkillContext,
 			clearDraft,
-			clearPendingAttachments,
-			clearVaultReferences,
+			clearComposerCheckpoint,
 			planMode,
 			planHtml,
 			sessionSelection,
@@ -2323,8 +2504,12 @@ function useRavenQueueActions(props: RavenActionProps) {
 }
 
 function useRavenClear(props: RavenActionProps) {
-	const { clearDraft, setPlanMode, resetSessionSelection } = props;
-	const clearVaultReferences = props.vaultPicker.clear;
+	const {
+		clearDraft,
+		clearComposerCheckpoint,
+		setPlanMode,
+		resetSessionSelection,
+	} = props;
 	const { setAgentSkillContext, agentContextSentRef, activateNewSession } =
 		props.session;
 	const { send, dispatch, pendingIdRef, lastAssistantIdRef } = props.runtime;
@@ -2332,6 +2517,7 @@ function useRavenClear(props: RavenActionProps) {
 	return useCallback(() => {
 		setPlanMode(false);
 		clearDraft();
+		clearComposerCheckpoint();
 		pendingIdRef.current = null;
 		// Reset the recap target ref too — it points at a message we're about
 		// to wipe via dispatch CLEAR, and a late tool_use_summary would
@@ -2344,7 +2530,6 @@ function useRavenClear(props: RavenActionProps) {
 		wsStore.seedActualModel(null);
 		wsStore.clearMessageBuffer();
 		clearChatQueue();
-		clearVaultReferences();
 		resetSessionSelection();
 		const newId = uid();
 		setAgentSkillContext(undefined);
@@ -2352,6 +2537,7 @@ function useRavenClear(props: RavenActionProps) {
 	}, [
 		send,
 		clearDraft,
+		clearComposerCheckpoint,
 		pendingIdRef,
 		lastAssistantIdRef,
 		agentContextSentRef,
@@ -2360,7 +2546,6 @@ function useRavenClear(props: RavenActionProps) {
 		setAgentSkillContext,
 		setPlanMode,
 		resetSessionSelection,
-		clearVaultReferences,
 	]);
 }
 
@@ -3346,7 +3531,7 @@ export function ChatPage() {
 		initialSessionApprovalsReviewer,
 	]);
 	const { prompt: seededPrompt } = ravenSearch;
-	const { input, setInput, clearDraft } = useDraft({
+	const { input, setInput, draftKey, clearDraft } = useDraft({
 		existingSessionId,
 		seededPrompt,
 		onClearSeed: () =>
@@ -3361,6 +3546,16 @@ export function ChatPage() {
 	});
 	const upload = useFileUpload({ agentCwd: agentSkillContext, sessionId });
 	const { pendingAttachments, uploadingCount } = upload;
+	const { clear: clearComposerCheckpoint } = useRavenComposerCheckpoint({
+		draftKey,
+		attachments: pendingAttachments,
+		setAttachments: upload.setPendingAttachments,
+		clearAttachments: upload.clearPending,
+		vaultReferences: vaultPicker.selected,
+		relicReferences: vaultPicker.selectedRelics,
+		workspaceReferences: vaultPicker.selectedWorkspace,
+		replaceReferences: vaultPicker.replaceSelections,
+	});
 	const [planMode, setPlanMode] = useState(false);
 	useEffect(() => {
 		const live = runtime.providerConfigOptions;
@@ -3406,24 +3601,33 @@ export function ChatPage() {
 	}, [sessionId]);
 	const [dragOver, setDragOver] = useState(false);
 	const [showModelPopup, setShowModelPopup] = useState(false);
+	const notificationAttention = ravenSearch.attention;
+	const notificationAttentionId = ravenSearch.attention_id;
+	const notificationBatchId = ravenSearch.notification_batch;
+	const notificationOpen = ravenSearch.notification_open === true;
 	const viewport = useRavenViewport({
 		input,
 		messages,
 		sessionId,
+		historyReady: runtime.historyReady,
+		hasOlderHistory: runtime.hasOlderHistory,
+		isLoadingOlderHistory: runtime.isLoadingOlderHistory,
+		loadOlderHistory: runtime.loadOlderHistory,
+		notificationTargeted: Boolean(
+			notificationAttention || notificationBatchId || notificationOpen,
+		),
 		activeSkills,
 		showModelPopup,
 		setShowModelPopup,
 	});
 	const { focusSkillOnNextRender } = viewport;
-	const notificationAttention = ravenSearch.attention;
-	const notificationAttentionId = ravenSearch.attention_id;
-	const notificationBatchId = ravenSearch.notification_batch;
 	const closeNotificationBatch = useCallback(() => {
 		void navigate({
 			to: "/raven",
 			search: (previous) => ({
 				...previous,
 				notification_batch: undefined,
+				notification_open: undefined,
 			}),
 			replace: true,
 		});
@@ -3440,11 +3644,23 @@ export function ChatPage() {
 					attention: undefined,
 					attention_id: undefined,
 					notification_batch: undefined,
+					notification_open: notificationOpen ? true : undefined,
 				}),
 			});
 		},
-		[navigate],
+		[navigate, notificationOpen],
 	);
+	useEffect(() => {
+		if (!notificationOpen || notificationBatchId) return;
+		void navigate({
+			to: "/raven",
+			search: (previous) => ({
+				...previous,
+				notification_open: undefined,
+			}),
+			replace: true,
+		});
+	}, [navigate, notificationBatchId, notificationOpen]);
 	const hasPendingNotificationAttention = useMemo(() => {
 		if (!notificationAttention) return false;
 		return runtime.messages.some((message) =>
@@ -3702,6 +3918,7 @@ export function ChatPage() {
 		input,
 		setInput,
 		clearDraft,
+		clearComposerCheckpoint,
 		activeSkills,
 		setActiveSkills,
 		commands,
@@ -4585,7 +4802,8 @@ function RavenMessagePane({
 }: ChatPageContentProps) {
 	const { sessionId } = session;
 	const { wsStatus, sessionState, runningTurnId, messages, send } = runtime;
-	const { scrollRef, bottomRef, transcriptContentRef } = viewport;
+	const { scrollRef, bottomRef, transcriptContentRef, restoreMessageId } =
+		viewport;
 	const {
 		handleDecide,
 		handleSubmitAnswers,
@@ -4704,6 +4922,7 @@ function RavenMessagePane({
 									hasOlderHistory={runtime.hasOlderHistory}
 									isLoadingOlderHistory={runtime.isLoadingOlderHistory}
 									onLoadOlderHistory={handleLoadOlderHistory}
+									restoreMessageId={restoreMessageId}
 									onLoadEarlierToolEvents={runtime.loadEarlierToolEvents}
 									handleDecide={handleDecide}
 									handleSubmitAnswers={handleSubmitAnswers}

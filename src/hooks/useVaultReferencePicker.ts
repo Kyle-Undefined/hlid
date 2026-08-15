@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	previewVaultReferenceFn,
 	previewWorkspaceReferenceFn,
@@ -23,6 +23,12 @@ import {
 
 const SEARCH_DEBOUNCE_MS = 120;
 export type ComposerReferenceSource = "vault" | "workspace" | "relic";
+
+export type VaultReferenceSelections = {
+	vault: VaultReferenceItem[];
+	relics: RelicReferenceItem[];
+	workspace: WorkspaceReferenceSelection[];
+};
 
 function workspaceSelection(
 	preview: WorkspaceReferencePreview,
@@ -418,6 +424,28 @@ export function useVaultReferencePicker(
 		setPreviewError(null);
 	}
 
+	const replaceSelections = useCallback(
+		({ vault, relics, workspace }: VaultReferenceSelections) => {
+			requestId.current++;
+			previewRequestId.current++;
+			selectionRequestId.current++;
+			setSelected([...vault]);
+			setSelectedRelics([...relics]);
+			setSelectedWorkspace([...workspace]);
+			setWorkspacePreview(null);
+			setVaultPreview(null);
+			setRelicPreview(null);
+			setPreviewLoading(false);
+			setPreviewError(null);
+			setWorkspaceSelectionLoading(null);
+		},
+		[],
+	);
+	const clear = useCallback(
+		() => replaceSelections({ vault: [], relics: [], workspace: [] }),
+		[replaceSelections],
+	);
+
 	return {
 		isOpen,
 		query: query?.query ?? "",
@@ -479,14 +507,7 @@ export function useVaultReferencePicker(
 			setSelectedWorkspace((current) =>
 				current.filter((item) => item.relativePath !== relativePath),
 			),
-		clear: () => {
-			setSelected([]);
-			setSelectedRelics([]);
-			setSelectedWorkspace([]);
-			setWorkspacePreview(null);
-			setVaultPreview(null);
-			setRelicPreview(null);
-			setPreviewError(null);
-		},
+		replaceSelections,
+		clear,
 	};
 }

@@ -101,4 +101,32 @@ describe("useFileUpload", () => {
 		expect(result.current.gitignoreHint).toBeNull();
 		expect(localStorage.getItem("hlid:gitignore-hint:/repo")).toBe("dismissed");
 	});
+
+	it("does not resurrect a completed upload after pending state is cleared", async () => {
+		let resolveUpload!: (response: Response) => void;
+		fetchMock.mockImplementationOnce(
+			() =>
+				new Promise<Response>((resolve) => {
+					resolveUpload = resolve;
+				}),
+		);
+		const { result } = renderHook(() =>
+			useFileUpload({ sessionId: "session-1" }),
+		);
+
+		let upload!: Promise<void>;
+		act(() => {
+			upload = result.current.uploadFiles([new File(["old"], "old.txt")]);
+		});
+		expect(result.current.uploadingCount).toBe(1);
+		act(() => result.current.clearPending());
+		await act(async () => {
+			resolveUpload(uploaded("old", "old.txt"));
+			await upload;
+		});
+
+		expect(result.current.uploadingCount).toBe(0);
+		expect(result.current.pendingAttachments).toEqual([]);
+		expect(result.current.uploadError).toBeNull();
+	});
 });

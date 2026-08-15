@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { QueuedChatMessage } from "#/hooks/wsChatQueueStore";
 import { approvedLabel } from "#/server/protocol";
 import type { AssistantMessage, ChatMessage, UserMessage } from "./chatReducer";
@@ -149,6 +149,7 @@ export function useMessageListView({
 	hasOlderHistory = false,
 	isLoadingOlderHistory = false,
 	onLoadOlderHistory,
+	restoreMessageId,
 }: {
 	messages: ChatMessage[];
 	chatQueue: QueuedChatMessage[];
@@ -158,6 +159,9 @@ export function useMessageListView({
 	hasOlderHistory?: boolean;
 	isLoadingOlderHistory?: boolean;
 	onLoadOlderHistory?: () => Promise<number>;
+	/** Keep a cold-restore anchor mounted even when it is older than the normal
+	 * 100-row render window. The caller bounds how many history pages it loads. */
+	restoreMessageId?: string | null;
 }) {
 	const [visibleHistoryCount, setVisibleHistoryCount] = useState(
 		HISTORY_RENDER_PAGE_SIZE,
@@ -165,12 +169,18 @@ export function useMessageListView({
 	const [isCursorLoadReserved, setIsCursorLoadReserved] = useState(false);
 	const activeCursorLoadRef = useRef<object | null>(null);
 	const currentSessionIdRef = useRef(sessionId);
+	const renderWindowSessionIdRef = useRef(sessionId);
+	const restoreVisibleCountRef = useRef(0);
 	currentSessionIdRef.current = sessionId;
-	// biome-ignore lint/correctness/useExhaustiveDependencies: changing sessions resets the bounded render window
 	useEffect(() => {
-		activeCursorLoadRef.current = null;
-		setIsCursorLoadReserved(false);
-		setVisibleHistoryCount(HISTORY_RENDER_PAGE_SIZE);
+		if (renderWindowSessionIdRef.current !== sessionId) {
+			renderWindowSessionIdRef.current = sessionId;
+			activeCursorLoadRef.current = null;
+			setIsCursorLoadReserved(false);
+			setVisibleHistoryCount(
+				Math.max(HISTORY_RENDER_PAGE_SIZE, restoreVisibleCountRef.current),
+			);
+		}
 		return () => {
 			activeCursorLoadRef.current = null;
 		};
@@ -185,9 +195,23 @@ export function useMessageListView({
 		() => groupConsecutiveLiveAssistantMessages(steerGroupedMessages),
 		[steerGroupedMessages],
 	);
+	const restoreIndex = restoreMessageId
+		? groupedMessages.findIndex((message) => message.id === restoreMessageId)
+		: -1;
+	const restoreVisibleCount =
+		restoreIndex >= 0 ? groupedMessages.length - restoreIndex : 0;
+	restoreVisibleCountRef.current = restoreVisibleCount;
+	useLayoutEffect(() => {
+		if (restoreVisibleCount <= visibleHistoryCount) return;
+		setVisibleHistoryCount(restoreVisibleCount);
+	}, [restoreVisibleCount, visibleHistoryCount]);
+	const effectiveVisibleHistoryCount = Math.max(
+		visibleHistoryCount,
+		restoreVisibleCount,
+	);
 	const hiddenHistoryCount = isCursorLoadReserved
 		? 0
-		: Math.max(0, groupedMessages.length - visibleHistoryCount);
+		: Math.max(0, groupedMessages.length - effectiveVisibleHistoryCount);
 	const visibleMessages = useMemo(
 		() => groupedMessages.slice(hiddenHistoryCount),
 		[groupedMessages, hiddenHistoryCount],

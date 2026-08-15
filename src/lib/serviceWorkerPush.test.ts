@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { runInNewContext } from "node:vm";
+import { MessageChannel } from "node:worker_threads";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { webPushNotificationPayloadSchema } from "./pushNotificationSchemas";
 
@@ -110,6 +111,7 @@ function loadWorker(
 		URL,
 		Response,
 		Promise,
+		MessageChannel,
 		atob,
 		fetch: fetchMock,
 		setTimeout,
@@ -298,6 +300,15 @@ function validPayload(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+function navigationAcknowledgement() {
+	return vi.fn((_message: unknown, transfer: readonly MessagePort[]) => {
+		transfer[0]?.postMessage({
+			type: "hlid:navigate-notification-ack",
+			accepted: true,
+		});
+	});
+}
+
 const DELIVERY_ID = "019ffa8b-0df1-7c63-8d03-e428cbae240f";
 const DELIVERY_ID_2 = "019ffa8b-0df1-7c63-bd03-e428cbae240f";
 const DELIVERY_ID_3 = "019ffa8b-0df1-7c63-ad04-e428cbae240f";
@@ -406,7 +417,7 @@ describe("service worker push notifications", () => {
 			{ delivery_id: DELIVERY_ID, status: "dismissed" },
 		]);
 		expect(existingClient.navigate).toHaveBeenCalledWith(
-			"/raven?session=session-1",
+			"/raven?session=session-1&notification_open=1",
 		);
 		expect(focusedClient.focus).toHaveBeenCalledOnce();
 	});
@@ -697,7 +708,7 @@ describe("service worker push notifications", () => {
 		await dispatchClose(worker.handlers.notificationclose, shown);
 
 		expect(existingClient.navigate).toHaveBeenCalledWith(
-			"/raven?notification_batch=batch-test-123",
+			"/raven?notification_batch=batch-test-123&notification_open=1",
 		);
 		expect(worker.clearAppBadge).toHaveBeenCalled();
 		const receipts = worker.fetchMock.mock.calls
@@ -1021,13 +1032,13 @@ describe("service worker push notifications", () => {
 		);
 	});
 
-	it("navigates a reported standalone PWA before any browser window", async () => {
-		const focusedPwa = { focus: vi.fn().mockResolvedValue(undefined) };
+	it("uses the live router in a reported standalone PWA without reloading it", async () => {
 		const standaloneClient = {
 			id: "standalone-client-1",
 			url: "https://hlid.test/forge",
-			navigate: vi.fn().mockResolvedValue(focusedPwa),
-			focus: vi.fn(),
+			navigate: vi.fn(),
+			focus: vi.fn().mockResolvedValue(undefined),
+			postMessage: navigationAcknowledgement(),
 		};
 		const websiteClient = {
 			id: "browser-client-1",
@@ -1048,31 +1059,42 @@ describe("service worker push notifications", () => {
 			url: "/raven?session=session-1",
 		});
 
-		expect(standaloneClient.navigate).toHaveBeenCalledWith(
-			"/raven?session=session-1",
-		);
 		expect(standaloneClient.focus).toHaveBeenCalledOnce();
-		expect(focusedPwa.focus).toHaveBeenCalledOnce();
+		expect(standaloneClient.postMessage).toHaveBeenCalledWith(
+			{
+				type: "hlid:navigate-notification",
+				version: 1,
+				url: "/raven?session=session-1",
+			},
+			expect.arrayContaining([expect.anything()]),
+		);
+		expect(standaloneClient.navigate).not.toHaveBeenCalled();
 		expect(websiteClient.navigate).not.toHaveBeenCalled();
 		expect(worker.openWindow).not.toHaveBeenCalled();
 	});
 
-	it("reuses an existing Hlid window before asking the browser to open one", async () => {
+	it("falls back to WindowClient navigation when a live page does not acknowledge", async () => {
 		const websiteClient = {
 			url: "https://hlid.test/forge",
 			navigate: vi.fn().mockResolvedValue(undefined),
 			focus: vi.fn().mockResolvedValue(undefined),
+			postMessage: vi.fn(),
 		};
 		const worker = loadWorker([websiteClient]);
 
-		await dispatchClick(worker.handlers.notificationclick, {
+		vi.useFakeTimers();
+		const click = dispatchClick(worker.handlers.notificationclick, {
 			sessionId: "session-1",
 			url: "/raven?session=session-1",
 		});
+		await vi.advanceTimersByTimeAsync(2_001);
+		await click;
+		vi.useRealTimers();
 
 		expect(websiteClient.focus).toHaveBeenCalledOnce();
+		expect(websiteClient.postMessage).toHaveBeenCalledOnce();
 		expect(websiteClient.navigate).toHaveBeenCalledWith(
-			"/raven?session=session-1",
+			"/raven?session=session-1&notification_open=1",
 		);
 		expect(worker.openWindow).not.toHaveBeenCalled();
 	});
@@ -1082,7 +1104,9 @@ describe("service worker push notifications", () => {
 			url: "https://hlid.test/forge",
 			focus: vi.fn(),
 			navigate: vi.fn().mockRejectedValue(new Error("stale window handle")),
-			postMessage: vi.fn(),
+			postMessage: vi.fn(() => {
+				throw new Error("stale message handle");
+			}),
 		};
 		backgroundPwa.focus.mockResolvedValue(backgroundPwa);
 		const worker = loadWorker([backgroundPwa]);
@@ -1094,13 +1118,42 @@ describe("service worker push notifications", () => {
 
 		expect(backgroundPwa.focus).toHaveBeenCalledOnce();
 		expect(backgroundPwa.navigate).toHaveBeenCalledWith(
-			"/raven?session=session-1",
+			"/raven?session=session-1&notification_open=1",
 		);
-		expect(backgroundPwa.postMessage).toHaveBeenCalledWith({
-			type: "hlid:navigate-notification",
+		expect(backgroundPwa.postMessage).toHaveBeenCalledWith(
+			{
+				type: "hlid:navigate-notification",
+				version: 1,
+				url: "/raven?session=session-1",
+			},
+			expect.arrayContaining([expect.anything()]),
+		);
+		expect(worker.openWindow).not.toHaveBeenCalled();
+	});
+
+	it("opens a safe window only after a stale client cannot focus or navigate", async () => {
+		const staleClient = {
+			url: "https://hlid.test/forge",
+			focus: vi.fn().mockRejectedValue(new Error("gone")),
+			navigate: vi.fn().mockRejectedValue(new Error("gone")),
+			postMessage: vi.fn(() => {
+				throw new Error("gone");
+			}),
+		};
+		const worker = loadWorker([staleClient]);
+
+		await dispatchClick(worker.handlers.notificationclick, {
+			sessionId: "session-1",
 			url: "/raven?session=session-1",
 		});
-		expect(worker.openWindow).not.toHaveBeenCalled();
+
+		expect(staleClient.focus).toHaveBeenCalledOnce();
+		expect(staleClient.navigate).toHaveBeenCalledWith(
+			"/raven?session=session-1&notification_open=1",
+		);
+		expect(worker.openWindow).toHaveBeenCalledWith(
+			"https://hlid.test/raven?session=session-1&notification_open=1",
+		);
 	});
 
 	it("falls back to navigating and focusing an existing Hlid website", async () => {
@@ -1119,7 +1172,7 @@ describe("service worker push notifications", () => {
 
 		expect(close).toHaveBeenCalledOnce();
 		expect(existingClient.navigate).toHaveBeenCalledWith(
-			"/raven?session=session-1",
+			"/raven?session=session-1&notification_open=1",
 		);
 		expect(focusedClient.focus).toHaveBeenCalledOnce();
 		expect(worker.openWindow).not.toHaveBeenCalled();
@@ -1155,7 +1208,7 @@ describe("service worker push notifications", () => {
 		});
 
 		expect(worker.openWindow).toHaveBeenCalledWith(
-			"https://hlid.test/raven?session=session+%2F+two",
+			"https://hlid.test/raven?session=session+%2F+two&notification_open=1",
 		);
 	});
 

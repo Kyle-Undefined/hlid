@@ -357,4 +357,67 @@ describe("useVaultReferencePicker", () => {
 			]),
 		);
 	});
+
+	it("replaces restored Vault, Relic, and workspace selections exactly", () => {
+		const { result } = renderHook(() => useHarness("", "/work/hlid"));
+		act(() =>
+			result.current.picker.replaceSelections({
+				vault: [
+					{
+						relativePath: "Projects/Hlid.md",
+						name: "Hlid.md",
+						directory: "Projects",
+					},
+				],
+				relics: [
+					{
+						id: "relic-1",
+						path: "/vault/.hlid/report.pdf",
+						filename: "report.pdf",
+						mime: "application/pdf",
+						kind: "vault",
+						createdAt: 123,
+						category: "report",
+					},
+				],
+				workspace: [
+					{
+						relativePath: "src/server/session.ts",
+						name: "session.ts",
+						directory: "src/server",
+						sizeBytes: 23,
+						sha256: "a".repeat(64),
+						environment: "wsl",
+						environmentLabel: "WSL · Ubuntu",
+						previewKind: "text",
+						mime: "text/plain",
+					},
+				],
+			}),
+		);
+
+		act(() =>
+			result.current.picker.replaceSelections({
+				vault: [
+					{
+						relativePath: "Inbox/Todo.md",
+						name: "Todo.md",
+						directory: "Inbox",
+					},
+				],
+				relics: [],
+				workspace: [],
+			}),
+		);
+
+		expect(result.current.picker.selected).toEqual([
+			{
+				relativePath: "Inbox/Todo.md",
+				name: "Todo.md",
+				directory: "Inbox",
+			},
+		]);
+		expect(result.current.picker.selectedRelics).toEqual([]);
+		expect(result.current.picker.selectedWorkspace).toEqual([]);
+	});
 });
