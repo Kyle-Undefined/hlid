@@ -3,6 +3,7 @@ import * as db from "../db";
 import type { ProviderInfo } from "../lib/providerTypes";
 import type {
 	RoutineNotificationPolicy,
+	RoutineStatus,
 	RoutineSummary,
 } from "../lib/routines";
 import { bumpDataRevision } from "./dataRevision";
@@ -31,6 +32,8 @@ export type RoutineRunCompletionEvent = {
 	runId: string;
 	rootSessionId: string | null;
 	status: RoutineSessionResult["status"];
+	/** Exact status stored on the immutable Routine run row. */
+	persistedStatus?: RoutineStatus;
 	reason: RoutineRunCompletionReason;
 	message: string;
 	createdAt: number;
@@ -288,6 +291,7 @@ export class RoutineScheduler {
 						runId: run.id,
 						rootSessionId: result.sessionId ?? run.session_id,
 						status: result.status,
+						persistedStatus: result.status,
 						reason: completionReason(result.status),
 						message: completionMessage(routine, result),
 						createdAt: run.created_at,

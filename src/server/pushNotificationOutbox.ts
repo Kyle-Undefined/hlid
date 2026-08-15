@@ -25,7 +25,7 @@ import {
 	updatePushNotificationEventStatus,
 } from "../db";
 import type { SessionNotificationMode } from "../lib/pushNotificationSchemas";
-import { getNotificationVisibleUntil } from "./notificationPresence";
+import { getNotificationAppVisibleUntil } from "./notificationPresence";
 import {
 	deliverPushEventsWithinOutbox,
 	type PushDeliveryDependencies,
@@ -71,6 +71,7 @@ type OutboxDependencies = {
 		overrides: Partial<PushDeliveryDependencies>,
 	) => ReturnType<typeof deliverPushEventsWithinOutbox>;
 	visibleUntil: (aliases: string[], nowMs: number) => number | null;
+	startupPresenceGraceMs: number;
 	isRelevant: (
 		event: PushNotificationEventRecord,
 	) => boolean | Promise<boolean>;
@@ -100,7 +101,8 @@ const defaultDependencies: OutboxDependencies = {
 	addBatchMembers: addPushNotificationBatchMembers,
 	updateBatch: updatePushNotificationBatchStatus,
 	deliver: deliverPushEventsWithinOutbox,
-	visibleUntil: (aliases, nowMs) => getNotificationVisibleUntil(aliases, nowMs),
+	visibleUntil: (_aliases, nowMs) => getNotificationAppVisibleUntil(nowMs),
+	startupPresenceGraceMs: 0,
 	isRelevant: () => true,
 	schedule: setTimeout,
 	cancel: clearTimeout,
@@ -344,6 +346,8 @@ export class PushNotificationOutbox {
 	private readonly wakeTimes = new Set<number>();
 	private wakeAfterDrain = false;
 	private closed = true;
+	private startedAt: number | null = null;
+	private startupGraceUntil: number | null = null;
 
 	constructor(overrides: Partial<OutboxDependencies> = {}) {
 		this.dependencies = {
@@ -364,7 +368,14 @@ export class PushNotificationOutbox {
 
 	start(): void {
 		this.closed = false;
+		this.startedAt = this.dependencies.now();
+		this.startupGraceUntil =
+			this.dependencies.startupPresenceGraceMs > 0
+				? this.startedAt + this.dependencies.startupPresenceGraceMs
+				: null;
 		this.wake();
+		if (this.startupGraceUntil !== null)
+			this.scheduleWake(this.startupGraceUntil);
 		this.schedulePoll();
 	}
 
@@ -377,6 +388,8 @@ export class PushNotificationOutbox {
 		this.wakeAt = null;
 		this.wakeTimes.clear();
 		this.wakeAfterDrain = false;
+		this.startedAt = null;
+		this.startupGraceUntil = null;
 		this.persisted.clear();
 		this.persistedExpiry.clear();
 		this.latestAttentionBySession.clear();
@@ -451,6 +464,9 @@ export class PushNotificationOutbox {
 				metadata: {
 					kind: event.kind,
 					sessionAliases: event.sessionAliases,
+					...(event.appFocusedAtOccurrence
+						? { appFocusedAtOccurrence: true }
+						: {}),
 					...(event.attentionSince !== undefined
 						? { attentionSince: event.attentionSince }
 						: {}),
@@ -484,12 +500,15 @@ export class PushNotificationOutbox {
 		});
 	}
 
-	cancelSessionEvent(event: PushNotificationEvent): void {
+	cancelSessionEvent(
+		event: PushNotificationEvent,
+		reason = "state_resolved",
+	): void {
 		const pending = this.persisted.get(eventKey(event));
 		if (!pending) return;
 		void pending
 			.then(async (record) => {
-				await this.dependencies.terminateEvent(record.id, "state_resolved");
+				await this.dependencies.terminateEvent(record.id, reason);
 				this.cleanupTrackedEvent(record);
 			})
 			.catch(() => {});
@@ -648,6 +667,60 @@ export class PushNotificationOutbox {
 			: routinePolicy(event);
 	}
 
+	private recoveredEventGraceUntil(
+		event: PushNotificationEventRecord,
+		nowMs: number,
+	): number | null {
+		if (
+			this.startedAt === null ||
+			this.startupGraceUntil === null ||
+			nowMs >= this.startupGraceUntil ||
+			event.createdAt > this.startedAt
+		) {
+			return null;
+		}
+		return this.startupGraceUntil;
+	}
+
+	private completionWasFocusedAtOccurrence(
+		event: PushNotificationEventRecord,
+	): boolean {
+		return (
+			event.category === "completion" &&
+			event.metadata.appFocusedAtOccurrence === true
+		);
+	}
+
+	private async expireTerminalBatch(
+		event: PushNotificationEventRecord,
+		nowMs: number,
+	): Promise<void> {
+		if (!event.batchId) return;
+		const members = await this.dependencies.listBatchMembers(event.batchId);
+		const memberEvents = await Promise.all(
+			members.map((member) => this.dependencies.getEvent(member.eventId)),
+		);
+		const allTerminal = memberEvents.every(
+			(member) =>
+				member === null ||
+				member.status === "processed" ||
+				member.status === "expired" ||
+				member.status === "cancelled",
+		);
+		if (allTerminal) {
+			await this.dependencies.updateBatch(event.batchId, "expired", nowMs);
+		}
+	}
+
+	private async suppressFocusedCompletion(
+		event: PushNotificationEventRecord,
+		nowMs: number,
+	): Promise<void> {
+		await this.dependencies.terminateEvent(event.id, "app_focused");
+		this.cleanupTrackedEvent(event);
+		await this.expireTerminalBatch(event, nowMs);
+	}
+
 	private async process(input: PushNotificationEventRecord[]): Promise<void> {
 		const nowMs = this.dependencies.now();
 		const relevant: PushNotificationEventRecord[] = [];
@@ -657,23 +730,36 @@ export class PushNotificationOutbox {
 				this.cleanupTrackedEvent(event);
 				continue;
 			}
+			const startupGraceUntil = this.recoveredEventGraceUntil(event, nowMs);
+			if (startupGraceUntil !== null) {
+				await this.dependencies.updateEvent(event.id, {
+					status: "deferred",
+					reason: "startup_presence_grace",
+					nextAttemptAt: startupGraceUntil,
+				});
+				this.scheduleWake(startupGraceUntil);
+				continue;
+			}
+			const visibleUntil = this.dependencies.visibleUntil(
+				eventAliases(event),
+				nowMs,
+			);
 			if (
-				event.sourceKind === "session" ||
-				stringArray(event.metadata.sessionAliases).length > 0
+				event.category === "completion" &&
+				(this.completionWasFocusedAtOccurrence(event) ||
+					(visibleUntil !== null && visibleUntil > nowMs))
 			) {
-				const visibleUntil = this.dependencies.visibleUntil(
-					eventAliases(event),
-					nowMs,
-				);
-				if (visibleUntil && visibleUntil > nowMs) {
-					await this.dependencies.updateEvent(event.id, {
-						status: "deferred",
-						reason: "visible",
-						nextAttemptAt: visibleUntil + 10,
-					});
-					this.scheduleWake(visibleUntil + 10);
-					continue;
-				}
+				await this.suppressFocusedCompletion(event, nowMs);
+				continue;
+			}
+			if (visibleUntil !== null && visibleUntil > nowMs) {
+				await this.dependencies.updateEvent(event.id, {
+					status: "deferred",
+					reason: "app_focused",
+					nextAttemptAt: visibleUntil + 10,
+				});
+				this.scheduleWake(visibleUntil + 10);
+				continue;
 			}
 			relevant.push(event);
 		}
@@ -1019,12 +1105,21 @@ export class PushNotificationOutbox {
 						eventAliases(candidate.event),
 						attemptNow,
 					);
-					if (visibleUntil && visibleUntil > attemptNow) {
+					if (
+						candidate.event.category === "completion" &&
+						(this.completionWasFocusedAtOccurrence(candidate.event) ||
+							(visibleUntil !== null && visibleUntil > attemptNow))
+					) {
+						cancelledEventIds.add(candidate.event.id);
+						await this.suppressFocusedCompletion(candidate.event, attemptNow);
+						continue;
+					}
+					if (visibleUntil !== null && visibleUntil > attemptNow) {
 						await this.dependencies.recordDecision({
 							eventId: candidate.event.id,
 							device: decisionDevice,
 							status: "queued",
-							reason: "visible",
+							reason: "app_focused",
 							nextAttemptAt: visibleUntil + 10,
 						});
 						this.scheduleWake(visibleUntil + 10);
@@ -1219,13 +1314,30 @@ export class PushNotificationOutbox {
 									eventAliases(candidate.event),
 									lockedNow,
 								);
-								if (lockedVisibleUntil && lockedVisibleUntil > lockedNow) {
+								if (
+									candidate.event.category === "completion" &&
+									(this.completionWasFocusedAtOccurrence(candidate.event) ||
+										(lockedVisibleUntil !== null &&
+											lockedVisibleUntil > lockedNow))
+								) {
+									handle();
+									cancelledEventIds.add(candidate.event.id);
+									await this.suppressFocusedCompletion(
+										candidate.event,
+										lockedNow,
+									);
+									continue;
+								}
+								if (
+									lockedVisibleUntil !== null &&
+									lockedVisibleUntil > lockedNow
+								) {
 									handle();
 									await this.dependencies.recordDecision({
 										eventId: candidate.event.id,
 										device: lockedDevice,
 										status: "queued",
-										reason: "visible",
+										reason: "app_focused",
 										nextAttemptAt: lockedVisibleUntil + 10,
 									});
 									this.scheduleWake(lockedVisibleUntil + 10);

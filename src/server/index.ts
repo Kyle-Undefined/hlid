@@ -100,6 +100,10 @@ import { INTERNAL_HLID_MCP_FLAG, runHlidMcpServer } from "./hlidMcpServer";
 import { migrateLegacyAttachmentsToLibrary } from "./libraryMigration";
 import { getLiveSessionsStatus } from "./liveSessions";
 import { MicrosoftSpeechManager } from "./microsoftSpeech";
+import {
+	getNotificationAppVisibleUntil,
+	NOTIFICATION_PRESENCE_LEASE_MS,
+} from "./notificationPresence";
 import { warmObsidianConnection } from "./obsidianConnectionCache";
 import {
 	INTERNAL_OBSIDIAN_MCP_FLAG,
@@ -142,6 +146,7 @@ import {
 	MULTIPART_OVERHEAD_BYTES,
 	payloadTooLarge,
 } from "./requestLimits";
+import { isRoutineNotificationRelevant } from "./routineNotificationRelevance";
 import {
 	type RoutineRunCompletionEvent,
 	runRoutineNow,
@@ -596,8 +601,12 @@ const broadcastLiveSessions = () => {
 };
 let pushNotificationCoordinator: PushNotificationCoordinator;
 const pushNotificationOutbox = new PushNotificationOutbox({
+	startupPresenceGraceMs: NOTIFICATION_PRESENCE_LEASE_MS,
 	reconcileOneShots: db.reconcilePushNotificationOneShots,
 	isRelevant: (event) => {
+		if (event.sourceKind === "routine") {
+			return isRoutineNotificationRelevant(event, db.getRoutine);
+		}
 		if (event.sourceKind !== "session") return true;
 		const aliases = Array.isArray(event.metadata.sessionAliases)
 			? event.metadata.sessionAliases.filter(
@@ -623,7 +632,8 @@ const pushNotificationOutbox = new PushNotificationOutbox({
 });
 pushNotificationCoordinator = new PushNotificationCoordinator({
 	persist: (event) => pushNotificationOutbox.persistSessionEvent(event),
-	cancelPersisted: (event) => pushNotificationOutbox.cancelSessionEvent(event),
+	cancelPersisted: (event, reason) =>
+		pushNotificationOutbox.cancelSessionEvent(event, reason),
 	deliver: () => pushNotificationOutbox.wake(),
 });
 const handlePushRoute = createPushRouteHandler({
@@ -697,6 +707,15 @@ const enqueueRoutineNotification = async (
 				? ("request" as const)
 				: ("problem" as const);
 	const occurredAt = event.finishedAt * 1_000;
+	const presenceCheckedAt = Date.now();
+	// Live scheduler callbacks arrive with the terminal transition, so this
+	// stamps confirmed foreground state at occurrence. Startup recovery cannot
+	// reconstruct a pre-crash lease; those events instead receive the outbox's
+	// bounded reconnect grace and are suppressed only if a client returns.
+	const appFocusedAtOccurrence =
+		event.status === "succeeded" &&
+		(getNotificationAppVisibleUntil(presenceCheckedAt) ?? 0) >
+			presenceCheckedAt;
 	const stored = await db.enqueuePushNotificationEvent({
 		sourceKind: "routine",
 		sourceId: event.runId,
@@ -716,7 +735,8 @@ const enqueueRoutineNotification = async (
 			routineRunId: event.runId,
 			rootSessionId: event.rootSessionId,
 			...(event.rootSessionId ? { sessionAliases: [event.rootSessionId] } : {}),
-			status: event.status,
+			status: event.persistedStatus ?? event.status,
+			...(appFocusedAtOccurrence ? { appFocusedAtOccurrence: true } : {}),
 			message: event.message,
 			notificationMode: outcome,
 			targetDeviceIds:
@@ -768,6 +788,7 @@ const recoverRoutineNotifications = async (): Promise<void> => {
 					run.status === "interrupted"
 						? "failed"
 						: (run.status as RoutineRunCompletionEvent["status"]),
+				persistedStatus: run.status,
 				reason,
 				message: (
 					run.action_required ??

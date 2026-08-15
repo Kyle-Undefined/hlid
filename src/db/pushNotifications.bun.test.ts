@@ -1613,6 +1613,78 @@ describe("Web Push subscription storage", () => {
 		]);
 	});
 
+	it("keeps accepted history while terminally quieting remaining focused completion retries", async () => {
+		const phone = await upsertPushSubscription(
+			subscription("focused-completion-phone"),
+			AUTH_ONE,
+		);
+		const tablet = await upsertPushSubscription(
+			subscription("focused-completion-tablet"),
+			AUTH_TWO,
+		);
+		const completion = await enqueuePushNotificationEvent({
+			id: "focused-completion-event",
+			sourceKind: "session",
+			sourceId: "focused-completion-session",
+			category: "completion",
+			reason: "ready",
+			occurredAt: 1_000,
+			expiresAt: 100_000,
+		});
+		for (const device of [phone, tablet]) {
+			await recordPushNotificationDecision({
+				eventId: completion.id,
+				device: {
+					id: device.id,
+					name: device.name,
+					privacy: device.preferences.privacy,
+				},
+				status: "pending",
+			});
+		}
+		await recordPushNotificationReceipt({
+			eventId: completion.id,
+			deviceId: phone.id,
+			status: "sent",
+			reason: "accepted",
+			receiptAt: 2_000,
+		});
+		await recordPushNotificationReceipt({
+			eventId: completion.id,
+			deviceId: tablet.id,
+			status: "failed",
+			reason: "provider_failure",
+			nextAttemptAt: 5_000,
+			receiptAt: 2_000,
+		});
+		await updatePushNotificationEventStatus(completion.id, {
+			status: "processed",
+			reason: "provider_accepted",
+		});
+
+		expect(
+			await terminatePushNotificationEvent(completion.id, "app_focused"),
+		).toMatchObject({
+			status: "processed",
+			statusReason: "provider_accepted",
+		});
+		expect(await listPushNotificationDeliveries(completion.id)).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					deviceId: phone.id,
+					status: "sent",
+					reason: "accepted",
+				}),
+				expect.objectContaining({
+					deviceId: tablet.id,
+					status: "expired",
+					reason: "app_focused",
+					nextAttemptAt: null,
+				}),
+			]),
+		);
+	});
+
 	it("resolves the nearest delegation-tree policy and keeps exact targets fail closed", async () => {
 		const db = await getDb();
 		for (const id of ["root", "child", "grandchild", "unrelated"]) {

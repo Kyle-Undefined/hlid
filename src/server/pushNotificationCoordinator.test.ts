@@ -758,7 +758,7 @@ describe("PushNotificationCoordinator", () => {
 		]);
 	});
 
-	it("defers while Raven is visible, then delivers if still relevant", async () => {
+	it("defers attention while Hlid is focused, then delivers if still relevant", async () => {
 		let now = 1_000;
 		let callback: (() => void) | undefined;
 		const deliver = vi.fn();
@@ -780,6 +780,46 @@ describe("PushNotificationCoordinator", () => {
 		callback?.();
 		await Promise.resolve();
 		expect(deliver).toHaveBeenCalledTimes(1);
+	});
+
+	it("stamps focused completions at occurrence so backgrounding cannot replay them", async () => {
+		let now = 1_000;
+		let visible = true;
+		let callback: (() => void) | undefined;
+		const deliver = vi.fn();
+		const persist = vi.fn();
+		const cancelPersisted = vi.fn();
+		const coordinator = new PushNotificationCoordinator({
+			deliver,
+			persist,
+			cancelPersisted,
+			now: () => now,
+			visibleUntil: () => (visible ? now + 1_000 : null),
+			schedule: (next) => {
+				callback = next;
+				return 1 as unknown as ReturnType<typeof setTimeout>;
+			},
+			cancel: () => {},
+		});
+		coordinator.observe([session("working", "provider_turn", now)]);
+		now = 1_100;
+		coordinator.observe([session("recent", "ready", now)]);
+		expect(persist).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "work_finished",
+				appFocusedAtOccurrence: true,
+			}),
+		);
+
+		visible = false;
+		now = 1_851;
+		callback?.();
+		await Promise.resolve();
+		expect(cancelPersisted).toHaveBeenCalledWith(
+			expect.objectContaining({ appFocusedAtOccurrence: true }),
+			"app_focused",
+		);
+		expect(deliver).not.toHaveBeenCalled();
 	});
 
 	it("cancels a deferred attention alert once resolved", () => {

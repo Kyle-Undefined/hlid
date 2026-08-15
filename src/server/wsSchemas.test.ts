@@ -70,6 +70,14 @@ describe("chat WebSocket runtime schema", () => {
 			parseClientMessage(
 				JSON.stringify({
 					type: "notification_presence",
+					visible: false,
+				}),
+			),
+		).toEqual({ type: "notification_presence", visible: false });
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "notification_presence",
 					session_id: "",
 					visible: true,
 				}),

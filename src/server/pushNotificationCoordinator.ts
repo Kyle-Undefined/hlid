@@ -1,5 +1,5 @@
 import type { PushNotificationCategory } from "../lib/pushNotificationSchemas";
-import { getNotificationVisibleUntil } from "./notificationPresence";
+import { getNotificationAppVisibleUntil } from "./notificationPresence";
 import type { SessionAttentionReason, SessionStatusEntry } from "./protocol";
 
 export type PushNotificationKind = "needs_attention" | "work_finished";
@@ -20,6 +20,8 @@ export type PushNotificationEvent = {
 	attentionId?: string;
 	occurredAt: number;
 	expiresAt: number;
+	/** The app had a confirmed foreground lease when this completion occurred. */
+	appFocusedAtOccurrence?: boolean;
 };
 
 export type PushNotificationDelivery = (
@@ -316,7 +318,7 @@ export type PushNotificationRelevanceEvent = {
 type CoordinatorOptions = {
 	deliver: PushNotificationDelivery;
 	persist?: (event: PushNotificationEvent) => void;
-	cancelPersisted?: (event: PushNotificationEvent) => void;
+	cancelPersisted?: (event: PushNotificationEvent, reason?: string) => void;
 	now?: () => number;
 	visibleUntil?: (sessionAliases: string[], now: number) => number | null;
 	schedule?: (
@@ -328,9 +330,9 @@ type CoordinatorOptions = {
 
 /**
  * Converts authoritative attention bucket transitions into deduplicated push
- * events. The initial snapshot only establishes a baseline. Events that occur
- * while their Raven session is visible wait for the bounded presence lease;
- * they are cancelled if the state is no longer relevant before delivery.
+ * events. The initial snapshot only establishes a baseline. Attention waits
+ * while Hlid has a foreground lease and is cancelled if its state resolves;
+ * completions confirmed during foreground use are terminally quieted.
  */
 export class PushNotificationCoordinator {
 	private readonly tracker = new PushNotificationTransitionTracker();
@@ -357,8 +359,7 @@ export class PushNotificationCoordinator {
 		this.now = options.now ?? Date.now;
 		this.visibleUntil =
 			options.visibleUntil ??
-			((sessionAliases, now) =>
-				getNotificationVisibleUntil(sessionAliases, now));
+			((_sessionAliases, now) => getNotificationAppVisibleUntil(now));
 		this.schedule = options.schedule ?? setTimeout;
 		this.cancel = options.cancel ?? clearTimeout;
 	}
@@ -408,10 +409,16 @@ export class PushNotificationCoordinator {
 			// reconciliation below emits one durable baseline for every current
 			// request after restoration has settled.
 			if (this.startupBaselinePending && !reconcileBaseline) continue;
-			const key = event.sessionAliases[0] ?? event.sessionId;
+			const appFocusedAtOccurrence =
+				event.kind === "work_finished" &&
+				(this.visibleUntil(event.sessionAliases, now) ?? 0) > now;
+			const trackedEvent = appFocusedAtOccurrence
+				? { ...event, appFocusedAtOccurrence: true }
+				: event;
+			const key = trackedEvent.sessionAliases[0] ?? trackedEvent.sessionId;
 			this.clearPending(key);
-			this.persist?.(event);
-			this.pending.set(key, { event, timer: null });
+			this.persist?.(trackedEvent);
+			this.pending.set(key, { event: trackedEvent, timer: null });
 			this.tryDeliver(key);
 		}
 	}
@@ -486,11 +493,22 @@ export class PushNotificationCoordinator {
 		}
 		const visibleUntil = this.visibleUntil(scheduled.event.sessionAliases, now);
 		if (visibleUntil && visibleUntil > now) {
+			if (scheduled.event.kind === "work_finished") {
+				this.clearPending(key, true, "app_focused");
+				return;
+			}
 			if (scheduled.timer) this.cancel(scheduled.timer);
 			scheduled.timer = this.schedule(
 				() => this.tryDeliver(key),
 				visibleUntil - now + 10,
 			);
+			return;
+		}
+		if (
+			scheduled.event.kind === "work_finished" &&
+			scheduled.event.appFocusedAtOccurrence
+		) {
+			this.clearPending(key, true, "app_focused");
 			return;
 		}
 
@@ -527,7 +545,14 @@ export class PushNotificationCoordinator {
 				return false;
 			}
 			const visibleUntil = this.visibleUntil(event.sessionAliases, now);
-			return !visibleUntil || visibleUntil <= now;
+			if (
+				event.appFocusedAtOccurrence ||
+				(visibleUntil !== null && visibleUntil > now)
+			) {
+				this.cancelPersisted?.(event, "app_focused");
+				return false;
+			}
+			return true;
 		});
 		this.completionBatch = [];
 		for (
@@ -550,10 +575,15 @@ export class PushNotificationCoordinator {
 		});
 	}
 
-	private clearPending(key: string, cancelPersisted = true): void {
+	private clearPending(
+		key: string,
+		cancelPersisted = true,
+		reason?: string,
+	): void {
 		const scheduled = this.pending.get(key);
 		if (scheduled?.timer) this.cancel(scheduled.timer);
-		if (scheduled && cancelPersisted) this.cancelPersisted?.(scheduled.event);
+		if (scheduled && cancelPersisted)
+			this.cancelPersisted?.(scheduled.event, reason);
 		this.pending.delete(key);
 	}
 }

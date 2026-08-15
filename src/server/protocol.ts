@@ -1293,13 +1293,13 @@ export type ClientConnectionProbeMessage = {
 };
 
 /**
- * Short-lived proof that this browser is visibly showing a Raven session.
- * The server uses the lease to avoid pushing a notification for the session
- * already in front of the user.
+ * Short-lived proof that this browser is visibly showing Hlid. Presence is
+ * app-global; the optional session ID is accepted for rolling compatibility
+ * with older clients and has no effect on notification routing.
  */
 export type ClientNotificationPresenceMessage = {
 	type: "notification_presence";
-	session_id: string;
+	session_id?: string;
 	visible: boolean;
 };
 

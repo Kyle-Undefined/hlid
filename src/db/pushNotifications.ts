@@ -1709,7 +1709,6 @@ export async function terminatePushNotificationEvent(
 			.get(id);
 		if (
 			!current ||
-			current.status === "processed" ||
 			current.status === "expired" ||
 			current.status === "cancelled"
 		) {
@@ -1725,12 +1724,14 @@ export async function terminatePushNotificationEvent(
 		);
 		db.run(
 			`UPDATE push_notification_deliveries
-				 SET status = 'expired', reason = 'state_changed',
+				 SET status = 'expired',
+				     reason = CASE WHEN ? = 'app_focused' THEN ? ELSE 'state_changed' END,
 				     next_attempt_at = NULL, updated_at = ?
 				 WHERE event_id = ?
 				   AND status IN ('pending', 'queued', 'failed')`,
-			[now, id],
+			[reason, reason.slice(0, 128), now, id],
 		);
+		if (current.status === "processed") return;
 		db.run(
 			`UPDATE push_notification_events
 			 SET status = ?, status_reason = ?, next_attempt_at = NULL,

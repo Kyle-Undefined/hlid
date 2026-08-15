@@ -79,7 +79,7 @@ import { useCommands } from "#/hooks/useCommands";
 import { useDraft } from "#/hooks/useDraft";
 import { useFileUpload } from "#/hooks/useFileUpload";
 import { useLoadChatHistory } from "#/hooks/useLoadChatHistory";
-import { useNotificationPresence } from "#/hooks/useNotificationPresence";
+import { useRavenNotificationCleanup } from "#/hooks/useNotificationPresence";
 import { useRavenComposerCheckpoint } from "#/hooks/useRavenComposerCheckpoint";
 import { useSlashPicker } from "#/hooks/useSlashPicker";
 import { useVaultReferencePicker } from "#/hooks/useVaultReferencePicker";
@@ -1034,8 +1034,6 @@ function useConfirmedNotificationSessionId(
 function useRavenChatRuntime({
 	existingSessionId,
 	isExplicitSession,
-	sessionId,
-	notificationSessionId,
 	sessionIdRef,
 	agentCwd,
 	expectedProviderId,
@@ -1043,8 +1041,6 @@ function useRavenChatRuntime({
 }: {
 	existingSessionId: string | null;
 	isExplicitSession: boolean;
-	sessionId: string;
-	notificationSessionId: string | null;
 	sessionIdRef: { current: string };
 	agentCwd?: string;
 	expectedProviderId?: string;
@@ -1370,12 +1366,6 @@ function useRavenChatRuntime({
 		],
 	);
 	const connection = useWs(handleAllMessages);
-	useNotificationPresence(
-		sessionId,
-		notificationSessionId,
-		connection.wsStatus,
-		connection.send,
-	);
 	const controlGoal = useCallback(
 		(
 			control:
@@ -3205,6 +3195,7 @@ export function ChatPage() {
 		sessionPersisted,
 		session.liveSessionStatus,
 	);
+	useRavenNotificationCleanup(notificationSessionId);
 	const pendingNotificationPolicy = usePendingSessionNotificationPolicy(
 		sessionId,
 		notificationSessionId,
@@ -3615,8 +3606,6 @@ export function ChatPage() {
 	const runtime = useRavenChatRuntime({
 		existingSessionId,
 		isExplicitSession,
-		sessionId,
-		notificationSessionId,
 		sessionIdRef,
 		agentCwd: agentSkillContext,
 		expectedProviderId: activeProviderId,

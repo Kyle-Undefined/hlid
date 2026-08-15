@@ -868,15 +868,17 @@ browser's installed-app link preference. If that preference is disabled, or the
 Home Screen icon is only a bookmark rather than an installed PWA, Android may
 open a browser tab instead.
 
-The bell beside Raven's attachment and voice controls appears once a session is
-durable. It offers **Default**, **Notify when finished**, **Always notify**, and
+The bell beside Raven's attachment and voice controls is available before the
+first prompt, so a new session can start with the notification behavior you
+want. It offers **Default**, **Notify when finished**, **Always notify**, and
 **Mute**. Default uses the effective device and inherited session rules. Notify
 when finished sends one completion alert, then returns that setting to Default
 after at least one push service accepts it. Always notify bypasses the device's
-category and completion minimum for eligible alerts. Mute suppresses alerts
-covered by the setting. An older session can still show **Next alert once
-(legacy)** until its next eligible alert is accepted. Device pause and quiet
-hours still win over every notify mode.
+category and completion minimum for eligible alerts, but does not interrupt you
+while Hlid is in the foreground. Mute suppresses alerts covered by the setting.
+An older session can still show **Next alert once (legacy)** until its next
+eligible alert is accepted. Device pause and quiet hours still win over every
+notify mode.
 
 A non-default session setting can cover **This session** or **This session and
 delegated sessions**, and can target all subscribed devices or an exact checked
@@ -885,11 +887,17 @@ session has its own setting. The control shows the effective mode, scope,
 targets, and parent source before you save a change. Missing or revoked exact
 targets remain visible as unavailable and are not widened to other devices.
 
-Repeated state updates are grouped by session, brief transitions settle before
-delivery, and the session already visible in a focused `Raven` window does not
-notify you again. Delegated children can still send a request when action must
-happen in that exact child; their ordinary completion is represented by the
-eventual top-level session alert. Every alert opens the exact session.
+Repeated state updates are grouped by session, and brief transitions settle
+before delivery. Ordinary alerts stay quiet while any authenticated Hlid window
+is visible and focused, even when you are looking at another session or another
+Hlid area. A brief focus loss for a native picker is ignored. Requests and
+problems can notify after Hlid moves to the background if they are still
+relevant; completion and successful Routine alerts that happen while Hlid is in
+the foreground are suppressed instead of arriving later as catch-up alerts.
+Notification previews from Forge still run in the foreground. Delegated
+children can still send a request when action must happen in that exact child;
+their ordinary completion is represented by the eventual top-level session
+alert. Every alert opens the exact session.
 Tapping an approval, question, or plan-review alert also highlights the exact
 still-pending card that produced it. This exact tap destination is retained for
 both Generic and Detailed wording. Older alerts without an exact card ID can

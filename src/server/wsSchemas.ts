@@ -136,7 +136,7 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 	z.strictObject({ type: z.literal("connection_probe"), request_id: id }),
 	z.strictObject({
 		type: z.literal("notification_presence"),
-		session_id: id,
+		session_id: id.optional(),
 		visible: z.boolean(),
 	}),
 	z.strictObject({

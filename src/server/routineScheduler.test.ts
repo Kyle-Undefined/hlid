@@ -217,6 +217,7 @@ describe("RoutineScheduler durable completion callback", () => {
 				runId: run.id,
 				rootSessionId: result.sessionId,
 				status: result.status,
+				persistedStatus: result.status,
 				reason,
 				message,
 				createdAt: run.created_at,

@@ -271,6 +271,59 @@ describe("NotificationsSection", () => {
 		).toContain("min-w-0");
 	});
 
+	it("describes foreground suppression without implying work was cancelled", async () => {
+		const occurredAt = new Date(2026, 0, 2, 12).getTime();
+		const expiresAt = new Date(2026, 0, 3, 12).getTime();
+		vi.mocked(getPushNotificationHistory).mockResolvedValue([
+			{
+				id: "88888888-8888-4888-8888-888888888888",
+				sourceKind: "session",
+				sourceId: "session-complete",
+				category: "completion",
+				reason: "work_finished",
+				label: "Finished session",
+				url: "/raven?session=session-complete",
+				runtimeMs: 30_000,
+				pendingCount: 0,
+				occurredAt,
+				expiresAt,
+				groupKey: "completion",
+				batchId: null,
+				status: "cancelled",
+				statusReason: "app_focused",
+				nextAttemptAt: null,
+				deliveries: [],
+			},
+			{
+				id: "99999999-9999-4999-8999-999999999999",
+				sourceKind: "session",
+				sourceId: "session-request",
+				category: "request",
+				reason: "permission_required",
+				label: "Waiting session",
+				url: "/raven?session=session-request",
+				runtimeMs: null,
+				pendingCount: 1,
+				occurredAt,
+				expiresAt,
+				groupKey: null,
+				batchId: null,
+				status: "deferred",
+				statusReason: "app_focused",
+				nextAttemptAt: occurredAt + 15_000,
+				deliveries: [],
+			},
+		]);
+
+		render(<NotificationsSection />);
+
+		expect(
+			await screen.findByText("suppressed · Hlið was focused"),
+		).toBeTruthy();
+		expect(screen.getByText("deferred · Hlið is focused")).toBeTruthy();
+		expect(screen.queryByText(/cancelled · app focused/i)).toBeNull();
+	});
+
 	it("keeps history retry separate from device and opt-in controls", async () => {
 		vi.mocked(getPushNotificationHistory)
 			.mockRejectedValueOnce(new Error("History unavailable."))

@@ -130,6 +130,8 @@ function harness(options: {
 	policy?: EffectivePushSessionPolicy;
 	result?: WebPushSendResult;
 	preserveSentHistory?: boolean;
+	visibleUntil?: number | null;
+	startupPresenceGraceMs?: number;
 }) {
 	const selectedEvent = options.event ?? event();
 	const selectedDevice = options.device ?? subscription();
@@ -263,7 +265,8 @@ function harness(options: {
 		clearOneShot: clearOneShot as never,
 		reconcileOneShots,
 		deliver: deliver as never,
-		visibleUntil: () => null,
+		visibleUntil: () => options.visibleUntil ?? null,
+		startupPresenceGraceMs: options.startupPresenceGraceMs ?? 0,
 		isRelevant: () => true,
 	});
 	return {
@@ -390,6 +393,105 @@ describe("PushNotificationOutbox", () => {
 			}),
 		);
 		expect(test.clearOneShot).toHaveBeenCalledWith("session-1", "notify_once");
+	});
+
+	it("defers requests globally while any Hlid client is focused", async () => {
+		const test = harness({ visibleUntil: NOW + 15_000 });
+		test.outbox.start();
+		await vi.waitFor(() =>
+			expect(test.updateEvent).toHaveBeenCalledWith(
+				"22222222-2222-4222-8222-222222222222",
+				expect.objectContaining({
+					status: "deferred",
+					reason: "app_focused",
+					nextAttemptAt: NOW + 15_010,
+				}),
+			),
+		);
+		test.outbox.close();
+		expect(test.deliver).not.toHaveBeenCalled();
+	});
+
+	it("gives recovered events one bounded lease for clients to reconnect", async () => {
+		const test = harness({ startupPresenceGraceMs: 15_000 });
+		test.outbox.start();
+		await vi.waitFor(() =>
+			expect(test.updateEvent).toHaveBeenCalledWith(
+				"22222222-2222-4222-8222-222222222222",
+				expect.objectContaining({
+					status: "deferred",
+					reason: "startup_presence_grace",
+					nextAttemptAt: NOW + 15_000,
+				}),
+			),
+		);
+		test.outbox.close();
+		expect(test.deliver).not.toHaveBeenCalled();
+	});
+
+	it("terminally suppresses completions while preserving an armed one-shot", async () => {
+		const completion = event({
+			category: "completion",
+			reason: "ready",
+			runtimeMs: 60_000,
+			groupKey: "session-completions",
+		});
+		const test = harness({
+			event: completion,
+			device: subscription(preferences({ work_finished: true })),
+			policy: policy({
+				sourceSessionId: "session-1",
+				mode: "notify_completion_once",
+			}),
+			visibleUntil: NOW + 15_000,
+		});
+		test.outbox.start();
+		await vi.waitFor(() =>
+			expect(test.updateEvent).toHaveBeenCalledWith(
+				completion.id,
+				expect.objectContaining({
+					status: "cancelled",
+					reason: "app_focused",
+				}),
+			),
+		);
+		test.outbox.close();
+		expect(test.deliver).not.toHaveBeenCalled();
+		expect(test.recordDecision).not.toHaveBeenCalled();
+		expect(test.clearOneShot).not.toHaveBeenCalled();
+	});
+
+	it("never replays a Routine success stamped focused at occurrence", async () => {
+		const routineSuccess = event({
+			sourceKind: "routine",
+			sourceId: "routine-run-1",
+			category: "completion",
+			reason: "routine_succeeded",
+			groupKey: "routine:routine-1",
+			metadata: {
+				routineId: "routine-1",
+				routineRunId: "routine-run-1",
+				notificationMode: "notify",
+				targetDeviceIds: null,
+				appFocusedAtOccurrence: true,
+			},
+		});
+		const test = harness({
+			event: routineSuccess,
+			device: subscription(preferences({ work_finished: true })),
+		});
+		test.outbox.start();
+		await vi.waitFor(() =>
+			expect(test.updateEvent).toHaveBeenCalledWith(
+				routineSuccess.id,
+				expect.objectContaining({
+					status: "cancelled",
+					reason: "app_focused",
+				}),
+			),
+		);
+		test.outbox.close();
+		expect(test.deliver).not.toHaveBeenCalled();
 	});
 
 	it("suppresses quiet-hour alerts without contacting the provider", async () => {
@@ -652,6 +754,119 @@ describe("PushNotificationOutbox", () => {
 			status: "suppressed",
 			reason: "one_shot_cancelled",
 			nextAttemptAt: null,
+		});
+	});
+
+	it("terminally suppresses a completion when focus begins at the provider lock", async () => {
+		const selectedEvent = event({
+			category: "completion",
+			reason: "ready",
+			runtimeMs: 60_000,
+			groupKey: "session-completions",
+			expiresAt: NOW + 24 * 60 * 60_000,
+		});
+		const selectedDevice = subscription(preferences({ work_finished: true }));
+		let row: PushNotificationDeliveryRecord | undefined;
+		const recordDecision = vi.fn(
+			async (input: {
+				device: PushNotificationDeliveryRecord["deviceSnapshot"];
+				status: PushNotificationDeliveryRecord["status"];
+				reason?: string | null;
+				nextAttemptAt?: number | null;
+			}) => {
+				row = delivery(selectedDevice, input.status, {
+					...(row ?? {}),
+					deviceSnapshot: input.device,
+					status: input.status,
+					reason: input.reason ?? null,
+					nextAttemptAt: input.nextAttemptAt ?? null,
+				});
+				return row;
+			},
+		);
+		const terminateEvent = vi.fn(async (_id: string, reason: string) => {
+			selectedEvent.status = "cancelled";
+			selectedEvent.statusReason = reason;
+			if (row) {
+				row = {
+					...row,
+					status: "expired",
+					reason,
+					nextAttemptAt: null,
+				};
+			}
+			return selectedEvent;
+		});
+		const send = vi.fn<PushDeliveryDependencies["send"]>(async () => ({
+			outcome: "delivered",
+			statusCode: 201,
+		}));
+		const deliver = vi.fn(
+			(events: PushEvent[], overrides: Partial<PushDeliveryDependencies>) =>
+				deliverPushEventsWithinOutbox(events, {
+					...overrides,
+					disableExpired: async () => 0,
+					loadVapidKeys: () => ({ publicKey: "public", privateKey: "private" }),
+					send,
+					recordSuccess: async () => {},
+					recordFailure: async () => {},
+					sleep: async () => {},
+				}),
+		);
+		let visibilityChecks = 0;
+		const clearOneShot = vi.fn(async () => true);
+		const outbox = new PushNotificationOutbox({
+			now: () => NOW,
+			listEvents: vi
+				.fn()
+				.mockResolvedValueOnce([selectedEvent])
+				.mockResolvedValue([]),
+			listPendingDeliveries: vi.fn(async () => []),
+			reconcileOneShots: vi.fn(async () => 0),
+			listSubscriptions: vi.fn(async () => [selectedDevice]),
+			listDeliveries: vi.fn(async () => (row ? [row] : [])),
+			getPolicy: vi.fn(async () =>
+				policy({
+					sourceSessionId: selectedEvent.sourceId,
+					mode: "notify_completion_once",
+				}),
+			),
+			updateEvent: vi.fn(async () => selectedEvent),
+			terminateEvent: terminateEvent as never,
+			recordDecision: recordDecision as never,
+			recordAttempt: vi.fn(async () => null) as never,
+			recordReceipt: vi.fn(async () => row ?? null) as never,
+			clearOneShot: clearOneShot as never,
+			deliver: deliver as never,
+			visibleUntil: () => {
+				visibilityChecks += 1;
+				return visibilityChecks >= 3 ? NOW + 15_000 : null;
+			},
+			isRelevant: () => true,
+			schedule: vi.fn(() => timerHandle()) as never,
+			cancel: vi.fn(),
+		});
+
+		outbox.start();
+		await vi.waitFor(() =>
+			expect(terminateEvent).toHaveBeenCalledWith(
+				selectedEvent.id,
+				"app_focused",
+			),
+		);
+		outbox.close();
+		expect(visibilityChecks).toBeGreaterThanOrEqual(3);
+		expect(send).not.toHaveBeenCalled();
+		expect(clearOneShot).not.toHaveBeenCalled();
+		expect(row).toMatchObject({
+			status: "expired",
+			reason: "app_focused",
+			deviceSnapshot: {
+				oneShot: {
+					sourceSessionId: selectedEvent.sourceId,
+					mode: "notify_completion_once",
+				},
+			},
 		});
 	});
 
@@ -1232,7 +1447,7 @@ describe("PushNotificationOutbox per-device revalidation", () => {
 				expect.objectContaining({
 					device: expect.objectContaining({ id: test.secondDevice.id }),
 					status: "queued",
-					reason: "visible",
+					reason: "app_focused",
 				}),
 			),
 		);
@@ -1335,6 +1550,80 @@ describe("PushNotificationOutbox persistence", () => {
 });
 
 describe("PushNotificationOutbox completion batching", () => {
+	it("expires a completion batch after focus terminally suppresses every member", async () => {
+		const selectedBatch = batch();
+		const first = event({
+			id: "22222222-2222-4222-8222-222222222221",
+			sourceId: "session-one",
+			category: "completion",
+			reason: "ready",
+			batchId: selectedBatch.id,
+			status: "batched",
+			groupKey: "session-completions",
+			metadata: { sessionAliases: ["session-one"] },
+		});
+		const second = event({
+			id: "22222222-2222-4222-8222-222222222223",
+			sourceId: "session-two",
+			category: "completion",
+			reason: "ready",
+			batchId: selectedBatch.id,
+			status: "batched",
+			groupKey: "session-completions",
+			metadata: { sessionAliases: ["session-two"] },
+		});
+		const stored = new Map([
+			[first.id, first],
+			[second.id, second],
+		]);
+		const members = [
+			batchMember(first, selectedBatch.id, 0),
+			batchMember(second, selectedBatch.id, 1),
+		];
+		const terminateEvent = vi.fn(async (id: string, reason: string) => {
+			const current = stored.get(id);
+			if (!current) return null;
+			const next: PushNotificationEventRecord = {
+				...current,
+				status: "cancelled",
+				statusReason: reason,
+			};
+			stored.set(id, next);
+			return next;
+		});
+		const updateBatch = vi.fn(async () => selectedBatch);
+		const outbox = new PushNotificationOutbox({
+			now: () => NOW,
+			listEvents: vi
+				.fn()
+				.mockResolvedValueOnce([first, second])
+				.mockResolvedValue([]),
+			listPendingDeliveries: vi.fn(async () => []),
+			reconcileOneShots: vi.fn(async () => 0),
+			isRelevant: () => true,
+			visibleUntil: () => NOW + 15_000,
+			terminateEvent: terminateEvent as never,
+			listBatchMembers: vi.fn(async () => members),
+			getEvent: vi.fn(async (id: string) => stored.get(id) ?? null) as never,
+			updateBatch: updateBatch as never,
+			schedule: vi.fn(() => timerHandle()) as never,
+			cancel: vi.fn(),
+		});
+
+		outbox.start();
+		await vi.waitFor(() =>
+			expect(updateBatch).toHaveBeenCalledWith(
+				selectedBatch.id,
+				"expired",
+				NOW,
+			),
+		);
+		outbox.close();
+		expect(terminateEvent).toHaveBeenCalledTimes(2);
+		expect(terminateEvent).toHaveBeenCalledWith(first.id, "app_focused");
+		expect(terminateEvent).toHaveBeenCalledWith(second.id, "app_focused");
+	});
+
 	it("delivers a live three-to-two candidate shrink as individual notifications", async () => {
 		const selectedBatch = batch();
 		const events = [

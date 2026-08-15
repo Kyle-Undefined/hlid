@@ -281,7 +281,7 @@ vi.mock("#/hooks/useChatWsHandler", () => ({
 }));
 vi.mock("#/hooks/useLoadChatHistory", () => ({ useLoadChatHistory: vi.fn() }));
 vi.mock("#/hooks/useNotificationPresence", () => ({
-	useNotificationPresence: vi.fn(),
+	useRavenNotificationCleanup: vi.fn(),
 }));
 vi.mock("#/hooks/projectPreviewStore", () => ({
 	useProjectPreview: () => state.preview,
@@ -412,7 +412,7 @@ vi.mock("#/lib/serverFns/config");
 
 import { resetRavenTerminalsForTesting } from "#/hooks/ravenTerminalStore";
 import { useLoadChatHistory } from "#/hooks/useLoadChatHistory";
-import { useNotificationPresence } from "#/hooks/useNotificationPresence";
+import { useRavenNotificationCleanup } from "#/hooks/useNotificationPresence";
 import {
 	loadRavenProviders,
 	refreshRavenProvider,
@@ -942,15 +942,10 @@ describe("Raven auto-sleep copy", () => {
 });
 
 describe("Raven composed submission behavior", () => {
-	it("reports the current Raven session for notification suppression", () => {
+	it("cleans up displayed notifications for the exact durable Raven session", () => {
 		render(<ChatPage />);
 
-		expect(useNotificationPresence).toHaveBeenCalledWith(
-			expect.any(String),
-			null,
-			"connected",
-			state.send,
-		);
+		expect(useRavenNotificationCleanup).toHaveBeenCalledWith(null);
 	});
 
 	it("offers notification overrides only for the durable session identity", () => {

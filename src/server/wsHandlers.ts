@@ -2208,7 +2208,7 @@ async function handleMessage(
 		return;
 	}
 	if (msg.type === "notification_presence") {
-		updateNotificationPresence(context.ws, msg.session_id, msg.visible);
+		updateNotificationPresence(context.ws, msg.visible);
 		return;
 	}
 	if (msg.type === "subscribe_session") {

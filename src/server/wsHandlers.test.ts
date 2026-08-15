@@ -297,11 +297,7 @@ describe("message — notification_presence", () => {
 			}),
 		);
 
-		expect(mockUpdateNotificationPresence).toHaveBeenCalledWith(
-			ws,
-			"db-session",
-			true,
-		);
+		expect(mockUpdateNotificationPresence).toHaveBeenCalledWith(ws, true);
 		expect(pool.get).not.toHaveBeenCalled();
 		expect(pool.findByDbSessionId).not.toHaveBeenCalled();
 		expect(pool.vaultEntry).not.toHaveBeenCalled();

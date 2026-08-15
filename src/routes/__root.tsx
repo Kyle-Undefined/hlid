@@ -14,8 +14,10 @@ import { Sidebar } from "#/components/nav/Sidebar";
 import { PullToRefreshIndicator } from "#/components/PullToRefreshIndicator";
 import { UpdateBanner } from "#/components/UpdateBanner";
 import * as privacyStore from "#/hooks/privacyStore";
+import { useNotificationPresence } from "#/hooks/useNotificationPresence";
 import { usePullToRefresh } from "#/hooks/usePullToRefresh";
 import { useVisualViewportGuard } from "#/hooks/useVisualViewportGuard";
+import { useWs } from "#/hooks/useWs";
 import {
 	changedDataDomains,
 	type DataRevisionSnapshot,
@@ -251,6 +253,12 @@ function SyncPrivacyStore() {
 	return null;
 }
 
+function RegisterNotificationPresence() {
+	const { wsStatus, send } = useWs();
+	useNotificationPresence(wsStatus, send);
+	return null;
+}
+
 function SyncServerData({ pathname }: { pathname: string }) {
 	const router = useRouter();
 	const revisions = useSyncExternalStore(
@@ -421,6 +429,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 					<>
 						<AuthSessionGuard key={pathname} />
 						<RegisterSW />
+						<RegisterNotificationPresence />
 						<SyncPrivacyStore />
 						<SyncServerData pathname={pathname} />
 						<RegisterErrorLogger />

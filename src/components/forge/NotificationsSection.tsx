@@ -633,10 +633,15 @@ function historyCategoryLabel(
 
 function historyDeliveryLabel(
 	delivery: PushNotificationHistoryDelivery,
+	category: PushNotificationHistoryEvent["category"],
 ): string {
 	if (delivery.openedAt !== null) return "opened";
 	if (delivery.dismissedAt !== null) return "dismissed";
 	if (delivery.displayedAt !== null) return "displayed";
+	if (delivery.reason === "app_focused") {
+		if (category === "completion") return "suppressed · Hlið was focused";
+		return "deferred · Hlið is focused";
+	}
 	if (delivery.status === "suppressed" && delivery.reason)
 		return `suppressed · ${delivery.reason.replaceAll("_", " ")}`;
 	if (delivery.status === "failed" && delivery.reason)
@@ -651,6 +656,24 @@ function historyDeliveryLabel(
 		return ["queued", ...details].join(" · ");
 	}
 	return delivery.status;
+}
+
+function historyEventLabel(event: PushNotificationHistoryEvent): string {
+	if (event.statusReason === "app_focused") {
+		if (event.category === "completion") {
+			return "suppressed · Hlið was focused";
+		}
+		return "deferred · Hlið is focused";
+	}
+	return [
+		event.status.replaceAll("_", " "),
+		event.statusReason?.replaceAll("_", " "),
+		event.reason && event.reason !== event.statusReason
+			? event.reason.replaceAll("_", " ")
+			: null,
+	]
+		.filter((detail): detail is string => Boolean(detail))
+		.join(" · ");
 }
 
 function NotificationHistoryList({
@@ -682,13 +705,7 @@ function NotificationHistoryList({
 						</time>
 					</div>
 					<div className="mt-1 text-[10px] text-muted-foreground/60">
-						{event.status.replaceAll("_", " ")}
-						{event.statusReason
-							? ` · ${event.statusReason.replaceAll("_", " ")}`
-							: ""}
-						{event.reason && event.reason !== event.statusReason
-							? ` · ${event.reason.replaceAll("_", " ")}`
-							: ""}
+						{historyEventLabel(event)}
 					</div>
 					{event.deliveries.length === 0 ? (
 						<div className="mt-1.5 text-[10px] text-muted-foreground/45">
@@ -704,7 +721,8 @@ function NotificationHistoryList({
 									key={delivery.id}
 									className="max-w-full break-words border border-border/60 bg-secondary/20 px-1.5 py-1 text-[9px] text-muted-foreground/75"
 								>
-									{delivery.device.name}: {historyDeliveryLabel(delivery)}
+									{delivery.device.name}:{" "}
+									{historyDeliveryLabel(delivery, event.category)}
 								</li>
 							))}
 						</ul>

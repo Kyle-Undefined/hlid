@@ -6,7 +6,6 @@
 export const NOTIFICATION_PRESENCE_LEASE_MS = 15_000;
 
 type Presence = {
-	sessionId: string;
 	visibleUntil: number;
 };
 
@@ -14,7 +13,6 @@ const presenceByClient = new Map<object, Presence>();
 
 export function updateNotificationPresence(
 	client: object,
-	sessionId: string,
 	visible: boolean,
 	now = Date.now(),
 ): void {
@@ -23,7 +21,6 @@ export function updateNotificationPresence(
 		return;
 	}
 	presenceByClient.set(client, {
-		sessionId,
 		visibleUntil: now + NOTIFICATION_PRESENCE_LEASE_MS,
 	});
 }
@@ -33,21 +30,20 @@ export function removeNotificationPresence(client: object): void {
 }
 
 /**
- * Returns the newest live lease for any alias of a durable Raven session.
- * Expired entries are pruned while scanning.
+ * Returns the newest live lease for any focused Hlid client. Presence is app
+ * global: a focused client silences Web Push for every chat and target device.
+ * Expired entries are pruned while scanning so a frozen mobile renderer cannot
+ * keep notifications quiet indefinitely.
  */
-export function getNotificationVisibleUntil(
-	sessionIds: Iterable<string>,
+export function getNotificationAppVisibleUntil(
 	now = Date.now(),
 ): number | null {
-	const wanted = new Set(sessionIds);
 	let visibleUntil: number | null = null;
 	for (const [client, presence] of presenceByClient) {
 		if (presence.visibleUntil <= now) {
 			presenceByClient.delete(client);
 			continue;
 		}
-		if (!wanted.has(presence.sessionId)) continue;
 		visibleUntil = Math.max(visibleUntil ?? 0, presence.visibleUntil);
 	}
 	return visibleUntil;
