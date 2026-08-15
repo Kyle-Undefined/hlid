@@ -301,7 +301,7 @@ export function EventLogSection({
 			<Field
 				id="forge-setting-event-log-persistence"
 				label="Event Log persistence"
-				hint="stores bounded runtime diagnostics in Hlid's database. turning this off stops new entries immediately after the setting saves; existing entries remain until cleared, and the underlying timing checks may still run."
+				hint="keeps the latest 1,000 runtime log entries in Hlid's database. older entries are deleted automatically. turning this off stops new entries immediately after the setting saves; existing entries remain until cleared, and the underlying timing checks may still run."
 			>
 				<label className="flex items-center gap-2 cursor-pointer">
 					<input

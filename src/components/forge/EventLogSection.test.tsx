@@ -93,6 +93,9 @@ describe("EventLogSection", () => {
 		expect((control as HTMLInputElement).checked).toBe(false);
 		expect(screen.getByText("off")).toBeTruthy();
 		expect(
+			screen.getByText(/keeps the latest 1,000 runtime log entries/i),
+		).toBeTruthy();
+		expect(
 			screen.getByText(
 				/stops new entries immediately after the setting saves/i,
 			),
