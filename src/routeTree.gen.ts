@@ -39,6 +39,7 @@ import { Route as ApiPushActionRouteImport } from './routes/api/push.$action'
 import { Route as ApiReadAloudAudioRouteImport } from './routes/api/read-aloud/audio'
 import { Route as ApiReadAloudPreviewRouteImport } from './routes/api/read-aloud/preview'
 import { Route as ApiReadAloudVoicesRouteImport } from './routes/api/read-aloud/voices'
+import { Route as ApiSpeechSynthesizeRouteImport } from './routes/api/speech/synthesize'
 import { Route as ApiVaultMemoryRouteImport } from './routes/api/vault/memory'
 import { Route as ApiVaultSkillsRouteImport } from './routes/api/vault/skills'
 import { Route as ApiVoiceTranscribeRouteImport } from './routes/api/voice/transcribe'
@@ -196,6 +197,11 @@ const ApiReadAloudVoicesRoute = ApiReadAloudVoicesRouteImport.update({
   path: '/api/read-aloud/voices',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiSpeechSynthesizeRoute = ApiSpeechSynthesizeRouteImport.update({
+  id: '/api/speech/synthesize',
+  path: '/api/speech/synthesize',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiVaultMemoryRoute = ApiVaultMemoryRouteImport.update({
   id: '/api/vault/memory',
   path: '/api/vault/memory',
@@ -257,6 +263,7 @@ export interface FileRoutesByFullPath {
   '/api/read-aloud/audio': typeof ApiReadAloudAudioRoute
   '/api/read-aloud/preview': typeof ApiReadAloudPreviewRoute
   '/api/read-aloud/voices': typeof ApiReadAloudVoicesRoute
+  '/api/speech/synthesize': typeof ApiSpeechSynthesizeRoute
   '/api/vault/memory': typeof ApiVaultMemoryRoute
   '/api/vault/skills': typeof ApiVaultSkillsRoute
   '/api/voice/transcribe': typeof ApiVoiceTranscribeRoute
@@ -295,6 +302,7 @@ export interface FileRoutesByTo {
   '/api/read-aloud/audio': typeof ApiReadAloudAudioRoute
   '/api/read-aloud/preview': typeof ApiReadAloudPreviewRoute
   '/api/read-aloud/voices': typeof ApiReadAloudVoicesRoute
+  '/api/speech/synthesize': typeof ApiSpeechSynthesizeRoute
   '/api/vault/memory': typeof ApiVaultMemoryRoute
   '/api/vault/skills': typeof ApiVaultSkillsRoute
   '/api/voice/transcribe': typeof ApiVoiceTranscribeRoute
@@ -334,6 +342,7 @@ export interface FileRoutesById {
   '/api/read-aloud/audio': typeof ApiReadAloudAudioRoute
   '/api/read-aloud/preview': typeof ApiReadAloudPreviewRoute
   '/api/read-aloud/voices': typeof ApiReadAloudVoicesRoute
+  '/api/speech/synthesize': typeof ApiSpeechSynthesizeRoute
   '/api/vault/memory': typeof ApiVaultMemoryRoute
   '/api/vault/skills': typeof ApiVaultSkillsRoute
   '/api/voice/transcribe': typeof ApiVoiceTranscribeRoute
@@ -374,6 +383,7 @@ export interface FileRouteTypes {
     | '/api/read-aloud/audio'
     | '/api/read-aloud/preview'
     | '/api/read-aloud/voices'
+    | '/api/speech/synthesize'
     | '/api/vault/memory'
     | '/api/vault/skills'
     | '/api/voice/transcribe'
@@ -412,6 +422,7 @@ export interface FileRouteTypes {
     | '/api/read-aloud/audio'
     | '/api/read-aloud/preview'
     | '/api/read-aloud/voices'
+    | '/api/speech/synthesize'
     | '/api/vault/memory'
     | '/api/vault/skills'
     | '/api/voice/transcribe'
@@ -450,6 +461,7 @@ export interface FileRouteTypes {
     | '/api/read-aloud/audio'
     | '/api/read-aloud/preview'
     | '/api/read-aloud/voices'
+    | '/api/speech/synthesize'
     | '/api/vault/memory'
     | '/api/vault/skills'
     | '/api/voice/transcribe'
@@ -489,6 +501,7 @@ export interface RootRouteChildren {
   ApiReadAloudAudioRoute: typeof ApiReadAloudAudioRoute
   ApiReadAloudPreviewRoute: typeof ApiReadAloudPreviewRoute
   ApiReadAloudVoicesRoute: typeof ApiReadAloudVoicesRoute
+  ApiSpeechSynthesizeRoute: typeof ApiSpeechSynthesizeRoute
   ApiVaultMemoryRoute: typeof ApiVaultMemoryRoute
   ApiVaultSkillsRoute: typeof ApiVaultSkillsRoute
   ApiVoiceTranscribeRoute: typeof ApiVoiceTranscribeRoute
@@ -707,6 +720,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiReadAloudVoicesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/speech/synthesize': {
+      id: '/api/speech/synthesize'
+      path: '/api/speech/synthesize'
+      fullPath: '/api/speech/synthesize'
+      preLoaderRoute: typeof ApiSpeechSynthesizeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/vault/memory': {
       id: '/api/vault/memory'
       path: '/api/vault/memory'
@@ -817,6 +837,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiReadAloudAudioRoute: ApiReadAloudAudioRoute,
   ApiReadAloudPreviewRoute: ApiReadAloudPreviewRoute,
   ApiReadAloudVoicesRoute: ApiReadAloudVoicesRoute,
+  ApiSpeechSynthesizeRoute: ApiSpeechSynthesizeRoute,
   ApiVaultMemoryRoute: ApiVaultMemoryRoute,
   ApiVaultSkillsRoute: ApiVaultSkillsRoute,
   ApiVoiceTranscribeRoute: ApiVoiceTranscribeRoute,

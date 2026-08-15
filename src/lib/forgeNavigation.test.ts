@@ -31,6 +31,9 @@ describe("Forge navigation metadata", () => {
 			);
 		}
 		expect(
+			getForgeCategory("experience").sections.map((section) => section.id),
+		).toContain("local-conversation");
+		expect(
 			getForgeCategory("developer").sections.map((section) => section.label),
 		).toEqual(["Event Log", "API Reference", "Pricing"]);
 	});
@@ -206,6 +209,12 @@ describe("Forge route search", () => {
 				section: "voice-input",
 			}),
 		).toBe("forge-section-voice-input");
+		expect(
+			getForgeNavigationFocusId({
+				category: "experience",
+				section: "local-conversation",
+			}),
+		).toBe("forge-section-local-conversation");
 		expect(
 			getForgeNavigationFocusId({
 				category: "experience",

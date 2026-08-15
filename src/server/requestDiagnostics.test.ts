@@ -4,6 +4,7 @@ import {
 	acpProviderOperationSlowRequestThreshold,
 	createRequestObserver,
 	createSlowOperationObserver,
+	localAudioSlowRequestThreshold,
 	projectPreviewSlowRequestThreshold,
 	safeErrorSummary,
 	startEventLoopLagMonitor,
@@ -15,6 +16,21 @@ afterEach(() => {
 });
 
 describe("request diagnostics", () => {
+	it("allows local audio work its runtime budget on both HTTP layers", () => {
+		for (const pathname of ["/voice/transcribe", "/api/voice/transcribe"]) {
+			expect(localAudioSlowRequestThreshold(pathname)).toBe(70_000);
+		}
+		for (const pathname of [
+			"/read-aloud/preview",
+			"/api/read-aloud/audio",
+			"/speech/synthesize",
+			"/api/speech/synthesize",
+		]) {
+			expect(localAudioSlowRequestThreshold(pathname)).toBe(10_000);
+		}
+		expect(localAudioSlowRequestThreshold("/voice")).toBeUndefined();
+	});
+
 	it("allows bounded ACP provider operations before warning", () => {
 		expect(acpProviderOperationSlowRequestThreshold("/acp/models")).toBe(5_000);
 		expect(acpProviderOperationSlowRequestThreshold("/providers")).toBe(12_000);

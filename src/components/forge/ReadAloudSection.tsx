@@ -7,6 +7,7 @@ import {
 } from "#/hooks/readAloudStore";
 import type { TtsInfo } from "#/lib/serverFns/tts";
 import { Section } from "./fields";
+import { PronunciationsField } from "./PronunciationsField";
 import {
 	ReadAloudProviderFields,
 	type ReadAloudUpdater,
@@ -100,6 +101,11 @@ export function ReadAloudSection({
 				update={update}
 			/>
 			<ReadingSpeedField rate={preferences.rate} update={update} />
+			<PronunciationsField
+				voice={voice}
+				onChange={onChange}
+				ttsInfo={ttsInfo}
+			/>
 		</Section>
 	);
 }

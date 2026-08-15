@@ -251,6 +251,9 @@ describe("VoiceSection", () => {
 		expect(screen.getByRole("heading", { name: "Read aloud" }).id).toBe(
 			"forge-section-read-aloud",
 		);
+		expect(screen.getByRole("heading", { name: "Local conversation" }).id).toBe(
+			"forge-section-local-conversation",
+		);
 		expect(screen.getByRole("heading", { name: "Codex realtime" }).id).toBe(
 			"forge-section-realtime-voice",
 		);
@@ -259,6 +262,39 @@ describe("VoiceSection", () => {
 		);
 		expect(screen.getByRole("heading", { name: "Voice input" }).id).toBe(
 			"forge-section-voice-input",
+		);
+	});
+
+	it("configures Local Conversation separately from provider-native Live", async () => {
+		const onChange = vi.fn();
+		ttsServer.getInfo.mockResolvedValue({
+			status: { state: "ready", model: "piper-cori-medium-int8" },
+			models: [],
+		});
+		render(
+			<VoiceSection
+				voice={{
+					...DEFAULT_VOICE_CONFIG,
+					enabled: true,
+					input_provider: "local",
+					read_aloud_provider: "neural",
+				}}
+				onChange={onChange}
+				initialInfo={{
+					...baseInfo,
+					status: { state: "ready", model: "base", loadedModel: "base" },
+				}}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("checkbox", { name: "Hands-free mode" }));
+		expect(onChange).toHaveBeenCalledWith({
+			local_conversation_mode: true,
+		});
+		await waitFor(() =>
+			expect(
+				screen.getByText("Whisper input · local neural output"),
+			).toBeTruthy(),
 		);
 	});
 

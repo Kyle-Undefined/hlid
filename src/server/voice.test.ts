@@ -86,10 +86,13 @@ whisper_init_with_params_no_state: use gpu = 1
 		expect(manager.status().state).toBe("unconfigured");
 	});
 
-	it("catalog exposes the curated recommended model", async () => {
-		vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("offline"));
+	it("serves the cached catalog without joining a startup refresh", async () => {
+		const fetchMock = vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementation(() => new Promise(() => {}));
 		const manager = new VoiceModelManager(DEFAULT_VOICE_CONFIG, null);
 		const models = await manager.models();
+		expect(fetchMock).not.toHaveBeenCalled();
 		expect(models.find((model) => model.id === "base")?.recommended).toBe(true);
 		expect(
 			models.every((model) => model.downloadUrl.startsWith("https://")),

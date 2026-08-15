@@ -37,6 +37,35 @@ function Harness({
 	);
 }
 
+function readyPronunciationTtsInfo(): TtsInfo {
+	return {
+		status: { state: "ready", model: "kitten" },
+		models: [
+			{
+				id: "kitten",
+				label: "Kitten",
+				description: "Local speech",
+				tier: "fast",
+				sizeBytes: 1,
+				runtimeSizeBytes: 1,
+				installed: true,
+				recommended: true,
+				quantized: true,
+				language: "English",
+				license: "Apache-2.0",
+				voices: [
+					{
+						id: "expr-voice-5-f",
+						label: "Expressive 5",
+						language: "en-US",
+						speaker: 7,
+					},
+				],
+			},
+		],
+	};
+}
+
 afterEach(() => {
 	cleanup();
 	__resetReadAloudForTesting();
@@ -385,5 +414,361 @@ describe("ReadAloudSection", () => {
 		expect(screen.getByRole("button", { name: "Playing…" })).toBeTruthy();
 		act(() => previewAudio.onended?.());
 		expect(screen.getByRole("button", { name: "Play preview" })).toBeTruthy();
+	});
+
+	it("adds, saves, and removes local neural pronunciations", () => {
+		vi.stubGlobal(
+			"fetch",
+			vi
+				.fn()
+				.mockResolvedValue(Response.json({ available: false, voices: [] })),
+		);
+		const onChange = vi.fn();
+		render(
+			<Harness
+				onChange={onChange}
+				initialVoice={{
+					...DEFAULT_VOICE_CONFIG,
+					pronunciations: [{ written: "Hlið", spoken: "hleeth" }],
+				}}
+			/>,
+		);
+
+		fireEvent.change(screen.getByLabelText("Say as pronunciation 1"), {
+			target: { value: "hleeth skiyahlf" },
+		});
+		expect(onChange).not.toHaveBeenCalled();
+		fireEvent.blur(screen.getByLabelText("Say as pronunciation 1"));
+		expect(onChange).toHaveBeenLastCalledWith({
+			pronunciations: [{ written: "Hlið", spoken: "hleeth skiyahlf" }],
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "Add pronunciation" }));
+		expect(screen.getAllByLabelText(/Written pronunciation/)).toHaveLength(2);
+		expect(
+			(
+				screen.getByRole("button", {
+					name: "Add pronunciation",
+				}) as HTMLButtonElement
+			).disabled,
+		).toBe(true);
+		onChange.mockClear();
+		fireEvent.change(screen.getByLabelText("Written pronunciation 2"), {
+			target: { value: "Raven" },
+		});
+		fireEvent.blur(screen.getByLabelText("Written pronunciation 2"));
+		expect(onChange).not.toHaveBeenCalled();
+		fireEvent.change(screen.getByLabelText("Say as pronunciation 2"), {
+			target: { value: "ray ven" },
+		});
+		fireEvent.blur(screen.getByLabelText("Say as pronunciation 2"));
+		expect(onChange).toHaveBeenLastCalledWith({
+			pronunciations: [
+				{ written: "Hlið", spoken: "hleeth skiyahlf" },
+				{ written: "Raven", spoken: "ray ven" },
+			],
+		});
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Remove pronunciation 1" }),
+		);
+		expect(onChange).toHaveBeenLastCalledWith({
+			pronunciations: [{ written: "Raven", spoken: "ray ven" }],
+		});
+	});
+
+	it("flags case-equivalent written forms and keeps them local", () => {
+		vi.stubGlobal(
+			"fetch",
+			vi
+				.fn()
+				.mockResolvedValue(Response.json({ available: false, voices: [] })),
+		);
+		const onChange = vi.fn();
+		render(
+			<Harness
+				onChange={onChange}
+				initialVoice={{
+					...DEFAULT_VOICE_CONFIG,
+					tts_model: "kitten",
+					tts_voice: "expr-voice-5-f",
+					pronunciations: [
+						{ written: "Hlið", spoken: "hleeth" },
+						{ written: "Raven", spoken: "ray ven" },
+					],
+				}}
+				ttsInfo={readyPronunciationTtsInfo()}
+			/>,
+		);
+
+		fireEvent.change(screen.getByLabelText("Written pronunciation 2"), {
+			target: { value: "hLIÐ" },
+		});
+		fireEvent.blur(screen.getByLabelText("Written pronunciation 2"));
+
+		expect(onChange).not.toHaveBeenCalled();
+		expect(screen.getAllByText("Duplicate written form")).toHaveLength(2);
+		expect(
+			screen.getByText(
+				"Written forms must be unique, ignoring capitalization.",
+			),
+		).toBeTruthy();
+		for (const input of screen.getAllByLabelText(/Written pronunciation/)) {
+			expect(input.getAttribute("aria-invalid")).toBe("true");
+		}
+		expect(
+			(
+				screen.getByRole("button", {
+					name: "Add pronunciation",
+				}) as HTMLButtonElement
+			).disabled,
+		).toBe(true);
+		for (const button of screen.getAllByRole("button", {
+			name: /Preview pronunciation/,
+		})) {
+			expect((button as HTMLButtonElement).disabled).toBe(true);
+		}
+
+		fireEvent.change(screen.getByLabelText("Written pronunciation 2"), {
+			target: { value: "Raven" },
+		});
+		fireEvent.blur(screen.getByLabelText("Written pronunciation 2"));
+		expect(onChange).toHaveBeenLastCalledWith({
+			pronunciations: [
+				{ written: "Hlið", spoken: "hleeth" },
+				{ written: "Raven", spoken: "ray ven" },
+			],
+		});
+		expect(screen.queryByText("Duplicate written form")).toBeNull();
+		for (const button of screen.getAllByRole("button", {
+			name: /Preview pronunciation/,
+		})) {
+			expect((button as HTMLButtonElement).disabled).toBe(false);
+		}
+	});
+
+	it("aborts a loading pronunciation preview when its row is removed", async () => {
+		const previewRequest: {
+			signal?: AbortSignal;
+			resolve?: (response: Response) => void;
+		} = {};
+		const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+			if (input === "/api/read-aloud/voices") {
+				return Promise.resolve(Response.json({ available: false, voices: [] }));
+			}
+			previewRequest.signal = init?.signal as AbortSignal;
+			return new Promise<Response>((resolve) => {
+				previewRequest.resolve = resolve;
+			});
+		});
+		vi.stubGlobal("fetch", fetch);
+		const Audio = vi.fn();
+		vi.stubGlobal("Audio", Audio);
+		const createObjectURL = vi.fn(() => "blob:late-pronunciation-preview");
+		const revokeObjectURL = vi.fn();
+		class PreviewURL extends URL {
+			static createObjectURL = createObjectURL;
+			static revokeObjectURL = revokeObjectURL;
+		}
+		vi.stubGlobal("URL", PreviewURL);
+		render(
+			<Harness
+				initialVoice={{
+					...DEFAULT_VOICE_CONFIG,
+					tts_model: "kitten",
+					tts_voice: "expr-voice-5-f",
+					pronunciations: [
+						{ written: "Hlið", spoken: "hleeth" },
+						{ written: "Raven", spoken: "ray ven" },
+					],
+				}}
+				ttsInfo={readyPronunciationTtsInfo()}
+			/>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Preview pronunciation 2" }),
+		);
+		await waitFor(() => expect(previewRequest.signal).toBeDefined());
+		expect(screen.getByText("Loading…")).toBeTruthy();
+		fireEvent.click(
+			screen.getByRole("button", { name: "Remove pronunciation 2" }),
+		);
+		expect(previewRequest.signal?.aborted).toBe(true);
+		expect(screen.queryByText("Loading…")).toBeNull();
+
+		await act(async () => {
+			previewRequest.resolve?.(
+				new Response(new Blob(["RIFF0000WAVEaudio"]), {
+					status: 200,
+				}),
+			);
+		});
+		await waitFor(() =>
+			expect(revokeObjectURL).toHaveBeenCalledWith(
+				"blob:late-pronunciation-preview",
+			),
+		);
+		expect(Audio).not.toHaveBeenCalled();
+	});
+
+	it("stops a playing pronunciation preview before row labels shift", async () => {
+		const fetch = vi.fn((input: RequestInfo | URL) => {
+			if (input === "/api/read-aloud/voices") {
+				return Promise.resolve(Response.json({ available: false, voices: [] }));
+			}
+			return Promise.resolve(
+				new Response(new Blob(["RIFF0000WAVEaudio"]), { status: 200 }),
+			);
+		});
+		vi.stubGlobal("fetch", fetch);
+		const previewAudio = {
+			onended: null as (() => void) | null,
+			onerror: null as (() => void) | null,
+			onplaying: null as (() => void) | null,
+			pause: vi.fn(),
+			play: vi.fn().mockResolvedValue(undefined),
+		};
+		vi.stubGlobal(
+			"Audio",
+			vi.fn(function AudioMock() {
+				return previewAudio;
+			}),
+		);
+		const revokeObjectURL = vi.fn();
+		class PreviewURL extends URL {
+			static createObjectURL = vi.fn(() => "blob:playing-preview");
+			static revokeObjectURL = revokeObjectURL;
+		}
+		vi.stubGlobal("URL", PreviewURL);
+		render(
+			<Harness
+				initialVoice={{
+					...DEFAULT_VOICE_CONFIG,
+					tts_model: "kitten",
+					tts_voice: "expr-voice-5-f",
+					pronunciations: [
+						{ written: "Hlið", spoken: "hleeth" },
+						{ written: "Raven", spoken: "ray ven" },
+					],
+				}}
+				ttsInfo={readyPronunciationTtsInfo()}
+			/>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Preview pronunciation 2" }),
+		);
+		await waitFor(() => expect(previewAudio.play).toHaveBeenCalledOnce());
+		act(() => previewAudio.onplaying?.());
+		expect(screen.getByText("Playing…")).toBeTruthy();
+		fireEvent.click(
+			screen.getByRole("button", { name: "Remove pronunciation 1" }),
+		);
+
+		expect(previewAudio.pause).toHaveBeenCalledOnce();
+		expect(revokeObjectURL).toHaveBeenCalledWith("blob:playing-preview");
+		expect(screen.queryByText("Playing…")).toBeNull();
+		expect(
+			screen.getByRole("button", { name: "Preview pronunciation 1" })
+				.textContent,
+		).toBe("Play");
+	});
+
+	it("previews a say-as value with the selected neural voice and speed", async () => {
+		const fetch = vi.fn((input: RequestInfo | URL) => {
+			if (input === "/api/read-aloud/voices") {
+				return Promise.resolve(Response.json({ available: false, voices: [] }));
+			}
+			return Promise.resolve(
+				new Response(new Blob(["RIFF0000WAVEaudio"]), {
+					status: 200,
+					headers: { "content-type": "audio/wav" },
+				}),
+			);
+		});
+		vi.stubGlobal("fetch", fetch);
+		const previewAudio = {
+			onended: null as (() => void) | null,
+			onerror: null as (() => void) | null,
+			onplaying: null as (() => void) | null,
+			pause: vi.fn(),
+			play: vi.fn().mockResolvedValue(undefined),
+		};
+		const Audio = vi.fn(function AudioMock() {
+			return previewAudio;
+		});
+		vi.stubGlobal("Audio", Audio);
+		const createObjectURL = vi.fn(() => "blob:pronunciation-preview");
+		const revokeObjectURL = vi.fn();
+		class PreviewURL extends URL {
+			static createObjectURL = createObjectURL;
+			static revokeObjectURL = revokeObjectURL;
+		}
+		vi.stubGlobal("URL", PreviewURL);
+		render(
+			<Harness
+				initialVoice={{
+					...DEFAULT_VOICE_CONFIG,
+					read_aloud_provider: "neural",
+					read_aloud_rate: 1.25,
+					tts_model: "kitten",
+					tts_voice: "expr-voice-5-f",
+					pronunciations: [{ written: "Hlið", spoken: "hleeth" }],
+				}}
+				ttsInfo={{
+					status: { state: "ready", model: "kitten" },
+					models: [
+						{
+							id: "kitten",
+							label: "Kitten",
+							description: "Local speech",
+							tier: "fast",
+							sizeBytes: 1,
+							runtimeSizeBytes: 1,
+							installed: true,
+							recommended: true,
+							quantized: true,
+							language: "English",
+							license: "Apache-2.0",
+							voices: [
+								{
+									id: "expr-voice-5-f",
+									label: "Expressive 5",
+									language: "en-US",
+									speaker: 7,
+								},
+							],
+						},
+					],
+				}}
+			/>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Preview pronunciation 1" }),
+		);
+		await waitFor(() =>
+			expect(fetch).toHaveBeenCalledWith(
+				"/api/speech/synthesize",
+				expect.objectContaining({
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						text: "hleeth",
+						voice_id: "expr-voice-5-f",
+						rate: 1.25,
+					}),
+				}),
+			),
+		);
+		await waitFor(() =>
+			expect(Audio).toHaveBeenCalledWith("blob:pronunciation-preview"),
+		);
+		expect(previewAudio.play).toHaveBeenCalledOnce();
+		act(() => previewAudio.onplaying?.());
+		expect(screen.getByText("Playing…")).toBeTruthy();
+		act(() => previewAudio.onended?.());
+		expect(revokeObjectURL).toHaveBeenCalledWith("blob:pronunciation-preview");
 	});
 });

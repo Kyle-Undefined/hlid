@@ -137,6 +137,7 @@ import { createReadAloudRouteHandler } from "./readAloudRoutes";
 import {
 	acpProviderOperationSlowRequestThreshold,
 	createRequestObserver,
+	localAudioSlowRequestThreshold,
 	projectPreviewSlowRequestThreshold,
 	startEventLoopLagMonitor,
 } from "./requestDiagnostics";
@@ -163,6 +164,7 @@ import { ShellSessionPool } from "./shellSessionPool";
 import { createShellUpgradeHandler } from "./shellUpgrade";
 import { handleSkillRoute } from "./skillRoutes";
 import { refreshLiveClaudeSkills } from "./skillRuntimeRefresh";
+import { createSpeechRouteHandler } from "./speechRoutes";
 import { probeExistingInstance } from "./startupProbe";
 import { resolveAllowedTerminalCwd } from "./terminalAccess";
 import { TerminalSessionPool } from "./terminalSessionPool";
@@ -170,6 +172,7 @@ import { createTerminalUpgradeHandler } from "./terminalUpgrade";
 import { startTlsProxy } from "./tlsProxy";
 import { TtsModelManager } from "./tts";
 import { INTERNAL_TTS_RUNTIME_FLAG, runTtsRuntimeServer } from "./tts-runtime";
+import { getTtsModelDefinition } from "./ttsModels";
 import { startUiServer } from "./uiServer";
 import { markUiServerReady } from "./uiStartupGate";
 import { bootstrapUmbod, closeUmbod } from "./umbod";
@@ -572,18 +575,32 @@ void tts.initialize().catch((error) => {
 	);
 });
 const microsoftSpeech = new MicrosoftSpeechManager();
+const getNeuralSpeechSettings = () => {
+	const voiceConfig = loadConfig().voice;
+	const model = getTtsModelDefinition(voiceConfig.tts_model);
+	return {
+		voiceId: voiceConfig.tts_voice,
+		rate: voiceConfig.read_aloud_rate,
+		voiceIds: model?.voices.map((voice) => voice.id) ?? [],
+	};
+};
 const handleReadAloudRoute = createReadAloudRouteHandler({
 	speech: microsoftSpeech,
 	tts: {
 		synthesize: (text, voiceId, speed) => tts.synthesize(text, voiceId, speed),
 	},
 	getAssistantMessageText: db.getAssistantMessageText,
-	getNeuralSettings: () => {
-		const voiceConfig = loadConfig().voice;
-		return {
-			voiceId: voiceConfig.tts_voice,
-			rate: voiceConfig.read_aloud_rate,
-		};
+	getNeuralSettings: getNeuralSpeechSettings,
+	getPronunciations: () => loadConfig().voice.pronunciations,
+});
+const handleSpeechRoute = createSpeechRouteHandler({
+	tts,
+	getNeuralSettings: getNeuralSpeechSettings,
+	onSynthesisError: (error) => {
+		console.error(
+			"[speech] local neural synthesis failed:",
+			error instanceof Error ? error.message : String(error),
+		);
 	},
 });
 const ptyWorkerPath = await bootstrapPtyRuntime();
@@ -894,8 +911,8 @@ const observeApiRequest = createRequestObserver({
 	scope: "internal-api",
 	slowRequestMs: (request) => {
 		const pathname = new URL(request.url).pathname;
-		if (pathname === "/voice/transcribe") return 70_000;
-		if (pathname.startsWith("/read-aloud/")) return 10_000;
+		const localAudioThreshold = localAudioSlowRequestThreshold(pathname);
+		if (localAudioThreshold !== undefined) return localAudioThreshold;
 		if (pathname === "/api/attachments/upload") return 30_000;
 		if (pathname.startsWith("/api/attachments/")) return 10_000;
 		const acpThreshold = acpProviderOperationSlowRequestThreshold(pathname);
@@ -1616,6 +1633,7 @@ const handleAuthenticatedRoute = createAuthenticatedRouteHandler({
 		handleCliProxyRoute,
 		handleVoiceRoute,
 		handleTtsRoute,
+		handleSpeechRoute,
 		handleReadAloudRoute,
 		handleAccountRoute,
 		handleRoutineRoute,

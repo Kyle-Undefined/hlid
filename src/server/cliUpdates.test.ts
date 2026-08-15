@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { HlidConfigSchema } from "../config";
 import type { CliUpdateStatus } from "../lib/cliUpdateTypes";
 import type { AcpCatalogItem } from "./acpRegistry";
+import { configuredAcpExecutionTargets } from "./acpTargets";
 import {
 	__resetCliUpdateStatusCacheForTesting,
 	buildWslCliProbeScript,
@@ -13,6 +15,7 @@ import {
 	inspectWindowsDesktopUpdates,
 	inspectWslUpdates,
 	invalidateAcpCliUpdateStatuses,
+	legacyHostAcpUpdateConfig,
 	parseCliUpdateStatusCache,
 	parseCliVersion,
 	parseCodexDesktopStoreUpdateManifest,
@@ -85,6 +88,44 @@ describe("CLI update discovery", () => {
 			compareCliVersions("26.707.9981.1", "26.707.9981.0"),
 		).toBeGreaterThan(0);
 		expect(compareCliVersions("1.0.0-beta", "1.0.0")).toBeLessThan(0);
+	});
+
+	it("projects only host ACP configs and native workspaces for legacy updates", () => {
+		const config = legacyHostAcpUpdateConfig(
+			HlidConfigSchema.parse({
+				vault: {
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\vault",
+				},
+				agents: [
+					{ path: "C:\\Users\\kyle\\native-project" },
+					{
+						path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\wsl-project",
+					},
+				],
+				acp_agents: [
+					{ id: "implicit-host" },
+					{ id: "explicit-host", target: { kind: "host" } },
+					{
+						id: "opencode",
+						target: { kind: "wsl", distro: "Ubuntu-24.04" },
+					},
+				],
+			}),
+		);
+
+		expect(config.vault.path).toBe("");
+		expect(config.agents.map((agent) => agent.path)).toEqual([
+			"C:\\Users\\kyle\\native-project",
+		]);
+		expect(config.acp_agents?.map((agent) => agent.id)).toEqual([
+			"implicit-host",
+			"explicit-host",
+		]);
+		expect(
+			configuredAcpExecutionTargets(config, "win32").map(
+				(descriptor) => descriptor.target,
+			),
+		).toEqual([{ kind: "host" }]);
 	});
 
 	it("parses installed and available versions from an exact Store row", () => {

@@ -247,6 +247,64 @@ describe("AcpRegistry", () => {
 		}
 	});
 
+	it("allows bounded WSL platform discovery teardown before warning", async () => {
+		let now = 0;
+		const performanceNow = vi
+			.spyOn(performance, "now")
+			.mockImplementation(() => now);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const config = HlidConfigSchema.parse({
+			vault: {
+				path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\vault",
+			},
+		});
+		const platformWarnings = () =>
+			warn.mock.calls
+				.map(([message]) => String(message))
+				.filter((message) => message.startsWith("[acp registry platform]"));
+		try {
+			const discoverAt = async (elapsedMs: number) => {
+				const instance = new AcpRegistry(async () => registry, undefined, {
+					platform: "win32",
+					architecture: "x64",
+					which: () => null,
+					adapterFactory: (target) =>
+						({
+							target: target ?? { kind: "host" },
+							key: target?.kind === "wsl" ? `wsl:${target.distro}` : "host",
+							registryPlatform: async () => {
+								now = elapsedMs;
+								return {
+									platform: "linux" as const,
+									architecture: "x64" as const,
+								};
+							},
+							providerPath: (_cwd: string, path: string) => path,
+							pathAccessible: () => true,
+							resolveExecutable: vi.fn(async () => null),
+							start: vi.fn(),
+							adaptMcpServer: <T>(server: T) => server,
+						}) as never,
+				});
+				await instance.catalog(config, false, false, {
+					agentIds: ["opencode"],
+				});
+			};
+
+			await discoverAt(2_999);
+			expect(platformWarnings()).toEqual([]);
+
+			now = 0;
+			await discoverAt(3_000);
+			expect(platformWarnings()).toEqual([
+				"[acp registry platform] platform discovery for WSL · Ubuntu-24.04 took 3000ms",
+			]);
+		} finally {
+			performanceNow.mockRestore();
+			warn.mockRestore();
+		}
+	});
+
 	it("single-flights concurrent materialization for the same exact inputs", async () => {
 		getSetting.mockResolvedValue(JSON.stringify(registry));
 		const executable = deferred<string | null>();

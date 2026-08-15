@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { HlidConfig } from "#/config";
 import { getVoiceInfoFn, type VoiceInfo } from "#/lib/serverFns/voice";
+import { voiceAudioToWav } from "#/lib/voiceAudio";
 import { matchesVoiceHotkey } from "#/lib/voiceHotkey";
+import { readVoiceTranscriptionResponse } from "#/lib/voiceTranscription";
 import type { ChatAttachment } from "#/server/protocol";
 
 type VoicePhase =
@@ -23,52 +25,6 @@ export type CodexDictationController = {
 	clearError: () => void;
 };
 
-function writeAscii(view: DataView, offset: number, value: string): void {
-	for (let i = 0; i < value.length; i++)
-		view.setUint8(offset + i, value.charCodeAt(i));
-}
-
-async function toWav(blob: Blob): Promise<Blob> {
-	const context = new AudioContext();
-	try {
-		const decoded = await context.decodeAudioData(await blob.arrayBuffer());
-		const targetRate = 16_000;
-		const frames = Math.ceil(decoded.duration * targetRate);
-		const offline = new OfflineAudioContext(1, frames, targetRate);
-		const source = offline.createBufferSource();
-		source.buffer = decoded;
-		source.connect(offline.destination);
-		source.start();
-		const rendered = await offline.startRendering();
-		const samples = rendered.getChannelData(0);
-		const buffer = new ArrayBuffer(44 + samples.length * 2);
-		const view = new DataView(buffer);
-		writeAscii(view, 0, "RIFF");
-		view.setUint32(4, 36 + samples.length * 2, true);
-		writeAscii(view, 8, "WAVEfmt ");
-		view.setUint32(16, 16, true);
-		view.setUint16(20, 1, true);
-		view.setUint16(22, 1, true);
-		view.setUint32(24, targetRate, true);
-		view.setUint32(28, targetRate * 2, true);
-		view.setUint16(32, 2, true);
-		view.setUint16(34, 16, true);
-		writeAscii(view, 36, "data");
-		view.setUint32(40, samples.length * 2, true);
-		for (let i = 0; i < samples.length; i++) {
-			const value = Math.max(-1, Math.min(1, samples[i] ?? 0));
-			view.setInt16(
-				44 + i * 2,
-				value < 0 ? value * 0x8000 : value * 0x7fff,
-				true,
-			);
-		}
-		return new Blob([buffer], { type: "audio/wav" });
-	} finally {
-		void context.close();
-	}
-}
-
 async function transcribe(
 	blob: Blob,
 	language: string,
@@ -81,32 +37,7 @@ async function transcribe(
 		body: form,
 		signal: AbortSignal.timeout(65_000),
 	});
-	return readTranscriptionResponse(response);
-}
-
-export async function readTranscriptionResponse(
-	response: Response,
-): Promise<{ text: string }> {
-	const raw = await response.text();
-	let result: { text?: string; error?: string } = {};
-	try {
-		result = JSON.parse(raw) as typeof result;
-	} catch {}
-	if (!response.ok) {
-		if (result.error) throw new Error(result.error);
-		if (response.status === 404) {
-			throw new Error(
-				"Voice transcription is unavailable in this Hlid build. Restart Hlid after installing the latest build.",
-			);
-		}
-		throw new Error(
-			`voice service returned ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`,
-		);
-	}
-	if (!raw || typeof result.text !== "string") {
-		throw new Error("voice service returned an invalid response");
-	}
-	return { text: result.text ?? "" };
+	return readVoiceTranscriptionResponse(response);
 }
 
 export async function uploadVoiceRecording(
@@ -210,11 +141,40 @@ export function useVoiceInput({
 	useEffect(() => setInfo(initialInfo), [initialInfo]);
 
 	useEffect(() => {
-		if (config.input_provider !== "local") return;
-		if (info.status.state !== "loading") return;
-		const timer = setInterval(() => void getVoiceInfoFn().then(setInfo), 1000);
-		return () => clearInterval(timer);
-	}, [config.input_provider, info.status.state]);
+		if (!config.enabled || config.input_provider !== "local") return;
+		const transientUnavailable =
+			info.status.state === "unavailable" &&
+			(!info.status.error || info.status.error === "voice service unavailable");
+		if (info.status.state !== "loading" && !transientUnavailable) return;
+
+		let cancelled = false;
+		let refreshInFlight = false;
+		const refresh = () => {
+			if (refreshInFlight) return;
+			refreshInFlight = true;
+			void getVoiceInfoFn()
+				.then((next) => {
+					if (!cancelled) setInfo(next);
+				})
+				.catch(() => {
+					// Keep the transient state and retry while Hlid finishes restarting.
+				})
+				.finally(() => {
+					refreshInFlight = false;
+				});
+		};
+		refresh();
+		const timer = setInterval(refresh, 1000);
+		return () => {
+			cancelled = true;
+			clearInterval(timer);
+		};
+	}, [
+		config.enabled,
+		config.input_provider,
+		info.status.error,
+		info.status.state,
+	]);
 
 	useEffect(() => {
 		if (presentedPhase !== "recording") return;
@@ -310,7 +270,7 @@ export function useVoiceInput({
 				const recorded = new Blob(chunksRef.current, {
 					type: recorder.mimeType,
 				});
-				void toWav(recorded)
+				void voiceAudioToWav(recorded)
 					.then(async (audio) => {
 						if (inputProvider === "local") {
 							const result = await transcribe(audio, config.language);

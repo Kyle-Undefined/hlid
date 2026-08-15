@@ -10,10 +10,13 @@ import {
 	MicOff,
 	Monitor,
 	Paperclip,
+	Pause,
+	Play,
 	ShieldCheck,
 	Square,
 	SquarePen,
 	TerminalIcon,
+	VolumeX,
 	X,
 } from "lucide-react";
 import {
@@ -79,6 +82,7 @@ import { useCommands } from "#/hooks/useCommands";
 import { useDraft } from "#/hooks/useDraft";
 import { useFileUpload } from "#/hooks/useFileUpload";
 import { useLoadChatHistory } from "#/hooks/useLoadChatHistory";
+import { useLocalConversation } from "#/hooks/useLocalConversation";
 import { useRavenNotificationCleanup } from "#/hooks/useNotificationPresence";
 import { useRavenComposerCheckpoint } from "#/hooks/useRavenComposerCheckpoint";
 import { useSlashPicker } from "#/hooks/useSlashPicker";
@@ -195,6 +199,7 @@ import {
 	renameSessionFn,
 	setSessionArchivedFn,
 } from "#/lib/serverFns/sessions";
+import { getTtsInfoFn } from "#/lib/serverFns/tts";
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import {
 	consumeServiceWorkerNotificationNavigation,
@@ -2135,6 +2140,17 @@ type RavenActionProps = {
 	providers: RavenProviders;
 };
 
+type RavenSendOptions = {
+	source?: "local-conversation";
+};
+
+type RavenSend = (
+	overrideText?: string,
+	goal?: { objective: string; tokenBudget?: number | null },
+	voiceAttachments?: ChatAttachment[],
+	options?: RavenSendOptions,
+) => void;
+
 /** Permission / question / plan-proposal card decisions. */
 function useRavenDecisionActions({ runtime, setPlanMode }: RavenActionProps) {
 	const { send, dispatch } = runtime;
@@ -2215,6 +2231,7 @@ function useRavenSend(props: RavenActionProps) {
 	const { agentSkillContext, agentContextSentRef, sessionId } = props.session;
 	const {
 		sessionState,
+		wsStatus,
 		send,
 		dispatch,
 		controlGoal,
@@ -2234,14 +2251,20 @@ function useRavenSend(props: RavenActionProps) {
 			overrideText?: string,
 			explicitGoal?: { objective: string; tokenBudget?: number | null },
 			voiceAttachments?: ChatAttachment[],
+			options?: RavenSendOptions,
 		) => {
+			const localConversationTurn = options?.source === "local-conversation";
+			if (localConversationTurn && wsStatus !== "connected") {
+				return;
+			}
 			const typed = (overrideText ?? input).trim();
 			const voiceTurn = voiceAttachments !== undefined;
+			const isolatedComposerTurn = voiceTurn || localConversationTurn;
 
 			const resolved = resolveCommandSubmission(
-				voiceTurn ? [] : activeSkills,
+				isolatedComposerTurn ? [] : activeSkills,
 				typed,
-				commands,
+				localConversationTurn ? [] : commands,
 			);
 			let { text } = resolved;
 			const { skillContexts, commandAction } = resolved;
@@ -2358,9 +2381,11 @@ function useRavenSend(props: RavenActionProps) {
 				commandAction: commandAction === "goal" ? undefined : commandAction,
 				attachments: voiceTurn
 					? voiceAttachments
-					: [...pendingAttachments, ...relicAttachments],
-				vaultReferences: voiceTurn ? [] : referencePaths,
-				workspaceReferences: voiceTurn ? [] : selectedWorkspace,
+					: localConversationTurn
+						? []
+						: [...pendingAttachments, ...relicAttachments],
+				vaultReferences: isolatedComposerTurn ? [] : referencePaths,
+				workspaceReferences: isolatedComposerTurn ? [] : selectedWorkspace,
 				agentCwd: agentSkillContext ?? undefined,
 				agentContextAlreadySent: agentContextSentRef.current,
 				planMode,
@@ -2390,6 +2415,12 @@ function useRavenSend(props: RavenActionProps) {
 
 			if (submission.kind === "queued") {
 				wsStore.enqueueChat(submission.message);
+			} else if (localConversationTurn) {
+				if (!send(submission.message)) return;
+				atBottomRef.current = true;
+				dispatch({ type: "ADD_USER", ...submission.user });
+				if (submission.marksAgentContextSent)
+					agentContextSentRef.current = true;
 			} else {
 				atBottomRef.current = true;
 				dispatch({ type: "ADD_USER", ...submission.user });
@@ -2397,7 +2428,7 @@ function useRavenSend(props: RavenActionProps) {
 					agentContextSentRef.current = true;
 				send(submission.message);
 			}
-			if (!voiceTurn) {
+			if (!isolatedComposerTurn) {
 				clearDraft();
 				clearComposerCheckpoint();
 				setInput("");
@@ -2410,6 +2441,7 @@ function useRavenSend(props: RavenActionProps) {
 			activeSkills,
 			commands,
 			sessionState,
+			wsStatus,
 			send,
 			sessionId,
 			pendingAttachments,
@@ -2439,14 +2471,7 @@ function useRavenSend(props: RavenActionProps) {
 	);
 }
 
-function useRavenVoice(
-	props: RavenActionProps,
-	handleSend: (
-		overrideText?: string,
-		goal?: { objective: string; tokenBudget?: number | null },
-		voiceAttachments?: ChatAttachment[],
-	) => void,
-) {
+function useRavenVoice(props: RavenActionProps, handleSend: RavenSend) {
 	const { config, initialVoiceInfo, input, setInput, providers } = props;
 	const { textareaRef } = props.viewport;
 	const onTranscription = useCallback(
@@ -2513,6 +2538,141 @@ function useRavenVoice(
 		onDictation: onTranscription,
 		onLiveClosed: discardLivePartials,
 	});
+	const localConversationAvailability = !config.voice.enabled
+		? "Enable Voice in Forge first"
+		: config.voice.input_provider !== "local"
+			? "Local Conversation requires Dictate with Whisper"
+			: config.voice.read_aloud_provider !== "neural"
+				? "Local Conversation requires Local neural read aloud"
+				: null;
+	const localConversationWsStatusRef = useRef(props.runtime.wsStatus);
+	localConversationWsStatusRef.current = props.runtime.wsStatus;
+	const localConversationStartGenerationRef = useRef(0);
+	const localConversationAllowedRef = useRef(false);
+	localConversationAllowedRef.current =
+		config.voice.local_conversation_mode &&
+		localConversationAvailability === null;
+	const localConversationCompetitionRef = useRef({
+		realtimeBusy: false,
+		voiceBusy: false,
+	});
+	const [localConversationChecking, setLocalConversationChecking] =
+		useState(false);
+	const [localConversationRuntimeError, setLocalConversationRuntimeError] =
+		useState<string | null>(null);
+	const handleLocalConversationTranscription = useCallback(
+		(text: string) => {
+			if (localConversationWsStatusRef.current !== "connected") return;
+			handleSend(text, undefined, undefined, {
+				source: "local-conversation",
+			});
+		},
+		[handleSend],
+	);
+	const localConversation = useLocalConversation({
+		enabled: config.voice.local_conversation_mode,
+		available: localConversationAvailability === null,
+		unavailableReason: localConversationAvailability,
+		language: config.voice.language,
+		rate: config.voice.read_aloud_rate,
+		pronunciations: config.voice.pronunciations,
+		messages: props.runtime.messages,
+		onTranscription: handleLocalConversationTranscription,
+	});
+	useEffect(() => {
+		if (props.runtime.wsStatus === "connected" || !localConversation.active) {
+			return;
+		}
+		localConversation.setMuted(true);
+		setLocalConversationRuntimeError(
+			"Raven disconnected. The Local Conversation microphone was muted.",
+		);
+	}, [
+		localConversation.active,
+		localConversation.setMuted,
+		props.runtime.wsStatus,
+	]);
+	const startLocalConversation = useCallback(async () => {
+		const generation = ++localConversationStartGenerationRef.current;
+		setLocalConversationRuntimeError(null);
+		if (localConversationWsStatusRef.current !== "connected") {
+			setLocalConversationRuntimeError(
+				"Raven is offline. Reconnect before starting Local Conversation.",
+			);
+			return;
+		}
+		const competition = localConversationCompetitionRef.current;
+		if (competition.realtimeBusy || competition.voiceBusy) {
+			setLocalConversationRuntimeError(
+				"Stop the other voice mode before starting Local Conversation.",
+			);
+			return;
+		}
+		setLocalConversationChecking(true);
+		try {
+			const [voiceInfo, ttsInfo] = await Promise.all([
+				getVoiceInfoFn({ data: { refresh: true } }),
+				getTtsInfoFn(),
+			]);
+			if (generation !== localConversationStartGenerationRef.current) return;
+			if (localConversationWsStatusRef.current !== "connected") {
+				setLocalConversationRuntimeError(
+					"Raven disconnected before Local Conversation could start.",
+				);
+				return;
+			}
+			const currentCompetition = localConversationCompetitionRef.current;
+			if (currentCompetition.realtimeBusy || currentCompetition.voiceBusy) {
+				setLocalConversationRuntimeError(
+					"Another voice mode started while Local Conversation was checking readiness.",
+				);
+				return;
+			}
+			if (!localConversationAllowedRef.current) {
+				setLocalConversationRuntimeError(
+					"Local Conversation settings changed while readiness was being checked.",
+				);
+				return;
+			}
+			if (voiceInfo.status.state !== "ready") {
+				setLocalConversationRuntimeError(
+					voiceInfo.status.error ??
+						`Local Whisper is ${voiceInfo.status.state}.`,
+				);
+				return;
+			}
+			if (ttsInfo.status.state !== "ready") {
+				setLocalConversationRuntimeError(
+					ttsInfo.status.error ??
+						`Local neural speech is ${ttsInfo.status.state}.`,
+				);
+				return;
+			}
+			await localConversation.start();
+		} catch (error) {
+			if (generation !== localConversationStartGenerationRef.current) return;
+			setLocalConversationRuntimeError(
+				error instanceof Error
+					? `Could not check Local Conversation readiness: ${error.message}`
+					: "Could not check Local Conversation readiness.",
+			);
+		} finally {
+			if (generation === localConversationStartGenerationRef.current) {
+				setLocalConversationChecking(false);
+			}
+		}
+	}, [localConversation.start]);
+	const stopLocalConversation = useCallback(() => {
+		localConversationStartGenerationRef.current += 1;
+		setLocalConversationChecking(false);
+		localConversation.stop();
+	}, [localConversation.stop]);
+	useEffect(
+		() => () => {
+			localConversationStartGenerationRef.current += 1;
+		},
+		[],
+	);
 	const configuredDictation =
 		providerId === "codex"
 			? codexRealtimeAvailability(
@@ -2525,8 +2685,17 @@ function useRavenVoice(
 					reason: "Dictate with Codex requires the native Codex provider.",
 				};
 	const realtimeDictationActive = realtime.mode === "dictation";
+	const localOrLiveActive =
+		localConversationChecking ||
+		localConversation.active ||
+		(realtime.mode === "live" &&
+			(realtime.phase === "starting" ||
+				realtime.phase === "connected" ||
+				realtime.phase === "stopping"));
 	const voice = useVoiceInput({
-		config: config.voice,
+		config: localOrLiveActive
+			? { ...config.voice, enabled: false }
+			: config.voice,
 		initialInfo: initialVoiceInfo,
 		onTranscription,
 		onAudioTurn,
@@ -2547,28 +2716,66 @@ function useRavenVoice(
 			clearError: realtime.clearError,
 		},
 	});
+	localConversationCompetitionRef.current = {
+		realtimeBusy:
+			realtime.phase === "starting" ||
+			realtime.phase === "connected" ||
+			realtime.phase === "stopping",
+		voiceBusy:
+			voice.phase === "starting" ||
+			voice.phase === "recording" ||
+			voice.phase === "transcribing" ||
+			voice.phase === "submitting",
+	};
 	return {
 		...voice,
 		error:
-			realtime.phase === "error" && realtime.mode === "live"
+			localConversationRuntimeError ??
+			localConversation.error ??
+			(realtime.phase === "error" && realtime.mode === "live"
 				? realtime.error
-				: voice.error,
+				: voice.error),
 		errorLabel:
-			realtime.mode === "live"
-				? "Raven Live failed"
-				: config.voice.input_provider === "codex"
-					? "voice message failed"
-					: config.voice.input_provider === "codex_dictation"
-						? "Codex dictation failed"
-						: "voice transcription failed",
+			localConversationRuntimeError || localConversation.error
+				? "Local Conversation failed"
+				: realtime.mode === "live"
+					? "Raven Live failed"
+					: config.voice.input_provider === "codex"
+						? "voice message failed"
+						: config.voice.input_provider === "codex_dictation"
+							? "Codex dictation failed"
+							: "voice transcription failed",
 		clearError: () => {
 			voice.clearError();
+			localConversation.clearError();
+			setLocalConversationRuntimeError(null);
 			if (realtime.mode === "live") realtime.clearError();
 		},
+		localConversationActive: localConversation.active,
+		localConversationPhase: localConversationChecking
+			? "starting"
+			: localConversation.phase,
+		localConversationChecking,
+		localConversationSpeakerPhase: localConversation.speakerPhase,
+		localConversationMuted: localConversation.isMuted,
+		localConversationCapturing: localConversation.isCapturing,
+		localConversationPendingTranscriptions:
+			localConversation.pendingTranscriptions,
+		localConversationAttentionRequired: localConversation.attentionRequired,
+		localConversationUnavailable: localConversation.unavailableReason,
+		startLocalConversation,
+		stopLocalConversation,
+		toggleLocalConversationMicrophone: localConversation.toggleMuted,
+		pauseLocalConversationSpeech: localConversation.pauseSpeech,
+		resumeLocalConversationSpeech: localConversation.resumeSpeech,
+		stopLocalConversationSpeech: localConversation.stopSpeech,
 		livePhase: realtime.mode === "live" ? realtime.phase : "idle",
 		liveUnavailable: realtime.unavailableReason,
 		liveMicrophoneMuted: realtime.liveMicrophoneMuted,
-		startLive: () => realtime.start("live"),
+		startLive: () =>
+			localConversation.active || localConversationChecking
+				? Promise.resolve()
+				: realtime.start("live"),
 		stopLive: realtime.stop,
 		toggleLiveMicrophone: realtime.toggleLiveMicrophone,
 	};
@@ -2576,6 +2783,30 @@ function useRavenVoice(
 
 function isRavenLiveInteractionLocked(phase: RavenVoice["livePhase"]): boolean {
 	return phase === "starting" || phase === "connected" || phase === "stopping";
+}
+
+function localConversationStatus(voice: RavenVoice): string {
+	if (voice.localConversationAttentionRequired) {
+		return "attention required · microphone muted";
+	}
+	if (voice.localConversationPhase === "starting") return "opening microphone…";
+	if (voice.localConversationSpeakerPhase === "paused") {
+		return voice.localConversationMuted
+			? "speech paused · microphone muted"
+			: "speech paused · listening…";
+	}
+	if (voice.localConversationMuted) return "microphone muted";
+	if (voice.localConversationCapturing) return "hearing you…";
+	if (voice.localConversationPendingTranscriptions > 0) {
+		return "transcribing · still listening…";
+	}
+	if (voice.localConversationSpeakerPhase === "speaking") {
+		return "speaking · microphone paused for playback…";
+	}
+	if (voice.localConversationSpeakerPhase === "synthesizing") {
+		return "preparing speech · listening…";
+	}
+	return "listening…";
 }
 
 function useRavenQueueActions(props: RavenActionProps) {
@@ -5670,6 +5901,7 @@ function ChatInputNotices({
 	const activeProvider = providers.find(
 		(provider) => provider.id === activeProviderId,
 	);
+	const localConversationOffline = runtime.wsStatus !== "connected";
 	const savedAutoNeedsRecheck =
 		savedSession &&
 		!session.liveSessionStatus &&
@@ -5744,7 +5976,7 @@ function ChatInputNotices({
 			)}
 			{isRavenLiveInteractionLocked(voice.livePhase) && (
 				<div className="flex items-center gap-3 px-4 py-1 border-b border-primary/20 bg-primary/5 text-primary/80">
-					<output className="min-w-0 flex-1 text-[10px] leading-relaxed">
+					<output className="min-w-0 flex-1 truncate text-[10px] leading-relaxed">
 						Raven Live ·{" "}
 						{voice.livePhase === "starting"
 							? "connecting…"
@@ -5779,6 +6011,98 @@ function ChatInputNotices({
 							{voice.liveMicrophoneMuted ? "Unmute" : "Mute"}
 						</button>
 					)}
+				</div>
+			)}
+			{voice.localConversationActive && (
+				<div className="flex items-center gap-2 px-4 py-1 border-b border-primary/20 bg-primary/5 text-primary/80">
+					<output className="min-w-0 flex-1 truncate text-[10px] leading-relaxed">
+						Local Conversation · {localConversationStatus(voice)}
+					</output>
+					{(voice.localConversationSpeakerPhase === "synthesizing" ||
+						voice.localConversationSpeakerPhase === "speaking" ||
+						voice.localConversationSpeakerPhase === "paused") && (
+						<button
+							type="button"
+							onClick={
+								voice.localConversationSpeakerPhase === "paused"
+									? voice.resumeLocalConversationSpeech
+									: voice.pauseLocalConversationSpeech
+							}
+							aria-label={
+								voice.localConversationSpeakerPhase === "paused"
+									? "Resume Local Conversation speech"
+									: "Pause Local Conversation speech"
+							}
+							title={
+								voice.localConversationSpeakerPhase === "paused"
+									? "Resume speech from the paused position"
+									: "Pause speech and keep Local Conversation running"
+							}
+							className="size-10 inline-grid shrink-0 place-items-center border border-primary/25 bg-background/60 text-primary hover:bg-primary/10 transition-colors"
+						>
+							{voice.localConversationSpeakerPhase === "paused" ? (
+								<Play className="w-3.5 h-3.5 fill-current" />
+							) : (
+								<Pause className="w-3.5 h-3.5 fill-current" />
+							)}
+						</button>
+					)}
+					{voice.localConversationSpeakerPhase !== "idle" && (
+						<button
+							type="button"
+							onClick={voice.stopLocalConversationSpeech}
+							aria-label="Stop Local Conversation speech"
+							title="Stop this response's speech and keep Local Conversation running"
+							className="size-10 inline-grid shrink-0 place-items-center border border-primary/25 bg-background/60 text-primary hover:bg-primary/10 transition-colors"
+						>
+							<VolumeX className="w-3.5 h-3.5" />
+						</button>
+					)}
+					<button
+						type="button"
+						onClick={voice.toggleLocalConversationMicrophone}
+						disabled={
+							voice.localConversationAttentionRequired ||
+							localConversationOffline
+						}
+						aria-pressed={voice.localConversationMuted}
+						aria-label={
+							voice.localConversationMuted
+								? "Unmute Local Conversation microphone"
+								: "Mute Local Conversation microphone"
+						}
+						title={
+							localConversationOffline
+								? "Reconnect Raven before changing the microphone"
+								: voice.localConversationAttentionRequired
+									? "Resolve the pending Raven request before unmuting"
+									: voice.localConversationMuted
+										? "Unmute Local Conversation microphone"
+										: voice.localConversationCapturing
+											? "Finish this utterance and hard mute the Local Conversation microphone"
+											: "Hard mute the Local Conversation microphone"
+						}
+						className="size-10 sm:w-auto sm:px-3 inline-flex shrink-0 items-center justify-center gap-1.5 border border-primary/25 bg-background/60 text-[10px] text-primary hover:bg-primary/10 disabled:opacity-40 transition-colors"
+					>
+						{voice.localConversationMuted ? (
+							<MicOff className="w-3.5 h-3.5" />
+						) : (
+							<Mic className="w-3.5 h-3.5" />
+						)}
+						<span className="hidden sm:inline">
+							{voice.localConversationMuted ? "Unmute" : "Mute"}
+						</span>
+					</button>
+					<button
+						type="button"
+						onClick={voice.stopLocalConversation}
+						aria-label="Stop Local Conversation"
+						title="Stop listening, speech, and release the microphone"
+						className="size-10 sm:w-auto sm:px-3 inline-flex shrink-0 items-center justify-center gap-1.5 border border-primary/25 bg-background/60 text-[10px] text-primary hover:bg-primary/10 transition-colors"
+					>
+						<Square className="w-3 h-3 fill-current" />
+						<span className="hidden sm:inline">Stop</span>
+					</button>
 				</div>
 			)}
 			{savedAutoNeedsRecheck ? (
@@ -6042,6 +6366,10 @@ function ChatVoiceControls(props: ChatVoiceControlsProps) {
 		hotkey: config.voice.hotkey,
 	});
 	const liveActive = isRavenLiveInteractionLocked(voice.livePhase);
+	const localConversationActive = voice.localConversationActive;
+	const localConversationStarting = voice.localConversationChecking;
+	const localConversationLocked =
+		localConversationActive || localConversationStarting;
 	return (
 		<>
 			<button
@@ -6057,7 +6385,8 @@ function ChatVoiceControls(props: ChatVoiceControlsProps) {
 					starting ||
 					(!voice.ready && voice.phase !== "recording") ||
 					processing ||
-					liveActive
+					liveActive ||
+					localConversationLocked
 				}
 				className={`px-2 py-2 md:py-3 transition-colors shrink-0 disabled:opacity-30 ${voice.phase === "recording" ? "text-destructive" : starting ? "text-primary" : "text-muted-foreground/45 hover:text-muted-foreground"}`}
 				aria-label={
@@ -6088,6 +6417,63 @@ function ChatVoiceControls(props: ChatVoiceControlsProps) {
 					<X className="w-3.5 h-3.5" />
 				</button>
 			)}
+			{config.voice.local_conversation_mode && (
+				<button
+					type="button"
+					onClick={() =>
+						localConversationActive
+							? voice.stopLocalConversation()
+							: localConversationStarting
+								? undefined
+								: void voice.startLocalConversation()
+					}
+					disabled={
+						wsStatus !== "connected" ||
+						liveActive ||
+						starting ||
+						voice.phase === "recording" ||
+						processing ||
+						localConversationStarting ||
+						(!localConversationActive &&
+							(voice.localConversationUnavailable !== null ||
+								voice.localConversationAttentionRequired))
+					}
+					className={`px-2 py-2 md:py-3 transition-colors shrink-0 disabled:opacity-30 ${
+						localConversationLocked
+							? "text-primary"
+							: "text-muted-foreground/45 hover:text-muted-foreground"
+					}`}
+					aria-label={
+						localConversationStarting
+							? "Checking Local Conversation readiness"
+							: localConversationActive
+								? "Stop Local Conversation"
+								: "Start Local Conversation"
+					}
+					title={
+						localConversationStarting
+							? "Checking local Whisper and neural speech readiness"
+							: liveActive
+								? "Stop Raven Live first"
+								: voice.localConversationAttentionRequired
+									? "Resolve the pending Raven request first"
+									: (voice.localConversationUnavailable ??
+										(localConversationActive
+											? "Stop Local Conversation"
+											: isRunning
+												? "Listen hands-free and queue spoken follow-ups while this turn runs"
+												: "Start hands-free local conversation"))
+					}
+				>
+					{localConversationStarting ? (
+						<LoaderCircle className="w-3.5 h-3.5 animate-spin" />
+					) : localConversationActive ? (
+						<Square className="w-3.5 h-3.5 fill-current" />
+					) : (
+						<MessageSquare className="w-3.5 h-3.5" />
+					)}
+				</button>
+			)}
 			{config.voice.codex_live_mode && (
 				<button
 					type="button"
@@ -6099,7 +6485,8 @@ function ChatVoiceControls(props: ChatVoiceControlsProps) {
 						props.activeProviderId !== "codex" ||
 						isRunning ||
 						voice.livePhase === "stopping" ||
-						voice.liveUnavailable !== null
+						voice.liveUnavailable !== null ||
+						localConversationLocked
 					}
 					className={`px-2 py-2 md:py-3 transition-colors shrink-0 disabled:opacity-30 ${
 						liveActive
@@ -6116,15 +6503,17 @@ function ChatVoiceControls(props: ChatVoiceControlsProps) {
 					title={
 						props.activeProviderId !== "codex"
 							? "Raven Live requires a native Codex session"
-							: voice.liveUnavailable
-								? voice.liveUnavailable
-								: voice.livePhase === "stopping"
-									? "Waiting for Raven Live to finish"
-									: isRunning
-										? "Wait for the current turn to finish"
-										: liveActive
-											? "Stop Raven Live"
-											: "Start Raven Live"
+							: localConversationLocked
+								? "Stop Local Conversation first"
+								: voice.liveUnavailable
+									? voice.liveUnavailable
+									: voice.livePhase === "stopping"
+										? "Waiting for Raven Live to finish"
+										: isRunning
+											? "Wait for the current turn to finish"
+											: liveActive
+												? "Stop Raven Live"
+												: "Start Raven Live"
 					}
 				>
 					{liveActive ? (
@@ -6228,6 +6617,9 @@ function composerPlaceholder(
 }
 
 function voiceAnnouncement(voice: RavenVoice): string {
+	if (voice.localConversationActive) {
+		return `Local Conversation ${localConversationStatus(voice)}`;
+	}
 	if (voice.livePhase === "starting") return "Starting Raven Live";
 	if (voice.livePhase === "connected")
 		return voice.liveMicrophoneMuted
@@ -6584,11 +6976,7 @@ interface ChatComposerProps {
 	canSteerDelegatedChild: boolean;
 	handleSteerDelegatedChild: () => void;
 	handleSkillSelect: (command: CommandDescriptor) => void;
-	handleSend: (
-		overrideText?: string,
-		goal?: { objective: string; tokenBudget?: number | null },
-		voiceAttachments?: ChatAttachment[],
-	) => void;
+	handleSend: RavenSend;
 	handleClear: () => void;
 	hideOnMobile?: boolean;
 }

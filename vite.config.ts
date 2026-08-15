@@ -100,7 +100,11 @@ function chunkBudgetPlugin(): Plugin {
 	return {
 		name: "hlid-chunk-budget",
 		apply: "build",
-		generateBundle(_options, bundle) {
+		generateBundle(options, bundle) {
+			// TanStack Start also runs this plugin for the SSR environment. The
+			// browser parse-cost budget applies only to emitted client assets.
+			if (resolve(options.dir ?? "") !== resolve(process.cwd(), "dist/client"))
+				return;
 			for (const output of Object.values(bundle)) {
 				if (output.type !== "chunk") continue;
 				const bytes = Buffer.byteLength(output.code);

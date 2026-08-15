@@ -73,6 +73,37 @@ const state = vi.hoisted(() => ({
 	voiceStart: vi.fn(),
 	voiceStop: vi.fn(),
 	voiceCancel: vi.fn(),
+	localConversationOptions: null as null | {
+		unavailableReason?: string | null;
+		onTranscription?: (text: string) => void | Promise<void>;
+	},
+	localConversationActive: false,
+	localConversationPhase: "idle" as
+		| "idle"
+		| "starting"
+		| "listening"
+		| "capturing"
+		| "muted"
+		| "error",
+	localConversationSpeakerPhase: "idle" as
+		| "idle"
+		| "synthesizing"
+		| "speaking"
+		| "paused",
+	localConversationMuted: false,
+	localConversationCapturing: false,
+	localConversationPendingTranscriptions: 0,
+	localConversationAttentionRequired: false,
+	localConversationError: null as string | null,
+	localConversationUnavailable: null as string | null,
+	localConversationStart: vi.fn(async () => {}),
+	localConversationStop: vi.fn(),
+	localConversationSetMuted: vi.fn(),
+	localConversationToggleMuted: vi.fn(),
+	localConversationPauseSpeech: vi.fn(),
+	localConversationResumeSpeech: vi.fn(),
+	localConversationStopSpeech: vi.fn(),
+	localConversationClearError: vi.fn(),
 	realtimeMode: null as "dictation" | "read-aloud" | "live" | null,
 	realtimePhase: "idle" as
 		| "idle"
@@ -93,6 +124,12 @@ const state = vi.hoisted(() => ({
 	realtimeToggleLiveMicrophone: vi.fn(),
 	realtimeClearError: vi.fn(),
 	uploadVoiceRecording: vi.fn(),
+	pendingAttachments: [] as Array<Record<string, unknown>>,
+	vaultReferences: [] as Array<Record<string, unknown>>,
+	relicReferences: [] as Array<Record<string, unknown>>,
+	workspaceReferences: [] as Array<Record<string, unknown>>,
+	vaultReplaceSelections: vi.fn(),
+	vaultClear: vi.fn(),
 	terminalProps: null as null | {
 		active: boolean;
 		terminateOnDisconnect?: boolean;
@@ -280,6 +317,31 @@ vi.mock("#/hooks/useChatWsHandler", () => ({
 	},
 }));
 vi.mock("#/hooks/useLoadChatHistory", () => ({ useLoadChatHistory: vi.fn() }));
+vi.mock("#/hooks/useLocalConversation", () => ({
+	useLocalConversation: (options: typeof state.localConversationOptions) => {
+		state.localConversationOptions = options;
+		return {
+			active: state.localConversationActive,
+			phase: state.localConversationPhase,
+			speakerPhase: state.localConversationSpeakerPhase,
+			isMuted: state.localConversationMuted,
+			isCapturing: state.localConversationCapturing,
+			pendingTranscriptions: state.localConversationPendingTranscriptions,
+			attentionRequired: state.localConversationAttentionRequired,
+			error: state.localConversationError,
+			unavailableReason:
+				options?.unavailableReason ?? state.localConversationUnavailable,
+			start: state.localConversationStart,
+			stop: state.localConversationStop,
+			setMuted: state.localConversationSetMuted,
+			toggleMuted: state.localConversationToggleMuted,
+			pauseSpeech: state.localConversationPauseSpeech,
+			resumeSpeech: state.localConversationResumeSpeech,
+			stopSpeech: state.localConversationStopSpeech,
+			clearError: state.localConversationClearError,
+		};
+	},
+}));
 vi.mock("#/hooks/useNotificationPresence", () => ({
 	useRavenNotificationCleanup: vi.fn(),
 }));
@@ -327,7 +389,7 @@ vi.mock("#/hooks/useVoiceInput", () => ({
 }));
 vi.mock("#/hooks/useFileUpload", () => ({
 	useFileUpload: () => ({
-		pendingAttachments: [],
+		pendingAttachments: state.pendingAttachments,
 		uploadingCount: 0,
 		uploadError: null,
 		gitignoreHint: null,
@@ -336,6 +398,68 @@ vi.mock("#/hooks/useFileUpload", () => ({
 		clearPending: vi.fn(),
 		setPendingAttachments: vi.fn(),
 		dismissGitignoreHint: vi.fn(),
+	}),
+}));
+vi.mock("#/hooks/useVaultReferencePicker", () => ({
+	useVaultReferencePicker: () => ({
+		isOpen: false,
+		query: "",
+		items: [],
+		rootLabel: "Vault",
+		workspaceRootLabel: "Workspace",
+		workspaceEnvironmentLabel: "Workspace",
+		total:
+			state.vaultReferences.length +
+			state.relicReferences.length +
+			state.workspaceReferences.length,
+		vaultTotal: state.vaultReferences.length,
+		relicTotal: state.relicReferences.length,
+		workspaceTotal: state.workspaceReferences.length,
+		workspaceAvailable: true,
+		activeSource: "vault",
+		truncated: false,
+		loading: false,
+		error: null,
+		workspacePreview: null,
+		vaultPreview: null,
+		relicPreview: null,
+		referencePreviewOpen: false,
+		previewLoading: false,
+		previewError: null,
+		workspaceSelectionLoading: null,
+		selectedIndex: 0,
+		selected: state.vaultReferences,
+		selectedRelics: state.relicReferences,
+		selectedWorkspace: state.workspaceReferences,
+		referencePaths: state.vaultReferences.map(
+			(reference) => reference.relativePath as string,
+		),
+		workspaceReferences: state.workspaceReferences.map((reference) => ({
+			relativePath: reference.relativePath as string,
+			sha256: reference.sha256 as string,
+		})),
+		relicAttachments: state.relicReferences.map((reference) => ({
+			id: reference.id,
+			path: reference.path,
+			filename: reference.filename,
+			mime: reference.mime,
+			kind: reference.kind,
+			reference: "relic",
+		})),
+		navigate: vi.fn(),
+		select: vi.fn(),
+		previewReference: vi.fn(),
+		setActiveSource: vi.fn(),
+		confirmWorkspaceReference: vi.fn(),
+		confirmReferencePreview: vi.fn(),
+		cancelReferencePreview: vi.fn(),
+		addVaultReference: vi.fn(),
+		close: vi.fn(),
+		remove: vi.fn(),
+		removeRelic: vi.fn(),
+		removeWorkspace: vi.fn(),
+		replaceSelections: state.vaultReplaceSelections,
+		clear: state.vaultClear,
 	}),
 }));
 vi.mock("#/hooks/useWs", () => ({
@@ -408,6 +532,9 @@ vi.mock("#/lib/serverFns/providers", () => ({
 vi.mock("#/lib/serverFns/voice", () => ({
 	getVoiceInfoFn: vi.fn(),
 }));
+vi.mock("#/lib/serverFns/tts", () => ({
+	getTtsInfoFn: vi.fn(),
+}));
 vi.mock("#/lib/serverFns/config");
 
 import { resetRavenTerminalsForTesting } from "#/hooks/ravenTerminalStore";
@@ -428,6 +555,7 @@ import {
 	getSessionRowFn,
 	getSessionSelectionFn,
 } from "#/lib/serverFns/sessions";
+import { getTtsInfoFn } from "#/lib/serverFns/tts";
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import {
 	ChatPage,
@@ -450,6 +578,18 @@ beforeEach(() => {
 	vi.mocked(getProvidersFn)
 		.mockReset()
 		.mockResolvedValue([] as never);
+	vi.mocked(getVoiceInfoFn)
+		.mockReset()
+		.mockResolvedValue({
+			status: { state: "unavailable", model: "" },
+			models: [],
+		});
+	vi.mocked(getTtsInfoFn)
+		.mockReset()
+		.mockResolvedValue({
+			status: { state: "unavailable", model: "" },
+			models: [],
+		});
 	state.send.mockReturnValue(true);
 	resetDataRevisionsForTesting();
 	resetRavenProviderCacheForTesting();
@@ -472,6 +612,16 @@ beforeEach(() => {
 	state.voicePhase = "idle";
 	state.voiceEngine = "local";
 	state.voiceReady = false;
+	state.localConversationOptions = null;
+	state.localConversationActive = false;
+	state.localConversationPhase = "idle";
+	state.localConversationSpeakerPhase = "idle";
+	state.localConversationMuted = false;
+	state.localConversationCapturing = false;
+	state.localConversationPendingTranscriptions = 0;
+	state.localConversationAttentionRequired = false;
+	state.localConversationError = null;
+	state.localConversationUnavailable = null;
 	state.realtimeMode = null;
 	state.realtimePhase = "idle";
 	state.realtimeLiveMicrophoneMuted = false;
@@ -485,6 +635,10 @@ beforeEach(() => {
 		mime: "audio/wav",
 		kind: "ephemeral",
 	});
+	state.pendingAttachments = [];
+	state.vaultReferences = [];
+	state.relicReferences = [];
+	state.workspaceReferences = [];
 	state.terminalProps = null;
 	state.preview = null;
 	state.notificationOverrideProps = null;
@@ -6103,6 +6257,551 @@ describe("Raven composed submission behavior", () => {
 		expect(screen.getByText("Goal startup failed")).toBeTruthy();
 		expect(screen.queryByText("Finish the Raven cleanup")).toBeNull();
 		expect(state.handleChatWsMessage).toHaveBeenCalledWith(runtimeError);
+	});
+
+	it("queues an isolated Local Conversation turn without consuming staged composer context", async () => {
+		state.sessionState = "running";
+		state.pendingAttachments = [
+			{
+				id: "staged-upload",
+				path: "/library/staged.txt",
+				filename: "staged.txt",
+				mime: "text/plain",
+				kind: "ephemeral",
+			},
+		];
+		state.vaultReferences = [
+			{
+				relativePath: "Notes/staged.md",
+				name: "staged.md",
+				directory: "Notes",
+			},
+		];
+		state.relicReferences = [
+			{
+				id: "staged-relic",
+				path: "/relics/staged.png",
+				filename: "staged.png",
+				mime: "image/png",
+				kind: "image",
+				createdAt: 1,
+				category: "generated",
+			},
+		];
+		state.workspaceReferences = [
+			{
+				relativePath: "src/staged.ts",
+				name: "staged.ts",
+				directory: "src",
+				sha256: "staged-sha",
+				sizeBytes: 12,
+				environment: "host",
+				environmentLabel: "Host",
+				previewKind: "text",
+				mime: "text/plain",
+			},
+		];
+		vi.mocked(getVoiceInfoFn).mockResolvedValue({
+			status: { state: "ready", model: "base" },
+			models: [],
+		});
+		vi.mocked(getTtsInfoFn).mockResolvedValue({
+			status: { state: "ready", model: "kitten-nano" },
+			models: [],
+		});
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as Record<string, unknown>),
+				vault_provider: "acp:opencode",
+				voice: {
+					...(state.loaderData.config as { voice: Record<string, unknown> })
+						.voice,
+					enabled: true,
+					input_provider: "local",
+					read_aloud_provider: "neural",
+					local_conversation_mode: true,
+				},
+			},
+			vaultSkills: [
+				{
+					file: "review.md",
+					name: "review",
+					description: "Review changes",
+					content: "Review the work",
+					filePath: "/vault/skills/review.md",
+				},
+			],
+			voiceInfo: {
+				status: { state: "unavailable", model: "" },
+				models: [],
+			},
+		};
+		render(<ChatPage />);
+		const composer = screen.getByRole("combobox") as HTMLTextAreaElement;
+		fireEvent.change(composer, { target: { value: "/rev" } });
+		fireEvent.click(screen.getByRole("button", { name: "Select /review" }));
+		fireEvent.change(composer, {
+			target: { value: "keep this staged typed request" },
+		});
+
+		const start = screen.getByRole("button", {
+			name: "Start Local Conversation",
+		}) as HTMLButtonElement;
+		expect(start.disabled).toBe(false);
+		fireEvent.click(start);
+		await waitFor(() =>
+			expect(state.localConversationStart).toHaveBeenCalledOnce(),
+		);
+		expect(getVoiceInfoFn).toHaveBeenCalledWith({ data: { refresh: true } });
+		expect(getTtsInfoFn).toHaveBeenCalledOnce();
+
+		await act(async () => {
+			await state.localConversationOptions?.onTranscription?.(
+				"also inspect the worker logs",
+			);
+		});
+		const queued = state.enqueueChat.mock.calls.at(-1)?.[0] as Record<
+			string,
+			unknown
+		>;
+		expect(queued).toEqual(
+			expect.objectContaining({
+				text: "also inspect the worker logs",
+				session_id: expect.any(String),
+			}),
+		);
+		expect(queued.skill_contexts).toBeUndefined();
+		expect(queued.attachments).toBeUndefined();
+		expect(queued.vault_references).toEqual([]);
+		expect(queued.workspace_references).toEqual([]);
+		expect(composer.value).toBe("keep this staged typed request");
+		expect(screen.getByTestId("active-command").textContent).toContain(
+			"skill/review",
+		);
+		expect(state.pendingAttachments).toHaveLength(1);
+		expect(state.vaultReferences).toHaveLength(1);
+		expect(state.relicReferences).toHaveLength(1);
+		expect(state.workspaceReferences).toHaveLength(1);
+	});
+
+	it("surfaces live Local Conversation readiness instead of loader status", async () => {
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as Record<string, unknown>),
+				voice: {
+					...(state.loaderData.config as { voice: Record<string, unknown> })
+						.voice,
+					enabled: true,
+					input_provider: "local",
+					read_aloud_provider: "neural",
+					local_conversation_mode: true,
+				},
+			},
+			voiceInfo: {
+				status: { state: "ready", model: "stale-loader-model" },
+				models: [],
+			},
+		};
+		vi.mocked(getVoiceInfoFn).mockResolvedValue({
+			status: {
+				state: "unavailable",
+				model: "",
+				error: "download a local Whisper model",
+			},
+			models: [],
+		});
+		vi.mocked(getTtsInfoFn).mockResolvedValue({
+			status: { state: "ready", model: "kitten-nano" },
+			models: [],
+		});
+		render(<ChatPage />);
+
+		const start = screen.getByRole("button", {
+			name: "Start Local Conversation",
+		}) as HTMLButtonElement;
+		expect(start.disabled).toBe(false);
+		fireEvent.click(start);
+
+		await waitFor(() =>
+			expect(screen.getByRole("alert").textContent).toContain(
+				"download a local Whisper model",
+			),
+		);
+		expect(getVoiceInfoFn).toHaveBeenCalledWith({ data: { refresh: true } });
+		expect(getTtsInfoFn).toHaveBeenCalledOnce();
+		expect(state.localConversationStart).not.toHaveBeenCalled();
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Dismiss voice error" }),
+		);
+		vi.mocked(getVoiceInfoFn).mockResolvedValue({
+			status: { state: "ready", model: "base" },
+			models: [],
+		});
+		vi.mocked(getTtsInfoFn).mockResolvedValue({
+			status: {
+				state: "unavailable",
+				model: "",
+				error: "download a local neural voice",
+			},
+			models: [],
+		});
+		fireEvent.click(start);
+
+		await waitFor(() =>
+			expect(screen.getByRole("alert").textContent).toContain(
+				"download a local neural voice",
+			),
+		);
+		expect(state.localConversationStart).not.toHaveBeenCalled();
+	});
+
+	it("cancels a pending Local Conversation readiness check on unmount", async () => {
+		let resolveVoiceInfo!: (value: {
+			status: { state: "ready"; model: string };
+			models: never[];
+		}) => void;
+		const voiceInfoPending = new Promise<{
+			status: { state: "ready"; model: string };
+			models: never[];
+		}>((resolve) => {
+			resolveVoiceInfo = resolve;
+		});
+		vi.mocked(getVoiceInfoFn).mockReturnValue(voiceInfoPending as never);
+		vi.mocked(getTtsInfoFn).mockResolvedValue({
+			status: { state: "ready", model: "kitten-nano" },
+			models: [],
+		});
+		state.voiceReady = true;
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as Record<string, unknown>),
+				voice: {
+					...(state.loaderData.config as { voice: Record<string, unknown> })
+						.voice,
+					enabled: true,
+					input_provider: "local",
+					read_aloud_provider: "neural",
+					local_conversation_mode: true,
+				},
+			},
+		};
+		const view = render(<ChatPage />);
+		const manualVoice = screen.getByRole("button", {
+			name: "Dictate with Whisper",
+		}) as HTMLButtonElement;
+		expect(manualVoice.disabled).toBe(false);
+		fireEvent.click(
+			screen.getByRole("button", { name: "Start Local Conversation" }),
+		);
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", {
+					name: "Checking Local Conversation readiness",
+				}),
+			).toBeTruthy(),
+		);
+		expect(manualVoice.disabled).toBe(true);
+
+		view.unmount();
+		await act(async () => {
+			resolveVoiceInfo({
+				status: { state: "ready", model: "base" },
+				models: [],
+			});
+			await voiceInfoPending;
+			await Promise.resolve();
+		});
+		expect(state.localConversationStart).not.toHaveBeenCalled();
+	});
+
+	it("does not start Local Conversation if another voice mode wins the readiness race", async () => {
+		let resolveVoiceInfo!: (value: {
+			status: { state: "ready"; model: string };
+			models: never[];
+		}) => void;
+		const voiceInfoPending = new Promise<{
+			status: { state: "ready"; model: string };
+			models: never[];
+		}>((resolve) => {
+			resolveVoiceInfo = resolve;
+		});
+		vi.mocked(getVoiceInfoFn).mockReturnValue(voiceInfoPending as never);
+		vi.mocked(getTtsInfoFn).mockResolvedValue({
+			status: { state: "ready", model: "kitten-nano" },
+			models: [],
+		});
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as Record<string, unknown>),
+				voice: {
+					...(state.loaderData.config as { voice: Record<string, unknown> })
+						.voice,
+					enabled: true,
+					input_provider: "local",
+					read_aloud_provider: "neural",
+					local_conversation_mode: true,
+				},
+			},
+		};
+		const view = render(<ChatPage />);
+		fireEvent.click(
+			screen.getByRole("button", { name: "Start Local Conversation" }),
+		);
+		await waitFor(() => expect(getVoiceInfoFn).toHaveBeenCalledOnce());
+
+		state.realtimeMode = "live";
+		state.realtimePhase = "connected";
+		view.rerender(<ChatPage />);
+		await act(async () => {
+			resolveVoiceInfo({
+				status: { state: "ready", model: "base" },
+				models: [],
+			});
+			await voiceInfoPending;
+		});
+
+		await waitFor(() =>
+			expect(screen.getByRole("alert").textContent).toContain(
+				"Another voice mode started",
+			),
+		);
+		expect(state.localConversationStart).not.toHaveBeenCalled();
+	});
+
+	it("stops a pending Local Conversation microphone start and unlocks voice controls", async () => {
+		let resolveStart!: () => void;
+		const startPending = new Promise<void>((resolve) => {
+			resolveStart = resolve;
+		});
+		state.localConversationStart.mockReturnValueOnce(startPending);
+		state.voiceReady = true;
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as Record<string, unknown>),
+				voice: {
+					...(state.loaderData.config as { voice: Record<string, unknown> })
+						.voice,
+					enabled: true,
+					input_provider: "local",
+					read_aloud_provider: "neural",
+					local_conversation_mode: true,
+				},
+			},
+		};
+		vi.mocked(getVoiceInfoFn).mockResolvedValue({
+			status: { state: "ready", model: "base" },
+			models: [],
+		});
+		vi.mocked(getTtsInfoFn).mockResolvedValue({
+			status: { state: "ready", model: "kitten-nano" },
+			models: [],
+		});
+		const view = render(<ChatPage />);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Start Local Conversation" }),
+		);
+		await waitFor(() =>
+			expect(state.localConversationStart).toHaveBeenCalledOnce(),
+		);
+		state.localConversationActive = true;
+		state.localConversationPhase = "starting";
+		view.rerender(<ChatPage />);
+		fireEvent.click(
+			screen.getByRole("button", { name: "Stop Local Conversation" }),
+		);
+		expect(state.localConversationStop).toHaveBeenCalledOnce();
+		state.localConversationActive = false;
+		state.localConversationPhase = "idle";
+		view.rerender(<ChatPage />);
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: "Start Local Conversation" }),
+			).toBeTruthy(),
+		);
+		expect(
+			(
+				screen.getByRole("button", {
+					name: "Dictate with Whisper",
+				}) as HTMLButtonElement
+			).disabled,
+		).toBe(false);
+		await act(async () => {
+			resolveStart();
+			await startPending;
+		});
+		expect(
+			screen.queryByRole("button", {
+				name: "Checking Local Conversation readiness",
+			}),
+		).toBeNull();
+	});
+
+	it("hard-mutes and rejects Local Conversation transcripts after Raven disconnects", async () => {
+		state.localConversationActive = true;
+		state.localConversationPhase = "listening";
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as Record<string, unknown>),
+				voice: {
+					...(state.loaderData.config as { voice: Record<string, unknown> })
+						.voice,
+					enabled: true,
+					input_provider: "local",
+					read_aloud_provider: "neural",
+					local_conversation_mode: true,
+				},
+			},
+		};
+		const view = render(<ChatPage />);
+		state.send.mockClear();
+		state.enqueueChat.mockClear();
+
+		state.wsStatus = "disconnected";
+		view.rerender(<ChatPage />);
+
+		await waitFor(() =>
+			expect(state.localConversationSetMuted).toHaveBeenCalledWith(true),
+		);
+		expect(screen.getByRole("alert").textContent).toContain(
+			"Raven disconnected",
+		);
+		state.localConversationMuted = true;
+		state.localConversationPhase = "muted";
+		view.rerender(<ChatPage />);
+		const offlineUnmute = screen.getByRole("button", {
+			name: "Unmute Local Conversation microphone",
+		}) as HTMLButtonElement;
+		expect(offlineUnmute.disabled).toBe(true);
+		fireEvent.click(offlineUnmute);
+		expect(state.localConversationToggleMuted).not.toHaveBeenCalled();
+		await act(async () => {
+			await state.localConversationOptions?.onTranscription?.(
+				"do not send this disconnected utterance",
+			);
+		});
+		expect(state.send).not.toHaveBeenCalled();
+		expect(state.enqueueChat).not.toHaveBeenCalled();
+	});
+
+	it("hard-mutes Local Conversation without stopping it", () => {
+		state.localConversationActive = true;
+		state.localConversationPhase = "listening";
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as Record<string, unknown>),
+				voice: {
+					...(state.loaderData.config as { voice: Record<string, unknown> })
+						.voice,
+					enabled: true,
+					input_provider: "local",
+					read_aloud_provider: "neural",
+					local_conversation_mode: true,
+				},
+			},
+			voiceInfo: {
+				status: { state: "ready", model: "base" },
+				models: [],
+			},
+		};
+		const view = render(<ChatPage />);
+
+		expect(screen.getByText(/Local Conversation · listening/)).toBeTruthy();
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Mute Local Conversation microphone",
+			}),
+		);
+		expect(state.localConversationToggleMuted).toHaveBeenCalledOnce();
+		expect(state.localConversationStop).not.toHaveBeenCalled();
+
+		state.localConversationMuted = true;
+		state.localConversationPhase = "muted";
+		view.rerender(<ChatPage />);
+		expect(
+			screen.getByText(/Local Conversation · microphone muted/),
+		).toBeTruthy();
+		const [stop] = screen.getAllByRole("button", {
+			name: "Stop Local Conversation",
+		});
+		expect(stop).toBeTruthy();
+		if (stop) fireEvent.click(stop);
+		expect(state.localConversationStop).toHaveBeenCalledOnce();
+	});
+
+	it("controls Local Conversation speech without stopping the conversation", () => {
+		state.localConversationActive = true;
+		state.localConversationPhase = "listening";
+		state.localConversationSpeakerPhase = "speaking";
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as Record<string, unknown>),
+				voice: {
+					...(state.loaderData.config as { voice: Record<string, unknown> })
+						.voice,
+					enabled: true,
+					input_provider: "local",
+					read_aloud_provider: "neural",
+					local_conversation_mode: true,
+				},
+			},
+		};
+		const view = render(<ChatPage />);
+
+		expect(screen.getByText(/Local Conversation · speaking/)).toBeTruthy();
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Pause Local Conversation speech",
+			}),
+		);
+		expect(state.localConversationPauseSpeech).toHaveBeenCalledOnce();
+		expect(state.localConversationStop).not.toHaveBeenCalled();
+
+		state.localConversationSpeakerPhase = "paused";
+		state.localConversationMuted = true;
+		view.rerender(<ChatPage />);
+		expect(
+			screen.getByText(/Local Conversation · speech paused · microphone muted/),
+		).toBeTruthy();
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Resume Local Conversation speech",
+			}),
+		);
+		expect(state.localConversationResumeSpeech).toHaveBeenCalledOnce();
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Stop Local Conversation speech",
+			}),
+		);
+		expect(state.localConversationStopSpeech).toHaveBeenCalledOnce();
+		expect(state.localConversationStop).not.toHaveBeenCalled();
+		expect(state.localConversationToggleMuted).not.toHaveBeenCalled();
+
+		state.localConversationSpeakerPhase = "synthesizing";
+		view.rerender(<ChatPage />);
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Pause Local Conversation speech",
+			}),
+		);
+		expect(state.localConversationPauseSpeech).toHaveBeenCalledTimes(2);
+		expect(
+			screen.getByRole("button", {
+				name: "Stop Local Conversation speech",
+			}),
+		).toBeTruthy();
 	});
 
 	it("sends an idle message through the WebSocket boundary", () => {

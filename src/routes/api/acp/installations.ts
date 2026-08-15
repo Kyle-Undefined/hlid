@@ -6,7 +6,7 @@ import {
 import { dbFetch } from "#/lib/dbClient";
 import { acpManagedInstallAccessResponse } from "#/lib/localRequest";
 import { forbiddenResponse } from "#/lib/originGate";
-import { loadToken, verifyToken } from "#/lib/token";
+import { isExactSameOriginMutation } from "#/lib/sameOriginRequest";
 
 type AcpManagedInstallRouteOperations = {
 	forbidden: (request: Request) => Response | null;
@@ -23,25 +23,7 @@ function sameOriginMutationResponse(request: Request): Response | null {
 			{ status: 415 },
 		);
 	}
-	const requestUrl = new URL(request.url);
-	const forwardedHost = request.headers.get("x-hlid-forwarded-host");
-	const trustedProxy = verifyToken(
-		request.headers.get("x-hlid-proxy-token"),
-		loadToken(),
-	);
-	const expectedOrigin =
-		trustedProxy &&
-		request.headers.get("x-hlid-forwarded-proto") === "https" &&
-		forwardedHost &&
-		!/[\r\n/@]/.test(forwardedHost)
-			? `https://${forwardedHost}`
-			: requestUrl.origin;
-	const origin = request.headers.get("origin");
-	if (!origin || origin !== expectedOrigin) {
-		return Response.json({ ok: false, error: "Forbidden" }, { status: 403 });
-	}
-	const fetchSite = request.headers.get("sec-fetch-site");
-	if (fetchSite && fetchSite !== "same-origin") {
+	if (!isExactSameOriginMutation(request)) {
 		return Response.json({ ok: false, error: "Forbidden" }, { status: 403 });
 	}
 	return null;

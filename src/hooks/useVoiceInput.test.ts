@@ -7,9 +7,9 @@ import { deferred } from "#/test/utils";
 vi.mock("#/lib/serverFns/voice", () => ({ getVoiceInfoFn: vi.fn() }));
 
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
+import { readVoiceTranscriptionResponse } from "#/lib/voiceTranscription";
 import {
 	type CodexDictationController,
-	readTranscriptionResponse,
 	uploadVoiceRecording,
 	useVoiceInput,
 } from "./useVoiceInput";
@@ -30,12 +30,14 @@ const config = {
 	tts_model: "",
 	tts_voice: "expr-voice-2-f",
 	tts_threads: 4,
+	local_conversation_mode: false,
 	codex_voice: "marin" as const,
 	codex_live_mode: false,
 	hotkey: "Alt+Shift+KeyV",
 	max_recording_seconds: 300,
 	acceleration: "auto" as const,
 	threads: 4,
+	pronunciations: [],
 	vocabulary: ["Claude", "Codex"],
 };
 
@@ -97,7 +99,7 @@ describe("useVoiceInput", () => {
 			headers: { "content-type": "text/html" },
 		});
 
-		await expect(readTranscriptionResponse(response)).rejects.toThrow(
+		await expect(readVoiceTranscriptionResponse(response)).rejects.toThrow(
 			"Voice transcription is unavailable in this Hlid build",
 		);
 	});
@@ -487,5 +489,107 @@ describe("useVoiceInput", () => {
 		await waitFor(() =>
 			expect(result.current.status.state).toBe("unavailable"),
 		);
+	});
+
+	it("recovers an unavailable Raven loader fallback after restart", async () => {
+		const loaderFallback = {
+			status: { state: "unavailable" as const, model: "" },
+			models: [],
+		};
+		vi.mocked(getVoiceInfoFn).mockResolvedValue(readyInfo);
+
+		const { result } = renderHook(() =>
+			useVoiceInput({
+				config,
+				initialInfo: loaderFallback,
+				onTranscription: vi.fn(),
+			}),
+		);
+
+		expect(result.current.ready).toBe(false);
+		await waitFor(() => expect(result.current.ready).toBe(true));
+		expect(getVoiceInfoFn).toHaveBeenCalled();
+	});
+
+	it("keeps reconciling transient voice service fallbacks until ready", async () => {
+		const loadingInfo = {
+			status: { state: "loading" as const, model: "base" },
+			models: [],
+		};
+		vi.mocked(getVoiceInfoFn)
+			.mockResolvedValueOnce({
+				status: {
+					state: "unavailable",
+					model: "",
+					error: "voice service unavailable",
+				},
+				models: [],
+			})
+			.mockResolvedValueOnce(readyInfo);
+
+		const { result } = renderHook(() =>
+			useVoiceInput({
+				config,
+				initialInfo: loadingInfo,
+				onTranscription: vi.fn(),
+			}),
+		);
+
+		await waitFor(() => expect(result.current.ready).toBe(true));
+		expect(getVoiceInfoFn).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not poll a genuine local Whisper runtime failure", async () => {
+		const runtimeFailure = {
+			status: {
+				state: "unavailable" as const,
+				model: "base",
+				error: "whisper runtime is not installed",
+			},
+			models: [],
+		};
+
+		renderHook(() =>
+			useVoiceInput({
+				config,
+				initialInfo: runtimeFailure,
+				onTranscription: vi.fn(),
+			}),
+		);
+
+		await act(async () => Promise.resolve());
+		expect(getVoiceInfoFn).not.toHaveBeenCalled();
+	});
+
+	it("keeps restart recovery status reads single-flight", async () => {
+		vi.useFakeTimers();
+		try {
+			const pending = deferred<typeof readyInfo>();
+			vi.mocked(getVoiceInfoFn).mockReturnValue(pending.promise);
+			const loaderFallback = {
+				status: { state: "unavailable" as const, model: "" },
+				models: [],
+			};
+
+			renderHook(() =>
+				useVoiceInput({
+					config,
+					initialInfo: loaderFallback,
+					onTranscription: vi.fn(),
+				}),
+			);
+			await act(async () => Promise.resolve());
+			expect(getVoiceInfoFn).toHaveBeenCalledOnce();
+
+			act(() => vi.advanceTimersByTime(5_000));
+			expect(getVoiceInfoFn).toHaveBeenCalledOnce();
+
+			await act(async () => {
+				pending.resolve(readyInfo);
+				await pending.promise;
+			});
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

@@ -92,6 +92,9 @@ function serializeDiagnostics(config: HlidConfig["diagnostics"]): string[] {
 
 function serializeVoice(config: HlidConfig["voice"]): string[] {
 	const voice = config ?? DEFAULT_VOICE_CONFIG;
+	const pronunciations = voice.pronunciations.map((entry) =>
+		tomlInlineTable({ written: entry.written, spoken: entry.spoken }),
+	);
 	return section("voice", [
 		`enabled = ${tomlVal(voice.enabled)}`,
 		`input_provider = ${tomlVal(voice.input_provider)}`,
@@ -104,12 +107,14 @@ function serializeVoice(config: HlidConfig["voice"]): string[] {
 		`tts_model = ${tomlVal(voice.tts_model)}`,
 		`tts_voice = ${tomlVal(voice.tts_voice)}`,
 		`tts_threads = ${tomlVal(voice.tts_threads)}`,
+		`local_conversation_mode = ${tomlVal(voice.local_conversation_mode)}`,
 		`codex_voice = ${tomlVal(voice.codex_voice)}`,
 		`codex_live_mode = ${tomlVal(voice.codex_live_mode)}`,
 		`hotkey = ${tomlVal(voice.hotkey)}`,
 		`max_recording_seconds = ${tomlVal(voice.max_recording_seconds)}`,
 		`acceleration = ${tomlVal(voice.acceleration)}`,
 		`threads = ${tomlVal(voice.threads)}`,
+		`pronunciations = [${pronunciations.join(", ")}]`,
 		`vocabulary = ${tomlVal(voice.vocabulary)}`,
 	]);
 }

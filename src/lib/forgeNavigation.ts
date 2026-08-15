@@ -257,6 +257,13 @@ export const FORGE_CATEGORIES: readonly ForgeCategoryDefinition[] = [
 				keywords: ["tts", "speech", "neural", "voice", "speaker"],
 			},
 			{
+				id: "local-conversation",
+				label: "Local conversation",
+				description:
+					"Hands-free Whisper input and local neural speech in Raven.",
+				keywords: ["hands-free", "whisper", "neural", "microphone", "raven"],
+			},
+			{
 				id: "realtime-voice",
 				label: "Realtime voice",
 				description: "Codex realtime and Raven Live voice behavior.",

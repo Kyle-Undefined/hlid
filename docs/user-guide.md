@@ -944,6 +944,16 @@ thread setting, download progress, and a fixed voice preview. You choose each
 download, and you can remove models separately. `Hlið` checks the runtime and
 model archives before installing them. They are not packed into the executable.
 
+**Pronunciations** teaches local neural read aloud how to say project names,
+acronyms, and other uncommon terms. Each entry pairs the literal written word or
+phrase with a phonetic **Say as** spelling, such as `Hlið` and `hleeth`. Use
+**Play** to test it because the best spelling can differ by voice. All-cap terms
+such as `ACP` match that exact capitalization so ordinary words such as `us` are
+not changed by an entry for `US`; other terms match without regard to case. The
+mapping changes only the text sent to local neural speech; the visible response,
+stored transcript, and text sent to an agent remain unchanged. It does not apply
+to device, `Microsoft`, or provider-native speech.
+
 Local neural speech runs in a separate child process, keeping native inference
 off the main `Hlið` server. Replies start with a short opening chunk, then use
 sentence-sized chunks with one prepared ahead. Playback can begin while the
@@ -961,8 +971,9 @@ See [Third-party notices](../THIRD_PARTY_NOTICES.md) for the bundled `Whisper`
 runtime and downloaded speech-model archives, checksums, source, and licenses.
 
 Read aloud skips fenced code blocks, link addresses, and `Markdown` formatting.
-It reads the finished response text, not tool activity or a reply that is still
-streaming.
+The regular per-message control reads the finished response text, not tool
+activity or a reply that is still streaming. Local Conversation uses the same
+neural speech runtime progressively, as described below.
 
 ### Voice input
 
@@ -1018,6 +1029,56 @@ Remote microphone capture needs the `HTTPS` endpoint. If it is not working,
 check browser permission, `HTTPS`, and the matching `Forge` voice settings. For
 **Talk to Codex**, also check that the selected model accepts audio. Realtime
 dictation and `Raven Live` use the separate account and backend gate.
+
+### Local Conversation
+
+Local Conversation is the opt-in, hands-free path for talking with a regular
+`Raven` provider. In **FORGE → Experience → Local conversation**, turn on
+**Hands-free mode** after choosing **Dictate with Whisper** for input and
+**Local neural** for read aloud. The Local Conversation control then appears in
+`Raven`; starting it rechecks that both the selected `Whisper` model and neural
+voice model are ready.
+
+Starting it opens the microphone and keeps it open. Local voice activity
+detection splits speech at natural pauses, sends each finished utterance to
+local `Whisper`, and submits the transcript as a normal text message. The
+microphone keeps listening while the provider works, so you can add another
+instruction without waiting for the current turn to finish. If the provider is
+busy, that instruction enters the normal `Raven` queue. This is
+provider-neutral behavior designed first around `OpenCode`; it does not require
+the selected model or harness to accept audio.
+
+Assistant speech can start before the full reply is done. `Hlið` waits for
+stable sentences or paragraphs instead of reading raw streaming chunks, and it
+flushes ready prose when the reply crosses a tool boundary. Playback can
+continue while the provider runs tools or writes the rest of its response.
+Fenced code, link addresses, and `Markdown` formatting are not read aloud. Voice activity
+detection pauses only while a spoken segment is actually playing so speaker
+output cannot be submitted as your next turn, then resumes between segments.
+Machine timestamps, test-run timing details, and absolute path prefixes are
+trimmed from Local Conversation speech while ordinary numbers and prose remain.
+
+During playback, **Pause speech** holds the current audio position and lets an
+unmuted microphone listen again. **Resume speech** continues from that position.
+**Stop speech** discards the current response's remaining narration but keeps
+Local Conversation, the microphone, the agent, and its tools running. A later
+assistant response is read normally. Speaking while speech is paused counts as
+a temporary hold: Hlið queues the new utterance while preserving the paused
+narration. **Resume speech** continues it after the utterance is safely captured;
+use **Stop speech** when you want to discard the remaining narration instead.
+
+**Mute** finishes and transcribes the utterance you are currently speaking, then
+hard-disables microphone input so background noise cannot start another one. It
+does not stop the agent, its tools, or assistant speech, and it stays muted
+across turn completion until you explicitly unmute it. Safety mutes caused by a
+disconnect or pending structured request discard partial speech instead.
+**Stop** ends Local Conversation, releases the microphone, and stops its queued
+speech.
+
+Permissions, questions, and plan proposals still require their structured
+`Raven` controls. Spoken words are never treated as an approval. Provider-native
+**Raven Live** remains a separate, independently gated `Codex` mode with its own
+realtime session and controls.
 
 ### Attachments
 

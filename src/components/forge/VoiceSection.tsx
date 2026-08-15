@@ -7,6 +7,7 @@ import {
 import type { ProviderInfo } from "#/lib/providerTypes";
 import type { VoiceInfo } from "#/lib/serverFns/voice";
 import { CodexRealtimeSection } from "./CodexRealtimeSection";
+import { LocalConversationSection } from "./LocalConversationSection";
 import { ReadAloudSection } from "./ReadAloudSection";
 import { TtsModelsSection } from "./TtsModelsSection";
 import {
@@ -46,6 +47,12 @@ export function VoiceSection({
 			<ReadAloudSection
 				voice={voice}
 				onChange={onChange}
+				ttsInfo={ttsRuntime.info}
+			/>
+			<LocalConversationSection
+				voice={voice}
+				onChange={onChange}
+				voiceStatus={voiceRuntime.info.status}
 				ttsInfo={ttsRuntime.info}
 			/>
 			<CodexRealtimeSection voice={voice} onChange={onChange} />

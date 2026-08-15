@@ -11,6 +11,12 @@ import {
 	navigationLabelGraphemeCount,
 	normalizeNavigationLabel,
 } from "./lib/navigationNames";
+import {
+	MAX_SPEECH_PRONUNCIATION_FIELD_CHARS,
+	MAX_SPEECH_PRONUNCIATIONS,
+	normalizeSpeechPronunciations,
+	type SpeechPronunciation,
+} from "./lib/speechPronunciations";
 import { parseWslUncSyntax } from "./lib/wslPathSyntax";
 
 const HexColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/);
@@ -331,6 +337,17 @@ const AttachmentsSchema = z.object({
 		.default(DEFAULT_ATTACHMENTS_CONFIG.allowed_mimes),
 });
 
+export const MAX_VOICE_PRONUNCIATIONS = MAX_SPEECH_PRONUNCIATIONS;
+export const MAX_VOICE_PRONUNCIATION_LENGTH =
+	MAX_SPEECH_PRONUNCIATION_FIELD_CHARS;
+
+export const VoicePronunciationSchema = z.object({
+	written: z.string().trim().min(1).max(MAX_VOICE_PRONUNCIATION_LENGTH),
+	spoken: z.string().trim().min(1).max(MAX_VOICE_PRONUNCIATION_LENGTH),
+});
+
+export type VoicePronunciation = SpeechPronunciation;
+
 export const DEFAULT_VOICE_CONFIG = {
 	enabled: false,
 	input_provider: "local" as const,
@@ -343,12 +360,14 @@ export const DEFAULT_VOICE_CONFIG = {
 	tts_model: "",
 	tts_voice: "expr-voice-2-f",
 	tts_threads: 4,
+	local_conversation_mode: false,
 	codex_voice: "marin" as const,
 	codex_live_mode: false,
 	hotkey: "Alt+Shift+KeyV",
 	max_recording_seconds: 300,
 	acceleration: "auto" as const,
 	threads: 4,
+	pronunciations: [] as VoicePronunciation[],
 	vocabulary: [
 		"Claude",
 		"Codex",
@@ -393,6 +412,9 @@ const VoiceSchema = z.object({
 		.min(1)
 		.max(32)
 		.default(DEFAULT_VOICE_CONFIG.tts_threads),
+	local_conversation_mode: z
+		.boolean()
+		.default(DEFAULT_VOICE_CONFIG.local_conversation_mode),
 	codex_voice: z
 		.enum([
 			"alloy",
@@ -433,6 +455,13 @@ const VoiceSchema = z.object({
 		.min(1)
 		.max(32)
 		.default(DEFAULT_VOICE_CONFIG.threads),
+	pronunciations: z
+		.array(VoicePronunciationSchema)
+		.max(MAX_VOICE_PRONUNCIATIONS)
+		.transform((pronunciations) =>
+			normalizeSpeechPronunciations(pronunciations),
+		)
+		.default(DEFAULT_VOICE_CONFIG.pronunciations),
 	vocabulary: z
 		.array(z.string().trim().min(1).max(80))
 		.max(50)

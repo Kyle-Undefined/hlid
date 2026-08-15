@@ -8,6 +8,7 @@ import { compressHttpResponse } from "./httpCompression";
 import {
 	acpProviderOperationSlowRequestThreshold,
 	createRequestObserver,
+	localAudioSlowRequestThreshold,
 	projectPreviewSlowRequestThreshold,
 } from "./requestDiagnostics";
 import { uiStartupGateResponse } from "./uiStartupGate";
@@ -50,8 +51,8 @@ const observeUiRequest = createRequestObserver({
 	},
 	slowRequestMs: (request) => {
 		const pathname = new URL(request.url).pathname;
-		if (pathname === "/api/voice/transcribe") return 70_000;
-		if (pathname.startsWith("/api/read-aloud/")) return 10_000;
+		const localAudioThreshold = localAudioSlowRequestThreshold(pathname);
+		if (localAudioThreshold !== undefined) return localAudioThreshold;
 		const id = pathname.startsWith("/_serverFn/")
 			? pathname.slice("/_serverFn/".length).split("/")[0]
 			: undefined;

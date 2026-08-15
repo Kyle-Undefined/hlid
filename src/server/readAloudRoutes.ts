@@ -2,6 +2,10 @@ import {
 	chunkNeuralReadAloudText,
 	readableTextFromMarkdown,
 } from "#/lib/readAloud";
+import {
+	applySpeechPronunciations,
+	type SpeechPronunciation,
+} from "#/lib/speechPronunciations";
 import type { MicrosoftSpeechManager } from "./microsoftSpeech";
 import { createConcurrencyGate } from "./requestLimits";
 import type { TtsModelManager } from "./tts";
@@ -15,6 +19,7 @@ type ReadAloudRouteOptions = {
 	tts?: Pick<TtsModelManager, "synthesize">;
 	getAssistantMessageText: (id: number) => Promise<string | null>;
 	getNeuralSettings?: () => { voiceId: string; rate: number };
+	getPronunciations?: () => readonly SpeechPronunciation[];
 };
 
 type ReadAloudRouteDependencies = {
@@ -22,6 +27,7 @@ type ReadAloudRouteDependencies = {
 	neuralTts: Pick<TtsModelManager, "synthesize">;
 	getAssistantMessageText: (id: number) => Promise<string | null>;
 	neuralSettings: () => { voiceId: string; rate: number };
+	pronunciations: () => readonly SpeechPronunciation[];
 	synthesisGate: ReturnType<typeof createConcurrencyGate>;
 };
 
@@ -82,6 +88,7 @@ async function handlePreviewRoute({
 async function readAssistantMessage(
 	url: URL,
 	getAssistantMessageText: ReadAloudRouteDependencies["getAssistantMessageText"],
+	pronunciations: ReadAloudRouteDependencies["pronunciations"],
 ): Promise<{ ok: true; text: string } | { ok: false; response: Response }> {
 	const rawMessageId = url.searchParams.get("message_id") ?? "";
 	const messageId = Number(rawMessageId);
@@ -101,7 +108,11 @@ async function readAssistantMessage(
 			),
 		};
 	}
-	const text = readableTextFromMarkdown(markdown);
+	const readableText = readableTextFromMarkdown(markdown);
+	const text =
+		url.searchParams.get("provider") === "neural"
+			? applySpeechPronunciations(readableText, pronunciations())
+			: readableText;
 	if (!text) {
 		return {
 			ok: false,
@@ -205,6 +216,7 @@ export function createReadAloudRouteHandler({
 	tts,
 	getAssistantMessageText,
 	getNeuralSettings,
+	getPronunciations,
 }: ReadAloudRouteOptions) {
 	const neuralTts = tts ?? {
 		synthesize: () =>
@@ -221,6 +233,7 @@ export function createReadAloudRouteHandler({
 		neuralTts,
 		getAssistantMessageText,
 		neuralSettings,
+		pronunciations: getPronunciations ?? (() => []),
 		synthesisGate: createConcurrencyGate(1),
 	};
 	return async (url: URL, request: Request): Promise<Response | null> => {
@@ -236,6 +249,7 @@ export function createReadAloudRouteHandler({
 		const message = await readAssistantMessage(
 			url,
 			dependencies.getAssistantMessageText,
+			dependencies.pronunciations,
 		);
 		if (!message.ok) return message.response;
 		if (url.searchParams.get("provider") === "neural") {

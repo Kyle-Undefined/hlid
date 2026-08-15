@@ -1,12 +1,13 @@
 import { accessSync, constants, mkdirSync, realpathSync } from "node:fs";
 import { open, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { HlidConfig } from "../config";
 import { resolveClaudeExecutable } from "../lib/claudePath";
 import type { CliUpdateStatus } from "../lib/cliUpdateTypes";
 import { resolveCodexExecutable } from "../lib/codexPath";
 import { dbFetch } from "../lib/dbClient";
 import { canonicalInstallDir } from "../lib/install";
-import { parseWslUnc } from "../lib/paths";
+import { parseWslUnc, parseWslUncSyntax } from "../lib/paths";
 import { runBoundedProcess } from "../lib/process";
 
 import { inspectAcpAgent } from "./acpProvider";
@@ -846,10 +847,29 @@ async function readAuthoritativeAcpCatalog(): Promise<AcpCatalogItem[]> {
 	return payload.agents as AcpCatalogItem[];
 }
 
+/**
+ * The legacy updater never owns an exact WSL ACP lifecycle. AcpRegistry derives
+ * candidate targets from every configured workspace, independently of its
+ * agent-id scope, so give this standalone registry a host-only projection.
+ */
+export function legacyHostAcpUpdateConfig(config: HlidConfig): HlidConfig {
+	return {
+		...config,
+		vault: parseWslUncSyntax(config.vault.path)
+			? { ...config.vault, path: "" }
+			: config.vault,
+		agents: config.agents.filter((agent) => !parseWslUncSyntax(agent.path)),
+		acp_agents: (config.acp_agents ?? []).filter(
+			(agent) => agent.target?.kind !== "wsl",
+		),
+	};
+}
+
 const defaultAcpDependencies: AcpUpdateDependencies = {
 	listCandidates: async () => {
-		const config = loadConfig();
+		const config = legacyHostAcpUpdateConfig(loadConfig());
 		const configuredAgents = config.acp_agents ?? [];
+		if (configuredAgents.length === 0) return [];
 		const configured = new Map(
 			configuredAgents.map((agent) => [agent.id, agent]),
 		);

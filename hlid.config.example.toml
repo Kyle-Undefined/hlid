@@ -43,6 +43,8 @@ read_aloud_rate = 1
 tts_model = ""
 tts_voice = "expr-voice-2-f"
 tts_threads = 4
+# Local Conversation composes Whisper input and local neural speech around Raven providers.
+local_conversation_mode = false
 # Codex dictation and Raven Live share this voice and preview gate.
 codex_voice = "marin"
 codex_live_mode = false
@@ -52,6 +54,10 @@ max_recording_seconds = 300
 # "cpu" always disables GPU compute.
 acceleration = "auto"
 threads = 4
+# Local neural pronunciation mappings affect generated speech only. The written
+# response and transcript stay unchanged.
+pronunciations = []
+# Example: pronunciations = [{ written = "Hlið", spoken = "hleeth" }]
 vocabulary = ["Claude", "Codex", "Hlið", "Raven", "Forge", "Umbod", "MCP", "Anthropic", "OpenAI", "TypeScript", "GitHub", "Bun"]
 
 # Optional advanced mode: connect an externally managed CLIProxyAPI process.

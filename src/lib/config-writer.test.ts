@@ -436,6 +436,25 @@ describe("writeConfig — voice section", () => {
 		expect(toml).toContain('vocabulary = ["Claude", "Codex", "Hlið"]');
 	});
 
+	it("round-trips local neural pronunciation mappings as TOML inline tables", () => {
+		const config = HlidConfigSchema.parse({
+			voice: {
+				pronunciations: [
+					{ written: "Hlið", spoken: "hleeth" },
+					{ written: "C++", spoken: "C plus plus" },
+				],
+			},
+		});
+		const toml = serializeConfig(config);
+
+		expect(toml).toContain(
+			'pronunciations = [{ "written" = "Hlið", "spoken" = "hleeth" }, { "written" = "C++", "spoken" = "C plus plus" }]',
+		);
+		expect(HlidConfigSchema.parse(parse(toml)).voice.pronunciations).toEqual(
+			config.voice.pronunciations,
+		);
+	});
+
 	it("writes shared read-aloud settings", () => {
 		const config = HlidConfigSchema.parse({
 			voice: {
@@ -445,6 +464,7 @@ describe("writeConfig — voice section", () => {
 				tts_model: "kitten-nano-v0.8-int8",
 				tts_voice: "expr-voice-5-f",
 				tts_threads: 8,
+				local_conversation_mode: true,
 			},
 		});
 		writeConfig(config);
@@ -455,6 +475,7 @@ describe("writeConfig — voice section", () => {
 		expect(toml).toContain('tts_model = "kitten-nano-v0.8-int8"');
 		expect(toml).toContain('tts_voice = "expr-voice-5-f"');
 		expect(toml).toContain("tts_threads = 8");
+		expect(toml).toContain("local_conversation_mode = true");
 	});
 
 	it("preserves Talk to Codex while migrating legacy Codex read aloud", () => {
@@ -506,12 +527,14 @@ describe("writeConfig — voice section", () => {
 					tts_model: "",
 					tts_voice: "expr-voice-2-f",
 					tts_threads: 4,
+					local_conversation_mode: false,
 					codex_voice: "marin",
 					codex_live_mode: false,
 					hotkey: "",
 					max_recording_seconds: 300,
 					acceleration: "auto",
 					threads: 4,
+					pronunciations: [],
 					vocabulary: ["Claude", "Codex"],
 				},
 			}),

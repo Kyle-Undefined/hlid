@@ -121,8 +121,17 @@ vi.mock("#/components/forge/VocabSection", () => ({
 }));
 vi.mock("#/components/forge/VoiceSection", () => ({
 	VoiceSection: () => (
-		<div id="forge-setting-recording-hotkey" tabIndex={-1}>
-			Voice content
+		<div>
+			<div id="forge-setting-recording-hotkey" tabIndex={-1}>
+				Voice content
+			</div>
+			<section
+				id="forge-section-local-conversation"
+				data-forge-section="forge-section-local-conversation"
+				tabIndex={-1}
+			>
+				Local conversation content
+			</section>
 		</div>
 	),
 }));
@@ -198,6 +207,20 @@ describe("ForgeSettings search", () => {
 		expect(screen.getByText("Navigation names content")).toBeTruthy();
 		await waitFor(() =>
 			expect(document.activeElement?.id).toBe("forge-section-navigation-names"),
+		);
+	});
+
+	it("focuses Local conversation from the Experience section navigation", async () => {
+		renderSettings();
+		fireEvent.change(screen.getByRole("combobox", { name: "Forge category" }), {
+			target: { value: "experience" },
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "Local conversation" }));
+		await waitFor(() =>
+			expect(document.activeElement?.id).toBe(
+				"forge-section-local-conversation",
+			),
 		);
 	});
 

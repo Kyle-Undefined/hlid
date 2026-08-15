@@ -65,6 +65,17 @@ describe("buildApiIndex", () => {
 		);
 	});
 
+	it("documents local speech synthesis on the API and same-origin UI surfaces", () => {
+		const apiSpeech = endpoint("POST", "/speech/synthesize");
+		const uiSpeech = endpoint("POST", "/api/speech/synthesize");
+
+		expect(apiSpeech).toMatchObject({ server: "api" });
+		expect(apiSpeech?.desc).toContain('"text": string');
+		expect(apiSpeech?.desc).toContain("1–300 characters");
+		expect(uiSpeech).toMatchObject({ server: "ui" });
+		expect(uiSpeech?.desc).toContain("same-origin");
+	});
+
 	it("documents the current filter and pagination contracts for user-visible database routes", () => {
 		const sessions = endpoint(
 			"GET",

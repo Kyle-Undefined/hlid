@@ -93,6 +93,50 @@ describe("read aloud internal routes", () => {
 		expect(synthesize).toHaveBeenCalledWith("Read this.", "windows:mark");
 	});
 
+	it("applies pronunciation mappings only to local neural speech", async () => {
+		const microsoftSynthesize = vi
+			.fn()
+			.mockResolvedValue(new TextEncoder().encode("RIFF0000WAVEaudio"));
+		const neuralSynthesize = vi.fn().mockResolvedValue({
+			audio: new TextEncoder().encode("RIFF0000WAVEaudio"),
+		});
+		const handler = createReadAloudRouteHandler({
+			speech: { voices: vi.fn(), synthesize: microsoftSynthesize },
+			tts: { synthesize: neuralSynthesize },
+			getAssistantMessageText: vi.fn().mockResolvedValue("Hlið works."),
+			getNeuralSettings: () => ({
+				voiceId: "expr-voice-5-f",
+				rate: 1,
+			}),
+			getPronunciations: () => [{ written: "Hlið", spoken: "hleeth" }],
+		});
+		const neuralUrl = new URL(
+			"http://localhost/read-aloud/audio?message_id=42&provider=neural&chunk_index=0",
+		);
+		const microsoftUrl = new URL(
+			"http://localhost/read-aloud/audio?message_id=42&voice_id=windows%3Amark",
+		);
+
+		await handler(
+			neuralUrl,
+			request(`${neuralUrl.pathname}${neuralUrl.search}`),
+		);
+		await handler(
+			microsoftUrl,
+			request(`${microsoftUrl.pathname}${microsoftUrl.search}`),
+		);
+
+		expect(neuralSynthesize).toHaveBeenCalledWith(
+			"hleeth works.",
+			"expr-voice-5-f",
+			1,
+		);
+		expect(microsoftSynthesize).toHaveBeenCalledWith(
+			"Hlið works.",
+			"windows:mark",
+		);
+	});
+
 	it("requires a persisted assistant message", async () => {
 		const handler = createReadAloudRouteHandler({
 			speech: { voices: vi.fn(), synthesize: vi.fn() },
@@ -216,6 +260,78 @@ describe("read aloud internal routes", () => {
 			"expr-voice-5-f",
 			1.25,
 		);
+	});
+
+	it("chunks neural speech after expanding pronunciation mappings", async () => {
+		const synthesize = vi.fn().mockResolvedValue({
+			audio: new TextEncoder().encode("RIFF0000WAVEaudio"),
+		});
+		const handler = createReadAloudRouteHandler({
+			speech: { voices: vi.fn(), synthesize: vi.fn() },
+			tts: { synthesize },
+			getAssistantMessageText: vi.fn().mockResolvedValue("Hlid ends here."),
+			getNeuralSettings: () => ({
+				voiceId: "expr-voice-5-f",
+				rate: 1,
+			}),
+			getPronunciations: () => [
+				{
+					written: "Hlid",
+					spoken: "Hlid with an intentionally extended spoken pronunciation",
+				},
+			],
+		});
+		const url = new URL(
+			"http://localhost/read-aloud/audio?message_id=42&provider=neural&chunk_index=0",
+		);
+
+		const response = await handler(
+			url,
+			request(`${url.pathname}${url.search}`),
+		);
+
+		expect(response?.status).toBe(200);
+		expect(response?.headers.get("x-hlid-chunk-count")).toBe("2");
+		expect(response?.headers.get("x-hlid-has-next-chunk")).toBe("1");
+		expect(synthesize).toHaveBeenCalledWith(
+			"Hlid with an.",
+			"expr-voice-5-f",
+			1,
+		);
+	});
+
+	it("checks the expanded neural text against the synthesis limit", async () => {
+		const synthesize = vi.fn();
+		const getNeuralSettings = vi.fn(() => ({
+			voiceId: "expr-voice-5-f",
+			rate: 1,
+		}));
+		const handler = createReadAloudRouteHandler({
+			speech: { voices: vi.fn(), synthesize: vi.fn() },
+			tts: { synthesize },
+			getAssistantMessageText: vi
+				.fn()
+				.mockResolvedValue(Array.from({ length: 2_500 }, () => "x").join(" ")),
+			getNeuralSettings,
+			getPronunciations: () => [
+				{ written: "x", spoken: "pronunciation-expands" },
+			],
+		});
+		const url = new URL(
+			"http://localhost/read-aloud/audio?message_id=42&provider=neural&chunk_index=0",
+		);
+
+		const response = await handler(
+			url,
+			request(`${url.pathname}${url.search}`),
+		);
+
+		expect(response?.status).toBe(413);
+		expect(await response?.json()).toEqual({
+			error: "message is too long to synthesize",
+		});
+		expect(getNeuralSettings).not.toHaveBeenCalled();
+		expect(synthesize).not.toHaveBeenCalled();
 	});
 
 	it.each([

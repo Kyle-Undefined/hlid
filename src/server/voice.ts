@@ -301,7 +301,9 @@ export class VoiceModelManager {
 	}
 
 	async models(refresh = false): Promise<VoiceModelInfo[]> {
-		const { value } = await catalog.get(refresh);
+		const { value } = refresh
+			? await catalog.get(true)
+			: await catalog.getCached();
 		return value.map((m) => ({ ...m, installed: existsSync(modelPath(m.id)) }));
 	}
 

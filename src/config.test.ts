@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { HlidConfigSchema } from "./config";
+import {
+	HlidConfigSchema,
+	MAX_VOICE_PRONUNCIATION_LENGTH,
+	MAX_VOICE_PRONUNCIATIONS,
+} from "./config";
 
 const UBUNTU_WORKSPACE =
 	"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\workspace";
@@ -57,5 +61,81 @@ describe("HlidConfigSchema ACP WSL workspace targets", () => {
 				acp_agents: [wslOpenCodeTarget()],
 			}).success,
 		).toBe(true);
+	});
+});
+
+describe("HlidConfigSchema Local Conversation", () => {
+	it("is opt-in and preserves an explicit enabled value", () => {
+		expect(HlidConfigSchema.parse({}).voice.local_conversation_mode).toBe(
+			false,
+		);
+		expect(
+			HlidConfigSchema.parse({
+				voice: { local_conversation_mode: true },
+			}).voice.local_conversation_mode,
+		).toBe(true);
+	});
+});
+
+describe("HlidConfigSchema read-aloud pronunciations", () => {
+	it("defaults to an empty library and trims literal written/spoken pairs", () => {
+		expect(HlidConfigSchema.parse({}).voice.pronunciations).toEqual([]);
+		expect(
+			HlidConfigSchema.parse({
+				voice: {
+					pronunciations: [{ written: "  Hlið  ", spoken: "  hleeth  " }],
+				},
+			}).voice.pronunciations,
+		).toEqual([{ written: "Hlið", spoken: "hleeth" }]);
+	});
+
+	it("rejects empty, oversized, or excessive pronunciation entries", () => {
+		expect(
+			HlidConfigSchema.safeParse({
+				voice: { pronunciations: [{ written: "", spoken: "hleeth" }] },
+			}).success,
+		).toBe(false);
+		expect(
+			HlidConfigSchema.safeParse({
+				voice: {
+					pronunciations: [
+						{
+							written: "H".repeat(MAX_VOICE_PRONUNCIATION_LENGTH + 1),
+							spoken: "aitch",
+						},
+					],
+				},
+			}).success,
+		).toBe(false);
+		expect(
+			HlidConfigSchema.safeParse({
+				voice: {
+					pronunciations: Array.from(
+						{ length: MAX_VOICE_PRONUNCIATIONS + 1 },
+						(_, index) => ({
+							written: `term ${index}`,
+							spoken: `term ${index}`,
+						}),
+					),
+				},
+			}).success,
+		).toBe(false);
+	});
+
+	it("keeps the first case-equivalent written pronunciation", () => {
+		expect(
+			HlidConfigSchema.parse({
+				voice: {
+					pronunciations: [
+						{ written: " Hlið ", spoken: "first" },
+						{ written: "HLIÐ", spoken: "second" },
+						{ written: "Raven", spoken: "ray-ven" },
+					],
+				},
+			}).voice.pronunciations,
+		).toEqual([
+			{ written: "Hlið", spoken: "first" },
+			{ written: "Raven", spoken: "ray-ven" },
+		]);
 	});
 });

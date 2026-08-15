@@ -8,6 +8,8 @@ const REQUEST_ID_HEADER = "x-hlid-request-id";
 const PROJECT_PREVIEW_LIFECYCLE_SLOW_MS = 5_000;
 const ACP_TEMPORARY_PROVIDER_OPERATION_SLOW_MS = 5_000;
 const ACP_PROVIDER_CATALOG_REQUEST_SLOW_MS = 12_000;
+const LOCAL_VOICE_TRANSCRIPTION_SLOW_MS = 70_000;
+const LOCAL_SPEECH_SYNTHESIS_SLOW_MS = 10_000;
 
 type DiagnosticLevel = "warn" | "error";
 type DiagnosticLogger = (level: DiagnosticLevel, message: string) => void;
@@ -50,6 +52,27 @@ export function acpProviderOperationSlowRequestThreshold(
 		requestName === "importAcpProviderSessionFn"
 		? ACP_TEMPORARY_PROVIDER_OPERATION_SLOW_MS
 		: undefined;
+}
+
+/** Local voice work has explicit model/runtime budgets on both HTTP layers. */
+export function localAudioSlowRequestThreshold(
+	pathname: string,
+): number | undefined {
+	if (
+		pathname === "/voice/transcribe" ||
+		pathname === "/api/voice/transcribe"
+	) {
+		return LOCAL_VOICE_TRANSCRIPTION_SLOW_MS;
+	}
+	if (
+		pathname.startsWith("/read-aloud/") ||
+		pathname.startsWith("/api/read-aloud/") ||
+		pathname === "/speech/synthesize" ||
+		pathname === "/api/speech/synthesize"
+	) {
+		return LOCAL_SPEECH_SYNTHESIS_SLOW_MS;
+	}
+	return undefined;
 }
 
 export type RequestObserverOptions = {

@@ -33,6 +33,7 @@ const ACP_REGISTRY_URL =
 const ACP_AVAILABILITY_TTL_MS = 60_000;
 const ACP_AVAILABILITY_PROBE_TIMEOUT_MS = 1_000;
 const ACP_AVAILABILITY_SCAN_SLOW_MS = 1_000;
+const ACP_PLATFORM_DISCOVERY_SLOW_MS = 3_000;
 const ACP_PLATFORM_SUCCESS_TTL_MS = 6 * 3600_000;
 const ACP_PLATFORM_FAILURE_TTL_MS = 5_000;
 
@@ -455,6 +456,7 @@ export class AcpRegistry {
 		});
 		this.observePlatform = createSlowOperationObserver({
 			scope: "acp registry platform",
+			thresholdMs: ACP_PLATFORM_DISCOVERY_SLOW_MS,
 		});
 		this.cache = createCachedList({
 			persistKey: "acp_registry_catalog",

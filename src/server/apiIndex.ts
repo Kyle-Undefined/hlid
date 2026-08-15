@@ -352,6 +352,12 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		server: "api",
 		desc: "Delete one installed local neural speech model that is not loaded.",
 	},
+	{
+		method: "POST",
+		path: "/speech/synthesize",
+		server: "api",
+		desc: 'Synthesize one authenticated local neural speech utterance as audio/wav. Body: {"text": string, "voice_id"?: string, "rate"?: number}; text is 1–300 characters and rate is 0.5–2.',
+	},
 	// ── Codex app-server maintenance (api port) ───────────────────────────────
 	{
 		method: "GET",
@@ -656,6 +662,12 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		path: "/api/voice/transcribe",
 		server: "ui",
 		desc: "Transcribe a multipart 16 kHz WAV recording locally with the selected Whisper model.",
+	},
+	{
+		method: "POST",
+		path: "/api/speech/synthesize",
+		server: "ui",
+		desc: 'Authenticated same-origin bridge for one local neural audio/wav utterance. Body: {"text": string, "voice_id"?: string, "rate"?: number}; text is 1–300 characters and rate is 0.5–2.',
 	},
 	// ── Vault & agents (ui port, /api/*) ──────────────────────────────────────
 	{
