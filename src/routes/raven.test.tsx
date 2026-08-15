@@ -99,6 +99,20 @@ const state = vi.hoisted(() => ({
 		sessionId: string;
 	},
 	preview: null as ProjectPreviewSnapshot | null,
+	notificationOverrideProps: null as null | {
+		sessionId: string;
+		disabled?: boolean;
+		provisionalPolicy?: {
+			mode: "notify_completion_once" | "notify_once" | "notify" | "mute";
+			scope: "session" | "delegation_tree";
+			targetDeviceIds: string[] | null;
+		} | null;
+		onSaveProvisionalPolicy?: (policy: {
+			mode: "notify_completion_once";
+			scope: "session";
+			targetDeviceIds: null;
+		}) => void | Promise<void>;
+	},
 }));
 
 vi.mock("@tanstack/react-router", () => ({
@@ -139,17 +153,41 @@ vi.mock("#/components/chat/MessageList", () => ({
 	),
 }));
 vi.mock("#/components/chat/SessionNotificationOverrideControl", () => ({
-	SessionNotificationOverrideButton: ({ sessionId }: { sessionId: string }) => (
-		<div data-testid="session-notification-override">
-			<button
-				type="button"
-				aria-label="Session notifications"
-				className="px-2 py-2 md:py-3"
-			>
-				{sessionId}
-			</button>
-		</div>
-	),
+	SessionNotificationOverrideButton: (props: {
+		sessionId: string;
+		disabled?: boolean;
+		provisionalPolicy?: {
+			mode: "notify_completion_once" | "notify_once" | "notify" | "mute";
+			scope: "session" | "delegation_tree";
+			targetDeviceIds: string[] | null;
+		} | null;
+		onSaveProvisionalPolicy?: (policy: {
+			mode: "notify_completion_once";
+			scope: "session";
+			targetDeviceIds: null;
+		}) => void | Promise<void>;
+	}) => {
+		state.notificationOverrideProps = props;
+		return (
+			<div data-testid="session-notification-override">
+				<button
+					type="button"
+					disabled={props.disabled}
+					aria-label="Session notifications"
+					className="px-2 py-2 md:py-3"
+					onClick={() =>
+						props.onSaveProvisionalPolicy?.({
+							mode: "notify_completion_once",
+							scope: "session",
+							targetDeviceIds: null,
+						})
+					}
+				>
+					{props.sessionId}
+				</button>
+			</div>
+		);
+	},
 }));
 vi.mock("#/components/chat/NotificationBatchDrawer", () => ({
 	NotificationBatchDrawer: ({
@@ -449,6 +487,7 @@ beforeEach(() => {
 	});
 	state.terminalProps = null;
 	state.preview = null;
+	state.notificationOverrideProps = null;
 	state.search = {};
 	vi.mocked(useLoadChatHistory).mockReturnValue({
 		historyReady: true,
@@ -935,18 +974,22 @@ describe("Raven composed submission behavior", () => {
 		).toBeTruthy();
 	});
 
-	it("does not offer notification overrides for a missing durable route", () => {
+	it("offers a provisional notification override for a missing durable route", () => {
 		configureEffortRejectionSession();
 		state.loaderData = { ...state.loaderData, sessionPersisted: false };
 		state.sessions = [];
 		render(<ChatPage />);
 
 		expect(
-			screen.queryByRole("button", { name: "Session notifications" }),
-		).toBeNull();
+			screen.getByRole("button", { name: "Session notifications" }).textContent,
+		).toBe("saved-session");
+		expect(state.notificationOverrideProps?.provisionalPolicy).toBeNull();
+		expect(state.notificationOverrideProps?.onSaveProvisionalPolicy).toBeTypeOf(
+			"function",
+		);
 	});
 
-	it("does not offer notification overrides for an undurable live identity", () => {
+	it("offers a provisional notification override for an undurable live identity", () => {
 		configureEffortRejectionSession();
 		state.loaderData = {
 			...state.loaderData,
@@ -960,8 +1003,79 @@ describe("Raven composed submission behavior", () => {
 		render(<ChatPage />);
 
 		expect(
-			screen.queryByRole("button", { name: "Session notifications" }),
-		).toBeNull();
+			screen.getByRole("button", { name: "Session notifications" }).textContent,
+		).toBe("live-session");
+		expect(state.notificationOverrideProps?.provisionalPolicy).toBeNull();
+	});
+
+	it("keeps a claimed live identity provisional until its session row exists", async () => {
+		configureEffortRejectionSession();
+		state.loaderData = { ...state.loaderData, sessionPersisted: false };
+		vi.mocked(getSessionRowFn).mockResolvedValue(null as never);
+		const view = render(<ChatPage />);
+
+		await waitFor(() => expect(getSessionRowFn).toHaveBeenCalled());
+		expect(state.notificationOverrideProps?.provisionalPolicy).toBeNull();
+		expect(state.notificationOverrideProps?.onSaveProvisionalPolicy).toBeTypeOf(
+			"function",
+		);
+
+		vi.mocked(getSessionRowFn).mockResolvedValue({
+			id: "saved-session",
+		} as never);
+		state.sessions = state.sessions.map((session) => ({
+			...(session as Record<string, unknown>),
+			state: "running",
+		}));
+		view.rerender(<ChatPage />);
+
+		await waitFor(() =>
+			expect(
+				state.notificationOverrideProps?.provisionalPolicy,
+			).toBeUndefined(),
+		);
+		expect(
+			state.notificationOverrideProps?.onSaveProvisionalPolicy,
+		).toBeUndefined();
+	});
+
+	it("sends a provisional notification policy with the first turn", () => {
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: null,
+			sessionPersisted: false,
+		};
+		render(<ChatPage />);
+
+		const notificationButton = screen.getByRole("button", {
+			name: "Session notifications",
+		});
+		const reservedSessionId = notificationButton.textContent;
+		expect(reservedSessionId).toBeTruthy();
+		fireEvent.click(notificationButton);
+		fireEvent.change(screen.getByRole("combobox"), {
+			target: { value: "notify me when this finishes" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+		expect(
+			(
+				screen.getByRole("button", {
+					name: "Session notifications",
+				}) as HTMLButtonElement
+			).disabled,
+		).toBe(true);
+		expect(state.send).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "chat",
+				session_id: reservedSessionId,
+				notification_policy: {
+					mode: "notify_completion_once",
+					scope: "session",
+					target_device_ids: null,
+				},
+			}),
+		);
 	});
 
 	it("inserts dictated text at the active Raven selection", () => {

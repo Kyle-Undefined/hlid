@@ -116,6 +116,53 @@ describe("chat WebSocket runtime schema", () => {
 		).toEqual({ type: "chat", text: "hello" });
 	});
 
+	it("accepts only strict durable first-chat notification policies", () => {
+		const notificationPolicy = {
+			mode: "notify_completion_once",
+			scope: "delegation_tree",
+			target_device_ids: ["11111111-1111-4111-8111-111111111111"],
+		};
+		const message = {
+			type: "chat",
+			text: "notify me",
+			session_id: "session-1",
+			turn_id: "turn-1",
+			notification_policy: notificationPolicy,
+		};
+		expect(parseClientMessage(JSON.stringify(message))).toEqual(message);
+
+		expect(
+			parseClientMessage(JSON.stringify({ ...message, turn_id: undefined })),
+		).toBeNull();
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					...message,
+					notification_policy: { ...notificationPolicy, mode: "default" },
+				}),
+			),
+		).toBeNull();
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					...message,
+					notification_policy: {
+						...notificationPolicy,
+						target_device_ids: [],
+					},
+				}),
+			),
+		).toBeNull();
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					...message,
+					notification_policy: { ...notificationPolicy, extra: true },
+				}),
+			),
+		).toBeNull();
+	});
+
 	it("accepts attachment-only chat and rejects a fully empty chat", () => {
 		const attachment = {
 			id: "attachment-1",

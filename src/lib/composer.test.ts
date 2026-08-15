@@ -263,6 +263,23 @@ describe("chat submission policy", () => {
 		});
 	});
 
+	it("carries a provisional notification policy on the first chat", () => {
+		const notificationPolicy = {
+			mode: "notify_completion_once" as const,
+			scope: "delegation_tree" as const,
+			target_device_ids: ["11111111-1111-4111-8111-111111111111"],
+		};
+		expect(submission({ notificationPolicy })).toMatchObject({
+			kind: "immediate",
+			message: {
+				type: "chat",
+				session_id: "session-1",
+				turn_id: "turn-1",
+				notification_policy: notificationPolicy,
+			},
+		});
+	});
+
 	it("sends agent context once and enables HTML only with plan mode", () => {
 		const first = submission({
 			agentCwd: "/agents/reviewer",

@@ -4829,6 +4829,40 @@ describe("message — chat", () => {
 		);
 	});
 
+	it("forwards the first-chat notification policy to durable session creation", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "notify me when this finishes",
+				session_id: "sess-notification",
+				turn_id: "turn-notification",
+				notification_policy: {
+					mode: "notify_completion_once",
+					scope: "delegation_tree",
+					target_device_ids: ["11111111-1111-4111-8111-111111111111"],
+				},
+			}),
+		);
+		expect(session.runQuery).toHaveBeenCalledWith(
+			"notify me when this finishes",
+			expect.any(Function),
+			expect.objectContaining({
+				sessionId: "sess-notification",
+				turnId: "turn-notification",
+				initialNotificationPolicy: {
+					mode: "notify_completion_once",
+					scope: "delegation_tree",
+					targetDeviceIds: ["11111111-1111-4111-8111-111111111111"],
+				},
+			}),
+		);
+	});
+
 	it("forwards plan_mode flag to session.runQuery", async () => {
 		const session = makeSession();
 		const { pool } = wrapSession(session);

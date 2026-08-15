@@ -36,6 +36,10 @@ import {
 	isClaudeRuntimeProvider,
 	isCodexRuntimeProvider,
 } from "../lib/providerRuntime";
+import type {
+	SessionNotificationMode,
+	SessionNotificationScope,
+} from "../lib/pushNotificationSchemas";
 import {
 	authorizeRoutineCapability,
 	type RoutinePermissionContext,
@@ -484,6 +488,11 @@ export interface RunQueryOptions {
 	workspaceReferences?: WorkspaceReferenceRequest[];
 	delegationContext?: string;
 	backgroundSession?: boolean;
+	initialNotificationPolicy?: {
+		mode: Exclude<SessionNotificationMode, "default">;
+		scope: SessionNotificationScope;
+		targetDeviceIds: string[] | null;
+	};
 	/** Captured at the Hlid input boundary; never inferred from mutable state. */
 	inputOrigin?: AgentInputOrigin;
 }
@@ -7173,6 +7182,7 @@ export class SessionManager {
 		agentCwd: string | undefined,
 		userMessage: string,
 		updateGlobalFocus = true,
+		initialNotificationPolicy?: RunQueryOptions["initialNotificationPolicy"],
 	): Promise<void> {
 		let sessionExists = Boolean(
 			sessionId && sessionId === this.currentSessionId,
@@ -7222,6 +7232,7 @@ export class SessionManager {
 				effort: selectedEffort,
 				permissionMode: selectedPermissionMode,
 				approvalsReviewer: this.approvalsReviewer ?? undefined,
+				...(initialNotificationPolicy ? { initialNotificationPolicy } : {}),
 			});
 		}
 
@@ -9661,7 +9672,13 @@ export class SessionManager {
 		if (!sessionId || !turnId) return false;
 		// The pending-turn table owns a real Raven session FK. Create or restore
 		// that row before acknowledging durable queue ownership.
-		await this.initSessionContext(sessionId, agentCwd, args.userMessage);
+		await this.initSessionContext(
+			sessionId,
+			agentCwd,
+			args.userMessage,
+			true,
+			args.options.initialNotificationPolicy,
+		);
 		const inserted = await db.enqueuePendingSessionTurn({
 			turnId,
 			sessionId,
@@ -12082,6 +12099,7 @@ export class SessionManager {
 			agentCwd,
 			userMessage,
 			!backgroundSession,
+			args.options.initialNotificationPolicy,
 		);
 		await this.syncPlanHtmlPath(Boolean(planMode && planHtml), sessionId);
 		this.activeRoutineContext = routineContext ?? null;

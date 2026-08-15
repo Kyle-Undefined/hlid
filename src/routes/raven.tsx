@@ -130,6 +130,13 @@ import { applyLiveProviderConfig } from "#/lib/liveProviderConfig";
 import { loaderValueOrFallback } from "#/lib/loaderFallback";
 import { mapMcpServer } from "#/lib/mcp";
 import { configuredObsidianCapture } from "#/lib/obsidianCapture";
+import {
+	clearPendingSessionNotificationPolicy,
+	loadPendingSessionNotificationPolicy,
+	type PendingSessionNotificationPolicy,
+	samePendingSessionNotificationPolicy,
+	savePendingSessionNotificationPolicy,
+} from "#/lib/pendingSessionNotificationPolicy";
 import { isCliProxyProvider } from "#/lib/providerIds";
 import {
 	codexRealtimeAvailability,
@@ -145,6 +152,7 @@ import {
 	isClaudeRuntimeProvider,
 	isCodexRuntimeProvider,
 } from "#/lib/providerRuntime";
+import { getSessionNotificationOverride } from "#/lib/pushNotifications";
 import {
 	getRavenProviderCacheSnapshot,
 	hasFreshRavenProviderModels,
@@ -900,6 +908,127 @@ function useRavenSessionIdentity({
 		),
 		interactiveMode,
 	};
+}
+
+function usePendingSessionNotificationPolicy(
+	sessionId: string,
+	durableSessionId: string | null,
+) {
+	const [state, setState] = useState<{
+		sessionId: string;
+		policy: PendingSessionNotificationPolicy | null;
+	}>(() => ({
+		sessionId,
+		policy: sessionId ? loadPendingSessionNotificationPolicy(sessionId) : null,
+	}));
+
+	useEffect(() => {
+		setState({
+			sessionId,
+			policy: sessionId
+				? loadPendingSessionNotificationPolicy(sessionId)
+				: null,
+		});
+	}, [sessionId]);
+
+	const policy = state.sessionId === sessionId ? state.policy : null;
+	const save = useCallback(
+		(next: PendingSessionNotificationPolicy | null) => {
+			if (!sessionId) return;
+			setState({ sessionId, policy: next });
+			// Keep the in-memory choice even when storage is unavailable. The active
+			// first submission still carries it; storage only adds discard recovery.
+			void savePendingSessionNotificationPolicy(sessionId, next);
+		},
+		[sessionId],
+	);
+	const clear = useCallback(() => {
+		if (!sessionId) return;
+		clearPendingSessionNotificationPolicy(sessionId);
+		setState({ sessionId, policy: null });
+	}, [sessionId]);
+
+	useEffect(() => {
+		if (!durableSessionId || !sessionId || !policy) return;
+		let cancelled = false;
+		void getSessionNotificationOverride(durableSessionId).then(
+			(value) => {
+				if (cancelled || !value.policy) return;
+				const authoritative: PendingSessionNotificationPolicy = {
+					mode: value.policy.mode,
+					scope: value.policy.scope,
+					targetDeviceIds: value.policy.targetDeviceIds,
+				};
+				if (!samePendingSessionNotificationPolicy(policy, authoritative))
+					return;
+				clearPendingSessionNotificationPolicy(sessionId);
+				setState((current) =>
+					current.sessionId === sessionId
+						? { sessionId, policy: null }
+						: current,
+				);
+			},
+			() => {
+				// Retain the provisional snapshot until a later authoritative read.
+			},
+		);
+		return () => {
+			cancelled = true;
+		};
+	}, [durableSessionId, policy, sessionId]);
+
+	return { policy, save, clear };
+}
+
+function useConfirmedNotificationSessionId(
+	sessionId: string,
+	sessionPersisted: boolean,
+	liveSessionStatus: ReturnType<
+		typeof useRavenSessionIdentity
+	>["liveSessionStatus"],
+): string | null {
+	const [confirmed, setConfirmed] = useState<{
+		sessionId: string;
+		durableSessionId: string | null;
+	}>(() => ({
+		sessionId,
+		durableSessionId: sessionPersisted ? sessionId : null,
+	}));
+
+	useEffect(() => {
+		setConfirmed({
+			sessionId,
+			durableSessionId: sessionPersisted ? sessionId : null,
+		});
+	}, [sessionId, sessionPersisted]);
+
+	useEffect(() => {
+		const candidateSessionId = liveSessionStatus?.db_session_id ?? null;
+		if (sessionPersisted || !candidateSessionId) return;
+		let cancelled = false;
+		void Promise.resolve(getSessionRowFn({ data: candidateSessionId })).then(
+			(row) => {
+				if (cancelled || !row) return;
+				setConfirmed((current) =>
+					current.sessionId === sessionId
+						? { sessionId, durableSessionId: candidateSessionId }
+						: current,
+				);
+			},
+			() => {
+				// A later live-status snapshot retries after the first-turn transaction.
+			},
+		);
+		return () => {
+			cancelled = true;
+		};
+	}, [liveSessionStatus, sessionId, sessionPersisted]);
+
+	return confirmed.sessionId === sessionId
+		? confirmed.durableSessionId
+		: sessionPersisted
+			? sessionId
+			: null;
 }
 
 function useRavenChatRuntime({
@@ -1996,6 +2125,8 @@ type RavenActionProps = {
 	clearComposerCheckpoint: ReturnType<
 		typeof useRavenComposerCheckpoint
 	>["clear"];
+	pendingNotificationPolicy: PendingSessionNotificationPolicy | null;
+	clearPendingNotificationPolicy: () => void;
 	activeSkills: ActiveRavenSkill[];
 	setActiveSkills: Dispatch<SetStateAction<ActiveRavenSkill[]>>;
 	commands: CommandDescriptor[];
@@ -2089,6 +2220,7 @@ function useRavenSend(props: RavenActionProps) {
 		planHtml,
 		sessionSelection,
 		activeProviderId,
+		pendingNotificationPolicy,
 	} = props;
 	const { agentSkillContext, agentContextSentRef, sessionId } = props.session;
 	const {
@@ -2248,6 +2380,13 @@ function useRavenSend(props: RavenActionProps) {
 				effort: sessionSelection.effort,
 				permissionMode: sessionSelection.permissionMode,
 				approvalsReviewer: sessionSelection.approvalsReviewer,
+				notificationPolicy: pendingNotificationPolicy
+					? {
+							mode: pendingNotificationPolicy.mode,
+							scope: pendingNotificationPolicy.scope,
+							target_device_ids: pendingNotificationPolicy.targetDeviceIds,
+						}
+					: undefined,
 				goal: goalStart
 					? {
 							objective: goalStart.objective,
@@ -2294,6 +2433,7 @@ function useRavenSend(props: RavenActionProps) {
 			planHtml,
 			sessionSelection,
 			activeProviderId,
+			pendingNotificationPolicy,
 			dispatch,
 			atBottomRef,
 			agentContextSentRef,
@@ -2507,6 +2647,7 @@ function useRavenClear(props: RavenActionProps) {
 	const {
 		clearDraft,
 		clearComposerCheckpoint,
+		clearPendingNotificationPolicy,
 		setPlanMode,
 		resetSessionSelection,
 	} = props;
@@ -2518,6 +2659,7 @@ function useRavenClear(props: RavenActionProps) {
 		setPlanMode(false);
 		clearDraft();
 		clearComposerCheckpoint();
+		clearPendingNotificationPolicy();
 		pendingIdRef.current = null;
 		// Reset the recap target ref too — it points at a message we're about
 		// to wipe via dispatch CLEAR, and a late tool_use_summary would
@@ -2538,6 +2680,7 @@ function useRavenClear(props: RavenActionProps) {
 		send,
 		clearDraft,
 		clearComposerCheckpoint,
+		clearPendingNotificationPolicy,
 		pendingIdRef,
 		lastAssistantIdRef,
 		agentContextSentRef,
@@ -3057,9 +3200,15 @@ export function ChatPage() {
 	});
 	const { agentSkillContext, sessionId, sessionIdRef, interactiveMode } =
 		session;
-	const notificationSessionId =
-		session.liveSessionStatus?.db_session_id ??
-		(sessionPersisted ? sessionId : null);
+	const notificationSessionId = useConfirmedNotificationSessionId(
+		sessionId,
+		sessionPersisted,
+		session.liveSessionStatus,
+	);
+	const pendingNotificationPolicy = usePendingSessionNotificationPolicy(
+		sessionId,
+		notificationSessionId,
+	);
 	const restoredSession = Boolean(
 		existingSessionId && agentSkillContext === initialAgentSkillContext,
 	);
@@ -3919,6 +4068,9 @@ export function ChatPage() {
 		setInput,
 		clearDraft,
 		clearComposerCheckpoint,
+		pendingNotificationPolicy:
+			notificationSessionId === null ? pendingNotificationPolicy.policy : null,
+		clearPendingNotificationPolicy: pendingNotificationPolicy.clear,
 		activeSkills,
 		setActiveSkills,
 		commands,
@@ -3970,6 +4122,9 @@ export function ChatPage() {
 		savedSession: restoredSession,
 		sessionPersisted,
 		notificationSessionId,
+		pendingNotificationPolicy:
+			notificationSessionId === null ? pendingNotificationPolicy.policy : null,
+		onSavePendingNotificationPolicy: pendingNotificationPolicy.save,
 		config,
 		agentList,
 		session,
@@ -5842,12 +5997,24 @@ function ChatInputControls(props: ChatComposerProps) {
 					className="px-2 py-2 md:py-3"
 				/>
 				<ChatVoiceControls {...props} />
-				{props.notificationSessionId && (
-					<SessionNotificationOverrideButton
-						sessionId={props.notificationSessionId}
-						trackingRef={layoutRef}
-					/>
-				)}
+				<SessionNotificationOverrideButton
+					sessionId={props.notificationSessionId ?? props.session.sessionId}
+					disabled={
+						props.notificationSessionId === null &&
+						props.runtime.messages.some((message) => message.role === "user")
+					}
+					provisionalPolicy={
+						props.notificationSessionId === null
+							? props.pendingNotificationPolicy
+							: undefined
+					}
+					onSaveProvisionalPolicy={
+						props.notificationSessionId === null
+							? props.onSavePendingNotificationPolicy
+							: undefined
+					}
+					trackingRef={layoutRef}
+				/>
 				{sessionFork.canFork && (
 					<button
 						type="button"
@@ -6358,6 +6525,10 @@ interface ChatComposerProps {
 	savedSession: boolean;
 	sessionPersisted: boolean;
 	notificationSessionId: string | null;
+	pendingNotificationPolicy: PendingSessionNotificationPolicy | null;
+	onSavePendingNotificationPolicy: (
+		policy: PendingSessionNotificationPolicy | null,
+	) => void;
 	config: RavenConfig;
 	agentList: RavenAgentList;
 	session: RavenSessionIdentity;

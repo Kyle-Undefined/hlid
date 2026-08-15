@@ -1,5 +1,10 @@
 import { z } from "zod";
 import {
+	pushTargetDeviceIdsSchema,
+	sessionNotificationModeSchema,
+	sessionNotificationScopeSchema,
+} from "../lib/pushNotificationSchemas";
+import {
 	MAX_COMPOSER_REFERENCES,
 	MAX_WORKSPACE_REFERENCES,
 } from "../lib/vaultReferences";
@@ -30,6 +35,12 @@ const workspaceReference = z.strictObject({
 const goalStart = z.strictObject({
 	objective: z.string().trim().min(1).max(4000),
 	token_budget: z.number().int().positive().nullable().optional(),
+});
+
+const initialNotificationPolicy = z.strictObject({
+	mode: sessionNotificationModeSchema.exclude(["default"]),
+	scope: sessionNotificationScopeSchema,
+	target_device_ids: pushTargetDeviceIdsSchema.nullable(),
 });
 
 const answers = z
@@ -63,7 +74,21 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 			effort: shortText.optional(),
 			permission_mode: shortText.optional(),
 			approvals_reviewer: approvalsReviewer.optional(),
+			notification_policy: initialNotificationPolicy.optional(),
 			goal: goalStart.optional(),
+		})
+		.superRefine((message, context) => {
+			if (
+				message.notification_policy !== undefined &&
+				(message.session_id === undefined || message.turn_id === undefined)
+			) {
+				context.addIssue({
+					code: "custom",
+					message:
+						"notification_policy requires a durable session_id and turn_id",
+					path: ["notification_policy"],
+				});
+			}
 		})
 		.refine(
 			(message) =>

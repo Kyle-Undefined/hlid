@@ -8,6 +8,10 @@ import { normalizeSearchText } from "../lib/search";
 import type { ProviderApprovalsReviewer } from "../server/agentProvider";
 import { markAnalyticsChanged } from "./analyticsRevision";
 import { type LedgerStatsRange, ledgerRangeCondition } from "./ledgerAnalytics";
+import {
+	type InitialPushSessionPolicy,
+	insertInitialPushSessionPolicyInDb,
+} from "./pushNotifications";
 import type { Db } from "./schema";
 import { getDb } from "./schema";
 import type {
@@ -572,6 +576,7 @@ export async function createSession(
 		approvalsReviewer?: ProviderApprovalsReviewer;
 		agentCwd?: string;
 		providerId?: string;
+		initialNotificationPolicy?: InitialPushSessionPolicy;
 	} = {},
 ): Promise<void> {
 	const db = await getDb();
@@ -600,6 +605,13 @@ export async function createSession(
 				id,
 				normalizeSearchText(label),
 			]);
+			if (selection.initialNotificationPolicy) {
+				insertInitialPushSessionPolicyInDb(
+					db,
+					id,
+					selection.initialNotificationPolicy,
+				);
+			}
 		}
 	})();
 	if (changes > 0) {

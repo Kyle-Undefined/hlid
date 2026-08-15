@@ -8,6 +8,7 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PendingSessionNotificationPolicy } from "#/lib/pendingSessionNotificationPolicy";
 import {
 	getPushNotificationDevices,
 	getSessionNotificationOverride,
@@ -109,6 +110,173 @@ beforeEach(() => {
 });
 
 describe("SessionNotificationOverrideButton", () => {
+	it("opens with a provisional Default policy and only loads devices", async () => {
+		const onSave = vi.fn();
+		render(
+			<SessionNotificationOverrideButton
+				sessionId="draft-session"
+				provisionalPolicy={null}
+				onSaveProvisionalPolicy={onSave}
+			/>,
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: "Session notifications" }),
+		);
+
+		await waitFor(() =>
+			expect(
+				screen
+					.getByRole("button", { name: "Default" })
+					.getAttribute("aria-pressed"),
+			).toBe("true"),
+		);
+		expect(
+			screen.getByLabelText("Effective notification policy").textContent,
+		).toContain("Effective: Default device rules");
+		expect(screen.getByText("Will apply when this chat starts")).toBeTruthy();
+		await waitFor(() =>
+			expect(getPushNotificationDevices).toHaveBeenCalledOnce(),
+		);
+		expect(getSessionNotificationOverride).not.toHaveBeenCalled();
+		expect(setSessionNotificationOverride).not.toHaveBeenCalled();
+		expect(onSave).not.toHaveBeenCalled();
+	});
+
+	it("closes and locks the provisional editor while the first chat persists", async () => {
+		const onSave = vi.fn();
+		const view = render(
+			<SessionNotificationOverrideButton
+				sessionId="draft-session"
+				provisionalPolicy={null}
+				onSaveProvisionalPolicy={onSave}
+			/>,
+		);
+		const trigger = screen.getByRole("button", {
+			name: "Session notifications",
+		});
+		fireEvent.click(trigger);
+		expect(
+			await screen.findByRole("dialog", {
+				name: "Session notification settings",
+			}),
+		).toBeTruthy();
+
+		view.rerender(
+			<SessionNotificationOverrideButton
+				sessionId="draft-session"
+				disabled
+				provisionalPolicy={null}
+				onSaveProvisionalPolicy={onSave}
+			/>,
+		);
+
+		await waitFor(() =>
+			expect(
+				screen.queryByRole("dialog", {
+					name: "Session notification settings",
+				}),
+			).toBeNull(),
+		);
+		expect((trigger as HTMLButtonElement).disabled).toBe(true);
+		expect(trigger.title).toContain("being saved with this chat");
+		expect(onSave).not.toHaveBeenCalled();
+	});
+
+	it("saves a provisional exact-device policy, closes, and restores focus", async () => {
+		const onSave = vi.fn(async () => {});
+		render(
+			<SessionNotificationOverrideButton
+				sessionId="draft-session"
+				provisionalPolicy={null}
+				onSaveProvisionalPolicy={onSave}
+			/>,
+		);
+		const trigger = screen.getByRole("button", {
+			name: "Session notifications",
+		});
+		fireEvent.click(trigger);
+		fireEvent.click(
+			await screen.findByRole("button", { name: "Notify when finished" }),
+		);
+		fireEvent.change(screen.getByLabelText("Notification scope"), {
+			target: { value: "delegation_tree" },
+		});
+		fireEvent.change(screen.getByLabelText("Notification devices"), {
+			target: { value: "exact" },
+		});
+		fireEvent.click(
+			await screen.findByRole("checkbox", { name: "Phone (this device)" }),
+		);
+		fireEvent.click(screen.getByRole("checkbox", { name: "Laptop" }));
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+		const expected: PendingSessionNotificationPolicy = {
+			mode: "notify_completion_once",
+			scope: "delegation_tree",
+			targetDeviceIds: [PHONE_ID, LAPTOP_ID],
+		};
+		await waitFor(() => expect(onSave).toHaveBeenCalledWith(expected));
+		await waitFor(() =>
+			expect(
+				screen.queryByRole("dialog", {
+					name: "Session notification settings",
+				}),
+			).toBeNull(),
+		);
+		expect(document.activeElement).toBe(trigger);
+		expect(getSessionNotificationOverride).not.toHaveBeenCalled();
+		expect(setSessionNotificationOverride).not.toHaveBeenCalled();
+	});
+
+	it("saves provisional Default as null and discards an unsaved panel edit", async () => {
+		const policy: PendingSessionNotificationPolicy = {
+			mode: "mute",
+			scope: "session",
+			targetDeviceIds: [PHONE_ID],
+		};
+		const onSave = vi.fn();
+		const { rerender } = render(
+			<SessionNotificationOverrideButton
+				sessionId="draft-session"
+				provisionalPolicy={policy}
+				onSaveProvisionalPolicy={onSave}
+			/>,
+		);
+		const trigger = screen.getByRole("button", {
+			name: "Session notifications",
+		});
+		fireEvent.click(trigger);
+		fireEvent.click(
+			await screen.findByRole("button", { name: "Always notify" }),
+		);
+		rerender(
+			<SessionNotificationOverrideButton
+				sessionId="draft-session"
+				provisionalPolicy={policy}
+				onSaveProvisionalPolicy={onSave}
+			/>,
+		);
+		expect(
+			screen
+				.getByRole("button", { name: "Always notify" })
+				.getAttribute("aria-pressed"),
+		).toBe("true");
+
+		fireEvent.pointerDown(document.body);
+		fireEvent.click(trigger);
+		expect(
+			(await screen.findByRole("button", { name: "Mute" })).getAttribute(
+				"aria-pressed",
+			),
+		).toBe("true");
+		fireEvent.click(screen.getByRole("button", { name: "Default" }));
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+		await waitFor(() => expect(onSave).toHaveBeenCalledWith(null));
+		expect(getSessionNotificationOverride).not.toHaveBeenCalled();
+		expect(setSessionNotificationOverride).not.toHaveBeenCalled();
+	});
+
 	it("opens the anchored dialog and restores focus when Escape closes it", async () => {
 		render(<SessionNotificationOverrideButton sessionId="session-1" />);
 		const trigger = screen.getByRole("button", {

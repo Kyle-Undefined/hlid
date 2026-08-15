@@ -1472,6 +1472,15 @@ async function runChatQuery(
 				planHtml: msg.plan_html,
 				commandAction: msg.command_action,
 				vaultReferences: msg.vault_references,
+				...(msg.notification_policy
+					? {
+							initialNotificationPolicy: {
+								mode: msg.notification_policy.mode,
+								scope: msg.notification_policy.scope,
+								targetDeviceIds: msg.notification_policy.target_device_ids,
+							},
+						}
+					: {}),
 				...(msg.goal
 					? {
 							goalStart: {

@@ -62,6 +62,7 @@ import {
 	recordProviderPermissionDenied,
 } from "./permissions";
 import { retainProjectPreviewFeedback } from "./projectPreviewFeedback";
+import { getPushSessionPolicy } from "./pushNotifications";
 import { getDb, setDbForTest } from "./schema";
 import {
 	createForkedSessionRow,
@@ -209,6 +210,100 @@ describe("session creation", () => {
 			agent_cwd: "/work/project",
 			provider_id: "codex",
 		});
+	});
+
+	it("creates a first-chat notification policy in the session transaction", async () => {
+		freshDb();
+		const phoneId = "11111111-1111-4111-8111-111111111111";
+		await createSession("notified-first-chat", "Notify me", "gpt-5.6-sol", {
+			initialNotificationPolicy: {
+				mode: "notify_completion_once",
+				scope: "session",
+				targetDeviceIds: [phoneId],
+			},
+		});
+		await createSession("notified-second-chat", "Notify too", "gpt-5.6-sol", {
+			initialNotificationPolicy: {
+				mode: "mute",
+				scope: "delegation_tree",
+				targetDeviceIds: null,
+			},
+		});
+
+		const firstPolicy = await getPushSessionPolicy("notified-first-chat");
+		const secondPolicy = await getPushSessionPolicy("notified-second-chat");
+		expect(await getSessionById("notified-first-chat")).not.toBeNull();
+		expect(firstPolicy).toMatchObject({
+			sessionId: "notified-first-chat",
+			mode: "notify_completion_once",
+			scope: "session",
+			targetDeviceIds: [phoneId],
+		});
+		expect(secondPolicy).toMatchObject({
+			mode: "mute",
+			scope: "delegation_tree",
+			targetDeviceIds: null,
+		});
+		expect(secondPolicy?.updatedAt).toBeGreaterThan(
+			firstPolicy?.updatedAt ?? Number.POSITIVE_INFINITY,
+		);
+	});
+
+	it("ignores a staged first-chat policy when the session already exists", async () => {
+		freshDb();
+		await createSession("existing-policy", "First", "model-a", {
+			initialNotificationPolicy: {
+				mode: "notify",
+				scope: "session",
+				targetDeviceIds: null,
+			},
+		});
+		const originalPolicy = await getPushSessionPolicy("existing-policy");
+
+		await createSession("existing-policy", "Second", "model-b", {
+			initialNotificationPolicy: {
+				mode: "mute",
+				scope: "delegation_tree",
+				targetDeviceIds: null,
+			},
+		});
+
+		expect(await getPushSessionPolicy("existing-policy")).toEqual(
+			originalPolicy,
+		);
+		expect((await getSessionById("existing-policy"))?.label).toBe("First");
+	});
+
+	it("rolls back session creation when its initial policy is invalid", async () => {
+		const database = freshDb();
+
+		await expect(
+			createSession("invalid-policy", "Invalid", "gpt-5.6-sol", {
+				initialNotificationPolicy: {
+					mode: "notify",
+					scope: "session",
+					targetDeviceIds: [],
+				},
+			}),
+		).rejects.toThrow();
+
+		expect(await getSessionById("invalid-policy")).toBeNull();
+		expect(
+			database
+				.query<{ count: number }, []>(
+					`SELECT COUNT(*) AS count FROM session_search
+					 WHERE session_id = 'invalid-policy'`,
+				)
+				.get()?.count,
+		).toBe(0);
+		expect(
+			database
+				.query<{ value: string }, []>(
+					`SELECT value FROM settings
+					 WHERE key = '_push_notification_policy_revision_v1'`,
+				)
+				.get(),
+		).toBeNull();
 	});
 });
 

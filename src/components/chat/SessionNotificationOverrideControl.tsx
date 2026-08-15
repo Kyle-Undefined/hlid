@@ -2,6 +2,7 @@ import { Bell, LoaderCircle } from "lucide-react";
 import { type RefObject, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useAnchoredPopover } from "#/hooks/useAnchoredPopover";
+import type { PendingSessionNotificationPolicy } from "#/lib/pendingSessionNotificationPolicy";
 import {
 	getPushNotificationDevices,
 	getSessionNotificationOverride,
@@ -11,6 +12,28 @@ import {
 	type SessionNotificationPolicyUpdate,
 	setSessionNotificationOverride,
 } from "#/lib/pushNotifications";
+
+type SaveProvisionalSessionNotificationPolicy = (
+	policy: PendingSessionNotificationPolicy | null,
+) => void | Promise<void>;
+
+type SessionNotificationOverrideTargetProps = {
+	sessionId: string;
+	/** Undefined uses the persisted session API; null is provisional Default. */
+	provisionalPolicy?: PendingSessionNotificationPolicy | null;
+	onSaveProvisionalPolicy?: SaveProvisionalSessionNotificationPolicy;
+};
+
+export type SessionNotificationOverrideButtonProps =
+	SessionNotificationOverrideTargetProps & {
+		disabled?: boolean;
+		trackingRef?: RefObject<HTMLElement | null>;
+	};
+
+export type SessionNotificationOverrideControlProps =
+	SessionNotificationOverrideTargetProps & {
+		onSaveSuccess?: () => void;
+	};
 
 const OPTIONS = [
 	{
@@ -58,6 +81,36 @@ function draftFromState(
 		scope: state.policy?.scope ?? "session",
 		targetDeviceIds: state.policy?.targetDeviceIds ?? null,
 	};
+}
+
+function stateFromPendingPolicy(
+	policy: PendingSessionNotificationPolicy | null,
+): SessionNotificationPolicyState {
+	return {
+		policy:
+			policy === null
+				? null
+				: {
+						sessionId: "pending",
+						...policy,
+						updatedAt: 0,
+					},
+		effective: {
+			requestedSessionId: "pending",
+			sourceSessionId: policy === null ? null : "pending",
+			mode: policy?.mode ?? "default",
+			scope: policy?.scope ?? "session",
+			targetDeviceIds: policy?.targetDeviceIds ?? null,
+			inherited: false,
+		},
+	};
+}
+
+function pendingPolicyFromDraft(
+	draft: SessionNotificationPolicyUpdate,
+): PendingSessionNotificationPolicy | null {
+	if (draft.mode === "default") return null;
+	return draft as PendingSessionNotificationPolicy;
 }
 
 function comparableDraft(draft: SessionNotificationPolicyUpdate): string {
@@ -130,18 +183,20 @@ function EffectivePolicy({
 	);
 }
 
-export function SessionNotificationOverrideButton({
-	sessionId,
-	trackingRef,
-}: {
-	sessionId: string;
-	trackingRef?: RefObject<HTMLElement | null>;
-}) {
+export function SessionNotificationOverrideButton(
+	props: SessionNotificationOverrideButtonProps,
+) {
+	const { disabled = false, trackingRef } = props;
+	const { sessionId, provisionalPolicy, onSaveProvisionalPolicy } = props;
 	const [open, setOpen] = useState(false);
 	const dialogId = useId();
 	const buttonRef = useRef<HTMLButtonElement>(null);
 	const dialogRef = useRef<HTMLDivElement>(null);
-	const previousSessionIdRef = useRef(sessionId);
+	const targetKey =
+		provisionalPolicy === undefined
+			? `session:${sessionId}`
+			: `pending:${sessionId}`;
+	const previousTargetKeyRef = useRef(targetKey);
 	const focusedForOpenRef = useRef(false);
 	const position = useAnchoredPopover(
 		open,
@@ -153,10 +208,14 @@ export function SessionNotificationOverrideButton({
 	);
 
 	useEffect(() => {
-		if (previousSessionIdRef.current === sessionId) return;
-		previousSessionIdRef.current = sessionId;
+		if (previousTargetKeyRef.current === targetKey) return;
+		previousTargetKeyRef.current = targetKey;
 		setOpen(false);
-	}, [sessionId]);
+	}, [targetKey]);
+
+	useEffect(() => {
+		if (disabled) setOpen(false);
+	}, [disabled]);
 
 	useEffect(() => {
 		if (!open) return;
@@ -190,13 +249,18 @@ export function SessionNotificationOverrideButton({
 			<button
 				ref={buttonRef}
 				type="button"
+				disabled={disabled}
 				aria-label="Session notifications"
 				aria-haspopup="dialog"
 				aria-expanded={open}
 				aria-controls={open ? dialogId : undefined}
-				title="Session notification settings"
+				title={
+					disabled
+						? "The notification setting is being saved with this chat"
+						: "Session notification settings"
+				}
 				onClick={() => setOpen((value) => !value)}
-				className={`shrink-0 px-2 py-2 transition-colors md:py-3 ${
+				className={`shrink-0 px-2 py-2 transition-colors disabled:cursor-wait disabled:opacity-35 md:py-3 ${
 					open
 						? "text-primary"
 						: "text-muted-foreground/45 hover:text-muted-foreground"
@@ -230,6 +294,8 @@ export function SessionNotificationOverrideButton({
 					>
 						<SessionNotificationOverrideControl
 							sessionId={sessionId}
+							provisionalPolicy={provisionalPolicy}
+							onSaveProvisionalPolicy={onSaveProvisionalPolicy}
 							onSaveSuccess={() => {
 								setOpen(false);
 								buttonRef.current?.focus();
@@ -242,18 +308,49 @@ export function SessionNotificationOverrideButton({
 	);
 }
 
-export function SessionNotificationOverrideControl({
-	sessionId,
-	onSaveSuccess,
-}: {
-	sessionId: string;
-	onSaveSuccess?: () => void;
-}) {
+export function SessionNotificationOverrideControl(
+	props: SessionNotificationOverrideControlProps,
+) {
+	const { onSaveSuccess } = props;
+	const { sessionId, provisionalPolicy, onSaveProvisionalPolicy } = props;
+	const persistedSessionId = provisionalPolicy === undefined ? sessionId : null;
+	const provisionalSessionId =
+		provisionalPolicy === undefined ? null : sessionId;
+	const targetRef = useRef<
+		| { kind: "persisted" }
+		| {
+				kind: "provisional";
+				policy: PendingSessionNotificationPolicy | null;
+				onSave: SaveProvisionalSessionNotificationPolicy | undefined;
+		  }
+	>(
+		provisionalPolicy === undefined
+			? { kind: "persisted" }
+			: {
+					kind: "provisional",
+					policy: provisionalPolicy,
+					onSave: onSaveProvisionalPolicy,
+				},
+	);
+	targetRef.current =
+		provisionalPolicy === undefined
+			? { kind: "persisted" }
+			: {
+					kind: "provisional",
+					policy: provisionalPolicy,
+					onSave: onSaveProvisionalPolicy,
+				};
 	const [state, setState] = useState<SessionNotificationPolicyState | null>(
-		null,
+		() =>
+			provisionalPolicy === undefined
+				? null
+				: stateFromPendingPolicy(provisionalPolicy),
 	);
 	const [draft, setDraft] = useState<SessionNotificationPolicyUpdate | null>(
-		null,
+		() =>
+			provisionalPolicy === undefined
+				? null
+				: draftFromState(stateFromPendingPolicy(provisionalPolicy)),
 	);
 	const [devices, setDevices] = useState<PushNotificationDevice[]>([]);
 	const [devicesLoading, setDevicesLoading] = useState(true);
@@ -263,28 +360,35 @@ export function SessionNotificationOverrideControl({
 
 	useEffect(() => {
 		let cancelled = false;
-		setState(null);
-		setDraft(null);
+		const target = targetRef.current;
+		if (persistedSessionId !== null) {
+			setState(null);
+			setDraft(null);
+			void getSessionNotificationOverride(persistedSessionId).then(
+				(value) => {
+					if (cancelled) return;
+					setState(value);
+					setDraft(draftFromState(value));
+				},
+				(cause) => {
+					if (!cancelled) {
+						setError(
+							cause instanceof Error
+								? cause.message
+								: "Could not load the session notification setting.",
+						);
+					}
+				},
+			);
+		} else if (provisionalSessionId !== null && target.kind === "provisional") {
+			const next = stateFromPendingPolicy(target.policy);
+			setState(next);
+			setDraft(draftFromState(next));
+		}
 		setDevices([]);
 		setDevicesLoading(true);
 		setError(null);
 		setDeviceError(null);
-		void getSessionNotificationOverride(sessionId).then(
-			(value) => {
-				if (cancelled) return;
-				setState(value);
-				setDraft(draftFromState(value));
-			},
-			(cause) => {
-				if (!cancelled) {
-					setError(
-						cause instanceof Error
-							? cause.message
-							: "Could not load the session notification setting.",
-					);
-				}
-			},
-		);
 		void getPushNotificationDevices()
 			.then((value) => {
 				if (!cancelled) setDevices(value);
@@ -304,7 +408,7 @@ export function SessionNotificationOverrideControl({
 		return () => {
 			cancelled = true;
 		};
-	}, [sessionId]);
+	}, [persistedSessionId, provisionalSessionId]);
 
 	async function save() {
 		if (saving || !state || !draft) return;
@@ -317,7 +421,18 @@ export function SessionNotificationOverrideControl({
 		setError(null);
 		let saved = false;
 		try {
-			const next = await setSessionNotificationOverride(sessionId, update);
+			const target = targetRef.current;
+			let next: SessionNotificationPolicyState;
+			if (target.kind === "persisted") {
+				next = await setSessionNotificationOverride(sessionId, update);
+			} else {
+				const nextPolicy = pendingPolicyFromDraft(update);
+				if (!target.onSave) {
+					throw new Error("Could not save the pending notification setting.");
+				}
+				await target.onSave(nextPolicy);
+				next = stateFromPendingPolicy(nextPolicy);
+			}
 			setState(next);
 			setDraft(draftFromState(next));
 			saved = true;
@@ -528,7 +643,9 @@ export function SessionNotificationOverrideControl({
 					)}
 					<div className="flex items-center justify-between gap-2 border-t border-border/40 px-1.5 pt-1.5 normal-case tracking-normal">
 						<span className="text-[8px] text-muted-foreground/35">
-							Stored with this session
+							{provisionalPolicy === undefined
+								? "Stored with this session"
+								: "Will apply when this chat starts"}
 						</span>
 						<button
 							type="button"

@@ -24,6 +24,7 @@ import {
 	sessionNotificationModeSchema,
 	sessionNotificationScopeSchema,
 } from "../lib/pushNotificationSchemas";
+import type { Db } from "./schema";
 import { getDb } from "./schema";
 
 export const MAX_PUSH_SUBSCRIPTION_DEVICES = 32;
@@ -714,6 +715,13 @@ type StoredSessionNotificationMode = Exclude<
 	"default"
 >;
 
+export type InitialPushSessionPolicy = {
+	mode: StoredSessionNotificationMode;
+	scope: SessionNotificationScope;
+	/** null means all devices; an array is exact and never falls back to all. */
+	targetDeviceIds: string[] | null;
+};
+
 type PushSessionPolicyDbRow = {
 	session_id: string;
 	mode: StoredSessionNotificationMode;
@@ -750,7 +758,7 @@ export type EffectivePushSessionPolicy = {
 
 const PUSH_POLICY_REVISION_SETTING = "_push_notification_policy_revision_v1";
 
-function nextPushPolicyRevision(db: Awaited<ReturnType<typeof getDb>>): number {
+function nextPushPolicyRevision(db: Db): number {
 	const raw = db
 		.query<{ value: string }, [string]>(
 			`SELECT value FROM settings WHERE key = ?`,
@@ -767,6 +775,61 @@ function nextPushPolicyRevision(db: Awaited<ReturnType<typeof getDb>>): number {
 		[PUSH_POLICY_REVISION_SETTING, String(next)],
 	);
 	return next;
+}
+
+function validateStoredPushSessionPolicy(
+	input: InitialPushSessionPolicy,
+): InitialPushSessionPolicy {
+	const mode = sessionNotificationModeSchema.parse(input.mode);
+	if (mode === "default") {
+		throw new Error(
+			"A stored session notification policy cannot use default mode",
+		);
+	}
+	return {
+		mode,
+		scope: sessionNotificationScopeSchema.parse(input.scope),
+		targetDeviceIds:
+			input.targetDeviceIds === null
+				? null
+				: pushTargetDeviceIdsSchema.parse(input.targetDeviceIds),
+	};
+}
+
+/**
+ * Insert a fully specified policy using the caller's transaction. This is the
+ * first-session path: conflicts and validation failures throw so session
+ * creation rolls back instead of starting provider work with widened defaults.
+ */
+export function insertInitialPushSessionPolicyInDb(
+	db: Db,
+	sessionId: string,
+	input: InitialPushSessionPolicy,
+): PushSessionPolicy {
+	const policy = validateStoredPushSessionPolicy(input);
+	const revision = nextPushPolicyRevision(db);
+	const result = db.run(
+		`INSERT INTO push_session_overrides
+			(session_id, mode, scope, target_device_ids_json, updated_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		[
+			sessionId,
+			policy.mode,
+			policy.scope,
+			policy.targetDeviceIds === null
+				? null
+				: JSON.stringify(policy.targetDeviceIds),
+			revision,
+		],
+	);
+	if (result.changes !== 1) {
+		throw new Error("Failed to insert the initial session notification policy");
+	}
+	return {
+		sessionId,
+		...policy,
+		updatedAt: revision,
+	};
 }
 
 function parsedTargetDeviceIds(value: string | null): string[] | null {

@@ -1,6 +1,10 @@
 import type { CommandAction } from "../lib/commands";
 import type { WorkspaceReferenceRequest } from "../lib/vaultReferences";
-import type { ChatAttachment, GoalStartRequest } from "../server/protocol";
+import type {
+	ChatAttachment,
+	ClientInitialNotificationPolicy,
+	GoalStartRequest,
+} from "../server/protocol";
 
 export type QueuedChatMessage = {
 	id: string;
@@ -20,6 +24,7 @@ export type QueuedChatMessage = {
 	effort?: string;
 	permission_mode?: string;
 	approvals_reviewer?: string;
+	notification_policy?: ClientInitialNotificationPolicy;
 	goal?: GoalStartRequest;
 	steerable?: boolean;
 	/** True after the message has been delivered to the server. */

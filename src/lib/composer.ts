@@ -134,6 +134,7 @@ function sessionControlFields(input: {
 	effort?: string;
 	permissionMode?: string;
 	approvalsReviewer?: ProviderApprovalsReviewer;
+	notificationPolicy?: ClientChatMessage["notification_policy"];
 }) {
 	return {
 		plan_mode: input.planMode || undefined,
@@ -144,6 +145,9 @@ function sessionControlFields(input: {
 		...(input.permissionMode ? { permission_mode: input.permissionMode } : {}),
 		...(input.approvalsReviewer
 			? { approvals_reviewer: input.approvalsReviewer }
+			: {}),
+		...(input.notificationPolicy
+			? { notification_policy: input.notificationPolicy }
 			: {}),
 	};
 }
@@ -170,6 +174,7 @@ export function prepareChatSubmission(input: {
 	effort?: string;
 	permissionMode?: string;
 	approvalsReviewer?: ProviderApprovalsReviewer;
+	notificationPolicy?: ClientChatMessage["notification_policy"];
 	goal?: ClientChatMessage["goal"];
 }): ChatSubmission | null {
 	if (

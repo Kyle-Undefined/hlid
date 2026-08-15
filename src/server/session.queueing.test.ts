@@ -175,6 +175,101 @@ async function establishIdlePeerSession(
 }
 
 describe("SessionManager — runQuery queueing", () => {
+	it("commits the initial notification policy before durable ownership and provider work", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+		let releaseCreate: (() => void) | undefined;
+		const createPending = new Promise<void>((resolve) => {
+			releaseCreate = resolve;
+		});
+		vi.mocked(dbMock.createSession).mockClear();
+		vi.mocked(dbMock.enqueuePendingSessionTurn).mockClear();
+		vi.mocked(dbMock.createSession).mockImplementationOnce(
+			async () => createPending,
+		);
+
+		const initialNotificationPolicy = {
+			mode: "notify_completion_once" as const,
+			scope: "session" as const,
+			targetDeviceIds: null,
+		};
+		const run = sm.runQuery("durable prompt", () => {}, {
+			inputOrigin: "human",
+			sessionId: "durable-policy-session",
+			turnId: "durable-policy-turn",
+			initialNotificationPolicy,
+		});
+
+		await waitFor(() => expect(dbMock.createSession).toHaveBeenCalledTimes(1));
+		expect(dbMock.createSession).toHaveBeenCalledWith(
+			"durable-policy-session",
+			"DURABLE PROMPT",
+			"claude-test",
+			expect.objectContaining({ initialNotificationPolicy }),
+		);
+		expect(dbMock.enqueuePendingSessionTurn).not.toHaveBeenCalled();
+		expect(ctl.getQueryCount()).toBe(0);
+
+		releaseCreate?.();
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const queued = vi.mocked(dbMock.enqueuePendingSessionTurn).mock
+			.calls[0]?.[0];
+		expect(queued?.payloadJson).not.toContain("initialNotificationPolicy");
+		ctl.turns[0].resolveDone();
+		await run;
+	});
+
+	it("fails closed before provider work when initial policy persistence fails", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+		vi.mocked(dbMock.createSession).mockRejectedValueOnce(
+			new Error("policy insert failed"),
+		);
+		vi.mocked(dbMock.enqueuePendingSessionTurn).mockClear();
+
+		await expect(
+			sm.runQuery("do not dispatch", () => {}, {
+				inputOrigin: "human",
+				sessionId: "failed-policy-session",
+				turnId: "failed-policy-turn",
+				initialNotificationPolicy: {
+					mode: "mute",
+					scope: "session",
+					targetDeviceIds: null,
+				},
+			}),
+		).rejects.toThrow("policy insert failed");
+
+		expect(dbMock.enqueuePendingSessionTurn).not.toHaveBeenCalled();
+		expect(ctl.getQueryCount()).toBe(0);
+	});
+
+	it("applies the initial policy on a non-durable first turn", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+		vi.mocked(dbMock.createSession).mockClear();
+		const initialNotificationPolicy = {
+			mode: "notify" as const,
+			scope: "delegation_tree" as const,
+			targetDeviceIds: null,
+		};
+
+		const run = sm.runQuery("ordinary prompt", () => {}, {
+			inputOrigin: "human",
+			sessionId: "ordinary-policy-session",
+			initialNotificationPolicy,
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		expect(dbMock.createSession).toHaveBeenCalledWith(
+			"ordinary-policy-session",
+			"ORDINARY PROMPT",
+			"claude-test",
+			expect.objectContaining({ initialNotificationPolicy }),
+		);
+		ctl.turns[0].resolveDone();
+		await run;
+	});
+
 	it("persists an interactive turn through the dispatch boundary", async () => {
 		const ctl = makeControllableProvider();
 		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));

@@ -1,3 +1,7 @@
+import type {
+	SessionNotificationMode,
+	SessionNotificationScope,
+} from "../lib/pushNotificationSchemas";
 import type { WorkspaceReferenceRequest } from "../lib/vaultReferences";
 import type {
 	ProviderApprovalsReviewer,
@@ -1182,6 +1186,12 @@ export type GoalStartRequest = {
 	token_budget?: number | null;
 };
 
+export type ClientInitialNotificationPolicy = {
+	mode: Exclude<SessionNotificationMode, "default">;
+	scope: SessionNotificationScope;
+	target_device_ids: string[] | null;
+};
+
 // Client → server messages
 export type ClientChatMessage = {
 	type: "chat";
@@ -1213,6 +1223,8 @@ export type ClientChatMessage = {
 	effort?: string;
 	permission_mode?: string;
 	approvals_reviewer?: ProviderApprovalsReviewer;
+	/** Provisional policy committed atomically when this first chat creates its DB session. */
+	notification_policy?: ClientInitialNotificationPolicy;
 	/** Start or replace the native Codex goal before submitting this turn. */
 	goal?: GoalStartRequest;
 };

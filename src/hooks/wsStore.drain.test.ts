@@ -107,6 +107,31 @@ describe("wsStore — Slice A: immediate-send drain", () => {
 		});
 	});
 
+	it("preserves a staged notification policy through queued transport", () => {
+		const notificationPolicy = {
+			mode: "notify_completion_once" as const,
+			scope: "session" as const,
+			target_device_ids: null,
+		};
+		wsStore.enqueueChat({
+			id: "notification-1",
+			text: "notify when finished",
+			session_id: "s1",
+			notification_policy: notificationPolicy,
+		});
+
+		const sent = currentWs.send.mock.calls
+			.map((call) => JSON.parse(call[0] as string))
+			.find((message) => message.type === "chat");
+		expect(sent).toMatchObject({
+			turn_id: "notification-1",
+			notification_policy: notificationPolicy,
+		});
+		expect(wsStore.getQueue()[0]?.notification_policy).toEqual(
+			notificationPolicy,
+		);
+	});
+
 	it("preserves multiple workspace revisions through send and browser reload", () => {
 		const workspaceReferences = [
 			{ relativePath: "src/app.ts", sha256: "a".repeat(64) },

@@ -233,6 +233,9 @@ function sendChatToServer(msg: QueuedChatMessage): boolean {
 	if (msg.approvals_reviewer) {
 		payload.approvals_reviewer = msg.approvals_reviewer;
 	}
+	if (msg.notification_policy) {
+		payload.notification_policy = msg.notification_policy;
+	}
 	if (msg.goal) payload.goal = msg.goal;
 	try {
 		socket.send(JSON.stringify(payload));
