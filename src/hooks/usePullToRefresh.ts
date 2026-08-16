@@ -8,21 +8,27 @@ export const MAX_PULL = 90;
 const DEADZONE = 12;
 
 /**
- * Walk up the DOM to find the nearest scrollable ancestor.
- * Returns null if none found before document.body.
+ * Require every scrollable ancestor under the listener container to be at the
+ * top. A nested scroller can be at its own top while the page behind it still
+ * has content above the viewport, which must remain a normal scroll gesture.
  */
-function getScrollContainer(el: Element | null): Element | null {
-	while (el && el !== document.body) {
+function areScrollContainersAtTop(
+	el: Element | null,
+	listenerContainer: Element,
+): boolean {
+	while (el) {
 		const { overflow, overflowY } = window.getComputedStyle(el);
 		if (
 			/auto|scroll/.test(overflow + overflowY) &&
-			el.scrollHeight > el.clientHeight
+			el.scrollHeight > el.clientHeight &&
+			el.scrollTop > 6
 		) {
-			return el;
+			return false;
 		}
+		if (el === listenerContainer) return true;
 		el = el.parentElement;
 	}
-	return null;
+	return false;
 }
 
 export interface PullToRefreshState {
@@ -35,9 +41,11 @@ export interface PullToRefreshState {
 /**
  * Attaches pull-to-refresh gesture handling to `containerRef`.
  *
- * - Walks the DOM on each touchmove to find the real scroll container;
- *   bails out if that container isn't scrolled to the top, so inner
- *   scroll areas (e.g. raven message list) work correctly.
+ * - Walks the DOM on each touchmove and bails out if any scroll container
+ *   through the listener root isn't at the top, so nested scroll areas work
+ *   without triggering a refresh while their parent page is still scrolled.
+ * - Keeps a normal scroll gesture disqualified even if it reaches the top;
+ *   only a new touch can begin pull-to-refresh.
  * - Calls `window.location.reload()` when triggered.
  * - Handles touchcancel for iOS system gestures.
  */
@@ -50,6 +58,7 @@ export function usePullToRefresh(
 	const startYRef = useRef(0);
 	const currentPullRef = useRef(0);
 	const activeRef = useRef(false);
+	const disqualifiedRef = useRef(false);
 	const refreshingRef = useRef(false);
 	const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -61,6 +70,7 @@ export function usePullToRefresh(
 			if (refreshingRef.current) return;
 			startYRef.current = e.touches[0].clientY;
 			activeRef.current = false;
+			disqualifiedRef.current = false;
 			currentPullRef.current = 0;
 		};
 
@@ -68,6 +78,20 @@ export function usePullToRefresh(
 			if (refreshingRef.current) return;
 
 			const deltaY = e.touches[0].clientY - startYRef.current;
+
+			// Once this touch has acted as a normal scroll, reaching the top midway
+			// through it must not convert that same gesture into pull-to-refresh.
+			const target = e.target instanceof Element ? e.target : container;
+			if (!areScrollContainersAtTop(target, container)) {
+				disqualifiedRef.current = true;
+				if (activeRef.current) {
+					activeRef.current = false;
+					currentPullRef.current = 0;
+					setPullY(0);
+				}
+				return;
+			}
+			if (disqualifiedRef.current) return;
 
 			if (deltaY <= 0) {
 				if (activeRef.current) {
@@ -77,11 +101,6 @@ export function usePullToRefresh(
 				}
 				return;
 			}
-
-			// Find the actual scrolling element under the finger.
-			// If it has content above the viewport, this is a normal scroll — bail.
-			const scrollEl = getScrollContainer(e.target as Element);
-			if (scrollEl && scrollEl.scrollTop > 6) return;
 
 			// Require a deliberate downward pull before engaging.
 			if (deltaY < DEADZONE) return;

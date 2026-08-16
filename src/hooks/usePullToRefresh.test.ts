@@ -11,6 +11,27 @@ function touch(type: string, y?: number): Event {
 	return event;
 }
 
+function makeScrollable(element: HTMLElement, scrollTop: number): void {
+	element.style.overflowY = "auto";
+	Object.defineProperties(element, {
+		scrollHeight: { value: 400 },
+		clientHeight: { value: 100 },
+	});
+	element.scrollTop = scrollTop;
+}
+
+function nestedScrollFixture() {
+	const container = document.createElement("div");
+	const forgeScroller = document.createElement("main");
+	const historyScroller = document.createElement("div");
+	const historyEntry = document.createElement("li");
+	container.append(forgeScroller);
+	forgeScroller.append(historyScroller);
+	historyScroller.append(historyEntry);
+	document.body.append(container);
+	return { container, forgeScroller, historyScroller, historyEntry };
+}
+
 beforeEach(() => vi.useFakeTimers());
 
 afterEach(() => {
@@ -52,5 +73,57 @@ describe("usePullToRefresh", () => {
 		act(() => container.dispatchEvent(touch("touchcancel")));
 		expect(result.current.pullY).toBe(0);
 		expect(result.current.isRefreshing).toBe(false);
+	});
+
+	it("does not pull when a parent scroller has content above the viewport", () => {
+		const { container, forgeScroller, historyScroller, historyEntry } =
+			nestedScrollFixture();
+		makeScrollable(forgeScroller, 48);
+		makeScrollable(historyScroller, 0);
+
+		const ref = { current: container };
+		const { result } = renderHook(() => usePullToRefresh(ref));
+
+		act(() => {
+			historyEntry.dispatchEvent(touch("touchstart", 0));
+			historyEntry.dispatchEvent(touch("touchmove", 120));
+		});
+
+		expect(result.current.pullY).toBe(0);
+		expect(result.current.isRefreshing).toBe(false);
+
+		forgeScroller.scrollTop = 0;
+		act(() => {
+			historyEntry.dispatchEvent(touch("touchstart", 0));
+			historyEntry.dispatchEvent(touch("touchmove", 120));
+		});
+
+		expect(result.current.pullY).toBeGreaterThan(0);
+	});
+
+	it("does not start pulling after a nested scroller reaches the top mid-gesture", () => {
+		const { container, forgeScroller, historyScroller, historyEntry } =
+			nestedScrollFixture();
+		makeScrollable(forgeScroller, 0);
+		makeScrollable(historyScroller, 32);
+
+		const ref = { current: container };
+		const { result } = renderHook(() => usePullToRefresh(ref));
+
+		act(() => {
+			historyEntry.dispatchEvent(touch("touchstart", 0));
+			historyEntry.dispatchEvent(touch("touchmove", 40));
+		});
+		expect(result.current.pullY).toBe(0);
+
+		historyScroller.scrollTop = 0;
+		act(() => {
+			historyEntry.dispatchEvent(touch("touchmove", 300));
+			historyEntry.dispatchEvent(touch("touchend"));
+		});
+
+		expect(result.current.pullY).toBe(0);
+		expect(result.current.isRefreshing).toBe(false);
+		expect(vi.getTimerCount()).toBe(0);
 	});
 });

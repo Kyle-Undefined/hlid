@@ -269,6 +269,16 @@ describe("NotificationsSection", () => {
 		expect(
 			screen.getByText("Compile release").closest("li")?.className,
 		).toContain("min-w-0");
+		const historyRegion = screen.getByRole("region", {
+			name: "Recent notification history",
+		});
+		expect(historyRegion.getAttribute("tabindex")).toBe("0");
+		expect(historyRegion.getAttribute("aria-busy")).toBe("false");
+		expect(historyRegion.className).toContain("max-h-[min(24rem,50svh)]");
+		expect(historyRegion.className).toContain("overflow-y-auto");
+		expect(historyRegion.className).toContain("touch-pan-y");
+		expect(historyRegion.className).toContain("focus-visible:ring-1");
+		expect(historyRegion.firstElementChild?.tagName).toBe("OL");
 	});
 
 	it("describes foreground suppression without implying work was cancelled", async () => {

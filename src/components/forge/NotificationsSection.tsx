@@ -678,58 +678,68 @@ function historyEventLabel(event: PushNotificationHistoryEvent): string {
 
 function NotificationHistoryList({
 	events,
+	busy,
 }: {
 	events: PushNotificationHistoryEvent[];
+	busy: boolean;
 }) {
 	return (
-		<ol className="w-full min-w-0 space-y-2 @4xl:w-[30rem]">
-			{events.map((event) => (
-				<li
-					key={event.id}
-					className="min-w-0 border border-border bg-background/40 p-2.5"
-				>
-					<div className="flex min-w-0 flex-wrap items-start justify-between gap-x-3 gap-y-1">
-						<div className="min-w-0">
-							<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-								{historyCategoryLabel(event.category)} · {event.sourceKind}
+		<section
+			aria-label="Recent notification history"
+			aria-busy={busy}
+			// biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users need to focus and scroll this bounded history viewport.
+			tabIndex={0}
+			className="max-h-[min(24rem,50svh)] w-full min-w-0 touch-pan-y overflow-y-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/60 @4xl:w-[30rem]"
+		>
+			<ol className="w-full min-w-0 space-y-2">
+				{events.map((event) => (
+					<li
+						key={event.id}
+						className="min-w-0 border border-border bg-background/40 p-2.5"
+					>
+						<div className="flex min-w-0 flex-wrap items-start justify-between gap-x-3 gap-y-1">
+							<div className="min-w-0">
+								<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+									{historyCategoryLabel(event.category)} · {event.sourceKind}
+								</div>
+								<div className="mt-0.5 break-words text-xs text-foreground/85">
+									{event.label ?? event.sourceId}
+								</div>
 							</div>
-							<div className="mt-0.5 break-words text-xs text-foreground/85">
-								{event.label ?? event.sourceId}
+							<time
+								dateTime={new Date(event.occurredAt).toISOString()}
+								className="shrink-0 text-[9px] text-muted-foreground/60"
+							>
+								{localDateTime(event.occurredAt)}
+							</time>
+						</div>
+						<div className="mt-1 text-[10px] text-muted-foreground/60">
+							{historyEventLabel(event)}
+						</div>
+						{event.deliveries.length === 0 ? (
+							<div className="mt-1.5 text-[10px] text-muted-foreground/45">
+								No device delivery decision recorded.
 							</div>
-						</div>
-						<time
-							dateTime={new Date(event.occurredAt).toISOString()}
-							className="shrink-0 text-[9px] text-muted-foreground/60"
-						>
-							{localDateTime(event.occurredAt)}
-						</time>
-					</div>
-					<div className="mt-1 text-[10px] text-muted-foreground/60">
-						{historyEventLabel(event)}
-					</div>
-					{event.deliveries.length === 0 ? (
-						<div className="mt-1.5 text-[10px] text-muted-foreground/45">
-							No device delivery decision recorded.
-						</div>
-					) : (
-						<ul
-							aria-label={`Device delivery states for ${event.label ?? event.sourceId}`}
-							className="mt-1.5 flex min-w-0 flex-wrap gap-1"
-						>
-							{event.deliveries.map((delivery) => (
-								<li
-									key={delivery.id}
-									className="max-w-full break-words border border-border/60 bg-secondary/20 px-1.5 py-1 text-[9px] text-muted-foreground/75"
-								>
-									{delivery.device.name}:{" "}
-									{historyDeliveryLabel(delivery, event.category)}
-								</li>
-							))}
-						</ul>
-					)}
-				</li>
-			))}
-		</ol>
+						) : (
+							<ul
+								aria-label={`Device delivery states for ${event.label ?? event.sourceId}`}
+								className="mt-1.5 flex min-w-0 flex-wrap gap-1"
+							>
+								{event.deliveries.map((delivery) => (
+									<li
+										key={delivery.id}
+										className="max-w-full break-words border border-border/60 bg-secondary/20 px-1.5 py-1 text-[9px] text-muted-foreground/75"
+									>
+										{delivery.device.name}:{" "}
+										{historyDeliveryLabel(delivery, event.category)}
+									</li>
+								))}
+							</ul>
+						)}
+					</li>
+				))}
+			</ol>
+		</section>
 	);
 }
 
@@ -1432,7 +1442,7 @@ export function NotificationsSection() {
 							No notification history yet.
 						</p>
 					) : (
-						<NotificationHistoryList events={history} />
+						<NotificationHistoryList events={history} busy={historyLoading} />
 					)}
 					{historyError && (
 						<p role="alert" className="text-xs text-destructive/80">
