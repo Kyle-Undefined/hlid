@@ -66,6 +66,52 @@ function readyPronunciationTtsInfo(): TtsInfo {
 	};
 }
 
+function coriPronunciationModel(): TtsInfo["models"][number] {
+	return {
+		id: "piper-cori-medium-int8",
+		label: "Piper Cori",
+		description: "Local speech",
+		tier: "balanced",
+		sizeBytes: 1,
+		runtimeSizeBytes: 1,
+		installed: true,
+		recommended: false,
+		quantized: true,
+		language: "English",
+		license: "MIT",
+		voices: [
+			{
+				id: "piper-cori",
+				label: "Cori",
+				language: "en-GB",
+				speaker: 0,
+			},
+		],
+	};
+}
+
+function installPronunciationAudioMock(objectUrl: string) {
+	const audio = {
+		onended: null as (() => void) | null,
+		onerror: null as (() => void) | null,
+		onplaying: null as (() => void) | null,
+		pause: vi.fn(),
+		play: vi.fn().mockResolvedValue(undefined),
+	};
+	const Audio = vi.fn(function AudioMock() {
+		return audio;
+	});
+	vi.stubGlobal("Audio", Audio);
+	const createObjectURL = vi.fn(() => objectUrl);
+	const revokeObjectURL = vi.fn();
+	class PreviewURL extends URL {
+		static createObjectURL = createObjectURL;
+		static revokeObjectURL = revokeObjectURL;
+	}
+	vi.stubGlobal("URL", PreviewURL);
+	return { audio, Audio, createObjectURL, revokeObjectURL };
+}
+
 afterEach(() => {
 	cleanup();
 	__resetReadAloudForTesting();
@@ -475,6 +521,319 @@ describe("ReadAloudSection", () => {
 		expect(onChange).toHaveBeenLastCalledWith({
 			pronunciations: [{ written: "Raven", spoken: "ray ven" }],
 		});
+	});
+
+	it("disables pronunciation previews when the selected model failed over to another runtime", () => {
+		const fetch = vi.fn().mockResolvedValue(
+			Response.json({
+				available: false,
+				voices: [],
+			}),
+		);
+		vi.stubGlobal("fetch", fetch);
+		render(
+			<Harness
+				initialVoice={{
+					...DEFAULT_VOICE_CONFIG,
+					read_aloud_provider: "neural",
+					tts_model: "piper-cori-medium-int8",
+					tts_voice: "piper-cori",
+					pronunciations: [{ written: "Hlið", spoken: "hleeth" }],
+				}}
+				ttsInfo={{
+					status: {
+						state: "ready",
+						model: "piper-cori-medium-int8",
+						loadedModel: "kitten",
+						error: "Cori failed to load",
+					},
+					models: [
+						{
+							id: "kitten",
+							label: "Kitten",
+							description: "Local speech",
+							tier: "fast",
+							sizeBytes: 1,
+							runtimeSizeBytes: 1,
+							installed: true,
+							recommended: true,
+							quantized: true,
+							language: "English",
+							license: "Apache-2.0",
+							voices: [
+								{
+									id: "expr-voice-5-f",
+									label: "Expressive 5",
+									language: "en-US",
+									speaker: 7,
+								},
+							],
+						},
+						coriPronunciationModel(),
+					],
+				}}
+			/>,
+		);
+
+		expect(
+			screen.getByText(
+				"The selected local neural model is not loaded. Resolve its model error before playing pronunciation previews.",
+			),
+		).toBeTruthy();
+		expect(
+			(
+				screen.getByRole("button", {
+					name: "Preview pronunciation 1",
+				}) as HTMLButtonElement
+			).disabled,
+		).toBe(true);
+		expect(
+			(
+				screen.getByRole("button", {
+					name: "Play preview",
+				}) as HTMLButtonElement
+			).disabled,
+		).toBe(true);
+		fireEvent.change(screen.getByLabelText("Pronunciation test sentence"), {
+			target: { value: "The live logs are ready." },
+		});
+		expect(
+			(
+				screen.getByRole("button", {
+					name: "Play pronunciation test",
+				}) as HTMLButtonElement
+			).disabled,
+		).toBe(true);
+		expect(fetch).not.toHaveBeenCalledWith(
+			"/api/speech/synthesize",
+			expect.anything(),
+		);
+	});
+
+	it("tests the exact user pronunciation library with the selected neural voice", async () => {
+		const fetch = vi.fn((input: RequestInfo | URL) => {
+			if (input === "/api/read-aloud/voices") {
+				return Promise.resolve(Response.json({ available: false, voices: [] }));
+			}
+			return Promise.resolve(
+				new Response(new Blob(["RIFF0000WAVEaudio"]), {
+					status: 200,
+					headers: { "content-type": "audio/wav" },
+				}),
+			);
+		});
+		vi.stubGlobal("fetch", fetch);
+		const preview = installPronunciationAudioMock(
+			"blob:user-pronunciation-test",
+		);
+		render(
+			<Harness
+				initialVoice={{
+					...DEFAULT_VOICE_CONFIG,
+					read_aloud_provider: "neural",
+					read_aloud_rate: 1.25,
+					tts_model: "kitten",
+					tts_voice: "expr-voice-5-f",
+					pronunciations: [
+						{ written: "live logs", spoken: "custom live logs" },
+					],
+				}}
+				ttsInfo={readyPronunciationTtsInfo()}
+			/>,
+		);
+
+		const sentence = screen.getByLabelText(
+			"Pronunciation test sentence",
+		) as HTMLInputElement;
+		expect(sentence.maxLength).toBe(300);
+		fireEvent.change(sentence, {
+			target: { value: "Live logs are ready. The live preview is ready." },
+		});
+		expect(
+			screen.getByText(
+				"custom live logs are ready. The live preview is ready.",
+			),
+		).toBeTruthy();
+		expect(screen.getByText("Text sent to voice:")).toBeTruthy();
+		expect(
+			screen.getByText(
+				"Uses the selected local neural voice, speed, and your pronunciations. The transcript is unchanged.",
+			),
+		).toBeTruthy();
+		fireEvent.click(
+			screen.getByRole("button", { name: "Play pronunciation test" }),
+		);
+
+		await waitFor(() =>
+			expect(fetch).toHaveBeenCalledWith(
+				"/api/speech/synthesize",
+				expect.objectContaining({
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						text: "custom live logs are ready. The live preview is ready.",
+						voice_id: "expr-voice-5-f",
+						rate: 1.25,
+					}),
+				}),
+			),
+		);
+		await waitFor(() => expect(preview.audio.play).toHaveBeenCalledOnce());
+		act(() => preview.audio.onplaying?.());
+		const stop = screen.getByRole("button", {
+			name: "Stop pronunciation test",
+		});
+		expect(stop.textContent).toBe("Playing…");
+		fireEvent.click(stop);
+
+		expect(preview.audio.pause).toHaveBeenCalledOnce();
+		expect(preview.revokeObjectURL).toHaveBeenCalledWith(
+			"blob:user-pronunciation-test",
+		);
+		expect(
+			screen.getByRole("button", { name: "Play pronunciation test" }),
+		).toBeTruthy();
+	});
+
+	it("aborts a sentence test while local synthesis is still loading", async () => {
+		const synthesisRequest: {
+			signal?: AbortSignal;
+			resolve?: (response: Response) => void;
+		} = {};
+		const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+			if (input === "/api/read-aloud/voices") {
+				return Promise.resolve(Response.json({ available: false, voices: [] }));
+			}
+			synthesisRequest.signal = init?.signal as AbortSignal;
+			return new Promise<Response>((resolve) => {
+				synthesisRequest.resolve = resolve;
+			});
+		});
+		vi.stubGlobal("fetch", fetch);
+		const preview = installPronunciationAudioMock(
+			"blob:aborted-pronunciation-test",
+		);
+		render(
+			<Harness
+				initialVoice={{
+					...DEFAULT_VOICE_CONFIG,
+					read_aloud_provider: "neural",
+					tts_model: "kitten",
+					tts_voice: "expr-voice-5-f",
+				}}
+				ttsInfo={readyPronunciationTtsInfo()}
+			/>,
+		);
+
+		fireEvent.change(screen.getByLabelText("Pronunciation test sentence"), {
+			target: { value: "Open the live logs." },
+		});
+		fireEvent.click(
+			screen.getByRole("button", { name: "Play pronunciation test" }),
+		);
+		await waitFor(() => expect(synthesisRequest.signal).toBeDefined());
+		const stop = screen.getByRole("button", {
+			name: "Stop pronunciation test",
+		});
+		expect(stop.textContent).toBe("Loading…");
+		fireEvent.click(stop);
+
+		expect(synthesisRequest.signal?.aborted).toBe(true);
+		expect(
+			screen.getByRole("button", { name: "Play pronunciation test" }),
+		).toBeTruthy();
+		await act(async () => {
+			synthesisRequest.resolve?.(
+				new Response(new Blob(["RIFF0000WAVEaudio"]), { status: 200 }),
+			);
+		});
+		await waitFor(() =>
+			expect(preview.revokeObjectURL).toHaveBeenCalledWith(
+				"blob:aborted-pronunciation-test",
+			),
+		);
+		expect(preview.Audio).not.toHaveBeenCalled();
+	});
+
+	it("stops a pronunciation preview when the selected speech settings change", async () => {
+		const fetch = vi.fn((input: RequestInfo | URL) => {
+			if (input === "/api/read-aloud/voices") {
+				return Promise.resolve(Response.json({ available: false, voices: [] }));
+			}
+			return Promise.resolve(
+				new Response(new Blob(["RIFF0000WAVEaudio"]), { status: 200 }),
+			);
+		});
+		vi.stubGlobal("fetch", fetch);
+		const preview = installPronunciationAudioMock(
+			"blob:changed-pronunciation-settings",
+		);
+		render(
+			<Harness
+				initialVoice={{
+					...DEFAULT_VOICE_CONFIG,
+					read_aloud_provider: "neural",
+					tts_model: "kitten",
+					tts_voice: "expr-voice-5-f",
+				}}
+				ttsInfo={readyPronunciationTtsInfo()}
+			/>,
+		);
+
+		fireEvent.change(screen.getByLabelText("Pronunciation test sentence"), {
+			target: { value: "Open the live logs." },
+		});
+		fireEvent.click(
+			screen.getByRole("button", { name: "Play pronunciation test" }),
+		);
+		await waitFor(() => expect(preview.audio.play).toHaveBeenCalledOnce());
+		act(() => preview.audio.onplaying?.());
+
+		fireEvent.change(screen.getByLabelText("Read aloud speed"), {
+			target: { value: "1.25" },
+		});
+
+		await waitFor(() => expect(preview.audio.pause).toHaveBeenCalledOnce());
+		expect(preview.revokeObjectURL).toHaveBeenCalledWith(
+			"blob:changed-pronunciation-settings",
+		);
+		expect(
+			screen.getByRole("button", { name: "Play pronunciation test" }),
+		).toBeTruthy();
+	});
+
+	it("blocks expanded pronunciation tests above the synthesis limit", () => {
+		vi.stubGlobal(
+			"fetch",
+			vi
+				.fn()
+				.mockResolvedValue(Response.json({ available: false, voices: [] })),
+		);
+		render(
+			<Harness
+				initialVoice={{
+					...DEFAULT_VOICE_CONFIG,
+					read_aloud_provider: "neural",
+					tts_model: "kitten",
+					tts_voice: "expr-voice-5-f",
+					pronunciations: [{ written: "x", spoken: "z".repeat(80) }],
+				}}
+				ttsInfo={readyPronunciationTtsInfo()}
+			/>,
+		);
+
+		fireEvent.change(screen.getByLabelText("Pronunciation test sentence"), {
+			target: { value: "x x x x" },
+		});
+		const play = screen.getByRole("button", {
+			name: "Play pronunciation test",
+		}) as HTMLButtonElement;
+		expect(play.disabled).toBe(true);
+		expect(
+			screen.getByText(
+				"The effective sentence is 323 characters. Shorten it to 300 or fewer before playing.",
+			),
+		).toBeTruthy();
 	});
 
 	it("flags case-equivalent written forms and keeps them local", () => {

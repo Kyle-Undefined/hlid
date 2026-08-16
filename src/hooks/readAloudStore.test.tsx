@@ -117,6 +117,7 @@ afterEach(() => {
 	stopReadAloud();
 	cleanup();
 	vi.unstubAllGlobals();
+	vi.restoreAllMocks();
 });
 
 describe("readAloudStore", () => {
@@ -355,6 +356,8 @@ describe("readAloudStore", () => {
 	});
 
 	it("prefetches and plays local neural chunks in order", async () => {
+		const readingId = "11111111-2222-4333-8444-555555555555";
+		vi.spyOn(crypto, "randomUUID").mockReturnValue(readingId);
 		const fetch = vi
 			.fn()
 			.mockResolvedValueOnce(
@@ -381,10 +384,15 @@ describe("readAloudStore", () => {
 		await waitFor(() => expect(MockAudio.instances).toHaveLength(1));
 		expect(fetch).toHaveBeenNthCalledWith(
 			1,
-			"/api/read-aloud/audio?message_id=42&provider=neural&chunk_index=0",
+			`/api/read-aloud/audio?message_id=42&provider=neural&chunk_index=0&reading_id=${readingId}`,
 			expect.objectContaining({ cache: "no-store" }),
 		);
 		await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+		expect(fetch).toHaveBeenNthCalledWith(
+			2,
+			`/api/read-aloud/audio?message_id=42&provider=neural&chunk_index=1&reading_id=${readingId}`,
+			expect.objectContaining({ cache: "no-store" }),
+		);
 		const first = MockAudio.instances[0];
 		expect(first?.src).toBe("blob:neural-0");
 		act(() => first?.onplaying?.());

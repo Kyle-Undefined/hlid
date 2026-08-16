@@ -85,6 +85,25 @@ describe("local speech synthesis route", () => {
 		);
 	});
 
+	it("keeps already-prepared speech text literal", async () => {
+		const synthesize = vi
+			.fn()
+			.mockResolvedValue({ audio: new Uint8Array([1]) });
+		const { handle } = handler(synthesize);
+
+		const response = await handle(
+			new URL("http://localhost/speech/synthesize"),
+			request(JSON.stringify({ text: "Open the live logs." })),
+		);
+
+		expect(response?.status).toBe(200);
+		expect(synthesize).toHaveBeenCalledWith(
+			"Open the live logs.",
+			"expr-voice-2-f",
+			1.1,
+		);
+	});
+
 	it("requires a JSON content type and valid JSON", async () => {
 		const { handle, synthesize } = handler();
 		const url = new URL("http://localhost/speech/synthesize");

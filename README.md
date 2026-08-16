@@ -73,8 +73,8 @@ set up, `Hlið` is happy.
   chats can separately use realtime dictation, a recorded audio turn, or
   `Raven Live`. Regular replies can also be read aloud with a local device
   voice, `Microsoft` speech on the `Windows` host, or the local neural voice.
-  The neural voice supports optional pronunciation mappings for project names
-  and uncommon terms.
+  The neural voice supports optional whole-word and phrase pronunciation
+  mappings, plus a sentence tester for the selected voice.
 - Opens a real project shell in `Raven`. There is also an interactive
   `Claude CLI` mode for the times when the full terminal makes more sense than
   the structured chat `UI`. Agents can start a session-scoped `Project Preview`,

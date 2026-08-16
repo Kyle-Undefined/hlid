@@ -70,6 +70,13 @@ export type TtsSynthesisResult = {
 	durationMs?: number;
 };
 
+export class TtsModelMismatchError extends Error {
+	constructor() {
+		super("local neural speech model changed");
+		this.name = "TtsModelMismatchError";
+	}
+}
+
 type RuntimeDefinition = {
 	id: string;
 	archiveUrl: string;
@@ -692,23 +699,31 @@ export class TtsModelManager {
 		await rmAsync(this.modelDir(definition), { recursive: true, force: true });
 	}
 
-	private voice(id: string): TtsVoiceInfo {
-		const definition = getTtsModelDefinition(
-			this.runtime?.model ?? this.config.tts_model,
+	private voice(model: string, id: string): TtsVoiceInfo {
+		const definition = getTtsModelDefinition(model);
+		const exactVoice = definition?.voices.find(
+			(candidate) => candidate.id === id,
 		);
-		const voice =
-			definition?.voices.find((candidate) => candidate.id === id) ??
-			definition?.voices[0];
+		const voice = exactVoice ?? definition?.voices[0];
 		if (!voice) throw new Error("TTS voice catalog is empty");
 		return voice;
 	}
 
 	private async synthesizeOnce(
+		runtime: TtsRuntime | null,
 		text: string,
 		voiceId: string,
 		speed: number,
+		expectedModel?: string,
 	): Promise<TtsSynthesisResult> {
-		const runtime = this.runtime;
+		if (
+			expectedModel &&
+			(!runtime ||
+				runtime.model !== expectedModel ||
+				this.statusValue.state !== "ready")
+		) {
+			throw new TtsModelMismatchError();
+		}
 		if (!runtime || this.statusValue.state !== "ready")
 			throw new Error("local neural voice is not ready");
 		const response = await this.fetcher(
@@ -721,7 +736,7 @@ export class TtsModelManager {
 				},
 				body: JSON.stringify({
 					text,
-					speaker: this.voice(voiceId).speaker,
+					speaker: this.voice(runtime.model, voiceId).speaker,
 					speed,
 				}),
 				signal: AbortSignal.timeout(30_000),
@@ -748,6 +763,7 @@ export class TtsModelManager {
 		text: string,
 		voiceId: string,
 		speed: number,
+		expectedModel?: string,
 	): Promise<TtsSynthesisResult> {
 		if (!text.trim() || text.length > 300)
 			throw new Error("invalid local neural synthesis text");
@@ -757,13 +773,33 @@ export class TtsModelManager {
 			throw new Error("local neural synthesis queue is full");
 		this.pendingSynthesis++;
 		const run = async () => {
+			const attemptedRuntime = this.runtime;
 			try {
-				return await this.synthesizeOnce(text, voiceId, speed);
+				return await this.synthesizeOnce(
+					attemptedRuntime,
+					text,
+					voiceId,
+					speed,
+					expectedModel,
+				);
 			} catch (error) {
-				if (!this.runtime || this.runtime.process.exitCode === null)
+				if (error instanceof TtsModelMismatchError) throw error;
+				if (expectedModel && this.runtime?.model !== expectedModel) {
+					throw new TtsModelMismatchError();
+				}
+				if (!attemptedRuntime || attemptedRuntime.process.exitCode === null)
 					throw error;
-				await this.load(this.config.tts_model);
-				return this.synthesizeOnce(text, voiceId, speed);
+				if (expectedModel && this.config.tts_model !== expectedModel) {
+					throw new TtsModelMismatchError();
+				}
+				await this.load(expectedModel ?? this.config.tts_model);
+				return this.synthesizeOnce(
+					this.runtime,
+					text,
+					voiceId,
+					speed,
+					expectedModel,
+				);
 			}
 		};
 		const result = this.synthesis.then(run, run);

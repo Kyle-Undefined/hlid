@@ -945,14 +945,26 @@ download, and you can remove models separately. `Hlið` checks the runtime and
 model archives before installing them. They are not packed into the executable.
 
 **Pronunciations** teaches local neural read aloud how to say project names,
-acronyms, and other uncommon terms. Each entry pairs the literal written word or
-phrase with a phonetic **Say as** spelling, such as `Hlið` and `hleeth`. Use
-**Play** to test it because the best spelling can differ by voice. All-cap terms
-such as `ACP` match that exact capitalization so ordinary words such as `us` are
-not changed by an entry for `US`; other terms match without regard to case. The
-mapping changes only the text sent to local neural speech; the visible response,
-stored transcript, and text sent to an agent remain unchanged. It does not apply
-to device, `Microsoft`, or provider-native speech.
+acronyms, and other uncommon terms. Each entry pairs a literal whole word or
+phrase with a **Say as** spelling, such as `Hlið` and `hleeth`. The mapping
+applies everywhere that written form matches. All-cap terms such as `ACP` match
+that exact capitalization so ordinary words such as `us` are not changed by an
+entry for `US`; other terms match without regard to case.
+
+Use an entry's **Play** control to audition its spelling. **Test a sentence**
+shows the exact **Text sent to voice** after applying your mappings, then plays
+it with the selected neural voice and speed. A **Say as** spelling is a hint
+interpreted by the selected model, not a phoneme instruction, so the audio
+preview is the source of truth. Retest pronunciation hints after changing
+voices because the same spelling can sound different.
+
+Hlið applies pronunciation mappings before Manual Read Aloud, Local
+Conversation, and **Test a sentence** send text to local neural speech. The
+low-level `/speech/synthesize` API treats its text as already prepared and
+synthesizes it literally, so direct callers must prepare any pronunciation
+changes themselves. The visible response, stored transcript, and text sent to
+an agent remain unchanged. Pronunciation mappings do not apply to device,
+`Microsoft`, or provider-native speech.
 
 Local neural speech runs in a separate child process, keeping native inference
 off the main `Hlið` server. Replies start with a short opening chunk, then use

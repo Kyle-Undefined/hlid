@@ -356,7 +356,7 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		method: "POST",
 		path: "/speech/synthesize",
 		server: "api",
-		desc: 'Synthesize one authenticated local neural speech utterance as audio/wav. Body: {"text": string, "voice_id"?: string, "rate"?: number}; text is 1–300 characters and rate is 0.5–2.',
+		desc: 'Synthesize one authenticated local neural speech utterance as audio/wav. Body: {"text": string, "voice_id"?: string, "rate"?: number}; text is 1–300 characters and rate is 0.5–2. Configured Hlið pronunciation rules are not applied; text is synthesized literally.',
 	},
 	// ── Codex app-server maintenance (api port) ───────────────────────────────
 	{
@@ -667,7 +667,7 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		method: "POST",
 		path: "/api/speech/synthesize",
 		server: "ui",
-		desc: 'Authenticated same-origin bridge for one local neural audio/wav utterance. Body: {"text": string, "voice_id"?: string, "rate"?: number}; text is 1–300 characters and rate is 0.5–2.',
+		desc: 'Authenticated same-origin bridge for one local neural audio/wav utterance. Body: {"text": string, "voice_id"?: string, "rate"?: number}; text is 1–300 characters and rate is 0.5–2. Configured Hlið pronunciation rules are not applied; text is synthesized literally.',
 	},
 	// ── Vault & agents (ui port, /api/*) ──────────────────────────────────────
 	{

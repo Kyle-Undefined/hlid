@@ -587,7 +587,9 @@ const getNeuralSpeechSettings = () => {
 const handleReadAloudRoute = createReadAloudRouteHandler({
 	speech: microsoftSpeech,
 	tts: {
-		synthesize: (text, voiceId, speed) => tts.synthesize(text, voiceId, speed),
+		synthesize: (text, voiceId, speed, expectedModel) =>
+			tts.synthesize(text, voiceId, speed, expectedModel),
+		status: () => tts.status(),
 	},
 	getAssistantMessageText: db.getAssistantMessageText,
 	getNeuralSettings: getNeuralSpeechSettings,

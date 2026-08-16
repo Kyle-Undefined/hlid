@@ -72,8 +72,12 @@ describe("buildApiIndex", () => {
 		expect(apiSpeech).toMatchObject({ server: "api" });
 		expect(apiSpeech?.desc).toContain('"text": string');
 		expect(apiSpeech?.desc).toContain("1–300 characters");
+		expect(apiSpeech?.desc).toContain("pronunciation rules are not applied");
+		expect(apiSpeech?.desc).toContain("synthesized literally");
 		expect(uiSpeech).toMatchObject({ server: "ui" });
 		expect(uiSpeech?.desc).toContain("same-origin");
+		expect(uiSpeech?.desc).toContain("pronunciation rules are not applied");
+		expect(uiSpeech?.desc).toContain("synthesized literally");
 	});
 
 	it("documents the current filter and pagination contracts for user-visible database routes", () => {

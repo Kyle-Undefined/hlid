@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { dbFetch } from "#/lib/dbClient";
 import { forbiddenResponse } from "#/lib/originGate";
+import { isValidNeuralReadingId } from "#/lib/readAloud";
 
 export async function handleMicrosoftAudio(
 	request: Request,
@@ -15,6 +16,19 @@ export async function handleMicrosoftAudio(
 	if (source.searchParams.get("provider") === "neural") {
 		query.set("provider", "neural");
 		query.set("chunk_index", source.searchParams.get("chunk_index") ?? "");
+		const readingId = source.searchParams.get("reading_id");
+		if (readingId !== null) {
+			if (!isValidNeuralReadingId(readingId)) {
+				return Response.json(
+					{ error: "invalid reading_id" },
+					{
+						status: 400,
+						headers: { "cache-control": "private, no-store" },
+					},
+				);
+			}
+			query.set("reading_id", readingId);
+		}
 	}
 	return dbFetch(`/read-aloud/audio?${query}`, {
 		signal: request.signal,

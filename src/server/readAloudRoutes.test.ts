@@ -1,8 +1,29 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { SpeechPronunciation } from "#/lib/speechPronunciations";
 import {
 	createReadAloudRouteHandler,
+	MAX_NEURAL_READING_SNAPSHOTS,
 	MAX_READ_ALOUD_TEXT_CHARS,
+	NEURAL_READING_SNAPSHOT_TTL_MS,
 } from "./readAloudRoutes";
+import {
+	type TtsModelManager,
+	TtsModelMismatchError,
+	type TtsStatus,
+} from "./tts";
+
+const DEFAULT_TTS_MODEL_ID = "kitten-nano-v0.8-int8";
+
+function readyTtsStatus(modelId = DEFAULT_TTS_MODEL_ID): TtsStatus {
+	return { state: "ready", model: modelId, loadedModel: modelId };
+}
+
+function neuralTts(
+	synthesize: TtsModelManager["synthesize"],
+	status: () => TtsStatus = () => readyTtsStatus(),
+): Pick<TtsModelManager, "status" | "synthesize"> {
+	return { synthesize, status };
+}
 
 const voice = {
 	id: "windows:mark",
@@ -15,6 +36,10 @@ const voice = {
 function request(path: string): Request {
 	return new Request(`http://localhost${path}`);
 }
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
 
 describe("read aloud internal routes", () => {
 	it("reports Microsoft voice availability", async () => {
@@ -102,7 +127,7 @@ describe("read aloud internal routes", () => {
 		});
 		const handler = createReadAloudRouteHandler({
 			speech: { voices: vi.fn(), synthesize: microsoftSynthesize },
-			tts: { synthesize: neuralSynthesize },
+			tts: neuralTts(neuralSynthesize),
 			getAssistantMessageText: vi.fn().mockResolvedValue("Hlið works."),
 			getNeuralSettings: () => ({
 				voiceId: "expr-voice-5-f",
@@ -167,7 +192,7 @@ describe("read aloud internal routes", () => {
 		}));
 		const handler = createReadAloudRouteHandler({
 			speech: { voices: vi.fn(), synthesize: vi.fn() },
-			tts: { synthesize },
+			tts: neuralTts(synthesize),
 			getAssistantMessageText: vi.fn().mockResolvedValue(markdown),
 			getNeuralSettings,
 		});
@@ -234,7 +259,7 @@ describe("read aloud internal routes", () => {
 		});
 		const handler = createReadAloudRouteHandler({
 			speech: { voices: vi.fn(), synthesize: vi.fn() },
-			tts: { synthesize },
+			tts: neuralTts(synthesize),
 			getAssistantMessageText: vi
 				.fn()
 				.mockResolvedValue(
@@ -268,7 +293,7 @@ describe("read aloud internal routes", () => {
 		});
 		const handler = createReadAloudRouteHandler({
 			speech: { voices: vi.fn(), synthesize: vi.fn() },
-			tts: { synthesize },
+			tts: neuralTts(synthesize),
 			getAssistantMessageText: vi.fn().mockResolvedValue("Hlid ends here."),
 			getNeuralSettings: () => ({
 				voiceId: "expr-voice-5-f",
@@ -300,6 +325,271 @@ describe("read aloud internal routes", () => {
 		);
 	});
 
+	it("keeps transformed chunks and neural settings stable for one reading", async () => {
+		let pronunciations: SpeechPronunciation[] = [
+			{
+				written: "Hlid",
+				spoken: "Hlid with an intentionally extended spoken pronunciation",
+			},
+		];
+		const settings = { voiceId: "expr-voice-5-f", rate: 1 };
+		const getAssistantMessageText = vi
+			.fn()
+			.mockResolvedValue("Hlid ends here.");
+		const getPronunciations = vi.fn(() => pronunciations);
+		const getNeuralSettings = vi.fn(() => settings);
+		const synthesize = vi.fn().mockResolvedValue({
+			audio: new TextEncoder().encode("RIFF0000WAVEaudio"),
+		});
+		const handler = createReadAloudRouteHandler({
+			speech: { voices: vi.fn(), synthesize: vi.fn() },
+			tts: neuralTts(synthesize),
+			getAssistantMessageText,
+			getPronunciations,
+			getNeuralSettings,
+		});
+		const readingId = "11111111-2222-4333-8444-555555555555";
+		const firstPath = `/read-aloud/audio?message_id=42&provider=neural&chunk_index=0&reading_id=${readingId}`;
+
+		const first = await handler(
+			new URL(`http://localhost${firstPath}`),
+			request(firstPath),
+		);
+		expect(first?.status).toBe(200);
+		expect(first?.headers.get("x-hlid-has-next-chunk")).toBe("1");
+
+		pronunciations = [{ written: "Hlid", spoken: "short" }];
+		settings.voiceId = "expr-voice-2-f";
+		settings.rate = 1.5;
+		const secondPath = `/read-aloud/audio?message_id=42&provider=neural&chunk_index=1&reading_id=${readingId}`;
+		const second = await handler(
+			new URL(`http://localhost${secondPath}`),
+			request(secondPath),
+		);
+
+		expect(second?.status).toBe(200);
+		expect(getAssistantMessageText).toHaveBeenCalledOnce();
+		expect(getPronunciations).toHaveBeenCalledOnce();
+		expect(getNeuralSettings).toHaveBeenCalledOnce();
+		expect(synthesize).toHaveBeenNthCalledWith(
+			2,
+			expect.stringContaining("intentionally extended spoken pronunciation"),
+			"expr-voice-5-f",
+			1,
+			DEFAULT_TTS_MODEL_ID,
+		);
+	});
+
+	it("ends a reading before a later chunk can use a switched TTS model", async () => {
+		let loadedModel = DEFAULT_TTS_MODEL_ID;
+		const synthesize = vi.fn().mockResolvedValue({
+			audio: new TextEncoder().encode("RIFF0000WAVEaudio"),
+		});
+		const handler = createReadAloudRouteHandler({
+			speech: { voices: vi.fn(), synthesize: vi.fn() },
+			tts: neuralTts(synthesize, () => readyTtsStatus(loadedModel)),
+			getAssistantMessageText: vi
+				.fn()
+				.mockResolvedValue(
+					"A deliberately long opening that creates another chunk.",
+				),
+			getNeuralSettings: () => ({
+				voiceId: "expr-voice-5-f",
+				rate: 1,
+			}),
+		});
+		const readingId = "77777777-7777-4777-8777-777777777777";
+		const firstPath = `/read-aloud/audio?message_id=42&provider=neural&chunk_index=0&reading_id=${readingId}`;
+		expect(
+			(
+				await handler(
+					new URL(`http://localhost${firstPath}`),
+					request(firstPath),
+				)
+			)?.status,
+		).toBe(200);
+
+		loadedModel = "piper-kristin-medium-int8";
+		const laterPath = `/read-aloud/audio?message_id=42&provider=neural&chunk_index=1&reading_id=${readingId}`;
+		const later = await handler(
+			new URL(`http://localhost${laterPath}`),
+			request(laterPath),
+		);
+
+		expect(later?.status).toBe(410);
+		expect(later?.headers.get("cache-control")).toBe("private, no-store");
+		expect(await later?.json()).toEqual({
+			error: "neural reading snapshot is unavailable",
+		});
+		expect(synthesize).toHaveBeenCalledOnce();
+	});
+
+	it("maps a queued TTS runtime switch to the snapshot's gone response", async () => {
+		const synthesize = vi
+			.fn()
+			.mockResolvedValueOnce({
+				audio: new TextEncoder().encode("RIFF0000WAVEaudio"),
+			})
+			.mockRejectedValueOnce(new TtsModelMismatchError());
+		const handler = createReadAloudRouteHandler({
+			speech: { voices: vi.fn(), synthesize: vi.fn() },
+			tts: neuralTts(synthesize),
+			getAssistantMessageText: vi
+				.fn()
+				.mockResolvedValue(
+					"A deliberately long opening that creates another chunk.",
+				),
+		});
+		const readingId = "88888888-8888-4888-8888-888888888888";
+		const firstPath = `/read-aloud/audio?message_id=42&provider=neural&chunk_index=0&reading_id=${readingId}`;
+		expect(
+			(
+				await handler(
+					new URL(`http://localhost${firstPath}`),
+					request(firstPath),
+				)
+			)?.status,
+		).toBe(200);
+
+		const laterPath = `/read-aloud/audio?message_id=42&provider=neural&chunk_index=1&reading_id=${readingId}`;
+		const later = await handler(
+			new URL(`http://localhost${laterPath}`),
+			request(laterPath),
+		);
+
+		expect(later?.status).toBe(410);
+		expect(later?.headers.get("cache-control")).toBe("private, no-store");
+		expect(await later?.json()).toEqual({
+			error: "neural reading snapshot is unavailable",
+		});
+		expect(synthesize).toHaveBeenCalledTimes(2);
+	});
+
+	it("returns the same gone response for unknown and message-mismatched later chunks", async () => {
+		const getAssistantMessageText = vi.fn().mockResolvedValue("Read this");
+		const synthesize = vi.fn().mockResolvedValue({
+			audio: new TextEncoder().encode("RIFF0000WAVEaudio"),
+		});
+		const handler = createReadAloudRouteHandler({
+			speech: { voices: vi.fn(), synthesize: vi.fn() },
+			tts: neuralTts(synthesize),
+			getAssistantMessageText,
+		});
+		const readingId = "22222222-2222-4222-8222-222222222222";
+		const unknownPath = `/read-aloud/audio?message_id=42&provider=neural&chunk_index=1&reading_id=${readingId}`;
+		const unknown = await handler(
+			new URL(`http://localhost${unknownPath}`),
+			request(unknownPath),
+		);
+		expect(unknown?.status).toBe(410);
+		expect(unknown?.headers.get("cache-control")).toBe("private, no-store");
+		expect(await unknown?.json()).toEqual({
+			error: "neural reading snapshot is unavailable",
+		});
+		expect(getAssistantMessageText).not.toHaveBeenCalled();
+		expect(synthesize).not.toHaveBeenCalled();
+
+		const firstPath = `/read-aloud/audio?message_id=42&provider=neural&chunk_index=0&reading_id=${readingId}`;
+		expect(
+			(
+				await handler(
+					new URL(`http://localhost${firstPath}`),
+					request(firstPath),
+				)
+			)?.status,
+		).toBe(200);
+		const mismatchPath = `/read-aloud/audio?message_id=43&provider=neural&chunk_index=1&reading_id=${readingId}`;
+		const mismatch = await handler(
+			new URL(`http://localhost${mismatchPath}`),
+			request(mismatchPath),
+		);
+		expect(mismatch?.status).toBe(410);
+		expect(await mismatch?.json()).toEqual({
+			error: "neural reading snapshot is unavailable",
+		});
+		expect(getAssistantMessageText).toHaveBeenCalledOnce();
+		expect(synthesize).toHaveBeenCalledOnce();
+	});
+
+	it("expires reading snapshots and does not recreate a later chunk", async () => {
+		const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+		const getAssistantMessageText = vi
+			.fn()
+			.mockResolvedValue(
+				"A deliberately long opening that creates another chunk.",
+			);
+		const handler = createReadAloudRouteHandler({
+			speech: { voices: vi.fn(), synthesize: vi.fn() },
+			tts: neuralTts(
+				vi.fn().mockResolvedValue({
+					audio: new TextEncoder().encode("RIFF0000WAVEaudio"),
+				}),
+			),
+			getAssistantMessageText,
+		});
+		const readingId = "33333333-3333-4333-8333-333333333333";
+		const firstPath = `/read-aloud/audio?message_id=42&provider=neural&chunk_index=0&reading_id=${readingId}`;
+		expect(
+			(
+				await handler(
+					new URL(`http://localhost${firstPath}`),
+					request(firstPath),
+				)
+			)?.status,
+		).toBe(200);
+
+		now.mockReturnValue(1_000 + NEURAL_READING_SNAPSHOT_TTL_MS + 1);
+		const laterPath = `/read-aloud/audio?message_id=42&provider=neural&chunk_index=1&reading_id=${readingId}`;
+		const later = await handler(
+			new URL(`http://localhost${laterPath}`),
+			request(laterPath),
+		);
+		expect(later?.status).toBe(410);
+		expect(getAssistantMessageText).toHaveBeenCalledOnce();
+	});
+
+	it("evicts the oldest reading when the bounded snapshot store is full", async () => {
+		const synthesize = vi.fn().mockResolvedValue({
+			audio: new TextEncoder().encode("RIFF0000WAVEaudio"),
+		});
+		const handler = createReadAloudRouteHandler({
+			speech: { voices: vi.fn(), synthesize: vi.fn() },
+			tts: neuralTts(synthesize),
+			getAssistantMessageText: vi
+				.fn()
+				.mockResolvedValue(
+					"A deliberately long opening that creates another chunk.",
+				),
+		});
+		for (let index = 0; index <= MAX_NEURAL_READING_SNAPSHOTS; index += 1) {
+			const path = `/read-aloud/audio?message_id=${index + 1}&provider=neural&chunk_index=0&reading_id=reading-${index}`;
+			expect(
+				(await handler(new URL(`http://localhost${path}`), request(path)))
+					?.status,
+			).toBe(200);
+		}
+
+		const oldestPath =
+			"/read-aloud/audio?message_id=1&provider=neural&chunk_index=1&reading_id=reading-0";
+		const newestPath = `/read-aloud/audio?message_id=${MAX_NEURAL_READING_SNAPSHOTS + 1}&provider=neural&chunk_index=1&reading_id=reading-${MAX_NEURAL_READING_SNAPSHOTS}`;
+		expect(
+			(
+				await handler(
+					new URL(`http://localhost${oldestPath}`),
+					request(oldestPath),
+				)
+			)?.status,
+		).toBe(410);
+		expect(
+			(
+				await handler(
+					new URL(`http://localhost${newestPath}`),
+					request(newestPath),
+				)
+			)?.status,
+		).toBe(200);
+	});
+
 	it("checks the expanded neural text against the synthesis limit", async () => {
 		const synthesize = vi.fn();
 		const getNeuralSettings = vi.fn(() => ({
@@ -308,7 +598,7 @@ describe("read aloud internal routes", () => {
 		}));
 		const handler = createReadAloudRouteHandler({
 			speech: { voices: vi.fn(), synthesize: vi.fn() },
-			tts: { synthesize },
+			tts: neuralTts(synthesize),
 			getAssistantMessageText: vi
 				.fn()
 				.mockResolvedValue(Array.from({ length: 2_500 }, () => "x").join(" ")),
@@ -347,7 +637,7 @@ describe("read aloud internal routes", () => {
 		}));
 		const handler = createReadAloudRouteHandler({
 			speech: { voices: vi.fn(), synthesize: vi.fn() },
-			tts: { synthesize },
+			tts: neuralTts(synthesize),
 			getAssistantMessageText: vi.fn().mockResolvedValue("Read this"),
 			getNeuralSettings,
 		});
@@ -373,7 +663,7 @@ describe("read aloud internal routes", () => {
 			.mockRejectedValueOnce(new Error("neural runtime unavailable"));
 		const handler = createReadAloudRouteHandler({
 			speech: { voices: vi.fn(), synthesize: vi.fn() },
-			tts: { synthesize },
+			tts: neuralTts(synthesize),
 			getAssistantMessageText: vi.fn().mockResolvedValue("Read this"),
 		});
 		const url = new URL(
@@ -402,7 +692,7 @@ describe("read aloud internal routes", () => {
 		});
 		const handler = createReadAloudRouteHandler({
 			speech: { voices: vi.fn(), synthesize: vi.fn() },
-			tts: { synthesize },
+			tts: neuralTts(synthesize),
 			getAssistantMessageText: vi.fn(),
 			getNeuralSettings: () => ({
 				voiceId: "expr-voice-2-f",
@@ -424,11 +714,9 @@ describe("read aloud internal routes", () => {
 	it("maps neural preview failures to service unavailable", async () => {
 		const handler = createReadAloudRouteHandler({
 			speech: { voices: vi.fn(), synthesize: vi.fn() },
-			tts: {
-				synthesize: vi
-					.fn()
-					.mockRejectedValue(new Error("preview model unavailable")),
-			},
+			tts: neuralTts(
+				vi.fn().mockRejectedValue(new Error("preview model unavailable")),
+			),
 			getAssistantMessageText: vi.fn(),
 		});
 		const response = await handler(

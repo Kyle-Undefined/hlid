@@ -6,6 +6,8 @@ import { DEFAULT_VOICE_CONFIG } from "../config";
 import {
 	relativeTtsArchivePath,
 	TtsModelManager,
+	TtsModelMismatchError,
+	type TtsStatus,
 	ttsArchiveExtractionArgs,
 	ttsTarExecutable,
 	validateTtsArchiveEntries,
@@ -13,6 +15,20 @@ import {
 import { TTS_MODEL_DEFINITIONS } from "./ttsModels";
 
 const tempDirectories: string[] = [];
+
+type MutableTtsManagerState = {
+	config: typeof DEFAULT_VOICE_CONFIG;
+	runtime: {
+		process: { exitCode: number | null; kill: () => void };
+		port: number;
+		token: string;
+		model: string;
+		threads: number;
+		version: string;
+	} | null;
+	loadGeneration: number;
+	statusValue: TtsStatus;
+};
 
 function tempDirectory(): string {
 	const directory = mkdtempSync(join(tmpdir(), "hlid-tts-test-"));
@@ -145,6 +161,228 @@ describe("TTS model manager", () => {
 			"checksum mismatch",
 		);
 		expect(manager.status().error).toContain("checksum mismatch");
+		manager.close();
+	});
+
+	it("checks an expected model inside the serialized synthesis run", async () => {
+		let resolveFirst: ((response: Response) => void) | undefined;
+		const firstResponse = new Promise<Response>((resolve) => {
+			resolveFirst = resolve;
+		});
+		const fetcher = vi.fn().mockReturnValue(firstResponse);
+		const manager = new TtsModelManager(
+			{
+				...DEFAULT_VOICE_CONFIG,
+				read_aloud_provider: "neural",
+				tts_model: "kitten-nano-v0.8-int8",
+			},
+			{
+				dataDir: tempDirectory(),
+				fetcher,
+				spawn: vi.fn() as never,
+			},
+		);
+		const state = manager as unknown as MutableTtsManagerState;
+		state.loadGeneration = 7;
+		state.runtime = {
+			process: { exitCode: null, kill: vi.fn() },
+			port: 24_001,
+			token: "old-token",
+			model: "kitten-nano-v0.8-int8",
+			threads: 2,
+			version: "1.13.4",
+		};
+		state.statusValue = {
+			state: "ready",
+			model: "kitten-nano-v0.8-int8",
+			loadedModel: "kitten-nano-v0.8-int8",
+		};
+		expect(manager.status().loadedModel).toBe("kitten-nano-v0.8-int8");
+
+		const first = manager.synthesize("First.", "expr-voice-2-f", 1);
+		await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+		const queued = manager.synthesize(
+			"Second.",
+			"expr-voice-2-f",
+			1,
+			"kitten-nano-v0.8-int8",
+		);
+		const queuedExpectation = expect(queued).rejects.toBeInstanceOf(
+			TtsModelMismatchError,
+		);
+		state.loadGeneration = 8;
+		state.runtime = {
+			process: { exitCode: null, kill: vi.fn() },
+			port: 24_002,
+			token: "new-token",
+			model: "piper-kristin-medium-int8",
+			threads: 2,
+			version: "1.13.4",
+		};
+		state.statusValue = {
+			state: "ready",
+			model: "piper-kristin-medium-int8",
+			loadedModel: "piper-kristin-medium-int8",
+		};
+		resolveFirst?.(new Response("audio"));
+
+		await expect(first).resolves.toMatchObject({
+			audio: expect.any(Uint8Array),
+		});
+		await queuedExpectation;
+		expect(fetcher).toHaveBeenCalledOnce();
+		manager.close();
+	});
+
+	it("does not retry a pinned reading with a newly configured model", async () => {
+		const fetcher = vi.fn().mockRejectedValue(new Error("runtime exited"));
+		const manager = new TtsModelManager(
+			{
+				...DEFAULT_VOICE_CONFIG,
+				read_aloud_provider: "neural",
+				tts_model: "kitten-nano-v0.8-int8",
+			},
+			{
+				dataDir: tempDirectory(),
+				fetcher,
+				spawn: vi.fn() as never,
+			},
+		);
+		const state = manager as unknown as MutableTtsManagerState;
+		state.runtime = {
+			process: { exitCode: 1, kill: vi.fn() },
+			port: 24_003,
+			token: "stopped-token",
+			model: "kitten-nano-v0.8-int8",
+			threads: 2,
+			version: "1.13.4",
+		};
+		state.statusValue = {
+			state: "ready",
+			model: "kitten-nano-v0.8-int8",
+			loadedModel: "kitten-nano-v0.8-int8",
+		};
+		state.config = {
+			...state.config,
+			tts_model: "piper-kristin-medium-int8",
+		};
+		const load = vi.spyOn(manager, "load");
+
+		await expect(
+			manager.synthesize(
+				"Do not switch models.",
+				"expr-voice-2-f",
+				1,
+				"kitten-nano-v0.8-int8",
+			),
+		).rejects.toBeInstanceOf(TtsModelMismatchError);
+		expect(fetcher).toHaveBeenCalledOnce();
+		expect(load).not.toHaveBeenCalled();
+		manager.close();
+	});
+
+	it("bases crash retry on the runtime that attempted the synthesis", async () => {
+		let rejectFirst: ((error: Error) => void) | undefined;
+		const firstResponse = new Promise<Response>((_resolve, reject) => {
+			rejectFirst = reject;
+		});
+		const fetcher = vi
+			.fn()
+			.mockReturnValueOnce(firstResponse)
+			.mockResolvedValueOnce(new Response("retried audio"));
+		const manager = new TtsModelManager(
+			{
+				...DEFAULT_VOICE_CONFIG,
+				read_aloud_provider: "neural",
+				tts_model: "kitten-nano-v0.8-int8",
+			},
+			{
+				dataDir: tempDirectory(),
+				fetcher,
+				spawn: vi.fn() as never,
+			},
+		);
+		const state = manager as unknown as MutableTtsManagerState;
+		const attemptedProcess = { exitCode: null as number | null, kill: vi.fn() };
+		state.runtime = {
+			process: attemptedProcess,
+			port: 24_005,
+			token: "attempted-token",
+			model: "kitten-nano-v0.8-int8",
+			threads: 2,
+			version: "1.13.4",
+		};
+		state.statusValue = {
+			state: "ready",
+			model: "kitten-nano-v0.8-int8",
+			loadedModel: "kitten-nano-v0.8-int8",
+		};
+		const load = vi.spyOn(manager, "load").mockResolvedValue();
+
+		const synthesis = manager.synthesize(
+			"Retry on the pinned model.",
+			"expr-voice-2-f",
+			1,
+			"kitten-nano-v0.8-int8",
+		);
+		await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+		attemptedProcess.exitCode = 1;
+		state.runtime = {
+			process: { exitCode: null, kill: vi.fn() },
+			port: 24_006,
+			token: "replacement-token",
+			model: "kitten-nano-v0.8-int8",
+			threads: 2,
+			version: "1.13.4",
+		};
+		rejectFirst?.(new Error("attempted runtime exited"));
+
+		await expect(synthesis).resolves.toMatchObject({
+			audio: expect.any(Uint8Array),
+		});
+		expect(load).toHaveBeenCalledWith("kitten-nano-v0.8-int8");
+		expect(fetcher).toHaveBeenCalledTimes(2);
+		manager.close();
+	});
+
+	it("keeps stale voice fallback deterministic within the pinned model", async () => {
+		const fetcher = vi.fn().mockResolvedValue(new Response("audio"));
+		const manager = new TtsModelManager(
+			{
+				...DEFAULT_VOICE_CONFIG,
+				read_aloud_provider: "neural",
+				tts_model: "kitten-nano-v0.8-int8",
+			},
+			{
+				dataDir: tempDirectory(),
+				fetcher,
+				spawn: vi.fn() as never,
+			},
+		);
+		const state = manager as unknown as MutableTtsManagerState;
+		state.runtime = {
+			process: { exitCode: null, kill: vi.fn() },
+			port: 24_004,
+			token: "ready-token",
+			model: "kitten-nano-v0.8-int8",
+			threads: 2,
+			version: "1.13.4",
+		};
+		state.statusValue = {
+			state: "ready",
+			model: "kitten-nano-v0.8-int8",
+			loadedModel: "kitten-nano-v0.8-int8",
+		};
+
+		await manager.synthesize(
+			"Use the model fallback.",
+			"removed-voice-id",
+			1,
+			"kitten-nano-v0.8-int8",
+		);
+
+		const requestInit = fetcher.mock.calls[0]?.[1] as RequestInit | undefined;
+		expect(JSON.parse(String(requestInit?.body))).toMatchObject({ speaker: 0 });
 		manager.close();
 	});
 });

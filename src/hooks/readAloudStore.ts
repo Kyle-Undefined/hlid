@@ -78,12 +78,24 @@ type PreparedNeuralChunk = {
 type ActiveNeuralReading = {
 	messageId: string;
 	dbId: number;
+	readingId: string;
 	generation: number;
 	controller: AbortController;
 	prefetched: Promise<PreparedNeuralChunk> | null;
 };
 
 let activeNeuralReading: ActiveNeuralReading | null = null;
+
+function createNeuralReadingId(): string | null {
+	if (typeof crypto === "undefined") return null;
+	if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+	if (typeof crypto.getRandomValues !== "function") return null;
+	const bytes = crypto.getRandomValues(new Uint8Array(16));
+	bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
+	bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+	const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"));
+	return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10).join("")}`;
+}
 
 const stateSubscribers = new Set<() => void>();
 const preferenceSubscribers = new Set<() => void>();
@@ -609,6 +621,7 @@ async function fetchNeuralChunk(
 		message_id: String(reading.dbId),
 		provider: "neural",
 		chunk_index: String(index),
+		reading_id: reading.readingId,
 	});
 	// fallow-ignore-next-line code-duplication -- Client fetch handling intentionally mirrors the server response contract across the bundle boundary.
 	const response = await fetch(`/api/read-aloud/audio?${query}`, {
@@ -721,6 +734,15 @@ function startNeuralReadAloud(messageId: string, dbId?: number): void {
 		});
 		return;
 	}
+	const readingId = createNeuralReadingId();
+	if (!readingId) {
+		updateState({
+			messageId,
+			phase: "error",
+			error: "Secure local neural speech IDs are not supported by this browser",
+		});
+		return;
+	}
 	const currentGeneration = ++generation;
 	utteranceGeneration++;
 	releasePendingVoiceDiscovery();
@@ -732,6 +754,7 @@ function startNeuralReadAloud(messageId: string, dbId?: number): void {
 	const reading: ActiveNeuralReading = {
 		messageId,
 		dbId,
+		readingId,
 		generation: currentGeneration,
 		controller: new AbortController(),
 		prefetched: null,

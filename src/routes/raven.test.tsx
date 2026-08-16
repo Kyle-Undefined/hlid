@@ -76,6 +76,7 @@ const state = vi.hoisted(() => ({
 	localConversationOptions: null as null | {
 		unavailableReason?: string | null;
 		onTranscription?: (text: string) => void | Promise<void>;
+		pronunciations?: readonly { written: string; spoken: string }[];
 	},
 	localConversationActive: false,
 	localConversationPhase: "idle" as
@@ -6386,6 +6387,30 @@ describe("Raven composed submission behavior", () => {
 		expect(screen.getByText("Goal startup failed")).toBeTruthy();
 		expect(screen.queryByText("Finish the Raven cleanup")).toBeNull();
 		expect(state.handleChatWsMessage).toHaveBeenCalledWith(runtimeError);
+	});
+
+	it("hydrates configured pronunciations into Local Conversation", () => {
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as Record<string, unknown>),
+				voice: {
+					...(state.loaderData.config as { voice: Record<string, unknown> })
+						.voice,
+					pronunciations: [
+						{ written: "Hlið", spoken: "hleeth" },
+						{ written: "OpenCode", spoken: "open code" },
+					],
+				},
+			},
+		};
+
+		render(<ChatPage />);
+
+		expect(state.localConversationOptions?.pronunciations).toEqual([
+			{ written: "Hlið", spoken: "hleeth" },
+			{ written: "OpenCode", spoken: "open code" },
+		]);
 	});
 
 	it("queues an isolated Local Conversation turn without consuming staged composer context", async () => {

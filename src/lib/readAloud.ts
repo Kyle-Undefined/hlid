@@ -1,5 +1,15 @@
 export const READ_ALOUD_PREFERENCES_KEY = "hlid:read-aloud";
 
+export const MAX_NEURAL_READING_ID_CHARACTERS = 64;
+
+export function isValidNeuralReadingId(value: string): boolean {
+	return (
+		value.length > 0 &&
+		value.length <= MAX_NEURAL_READING_ID_CHARACTERS &&
+		/^[A-Za-z0-9_-]+$/u.test(value)
+	);
+}
+
 export type ReadAloudProvider = "device" | "microsoft" | "neural" | "codex";
 
 export type ReadAloudPreferences = {

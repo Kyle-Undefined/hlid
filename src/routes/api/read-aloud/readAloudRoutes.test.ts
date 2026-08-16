@@ -28,6 +28,18 @@ describe("read aloud route adapters", () => {
 		expect(mockDbFetch).not.toHaveBeenCalled();
 	});
 
+	it("applies the request gate before validating a neural reading ID", async () => {
+		mockForbidden.mockReturnValue(new Response("Forbidden", { status: 403 }));
+		const response = await handleMicrosoftAudio(
+			new Request(
+				"http://localhost/api/read-aloud/audio?message_id=42&provider=neural&chunk_index=1&reading_id=unsafe%2Fvalue",
+			),
+		);
+
+		expect(response.status).toBe(403);
+		expect(mockDbFetch).not.toHaveBeenCalled();
+	});
+
 	it("proxies Microsoft voice inventory", async () => {
 		await handleMicrosoftVoices(
 			new Request("http://localhost/api/read-aloud/voices"),
@@ -63,13 +75,30 @@ describe("read aloud route adapters", () => {
 	it("forwards only the bounded neural chunk parameters", async () => {
 		await handleMicrosoftAudio(
 			new Request(
-				"http://localhost/api/read-aloud/audio?message_id=42&provider=neural&chunk_index=3&voice_id=ignored",
+				"http://localhost/api/read-aloud/audio?message_id=42&provider=neural&chunk_index=3&reading_id=11111111-2222-4333-8444-555555555555&voice_id=ignored",
 			),
 		);
 		expect(mockDbFetch).toHaveBeenCalledWith(
-			"/read-aloud/audio?message_id=42&voice_id=ignored&provider=neural&chunk_index=3",
+			"/read-aloud/audio?message_id=42&voice_id=ignored&provider=neural&chunk_index=3&reading_id=11111111-2222-4333-8444-555555555555",
 			expect.objectContaining({ signal: expect.any(AbortSignal) }),
 		);
+	});
+
+	it.each([
+		"",
+		"unsafe/value",
+		"x".repeat(65),
+	])("rejects an invalid neural reading ID before proxying (%j)", async (readingId) => {
+		const response = await handleMicrosoftAudio(
+			new Request(
+				`http://localhost/api/read-aloud/audio?message_id=42&provider=neural&chunk_index=0&reading_id=${encodeURIComponent(readingId)}`,
+			),
+		);
+
+		expect(response.status).toBe(400);
+		expect(response.headers.get("cache-control")).toBe("private, no-store");
+		expect(await response.json()).toEqual({ error: "invalid reading_id" });
+		expect(mockDbFetch).not.toHaveBeenCalled();
 	});
 
 	it("proxies the fixed neural voice preview", async () => {

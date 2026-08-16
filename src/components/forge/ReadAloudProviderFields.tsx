@@ -312,7 +312,13 @@ function NeuralVoiceFields({
 		model?.voices.find((item) => item.id === preferences.neuralVoiceId)?.id ??
 		model?.voices[0]?.id ??
 		"";
-	const ready = ttsInfo?.status.state === "ready";
+	const loadedModelId =
+		ttsInfo?.status.loadedModel ??
+		(ttsInfo?.status.state === "ready" ? ttsInfo.status.model : "");
+	const ready =
+		ttsInfo?.status.state === "ready" &&
+		Boolean(model?.id) &&
+		model?.id === loadedModelId;
 	return (
 		<>
 			<NeuralVoiceField
