@@ -521,6 +521,17 @@ describe("ForgeSettings search", () => {
 			screen.getByRole("button", { name: /Inventory unavailable/i }),
 		).toBeTruthy();
 	});
+
+	it("keeps a slow inventory refresh non-actionable until it settles", () => {
+		renderSettings({}, { inventoryStatus: "slow" });
+
+		expect(
+			screen.getByText("System inventory is still refreshing…"),
+		).toBeTruthy();
+		expect(
+			screen.queryByRole("button", { name: /Inventory unavailable/i }),
+		).toBeNull();
+	});
 });
 
 function renderSettings(

@@ -1244,14 +1244,20 @@ function InventoryStatus({
 	status,
 	onRetry,
 }: {
-	status: "loading" | "ready" | "unavailable";
+	status: "loading" | "slow" | "ready" | "unavailable";
 	onRetry: () => void;
 }) {
 	if (status === "ready") return null;
-	if (status === "loading") {
+	if (status === "loading" || status === "slow") {
 		return (
-			<span className="text-[10px] tracking-wider text-muted-foreground uppercase">
-				Refreshing system inventory…
+			<span
+				className={`text-[10px] tracking-wider uppercase ${
+					status === "slow" ? "text-status-warning" : "text-muted-foreground"
+				}`}
+			>
+				{status === "slow"
+					? "System inventory is still refreshing…"
+					: "Refreshing system inventory…"}
 			</span>
 		);
 	}
@@ -1279,7 +1285,7 @@ export function ForgeSettings({
 }: {
 	initial: SettingsInitial;
 	state: SettingsFormState;
-	inventoryStatus?: "loading" | "ready" | "unavailable";
+	inventoryStatus?: "loading" | "slow" | "ready" | "unavailable";
 	onRetryInventory?: () => void | Promise<void>;
 	onRefreshProviderOptions?: (providerId: string) => void | Promise<void>;
 	onDiscoverAcpModels?: (id: string) => Promise<ProviderInfo["models"]>;

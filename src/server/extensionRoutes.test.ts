@@ -116,6 +116,42 @@ describe("extension inventory routes", () => {
 		expect(discover).toHaveBeenCalledTimes(2);
 	});
 
+	it("joins explicit retries to the active catalog scan", async () => {
+		let resolveInventory: ((value: ExtensionInventory) => void) | undefined;
+		const discover = vi.fn(
+			() =>
+				new Promise<ExtensionInventory>((resolve) => {
+					resolveInventory = resolve;
+				}),
+		);
+		const handle = createExtensionRouteHandler({
+			loadConfig: () => ({}) as HlidConfig,
+			discover,
+		});
+		const catalog = new Request("http://localhost/extensions/catalog");
+		const retry = () =>
+			new Request("http://localhost/extensions/catalog?refresh=1");
+
+		const initial = handle(new URL(catalog.url), catalog);
+		const firstRetryRequest = retry();
+		const firstRetry = handle(
+			new URL(firstRetryRequest.url),
+			firstRetryRequest,
+		);
+		const secondRetryRequest = retry();
+		const secondRetry = handle(
+			new URL(secondRetryRequest.url),
+			secondRetryRequest,
+		);
+
+		expect(discover).toHaveBeenCalledOnce();
+		resolveInventory?.(inventory);
+		await expect((await initial)?.json()).resolves.toEqual(inventory);
+		await expect((await firstRetry)?.json()).resolves.toEqual(inventory);
+		await expect((await secondRetry)?.json()).resolves.toEqual(inventory);
+		expect(discover).toHaveBeenCalledOnce();
+	});
+
 	it("invalidates the catalog cache after provider state changes", async () => {
 		const discover = vi.fn().mockResolvedValue(inventory);
 		const mutate = vi.fn().mockResolvedValue({

@@ -126,7 +126,13 @@ export function createExtensionRouteHandler(
 		}
 		if (url.pathname === "/extensions/catalog") {
 			if (url.searchParams.get("refresh") === "1") {
-				invalidateCatalog();
+				// A retry while the current generation is still scanning must join
+				// that scan. Invalidating here would give the retry a new generation
+				// and launch another set of native CLI/filesystem probes while the
+				// original work continues in the background.
+				if (catalogInflight?.generation !== catalogGeneration) {
+					invalidateCatalog();
+				}
 			}
 			return Response.json(await readCatalog());
 		}

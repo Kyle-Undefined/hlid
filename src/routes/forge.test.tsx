@@ -43,7 +43,13 @@ vi.mock("#/lib/serverFns/cliproxy", () => ({
 		oauth: "idle",
 		accounts: {},
 	}),
-	refreshCliProxyInfoFn: vi.fn(),
+	refreshCliProxyInfoFn: vi.fn().mockResolvedValue({
+		state: "ready",
+		managed: false,
+		authenticated: false,
+		oauth: "idle",
+		accounts: {},
+	}),
 }));
 vi.mock("#/lib/serverFns/config");
 vi.mock("#/lib/serverFns/providers", () => ({
@@ -138,6 +144,82 @@ describe("forge route loader", () => {
 });
 
 describe("forge inventory refresh", () => {
+	it("coalesces retries and applies inventory that finishes after the slow threshold", async () => {
+		vi.useFakeTimers();
+		try {
+			routeState.loaderData = {
+				server: { port: 3000 },
+				cwd: "C:\\workspace",
+				providers: [],
+				accountInfo: null,
+				voiceInfo: { status: { state: "ready", model: "base" }, models: [] },
+				cliProxyInfo: {
+					state: "ready",
+					managed: false,
+					authenticated: false,
+					oauth: "idle",
+					accounts: {},
+				},
+				acpCatalog: [],
+				inventoryStatus: "ready",
+			};
+			let resolveProviders: ((providers: unknown[]) => void) | undefined;
+			vi.mocked(getProvidersFn).mockImplementation(
+				() =>
+					new Promise((resolve) => {
+						resolveProviders = resolve as (providers: unknown[]) => void;
+					}),
+			);
+
+			const Component = route.component;
+			render(<Component />);
+			const retry = routeState.forgeSettings.mock.lastCall?.[0]
+				.onRetryInventory as () => Promise<void>;
+			let first!: Promise<void>;
+			let second!: Promise<void>;
+			act(() => {
+				first = retry();
+				second = retry();
+			});
+
+			expect(getProvidersFn).toHaveBeenCalledOnce();
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(8_000);
+			});
+			expect(routeState.forgeSettings.mock.lastCall?.[0].inventoryStatus).toBe(
+				"slow",
+			);
+
+			resolveProviders?.([
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [{ value: "fresh", label: "Fresh" }],
+					hostCapabilities: {
+						windowsComputerUse: {
+							label: "Windows Computer Use",
+							available: true,
+						},
+					},
+				},
+			]);
+			await act(async () => {
+				await Promise.all([first, second]);
+			});
+
+			expect(getProvidersFn).toHaveBeenCalledOnce();
+			expect(routeState.forgeSettings.mock.lastCall?.[0].inventoryStatus).toBe(
+				"ready",
+			);
+			expect(
+				routeState.forgeSettings.mock.lastCall?.[0].initial.providers[0].models,
+			).toEqual([{ value: "fresh", label: "Fresh" }]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("retains managed ACP operation snapshots across route remounts", () => {
 		const loaderData = {
 			server: { port: 3000 },

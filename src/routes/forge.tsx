@@ -28,13 +28,13 @@ import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 const getCwdFn = createServerFn({ method: "GET" }).handler(() => process.cwd());
 const FORGE_OPTIONAL_LOADER_WAIT_MS = 500;
 const FORGE_INVENTORY_RECOVERY_WAIT_MS = 8_000;
-type ForgeInventoryStatus = "loading" | "ready" | "unavailable";
+type ForgeInventoryStatus = "loading" | "slow" | "ready" | "unavailable";
 type ForgeInventory = Pick<
 	SettingsInitial,
 	"providers" | "accountInfo" | "voiceInfo" | "cliProxyInfo" | "acpCatalog"
 >;
 type ForgeInventorySeed = ForgeInventory & {
-	inventoryStatus: Exclude<ForgeInventoryStatus, "loading">;
+	inventoryStatus: Extract<ForgeInventoryStatus, "ready" | "unavailable">;
 };
 type RetainedForgeInventory = {
 	inventory: ForgeInventory;
@@ -54,6 +54,10 @@ const retainedForgeInventory =
 	typeof window === "undefined"
 		? undefined
 		: new WeakMap<object, RetainedForgeInventory>();
+const retainedForgeInventoryRefreshes =
+	typeof window === "undefined"
+		? undefined
+		: new WeakMap<object, Promise<void>>();
 
 function forgeInventoryFromSeed(seed: ForgeInventorySeed): ForgeInventory {
 	return {
@@ -296,6 +300,16 @@ function SettingsPage() {
 	const refreshInventory = useCallback(
 		async (force = false) => {
 			const requestSeed = loaderSeedRef.current;
+			const existing = retainedForgeInventoryRefreshes?.get(requestSeed);
+			if (existing) {
+				const current = retainedInventoryForSeed(requestSeed);
+				commitInventory(
+					current.inventory,
+					"loading",
+					current.recoveredHostCapabilities,
+				);
+				return existing;
+			}
 			const providerState = retainedInventoryForSeed(requestSeed);
 			const providerRevision = providerState.providerInventoryRevision;
 			const providerGeneration = force
@@ -309,79 +323,96 @@ function SettingsPage() {
 				"loading",
 				force ? undefined : recoveredHostCapabilitiesRef.current,
 			);
-			const [providers, accountInfo, voiceInfo, cliProxyInfo, acpCatalog] =
-				await Promise.all([
-					optionalLoaderValue(
-						getProvidersFn({
-							data: {
-								refresh: force,
-								includeHostCapabilities: true,
-								includeProviderCapabilities: true,
-								preferCachedModels: !force,
-							},
-						}),
-						[],
-						FORGE_INVENTORY_RECOVERY_WAIT_MS,
-					),
-					optionalLoaderValue(
-						getAccountInfoFn(),
-						null,
-						FORGE_INVENTORY_RECOVERY_WAIT_MS,
-					),
-					optionalLoaderValue(
-						getVoiceInfoFn(force ? { data: { refresh: true } } : undefined),
-						UNAVAILABLE_VOICE_INFO,
-						FORGE_INVENTORY_RECOVERY_WAIT_MS,
-					),
-					optionalLoaderValue(
-						force ? refreshCliProxyInfoFn() : getCliProxyInfoFn(),
-						UNAVAILABLE_CLIPROXY_INFO,
-						FORGE_INVENTORY_RECOVERY_WAIT_MS,
-					),
-					optionalLoaderValue(
-						getAcpRegistryFn(force ? { data: { refresh: true } } : undefined),
-						[],
-						FORGE_INVENTORY_RECOVERY_WAIT_MS,
-					),
-				]);
-			if (loaderSeedRef.current !== requestSeed) return;
-			const currentProviderState = retainedInventoryForSeed(requestSeed);
-			// Another Forge instance can finish an explicit provider refresh while
-			// this recovery is in flight. Merge against the retained shared snapshot,
-			// not this instance's potentially stale ref after an unmount/remount.
-			const current = currentProviderState.inventory;
-			const providerResultIsCurrent = force
-				? currentProviderState.providerRefreshGeneration === providerGeneration
-				: currentProviderState.providerInventoryRevision === providerRevision;
-			const nextInventory = {
-				providers:
-					providers.status === "ready" && providerResultIsCurrent
-						? providers.value
-						: current.providers,
-				accountInfo:
-					accountInfo.status === "ready"
-						? accountInfo.value
-						: current.accountInfo,
-				voiceInfo:
-					voiceInfo.status === "ready" ? voiceInfo.value : current.voiceInfo,
-				cliProxyInfo:
-					cliProxyInfo.status === "ready"
-						? cliProxyInfo.value
-						: current.cliProxyInfo,
-				acpCatalog:
-					acpCatalog.status === "ready" ? acpCatalog.value : current.acpCatalog,
-			};
-			if (force && providers.status === "ready" && providerResultIsCurrent) {
-				currentProviderState.providerInventoryRevision += 1;
-			}
-			commitInventory(
-				nextInventory,
-				[providers, accountInfo, voiceInfo, cliProxyInfo, acpCatalog].every(
-					(item) => item.status === "ready",
-				)
-					? "ready"
-					: "unavailable",
-			);
+			const reads = [
+				getProvidersFn({
+					data: {
+						refresh: force,
+						includeHostCapabilities: true,
+						includeProviderCapabilities: true,
+						preferCachedModels: !force,
+					},
+				}),
+				getAccountInfoFn(),
+				getVoiceInfoFn(force ? { data: { refresh: true } } : undefined),
+				force ? refreshCliProxyInfoFn() : getCliProxyInfoFn(),
+				getAcpRegistryFn(force ? { data: { refresh: true } } : undefined),
+			] as const;
+			let pending!: Promise<void>;
+			pending = (async () => {
+				const slowTimer = window.setTimeout(() => {
+					if (
+						loaderSeedRef.current !== requestSeed ||
+						retainedForgeInventoryRefreshes?.get(requestSeed) !== pending
+					) {
+						return;
+					}
+					const current = retainedInventoryForSeed(requestSeed);
+					commitInventory(
+						current.inventory,
+						"slow",
+						current.recoveredHostCapabilities,
+					);
+				}, FORGE_INVENTORY_RECOVERY_WAIT_MS);
+				try {
+					const [providers, accountInfo, voiceInfo, cliProxyInfo, acpCatalog] =
+						await Promise.allSettled(reads);
+					if (loaderSeedRef.current !== requestSeed) return;
+					const currentProviderState = retainedInventoryForSeed(requestSeed);
+					// Another Forge instance can finish an explicit provider refresh while
+					// this recovery is in flight. Merge against the retained shared snapshot,
+					// not this instance's potentially stale ref after an unmount/remount.
+					const current = currentProviderState.inventory;
+					const providerResultIsCurrent = force
+						? currentProviderState.providerRefreshGeneration ===
+							providerGeneration
+						: currentProviderState.providerInventoryRevision ===
+							providerRevision;
+					const nextInventory = {
+						providers:
+							providers.status === "fulfilled" && providerResultIsCurrent
+								? providers.value
+								: current.providers,
+						accountInfo:
+							accountInfo.status === "fulfilled"
+								? accountInfo.value
+								: current.accountInfo,
+						voiceInfo:
+							voiceInfo.status === "fulfilled"
+								? voiceInfo.value
+								: current.voiceInfo,
+						cliProxyInfo:
+							cliProxyInfo.status === "fulfilled"
+								? cliProxyInfo.value
+								: current.cliProxyInfo,
+						acpCatalog:
+							acpCatalog.status === "fulfilled"
+								? acpCatalog.value
+								: current.acpCatalog,
+					};
+					if (
+						force &&
+						providers.status === "fulfilled" &&
+						providerResultIsCurrent
+					) {
+						currentProviderState.providerInventoryRevision += 1;
+					}
+					commitInventory(
+						nextInventory,
+						[providers, accountInfo, voiceInfo, cliProxyInfo, acpCatalog].every(
+							(item) => item.status === "fulfilled",
+						)
+							? "ready"
+							: "unavailable",
+					);
+				} finally {
+					window.clearTimeout(slowTimer);
+					if (retainedForgeInventoryRefreshes?.get(requestSeed) === pending) {
+						retainedForgeInventoryRefreshes.delete(requestSeed);
+					}
+				}
+			})();
+			retainedForgeInventoryRefreshes?.set(requestSeed, pending);
+			return pending;
 		},
 		[commitInventory],
 	);
