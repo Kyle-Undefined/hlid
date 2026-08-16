@@ -102,6 +102,10 @@ function mergeProviderWindow(
 	previous: ProviderWindowEntry | undefined,
 	now: number,
 ): ProviderWindowEntry {
+	// A provider-native display reading is authoritative. In particular, an
+	// authentication failure or expired stale cache must clear a previous
+	// account's browser-cached percentage instead of using the anti-flicker rule.
+	if (fresh.displayOnly) return fresh;
 	return { ...fresh, ...preferredWindowReading(fresh, previous, now) };
 }
 

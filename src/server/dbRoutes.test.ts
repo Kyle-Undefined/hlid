@@ -53,6 +53,7 @@ const {
 	mockAbandonInterruptedHlidDelegation,
 	mockCloseProjectPreviewSession,
 	mockUnlinkPaths,
+	mockPersistDisplayUsageReading,
 } = vi.hoisted(() => ({
 	mockGetSessionById: vi.fn(),
 	mockGetCurrentSessionId: vi.fn(),
@@ -97,6 +98,7 @@ const {
 	mockAbandonInterruptedHlidDelegation: vi.fn(),
 	mockCloseProjectPreviewSession: vi.fn(),
 	mockUnlinkPaths: vi.fn().mockResolvedValue(undefined),
+	mockPersistDisplayUsageReading: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../db", () => ({
@@ -150,6 +152,7 @@ vi.mock("./sessionForkAttachments", () => ({
 
 vi.mock("./proxy", () => ({
 	getWindowMark: vi.fn().mockReturnValue(null),
+	persistDisplayUsageReading: mockPersistDisplayUsageReading,
 }));
 
 vi.mock("./providerHistorySync", () => ({
@@ -2964,6 +2967,7 @@ describe("handleDbRoute — GET /db/session-tool-event", () => {
 
 // ── GET /db/provider-usage ────────────────────────────────────────────────────
 
+import type { AgentProvider } from "./agentProvider";
 import { getWindowMark } from "./proxy";
 
 describe("handleDbRoute — GET /db/provider-usage", () => {
@@ -3025,6 +3029,148 @@ describe("handleDbRoute — GET /db/provider-usage", () => {
 		expect(secondBody[1].windows[0].utilization).toBe(75);
 		expect(secondBody[1].windows[0].resetsAt).toBe(100);
 		expect(mockGetProviderUsage).toHaveBeenCalledTimes(2);
+	});
+
+	it("refreshes provider-native usage before returning the snapshot", async () => {
+		mockGetProviderUsage.mockImplementation(async (id: string) =>
+			makeSnapshot(id),
+		);
+		const reading = {
+			windowId: "opencode_go_rolling",
+			label: "ROLLING",
+			utilization: 0.4,
+			remaining: null,
+			limit: null,
+			resetsAt: 99,
+		};
+		const readUsageWindows = vi.fn().mockResolvedValue([reading]);
+		const providers = new Map<string, AgentProvider>([
+			[
+				"acp:opencode",
+				{
+					readUsageWindows,
+					usageWindows: [
+						{
+							windowId: reading.windowId,
+							label: reading.label,
+							windowSecs: 18_000,
+							displayOnly: true,
+						},
+					],
+				} as unknown as AgentProvider,
+			],
+		]);
+
+		const response = await handleDbRoute(
+			makeUrl("/db/provider-usage", { providers: "acp:opencode" }),
+			makeRequest(),
+			undefined,
+			undefined,
+			providers,
+		);
+
+		expect(response?.status).toBe(200);
+		expect(readUsageWindows).toHaveBeenCalledOnce();
+		expect(mockPersistDisplayUsageReading).toHaveBeenCalledWith(
+			"acp:opencode",
+			reading,
+		);
+	});
+
+	it("keeps provider-native refresh failures nonfatal", async () => {
+		mockGetProviderUsage.mockImplementation(async (id: string) =>
+			makeSnapshot(id),
+		);
+		const providers = new Map<string, AgentProvider>([
+			[
+				"acp:opencode",
+				{
+					readUsageWindows: vi.fn().mockRejectedValue(new Error("offline")),
+					usageWindows: [
+						{
+							windowId: "opencode_go_rolling",
+							label: "ROLLING",
+							windowSecs: 18_000,
+							displayOnly: true,
+						},
+					],
+				} as unknown as AgentProvider,
+			],
+		]);
+
+		const response = await handleDbRoute(
+			makeUrl("/db/provider-usage", { providers: "acp:opencode" }),
+			makeRequest(),
+			undefined,
+			undefined,
+			providers,
+		);
+
+		expect(response?.status).toBe(200);
+		expect((await response?.json())?.[0]?.providerId).toBe("acp:opencode");
+	});
+
+	it("does not poll when OpenCode Go usage is disabled", async () => {
+		mockGetProviderUsage.mockImplementation(async (id: string) =>
+			makeSnapshot(id),
+		);
+		const readUsageWindows = vi.fn().mockResolvedValue([]);
+		const providers = new Map<string, AgentProvider>([
+			["acp:opencode", { readUsageWindows } as unknown as AgentProvider],
+		]);
+
+		await handleDbRoute(
+			makeUrl("/db/provider-usage", { providers: "acp:opencode" }),
+			makeRequest(),
+			undefined,
+			undefined,
+			providers,
+		);
+
+		expect(readUsageWindows).not.toHaveBeenCalled();
+	});
+
+	it("does not overlay gating marks onto display-only account windows", async () => {
+		mockGetProviderUsage.mockResolvedValue({
+			providerId: "acp:opencode",
+			providerLabel: "OpenCode Go",
+			windows: [
+				{
+					windowId: "opencode_go_monthly",
+					label: "MONTHLY",
+					windowSecs: 2_592_000,
+					displayOnly: true,
+					showLocalStats: false,
+					tokens: 0,
+					queries: 0,
+					sessions: 0,
+					cost: 0,
+					utilization: null,
+					remaining: null,
+					limit: null,
+					resetsAt: null,
+				},
+			],
+		});
+		vi.mocked(getWindowMark).mockReturnValue({
+			utilization: 0.91,
+			remaining: null,
+			resetsAt: 999,
+		});
+
+		const response = await handleDbRoute(
+			makeUrl("/db/provider-usage", { providers: "acp:opencode" }),
+			makeRequest(),
+		);
+		const body = (await response?.json()) as Array<{
+			windows: Array<{ utilization: number | null; resetsAt: number | null }>;
+		}>;
+
+		expect(body[0].windows[0]).toMatchObject({
+			utilization: null,
+			resetsAt: null,
+		});
+		expect(getWindowMark).not.toHaveBeenCalled();
 	});
 });
 

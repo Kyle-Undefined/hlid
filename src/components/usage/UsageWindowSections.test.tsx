@@ -88,4 +88,29 @@ describe("UsageWindowSections", () => {
 		expect(screen.getByText("$1.50")).not.toBeNull();
 		expect(screen.getByText("4q")).not.toBeNull();
 	});
+
+	it("hides Ledger totals for provider-native account windows", () => {
+		render(
+			<ProviderWindowCell
+				win={{
+					windowId: "opencode_go_weekly",
+					label: "WEEKLY",
+					windowSecs: 7 * 86_400,
+					showLocalStats: false,
+					utilization: 0.42,
+					remaining: null,
+					limit: null,
+					resetsAt: null,
+					cost: 99,
+					queries: 12,
+					tokens: 1_000,
+					sessions: 2,
+				}}
+			/>,
+		);
+
+		expect(screen.getByText("42%")).not.toBeNull();
+		expect(screen.queryByText("$99.00")).toBeNull();
+		expect(screen.queryByText("12q")).toBeNull();
+	});
 });

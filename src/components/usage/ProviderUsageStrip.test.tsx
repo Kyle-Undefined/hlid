@@ -1,5 +1,11 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderUsageSnapshot } from "#/db";
 import { builtInProviderUsageShells } from "#/lib/usageWindows";
@@ -95,6 +101,106 @@ describe("ProviderUsageStrip polling", () => {
 
 		expect(screen.getByText("7 queries")).not.toBeNull();
 		expect(screen.getByText("~$4.25")).not.toBeNull();
+	});
+
+	it("never hydrates a legacy display-only account snapshot", async () => {
+		const legacy = [
+			{
+				providerId: "acp:opencode",
+				providerLabel: "OpenCode Go",
+				windows: [
+					{
+						windowId: "opencode_go_monthly",
+						label: "MONTHLY",
+						windowSecs: 30 * 86_400,
+						displayOnly: true,
+						showLocalStats: false,
+						modelPrefixes: ["opencode-go/"],
+						tokens: 0,
+						queries: 0,
+						sessions: 0,
+						cost: 0,
+						utilization: 0.87,
+						remaining: null,
+						limit: null,
+						resetsAt: Math.floor(Date.now() / 1_000) + 86_400,
+					},
+				],
+			},
+		] satisfies ProviderUsageSnapshot[];
+		sessionStorage.setItem(
+			"hlid_provider_usage_snapshots",
+			JSON.stringify(legacy),
+		);
+
+		render(
+			<ProviderUsageStrip
+				initial={[]}
+				liveQueryCount={0}
+				rateLimit={null}
+				fetchFn={vi.fn(() => new Promise<ProviderUsageSnapshot[]>(() => {}))}
+			/>,
+		);
+		await act(async () => {});
+
+		expect(screen.queryByText("MONTHLY")).toBeNull();
+		expect(screen.queryByText("87%")).toBeNull();
+		expect(sessionStorage.getItem("hlid_provider_usage_snapshots")).toBeNull();
+	});
+
+	it("excludes display-only windows from cache without hiding live readings", async () => {
+		const snapshots = [
+			{
+				providerId: "codex",
+				providerLabel: "Codex",
+				windows: [
+					{
+						...builtInProviderUsageShells()[1].windows[0],
+						utilization: 0.2,
+					},
+				],
+			},
+			{
+				providerId: "acp:opencode",
+				providerLabel: "OpenCode Go",
+				windows: [
+					{
+						windowId: "opencode_go_weekly",
+						label: "WEEKLY",
+						windowSecs: 7 * 86_400,
+						displayOnly: true,
+						showLocalStats: false,
+						modelPrefixes: ["opencode-go/"],
+						tokens: 0,
+						queries: 0,
+						sessions: 0,
+						cost: 0,
+						utilization: 0.44,
+						remaining: null,
+						limit: null,
+						resetsAt: null,
+					},
+				],
+			},
+		] satisfies ProviderUsageSnapshot[];
+
+		render(
+			<ProviderUsageStrip
+				initial={snapshots}
+				liveQueryCount={0}
+				rateLimit={null}
+				fetchFn={vi.fn().mockResolvedValue(snapshots)}
+			/>,
+		);
+		await act(async () => {});
+		fireEvent.click(screen.getByRole("button", { name: "OpenCode Go" }));
+
+		expect(screen.getByText("44%")).not.toBeNull();
+		const cached = JSON.parse(
+			sessionStorage.getItem("hlid_provider_usage_snapshots") ?? "[]",
+		) as ProviderUsageSnapshot[];
+		expect(cached.map((snapshot) => snapshot.providerId)).toEqual(["codex"]);
+		expect(cached[0]?.windows[0]?.displayOnly).not.toBe(true);
 	});
 
 	it("does not let a route-invalidated layout shell clear fresh usage", async () => {
@@ -321,6 +427,106 @@ describe("ProviderUsageStrip polling", () => {
 		expect(screen.getByRole("button", { name: "Claude" }).className).toContain(
 			"text-foreground/70",
 		);
+	});
+
+	it("shows model-scoped OpenCode Go windows only for opencode-go models", () => {
+		const providers: ProviderUsageSnapshot[] = [
+			{ providerId: "claude", providerLabel: "Claude", windows: [] },
+			{
+				providerId: "acp:opencode",
+				providerLabel: "OpenCode Go",
+				windows: [
+					{
+						windowId: "opencode_go_weekly",
+						label: "WEEKLY",
+						windowSecs: 604_800,
+						displayOnly: true,
+						showLocalStats: false,
+						modelPrefixes: ["opencode-go/"],
+						tokens: 0,
+						queries: 0,
+						sessions: 0,
+						cost: 0,
+						utilization: 0.4,
+						remaining: null,
+						limit: null,
+						resetsAt: Math.floor(Date.now() / 1_000) + 604_800,
+					},
+				],
+			},
+		];
+		const view = render(
+			<ProviderUsageStrip
+				initial={providers}
+				liveQueryCount={0}
+				rateLimit={null}
+				preferredProviderId="acp:opencode"
+				preferredProviderLabel="OpenCode"
+				preferredModel="opencode/claude-sonnet"
+				tail={<div>ACTIVE CONTEXT</div>}
+				fetchFn={vi.fn().mockResolvedValue(providers)}
+			/>,
+		);
+
+		expect(screen.queryByText("WEEKLY")).toBeNull();
+		expect(screen.getByText("ACTIVE CONTEXT")).not.toBeNull();
+		expect(
+			screen.getByRole("button", { name: "OpenCode" }).className,
+		).toContain("text-foreground/70");
+
+		view.rerender(
+			<ProviderUsageStrip
+				initial={providers}
+				liveQueryCount={0}
+				rateLimit={null}
+				preferredProviderId="acp:opencode"
+				preferredProviderLabel="OpenCode"
+				preferredModel="opencode-go/gpt-5"
+				tail={<div>ACTIVE CONTEXT</div>}
+				fetchFn={vi.fn().mockResolvedValue(providers)}
+			/>,
+		);
+
+		expect(screen.getByText("WEEKLY")).not.toBeNull();
+		expect(screen.getByRole("button", { name: "OpenCode Go" })).not.toBeNull();
+	});
+
+	it("shows account-wide OpenCode Go windows in Cockpit without a model scope", () => {
+		const providers: ProviderUsageSnapshot[] = [
+			{
+				providerId: "acp:opencode",
+				providerLabel: "OpenCode Go",
+				windows: [
+					{
+						windowId: "opencode_go_rolling",
+						label: "5-HOUR",
+						windowSecs: 18_000,
+						displayOnly: true,
+						showLocalStats: false,
+						modelPrefixes: ["opencode-go/"],
+						tokens: 0,
+						queries: 0,
+						sessions: 0,
+						cost: 0,
+						utilization: 0.2,
+						remaining: null,
+						limit: null,
+						resetsAt: null,
+					},
+				],
+			},
+		];
+
+		render(
+			<ProviderUsageStrip
+				initial={providers}
+				liveQueryCount={0}
+				rateLimit={null}
+				fetchFn={vi.fn().mockResolvedValue(providers)}
+			/>,
+		);
+
+		expect(screen.getByText("5-HOUR")).not.toBeNull();
 	});
 
 	it("shows CLIProxy as Other with context instead of unsupported quota windows", () => {

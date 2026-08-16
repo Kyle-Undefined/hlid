@@ -581,6 +581,10 @@ const AcpAgentSchema = z
 		executable: z.string().optional(),
 		args: z.array(z.string()).optional(),
 		env: z.record(z.string(), z.string()).optional(),
+		/** Dedicated secret used only for display-only OpenCode Go telemetry. */
+		opencode_go_usage: z
+			.object({ api_key: z.string().trim().min(1).max(4_096) })
+			.optional(),
 		/** Hlid-only OpenCode model visibility. Absence leaves native config alone. */
 		model_filter: AcpModelFilterSchema.optional(),
 		/** Vault-chat defaults for this ACP provider. Empty/absent values defer to the agent. */
@@ -593,6 +597,14 @@ const AcpAgentSchema = z
 		recap_model: z.string().optional(),
 	})
 	.superRefine((agent, context) => {
+		if (agent.opencode_go_usage && agent.id !== "opencode") {
+			context.addIssue({
+				code: "custom",
+				path: ["opencode_go_usage"],
+				message:
+					"opencode_go_usage is supported only for the OpenCode ACP agent",
+			});
+		}
 		if (agent.model_filter && agent.id !== "opencode") {
 			context.addIssue({
 				code: "custom",

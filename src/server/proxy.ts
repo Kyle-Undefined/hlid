@@ -74,17 +74,7 @@ export function applyReading(
 
 	// DB write fires on every valid reading — single INSERT OR REPLACE on a
 	// fixed settings row; negligible overhead relative to a proxy round-trip.
-	const persisted = db.saveSetting(
-		dbSettingKey(providerId, reading.windowId),
-		JSON.stringify({
-			utilization: reading.utilization,
-			remaining: reading.remaining,
-			limit: reading.limit,
-			resetsAt: reading.resetsAt ?? null,
-			windowId: reading.windowId,
-			label: reading.label,
-		}),
-	);
+	const persisted = persistDisplayUsageReading(providerId, reading);
 
 	// Only broadcast when something changed to avoid WS noise under heavy load.
 	const changed =
@@ -105,6 +95,28 @@ export function applyReading(
 		providerId,
 	});
 	return persisted;
+}
+
+/**
+ * Persist display-only account telemetry without updating the auto-sleep marks
+ * or broadcasting a rate-limit event. Use this for quotas that do not govern
+ * every session of the Hlid provider identity.
+ */
+export function persistDisplayUsageReading(
+	providerId: string,
+	reading: ProviderWindowReading,
+): Promise<void> {
+	return db.saveSetting(
+		dbSettingKey(providerId, reading.windowId),
+		JSON.stringify({
+			utilization: reading.utilization,
+			remaining: reading.remaining,
+			limit: reading.limit,
+			resetsAt: reading.resetsAt ?? null,
+			windowId: reading.windowId,
+			label: reading.label,
+		}),
+	);
 }
 
 /** Seed in-memory high-water marks from DB on cold start. */
@@ -131,6 +143,18 @@ export async function seedWindowMarks(
 			});
 		} catch {}
 	}
+}
+
+/** Seed only windows that are allowed to participate in usage gating. */
+export function seedProviderWindowMarks(
+	provider: Pick<AgentProvider, "providerId" | "usageWindows">,
+): Promise<void> {
+	return seedWindowMarks(
+		provider.providerId,
+		(provider.usageWindows ?? [])
+			.filter((window) => !window.displayOnly)
+			.map((window) => window.windowId),
+	);
 }
 
 export async function startProviderProxy(

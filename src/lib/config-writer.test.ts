@@ -133,7 +133,10 @@ describe("writeConfig — persistence invariants", () => {
 					target: { kind: "wsl", distro: "Ubuntu-24.04" },
 					executable: "/opt/opencode",
 					args: ["acp"],
-					env: { API_URL: "https://example.test:8443/path" },
+					env: {
+						API_URL: "https://example.test:8443/path",
+					},
+					opencode_go_usage: { api_key: "go-secret" },
 					model_filter: {
 						mode: "only",
 						models: ["anthropic/claude-sonnet-4-6", "openai/gpt-5.6-luna"],

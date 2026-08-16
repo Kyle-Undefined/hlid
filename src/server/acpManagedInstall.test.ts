@@ -322,11 +322,15 @@ describe("AcpManagedInstaller", () => {
 		operations.fetcher = async () => new Response(secondPayload);
 
 		await expect(
-			mutate(installer, "update", agent("2.0.0", secondPayload)).completion,
+			mutate(installer, "update", agent("2.0.0", secondPayload), true)
+				.completion,
 		).rejects.toThrow(/runtime sync failed/);
 		expect(installer.resolveManagedInvocation("opencode", target)).toEqual(
 			prior,
 		);
+		expect(refresh).toHaveBeenNthCalledWith(1);
+		expect(refresh).toHaveBeenNthCalledWith(2);
+		expect(refresh).toHaveBeenNthCalledWith(3);
 		expect(installer.targetState("opencode", target).error).toMatch(
 			/runtime sync failed/,
 		);
@@ -485,6 +489,33 @@ describe("AcpManagedInstaller", () => {
 		expect(installer.resolveManagedInvocation("opencode", target)).toBeNull();
 		expect(installer.records()).toEqual([]);
 		expect(installer.claimedTargets()).toEqual([]);
+	});
+
+	it("refreshes live runtime evidence after every managed target mutation", async () => {
+		const root = await temporaryDirectory();
+		const firstPayload = Buffer.from("first binary");
+		const secondPayload = Buffer.from("second binary");
+		const thirdPayload = Buffer.from("third binary");
+		const refresh = vi.fn().mockResolvedValue(undefined);
+		const operations = dependencies(firstPayload, { refresh });
+		const installer = new AcpManagedInstaller(root, operations);
+
+		await mutate(installer, "install", agent("1.0.0", firstPayload)).completion;
+		expect(refresh).toHaveBeenLastCalledWith();
+
+		refresh.mockClear();
+		operations.fetcher = async () => new Response(secondPayload);
+		await mutate(installer, "update", agent("2.0.0", secondPayload), false)
+			.completion;
+		expect(refresh).toHaveBeenCalledOnce();
+		expect(refresh).toHaveBeenLastCalledWith();
+
+		refresh.mockClear();
+		operations.fetcher = async () => new Response(thirdPayload);
+		await mutate(installer, "update", agent("3.0.0", thirdPayload), true)
+			.completion;
+		expect(refresh).toHaveBeenCalledOnce();
+		expect(refresh).toHaveBeenLastCalledWith();
 	});
 
 	it("updates same-version distributions when invocation metadata changes", async () => {

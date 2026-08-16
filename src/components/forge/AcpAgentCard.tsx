@@ -6,6 +6,7 @@ import type {
 	AcpTargetStatus,
 } from "#/lib/acpManagedTypes";
 import type { ProviderInfo } from "#/lib/providerTypes";
+import { CONFIG_SECRET_SENTINEL } from "#/lib/publicConfig";
 import { includesSearchText } from "#/lib/search";
 import type {
 	AcpAgentInfo,
@@ -551,6 +552,67 @@ function OpenCodeModelVisibility({
 	);
 }
 
+function OpenCodeGoUsage({
+	configured,
+	disabled,
+	onUpdateOverride,
+}: {
+	configured: AcpAgentConfig;
+	disabled: boolean;
+	onUpdateOverride: (patch: Partial<AcpAgentConfig>) => void;
+}) {
+	const apiKey = configured.opencode_go_usage?.api_key ?? "";
+	const enabled = configured.opencode_go_usage !== undefined;
+
+	function updateApiKey(value: string): void {
+		onUpdateOverride({
+			opencode_go_usage: value ? { api_key: value } : undefined,
+		});
+	}
+
+	return (
+		<div className="min-w-0 space-y-3 border border-border/70 bg-background/40 px-3 py-3">
+			<label className="flex min-w-0 items-start gap-2 text-xs text-foreground">
+				<input
+					type="checkbox"
+					checked={enabled}
+					disabled={disabled || !enabled}
+					onChange={() => onUpdateOverride({ opencode_go_usage: undefined })}
+					className="mt-0.5"
+				/>
+				<span className="min-w-0">
+					<span className="block text-[9px] tracking-widest text-foreground/70 uppercase">
+						OpenCode Go usage
+					</span>
+					<span className="block text-[10px] text-muted-foreground">
+						Show account-wide limits for OpenCode Go models only, across Windows
+						and WSL. These windows do not control auto-sleep or Ledger
+						accounting.
+					</span>
+				</span>
+			</label>
+			<label className="block text-[9px] tracking-widest text-muted-foreground uppercase">
+				OpenCode Go API key
+				<input
+					type="password"
+					autoComplete="off"
+					spellCheck={false}
+					disabled={disabled}
+					value={apiKey}
+					onChange={(event) => updateApiKey(event.target.value)}
+					placeholder="required before enabling usage"
+					className="mt-1 w-full border border-border bg-input px-2 py-1 text-xs font-mono normal-case"
+				/>
+				<span className="mt-1 block text-[10px] font-sans normal-case tracking-normal text-muted-foreground">
+					{apiKey === CONFIG_SECRET_SENTINEL
+						? "Saved key retained. Enter a replacement or clear it to remove."
+						: "Hlid stores this key only for the official OpenCode usage endpoint. It is not forwarded to OpenCode ACP."}
+				</span>
+			</label>
+		</div>
+	);
+}
+
 function readableBytes(value: number): string {
 	if (value < 1024) return `${value} B`;
 	if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
@@ -600,12 +662,14 @@ function TargetMutationAction({
 	target,
 	action,
 	disabled,
+	buttonAriaLabel,
 	onMutate,
 }: {
 	item: AcpCatalogItem;
 	target: AcpTargetStatus;
 	action: AcpManagedMutationAction;
 	disabled: boolean;
+	buttonAriaLabel?: string;
 	onMutate: (action: AcpManagedMutationAction) => void;
 }) {
 	const destructive = action === "remove";
@@ -630,6 +694,7 @@ function TargetMutationAction({
 			trigger={(open) => (
 				<button
 					type="button"
+					aria-label={buttonAriaLabel}
 					disabled={disabled}
 					onClick={open}
 					className={`border px-3 py-1.5 text-[10px] tracking-widest uppercase disabled:opacity-40 ${
@@ -662,10 +727,21 @@ function AcpTargetInstallation({
 	disabled: boolean;
 	configurationCurrent: boolean;
 	onSelectTarget: (targetId: string) => void;
-	onManagedMutation: (action: AcpManagedMutationAction) => void;
+	onManagedMutation: (
+		targetId: string,
+		action: AcpManagedMutationAction,
+	) => void;
 }) {
 	if (item.targets.length === 0) return null;
 	const operation = target ? operationLabel(target) : null;
+	const otherManagedUpdates = enabled
+		? item.targets.filter(
+				(candidate) =>
+					candidate.targetId !== target?.targetId &&
+					candidate.provenance === "managed" &&
+					candidate.canUpdate,
+			)
+		: [];
 	const targetLocked = disabled || enabled || Boolean(target?.operation);
 	const version = target?.installedVersion ?? target?.observedVersion;
 	const status = !target
@@ -747,7 +823,7 @@ function AcpTargetInstallation({
 							disabled={
 								disabled || !configurationCurrent || Boolean(target.operation)
 							}
-							onMutate={onManagedMutation}
+							onMutate={(action) => onManagedMutation(target.targetId, action)}
 						/>
 					)}
 					{target.provenance === "managed" && target.canUpdate && (
@@ -758,7 +834,7 @@ function AcpTargetInstallation({
 							disabled={
 								disabled || !configurationCurrent || Boolean(target.operation)
 							}
-							onMutate={onManagedMutation}
+							onMutate={(action) => onManagedMutation(target.targetId, action)}
 						/>
 					)}
 					{target.provenance === "managed" && (
@@ -773,9 +849,61 @@ function AcpTargetInstallation({
 								!target.canRemove ||
 								Boolean(target.operation)
 							}
-							onMutate={onManagedMutation}
+							onMutate={(action) => onManagedMutation(target.targetId, action)}
 						/>
 					)}
+				</div>
+			)}
+			{otherManagedUpdates.length > 0 && (
+				<div className="space-y-2 border-t border-border/60 pt-2">
+					<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+						Other environment updates
+					</div>
+					<p className="text-[10px] text-muted-foreground">
+						Updates the exact Hlid-managed installation without changing this
+						agent&apos;s active execution environment.
+					</p>
+					{otherManagedUpdates.map((candidate) => {
+						const candidateOperation = operationLabel(candidate);
+						return (
+							<div
+								key={candidate.targetId}
+								className="flex min-w-0 flex-col gap-2 border border-border/60 px-2.5 py-2 @2xl:flex-row @2xl:items-center @2xl:justify-between"
+							>
+								<div className="min-w-0 text-[10px] text-muted-foreground">
+									<div className="text-foreground/80">{candidate.label}</div>
+									<div>
+										v
+										{candidate.installedVersion ??
+											candidate.observedVersion ??
+											"—"}
+										{candidate.registryVersion
+											? ` → v${candidate.registryVersion}`
+											: ""}
+									</div>
+									{candidateOperation && (
+										<output className="block text-primary" aria-live="polite">
+											{candidateOperation}
+										</output>
+									)}
+								</div>
+								<TargetMutationAction
+									item={item}
+									target={candidate}
+									action="update"
+									buttonAriaLabel={`Update ${item.name} in ${candidate.label}`}
+									disabled={
+										disabled ||
+										!configurationCurrent ||
+										Boolean(candidate.operation)
+									}
+									onMutate={(action) =>
+										onManagedMutation(candidate.targetId, action)
+									}
+								/>
+							</div>
+						);
+					})}
 				</div>
 			)}
 		</div>
@@ -828,7 +956,10 @@ export function AcpAgentCard({
 	managedMutationConfigurationCurrent?: boolean;
 	onToggle: () => void;
 	onSelectTarget: (targetId: string) => void;
-	onManagedMutation: (action: AcpManagedMutationAction) => void;
+	onManagedMutation: (
+		targetId: string,
+		action: AcpManagedMutationAction,
+	) => void;
 	onUpdateOverride: (patch: Partial<AcpAgentConfig>) => void;
 	onInspect: (methodId?: string) => void;
 	onRefreshOptions: () => void;
@@ -989,15 +1120,22 @@ export function AcpAgentCard({
 				</div>
 			)}
 			{openCode && configured && (
-				<OpenCodeModelVisibility
-					key={`${configurationCurrent}:${modelDiscoveryIdentity(item)}`}
-					configured={configured}
-					models={models}
-					disabled={disabled}
-					configurationCurrent={configurationCurrent}
-					onUpdateOverride={onUpdateOverride}
-					onDiscoverModels={onDiscoverModels}
-				/>
+				<>
+					<OpenCodeGoUsage
+						configured={configured}
+						disabled={disabled}
+						onUpdateOverride={onUpdateOverride}
+					/>
+					<OpenCodeModelVisibility
+						key={`${configurationCurrent}:${modelDiscoveryIdentity(item)}`}
+						configured={configured}
+						models={models}
+						disabled={disabled}
+						configurationCurrent={configurationCurrent}
+						onUpdateOverride={onUpdateOverride}
+						onDiscoverModels={onDiscoverModels}
+					/>
+				</>
 			)}
 			{configured && (
 				<div className="grid sm:grid-cols-2 gap-2">

@@ -339,6 +339,12 @@ export type ProviderWindowEntry = {
 	label: string;
 	/** Rolling window size in seconds (used for DB time-range queries). */
 	windowSecs: number;
+	/** Account telemetry that must never feed rate-limit gating or sleep. */
+	displayOnly?: boolean;
+	/** False for provider-native account telemetry unrelated to Ledger totals. */
+	showLocalStats?: boolean;
+	/** Models for which this external quota is relevant in Raven. */
+	modelPrefixes?: string[];
 	tokens: number;
 	queries: number;
 	sessions: number;

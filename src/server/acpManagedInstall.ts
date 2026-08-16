@@ -121,7 +121,7 @@ export type AcpManagedInstallDependencies = {
 		hostCwd: string;
 	}): string;
 	probe(input: AcpManagedProbeInput): Promise<{ observedVersion?: string }>;
-	/** Re-read configuration/catalog state and hot-sync live provider runtimes. */
+	/** Re-read catalog state and reconcile live runtimes after exact-target mutation. */
 	refresh(): Promise<void>;
 	fetcher?: AcpManagedFetcher;
 	now?: () => number;
@@ -874,7 +874,7 @@ export class AcpManagedInstaller {
 			.then(async () => {
 				await this.retryRetiredVersions(1);
 				return input.action === "remove"
-					? this.remove(input, operation, current, retired)
+					? this.remove(operation, current, retired)
 					: this.installOrUpdate(
 							input,
 							operation,
@@ -1287,7 +1287,6 @@ export class AcpManagedInstaller {
 	}
 
 	private async remove(
-		_input: AcpManagedMutationInput,
 		operation: ActiveOperation,
 		record: AcpManagedInstallRecord | undefined,
 		retired: AcpManagedInstallRecord[],

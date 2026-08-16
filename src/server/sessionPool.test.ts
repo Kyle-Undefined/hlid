@@ -1445,4 +1445,33 @@ describe("SessionPool runtime refresh", () => {
 			{ preserveSelection: true },
 		);
 	});
+
+	it("retires only sessions owned by one exact ACP execution target", async () => {
+		const windowsCwd = "C:\\Users\\kyle\\Vault";
+		const wslCwd = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\workspace";
+		const config = makeConfig(windowsCwd);
+		config.agents = [
+			{
+				path: wslCwd,
+				name: "WSL workspace",
+				mode: "cwd",
+				provider: "acp:opencode",
+			},
+		];
+		const pool = new SessionPool(config, makeProviders());
+		pool.create(windowsCwd, "Windows workspace");
+		pool.create(wslCwd, "WSL workspace");
+
+		await pool.retireProviderTargetSessions("acp:opencode", {
+			kind: "wsl",
+			distro: "ubuntu-24.04",
+		});
+
+		expect(mockInstances[0]?.retireProviderSessions).not.toHaveBeenCalled();
+		expect(mockInstances[1]?.retireProviderSessions).toHaveBeenCalledOnce();
+		expect(mockInstances[1]?.retireProviderSessions).toHaveBeenCalledWith(
+			new Set(["acp:opencode"]),
+			{ preserveSelection: true },
+		);
+	});
 });

@@ -23,6 +23,7 @@ export function acpRuntimeIdentity(
 							Object.entries(agent.env).sort(([a], [b]) => a.localeCompare(b)),
 						)
 					: undefined,
+				opencodeGoUsage: agent.opencode_go_usage?.api_key,
 				modelFilter: agent.model_filter
 					? {
 							mode: agent.model_filter.mode,

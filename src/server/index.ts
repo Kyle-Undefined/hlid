@@ -128,7 +128,7 @@ import {
 	type ProviderCatalogSnapshot,
 	providerCatalogRequestOptions,
 } from "./providerCatalog";
-import { seedWindowMarks, startProviderProxy } from "./proxy";
+import { seedProviderWindowMarks, startProviderProxy } from "./proxy";
 import { bootstrapPtyRuntime } from "./pty-bootstrap";
 import { PushNotificationCoordinator } from "./pushNotificationCoordinator";
 import { PushNotificationOutbox } from "./pushNotificationOutbox";
@@ -481,7 +481,7 @@ for (const item of acpCatalog.filter((candidate) => candidate.enabled)) {
 for (const provider of providers.values()) {
 	db.registerProvider(
 		provider.providerId,
-		provider.label ?? provider.providerId,
+		provider.usageLabel ?? provider.label ?? provider.providerId,
 		provider.usageWindows ? [...provider.usageWindows] : [],
 	);
 }
@@ -938,16 +938,11 @@ const providerProxyStarts: Promise<void>[] = [];
 for (const provider of providers.values()) {
 	if (provider.proxyConfig) {
 		providerProxyStarts.push(startProviderProxy(provider, anthropicUpstream));
-	} else if (provider.usageWindows?.length) {
+	} else if (provider.usageWindows?.some((window) => !window.displayOnly)) {
 		// Providers such as Codex report windows through their control API rather
 		// than an HTTP proxy. Hydrate their last durable reading before Raven can
 		// submit the first post-restart turn.
-		providerProxyStarts.push(
-			seedWindowMarks(
-				provider.providerId,
-				provider.usageWindows.map((window) => window.windowId),
-			),
-		);
+		providerProxyStarts.push(seedProviderWindowMarks(provider));
 	}
 }
 
@@ -1316,6 +1311,8 @@ async function applyAcpRuntimeConfig(
 		fingerprints: managedAcpFingerprints,
 		retireProviderSessions: (providerIds, options) =>
 			pool.retireProviderSessions(providerIds, options),
+		retireProviderTargetSessions: (providerId, target) =>
+			pool.retireProviderTargetSessions(providerId, target),
 		registerProvider: (provider, replaced) => {
 			modelCatalog.register(provider, { refreshIdentity: replaced });
 			providerCapabilityCatalog.register(provider, {
@@ -1323,7 +1320,7 @@ async function applyAcpRuntimeConfig(
 			});
 			db.registerProvider(
 				provider.providerId,
-				provider.label ?? provider.providerId,
+				provider.usageLabel ?? provider.label ?? provider.providerId,
 				provider.usageWindows ? [...provider.usageWindows] : [],
 			);
 		},
@@ -1395,7 +1392,7 @@ async function applyCliProxyRuntimeConfig(): Promise<void> {
 				providerCapabilityCatalog.register(provider);
 				db.registerProvider(
 					provider.providerId,
-					provider.label ?? provider.providerId,
+					provider.usageLabel ?? provider.label ?? provider.providerId,
 					provider.usageWindows ? [...provider.usageWindows] : [],
 				);
 			}
@@ -1649,7 +1646,8 @@ const handleAuthenticatedRoute = createAuthenticatedRouteHandler({
 			}),
 	],
 	getMcpStatus: () => pool.vaultEntry().manager.getLastMcpStatus() ?? [],
-	handleDb: (url, req) => handleDbRoute(url, req, pool, terminalPool),
+	handleDb: (url, req) =>
+		handleDbRoute(url, req, pool, terminalPool, providers),
 	handleAttachment: (url, req) => handleAttachmentRoute(url, req, config),
 });
 

@@ -621,7 +621,9 @@ async function mutateManagedAcpInstallation(
 		acpRuntimeIdentity(configured ? [configured] : []) !==
 			acpRuntimeIdentity(currentConfigured ? [currentConfigured] : []) ||
 		item.enabled !== Boolean(currentConfigured) ||
-		(item.enabled && currentSelectedTargetId !== descriptor.targetId)
+		(item.enabled &&
+			parsed.data.action !== "update" &&
+			currentSelectedTargetId !== descriptor.targetId)
 	) {
 		return Response.json(
 			{

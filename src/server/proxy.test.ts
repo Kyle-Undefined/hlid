@@ -33,10 +33,13 @@ import type { AgentProvider } from "./agentProvider";
 import {
 	applyReading,
 	getWindowMark,
+	persistDisplayUsageReading,
+	seedProviderWindowMarks,
 	startProviderProxy,
 	updateWindowMark,
 } from "./proxy";
 import { broadcast } from "./runState";
+import { evaluateSleep } from "./usageGate";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -364,6 +367,56 @@ describe("applyReading", () => {
 				limit: undefined,
 			}),
 		);
+	});
+
+	it("persists display-only telemetry without marks or rate-limit broadcasts", async () => {
+		vi.mocked(db.saveSetting).mockClear();
+		vi.mocked(broadcast).mockClear();
+		const reading = makeReading({
+			windowId: "weekly",
+			label: "WEEKLY",
+			utilization: 0.99,
+		});
+		const providerId = "acp:opencode-display-only-persist";
+
+		await persistDisplayUsageReading(providerId, reading);
+
+		expect(db.saveSetting).toHaveBeenCalledOnce();
+		expect(getWindowMark(providerId, reading.windowId)).toBeUndefined();
+		expect(
+			evaluateSleep(providerId, {
+				enabled: true,
+				threshold: 0.95,
+				max_sleep_minutes: 360,
+				resume_buffer_seconds: 60,
+			}),
+		).toBeNull();
+		expect(broadcast).not.toHaveBeenCalled();
+	});
+
+	it("does not seed display-only provider windows into usage gating", async () => {
+		vi.mocked(db.getSetting).mockResolvedValue(
+			JSON.stringify({
+				utilization: 0.99,
+				resetsAt: futureUnix(),
+			}),
+		);
+		const providerId = "acp:opencode-display-only-seed";
+
+		await seedProviderWindowMarks({
+			providerId,
+			usageWindows: [
+				{
+					windowId: "weekly",
+					label: "WEEKLY",
+					windowSecs: 604_800,
+					displayOnly: true,
+				},
+			],
+		});
+
+		expect(db.getSetting).not.toHaveBeenCalled();
+		expect(getWindowMark(providerId, "weekly")).toBeUndefined();
 	});
 
 	it("broadcasts remaining and limit with a structured window reading", () => {

@@ -4392,6 +4392,38 @@ describe("usage — registerProvider", () => {
 		expect(snapshot.windows[0].label).toBe("1-HOUR");
 	});
 
+	it("keeps display-only account windows separate from Ledger query totals", async () => {
+		await createSession("go-ledger", "OpenCode", "opencode-go/gpt-5");
+		await recordQuery(
+			"go-ledger",
+			baseQuery({ cost: 3.5, input_tokens: 1_200, output_tokens: 300 }),
+			"acp:opencode",
+		);
+		registerProvider("acp:opencode", "OpenCode Go", [
+			{
+				windowId: "opencode_go_weekly",
+				label: "WEEKLY",
+				windowSecs: 7 * 86_400,
+				displayOnly: true,
+				showLocalStats: false,
+				modelPrefixes: ["opencode-go/"],
+			},
+		]);
+
+		const snapshot = await getProviderUsage("acp:opencode");
+
+		expect(snapshot.providerLabel).toBe("OpenCode Go");
+		expect(snapshot.windows[0]).toMatchObject({
+			displayOnly: true,
+			showLocalStats: false,
+			modelPrefixes: ["opencode-go/"],
+			tokens: 0,
+			queries: 0,
+			sessions: 0,
+			cost: 0,
+		});
+	});
+
 	it("registerProvider overwrites an existing provider registration", async () => {
 		registerProvider("testprovider2", "Old Label", [
 			{ windowId: "w1", label: "W1", windowSecs: 3600 },

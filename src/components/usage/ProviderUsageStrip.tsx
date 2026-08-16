@@ -11,13 +11,34 @@ import type { RateLimitMessage } from "#/server/protocol";
 const PROVIDER_STRIP_KEY = "hlid_active_provider";
 const PROVIDER_USAGE_CACHE_KEY = "hlid_provider_usage_snapshots";
 
+function cacheableProviderUsages(
+	snapshots: ProviderUsageSnapshot[],
+): ProviderUsageSnapshot[] {
+	return snapshots.flatMap((snapshot) => {
+		const windows = snapshot.windows.filter((window) => !window.displayOnly);
+		return windows.length > 0 ? [{ ...snapshot, windows }] : [];
+	});
+}
+
+function writeProviderUsageCache(snapshots: ProviderUsageSnapshot[]): void {
+	try {
+		if (snapshots.length === 0) {
+			sessionStorage.removeItem(PROVIDER_USAGE_CACHE_KEY);
+			return;
+		}
+		sessionStorage.setItem(PROVIDER_USAGE_CACHE_KEY, JSON.stringify(snapshots));
+	} catch {
+		// The stable shell still works if browser storage is unavailable.
+	}
+}
+
 function cachedProviderUsages(): ProviderUsageSnapshot[] {
 	try {
 		const parsed = JSON.parse(
 			sessionStorage.getItem(PROVIDER_USAGE_CACHE_KEY) ?? "[]",
 		) as unknown;
 		if (!Array.isArray(parsed)) return [];
-		return parsed.filter(
+		const snapshots = parsed.filter(
 			(snapshot): snapshot is ProviderUsageSnapshot =>
 				typeof snapshot === "object" &&
 				snapshot !== null &&
@@ -25,18 +46,18 @@ function cachedProviderUsages(): ProviderUsageSnapshot[] {
 				typeof snapshot.providerLabel === "string" &&
 				Array.isArray(snapshot.windows),
 		);
+		const cacheable = cacheableProviderUsages(snapshots);
+		// Rewrite or remove legacy cache entries so account-scoped telemetry can
+		// never be rehydrated after its key is rotated or disabled.
+		writeProviderUsageCache(cacheable);
+		return cacheable;
 	} catch {
 		return [];
 	}
 }
 
 function cacheProviderUsages(snapshots: ProviderUsageSnapshot[]): void {
-	if (snapshots.length === 0) return;
-	try {
-		sessionStorage.setItem(PROVIDER_USAGE_CACHE_KEY, JSON.stringify(snapshots));
-	} catch {
-		// The stable shell still works if browser storage is unavailable.
-	}
+	writeProviderUsageCache(cacheableProviderUsages(snapshots));
 }
 
 function initialProvider(
@@ -72,6 +93,8 @@ export function ProviderUsageStrip({
 	liveQueryCount,
 	rateLimit,
 	preferredProviderId,
+	preferredProviderLabel,
+	preferredModel,
 	initialStale = false,
 	tail,
 	fetchFn,
@@ -80,6 +103,10 @@ export function ProviderUsageStrip({
 	liveQueryCount: number;
 	rateLimit: RateLimitMessage | null;
 	preferredProviderId?: string;
+	/** Chat-provider label used when a narrower model quota is out of scope. */
+	preferredProviderLabel?: string;
+	/** Exact active Raven model used to hide model-scoped external quotas. */
+	preferredModel?: string;
 	/** Initial data is a layout shell and should refresh immediately. */
 	initialStale?: boolean;
 	tail?: React.ReactNode;
@@ -87,9 +114,28 @@ export function ProviderUsageStrip({
 }) {
 	const [snapshots, setSnapshots] = useState(initial);
 	const displayedSnapshots = useMemo(() => {
-		const withoutCliProxy = snapshots.filter(
-			(snapshot) => !isCliProxyProvider(snapshot.providerId),
-		);
+		const withoutCliProxy = snapshots
+			.filter((snapshot) => !isCliProxyProvider(snapshot.providerId))
+			.map((snapshot) => {
+				if (snapshot.providerId !== preferredProviderId) return snapshot;
+				const windows = snapshot.windows.filter(
+					(window) =>
+						!window.modelPrefixes?.length ||
+						Boolean(
+							preferredModel &&
+								window.modelPrefixes.some((prefix) =>
+									preferredModel.startsWith(prefix),
+								),
+						),
+				);
+				return windows.length === snapshot.windows.length
+					? snapshot
+					: {
+							...snapshot,
+							providerLabel: preferredProviderLabel ?? snapshot.providerLabel,
+							windows,
+						};
+			});
 		if (!preferredProviderId || !isCliProxyProvider(preferredProviderId)) {
 			return withoutCliProxy;
 		}
@@ -104,7 +150,7 @@ export function ProviderUsageStrip({
 				windows: active?.windows ?? [],
 			},
 		];
-	}, [preferredProviderId, snapshots]);
+	}, [preferredModel, preferredProviderId, preferredProviderLabel, snapshots]);
 	const fetchFnRef = useRef(fetchFn);
 	fetchFnRef.current = fetchFn;
 	const providerIds = useMemo(

@@ -2589,6 +2589,15 @@ function translateUserMessage(
 		toolResultBlocks.length === 1
 			? (message as { tool_use_result?: unknown }).tool_use_result
 			: undefined;
+	// Claude Agent SDK 0.3.232 wraps subagent MCP results that carry _meta.
+	// Track the same content as older bare results and keep provider metadata
+	// opaque; visible output still comes from the canonical tool_result block.
+	const trackingToolResult = (() => {
+		const envelope = recordValue(structuredToolResult);
+		return envelope && "_meta" in envelope && "content" in envelope
+			? envelope.content
+			: structuredToolResult;
+	})();
 	const checkpointId = (message as { uuid?: unknown }).uuid;
 	const checkpointSessionId = (message as { session_id?: unknown }).session_id;
 	const isRootUserMessage =
@@ -2649,7 +2658,7 @@ function translateUserMessage(
 			if (block.type !== "tool_result") return [];
 			const text = normalizeToolResultContent(block.content);
 			const toolId = String(block.tool_use_id ?? "");
-			const result = structuredToolResult ?? block.content;
+			const result = trackingToolResult ?? block.content;
 			const activityEvents = tracker
 				.recordTaskActivityResult(toolId, result)
 				.map((event) => (providerFrame ? { ...event, providerFrame } : event));
@@ -3070,6 +3079,48 @@ function translateSdkMessage(
 	}
 }
 
+function claudeSlashCommandKey(value: unknown): string | null {
+	if (typeof value !== "string") return null;
+	const name = value.trim().replace(/^\/+/, "").toLowerCase();
+	return name || null;
+}
+
+/**
+ * Claude 2.1.233 can identify commands whose UX requires a local terminal.
+ * Raven is a remote surface, so retain every command on older runtimes and
+ * remove only the exact names (or aliases) explicitly tagged by a newer init.
+ */
+function filterClaudeTerminalCommands(
+	commands: SlashCommand[],
+	terminalCommands: ReadonlySet<string> | null,
+): SlashCommand[] {
+	if (!terminalCommands || terminalCommands.size === 0) return commands;
+	let changed = false;
+	const visible: SlashCommand[] = [];
+	for (const command of commands) {
+		const name = claudeSlashCommandKey(command.name);
+		if (name && terminalCommands.has(name)) {
+			changed = true;
+			continue;
+		}
+		const aliases = command.aliases?.filter((alias) => {
+			const key = claudeSlashCommandKey(alias);
+			return !key || !terminalCommands.has(key);
+		});
+		if (aliases && aliases.length !== command.aliases?.length) {
+			changed = true;
+			if (aliases.length > 0) visible.push({ ...command, aliases });
+			else {
+				const { aliases: _aliases, ...withoutAliases } = command;
+				visible.push(withoutAliases);
+			}
+		} else {
+			visible.push(command);
+		}
+	}
+	return changed ? visible : commands;
+}
+
 class ClaudeAgentSession implements AgentSession {
 	private abortController: AbortController;
 	private makeQuery: (
@@ -3090,6 +3141,9 @@ class ClaudeAgentSession implements AgentSession {
 	// Retain later full replacements so probes after route navigation do not
 	// resurrect skills that reloadSkills() removed (or omit skills it added).
 	private latestSkillCommands: SlashCommand[] | null = null;
+	// Null means the runtime did not advertise terminal command metadata. This
+	// keeps command behavior unchanged for older Claude Code versions.
+	private terminalSlashCommands: Set<string> | null = null;
 	private firstSend: SdkUserMessage | null = null;
 	private receivedAnyEvent = false;
 	private retriedWithoutResume = false;
@@ -3176,6 +3230,21 @@ class ClaudeAgentSession implements AgentSession {
 			...configured.dynamicServers,
 			...this.hostMcpServers,
 		};
+	}
+
+	private observeTerminalSlashCommands(
+		message: Extract<SDKMessage, { type: "system"; subtype: "init" }>,
+	): void {
+		const advertised = message.terminal_slash_commands;
+		if (!Array.isArray(advertised)) {
+			this.terminalSlashCommands = null;
+			return;
+		}
+		this.terminalSlashCommands = new Set(
+			advertised
+				.map(claudeSlashCommandKey)
+				.filter((name): name is string => name !== null),
+		);
 	}
 
 	cancel(): void {
@@ -3389,7 +3458,7 @@ class ClaudeAgentSession implements AgentSession {
 		const result = await this.sdkQuery.reloadSkills();
 		const skills = result.skills as SlashCommand[];
 		this.latestSkillCommands = skills;
-		return skills;
+		return filterClaudeTerminalCommands(skills, this.terminalSlashCommands);
 	}
 
 	async rewindFiles(
@@ -3404,8 +3473,10 @@ class ClaudeAgentSession implements AgentSession {
 
 	async supportedCommands(): Promise<SlashCommand[]> {
 		if (!this.sdkQuery) return [];
-		if (this.latestSkillCommands !== null) return this.latestSkillCommands;
-		return this.sdkQuery.supportedCommands() as Promise<SlashCommand[]>;
+		const commands =
+			this.latestSkillCommands ??
+			((await this.sdkQuery.supportedCommands()) as SlashCommand[]);
+		return filterClaudeTerminalCommands(commands, this.terminalSlashCommands);
 	}
 
 	async usageWindows(): Promise<ProviderWindowReading[]> {
@@ -4115,6 +4186,11 @@ class ClaudeAgentSession implements AgentSession {
 				const sessionInit =
 					message.type === "system" &&
 					(message as { subtype?: unknown }).subtype === "init";
+				if (sessionInit) {
+					this.observeTerminalSlashCommands(
+						message as Extract<SDKMessage, { type: "system"; subtype: "init" }>,
+					);
+				}
 				if (rawProviderSessionId && !sessionStateChanged) {
 					if (this.currentNativeSessionId === undefined || sessionInit) {
 						this.currentNativeSessionId = rawProviderSessionId;
@@ -4425,6 +4501,10 @@ class ClaudeAgentSession implements AgentSession {
 				for (const event of translation.events) {
 					if (event.type === "commands_changed") {
 						this.latestSkillCommands = event.commands;
+						event.commands = filterClaudeTerminalCommands(
+							event.commands,
+							this.terminalSlashCommands,
+						);
 					}
 				}
 				hadText =

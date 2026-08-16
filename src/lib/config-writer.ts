@@ -296,6 +296,9 @@ function serializeAcpAgent(
 		...optionalEntry("executable", agent.executable),
 		...optionalEntry("args", agent.args),
 		...(agent.env ? [`env = ${tomlInlineTable(agent.env)}`] : []),
+		...(agent.opencode_go_usage
+			? [`opencode_go_usage = ${tomlInlineTable(agent.opencode_go_usage)}`]
+			: []),
 		...(agent.model_filter
 			? [`model_filter = ${tomlInlineTable(agent.model_filter)}`]
 			: []),

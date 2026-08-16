@@ -7,6 +7,7 @@ import {
 	screen,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CONFIG_SECRET_SENTINEL } from "#/lib/publicConfig";
 import type {
 	AcpAgentInfo,
 	AcpAuthMethod,
@@ -103,7 +104,10 @@ function renderCard(
 		configurationCurrent: boolean;
 		onToggle: () => void;
 		onSelectTarget: (targetId: string) => void;
-		onManagedMutation: (action: "install" | "update" | "remove") => void;
+		onManagedMutation: (
+			targetId: string,
+			action: "install" | "update" | "remove",
+		) => void;
 		onUpdateOverride: (patch: Partial<AcpAgentConfig>) => void;
 		onInspect: (methodId?: string) => void;
 		onRefreshOptions: () => void;
@@ -212,7 +216,7 @@ describe("AcpAgentCard", () => {
 			screen.getByText("install Gemini CLI v1.3.0 in WSL · Ubuntu-24.04?"),
 		).toBeTruthy();
 		fireEvent.click(screen.getByRole("button", { name: "install" }));
-		expect(onManagedMutation).toHaveBeenCalledWith("install");
+		expect(onManagedMutation).toHaveBeenCalledWith("wsl-ubuntu", "install");
 	});
 
 	it("confirms a managed Windows host installation", () => {
@@ -241,7 +245,7 @@ describe("AcpAgentCard", () => {
 			screen.getByText("install Gemini CLI v1.3.0 in Windows?"),
 		).toBeTruthy();
 		fireEvent.click(screen.getByRole("button", { name: "install" }));
-		expect(onManagedMutation).toHaveBeenCalledWith("install");
+		expect(onManagedMutation).toHaveBeenCalledWith("host", "install");
 	});
 
 	it("shows managed update and removal while protecting an enabled target", () => {
@@ -270,7 +274,57 @@ describe("AcpAgentCard", () => {
 		).toBe(true);
 		fireEvent.click(screen.getByRole("button", { name: "Update" }));
 		fireEvent.click(screen.getByRole("button", { name: "update" }));
-		expect(onManagedMutation).toHaveBeenCalledWith("update");
+		expect(onManagedMutation).toHaveBeenCalledWith("wsl-ubuntu", "update");
+	});
+
+	it("updates another managed environment without changing the active target", () => {
+		const onManagedMutation = vi.fn();
+		const onSelectTarget = vi.fn();
+		const host = managedWslTarget({
+			targetId: "host",
+			target: { kind: "host" },
+			label: "Windows",
+			recommended: false,
+			selected: true,
+			platformTarget: "windows-x86_64",
+			command: "C:\\managed\\opencode.exe",
+			resolvedExecutable: "C:\\managed\\opencode.exe",
+		});
+		const wsl = managedWslTarget({ selected: false });
+		renderCard({
+			item: makeItem({
+				id: "opencode",
+				name: "OpenCode",
+				targets: [host, wsl],
+			}),
+			selectedTargetId: "host",
+			configured: { id: "opencode" } as AcpAgentConfig,
+			onSelectTarget,
+			onManagedMutation,
+		});
+
+		expect(
+			(
+				screen.getByRole("combobox", {
+					name: "OpenCode execution environment",
+				}) as HTMLSelectElement
+			).value,
+		).toBe("host");
+		expect(screen.getByText("Other environment updates")).toBeTruthy();
+		expect(
+			screen.getByText(
+				/without changing this agent's active execution environment/,
+			),
+		).toBeTruthy();
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Update OpenCode in WSL · Ubuntu-24.04",
+			}),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "update" }));
+
+		expect(onManagedMutation).toHaveBeenCalledWith("wsl-ubuntu", "update");
+		expect(onSelectTarget).not.toHaveBeenCalled();
 	});
 
 	it("requires confirmation before removing a disabled managed target", () => {
@@ -289,7 +343,7 @@ describe("AcpAgentCard", () => {
 		).toBeTruthy();
 		expect(onManagedMutation).not.toHaveBeenCalled();
 		fireEvent.click(screen.getByRole("button", { name: "remove" }));
-		expect(onManagedMutation).toHaveBeenCalledWith("remove");
+		expect(onManagedMutation).toHaveBeenCalledWith("wsl-ubuntu", "remove");
 	});
 
 	it("offers only removal for a receipt-backed target whose workspace is gone", () => {
@@ -323,7 +377,7 @@ describe("AcpAgentCard", () => {
 		expect(screen.queryByRole("button", { name: "Update" })).toBeNull();
 		fireEvent.click(screen.getByRole("button", { name: "Remove" }));
 		fireEvent.click(screen.getByRole("button", { name: "remove" }));
-		expect(onManagedMutation).toHaveBeenCalledWith("remove");
+		expect(onManagedMutation).toHaveBeenCalledWith("wsl-ubuntu", "remove");
 	});
 
 	it("never offers managed lifecycle actions for an external executable", () => {
@@ -525,6 +579,86 @@ describe("AcpAgentCard", () => {
 				"Applies only to OpenCode ACP sessions launched from this Hlid integration. Standalone OpenCode and CLIProxy keep their own model configuration. Defaults excluded by the filter reset to OpenCode's provider default.",
 			),
 		).toBeTruthy();
+	});
+
+	it("opts into account-wide OpenCode Go usage with a dedicated endpoint key", () => {
+		const onUpdateOverride = vi.fn();
+		const configured = {
+			id: "opencode",
+			env: { EXISTING_SETTING: "keep" },
+		} as AcpAgentConfig;
+		const { rerenderCard } = renderCard({
+			item: makeItem({ id: "opencode", name: "OpenCode" }),
+			configured,
+			onUpdateOverride,
+		});
+
+		const toggle = screen.getByRole("checkbox", {
+			name: /OpenCode Go usage/i,
+		}) as HTMLInputElement;
+		const apiKey = screen.getByLabelText(
+			/OpenCode Go API key/i,
+		) as HTMLInputElement;
+		expect(toggle.disabled).toBe(true);
+		fireEvent.change(apiKey, { target: { value: "go-secret" } });
+		expect(onUpdateOverride).toHaveBeenLastCalledWith({
+			opencode_go_usage: { api_key: "go-secret" },
+		});
+
+		rerenderCard({
+			configured: {
+				...configured,
+				opencode_go_usage: { api_key: "go-secret" },
+			},
+		});
+		expect(
+			(
+				screen.getByRole("checkbox", {
+					name: /OpenCode Go usage/i,
+				}) as HTMLInputElement
+			).checked,
+		).toBe(true);
+		fireEvent.click(
+			screen.getByRole("checkbox", { name: /OpenCode Go usage/i }),
+		);
+		expect(onUpdateOverride).toHaveBeenLastCalledWith({
+			opencode_go_usage: undefined,
+		});
+		expect(
+			screen.getByText(
+				/account-wide limits for OpenCode Go models only, across Windows and WSL/i,
+			),
+		).toBeTruthy();
+		expect(
+			screen.getByText(/only for the official OpenCode usage endpoint/i),
+		).toBeTruthy();
+	});
+
+	it("retains the redacted OpenCode Go key until it is explicitly replaced or cleared", () => {
+		const onUpdateOverride = vi.fn();
+		renderCard({
+			item: makeItem({ id: "opencode", name: "OpenCode" }),
+			configured: {
+				id: "opencode",
+				env: {
+					EXISTING_SETTING: "keep",
+				},
+				opencode_go_usage: { api_key: CONFIG_SECRET_SENTINEL },
+			} as AcpAgentConfig,
+			onUpdateOverride,
+		});
+
+		const apiKey = screen.getByLabelText(
+			/OpenCode Go API key/i,
+		) as HTMLInputElement;
+		expect(apiKey.value).toBe(CONFIG_SECRET_SENTINEL);
+		expect(screen.getByText(/Saved key retained/)).toBeTruthy();
+		expect(onUpdateOverride).not.toHaveBeenCalled();
+
+		fireEvent.change(apiKey, { target: { value: "" } });
+		expect(onUpdateOverride).toHaveBeenCalledWith({
+			opencode_go_usage: undefined,
+		});
 	});
 
 	it("stages OpenCode model selections until one apply action", () => {

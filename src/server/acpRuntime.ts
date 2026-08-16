@@ -25,6 +25,12 @@ import type {
 	ProviderForkCapability,
 	ProviderModelInfo,
 } from "./agentProvider";
+import {
+	createOpenCodeGoUsageReader,
+	OPENCODE_GO_USAGE_WINDOWS,
+	type OpenCodeGoUsageReader,
+	unavailableOpenCodeGoUsageReadings,
+} from "./openCodeGoUsage";
 
 const OPENCODE_CONFIG_CONTENT = "OPENCODE_CONFIG_CONTENT";
 const MAX_OPENCODE_CONFIG_CONTENT_LENGTH = 24_000;
@@ -739,7 +745,7 @@ function workspaceRuntimeUnavailableMessage(
 /** One provider identity that dispatches each exact workspace to its own runtime. */
 export class WorkspaceRoutedAcpProvider implements AgentProvider {
 	readonly providerId: string;
-	readonly label: string;
+	label: string;
 	readonly modelCatalogScope = "workspace" as const;
 	readonly effortScope = "model" as const;
 	readonly liveModelDiscoveryValidatesAvailability = true;
@@ -758,18 +764,67 @@ export class WorkspaceRoutedAcpProvider implements AgentProvider {
 	private catalogItem: AcpCatalogItem;
 	private readonly children = new Map<
 		string,
-		{ fingerprint: string; provider: AcpProvider }
+		{
+			fingerprint: string;
+			provider: AcpProvider;
+			target: AcpExecutionTarget;
+			cwd: string;
+		}
 	>();
 	private retirementError: AcpWorkspaceRuntimeError | null = null;
 	private retirementPromise: Promise<void> | null = null;
+	private openCodeGoUsage: OpenCodeGoUsageReader | null = null;
+	private openCodeGoUsageKey: string | null = null;
 
 	constructor(
 		item: AcpCatalogItem,
-		private readonly config: HlidConfig,
+		private config: HlidConfig,
 	) {
 		this.catalogItem = item;
 		this.providerId = item.providerId;
 		this.label = item.name;
+		this.updateOpenCodeGoUsage(config);
+	}
+
+	get usageWindows(): AgentProvider["usageWindows"] {
+		return this.openCodeGoUsage ? OPENCODE_GO_USAGE_WINDOWS : undefined;
+	}
+
+	get usageLabel(): string | undefined {
+		return this.openCodeGoUsage ? "OpenCode Go" : undefined;
+	}
+
+	updateOpenCodeGoUsage(config: HlidConfig): boolean {
+		const configured = (config.acp_agents ?? []).find(
+			(agent) => agent.id === this.catalogItem.id,
+		);
+		const nextKey =
+			this.catalogItem.id === "opencode"
+				? (configured?.opencode_go_usage?.api_key.trim() ?? null)
+				: null;
+		if (nextKey === this.openCodeGoUsageKey) return false;
+		this.openCodeGoUsageKey = nextKey;
+		this.openCodeGoUsage = nextKey
+			? createOpenCodeGoUsageReader({ apiKey: nextKey })
+			: null;
+		return true;
+	}
+
+	async readUsageWindows() {
+		const client = this.openCodeGoUsage;
+		if (!client) return [];
+		const readings = await client();
+		if (client === this.openCodeGoUsage) return readings;
+
+		// A config save may replace the account key while the old request is in
+		// flight. Retry the current client once, and never allow the old account's
+		// result to escape into the shared display cache.
+		const current = this.openCodeGoUsage;
+		if (!current) return unavailableOpenCodeGoUsageReadings();
+		const currentReadings = await current();
+		return current === this.openCodeGoUsage
+			? currentReadings
+			: unavailableOpenCodeGoUsageReadings();
 	}
 
 	get metadataCacheIdentity(): string {
@@ -795,7 +850,14 @@ export class WorkspaceRoutedAcpProvider implements AgentProvider {
 			.sessionContinuityIdentity;
 	}
 
-	updateCatalog(item: AcpCatalogItem): boolean {
+	reconcileCatalog(
+		item: AcpCatalogItem,
+		config: HlidConfig,
+	): {
+		availabilityChanged: boolean;
+		changedTargets: AcpExecutionTarget[];
+		cleanup: Promise<void>;
+	} {
 		const priorTargets =
 			this.catalogItem.targets.length > 0
 				? this.catalogItem.targets
@@ -808,8 +870,7 @@ export class WorkspaceRoutedAcpProvider implements AgentProvider {
 				{ available: target.available, reason: target.blockedReason },
 			]),
 		);
-		this.catalogItem = item;
-		let changed = before.size !== nextTargets.length;
+		let availabilityChanged = before.size !== nextTargets.length;
 		for (const target of nextTargets) {
 			const key = acpExecutionTargetKey(target.target);
 			const prior = before.get(key);
@@ -817,26 +878,48 @@ export class WorkspaceRoutedAcpProvider implements AgentProvider {
 				prior?.available !== target.available ||
 				prior?.reason !== target.blockedReason
 			) {
-				changed = true;
+				availabilityChanged = true;
 			}
 		}
+
+		const changedTargets = new Map<string, AcpExecutionTarget>();
+		const retirements: Promise<void>[] = [];
 		for (const [key, child] of this.children) {
-			const targetKey = key.slice(0, key.indexOf("\0"));
-			const status = nextTargets.find(
-				(candidate) => acpExecutionTargetKey(candidate.target) === targetKey,
-			);
+			let runtime: AcpWorkspaceRuntime | null = null;
+			try {
+				runtime = resolveAcpWorkspaceRuntime(item, config, child.cwd);
+			} catch {
+				// Removing a configured workspace/target retires only its exact child.
+			}
+			const targetKey = acpExecutionTargetKey(child.target);
+			if (
+				!runtime ||
+				acpExecutionTargetKey(runtime.target) !== targetKey ||
+				runtime.metadataCacheIdentity !== child.fingerprint
+			) {
+				this.children.delete(key);
+				changedTargets.set(targetKey, child.target);
+				retirements.push(
+					child.provider.retireRuntime(
+						`${this.label} runtime is updating in ${acpExecutionTargetLabel(child.target)}; try again shortly.`,
+					),
+				);
+				continue;
+			}
 			child.provider.updateAvailabilitySnapshot(
-				status?.available
+				runtime.available
 					? { available: true }
-					: {
-							available: false,
-							reason:
-								status?.blockedReason ??
-								`${this.label} runtime is unavailable in ${status?.label ?? targetKey}`,
-						},
+					: { available: false, reason: runtime.reason },
 			);
 		}
-		return changed;
+		this.catalogItem = item;
+		this.config = config;
+		this.label = item.name;
+		return {
+			availabilityChanged,
+			changedTargets: [...changedTargets.values()],
+			cleanup: Promise.allSettled(retirements).then(() => undefined),
+		};
 	}
 
 	/**
@@ -897,6 +980,8 @@ export class WorkspaceRoutedAcpProvider implements AgentProvider {
 		this.children.set(key, {
 			fingerprint: runtime.metadataCacheIdentity,
 			provider,
+			target: runtime.target,
+			cwd,
 		});
 		return provider;
 	}
@@ -1005,6 +1090,10 @@ export async function syncAcpRuntimeProviders(options: {
 		providerIds: Iterable<string>,
 		options?: { preserveSelection?: boolean },
 	) => void | Promise<void>;
+	retireProviderTargetSessions: (
+		providerId: string,
+		target: AcpExecutionTarget,
+	) => void | Promise<void>;
 	registerProvider: (provider: AgentProvider, replaced: boolean) => void;
 }): Promise<AcpRuntimeSyncResult> {
 	const desired = new Map(
@@ -1027,32 +1116,60 @@ export async function syncAcpRuntimeProviders(options: {
 	const removed: string[] = [];
 	const replaced: string[] = [];
 	const availabilityUpdated: string[] = [];
+	const routedCleanup: Promise<void>[] = [];
+	const routedSessionCleanup: Promise<void>[] = [];
 	for (const [providerId, fingerprint] of options.fingerprints) {
 		const next = desired.get(providerId);
-		if (!next) removed.push(providerId);
-		else if (next.fingerprint !== fingerprint) replaced.push(providerId);
-		else {
-			const provider = options.providers.get(providerId);
-			if (provider instanceof WorkspaceRoutedAcpProvider) {
-				if (provider.updateCatalog(next.item)) {
-					availabilityUpdated.push(providerId);
-				}
-			} else {
-				const nextAvailability = {
-					available: next.item.available,
-					...(next.item.unavailableReason
-						? { reason: next.item.unavailableReason }
-						: {}),
-				};
-				const currentAvailability = provider?.cachedAvailability?.();
-				if (
-					provider?.updateAvailabilitySnapshot &&
-					(currentAvailability?.available !== nextAvailability.available ||
-						currentAvailability?.reason !== nextAvailability.reason)
-				) {
-					provider.updateAvailabilitySnapshot(nextAvailability);
-					availabilityUpdated.push(providerId);
-				}
+		if (!next) {
+			removed.push(providerId);
+			continue;
+		}
+		const provider = options.providers.get(providerId);
+		if (provider instanceof WorkspaceRoutedAcpProvider) {
+			const runtimeMetadataChanged = next.fingerprint !== fingerprint;
+			const usageChanged = provider.updateOpenCodeGoUsage(options.config);
+			const reconciliation = provider.reconcileCatalog(
+				next.item,
+				options.config,
+			);
+			options.fingerprints.set(providerId, next.fingerprint);
+			if (
+				runtimeMetadataChanged ||
+				reconciliation.availabilityChanged ||
+				usageChanged
+			) {
+				availabilityUpdated.push(providerId);
+			}
+			if (runtimeMetadataChanged || usageChanged) {
+				options.registerProvider(provider, runtimeMetadataChanged);
+			}
+			routedCleanup.push(reconciliation.cleanup);
+			for (const target of reconciliation.changedTargets) {
+				routedSessionCleanup.push(
+					Promise.resolve(
+						options.retireProviderTargetSessions(providerId, target),
+					),
+				);
+			}
+			continue;
+		}
+		if (next.fingerprint !== fingerprint) {
+			replaced.push(providerId);
+		} else {
+			const nextAvailability = {
+				available: next.item.available,
+				...(next.item.unavailableReason
+					? { reason: next.item.unavailableReason }
+					: {}),
+			};
+			const currentAvailability = provider?.cachedAvailability?.();
+			if (
+				provider?.updateAvailabilitySnapshot &&
+				(currentAvailability?.available !== nextAvailability.available ||
+					currentAvailability?.reason !== nextAvailability.reason)
+			) {
+				provider.updateAvailabilitySnapshot(nextAvailability);
+				availabilityUpdated.push(providerId);
 			}
 		}
 	}
@@ -1101,7 +1218,12 @@ export async function syncAcpRuntimeProviders(options: {
 			),
 		);
 	}
-	await Promise.all([...providerCleanup, ...sessionCleanup]);
+	await Promise.all([
+		...providerCleanup,
+		...sessionCleanup,
+		...routedCleanup,
+		...routedSessionCleanup,
+	]);
 
 	// No await occurs between these mutations: consumers see either the retired
 	// provider or its replacement, never a transient missing provider identity.

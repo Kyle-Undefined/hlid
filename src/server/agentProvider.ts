@@ -1249,7 +1249,17 @@ export interface AgentProvider {
 		label: string;
 		windowSecs: number;
 		optional?: boolean;
+		/** Account telemetry that must never feed rate-limit gating or sleep. */
+		displayOnly?: boolean;
+		/** Hide Hlid Ledger totals when this is account telemetry only. */
+		showLocalStats?: boolean;
+		/** Show this window in Raven only for models with one of these prefixes. */
+		modelPrefixes?: ReadonlyArray<string>;
 	}>;
+	/** Usage-only label when it is narrower than the chat provider identity. */
+	readonly usageLabel?: string;
+	/** Refresh provider-global usage without requiring an active chat session. */
+	readUsageWindows?(): Promise<ProviderWindowReading[]>;
 	/**
 	 * True when mcpServerStatus()/supportedCommands() require an initialized
 	 * chat process. Public metadata probes must use a provider cache when no

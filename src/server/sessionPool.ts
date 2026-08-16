@@ -11,10 +11,19 @@ import { resolve } from "node:path";
 import type { HlidConfig } from "../config";
 import * as db from "../db";
 import {
+	type AcpExecutionTarget,
+	acpExecutionTargetKey,
+} from "../lib/acpExecutionTarget";
+import {
 	type DelegatedLifecycleCounts,
 	withDelegatedAttentionRollups,
 } from "../lib/delegationAttention";
-import { declaredPathKey, expandTilde, samePath } from "../lib/paths";
+import {
+	declaredPathKey,
+	expandTilde,
+	parseWslUncSyntax,
+	samePath,
+} from "../lib/paths";
 import { deriveSessionAttention } from "../lib/sessionAttention";
 import type { AgentProvider } from "./agentProvider";
 import type { SessionAttentionSnapshot, SessionStatusEntry } from "./protocol";
@@ -666,6 +675,31 @@ export class SessionPool {
 			[...this.entries.values()].map((entry) =>
 				entry.manager.retireProviderSessions(retired, options),
 			),
+		);
+	}
+
+	/** Retire only sessions routed through one exact ACP execution target. */
+	async retireProviderTargetSessions(
+		providerId: string,
+		target: AcpExecutionTarget,
+	): Promise<void> {
+		const retired = new Set([providerId]);
+		const targetKey = acpExecutionTargetKey(target);
+		await Promise.all(
+			[...this.entries.values()].flatMap((entry) => {
+				const runtimeCwd = this.providerRuntimeCwd(entry.agentCwd);
+				if (!runtimeCwd) return [];
+				const wsl = parseWslUncSyntax(runtimeCwd);
+				const runtimeTarget: AcpExecutionTarget = wsl
+					? { kind: "wsl", distro: wsl.distro }
+					: { kind: "host" };
+				if (acpExecutionTargetKey(runtimeTarget) !== targetKey) return [];
+				return [
+					entry.manager.retireProviderSessions(retired, {
+						preserveSelection: true,
+					}),
+				];
+			}),
 		);
 	}
 }

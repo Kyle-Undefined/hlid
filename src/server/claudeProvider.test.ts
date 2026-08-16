@@ -185,6 +185,44 @@ describe("ClaudeProvider — event mapping", () => {
 		expect(events[0]).toEqual({ type: "session_start", sessionId: "sid-abc" });
 	});
 
+	it("continues normally when newer models omit Todo and Task tools", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "system",
+					subtype: "init",
+					session_id: "sid-without-todo-tools",
+					tools: ["Read", "Bash", "Agent"],
+				},
+				{
+					type: "assistant",
+					message: {
+						content: [{ type: "text", text: "Ready without task tools." }],
+						usage: { input_tokens: 3, output_tokens: 4 },
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 10,
+					usage: { input_tokens: 3, output_tokens: 4 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events).toContainEqual({
+			type: "text_delta",
+			text: "Ready without task tools.",
+		});
+		expect(events.find((event) => event.type === "done")).toBeDefined();
+		expect(events.some((event) => event.type === "transport_error")).toBe(
+			false,
+		);
+	});
+
 	it("yields a provider context reset with Claude's replacement conversation id", async () => {
 		vi.mocked(query).mockReturnValueOnce(
 			sdkGen([
@@ -2160,6 +2198,113 @@ describe("ClaudeProvider — event mapping", () => {
 			},
 		]);
 		expect(events.some((event) => event.type === "file_checkpoint")).toBe(
+			false,
+		);
+	});
+
+	it("accepts subagent MCP results carrying content and opaque _meta", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					message: {
+						content: [
+							{
+								type: "tool_use",
+								id: "agent-parent",
+								name: "Agent",
+								input: {
+									name: "mcp-scout",
+									prompt: "Use the example MCP",
+								},
+							},
+						],
+						usage: { input_tokens: 1, output_tokens: 1 },
+					},
+				},
+				{
+					type: "system",
+					subtype: "task_started",
+					task_id: "task-subagent-mcp",
+					tool_use_id: "agent-parent",
+					task_type: "subagent",
+					subagent_type: "Explore",
+					description: "Using the example MCP",
+					session_id: "sid-subagent-mcp",
+					uuid: "uuid-subagent-mcp-start",
+				},
+				{
+					type: "assistant",
+					parent_tool_use_id: "agent-parent",
+					message: {
+						content: [
+							{
+								type: "tool_use",
+								id: "subagent-mcp-tool",
+								name: "mcp__example__lookup",
+								input: { query: "bounded" },
+							},
+						],
+						usage: { input_tokens: 2, output_tokens: 1 },
+					},
+				},
+				{
+					type: "user",
+					parent_tool_use_id: "agent-parent",
+					tool_use_result: {
+						content: [{ type: "text", text: "Structured MCP result" }],
+						_meta: { "example/private": "must-not-leak" },
+					},
+					message: {
+						content: [
+							{
+								type: "tool_result",
+								tool_use_id: "subagent-mcp-tool",
+								content: [{ type: "text", text: "Structured MCP result" }],
+							},
+						],
+					},
+				},
+				{
+					type: "system",
+					subtype: "task_notification",
+					task_id: "task-subagent-mcp",
+					tool_use_id: "agent-parent",
+					status: "completed",
+					summary: "Example MCP lookup complete",
+					session_id: "sid-subagent-mcp",
+					uuid: "uuid-subagent-mcp-complete",
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 10,
+					usage: { input_tokens: 2, output_tokens: 1 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events).toContainEqual({
+			type: "tool_result",
+			toolId: "subagent-mcp-tool",
+			content: "Structured MCP result",
+		});
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "tool_update",
+				toolId: "agent-parent",
+				subagent: expect.objectContaining({
+					agentId: "task-subagent-mcp",
+					status: "completed",
+					currentStep: "Example MCP lookup complete",
+				}),
+			}),
+		);
+		expect(JSON.stringify(events)).not.toContain("must-not-leak");
+		expect(events.some((event) => event.type === "transport_error")).toBe(
 			false,
 		);
 	});
@@ -5965,6 +6110,83 @@ describe("ClaudeProvider — supportedCommands", () => {
 		expect(commands).toEqual(mockCommands);
 	});
 
+	it("hides only terminal-bound commands advertised by Claude init", async () => {
+		const gen = sdkGen([
+			{
+				type: "system",
+				subtype: "init",
+				session_id: "sid-terminal-commands",
+				tools: [],
+				terminal_slash_commands: ["/exit", "statusline"],
+			},
+		]);
+		gen.supportedCommands = vi.fn().mockResolvedValue([
+			{
+				name: "exit",
+				description: "Exit the local terminal",
+				argumentHint: "",
+			},
+			{
+				name: "review",
+				description: "Review changes",
+				argumentHint: "",
+				aliases: ["statusline", "check"],
+			},
+			{
+				name: "help",
+				description: "Show help",
+				argumentHint: "",
+			},
+		]);
+		vi.mocked(query).mockReturnValueOnce(gen);
+		const session = new ClaudeProvider().query(baseParams());
+
+		await expect(session[Symbol.asyncIterator]().next()).resolves.toEqual({
+			done: false,
+			value: {
+				type: "session_start",
+				sessionId: "sid-terminal-commands",
+			},
+		});
+		await expect(session.supportedCommands?.()).resolves.toEqual([
+			{
+				name: "review",
+				description: "Review changes",
+				argumentHint: "",
+				aliases: ["check"],
+			},
+			{
+				name: "help",
+				description: "Show help",
+				argumentHint: "",
+			},
+		]);
+	});
+
+	it("keeps every command when older Claude init omits terminal metadata", async () => {
+		const commands = [
+			{
+				name: "exit",
+				description: "Legacy command snapshot",
+				argumentHint: "",
+			},
+		];
+		const gen = sdkGen([
+			{
+				type: "system",
+				subtype: "init",
+				session_id: "sid-legacy-commands",
+				tools: [],
+			},
+		]);
+		gen.supportedCommands = vi.fn().mockResolvedValue(commands);
+		vi.mocked(query).mockReturnValueOnce(gen);
+		const session = new ClaudeProvider().query(baseParams());
+
+		await session[Symbol.asyncIterator]().next();
+		await expect(session.supportedCommands?.()).resolves.toEqual(commands);
+	});
+
 	it("retains commands_changed replacements for later probes", async () => {
 		const refreshedCommands = [
 			{
@@ -5999,6 +6221,112 @@ describe("ClaudeProvider — supportedCommands", () => {
 		await expect(session.supportedCommands?.()).resolves.toEqual(
 			refreshedCommands,
 		);
+		expect(gen.supportedCommands).not.toHaveBeenCalled();
+	});
+
+	it("filters terminal-bound commands from live command replacements", async () => {
+		const gen = sdkGen([
+			{
+				type: "system",
+				subtype: "init",
+				session_id: "sid-command-replacement",
+				tools: [],
+				terminal_slash_commands: ["feedback"],
+			},
+			{
+				type: "system",
+				subtype: "commands_changed",
+				commands: [
+					{
+						name: "feedback",
+						description: "Open a terminal dialog",
+						argumentHint: "",
+					},
+					{
+						name: "voice",
+						description: "Apply voice rules",
+						argumentHint: "",
+					},
+				],
+				uuid: "uuid-command-replacement",
+				session_id: "sid-command-replacement",
+			},
+		]);
+		gen.supportedCommands = vi.fn().mockResolvedValue([]);
+		vi.mocked(query).mockReturnValueOnce(gen);
+		const session = new ClaudeProvider().query(baseParams());
+		const iterator = session[Symbol.asyncIterator]();
+
+		await iterator.next();
+		await expect(iterator.next()).resolves.toEqual({
+			done: false,
+			value: {
+				type: "commands_changed",
+				commands: [
+					{
+						name: "voice",
+						description: "Apply voice rules",
+						argumentHint: "",
+					},
+				],
+			},
+		});
+		await expect(session.supportedCommands?.()).resolves.toEqual([
+			{
+				name: "voice",
+				description: "Apply voice rules",
+				argumentHint: "",
+			},
+		]);
+		expect(gen.supportedCommands).not.toHaveBeenCalled();
+	});
+
+	it("re-evaluates the raw command cache when later init metadata changes", async () => {
+		const commands = [
+			{
+				name: "feedback",
+				description: "Open feedback",
+				argumentHint: "",
+			},
+			{
+				name: "voice",
+				description: "Apply voice rules",
+				argumentHint: "",
+			},
+		];
+		const gen = sdkGen([
+			{
+				type: "system",
+				subtype: "init",
+				session_id: "sid-changing-command-metadata",
+				tools: [],
+				terminal_slash_commands: ["feedback"],
+			},
+			{
+				type: "system",
+				subtype: "commands_changed",
+				commands,
+				uuid: "uuid-changing-command-list",
+				session_id: "sid-changing-command-metadata",
+			},
+			{
+				type: "system",
+				subtype: "init",
+				session_id: "sid-changing-command-metadata",
+				tools: [],
+			},
+		]);
+		gen.supportedCommands = vi.fn().mockResolvedValue([]);
+		vi.mocked(query).mockReturnValueOnce(gen);
+		const session = new ClaudeProvider().query(baseParams());
+		const iterator = session[Symbol.asyncIterator]();
+
+		await iterator.next();
+		await expect(iterator.next()).resolves.toMatchObject({
+			value: { commands: [commands[1]] },
+		});
+		await iterator.next();
+		await expect(session.supportedCommands?.()).resolves.toEqual(commands);
 		expect(gen.supportedCommands).not.toHaveBeenCalled();
 	});
 

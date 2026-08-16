@@ -146,6 +146,12 @@ export type ProviderWindowDef = {
 	windowSecs: number;
 	/** Hide the window until the provider reports a current reset period. */
 	optional?: boolean;
+	/** Account telemetry that must never feed rate-limit gating or sleep. */
+	displayOnly?: boolean;
+	/** Hide Hlid Ledger totals when the window is external account telemetry. */
+	showLocalStats?: boolean;
+	/** Show this window in Raven only for models with one of these prefixes. */
+	modelPrefixes?: ReadonlyArray<string>;
 };
 
 /**
@@ -247,8 +253,10 @@ export async function getProviderUsage(
 
 	for (const def of windowDefs) {
 		const row =
-			db
-				.query<WindowRow, [string, number]>(`
+			def.showLocalStats === false
+				? EMPTY_ROW
+				: (db
+						.query<WindowRow, [string, number]>(`
         SELECT
 		  COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_creation_tokens, 0)), 0) as tokens,
 		  COUNT(DISTINCT session_id) as sessions,
@@ -258,7 +266,7 @@ export async function getProviderUsage(
         FROM usage_queries
         WHERE provider_id = ? AND timestamp >= strftime('%s', 'now', ? || ' seconds')
       `)
-				.get(providerId, -def.windowSecs) ?? EMPTY_ROW;
+						.get(providerId, -def.windowSecs) ?? EMPTY_ROW);
 
 		const rl = parseStoredRl(
 			db
@@ -273,6 +281,9 @@ export async function getProviderUsage(
 			windowId: def.windowId,
 			label: def.label,
 			windowSecs: def.windowSecs,
+			...(def.displayOnly ? { displayOnly: true } : {}),
+			...(def.showLocalStats === false ? { showLocalStats: false } : {}),
+			...(def.modelPrefixes ? { modelPrefixes: [...def.modelPrefixes] } : {}),
 			tokens: row.tokens,
 			sessions: row.sessions,
 			queries: row.queries,

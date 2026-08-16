@@ -4704,6 +4704,8 @@ function ChatPageContent(props: ChatPageContentProps) {
 				liveQueryCount={liveStats?.queries ?? 0}
 				rateLimit={rateLimit}
 				preferredProviderId={composerProps.activeProviderId}
+				preferredProviderLabel={composerProps.activeProviderLabel}
+				preferredModel={composerProps.activeModel ?? undefined}
 				fetchFn={loadProviderUsages}
 				tail={<ContextWindowSection stats={liveStats} />}
 			/>

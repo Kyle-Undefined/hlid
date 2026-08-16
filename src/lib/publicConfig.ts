@@ -4,16 +4,21 @@ import type { HlidConfig } from "#/config";
 export const CONFIG_SECRET_SENTINEL = "__HLID_SECRET_SET__";
 
 export function publicConfig(config: HlidConfig): HlidConfig {
-	const acpAgents = config.acp_agents?.map((agent) =>
-		agent.env
+	const acpAgents = config.acp_agents?.map((agent) => ({
+		...agent,
+		...(agent.env
 			? {
-					...agent,
 					env: Object.fromEntries(
 						Object.keys(agent.env).map((key) => [key, CONFIG_SECRET_SENTINEL]),
 					),
 				}
-			: agent,
-	);
+			: {}),
+		...(agent.opencode_go_usage
+			? {
+					opencode_go_usage: { api_key: CONFIG_SECRET_SENTINEL },
+				}
+			: {}),
+	}));
 	if (!config.cliproxy.api_key && acpAgents === undefined) return config;
 	return {
 		...config,
@@ -53,14 +58,36 @@ export function restoreConfigSecrets(
 		acp_agents: rawAgents.map((rawAgent) => {
 			if (!rawAgent || typeof rawAgent !== "object") return rawAgent;
 			const agent = rawAgent as Record<string, unknown>;
-			const env = agent.env;
-			if (!env || typeof env !== "object" || Array.isArray(env)) return agent;
 			const id = typeof agent.id === "string" ? agent.id : "";
-			const currentEnv = current.acp_agents?.find(
+			const currentAgent = current.acp_agents?.find(
 				(candidate) => candidate.id === id,
-			)?.env;
+			);
+			let restoredAgent = agent;
+			const openCodeGoUsage = agent.opencode_go_usage;
+			if (
+				openCodeGoUsage &&
+				typeof openCodeGoUsage === "object" &&
+				!Array.isArray(openCodeGoUsage)
+			) {
+				const usage = openCodeGoUsage as Record<string, unknown>;
+				if (usage.api_key === CONFIG_SECRET_SENTINEL) {
+					restoredAgent = {
+						...restoredAgent,
+						opencode_go_usage: {
+							...usage,
+							// An orphaned redaction marker is invalid input, never a key.
+							api_key: currentAgent?.opencode_go_usage?.api_key ?? "",
+						},
+					};
+				}
+			}
+			const env = agent.env;
+			if (!env || typeof env !== "object" || Array.isArray(env)) {
+				return restoredAgent;
+			}
+			const currentEnv = currentAgent?.env;
 			return {
-				...agent,
+				...restoredAgent,
 				env: Object.fromEntries(
 					Object.entries(env as Record<string, unknown>).map(([key, value]) => [
 						key,

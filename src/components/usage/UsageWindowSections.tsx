@@ -135,27 +135,29 @@ export function ProviderWindowCell({
 					}}
 				/>
 			</div>
-			<div className="flex items-center flex-wrap gap-x-1.5 gap-y-0">
-				<PrivacyMask
-					inline
-					className="text-[9px] tabular-nums text-foreground/50"
-				>
-					{(win.unpricedQueries ?? 0) > 0 && win.cost === 0
-						? "--"
-						: `${estimatedCost ? "~" : ""}$${(win.cost ?? 0).toFixed(2)}`}
-				</PrivacyMask>
-				<span className="text-muted-foreground/25 hidden md:inline">·</span>
-				<PrivacyMask
-					inline
-					className="text-[8px] tracking-widest text-muted-foreground/40"
-				>
-					<span className="md:hidden">{win.queries}q</span>
-					<span className="hidden md:inline">{win.queries} queries</span>
-					{(win.unpricedQueries ?? 0) > 0 && (
-						<span> · {win.unpricedQueries} unpriced</span>
-					)}
-				</PrivacyMask>
-			</div>
+			{win.showLocalStats !== false && (
+				<div className="flex items-center flex-wrap gap-x-1.5 gap-y-0">
+					<PrivacyMask
+						inline
+						className="text-[9px] tabular-nums text-foreground/50"
+					>
+						{(win.unpricedQueries ?? 0) > 0 && win.cost === 0
+							? "--"
+							: `${estimatedCost ? "~" : ""}$${(win.cost ?? 0).toFixed(2)}`}
+					</PrivacyMask>
+					<span className="text-muted-foreground/25 hidden md:inline">·</span>
+					<PrivacyMask
+						inline
+						className="text-[8px] tracking-widest text-muted-foreground/40"
+					>
+						<span className="md:hidden">{win.queries}q</span>
+						<span className="hidden md:inline">{win.queries} queries</span>
+						{(win.unpricedQueries ?? 0) > 0 && (
+							<span> · {win.unpricedQueries} unpriced</span>
+						)}
+					</PrivacyMask>
+				</div>
+			)}
 		</div>
 	);
 }

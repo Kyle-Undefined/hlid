@@ -186,6 +186,45 @@ describe("POST /api/config — handlePostConfig", () => {
 		expect(writeConfig).toHaveBeenCalledWith(current);
 	});
 
+	it("redacts and restores the dedicated OpenCode Go usage key", async () => {
+		const current = HlidConfigSchema.parse({
+			acp_agents: [
+				{
+					id: "opencode",
+					opencode_go_usage: { api_key: "go-usage-secret" },
+				},
+			],
+		});
+		mockLoadConfig.mockReturnValue(current);
+
+		const getResponse = await handleGetConfig(get());
+		const publicValue = (await getResponse.json()) as typeof current;
+		expect(publicValue.acp_agents?.[0]?.opencode_go_usage).toEqual({
+			api_key: "__HLID_SECRET_SET__",
+		});
+		expect(JSON.stringify(publicValue)).not.toContain("go-usage-secret");
+
+		const postResponse = await handlePostConfig(post(publicValue));
+		expect(postResponse.status).toBe(200);
+		expect(writeConfig).toHaveBeenCalledWith(current);
+	});
+
+	it("rejects an orphaned OpenCode Go redaction marker as an API key", async () => {
+		const response = await handlePostConfig(
+			post({
+				acp_agents: [
+					{
+						id: "opencode",
+						opencode_go_usage: { api_key: "__HLID_SECRET_SET__" },
+					},
+				],
+			}),
+		);
+
+		expect(response.status).toBe(400);
+		expect(writeConfig).not.toHaveBeenCalled();
+	});
+
 	it("waits for runtime synchronization when Codex Live changes", async () => {
 		let finishRuntimeSync: (response: Response) => void = () => {};
 		const runtimeSync = new Promise<Response>((resolve) => {

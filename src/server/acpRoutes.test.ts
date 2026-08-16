@@ -908,6 +908,131 @@ describe("ACP internal HTTP routes", () => {
 		});
 	});
 
+	it("updates an inactive managed target without switching the active runtime", async () => {
+		const mutate = vi.fn(() => ({
+			operation: {
+				id: "operation-update-wsl",
+				action: "update" as const,
+				phase: "queued" as const,
+				cancelable: true,
+			},
+			completion: Promise.resolve(),
+		}));
+		const managedHostTarget = {
+			...hostTarget,
+			selected: false,
+			provenance: "managed" as const,
+			canInstall: false,
+			canUpdate: true,
+			canRemove: true,
+			installedVersion: "0.9.0",
+		};
+		const dualTargetAgent = {
+			...enabledAgent,
+			targets: [managedHostTarget, { ...wslTarget, selected: true }],
+		};
+		const stableConfig = HlidConfigSchema.parse({
+			vault: { path: "/workspace" },
+			agents: [{ name: "WSL", path: wslWorkspace }],
+			acp_agents: [{ id: "opencode", target: wslTargetDescriptor }],
+		});
+		loadConfig.mockReturnValue(stableConfig);
+		catalog.mockResolvedValue([dualTargetAgent]);
+		const managedHandle = createAcpRouteHandler({
+			registry: { catalog },
+			loadConfig,
+			managedInstaller: { mutate },
+			managedMutationAuthorized: () => true,
+		});
+
+		const response = await managedHandle(
+			new URL("http://localhost/acp/managed/mutate"),
+			request("/acp/managed/mutate", "POST", {
+				action: "update",
+				agentId: "opencode",
+				targetId: "host",
+				revision: mutationRevision,
+			}),
+		);
+
+		expect(response?.status).toBe(202);
+		expect(mutate).toHaveBeenCalledWith({
+			action: "update",
+			agent: dualTargetAgent,
+			targetDescriptor: expect.objectContaining({
+				targetId: "host",
+				target: { kind: "host" },
+			}),
+			platformTarget: "linux-x86_64",
+			enabled: false,
+		});
+		expect(stableConfig.acp_agents?.[0]?.target).toEqual(wslTargetDescriptor);
+	});
+
+	it.each([
+		{
+			action: "install" as const,
+			target: {
+				...hostTarget,
+				selected: false,
+				provenance: "missing" as const,
+				available: false,
+				canEnable: false,
+				canInstall: true,
+				canRemove: false,
+				resolvedExecutable: undefined,
+			},
+		},
+		{
+			action: "remove" as const,
+			target: {
+				...hostTarget,
+				selected: false,
+				provenance: "managed" as const,
+				canInstall: false,
+				canRemove: true,
+				installedVersion: "1.0.0",
+			},
+		},
+	])("still rejects inactive-target $action", async ({ action, target }) => {
+		const mutate = vi.fn();
+		const activeWsl = { ...wslTarget, selected: true };
+		loadConfig.mockReturnValue(
+			HlidConfigSchema.parse({
+				vault: { path: "/workspace" },
+				agents: [{ name: "WSL", path: wslWorkspace }],
+				acp_agents: [{ id: "opencode", target: wslTargetDescriptor }],
+			}),
+		);
+		catalog.mockResolvedValue([
+			{ ...enabledAgent, targets: [target, activeWsl] },
+		]);
+		const managedHandle = createAcpRouteHandler({
+			registry: { catalog },
+			loadConfig,
+			managedInstaller: { mutate },
+			managedMutationAuthorized: () => true,
+		});
+
+		const response = await managedHandle(
+			new URL("http://localhost/acp/managed/mutate"),
+			request("/acp/managed/mutate", "POST", {
+				action,
+				agentId: "opencode",
+				targetId: "host",
+				revision: mutationRevision,
+			}),
+		);
+
+		expect(response?.status).toBe(409);
+		expect(await response?.json()).toEqual({
+			ok: false,
+			error:
+				"ACP configuration changed. Wait for the save to finish and confirm again.",
+		});
+		expect(mutate).not.toHaveBeenCalled();
+	});
+
 	it("limits update refreshes to configured harnesses", async () => {
 		const response = await handle(
 			new URL("http://localhost/acp/registry?refresh=1&configured=1"),

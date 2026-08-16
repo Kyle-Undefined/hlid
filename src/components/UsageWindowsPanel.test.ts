@@ -129,6 +129,22 @@ describe("mergeProviderSnapshot", () => {
 		expect(result.windows[0].utilization).toBe(0.1);
 	});
 
+	it("treats a display-only null reading as an authoritative account clear", () => {
+		const previous = makeSnapshot(0.81, FUTURE_FAR);
+		const fresh = makeSnapshot(null, null);
+		fresh.providerId = "acp:opencode";
+		fresh.providerLabel = "OpenCode Go";
+		fresh.windows[0] = { ...fresh.windows[0], displayOnly: true };
+		previous.providerId = fresh.providerId;
+		previous.providerLabel = fresh.providerLabel;
+		previous.windows[0] = { ...previous.windows[0], displayOnly: true };
+
+		const result = mergeProviderSnapshot(fresh, previous, null);
+
+		expect(result.windows[0].utilization).toBeNull();
+		expect(result.windows[0].resetsAt).toBeNull();
+	});
+
 	it("applies matching live rate limits without changing other providers", () => {
 		const claude = makeSnapshot(0.1, FUTURE_NEAR);
 		const codex = { ...makeSnapshot(0.2, FUTURE_NEAR), providerId: "codex" };

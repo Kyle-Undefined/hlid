@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type HlidConfig, HlidConfigSchema } from "../config";
+import { AcpProvider } from "./acpProvider";
 import type { AcpCatalogItem } from "./acpRegistry";
 import {
 	acpExecutionTargetForWorkspace,
@@ -93,7 +94,9 @@ function target(
 }
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	vi.unstubAllEnvs();
+	vi.unstubAllGlobals();
 });
 
 describe("ACP runtime synchronization", () => {
@@ -246,6 +249,62 @@ describe("ACP runtime synchronization", () => {
 		expect(wsl.env.PATH).toBe("/opt/opencode/bin");
 		expect(JSON.parse(wsl.env.OPENCODE_CONFIG_CONTENT).instructions).toEqual([
 			"wsl.md",
+		]);
+	});
+
+	it("keeps the OpenCode Go usage key out of runtime identity and subprocess env", () => {
+		const catalogItem = item("opencode");
+		const withoutUsage = config([
+			{ id: "opencode", env: { RUNTIME_SETTING: "kept" } },
+		]);
+		const withUsage = config([
+			{
+				id: "opencode",
+				env: { RUNTIME_SETTING: "kept" },
+				opencode_go_usage: { api_key: "go-usage-secret" },
+			},
+		]);
+
+		expect(acpRuntimeFingerprint(catalogItem, withUsage)).toBe(
+			acpRuntimeFingerprint(catalogItem, withoutUsage),
+		);
+		const prior = resolveAcpWorkspaceRuntime(
+			catalogItem,
+			withoutUsage,
+			"/workspace",
+		);
+		const next = resolveAcpWorkspaceRuntime(
+			catalogItem,
+			withUsage,
+			"/workspace",
+		);
+		expect(next.env).toEqual(prior.env);
+		expect(next.env.OPENCODE_API_KEY).toBeUndefined();
+	});
+
+	it("exposes OpenCode Go usage metadata only when its dedicated key exists", () => {
+		const catalogItem = item("opencode");
+		const withoutUsage = createConfiguredAcpProvider(
+			catalogItem,
+			config([{ id: "opencode" }]),
+		);
+		const withUsage = createConfiguredAcpProvider(
+			catalogItem,
+			config([
+				{
+					id: "opencode",
+					opencode_go_usage: { api_key: "go-usage-secret" },
+				},
+			]),
+		);
+
+		expect(withoutUsage.usageLabel).toBeUndefined();
+		expect(withoutUsage.usageWindows).toBeUndefined();
+		expect(withUsage.usageLabel).toBe("OpenCode Go");
+		expect(withUsage.usageWindows?.map((window) => window.windowId)).toEqual([
+			"opencode_go_rolling",
+			"opencode_go_weekly",
+			"opencode_go_monthly",
 		]);
 	});
 
@@ -745,6 +804,134 @@ describe("ACP runtime synchronization", () => {
 		).toThrow("not a valid WSL UNC path");
 	});
 
+	it("keeps the active workspace identity stable when only another target updates", () => {
+		const runtimeConfig = HlidConfigSchema.parse({
+			vault: { name: "Vault", path: "C:\\Users\\kyle\\Vault" },
+			agents: [
+				{
+					name: "Workspace",
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\workspace",
+				},
+			],
+			acp_agents: [{ id: "opencode" }],
+		});
+		const host = target("host", { selected: true });
+		const priorWsl = target("wsl", {
+			selected: false,
+			command: "/managed/opencode-v1",
+		});
+		const updatedWsl = {
+			...priorWsl,
+			command: "/managed/opencode-v2",
+			resolvedExecutable: "/managed/opencode-v2",
+			installedVersion: "2.0.0",
+		};
+		const before = item("opencode", { targets: [host, priorWsl] });
+		const after = item("opencode", { targets: [host, updatedWsl] });
+		const activeCwd = "C:\\Users\\kyle\\Vault";
+
+		expect(
+			resolveAcpWorkspaceRuntime(before, runtimeConfig, activeCwd, "win32")
+				.metadataCacheIdentity,
+		).toBe(
+			resolveAcpWorkspaceRuntime(after, runtimeConfig, activeCwd, "win32")
+				.metadataCacheIdentity,
+		);
+		// The aggregate fingerprint still changes so the routed provider can reconcile
+		// the one changed child while leaving this active workspace untouched.
+		expect(acpRuntimeFingerprint(before, runtimeConfig)).not.toBe(
+			acpRuntimeFingerprint(after, runtimeConfig),
+		);
+	});
+
+	it("reconciles only the updated WSL child while preserving the live Windows child", async () => {
+		const windowsCwd = "C:\\Users\\kyle\\Vault";
+		const wslCwd = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\workspace";
+		const runtimeConfig = HlidConfigSchema.parse({
+			vault: { name: "Vault", path: windowsCwd },
+			agents: [{ name: "Workspace", path: wslCwd }],
+			acp_agents: [{ id: "opencode", target: { kind: "host" } }],
+		});
+		const host = target("host", {
+			selected: true,
+			command: "C:\\managed\\opencode.exe",
+		});
+		const priorWsl = target("wsl", {
+			selected: false,
+			command: "/managed/opencode-v1",
+		});
+		const updatedWsl = {
+			...priorWsl,
+			command: "/managed/opencode-v2",
+			resolvedExecutable: "/managed/opencode-v2",
+			installedVersion: "2.0.0",
+		};
+		const before = item("opencode", { targets: [host, priorWsl] });
+		const after = item("opencode", { targets: [host, updatedWsl] });
+		const provider = createConfiguredAcpProvider(before, runtimeConfig);
+		const providers = new Map<string, AgentProvider>([
+			[provider.providerId, provider],
+		]);
+		const fingerprints = new Map([
+			[provider.providerId, acpRuntimeFingerprint(before, runtimeConfig)],
+		]);
+		const query = vi
+			.spyOn(AcpProvider.prototype, "query")
+			.mockImplementation(() => ({}) as never);
+		const retireRuntime = vi.spyOn(AcpProvider.prototype, "retireRuntime");
+		const retireAll = vi.fn();
+		const retireTarget = vi.fn();
+		const register = vi.fn();
+
+		provider.query({ cwd: windowsCwd } as never);
+		provider.query({ cwd: wslCwd } as never);
+		const windowsChild = query.mock.instances[0] as AcpProvider;
+		const wslChild = query.mock.instances[1] as AcpProvider;
+		const windowsIdentity = provider.runtimeIdentityFor(windowsCwd);
+		const wslIdentity = provider.runtimeIdentityFor(wslCwd);
+
+		expect(
+			await syncAcpRuntimeProviders({
+				config: runtimeConfig,
+				catalog: [after],
+				providers,
+				fingerprints,
+				retireProviderSessions: retireAll,
+				retireProviderTargetSessions: retireTarget,
+				registerProvider: register,
+			}),
+		).toEqual({
+			added: [],
+			removed: [],
+			replaced: [],
+			availabilityUpdated: ["acp:opencode"],
+		});
+
+		expect(providers.get("acp:opencode")).toBe(provider);
+		expect(retireAll).not.toHaveBeenCalled();
+		expect(retireTarget).toHaveBeenCalledOnce();
+		expect(retireTarget).toHaveBeenCalledWith("acp:opencode", {
+			kind: "wsl",
+			distro: "Ubuntu-24.04",
+		});
+		expect(retireRuntime).toHaveBeenCalledOnce();
+		expect(retireRuntime.mock.instances[0]).toBe(wslChild);
+		expect(register).toHaveBeenCalledWith(provider, true);
+		expect(provider.runtimeIdentityFor(windowsCwd)).toBe(windowsIdentity);
+		expect(provider.runtimeIdentityFor(wslCwd)).not.toBe(wslIdentity);
+
+		provider.query({ cwd: windowsCwd } as never);
+		provider.query({ cwd: wslCwd } as never);
+		expect(query.mock.instances[2]).toBe(windowsChild);
+		expect(query.mock.instances[3]).not.toBe(wslChild);
+		expect((query.mock.instances[2] as AcpProvider).options.command).toBe(
+			"C:\\managed\\opencode.exe",
+		);
+		expect((query.mock.instances[3] as AcpProvider).options.command).toBe(
+			"/managed/opencode-v2",
+		);
+	});
+
 	it("marks a manually persisted invalid filter unavailable without crashing startup", () => {
 		const provider = createConfiguredAcpProvider(
 			item("opencode"),
@@ -763,7 +950,149 @@ describe("ACP runtime synchronization", () => {
 		});
 	});
 
-	it("adds, replaces, and removes only managed ACP providers", async () => {
+	it("rotates the dedicated Go usage client without retiring the ACP runtime", async () => {
+		const catalogItem = item("opencode");
+		const initialConfig = config([{ id: "opencode" }]);
+		const provider = createConfiguredAcpProvider(catalogItem, initialConfig);
+		const providers = new Map<string, AgentProvider>([
+			[provider.providerId, provider],
+		]);
+		const fingerprints = new Map([
+			[provider.providerId, acpRuntimeFingerprint(catalogItem, initialConfig)],
+		]);
+		const retireAll = vi.fn();
+		const retireTarget = vi.fn();
+		const register = vi.fn();
+		const usageFetch = vi
+			.fn()
+			.mockResolvedValue(new Response(null, { status: 401 }));
+		vi.stubGlobal("fetch", usageFetch);
+		const enabledConfig = config([
+			{
+				id: "opencode",
+				opencode_go_usage: { api_key: "first-go-key" },
+			},
+		]);
+
+		expect(
+			await syncAcpRuntimeProviders({
+				config: enabledConfig,
+				catalog: [catalogItem],
+				providers,
+				fingerprints,
+				retireProviderSessions: retireAll,
+				retireProviderTargetSessions: retireTarget,
+				registerProvider: register,
+			}),
+		).toEqual({
+			added: [],
+			removed: [],
+			replaced: [],
+			availabilityUpdated: ["acp:opencode"],
+		});
+		expect(providers.get("acp:opencode")).toBe(provider);
+		expect(retireAll).not.toHaveBeenCalled();
+		expect(retireTarget).not.toHaveBeenCalled();
+		expect(register).toHaveBeenCalledWith(provider, false);
+		expect(provider.usageLabel).toBe("OpenCode Go");
+		await provider.readUsageWindows();
+		expect(usageFetch.mock.calls[0]?.[1]?.headers).toMatchObject({
+			authorization: "Bearer first-go-key",
+		});
+
+		register.mockClear();
+		const rotatedConfig = config([
+			{
+				id: "opencode",
+				opencode_go_usage: { api_key: "second-go-key" },
+			},
+		]);
+		expect(
+			await syncAcpRuntimeProviders({
+				config: rotatedConfig,
+				catalog: [catalogItem],
+				providers,
+				fingerprints,
+				retireProviderSessions: retireAll,
+				retireProviderTargetSessions: retireTarget,
+				registerProvider: register,
+			}),
+		).toEqual({
+			added: [],
+			removed: [],
+			replaced: [],
+			availabilityUpdated: ["acp:opencode"],
+		});
+		expect(register).toHaveBeenCalledWith(provider, false);
+		expect(retireAll).not.toHaveBeenCalled();
+		expect(retireTarget).not.toHaveBeenCalled();
+		await provider.readUsageWindows();
+		expect(usageFetch.mock.calls[1]?.[1]?.headers).toMatchObject({
+			authorization: "Bearer second-go-key",
+		});
+	});
+
+	it("never returns an old account reading after its key is replaced in flight", async () => {
+		const oldRequest = Promise.withResolvers<Response>();
+		const usageResponse = (percent: number) =>
+			Response.json({
+				usage: {
+					rolling: {
+						status: "ok",
+						percent,
+						resetsAt: "2030-01-01T01:00:00.000Z",
+					},
+					weekly: {
+						status: "ok",
+						percent,
+						resetsAt: "2030-01-07T00:00:00.000Z",
+					},
+					monthly: {
+						status: "ok",
+						percent,
+						resetsAt: "2030-02-01T00:00:00.000Z",
+					},
+				},
+			});
+		const usageFetch = vi.fn(
+			(_input: string | URL | Request, init?: RequestInit) =>
+				new Headers(init?.headers).get("authorization") === "Bearer old-key"
+					? oldRequest.promise
+					: Promise.resolve(usageResponse(82)),
+		);
+		vi.stubGlobal("fetch", usageFetch);
+		const provider = createConfiguredAcpProvider(
+			item("opencode"),
+			config([
+				{
+					id: "opencode",
+					opencode_go_usage: { api_key: "old-key" },
+				},
+			]),
+		);
+
+		const pending = provider.readUsageWindows();
+		expect(usageFetch).toHaveBeenCalledOnce();
+		provider.updateOpenCodeGoUsage(
+			config([
+				{
+					id: "opencode",
+					opencode_go_usage: { api_key: "new-key" },
+				},
+			]),
+		);
+		oldRequest.resolve(usageResponse(12));
+
+		const readings = await pending;
+
+		expect(readings[0]?.utilization).toBe(0.82);
+		expect(usageFetch).toHaveBeenCalledTimes(2);
+		expect(usageFetch.mock.calls[1]?.[1]?.headers).toMatchObject({
+			authorization: "Bearer new-key",
+		});
+	});
+
+	it("adds, reconciles, and removes only managed ACP providers", async () => {
 		const native = { providerId: "codex", query: vi.fn() } as AgentProvider;
 		const providers = new Map<string, AgentProvider>([["codex", native]]);
 		const fingerprints = new Map<string, string>();
@@ -779,6 +1108,7 @@ describe("ACP runtime synchronization", () => {
 				providers,
 				fingerprints,
 				retireProviderSessions: retire,
+				retireProviderTargetSessions: vi.fn(),
 				registerProvider: register,
 			}),
 		).toEqual({
@@ -792,6 +1122,9 @@ describe("ACP runtime synchronization", () => {
 			expect.objectContaining({ providerId: "acp:opencode" }),
 			false,
 		);
+		const managed = providers.get("acp:opencode");
+		retire.mockClear();
+		register.mockClear();
 
 		const changedConfig = config([
 			{ id: "opencode", executable: "C:/tools/opencode.cmd" },
@@ -806,17 +1139,18 @@ describe("ACP runtime synchronization", () => {
 				providers,
 				fingerprints,
 				retireProviderSessions: retire,
+				retireProviderTargetSessions: vi.fn(),
 				registerProvider: register,
 			}),
 		).toEqual({
 			added: [],
 			removed: [],
-			replaced: ["acp:opencode"],
-			availabilityUpdated: [],
+			replaced: [],
+			availabilityUpdated: ["acp:opencode"],
 		});
-		expect(retire).toHaveBeenLastCalledWith(["acp:opencode"], {
-			preserveSelection: true,
-		});
+		expect(providers.get("acp:opencode")).toBe(managed);
+		expect(retire).not.toHaveBeenCalled();
+		expect(register).toHaveBeenCalledWith(managed, true);
 
 		expect(
 			await syncAcpRuntimeProviders({
@@ -825,6 +1159,7 @@ describe("ACP runtime synchronization", () => {
 				providers,
 				fingerprints,
 				retireProviderSessions: retire,
+				retireProviderTargetSessions: vi.fn(),
 				registerProvider: register,
 			}),
 		).toEqual({
@@ -857,6 +1192,7 @@ describe("ACP runtime synchronization", () => {
 				providers,
 				fingerprints,
 				retireProviderSessions: vi.fn(),
+				retireProviderTargetSessions: vi.fn(),
 				registerProvider: register,
 			}),
 		).toEqual({
@@ -897,6 +1233,7 @@ describe("ACP runtime synchronization", () => {
 				providers,
 				fingerprints,
 				retireProviderSessions: retire,
+				retireProviderTargetSessions: vi.fn(),
 				registerProvider: vi.fn(),
 			}),
 		).rejects.toBeInstanceOf(OpenCodeConfigOverlayError);
@@ -926,6 +1263,7 @@ describe("ACP runtime synchronization", () => {
 				providers,
 				fingerprints,
 				retireProviderSessions: retire,
+				retireProviderTargetSessions: vi.fn(),
 				registerProvider: vi.fn(),
 			}),
 		).toEqual({
@@ -950,6 +1288,7 @@ describe("ACP runtime synchronization", () => {
 				providers,
 				fingerprints,
 				retireProviderSessions: retire,
+				retireProviderTargetSessions: vi.fn(),
 				registerProvider: vi.fn(),
 			}),
 		).toEqual({
@@ -966,7 +1305,7 @@ describe("ACP runtime synchronization", () => {
 		expect(providers.get(provider.providerId)).toBe(provider);
 	});
 
-	it("cancels and awaits a hanging old inspection before swapping runtimes", async () => {
+	it("cancels and awaits a hanging child inspection before reconciling its target", async () => {
 		const root = mkdtempSync(join(tmpdir(), "hlid-acp-runtime-replace-"));
 		const initializeMarker = join(root, "initialize.log");
 		const activeConfig = HlidConfigSchema.parse({
@@ -998,6 +1337,8 @@ describe("ACP runtime synchronization", () => {
 				args: [fakeAcpFixture],
 				env: { HLID_FAKE_ACP_BEHAVIOR: "" },
 			});
+			const retireTarget = vi.fn();
+			const register = vi.fn();
 
 			await expect(
 				syncAcpRuntimeProviders({
@@ -1006,26 +1347,43 @@ describe("ACP runtime synchronization", () => {
 					providers,
 					fingerprints,
 					retireProviderSessions: vi.fn(),
-					registerProvider: vi.fn(),
+					retireProviderTargetSessions: retireTarget,
+					registerProvider: register,
 				}),
 			).resolves.toEqual({
 				added: [],
 				removed: [],
-				replaced: ["acp:opencode"],
-				availabilityUpdated: [],
+				replaced: [],
+				availabilityUpdated: ["acp:opencode"],
 			});
-			await expect(models).rejects.toThrow("runtime is updating");
-			expect(providers.get("acp:opencode")).not.toBe(provider);
+			await expect(models).rejects.toThrow("runtime is updating in");
+			expect(providers.get("acp:opencode")).toBe(provider);
+			expect(retireTarget).toHaveBeenCalledWith("acp:opencode", {
+				kind: "host",
+			});
+			expect(register).toHaveBeenCalledWith(provider, true);
 		} finally {
 			await provider.retireRuntime();
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
 
-	it("keeps a fail-closed runtime registered until replacement cleanup settles", async () => {
+	it("preserves fail-closed replacement behavior for a generic managed provider", async () => {
 		const activeConfig = config([{ id: "opencode" }]);
 		const activeItem = item("opencode");
-		const provider = createConfiguredAcpProvider(activeItem, activeConfig);
+		let retirementReason: string | undefined;
+		const provider = {
+			providerId: "acp:opencode",
+			label: "OpenCode",
+			query: vi.fn(() => {
+				if (retirementReason) throw new Error(retirementReason);
+				return {} as never;
+			}),
+			retireRuntime: vi.fn((reason?: string) => {
+				retirementReason = reason;
+				return Promise.resolve();
+			}),
+		} as AgentProvider;
 		const providers = new Map<string, AgentProvider>([
 			[provider.providerId, provider],
 		]);
@@ -1047,6 +1405,7 @@ describe("ACP runtime synchronization", () => {
 			providers,
 			fingerprints,
 			retireProviderSessions: () => cleanup,
+			retireProviderTargetSessions: vi.fn(),
 			registerProvider: register,
 		});
 		await Promise.resolve();

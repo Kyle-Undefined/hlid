@@ -820,6 +820,69 @@ describe("AcpSection", () => {
 		);
 	});
 
+	it("updates an inactive managed target without changing the configured environment", async () => {
+		serverFns.mutate.mockResolvedValue({
+			id: "operation-update-wsl",
+			action: "update",
+			phase: "downloading",
+			received: 1024,
+			total: 2048,
+			cancelable: true,
+		});
+		const onChange = vi.fn();
+		const opencode = item("opencode", "OpenCode");
+		const host = wslTarget({
+			targetId: "host",
+			target: { kind: "host" },
+			label: "Windows",
+			recommended: false,
+			selected: true,
+			platformTarget: "windows-x86_64",
+			canUpdate: false,
+			command: "C:\\managed\\opencode.exe",
+		});
+		const wsl = wslTarget({
+			selected: false,
+			canUpdate: true,
+			registryVersion: "1.1.0",
+		});
+		render(
+			<AcpSection
+				initialCatalog={[{ ...opencode, targets: [host, wsl] }]}
+				value={[{ id: "opencode" }]}
+				savedValue={[{ id: "opencode" }]}
+				onChange={onChange}
+			/>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Update OpenCode in WSL · Ubuntu-24.04",
+			}),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "update" }));
+
+		await waitFor(() =>
+			expect(serverFns.mutate).toHaveBeenCalledWith({
+				action: "update",
+				agentId: "opencode",
+				targetId: "wsl-ubuntu",
+				revision: mutationRevision,
+			}),
+		);
+		expect(onChange).not.toHaveBeenCalled();
+		expect(
+			(
+				screen.getByRole("combobox", {
+					name: "OpenCode execution environment",
+				}) as HTMLSelectElement
+			).value,
+		).toBe("host");
+		expect((await screen.findByRole("status")).textContent).toContain(
+			"Updating · Downloading · 1 KB of 2 KB",
+		);
+	});
+
 	it("polls the catalog until a managed operation settles", async () => {
 		vi.useFakeTimers();
 		const opencode = item("opencode", "OpenCode");

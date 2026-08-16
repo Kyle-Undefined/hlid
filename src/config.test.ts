@@ -64,6 +64,36 @@ describe("HlidConfigSchema ACP WSL workspace targets", () => {
 	});
 });
 
+describe("HlidConfigSchema OpenCode Go usage", () => {
+	it("requires an explicit configured key and remains OpenCode-only", () => {
+		expect(
+			HlidConfigSchema.safeParse({
+				acp_agents: [{ id: "opencode", opencode_go_usage: { api_key: "" } }],
+			}).success,
+		).toBe(false);
+		expect(
+			HlidConfigSchema.safeParse({
+				acp_agents: [
+					{
+						id: "other",
+						opencode_go_usage: { api_key: "secret" },
+					},
+				],
+			}).success,
+		).toBe(false);
+		expect(
+			HlidConfigSchema.safeParse({
+				acp_agents: [
+					{
+						id: "opencode",
+						opencode_go_usage: { api_key: "secret" },
+					},
+				],
+			}).success,
+		).toBe(true);
+	});
+});
+
 describe("HlidConfigSchema Local Conversation", () => {
 	it("is opt-in and preserves an explicit enabled value", () => {
 		expect(HlidConfigSchema.parse({}).voice.local_conversation_mode).toBe(

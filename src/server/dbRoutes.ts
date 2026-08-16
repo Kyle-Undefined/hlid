@@ -11,6 +11,7 @@ import {
 	isHlidDelegationControlOwned,
 } from "../lib/hlidDelegation";
 import { clampInt, uid } from "../lib/utils";
+import type { AgentProvider } from "./agentProvider";
 import {
 	msUntilNextLocalDay,
 	readAnalyticsSnapshot,
@@ -24,7 +25,7 @@ import {
 	startProviderHistorySync,
 	syncClaudeProviderHistory,
 } from "./providerHistorySync";
-import { getWindowMark } from "./proxy";
+import { getWindowMark, persistDisplayUsageReading } from "./proxy";
 import { broadcast } from "./runState";
 import { copyForkedSessionAttachments } from "./sessionForkAttachments";
 import type { SessionPool } from "./sessionPool";
@@ -39,8 +40,9 @@ export async function handleDbRoute(
 	req: Request,
 	pool?: SessionPool,
 	terminalPool?: TerminalSessionPool,
+	providers?: ReadonlyMap<string, AgentProvider>,
 ): Promise<Response | null> {
-	const context = { url, req, pool, terminalPool };
+	const context = { url, req, pool, terminalPool, providers };
 	switch (req.method) {
 		case "GET":
 			return handleGetRoute(context);
@@ -60,6 +62,7 @@ interface DbRouteContext {
 	req: Request;
 	pool?: SessionPool;
 	terminalPool?: TerminalSessionPool;
+	providers?: ReadonlyMap<string, AgentProvider>;
 }
 
 type DbGetHandler = (context: DbRouteContext) => Response | Promise<Response>;
@@ -125,7 +128,8 @@ const DB_GET_HANDLERS: Record<string, DbGetHandler> = {
 		getSessionScopedRows(url, db.getSessionAskUserQuestions),
 	"/db/weekly-stats": () => getWeeklyStats(),
 	"/db/thirty-day-stats": () => getThirtyDayStats(),
-	"/db/provider-usage": ({ url }) => getProviderUsage(url),
+	"/db/provider-usage": ({ url, providers }) =>
+		getProviderUsage(url, providers),
 	"/db/attachments": ({ url }) => getAttachments(url),
 	"/db/logs": ({ url }) => getLogs(url),
 	"/db/storage": async () => Response.json(await db.getStorageStats()),
@@ -640,17 +644,53 @@ async function getSessionScopedRows<T>(
 	return Response.json(await query(sessionId, minSeq, beforeSeq, maxSeq));
 }
 
-async function getProviderUsage(url: URL): Promise<Response> {
+async function getProviderUsage(
+	url: URL,
+	providers?: ReadonlyMap<string, AgentProvider>,
+): Promise<Response> {
 	const providerIds = (url.searchParams.get("providers") ?? "claude")
 		.split(",")
 		.map((s) => s.trim())
 		.filter(Boolean);
-	const cached = await readAnalyticsSnapshot(
-		"providerUsage",
-		providerIds.join(","),
-		() => Promise.all(providerIds.map((id) => db.getProviderUsage(id))),
-		{ maxAgeMs: 15_000 },
+	// Provider-native account telemetry should remain useful when no chat process
+	// is live. Each provider owns its own cache/deduplication and failures are
+	// deliberately isolated from this read-only analytics route.
+	const providerNativeReaders = new Map(
+		providerIds.flatMap((providerId) => {
+			const provider = providers?.get(providerId);
+			return provider?.readUsageWindows &&
+				provider.usageWindows?.some((window) => window.displayOnly)
+				? ([[providerId, provider]] as const)
+				: [];
+		}),
 	);
+	await Promise.allSettled(
+		[...providerNativeReaders].map(async ([providerId, provider]) => {
+			const reader = provider.readUsageWindows as NonNullable<
+				typeof provider.readUsageWindows
+			>;
+			const readings = await reader.call(provider);
+			await Promise.all(
+				readings.map((reading) =>
+					persistDisplayUsageReading(providerId, reading),
+				),
+			);
+		}),
+	);
+	const loadSnapshots = () =>
+		Promise.all(providerIds.map((id) => db.getProviderUsage(id)));
+	// A reader may have just replaced or authoritatively cleared account data.
+	// Bypass the analytics snapshot so the same response cannot return an older
+	// key/account's percentage for another 15 seconds.
+	const cached =
+		providerNativeReaders.size > 0
+			? await loadSnapshots()
+			: await readAnalyticsSnapshot(
+					"providerUsage",
+					providerIds.join(","),
+					loadSnapshots,
+					{ maxAgeMs: 15_000 },
+				);
 	// Live overlays must not mutate the retained DB snapshot.
 	const snapshots = cached.map((snapshot) => ({
 		...snapshot,
@@ -659,6 +699,7 @@ async function getProviderUsage(url: URL): Promise<Response> {
 	// Overlay in-memory high-water marks so live-session values are always current.
 	for (const snapshot of snapshots) {
 		for (const win of snapshot.windows) {
+			if (win.displayOnly) continue;
 			const mark = getWindowMark(snapshot.providerId, win.windowId);
 			if (!mark) continue;
 			win.utilization = mark.utilization;

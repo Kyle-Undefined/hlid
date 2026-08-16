@@ -550,8 +550,8 @@ export function AcpSection({
 									[item.id]: targetId,
 								}))
 							}
-							onManagedMutation={(action) =>
-								void mutateManagedInstallation(item, selectedTargetId, action)
+							onManagedMutation={(targetId, action) =>
+								void mutateManagedInstallation(item, targetId, action)
 							}
 							onUpdateOverride={(patch) => updateOverride(item.id, patch)}
 							onInspect={(methodId) => void inspect(item, methodId)}
