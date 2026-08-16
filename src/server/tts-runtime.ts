@@ -4,6 +4,9 @@ import { getTtsModelDefinition } from "./ttsModels";
 
 export const INTERNAL_TTS_RUNTIME_FLAG = "--internal-tts-runtime";
 export const MAX_TTS_RUNTIME_TEXT_CHARS = 300;
+// Retain enough model-authored silence for lists to sound distinct without
+// restoring the unusually long pauses some bundled voices can generate.
+const LOCAL_NEURAL_SILENCE_SCALE = 0.5;
 
 type GeneratedAudio = {
 	samples: Float32Array;
@@ -190,7 +193,7 @@ export function createTtsRuntimeFetchHandler(
 				generationConfig: {
 					sid: speaker,
 					speed,
-					silenceScale: 0.2,
+					silenceScale: LOCAL_NEURAL_SILENCE_SCALE,
 				},
 			});
 			const wav = float32ToPcmWav(audio.samples, audio.sampleRate);

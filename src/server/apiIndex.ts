@@ -398,9 +398,9 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 	},
 	{
 		method: "GET",
-		path: "/db/session-messages?session_id=&before_seq=&before_id=&min_seq=&min_id=&limit=&tool_event_page_size=",
+		path: "/db/session-messages?session_id=&before_seq=&before_id=&min_seq=&min_id=&limit=&tool_event_page_size=&lookahead=",
 		server: "api",
-		desc: "Message transcript enriched with assistant tool-event summaries and user attachments. Supports exclusive backward cursors with before_seq/before_id and inclusive forward refresh cursors with min_seq/min_id; row IDs disambiguate equal sequence values. Optional tool_event_page_size compacts eligible settled assistant tool histories; omitting it preserves the full legacy response.",
+		desc: "Message transcript enriched with assistant tool-event summaries and user attachments. Supports exclusive backward cursors with before_seq/before_id and inclusive forward refresh cursors with min_seq/min_id; row IDs disambiguate equal sequence values. Optional tool_event_page_size compacts eligible settled assistant tool histories and returns has_context_receipt instead of the full context_manifest_json; omitting it preserves the full legacy response. For compact limited history reads, lookahead=1 retains the oldest row when a full page is returned but skips tool and attachment enrichment for that row.",
 	},
 	{
 		method: "GET",

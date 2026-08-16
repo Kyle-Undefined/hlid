@@ -1,5 +1,9 @@
 import * as db from "../db";
-import type { AttachmentListFilter } from "../db/types";
+import type {
+	AttachmentListFilter,
+	AttachmentRow,
+	ToolEventTranscriptWindow,
+} from "../db/types";
 import { setEventLogPersistenceEnabled } from "../lib/eventLogPolicy";
 import { parseHlidTurnContextManifest } from "../lib/hlidContext";
 import {
@@ -327,6 +331,7 @@ async function getSessionMessages(url: URL): Promise<Response> {
 	const toolEventPageSize = toolEventPageSizeParam
 		? clampInt(toolEventPageSizeParam, 20, 1, 100)
 		: undefined;
+	const compactHistoryLookahead = url.searchParams.get("lookahead") === "1";
 	const pageMessages = await db.getSessionMessages(
 		sessionId,
 		beforeSeq,
@@ -335,22 +340,44 @@ async function getSessionMessages(url: URL): Promise<Response> {
 		beforeId,
 		requestedMinId,
 	);
-	const minSeq = pageMessages[0]?.seq;
-	if (minSeq === undefined) return Response.json([]);
-	const maxSeq = pageMessages.at(-1)?.seq ?? minSeq;
-	const [toolEventWindow, attachments] = await Promise.all([
-		toolEventPageSize === undefined
-			? db
-					.getSessionToolEventSummaries(sessionId, minSeq, undefined, maxSeq)
-					.then((items) => ({ items, pages: [] }))
-			: db.getSessionToolEventTranscriptWindow(
-					sessionId,
-					minSeq,
-					maxSeq,
-					toolEventPageSize,
-				),
-		db.getAttachmentsForSession(sessionId, minSeq, undefined, maxSeq),
-	]);
+	if (pageMessages.length === 0) return Response.json([]);
+	const excludesLookaheadEnrichment =
+		compactHistoryLookahead &&
+		toolEventPageSize !== undefined &&
+		limit !== undefined &&
+		pageMessages.length === limit;
+	const enrichmentMessages = excludesLookaheadEnrichment
+		? pageMessages.slice(1)
+		: pageMessages;
+	const enrichmentMinSeq = enrichmentMessages[0]?.seq;
+	const enrichmentMaxSeq = enrichmentMessages.at(-1)?.seq;
+	let toolEventWindow: ToolEventTranscriptWindow = { items: [], pages: [] };
+	let attachments: AttachmentRow[] = [];
+	if (enrichmentMinSeq !== undefined && enrichmentMaxSeq !== undefined) {
+		[toolEventWindow, attachments] = await Promise.all([
+			toolEventPageSize === undefined
+				? db
+						.getSessionToolEventSummaries(
+							sessionId,
+							enrichmentMinSeq,
+							undefined,
+							enrichmentMaxSeq,
+						)
+						.then((items) => ({ items, pages: [] }))
+				: db.getSessionToolEventTranscriptWindow(
+						sessionId,
+						enrichmentMinSeq,
+						enrichmentMaxSeq,
+						toolEventPageSize,
+					),
+			db.getAttachmentsForSession(
+				sessionId,
+				enrichmentMinSeq,
+				undefined,
+				enrichmentMaxSeq,
+			),
+		]);
+	}
 	const toolEvents = toolEventWindow.items;
 	const toolsBySeq = new Map<number, (typeof toolEvents)[number][]>();
 	for (const te of toolEvents) {
@@ -372,16 +399,38 @@ async function getSessionMessages(url: URL): Promise<Response> {
 		list.push(a);
 		attachBySeq.set(a.message_seq, list);
 	}
-	const enriched = pageMessages.map((m) => {
+	const enriched = pageMessages.map((m, index) => {
+		const {
+			context_manifest_json: contextManifestJson,
+			...messageWithoutContextManifest
+		} = m;
+		const transcriptMessage =
+			toolEventPageSize === undefined
+				? m
+				: {
+						...messageWithoutContextManifest,
+						has_context_receipt: contextManifestJson != null,
+					};
+		const enrichMessage = !excludesLookaheadEnrichment || index > 0;
 		const allToolEvents =
-			m.role === "assistant" ? (toolsBySeq.get(m.seq) ?? []) : undefined;
+			m.role === "assistant" && enrichMessage
+				? (toolsBySeq.get(m.seq) ?? [])
+				: m.role === "assistant"
+					? []
+					: undefined;
 		const toolEventPage =
-			m.role === "assistant" ? toolPagesBySeq.get(m.seq) : undefined;
+			m.role === "assistant" && enrichMessage
+				? toolPagesBySeq.get(m.seq)
+				: undefined;
 		return {
-			...m,
+			...transcriptMessage,
 			toolEvents: allToolEvents,
 			attachments:
-				m.role === "user" ? (attachBySeq.get(m.seq) ?? []) : undefined,
+				m.role === "user" && enrichMessage
+					? (attachBySeq.get(m.seq) ?? [])
+					: m.role === "user"
+						? []
+						: undefined,
 			...(toolEventPage ? { toolEventPage } : {}),
 		};
 	});

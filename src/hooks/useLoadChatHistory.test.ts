@@ -820,7 +820,7 @@ describe("useLoadChatHistory — initial load", () => {
 		vi.mocked(getSessionDataFn).mockResolvedValue([
 			{
 				...makeRow("user", "inspect this turn", 1000),
-				context_manifest_json: '{"contractVersion":1}',
+				has_context_receipt: true,
 			},
 			makeRow("user", "legacy turn", 2000),
 		]);
@@ -1080,9 +1080,22 @@ describe("useLoadChatHistory — initial load", () => {
 			resultTruncated: true,
 			detailSessionId: "sess-1",
 		});
+		const hydrated = dispatch.mock.calls.find(
+			([action]) => action.type === "HYDRATE_HISTORY",
+		)?.[0];
+		const anchor = hydrated.items.find(
+			(item: { kind: string }) => item.kind === "message",
+		);
+		expect(anchor).toMatchObject({
+			kind: "message",
+			id: `persisted-message:${row.id}`,
+			role: "assistant",
+			text: "",
+		});
+		expect(anchor).not.toHaveProperty("toolEvents");
 	});
 
-	it("uses a 101-row lookahead and prepends the preceding cursor page without overlap", async () => {
+	it("uses a 21-row initial lookahead and prepends a 101-row cursor page without overlap", async () => {
 		const rows = (start: number, end: number) =>
 			Array.from({ length: end - start + 1 }, (_, index) => {
 				const seq = start + index;
@@ -1099,8 +1112,8 @@ describe("useLoadChatHistory — initial load", () => {
 				};
 			});
 		vi.mocked(getSessionDataFn)
-			.mockResolvedValueOnce(rows(100, 200))
-			.mockResolvedValueOnce(rows(0, 100));
+			.mockResolvedValueOnce(rows(180, 200))
+			.mockResolvedValueOnce(rows(80, 180));
 		const dispatch = vi.fn();
 		const hook = renderHistory({
 			existingSessionId: "sess-1",
@@ -1122,13 +1135,13 @@ describe("useLoadChatHistory — initial load", () => {
 
 		expect(loaded).toBe(100);
 		expect(getSessionDataFn).toHaveBeenNthCalledWith(1, {
-			data: { sessionId: "sess-1", limit: 101 },
+			data: { sessionId: "sess-1", limit: 21 },
 		});
 		expect(getSessionDataFn).toHaveBeenNthCalledWith(2, {
 			data: {
 				sessionId: "sess-1",
-				beforeSeq: 101,
-				beforeId: 102,
+				beforeSeq: 181,
+				beforeId: 182,
 				limit: 101,
 			},
 		});
@@ -1143,21 +1156,21 @@ describe("useLoadChatHistory — initial load", () => {
 		);
 		const combinedTexts = combinedMessages.map((item) => item.text);
 		expect(combinedTexts).toEqual(
-			Array.from({ length: 200 }, (_, index) => `message ${index + 1}`),
+			Array.from({ length: 120 }, (_, index) => `message ${index + 81}`),
 		);
-		expect(new Set(combinedTexts).size).toBe(200);
+		expect(new Set(combinedTexts).size).toBe(120);
 		expect(combinedMessages.map((item) => item.id)).toEqual(
 			Array.from(
-				{ length: 200 },
-				(_, index) => `persisted-message:${index + 2}`,
+				{ length: 120 },
+				(_, index) => `persisted-message:${index + 82}`,
 			),
 		);
 		expect(getSessionPlanProposalsFn).toHaveBeenNthCalledWith(2, {
 			data: {
 				sessionId: "sess-1",
-				minSeq: 1,
-				maxSeq: 100,
-				beforeSeq: 101,
+				minSeq: 81,
+				maxSeq: 180,
+				beforeSeq: 181,
 			},
 		});
 	});

@@ -129,6 +129,7 @@ describe("TTS child runtime", () => {
 				generationConfig: expect.objectContaining({
 					sid: 3,
 					speed: 1.25,
+					silenceScale: 0.5,
 				}),
 			}),
 		);

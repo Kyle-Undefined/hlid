@@ -1,4 +1,4 @@
-import type { Action } from "#/components/chat/chatReducer";
+import type { Action, HistoryItem } from "#/components/chat/chatReducer";
 import { seedContextStats } from "#/hooks/wsLiveStatsStore";
 import * as wsStore from "#/hooks/wsStore";
 import {
@@ -31,6 +31,7 @@ type SessionToolEventSummaryRow = NonNullable<
 >[number];
 
 export const SESSION_HISTORY_PAGE_SIZE = 100;
+const INITIAL_SESSION_HISTORY_PAGE_SIZE = 20;
 
 function safeParseJson<T>(raw: string, fallback: T): T {
 	try {
@@ -85,7 +86,8 @@ function mapSessionRows(
 	permEvents: PermRow[],
 	planRows: PlanRow[],
 	aukRows: AukRow[],
-) {
+	messageDetail: "full" | "anchor" = "full",
+): HistoryItem[] {
 	const messageItems = rows.map((r) => {
 		const realtimeUtteranceId =
 			r.source === "codex_realtime" && r.utterance_id
@@ -94,23 +96,28 @@ function mapSessionRows(
 		const realtimeSource = realtimeUtteranceId
 			? ("codex_realtime" as const)
 			: undefined;
-		return {
+		const anchor = {
 			kind: "message" as const,
 			timestamp: r.timestamp,
 			// Realtime rows retain the same utterance identity from provisional delta
 			// through history hydration. Ordinary user rows keep their queued turn id;
-			// every other row uses the globally unique database id.
+			// every other row uses the globally unique database id. Delayed metadata
+			// hydration reuses that identity for lightweight placement anchors.
 			id: realtimeUtteranceId
 				? realtimeUtteranceId
 				: r.role === "user" && r.turn_id
 					? r.turn_id
 					: `persisted-message:${r.id}`,
+			role: r.role,
+			text: messageDetail === "full" ? r.text : "",
+		};
+		if (messageDetail === "anchor") return anchor;
+		return {
+			...anchor,
 			// Real messages.id primary key, exposed separately from the synthetic
 			// `id` above so callers don't have to parse it back out of a string.
 			// Used by the "branch from here" fork action (assistant rows only).
 			dbId: r.id,
-			role: r.role,
-			text: r.text,
 			seq: r.seq,
 			...(realtimeSource
 				? {
@@ -122,7 +129,8 @@ function mapSessionRows(
 						forkSupported: r.fork_supported === 1,
 					}
 				: {}),
-			hasContextReceipt: Boolean(r.context_manifest_json),
+			hasContextReceipt:
+				r.has_context_receipt ?? Boolean(r.context_manifest_json),
 			hasFileCheckpoint: Boolean(r.checkpoint_uuid),
 			steerTargetSeq: r.steer_target_seq,
 			steerToolEventIndex: r.steer_tool_event_index,
@@ -313,7 +321,7 @@ async function loadSessionMetadata(
 		getSessionPlanProposalsFn({ data: scopedPage }),
 		getSessionAskUserQuestionsFn({ data: scopedPage }),
 	]);
-	return mapSessionRows(rows, permEvents, planRows, aukRows);
+	return mapSessionRows(rows, permEvents, planRows, aukRows, "anchor");
 }
 
 /**
@@ -525,7 +533,7 @@ export async function loadSessionSnapshot({
 	handleWsMessage,
 	isCancelled,
 	onInteractionMetadataReady,
-	pageSize = SESSION_HISTORY_PAGE_SIZE,
+	pageSize = INITIAL_SESSION_HISTORY_PAGE_SIZE,
 	preserveFromSeq,
 	preserveFromId,
 	preserveHasOlder = false,

@@ -39,6 +39,157 @@ describe("createProgressiveSpeechSegmenter", () => {
 		);
 	});
 
+	it.each([
+		[
+			"unordered items",
+			"- First item\n- Second item",
+			[
+				{ text: "First item.", sourceStart: 0, sourceEnd: 13 },
+				{ text: "Second item.", sourceStart: 13, sourceEnd: 26 },
+			],
+		],
+		[
+			"period-numbered items",
+			"1. First item\n2. Second item",
+			[
+				{ text: "First item.", sourceStart: 0, sourceEnd: 14 },
+				{ text: "Second item.", sourceStart: 14, sourceEnd: 28 },
+			],
+		],
+		[
+			"parenthesis-numbered items",
+			"1) First item\n2) Second item",
+			[
+				{ text: "First item.", sourceStart: 0, sourceEnd: 14 },
+				{ text: "Second item.", sourceStart: 14, sourceEnd: 28 },
+			],
+		],
+		[
+			"nested items",
+			"- Parent\n  - Child\n- Sibling",
+			[
+				{ text: "Parent.", sourceStart: 0, sourceEnd: 9 },
+				{ text: "Child.", sourceStart: 9, sourceEnd: 19 },
+				{ text: "Sibling.", sourceStart: 19, sourceEnd: 28 },
+			],
+		],
+		[
+			"task-list items",
+			"- [ ] Pending\n- [x] Done",
+			[
+				{ text: "Pending.", sourceStart: 0, sourceEnd: 14 },
+				{ text: "Done.", sourceStart: 14, sourceEnd: 24 },
+			],
+		],
+	] as const)("emits %s as source-aligned speech segments", (_name, source, expected) => {
+		const speech = createProgressiveSpeechSegmenter("turn-list");
+		const stable = speech.pushChunk({ text: source }).enqueue;
+		const tail = speech.flush("done").enqueue;
+
+		expect(
+			[...stable, ...tail].map(({ text, sourceStart, sourceEnd }) => ({
+				text,
+				sourceStart,
+				sourceEnd,
+			})),
+		).toEqual(expected);
+	});
+
+	it("keeps a soft-wrapped list continuation in its parent item", () => {
+		const source = "- First line\n  continuation\n- Next item";
+		const speech = createProgressiveSpeechSegmenter("turn-wrapped-list");
+		const stable = speech.pushChunk({ text: source }).enqueue;
+		const tail = speech.flush("done").enqueue;
+		const segments = [...stable, ...tail];
+
+		expect(segments).toHaveLength(2);
+		expect(segments[0]).toMatchObject({ sourceStart: 0, sourceEnd: 28 });
+		expect(segments[0]?.text).toContain("First line");
+		expect(segments[0]?.text).toContain("continuation");
+		expect(segments[1]).toMatchObject({
+			text: "Next item.",
+			sourceStart: 28,
+			sourceEnd: source.length,
+		});
+	});
+
+	it("keeps later sentences separate from the next list item", () => {
+		const source = "- First sentence. More detail\n- Second item";
+		const speech = createProgressiveSpeechSegmenter("turn-list-detail");
+		const stable = speech.pushChunk({ text: source }).enqueue;
+		const tail = speech.flush("done").enqueue;
+
+		expect([...stable, ...tail].map((segment) => segment.text)).toEqual([
+			"First sentence.",
+			"More detail.",
+			"Second item.",
+		]);
+	});
+
+	it("buffers a partial ordered-list marker until its item arrives", () => {
+		const speech = createProgressiveSpeechSegmenter("turn-partial-list");
+		expect(speech.pushChunk({ text: "1." }).enqueue).toEqual([]);
+		expect(
+			speech
+				.pushChunk({
+					text: " First item\n2. Second item",
+					offset: 2,
+				})
+				.enqueue.map((segment) => segment.text),
+		).toEqual(["First item."]);
+		expect(speech.flush("done").enqueue.map((segment) => segment.text)).toEqual(
+			["Second item."],
+		);
+	});
+
+	it("handles a long non-list blockquote prefix without pathological scanning", () => {
+		const source = `${">".repeat(30)} not a list.`;
+		const speech = createProgressiveSpeechSegmenter("turn-blockquote-prefix");
+		expect(
+			speech.pushChunk({ text: source }).enqueue.map(({ text }) => text),
+		).toEqual(["not a list."]);
+	}, 500);
+
+	it("invalidates only a revised queued list item", () => {
+		const speech = createProgressiveSpeechSegmenter("turn-list-replace");
+		const original = speech.pushChunk({
+			text: "- First item\n- Old item.",
+		}).enqueue;
+
+		const replacement = speech.pushChunk({
+			text: "- First item\n- New item.",
+			replace: true,
+		});
+
+		expect(replacement.invalidate).toEqual([original[1]?.id]);
+		expect(replacement.invalidate).not.toContain(original[0]?.id);
+		expect(replacement.enqueue.map((segment) => segment.text)).toEqual([
+			"New item.",
+		]);
+	});
+
+	it.each([
+		["ordinary prose", "First line\nSecond line.", "First line. Second line."],
+		["a heading", "## Result\nReady.", "Result. Ready."],
+		[
+			"a table",
+			"| Name | State |\n| --- | --- |\n| Raven | ready |",
+			"Name, State. Raven, ready.",
+		],
+	] as const)("does not split %s at a single newline", (_name, source, expected) => {
+		const speech = createProgressiveSpeechSegmenter("turn-non-list");
+		const stable = speech.pushChunk({ text: source }).enqueue;
+		const tail = speech.flush("done").enqueue;
+
+		expect([...stable, ...tail]).toMatchObject([
+			{
+				text: expected,
+				sourceStart: 0,
+				sourceEnd: source.length,
+			},
+		]);
+	});
+
 	it("force flushes settled prose at tool and message boundaries", () => {
 		const speech = createProgressiveSpeechSegmenter();
 		expect(speech.pushChunk({ text: "I'll inspect that" }).enqueue).toEqual([]);
@@ -162,6 +313,31 @@ describe("createProgressiveSpeechSegmenter", () => {
 		expect(
 			second.enqueue.map((segment) => segment.text).join(" "),
 		).not.toContain("hidden");
+	});
+
+	it("does not narrate standalone indented code that resembles a list", () => {
+		const speech = createProgressiveSpeechSegmenter("turn-indented-code-list");
+		const source = "Intro.\n\n    - hidden item\n\nDone.";
+		expect(
+			speech.pushChunk({ text: source }).enqueue.map(({ text }) => text),
+		).toEqual(["Intro.", "Done."]);
+	});
+
+	it("does not narrate indented list-shaped code inside a list", () => {
+		const speech = createProgressiveSpeechSegmenter("turn-nested-list-code");
+		const source = [
+			"- Parent",
+			"",
+			"      - secret code",
+			"",
+			"- Sibling",
+		].join("\n");
+		const stable = speech.pushChunk({ text: source }).enqueue;
+		const tail = speech.flush("done").enqueue;
+		expect([...stable, ...tail].map(({ text }) => text)).toEqual([
+			"Parent.",
+			"Sibling.",
+		]);
 	});
 
 	it("cleans the exact Codex shell timestamp and Windows folder tail", () => {

@@ -9,7 +9,6 @@ import {
 	getRavenProviderCacheSnapshot,
 	hasFreshRavenProviderModels,
 	loadRavenProviders,
-	loadRavenProvidersForNavigation,
 	refreshRavenProvider,
 	refreshRavenProviderForSession,
 	resetRavenProviderCacheForTesting,
@@ -406,49 +405,6 @@ describe("loadRavenProviders", () => {
 		staleRead.reject(new Error("stale read failed"));
 		await staleRejection;
 		expect(await loadRavenProviders("/vault")).toEqual(provider("fresh"));
-		expect(getProvidersFn).toHaveBeenCalledTimes(2);
-	});
-
-	it("returns a valid prior cache without joining an active live refresh", async () => {
-		const liveRefresh = deferred<ReturnType<typeof provider>>();
-		vi.mocked(getProvidersFn)
-			.mockResolvedValueOnce(provider("cached"))
-			.mockImplementationOnce(() => liveRefresh.promise);
-
-		expect(await loadRavenProviders("/vault")).toEqual(provider("cached"));
-		const refreshing = refreshRavenProvider("acp:opencode", "/vault");
-		const navigation = loadRavenProvidersForNavigation("/vault");
-
-		expect(navigation).not.toBe(refreshing);
-		expect(await navigation).toEqual(provider("cached"));
-		expect(getProvidersFn).toHaveBeenCalledTimes(2);
-
-		liveRefresh.resolve(provider("live"));
-		expect(await refreshing).toEqual(provider("live"));
-	});
-
-	it("keeps a process-free navigation read separate from an active refresh", async () => {
-		const liveRefresh = deferred<ReturnType<typeof provider>>();
-		const navigationRead = deferred<ReturnType<typeof provider>>();
-		vi.mocked(getProvidersFn)
-			.mockImplementationOnce(() => liveRefresh.promise)
-			.mockImplementationOnce(() => navigationRead.promise);
-
-		const refreshing = refreshRavenProvider("acp:opencode", "/vault");
-		const navigation = loadRavenProvidersForNavigation("/vault");
-		const sharedNavigation = loadRavenProvidersForNavigation("/vault");
-
-		expect(navigation).not.toBe(refreshing);
-		expect(sharedNavigation).toBe(navigation);
-		expect(getProvidersFn).toHaveBeenNthCalledWith(2, {
-			data: { preferCachedModels: true, discoveryCwd: "/vault" },
-		});
-
-		liveRefresh.resolve(provider("live"));
-		expect(await refreshing).toEqual(provider("live"));
-		navigationRead.resolve(provider("cached"));
-		expect(await navigation).toEqual(provider("cached"));
-		expect(await loadRavenProviders("/vault")).toEqual(provider("live"));
 		expect(getProvidersFn).toHaveBeenCalledTimes(2);
 	});
 

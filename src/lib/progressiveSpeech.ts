@@ -1,4 +1,7 @@
-import { readableTextFromMarkdown } from "./readAloud";
+import {
+	isNonTerminalSpeechPeriod,
+	readableTextFromMarkdown,
+} from "./readAloud";
 import {
 	createSpeechPronunciationReplacer,
 	type SpeechPronunciation,
@@ -75,20 +78,8 @@ const MARKDOWN_CLOSERS = new Set([
 	"_",
 	"~",
 ]);
-const NON_TERMINAL_ABBREVIATIONS = new Set([
-	"dr",
-	"e.g",
-	"fig",
-	"i.e",
-	"jr",
-	"mr",
-	"mrs",
-	"ms",
-	"prof",
-	"sr",
-	"st",
-	"vs",
-]);
+const LIST_ITEM_PREFIX = /^\s*(?:>\s*)*(?:[-+*]|\d+[.)])\s+(?:\[[ x]\]\s+)?/iu;
+const LIST_ITEM_MARKER = /^\s*(?:>\s*)*(?:[-+*]|\d+[.)])(?=[ \t]|$)/iu;
 
 const ISO_TIMESTAMP_SOURCE = String.raw`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})`;
 const MARKDOWN_METADATA_PREFIX_SOURCE = String.raw`\s*(?:>\s*)?(?:[-+*]\s+)?`;
@@ -315,8 +306,27 @@ function maskLinkDestinationsAndUrls(text: string): string {
 	return characters.join("");
 }
 
+function maskListItemPrefixes(text: string): string {
+	const characters = text.split("");
+	let lineStart = 0;
+	while (lineStart < text.length) {
+		const newline = text.indexOf("\n", lineStart);
+		const lineEnd = newline === -1 ? text.length : newline;
+		const line = text.slice(lineStart, lineEnd);
+		const prefix =
+			line.match(LIST_ITEM_PREFIX)?.[0] ?? line.match(LIST_ITEM_MARKER)?.[0];
+		if (prefix) {
+			maskCharacters(characters, lineStart, lineStart + prefix.length);
+		}
+		lineStart = newline === -1 ? text.length : newline + 1;
+	}
+	return characters.join("");
+}
+
 function boundaryText(markdown: string): string {
-	return maskLinkDestinationsAndUrls(maskInlineCode(markdown));
+	return maskListItemPrefixes(
+		maskLinkDestinationsAndUrls(maskInlineCode(markdown)),
+	);
 }
 
 function isParagraphBoundary(text: string, index: number): number | null {
@@ -332,28 +342,6 @@ function isParagraphBoundary(text: string, index: number): number | null {
 	return text[cursor] === "\n" ? cursor + 1 : null;
 }
 
-function precedingWord(text: string, dotIndex: number): string {
-	let start = dotIndex;
-	while (start > 0 && /[A-Za-z.]/u.test(text[start - 1] ?? "")) start -= 1;
-	return text.slice(start, dotIndex + 1);
-}
-
-function isNonTerminalPeriod(
-	text: string,
-	index: number,
-	afterPunctuation: number,
-): boolean {
-	if (text[index] !== ".") return false;
-	const previous = text[index - 1] ?? "";
-	const next = text[afterPunctuation] ?? "";
-	if (/\d/u.test(previous) && (/\d/u.test(next) || !next)) return true;
-	const word = precedingWord(text, index);
-	const normalized = word.slice(0, -1).toLowerCase();
-	if (NON_TERMINAL_ABBREVIATIONS.has(normalized)) return true;
-	if (/^(?:[A-Za-z]\.){2,}$/u.test(word)) return true;
-	return /^[A-Z]\.$/u.test(word);
-}
-
 function hasUnclosedSquareBracket(text: string): boolean {
 	let depth = 0;
 	for (let index = 0; index < text.length; index += 1) {
@@ -362,6 +350,20 @@ function hasUnclosedSquareBracket(text: string): boolean {
 		if (text[index] === "]" && depth > 0) depth -= 1;
 	}
 	return depth > 0;
+}
+
+function isListItemBoundary(
+	text: string,
+	index: number,
+	segmentStart: number,
+): boolean {
+	if (text[index] !== "\n") return false;
+	const nextLineStart = index + 1;
+	const nextNewline = text.indexOf("\n", nextLineStart);
+	const nextLineEnd = nextNewline === -1 ? text.length : nextNewline;
+	if (!LIST_ITEM_PREFIX.test(text.slice(nextLineStart, nextLineEnd)))
+		return false;
+	return Boolean(text.slice(segmentStart, index).trim());
 }
 
 function findStableBoundary(
@@ -373,6 +375,9 @@ function findStableBoundary(
 		const paragraphEnd = isParagraphBoundary(text, index);
 		if (paragraphEnd !== null) {
 			return { end: paragraphEnd, kind: "paragraph" };
+		}
+		if (isListItemBoundary(sourceText, index, start)) {
+			return { end: index + 1, kind: "sentence" };
 		}
 		if (text[index] !== "." && text[index] !== "!" && text[index] !== "?") {
 			continue;
@@ -386,7 +391,7 @@ function findStableBoundary(
 		) {
 			punctuationEnd += 1;
 		}
-		if (isNonTerminalPeriod(text, index, punctuationEnd)) continue;
+		if (isNonTerminalSpeechPeriod(text, index, punctuationEnd)) continue;
 		let end = punctuationEnd;
 		while (MARKDOWN_CLOSERS.has(text[end] ?? "")) end += 1;
 		const following = text[end];

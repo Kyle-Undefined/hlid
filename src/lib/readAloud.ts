@@ -27,6 +27,92 @@ const HTML_ENTITIES: Record<string, string> = {
 	"&quot;": '"',
 };
 
+const NON_TERMINAL_SPEECH_ABBREVIATIONS = new Set([
+	"dr",
+	"e.g",
+	"fig",
+	"i.e",
+	"jr",
+	"mr",
+	"mrs",
+	"ms",
+	"prof",
+	"sr",
+	"st",
+	"vs",
+]);
+const SPEECH_SENTENCE_CLOSERS = new Set([
+	'"',
+	"'",
+	"”",
+	"’",
+	")",
+	"]",
+	"}",
+	"*",
+	"_",
+	"~",
+]);
+
+function precedingSpeechWord(text: string, dotIndex: number): string {
+	let start = dotIndex;
+	while (start > 0 && /[A-Za-z.]/u.test(text[start - 1] ?? "")) start -= 1;
+	return text.slice(start, dotIndex + 1);
+}
+
+export function isNonTerminalSpeechPeriod(
+	text: string,
+	index: number,
+	afterPunctuation: number,
+): boolean {
+	if (text[index] !== ".") return false;
+	const previous = text[index - 1] ?? "";
+	const next = text[afterPunctuation] ?? "";
+	if (/\d/u.test(previous) && (/\d/u.test(next) || !next)) return true;
+	const word = precedingSpeechWord(text, index);
+	const normalized = word.slice(0, -1).toLowerCase();
+	if (normalized === "no" && /^\s+\d/u.test(text.slice(afterPunctuation))) {
+		return true;
+	}
+	if (NON_TERMINAL_SPEECH_ABBREVIATIONS.has(normalized)) return true;
+	if (/^(?:[A-Za-z]\.){2,}$/u.test(word)) return true;
+	return /^[A-Z]\.$/u.test(word);
+}
+
+function speechSentenceEnd(
+	text: string,
+	punctuationIndex: number,
+): number | null {
+	const punctuation = text[punctuationIndex];
+	if (punctuation !== "." && punctuation !== "!" && punctuation !== "?") {
+		return null;
+	}
+	let end = punctuationIndex + 1;
+	while (text[end] === "." || text[end] === "!" || text[end] === "?") {
+		end += 1;
+	}
+	if (isNonTerminalSpeechPeriod(text, punctuationIndex, end)) return null;
+	while (SPEECH_SENTENCE_CLOSERS.has(text[end] ?? "")) end += 1;
+	if (text[end] !== undefined && !/\s/u.test(text[end] ?? "")) return null;
+	return end;
+}
+
+function splitSpeechSentences(text: string): string[] {
+	const sentences: string[] = [];
+	let start = 0;
+	for (let index = 0; index < text.length; index += 1) {
+		const end = speechSentenceEnd(text, index);
+		if (end === null) continue;
+		const sentence = text.slice(start, end).trim();
+		if (sentence) sentences.push(sentence);
+		start = end;
+		index = end - 1;
+	}
+	const tail = text.slice(start).trim();
+	if (tail) sentences.push(tail);
+	return sentences;
+}
+
 /** Convert an assistant's Markdown into text that sounds natural when spoken. */
 export function readableTextFromMarkdown(markdown: string): string {
 	const withoutCodeBlocks = markdown
@@ -45,9 +131,8 @@ export function readableTextFromMarkdown(markdown: string): string {
 		.map((line) =>
 			line
 				.replace(/^\s{0,3}#{1,6}\s+/, "")
-				.replace(/^\s*>+\s?/, "")
-				.replace(/^\s*[-+*]\s+/, "")
-				.replace(/^\s*\d+[.)]\s+/, "")
+				.replace(/^\s*(?:>\s*)+/u, "")
+				.replace(/^\s*(?:[-+*]|\d+[.)])\s+(?:\[[ x]\]\s+)?/iu, "")
 				.replace(/^\s*\|\s?|\s?\|\s*$/g, "")
 				.replace(/\s*\|\s*/g, ", ")
 				.replace(/[*_~]/g, "")
@@ -89,7 +174,7 @@ export function chunkReadAloudText(
 	maxCharacters = 240,
 ): string[] {
 	if (!text.trim()) return [];
-	const sentences = text.match(/[^.!?]+(?:[.!?]+|$)/g) ?? [text];
+	const sentences = splitSpeechSentences(text);
 	const chunks: string[] = [];
 	let current = "";
 	for (const rawSentence of sentences) {
@@ -125,8 +210,17 @@ export function chunkNeuralReadAloudText(
 		return bounded;
 	});
 	const first = chunks[0];
-	if (!first || first.length <= firstChunkCharacters) return chunks;
-	let split = first.lastIndexOf(" ", firstChunkCharacters);
+	if (!first) return chunks;
+	let split = 0;
+	for (let index = 0; index < first.length; index += 1) {
+		const end = speechSentenceEnd(first, index);
+		if (end === null) continue;
+		if (end > firstChunkCharacters) break;
+		if (end < first.length) split = end;
+		break;
+	}
+	if (split <= 0 && first.length <= firstChunkCharacters) return chunks;
+	if (split <= 0) split = first.lastIndexOf(" ", firstChunkCharacters);
 	if (split <= 0) split = Math.min(firstChunkCharacters, first.length);
 	const leading = first.slice(0, split).trim();
 	const trailing = first.slice(split).trim();

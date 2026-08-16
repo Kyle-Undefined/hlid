@@ -182,6 +182,39 @@ describe("useLocalConversation", () => {
 		expect(micState.options?.shouldSuppressInput?.()).toBe(false);
 	});
 
+	it("reads list items separately while the assistant is still streaming", async () => {
+		const { result, rerender } = renderHook(
+			({ messages }: { messages: ChatMessage[] }) =>
+				useLocalConversation({
+					...baseOptions,
+					messages,
+					onTranscription: vi.fn(),
+				}),
+			{ initialProps: { messages: [] as ChatMessage[] } },
+		);
+		await act(async () => result.current.start());
+
+		rerender({
+			messages: [assistant("- First item\n- Second item")],
+		});
+		await waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+		expect(
+			JSON.parse(String(vi.mocked(fetch).mock.calls[0]?.[1]?.body)).text,
+		).toBe("First item.");
+
+		rerender({
+			messages: [
+				assistant("- First item\n- Second item", { streaming: false }),
+			],
+		});
+		await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+		expect(
+			vi
+				.mocked(fetch)
+				.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).text),
+		).toEqual(["First item.", "Second item."]);
+	});
+
 	it("sends only the pronounced copy to local neural speech", async () => {
 		const { result, rerender } = renderHook(
 			({ messages }: { messages: ChatMessage[] }) =>

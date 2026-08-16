@@ -161,7 +161,6 @@ import {
 	getRavenProviderCacheSnapshot,
 	hasFreshRavenProviderModels,
 	loadRavenProviders,
-	loadRavenProvidersForNavigation,
 	refreshRavenProviderForSession,
 	subscribeRavenProviderCache,
 } from "#/lib/ravenProviderCache";
@@ -542,10 +541,10 @@ async function loadRavenRoute(session?: string, agent?: string) {
 		config,
 		agentSkillContext,
 	);
-	const providers = await optionalRavenLoaderValue(
-		loadRavenProvidersForNavigation(providerDiscoveryCwd),
-		[],
-	);
+	// Provider discovery can launch provider processes and must not hold session
+	// navigation pending. Reuse an accepted exact-workspace snapshot when one is
+	// already available; ChatPage hydrates a cold catalog after it mounts.
+	const providers = getRavenProviderCacheSnapshot(providerDiscoveryCwd) ?? [];
 	const interactiveMode = interactiveModeForAgent(config, agentSkillContext);
 	resolvedSessionId = resolveTerminalSession(
 		resolvedSessionId,
@@ -3354,11 +3353,18 @@ export function ChatPage() {
 	}, [initialAgentList]);
 	useEffect(() => {
 		setProviderCatalog(initialProviders);
-		if (initialProviders.length > 0) return;
 		let cancelled = false;
 		void loadRavenProviders(initialProviderDiscoveryCwd).then(
 			(next) => {
-				if (!cancelled && Array.isArray(next) && next.length > 0) {
+				const accepted = getRavenProviderCacheSnapshot(
+					initialProviderDiscoveryCwd,
+				);
+				if (
+					!cancelled &&
+					Array.isArray(next) &&
+					next.length > 0 &&
+					accepted === next
+				) {
 					setProviderCatalog(next);
 				}
 			},

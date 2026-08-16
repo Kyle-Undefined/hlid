@@ -35,6 +35,39 @@ const secret = "do not narrate code";
 			),
 		).toBe("Name, State. Raven, ready.");
 	});
+
+	it.each([
+		[
+			"unordered items",
+			"- First item\n- Second item",
+			"First item. Second item.",
+		],
+		[
+			"period-numbered items",
+			"1. First item\n2. Second item",
+			"First item. Second item.",
+		],
+		[
+			"parenthesis-numbered items",
+			"1) First item\n2) Second item",
+			"First item. Second item.",
+		],
+		[
+			"nested items",
+			"- Parent\n  - Child\n- Sibling",
+			"Parent. Child. Sibling.",
+		],
+		["nested blockquotes", "> > - Nested item", "Nested item."],
+		["task-list items", "- [ ] Pending\n- [x] Complete", "Pending. Complete."],
+	] as const)("cleans %s without narrating list markers", (_name, markdown, expected) => {
+		expect(readableTextFromMarkdown(markdown)).toBe(expected);
+	});
+
+	it("keeps bracketed prose that is not a task-list item", () => {
+		expect(readableTextFromMarkdown("[x] coordinate remains meaningful")).toBe(
+			"[x] coordinate remains meaningful.",
+		);
+	});
 });
 
 describe("chunkReadAloudText", () => {
@@ -44,6 +77,15 @@ describe("chunkReadAloudText", () => {
 		const chunks = chunkReadAloudText(text, 38);
 		expect(chunks.every((chunk) => chunk.length <= 38)).toBe(true);
 		expect(chunks.join(" ")).toBe(text);
+	});
+
+	it("preserves abbreviations, initialisms, and decimals while chunking", () => {
+		const text =
+			"Dr. Rao checks U.S. version No. 3.14. Another sentence follows.";
+		const chunks = chunkReadAloudText(text, 24);
+		expect(chunks.join(" ")).toBe(text);
+		expect(chunks.join(" ")).not.toContain("U. S.");
+		expect(chunks.join(" ")).not.toContain("3. 14");
 	});
 
 	it("returns no utterances for blank text", () => {
@@ -59,6 +101,31 @@ describe("chunkNeuralReadAloudText", () => {
 		expect(chunks[0]?.length).toBeLessThanOrEqual(20);
 		expect(chunks.join(" ")).toBe(text);
 		expect(chunks.slice(1).every((chunk) => chunk.length <= 220)).toBe(true);
+	});
+
+	it("keeps a completed first list item intact", () => {
+		expect(chunkNeuralReadAloudText("First item. Second item.")).toEqual([
+			"First item.",
+			"Second item.",
+		]);
+	});
+
+	it("separates a completed first item even when the full chunk is short", () => {
+		expect(chunkNeuralReadAloudText("Yes. No.")).toEqual(["Yes.", "No."]);
+	});
+
+	it("does not treat an abbreviation as the startup sentence", () => {
+		const text = `Dr. Rao ${"checks ".repeat(45)}a deliberately longer sentence.`;
+		const chunks = chunkNeuralReadAloudText(text);
+		expect(chunks[0]).not.toBe("Dr.");
+		expect(chunks.join(" ")).toBe(text);
+	});
+
+	it("keeps a numbered abbreviation with its value", () => {
+		expect(chunkNeuralReadAloudText("No. 5 is ready. Next item.")).toEqual([
+			"No. 5 is ready.",
+			"Next item.",
+		]);
 	});
 
 	it("keeps an unbroken token inside the runtime limit", () => {

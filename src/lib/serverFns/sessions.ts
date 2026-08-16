@@ -98,6 +98,7 @@ export const getSessionRowsByIdsFn = createServerFn({ method: "GET" })
 	});
 
 type EnrichedMessageRow = MessageRow & {
+	has_context_receipt?: boolean;
 	toolEvents?: ToolEventSummaryRow[];
 	toolEventPage?: ToolEventPageMeta;
 	attachments?: AttachmentRow[];
@@ -170,6 +171,10 @@ export const getSessionDataFn = createServerFn({ method: "GET" })
 		});
 		if ("limit" in data) {
 			params.set("limit", String(data.limit));
+			// Transcript pages request one extra oldest row to detect whether more
+			// history exists. Keep that row in the response, but let the DB route
+			// avoid hydrating payloads the client will discard.
+			params.set("lookahead", "1");
 			if (data.beforeSeq !== undefined) {
 				params.set("before_seq", String(data.beforeSeq));
 				if (data.beforeId !== undefined) {

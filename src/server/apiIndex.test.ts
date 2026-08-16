@@ -86,10 +86,13 @@ describe("buildApiIndex", () => {
 
 		const messages = endpoint(
 			"GET",
-			"/db/session-messages?session_id=&before_seq=&before_id=&min_seq=&min_id=&limit=&tool_event_page_size=",
+			"/db/session-messages?session_id=&before_seq=&before_id=&min_seq=&min_id=&limit=&tool_event_page_size=&lookahead=",
 		);
 		expect(messages?.desc).toContain("before_seq/before_id");
 		expect(messages?.desc).toContain("min_seq/min_id");
+		expect(messages?.desc).toContain("has_context_receipt");
+		expect(messages?.desc).toContain("context_manifest_json");
+		expect(messages?.desc).toContain("lookahead=1");
 
 		const sessionUpdate = endpoint("PATCH", "/db/session?id=");
 		expect(sessionUpdate?.desc).toContain('{"archived": boolean}');

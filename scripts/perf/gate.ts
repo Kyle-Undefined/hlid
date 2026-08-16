@@ -21,7 +21,10 @@ import {
 const repoRoot = resolve(import.meta.dir, "../..");
 const PERF_SESSION_ID = "perf-session";
 const PERF_READY_SENTINEL = "PERF_READY_SENTINEL";
+const PERF_OLDER_TOOL_PAYLOAD_SENTINEL = "PERF_OLDER_TOOL_PAYLOAD_SENTINEL";
+const PERF_CONTEXT_PAYLOAD_SENTINEL = "PERF_CONTEXT_PAYLOAD_SENTINEL";
 const PERF_STREAM_SENTINEL = "PERF_STREAM_DONE";
+const EXPECTED_INITIAL_MESSAGE_COUNT = 20;
 const PASSWORD = "hlid-performance-gate";
 const cdpSessions = new WeakMap<Page, CDPSession>();
 
@@ -44,6 +47,13 @@ type BrowserSnapshot = {
 	encodedBodyBytes: number;
 };
 
+type RavenNavigationTiming = {
+	firstTranscriptVisibleMs: number;
+	readinessMs: number;
+	initialHistoryResponseBytes: number;
+	renderedMessageCount: number;
+};
+
 type GateReport = {
 	label: string;
 	createdAt: string;
@@ -56,7 +66,10 @@ type GateReport = {
 		shellPreloadGzipBytes: number;
 	};
 	desktop: {
+		firstTranscriptVisibleMs: number;
 		readinessMs: number;
+		initialHistoryResponseBytes: number;
+		renderedMessageCount: number;
 		initial: BrowserSnapshot;
 		toolRevealMs: number;
 		toolRevealDelta: BrowserSnapshot;
@@ -68,7 +81,10 @@ type GateReport = {
 		idleWebSocketMessageTypes: Record<string, number>;
 	};
 	mobile: {
+		firstTranscriptVisibleMs: number;
 		readinessMs: number;
+		initialHistoryResponseBytes: number;
+		renderedMessageCount: number;
 		initial: BrowserSnapshot;
 	};
 	budgets: Array<{
@@ -354,17 +370,89 @@ function delta(after: BrowserSnapshot, before: BrowserSnapshot): BrowserSnapshot
 	) as BrowserSnapshot;
 }
 
-async function navigateRaven(page: Page, baseUrl: string): Promise<number> {
+async function navigateRaven(
+	page: Page,
+	baseUrl: string,
+): Promise<RavenNavigationTiming> {
 	const startedAt = performance.now();
-	await page.goto(`${baseUrl}/raven?session=${PERF_SESSION_ID}`, {
-		waitUntil: "domcontentloaded",
-	});
-	await page.getByText(PERF_READY_SENTINEL, { exact: false }).waitFor({
-		state: "visible",
-		timeout: 20_000,
-	});
-	await page.locator('textarea[role="combobox"]').waitFor({ state: "visible" });
-	return performance.now() - startedAt;
+	const historyBodies: Buffer[] = [];
+	const pendingCaptures = new Set<Promise<void>>();
+	const captureHistoryResponse = (response: {
+		request(): { resourceType(): string };
+		body(): Promise<Buffer>;
+	}) => {
+		const resourceType = response.request().resourceType();
+		if (resourceType !== "fetch" && resourceType !== "xhr") return;
+		const capture = response
+			.body()
+			.then((body) => {
+				if (body.includes(PERF_READY_SENTINEL)) historyBodies.push(body);
+			})
+			.catch(() => {});
+		pendingCaptures.add(capture);
+		void capture.finally(() => pendingCaptures.delete(capture));
+	};
+	page.on("response", captureHistoryResponse);
+	let firstTranscriptVisibleMs: number;
+	let readinessMs: number;
+	try {
+		await page.goto(`${baseUrl}/raven?session=${PERF_SESSION_ID}`, {
+			waitUntil: "domcontentloaded",
+		});
+		await page
+			.locator("[data-raven-message-id] > *")
+			.first()
+			.waitFor({ state: "visible", timeout: 20_000 });
+		await page.evaluate(
+			() =>
+				new Promise<void>((resolveFrame) =>
+					requestAnimationFrame(() =>
+						requestAnimationFrame(() => resolveFrame()),
+					),
+				),
+		);
+		firstTranscriptVisibleMs = performance.now() - startedAt;
+		await page.getByText(PERF_READY_SENTINEL, { exact: false }).waitFor({
+			state: "visible",
+			timeout: 20_000,
+		});
+		await page
+			.locator('textarea[role="combobox"]')
+			.waitFor({ state: "visible" });
+		readinessMs = performance.now() - startedAt;
+		await page.waitForTimeout(100);
+		await Promise.all([...pendingCaptures]);
+	} finally {
+		page.off("response", captureHistoryResponse);
+	}
+	if (historyBodies.length !== 1) {
+		throw new Error(
+			`Initial Raven navigation loaded history ${historyBodies.length} times; expected exactly once`,
+		);
+	}
+	const historyBody = historyBodies[0];
+	if (historyBody.includes(PERF_OLDER_TOOL_PAYLOAD_SENTINEL)) {
+		throw new Error(
+			"Initial history response enriched its nonpageable lookahead row",
+		);
+	}
+	if (historyBody.includes(PERF_CONTEXT_PAYLOAD_SENTINEL)) {
+		throw new Error("Initial history response included a full context receipt");
+	}
+	const renderedMessageCount = await page
+		.locator("[data-raven-message-id]")
+		.count();
+	if (renderedMessageCount !== EXPECTED_INITIAL_MESSAGE_COUNT) {
+		throw new Error(
+			`Initial Raven transcript rendered ${renderedMessageCount} messages; expected ${EXPECTED_INITIAL_MESSAGE_COUNT}`,
+		);
+	}
+	return {
+		firstTranscriptVisibleMs,
+		readinessMs,
+		initialHistoryResponseBytes: historyBody.byteLength,
+		renderedMessageCount,
+	};
 }
 
 function budget(name: string, actual: number, limit: number, unit: string) {
@@ -446,9 +534,27 @@ try {
 	const desktopPage = await desktopContext.newPage();
 	await installLongTaskObserver(desktopPage);
 	await login(desktopPage, baseUrl);
-	const desktopReadinessMs = await navigateRaven(desktopPage, baseUrl);
+	const desktopNavigation = await navigateRaven(desktopPage, baseUrl);
 	await collectGarbage(desktopContext, desktopPage);
 	const desktopInitial = await snapshot(desktopContext, desktopPage);
+
+	// Measure mobile against the same immutable seeded transcript. The desktop
+	// stream below appends a turn, which would otherwise make the two readiness
+	// samples cover different history windows and response sizes.
+	const mobileContext = await browser.newContext({
+		viewport: { width: 390, height: 844 },
+		deviceScaleFactor: 2,
+		isMobile: true,
+		hasTouch: true,
+		serviceWorkers: "block",
+	});
+	const mobilePage = await mobileContext.newPage();
+	await installLongTaskObserver(mobilePage);
+	await login(mobilePage, baseUrl);
+	const mobileNavigation = await navigateRaven(mobilePage, baseUrl);
+	await collectGarbage(mobileContext, mobilePage);
+	const mobileInitial = await snapshot(mobileContext, mobilePage);
+	await mobileContext.close();
 
 	const reveal = desktopPage.locator("[data-activity-load-earlier]");
 	const revealWindow = await reveal.getAttribute("data-activity-load-earlier");
@@ -521,20 +627,6 @@ try {
 	idleDelta.jsHeapTotalBytes =
 		afterIdleGarbageCollection.jsHeapTotalBytes - beforeIdle.jsHeapTotalBytes;
 
-	const mobileContext = await browser.newContext({
-		viewport: { width: 390, height: 844 },
-		deviceScaleFactor: 2,
-		isMobile: true,
-		hasTouch: true,
-		serviceWorkers: "block",
-	});
-	const mobilePage = await mobileContext.newPage();
-	await installLongTaskObserver(mobilePage);
-	await login(mobilePage, baseUrl);
-	const mobileReadinessMs = await navigateRaven(mobilePage, baseUrl);
-	await collectGarbage(mobileContext, mobilePage);
-	const mobileInitial = await snapshot(mobileContext, mobilePage);
-
 	const toolRevealDelta = delta(afterReveal, beforeReveal);
 	const streamDelta = delta(afterStream, beforeStream);
 	const idleTaskPercent =
@@ -547,7 +639,24 @@ try {
 	const bundle = bundleMetrics();
 	const budgets = [
 		budget("server startup", serverStartupMs, 10_000, "ms"),
-		budget("desktop Raven readiness", desktopReadinessMs, 4_000, "ms"),
+		budget(
+			"desktop first transcript visible",
+			desktopNavigation.firstTranscriptVisibleMs,
+			2_000,
+			"ms",
+		),
+		budget(
+			"desktop Raven readiness",
+			desktopNavigation.readinessMs,
+			4_000,
+			"ms",
+		),
+		budget(
+			"desktop initial history response",
+			desktopNavigation.initialHistoryResponseBytes,
+			512 * 1024,
+			"bytes",
+		),
 		budget("desktop DOM nodes", desktopInitial.domNodes, 9_000, "nodes"),
 		budget(
 			"client bundle",
@@ -589,7 +698,24 @@ try {
 			8 * 1024 * 1024,
 			"bytes",
 		),
-		budget("mobile Raven readiness", mobileReadinessMs, 6_000, "ms"),
+		budget(
+			"mobile first transcript visible",
+			mobileNavigation.firstTranscriptVisibleMs,
+			3_000,
+			"ms",
+		),
+		budget(
+			"mobile Raven readiness",
+			mobileNavigation.readinessMs,
+			6_000,
+			"ms",
+		),
+		budget(
+			"mobile initial history response",
+			mobileNavigation.initialHistoryResponseBytes,
+			640 * 1024,
+			"bytes",
+		),
 		budget("mobile DOM nodes", mobileInitial.domNodes, 12_000, "nodes"),
 		budget(
 			"mobile heap",
@@ -607,7 +733,11 @@ try {
 		serverStartupMs,
 		bundle,
 		desktop: {
-			readinessMs: desktopReadinessMs,
+			firstTranscriptVisibleMs: desktopNavigation.firstTranscriptVisibleMs,
+			readinessMs: desktopNavigation.readinessMs,
+			initialHistoryResponseBytes:
+				desktopNavigation.initialHistoryResponseBytes,
+			renderedMessageCount: desktopNavigation.renderedMessageCount,
 			initial: desktopInitial,
 			toolRevealMs,
 			toolRevealDelta,
@@ -618,7 +748,13 @@ try {
 			idleHeapGrowthBytes,
 			idleWebSocketMessageTypes,
 		},
-		mobile: { readinessMs: mobileReadinessMs, initial: mobileInitial },
+		mobile: {
+			firstTranscriptVisibleMs: mobileNavigation.firstTranscriptVisibleMs,
+			readinessMs: mobileNavigation.readinessMs,
+			initialHistoryResponseBytes: mobileNavigation.initialHistoryResponseBytes,
+			renderedMessageCount: mobileNavigation.renderedMessageCount,
+			initial: mobileInitial,
+		},
 		budgets,
 	};
 	const requestedOutput = argument("output");
@@ -650,7 +786,6 @@ try {
 	}
 
 	await desktopContext.close();
-	await mobileContext.close();
 } finally {
 	if (browser) await browser.close().catch(() => {});
 	if (server) {

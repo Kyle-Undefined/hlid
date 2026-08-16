@@ -3230,6 +3230,129 @@ describe("Raven composed submission behavior", () => {
 		});
 	});
 
+	it("revalidates a non-empty native catalog after mount without blanking it", async () => {
+		const cachedProviders = [
+			{
+				id: "claude",
+				label: "Cached Claude",
+				available: true,
+				models: [
+					{
+						value: "claude-sonnet-4-6",
+						label: "Cached Sonnet",
+						isDefault: true,
+					},
+				],
+			},
+		];
+		const freshProviders = [
+			{
+				...cachedProviders[0],
+				label: "Fresh Claude",
+				models: [
+					{
+						value: "claude-sonnet-4-6",
+						label: "Fresh Sonnet",
+						isDefault: true,
+					},
+				],
+			},
+		];
+		vi.mocked(getProvidersFn).mockResolvedValue(cachedProviders as never);
+		await loadRavenProviders("/vault");
+		replaceDataRevisions({
+			...getDataRevisionSnapshot(),
+			providers: getDataRevisionSnapshot().providers + 1,
+		});
+		const backgroundRead = deferred<Array<Record<string, unknown>>>();
+		vi.mocked(getProvidersFn).mockReset();
+		vi.mocked(getProvidersFn).mockReturnValue(backgroundRead.promise as never);
+		state.loaderData = {
+			...state.loaderData,
+			providers: cachedProviders,
+		};
+
+		render(<ChatPage />);
+		expect(
+			screen.getByRole("button", { name: /Cached Claude.*Sonnet 4\.6/i }),
+		).toBeTruthy();
+		await waitFor(() => expect(getProvidersFn).toHaveBeenCalledOnce());
+
+		await act(async () => backgroundRead.resolve(freshProviders));
+
+		expect(
+			await screen.findByRole("button", {
+				name: /Fresh Claude.*Sonnet 4\.6/i,
+			}),
+		).toBeTruthy();
+	});
+
+	it("does not apply an ordinary provider read superseded by a live refresh", async () => {
+		const cachedProviders = [
+			{
+				id: "claude",
+				label: "Cached Claude",
+				available: true,
+				models: [
+					{
+						value: "claude-sonnet-4-6",
+						label: "Cached Sonnet",
+						isDefault: true,
+					},
+				],
+			},
+		];
+		const staleProviders = [
+			{
+				...cachedProviders[0],
+				label: "Stale Claude",
+			},
+		];
+		const liveProviders = [
+			{
+				...cachedProviders[0],
+				label: "Live Claude",
+			},
+		];
+		vi.mocked(getProvidersFn).mockResolvedValue(cachedProviders as never);
+		await loadRavenProviders("/vault");
+		replaceDataRevisions({
+			...getDataRevisionSnapshot(),
+			providers: getDataRevisionSnapshot().providers + 1,
+		});
+		const ordinaryRead = deferred<Array<Record<string, unknown>>>();
+		const liveRefresh = deferred<Array<Record<string, unknown>>>();
+		vi.mocked(getProvidersFn).mockReset();
+		vi.mocked(getProvidersFn)
+			.mockReturnValueOnce(ordinaryRead.promise as never)
+			.mockReturnValueOnce(liveRefresh.promise as never);
+		state.loaderData = {
+			...state.loaderData,
+			providers: cachedProviders,
+		};
+
+		render(<ChatPage />);
+		await waitFor(() => expect(getProvidersFn).toHaveBeenCalledOnce());
+		const refreshing = refreshRavenProvider("claude", "/vault");
+		await waitFor(() => expect(getProvidersFn).toHaveBeenCalledTimes(2));
+
+		await act(async () => liveRefresh.resolve(liveProviders));
+		await refreshing;
+		expect(
+			await screen.findByRole("button", {
+				name: /Live Claude.*Sonnet 4\.6/i,
+			}),
+		).toBeTruthy();
+
+		await act(async () => ordinaryRead.resolve(staleProviders));
+		expect(
+			screen.getByRole("button", { name: /Live Claude.*Sonnet 4\.6/i }),
+		).toBeTruthy();
+		expect(
+			screen.queryByRole("button", { name: /Stale Claude.*Sonnet 4\.6/i }),
+		).toBeNull();
+	});
+
 	it("shows model loading on the first ACP selection and fills the picker without a provider bounce", async () => {
 		state.model = "claude-sonnet-4-6";
 		const refresh = deferred<Array<Record<string, unknown>>>();
@@ -3321,6 +3444,28 @@ describe("Raven composed submission behavior", () => {
 
 	it("offers an in-place retry when the first ACP model refresh fails", async () => {
 		state.model = "claude-sonnet-4-6";
+		const initialProviders = [
+			{
+				id: "claude",
+				label: "Claude",
+				available: true,
+				models: [
+					{
+						value: "claude-sonnet-4-6",
+						label: "Sonnet 4.6",
+					},
+				],
+			},
+			{
+				id: "acp:opencode",
+				label: "OpenCode",
+				available: true,
+				models: [],
+			},
+		];
+		vi.mocked(getProvidersFn).mockResolvedValue(initialProviders as never);
+		await loadRavenProviders("/vault");
+		vi.mocked(getProvidersFn).mockReset();
 		vi.mocked(getProvidersFn)
 			.mockRejectedValueOnce(new Error("live refresh failed"))
 			.mockResolvedValueOnce([
@@ -3334,25 +3479,7 @@ describe("Raven composed submission behavior", () => {
 			] as never);
 		state.loaderData = {
 			...state.loaderData,
-			providers: [
-				{
-					id: "claude",
-					label: "Claude",
-					available: true,
-					models: [
-						{
-							value: "claude-sonnet-4-6",
-							label: "Sonnet 4.6",
-						},
-					],
-				},
-				{
-					id: "acp:opencode",
-					label: "OpenCode",
-					available: true,
-					models: [],
-				},
-			],
+			providers: initialProviders,
 		};
 
 		render(<ChatPage />);
@@ -3496,7 +3623,9 @@ describe("Raven composed submission behavior", () => {
 		// require another provider process or a second bounce.
 		fireEvent.click(screen.getByRole("button", { name: "OpenCode" }));
 		expect(screen.getByRole("button", { name: /^Allowed/ })).toBeTruthy();
-		expect(getProvidersFn).toHaveBeenCalledOnce();
+		// One cached-model revalidation starts on mount; selecting OpenCode starts
+		// the provider-authoritative live refresh.
+		expect(getProvidersFn).toHaveBeenCalledTimes(2);
 	});
 
 	it("keeps ACP selected on provider default when refresh returns stale", async () => {
@@ -3678,7 +3807,7 @@ describe("Raven composed submission behavior", () => {
 			screen.getByRole("button", { name: /Claude.*Sonnet 4\.6/i }),
 		);
 		fireEvent.click(screen.getByRole("button", { name: "OpenCode" }));
-		await waitFor(() => expect(getProvidersFn).toHaveBeenCalledOnce());
+		await waitFor(() => expect(getProvidersFn).toHaveBeenCalledTimes(2));
 
 		act(() => state.onAgentChange?.("/context-project"));
 		await act(async () => {
@@ -7340,36 +7469,29 @@ describe("raven route loader", () => {
 			},
 		];
 		vi.mocked(getProvidersFn).mockResolvedValue(filteredProviders as never);
+		await loadRavenProviders("/vault");
+		vi.mocked(getProvidersFn).mockClear();
 
 		const data = await route.loader({ deps: { session: "new-acp" } });
 
 		expect(data.sessionPersisted).toBe(false);
 		expect(data.providers).toEqual(filteredProviders);
-		expect(getProvidersFn).toHaveBeenCalledWith({
-			data: { preferCachedModels: true, discoveryCwd: "/vault" },
-		});
+		expect(getProvidersFn).not.toHaveBeenCalled();
 	});
 
 	it("does not join an overlapping ACP refresh during route navigation", async () => {
 		const liveRefresh = deferred<Array<Record<string, unknown>>>();
-		const navigationRead = deferred<Array<Record<string, unknown>>>();
-		vi.mocked(getProvidersFn)
-			.mockImplementationOnce(() => liveRefresh.promise as never)
-			.mockImplementationOnce(() => navigationRead.promise as never);
+		vi.mocked(getProvidersFn).mockImplementationOnce(
+			() => liveRefresh.promise as never,
+		);
 		const refreshing = refreshRavenProvider("acp:opencode", "/vault");
-
-		const loading = route.loader({ deps: { session: "overlap-session" } });
-		await waitFor(() => expect(getProvidersFn).toHaveBeenCalledTimes(2));
-		expect(getProvidersFn).toHaveBeenNthCalledWith(2, {
-			data: { preferCachedModels: true, discoveryCwd: "/vault" },
-		});
 
 		const cachedProviders = [
 			{ id: "acp:opencode", label: "OpenCode", available: true },
 		];
-		navigationRead.resolve(cachedProviders);
-		const data = await loading;
-		expect(data.providers).toEqual(cachedProviders);
+		const data = await route.loader({ deps: { session: "overlap-session" } });
+		expect(data.providers).toEqual([]);
+		expect(getProvidersFn).toHaveBeenCalledOnce();
 
 		liveRefresh.resolve([
 			{
@@ -7379,9 +7501,14 @@ describe("raven route loader", () => {
 			},
 		]);
 		await refreshing;
+		const cached = await route.loader({ deps: { session: "cached-session" } });
+		expect(cached.providers).toEqual([
+			expect.objectContaining({ id: "acp:opencode" }),
+		]);
+		expect(getProvidersFn).toHaveBeenCalledOnce();
 	});
 
-	it("keeps cached provider navigation for a persisted ACP session", async () => {
+	it("restores a persisted ACP provider without waiting for its catalog", async () => {
 		vi.mocked(getConfig).mockResolvedValue(
 			makeLoaderConfig({
 				vault_provider: "acp:opencode",
@@ -7389,13 +7516,24 @@ describe("raven route loader", () => {
 			}) as never,
 		);
 		vi.mocked(getSessionRowFn).mockResolvedValue({ id: "saved-acp" } as never);
+		vi.mocked(getSessionSelectionFn).mockResolvedValue({
+			agentCwd: null,
+			providerId: "acp:opencode",
+			model: "provider-default",
+			effort: null,
+			permissionMode: "default",
+		} as never);
 
 		const data = await route.loader({ deps: { session: "saved-acp" } });
 
 		expect(data.sessionPersisted).toBe(true);
-		expect(getProvidersFn).toHaveBeenCalledWith({
-			data: { preferCachedModels: true, discoveryCwd: "/vault" },
+		expect(data).toMatchObject({
+			sessionProviderId: "acp:opencode",
+			sessionModel: "provider-default",
+			sessionPermissionMode: "default",
+			providers: [],
 		});
+		expect(getProvidersFn).not.toHaveBeenCalled();
 	});
 
 	it("discards an explicit route agent that is no longer configured", async () => {
@@ -7405,41 +7543,36 @@ describe("raven route loader", () => {
 		expect(data.agentSkillContext).toBeUndefined();
 	});
 
-	it("does not let a stalled provider catalog hold Raven navigation pending", async () => {
-		vi.useFakeTimers();
-		try {
-			vi.mocked(getProvidersFn).mockImplementation(() => new Promise(() => {}));
-			const pending = route.loader({ deps: { session: "s1" } });
-			await vi.advanceTimersByTimeAsync(501);
-			const data = await pending;
-			expect(data.existingSessionId).toBe("s1");
-			expect(data.providers).toEqual([]);
-			expect(getProvidersFn).toHaveBeenCalledWith({
-				data: { preferCachedModels: true, discoveryCwd: "/vault" },
-			});
-		} finally {
-			vi.useRealTimers();
-		}
+	it("does not start provider discovery on the navigation path", async () => {
+		vi.mocked(getProvidersFn).mockImplementation(() => new Promise(() => {}));
+
+		const data = await route.loader({ deps: { session: "s1" } });
+
+		expect(data.existingSessionId).toBe("s1");
+		expect(data.providers).toEqual([]);
+		expect(getProvidersFn).not.toHaveBeenCalled();
 	});
 
-	it("shares a stalled provider read across session switches", async () => {
-		vi.useFakeTimers();
-		try {
-			vi.mocked(getProvidersFn).mockImplementation(() => new Promise(() => {}));
-			const first = route.loader({ deps: { session: "switch-test-a" } });
-			await vi.advanceTimersByTimeAsync(501);
-			const firstData = await first;
+	it("does not join a background provider read across session switches", async () => {
+		const backgroundRead = deferred<Array<Record<string, unknown>>>();
+		vi.mocked(getProvidersFn).mockReturnValue(backgroundRead.promise as never);
+		const hydrating = loadRavenProviders("/vault");
 
-			const second = route.loader({ deps: { session: "switch-test-b" } });
-			await vi.advanceTimersByTimeAsync(501);
-			const secondData = await second;
+		const firstData = await route.loader({
+			deps: { session: "switch-test-a" },
+		});
+		const secondData = await route.loader({
+			deps: { session: "switch-test-b" },
+		});
 
-			expect(firstData.existingSessionId).toBe("switch-test-a");
-			expect(secondData.existingSessionId).toBe("switch-test-b");
-			expect(getProvidersFn).toHaveBeenCalledOnce();
-		} finally {
-			vi.useRealTimers();
-		}
+		expect(firstData.existingSessionId).toBe("switch-test-a");
+		expect(secondData.existingSessionId).toBe("switch-test-b");
+		expect(firstData.providers).toEqual([]);
+		expect(secondData.providers).toEqual([]);
+		expect(getProvidersFn).toHaveBeenCalledOnce();
+
+		backgroundRead.resolve([]);
+		await hydrating;
 	});
 
 	it("does not let optional agent, skill, or voice inventory hold navigation pending", async () => {
@@ -7511,6 +7644,12 @@ describe("raven route loader", () => {
 	});
 
 	it("uses a cwd-mode agent workspace for provider options", async () => {
+		const projectProviders = [
+			{ id: "codex", label: "Project Codex", available: true },
+		];
+		vi.mocked(getProvidersFn).mockResolvedValue(projectProviders as never);
+		await loadRavenProviders("/proj");
+		vi.mocked(getProvidersFn).mockClear();
 		vi.mocked(getConfig).mockResolvedValue(
 			makeLoaderConfig({ agents: [{ path: "/proj", mode: "cwd" }] }) as never,
 		);
@@ -7524,13 +7663,18 @@ describe("raven route loader", () => {
 		} as never);
 		const data = await route.loader({ deps: {} });
 		expect(data.agentSkillContext).toBe("/proj");
+		expect(data.providers).toEqual(projectProviders);
 		expect(getSessionSelectionFn).toHaveBeenCalledWith({ data: "cur" });
-		expect(getProvidersFn).toHaveBeenCalledWith({
-			data: { preferCachedModels: true, discoveryCwd: "/proj" },
-		});
+		expect(getProvidersFn).not.toHaveBeenCalled();
 	});
 
 	it("uses the vault workspace for context-mode agent options", async () => {
+		const vaultProviders = [
+			{ id: "acp:opencode", label: "Vault OpenCode", available: true },
+		];
+		vi.mocked(getProvidersFn).mockResolvedValue(vaultProviders as never);
+		await loadRavenProviders("/vault");
+		vi.mocked(getProvidersFn).mockClear();
 		vi.mocked(getConfig).mockResolvedValue(
 			makeLoaderConfig({
 				agents: [{ path: "/proj", mode: "context" }],
@@ -7548,9 +7692,9 @@ describe("raven route loader", () => {
 		const data = await route.loader({ deps: {} });
 
 		expect(data.agentSkillContext).toBe("/proj");
-		expect(getProvidersFn).toHaveBeenCalledWith({
-			data: { preferCachedModels: true, discoveryCwd: "/vault" },
-		});
+		expect(data.sessionProviderId).toBe("acp:opencode");
+		expect(data.providers).toEqual(vaultProviders);
+		expect(getProvidersFn).not.toHaveBeenCalled();
 	});
 
 	it("normalizes an equivalent saved WSL path to the configured agent path", async () => {

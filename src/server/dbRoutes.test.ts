@@ -2506,6 +2506,174 @@ describe("handleDbRoute — GET /db/session-messages", () => {
 		);
 	});
 
+	it("retains a full-page lookahead row without enriching it", async () => {
+		mockGetSessionMessages.mockResolvedValue([
+			{ id: 1, seq: 1, role: "user", text: "lookahead" },
+			{ id: 2, seq: 2, role: "assistant", text: "real assistant" },
+			{ id: 3, seq: 3, role: "user", text: "real user" },
+		]);
+		mockGetSessionToolEventTranscriptWindow.mockResolvedValue({
+			items: [{ id: 20, assistant_seq: 2, name: "Read" }],
+			pages: [
+				{
+					assistantSeq: 2,
+					total: 21,
+					errorCount: 0,
+					hasEarlier: true,
+					nextBeforeId: 20,
+				},
+			],
+		});
+		mockGetAttachmentsForSession.mockResolvedValue([
+			{ id: "old", message_seq: 1, name: "lookahead.png" },
+			{ id: "real", message_seq: 3, name: "real.png" },
+		]);
+
+		const response = await handleDbRoute(
+			makeUrl("/db/session-messages", {
+				session_id: "s1",
+				limit: "3",
+				tool_event_page_size: "20",
+				lookahead: "1",
+			}),
+			makeRequest(),
+		);
+		const rows = (await response?.json()) as Array<{
+			id: number;
+			toolEvents?: Array<{ id: number }>;
+			toolEventPage?: { total: number };
+			attachments?: Array<{ id: string }>;
+		}>;
+
+		expect(rows.map((row) => row.id)).toEqual([1, 2, 3]);
+		expect(rows[0].attachments).toEqual([]);
+		expect(rows[1].toolEvents).toEqual([expect.objectContaining({ id: 20 })]);
+		expect(rows[1].toolEventPage).toMatchObject({ total: 21 });
+		expect(rows[2].attachments).toEqual([
+			expect.objectContaining({ id: "real" }),
+		]);
+		expect(mockGetSessionToolEventTranscriptWindow).toHaveBeenCalledWith(
+			"s1",
+			2,
+			3,
+			20,
+		);
+		expect(mockGetAttachmentsForSession).toHaveBeenCalledWith(
+			"s1",
+			2,
+			undefined,
+			3,
+		);
+	});
+
+	it("excludes only the cursor lookahead row when sequences are equal", async () => {
+		mockGetSessionMessages.mockResolvedValue([
+			{ id: 40, seq: 10, role: "assistant", text: "lookahead" },
+			{ id: 41, seq: 10, role: "assistant", text: "real equal-seq row" },
+			{ id: 42, seq: 11, role: "user", text: "real newer row" },
+		]);
+		mockGetSessionToolEventTranscriptWindow.mockResolvedValue({
+			items: [{ id: 80, assistant_seq: 10, name: "Read" }],
+			pages: [
+				{
+					assistantSeq: 10,
+					total: 22,
+					errorCount: 1,
+					hasEarlier: true,
+					nextBeforeId: 80,
+				},
+			],
+		});
+		mockGetAttachmentsForSession.mockResolvedValue([]);
+
+		const response = await handleDbRoute(
+			makeUrl("/db/session-messages", {
+				session_id: "s1",
+				before_seq: "20",
+				before_id: "100",
+				limit: "3",
+				tool_event_page_size: "20",
+				lookahead: "1",
+			}),
+			makeRequest(),
+		);
+		const rows = (await response?.json()) as Array<{
+			id: number;
+			toolEvents?: Array<{ id: number }>;
+			toolEventPage?: unknown;
+		}>;
+
+		expect(mockGetSessionMessages).toHaveBeenCalledWith(
+			"s1",
+			20,
+			3,
+			undefined,
+			100,
+			undefined,
+		);
+		expect(rows.map((row) => row.id)).toEqual([40, 41, 42]);
+		expect(rows[0].toolEvents).toEqual([]);
+		expect(rows[0].toolEventPage).toBeUndefined();
+		expect(rows[1].toolEvents).toEqual([expect.objectContaining({ id: 80 })]);
+		expect(rows[1].toolEventPage).toBeDefined();
+		expect(mockGetSessionToolEventTranscriptWindow).toHaveBeenCalledWith(
+			"s1",
+			10,
+			11,
+			20,
+		);
+	});
+
+	it("enriches every row when a lookahead page is partial", async () => {
+		mockGetSessionMessages.mockResolvedValue([
+			{ id: 1, seq: 1, role: "assistant", text: "oldest real row" },
+			{ id: 2, seq: 2, role: "user", text: "middle real row" },
+			{ id: 3, seq: 3, role: "assistant", text: "newest real row" },
+		]);
+		mockGetSessionToolEventTranscriptWindow.mockResolvedValue({
+			items: [
+				{ id: 10, assistant_seq: 1, name: "Read" },
+				{ id: 30, assistant_seq: 3, name: "Bash" },
+			],
+			pages: [],
+		});
+		mockGetAttachmentsForSession.mockResolvedValue([
+			{ id: "middle", message_seq: 2, name: "middle.png" },
+		]);
+
+		const response = await handleDbRoute(
+			makeUrl("/db/session-messages", {
+				session_id: "s1",
+				limit: "4",
+				tool_event_page_size: "20",
+				lookahead: "1",
+			}),
+			makeRequest(),
+		);
+		const rows = (await response?.json()) as Array<{
+			toolEvents?: Array<{ id: number }>;
+			attachments?: Array<{ id: string }>;
+		}>;
+
+		expect(rows[0].toolEvents).toEqual([expect.objectContaining({ id: 10 })]);
+		expect(rows[1].attachments).toEqual([
+			expect.objectContaining({ id: "middle" }),
+		]);
+		expect(rows[2].toolEvents).toEqual([expect.objectContaining({ id: 30 })]);
+		expect(mockGetSessionToolEventTranscriptWindow).toHaveBeenCalledWith(
+			"s1",
+			1,
+			3,
+			20,
+		);
+		expect(mockGetAttachmentsForSession).toHaveBeenCalledWith(
+			"s1",
+			1,
+			undefined,
+			3,
+		);
+	});
+
 	it("maps a mixed DB-selected tool window and leaves legacy reads complete", async () => {
 		mockGetSessionMessages.mockResolvedValue([
 			{ id: 1, seq: 2, role: "assistant", text: "done", query_id: 42 },
@@ -2551,6 +2719,7 @@ describe("handleDbRoute — GET /db/session-messages", () => {
 			makeUrl("/db/session-messages", {
 				session_id: "s1",
 				tool_event_page_size: "20",
+				lookahead: "1",
 			}),
 			makeRequest(),
 		);
@@ -2578,7 +2747,11 @@ describe("handleDbRoute — GET /db/session-messages", () => {
 		expect(mockGetSessionToolEventSummaries).not.toHaveBeenCalled();
 
 		const legacy = await handleDbRoute(
-			makeUrl("/db/session-messages", { session_id: "s1" }),
+			makeUrl("/db/session-messages", {
+				session_id: "s1",
+				limit: "2",
+				lookahead: "1",
+			}),
 			makeRequest(),
 		);
 		const legacyRows = (await legacy?.json()) as Array<{
@@ -2589,6 +2762,47 @@ describe("handleDbRoute — GET /db/session-messages", () => {
 		expect(legacyRows[1].toolEvents).toHaveLength(21);
 		expect(legacyRows[0].toolEventPage).toBeUndefined();
 		expect(legacyRows[1].toolEventPage).toBeUndefined();
+	});
+
+	it("keeps only context receipt presence in compact transcript rows", async () => {
+		mockGetSessionMessages.mockResolvedValue([
+			{
+				id: 1,
+				seq: 1,
+				role: "user",
+				text: "with context",
+				context_manifest_json: '{"contractVersion":1}',
+			},
+			{ id: 2, seq: 2, role: "user", text: "without context" },
+		]);
+		mockGetAttachmentsForSession.mockResolvedValue([]);
+
+		const compact = await handleDbRoute(
+			makeUrl("/db/session-messages", {
+				session_id: "s1",
+				tool_event_page_size: "20",
+			}),
+			makeRequest(),
+		);
+		const compactRows = (await compact?.json()) as Array<
+			Record<string, unknown>
+		>;
+		expect(compactRows[0]).toMatchObject({ has_context_receipt: true });
+		expect(compactRows[1]).toMatchObject({ has_context_receipt: false });
+		expect(compactRows[0]).not.toHaveProperty("context_manifest_json");
+		expect(compactRows[1]).not.toHaveProperty("context_manifest_json");
+
+		mockGetSessionToolEventSummaries.mockResolvedValue([]);
+		const legacy = await handleDbRoute(
+			makeUrl("/db/session-messages", { session_id: "s1" }),
+			makeRequest(),
+		);
+		const legacyRows = (await legacy?.json()) as Array<Record<string, unknown>>;
+		expect(legacyRows[0]).toMatchObject({
+			context_manifest_json: '{"contractVersion":1}',
+		});
+		expect(legacyRows[0]).not.toHaveProperty("has_context_receipt");
+		expect(legacyRows[1]).not.toHaveProperty("has_context_receipt");
 	});
 
 	it("omits page metadata when the DB returns a complete one-page history", async () => {
