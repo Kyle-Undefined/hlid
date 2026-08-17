@@ -146,6 +146,7 @@ import {
 	MAX_VOICE_BODY_BYTES,
 	MULTIPART_OVERHEAD_BYTES,
 	payloadTooLarge,
+	readRequestBodyLimited,
 } from "./requestLimits";
 import { isRoutineNotificationRelevant } from "./routineNotificationRelevance";
 import {
@@ -174,6 +175,12 @@ import { TtsModelManager } from "./tts";
 import { bootstrapTtsRuntimeAssets } from "./tts-bootstrap";
 import { INTERNAL_TTS_RUNTIME_FLAG, runTtsRuntimeServer } from "./tts-runtime";
 import { getTtsModelDefinition } from "./ttsModels";
+import {
+	installQualifiedTtsRuntime,
+	MAX_TTS_RUNTIME_INSTALL_BODY_BYTES,
+	runtimeInstallFilenames,
+	ttsRuntimeInstallStatus,
+} from "./ttsRuntimeInstall";
 import { startUiServer } from "./uiServer";
 import { markUiServerReady } from "./uiStartupGate";
 import { bootstrapUmbod, closeUmbod } from "./umbod";
@@ -1231,6 +1238,74 @@ async function deleteTtsModel(url: URL): Promise<Response> {
 	}
 }
 
+let ttsRuntimeInstallActive = false;
+
+async function installTtsRuntime(req: Request): Promise<Response> {
+	if (ttsRuntimeInstallActive) {
+		return Response.json(
+			{ error: "A DirectML runtime install is already in progress." },
+			{ status: 409 },
+		);
+	}
+	if (contentLengthExceeds(req, MAX_TTS_RUNTIME_INSTALL_BODY_BYTES)) {
+		return payloadTooLarge(MAX_TTS_RUNTIME_INSTALL_BODY_BYTES);
+	}
+	const expected = runtimeInstallFilenames();
+	ttsRuntimeInstallActive = true;
+	try {
+		const limited = await readRequestBodyLimited(
+			req,
+			MAX_TTS_RUNTIME_INSTALL_BODY_BYTES,
+		);
+		if (!limited.ok) return limited.response;
+		const contentType = req.headers.get("content-type");
+		if (!contentType?.startsWith("multipart/form-data")) {
+			return Response.json(
+				{
+					error:
+						"A multipart DirectML runtime archive and manifest are required.",
+				},
+				{ status: 400 },
+			);
+		}
+		const form = await new Request(req.url, {
+			method: "POST",
+			headers: { "content-type": contentType },
+			body: limited.body,
+		}).formData();
+		const archive = form.get("archive");
+		const manifest = form.get("manifest");
+		if (!(archive instanceof File) || archive.name !== expected.archive) {
+			return Response.json(
+				{ error: `Select the exact ${expected.archive} archive.` },
+				{ status: 400 },
+			);
+		}
+		if (!(manifest instanceof File) || manifest.name !== expected.manifest) {
+			return Response.json(
+				{ error: `Select the exact ${expected.manifest} file.` },
+				{ status: 400 },
+			);
+		}
+		const assets = await installQualifiedTtsRuntime(
+			new Uint8Array(await archive.arrayBuffer()),
+			new Uint8Array(await manifest.arrayBuffer()),
+		);
+		await tts.setRuntimeAssets(assets);
+		return Response.json({
+			status: tts.status(),
+			models: tts.models(),
+			runtime: {
+				directml: ttsRuntimeInstallStatus({
+					installed: tts.hasRuntimeBackend("directml"),
+				}),
+			},
+		});
+	} finally {
+		ttsRuntimeInstallActive = false;
+	}
+}
+
 async function transcribeVoice(req: Request): Promise<Response> {
 	if (contentLengthExceeds(req, MAX_VOICE_BODY_BYTES)) {
 		return payloadTooLarge(MAX_VOICE_BODY_BYTES);
@@ -1573,6 +1648,11 @@ const TTS_ROUTE_HANDLERS: Record<string, ServerRouteHandler> = {
 		Response.json({
 			status: tts.status(),
 			models: tts.models(),
+			runtime: {
+				directml: ttsRuntimeInstallStatus({
+					installed: tts.hasRuntimeBackend("directml"),
+				}),
+			},
 		}),
 	"POST /tts/sync": async () => {
 		await tts.syncConfig(loadConfig().voice);
@@ -1583,6 +1663,7 @@ const TTS_ROUTE_HANDLERS: Record<string, ServerRouteHandler> = {
 		tts.cancelDownload();
 		return Response.json({ ok: true });
 	},
+	"POST /tts/runtime/install": (_url, request) => installTtsRuntime(request),
 	"DELETE /tts/model": (url) => deleteTtsModel(url),
 };
 

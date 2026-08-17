@@ -144,6 +144,20 @@ function browserRuntimeBoundaryPlugin(): Plugin {
 	};
 }
 
+function modernKatexFontsPlugin(): Plugin {
+	return {
+		name: "hlid-modern-katex-fonts",
+		enforce: "pre",
+		transform(code, id) {
+			if (!/[\\/]katex[\\/]dist[\\/]katex\.min\.css(?:\?|$)/.test(id)) return;
+			return code.replace(
+				/src:url\(([^)]*\.woff2)\) format\("woff2"\),url\([^)]*\.woff\) format\("woff"\),url\([^)]*\.ttf\) format\("truetype"\)/g,
+				'src:url($1) format("woff2")',
+			);
+		},
+	};
+}
+
 /**
  * Stamp the service worker cache name with the app version + a per-build id.
  * public/ is copied verbatim, so this rewrites dist/client/sw.js after the
@@ -235,6 +249,7 @@ const config = defineConfig({
 		swStampPlugin(),
 		browserRuntimeBoundaryPlugin(),
 		chunkBudgetPlugin(),
+		modernKatexFontsPlugin(),
 		ipGatePlugin(serverCfg.local_network_access ?? false),
 		tailwindcss(),
 		tanstackStart({

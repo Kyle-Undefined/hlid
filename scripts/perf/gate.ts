@@ -60,6 +60,10 @@ type GateReport = {
 	commit: string;
 	idleDurationMs: number;
 	serverStartupMs: number;
+	server: {
+		eventLoopLagWarnings: number;
+		maxEventLoopLagMs: number;
+	};
 	bundle: {
 		clientBytes: number;
 		shellPreloadBytes: number;
@@ -161,6 +165,30 @@ function directoryBytes(path: string): number {
 		else total += statSync(child).size;
 	}
 	return total;
+}
+
+function monitorServerOutput(
+	stream: ReadableStream<Uint8Array>,
+	onLine: (line: string) => void,
+): Promise<void> {
+	return (async () => {
+		const reader = stream.getReader();
+		const decoder = new TextDecoder();
+		let pending = "";
+		try {
+			while (true) {
+				const { done, value } = await reader.read();
+				pending += decoder.decode(value, { stream: !done });
+				const lines = pending.split(/\r?\n/);
+				pending = lines.pop() ?? "";
+				for (const line of lines) onLine(line);
+				if (done) break;
+			}
+			if (pending) onLine(pending);
+		} finally {
+			reader.releaseLock();
+		}
+	})();
 }
 
 function bundleMetrics() {
@@ -498,6 +526,11 @@ writeFileSync(
 
 let server: ReturnType<typeof Bun.spawn> | null = null;
 let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
+const serverDiagnostics = {
+	eventLoopLagWarnings: 0,
+	maxEventLoopLagMs: 0,
+};
+let serverOutputDrains: Promise<void>[] = [];
 try {
 	if (!skipBuild) await run(["bun", "run", "build"]);
 	const build = await Bun.build({
@@ -523,6 +556,29 @@ try {
 		stdout: "pipe",
 		stderr: "pipe",
 	});
+	const serverStdout = server.stdout;
+	const serverStderr = server.stderr;
+	if (
+		!serverStdout ||
+		typeof serverStdout === "number" ||
+		!serverStderr ||
+		typeof serverStderr === "number"
+	) {
+		throw new Error("Performance server output pipes are unavailable");
+	}
+	serverOutputDrains = [
+		monitorServerOutput(serverStdout, () => {}),
+		monitorServerOutput(serverStderr, (line) => {
+			const lag = line.match(/^\[server\] event loop delayed by (\d+)ms$/);
+			if (!lag) return;
+			const milliseconds = Number(lag[1]);
+			serverDiagnostics.eventLoopLagWarnings++;
+			serverDiagnostics.maxEventLoopLagMs = Math.max(
+				serverDiagnostics.maxEventLoopLagMs,
+				milliseconds,
+			);
+		}),
+	];
 	await waitForServer(baseUrl);
 	const serverStartupMs = performance.now() - serverStartedAt;
 
@@ -661,8 +717,14 @@ try {
 		budget(
 			"client bundle",
 			bundle.clientBytes,
-			8.25 * 1024 * 1024,
+			7.5 * 1024 * 1024,
 			"bytes",
+		),
+		budget(
+			"server event-loop lag warnings",
+			serverDiagnostics.eventLoopLagWarnings,
+			0,
+			"warnings",
 		),
 		budget(
 			"shell preload",
@@ -731,6 +793,7 @@ try {
 		commit: await gitHead(),
 		idleDurationMs,
 		serverStartupMs,
+		server: serverDiagnostics,
 		bundle,
 		desktop: {
 			firstTranscriptVisibleMs: desktopNavigation.firstTranscriptVisibleMs,
@@ -791,6 +854,7 @@ try {
 	if (server) {
 		server.kill("SIGTERM");
 		await Promise.race([server.exited, Bun.sleep(5_000)]).catch(() => {});
+		await Promise.allSettled(serverOutputDrains);
 	}
 	if (keepTemp) console.log(`Kept performance fixture: ${tempRoot}`);
 	else if (existsSync(tempRoot) && basename(tempRoot).startsWith("hlid-perf-gate-")) {

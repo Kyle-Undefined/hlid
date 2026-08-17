@@ -15,6 +15,8 @@ type CapabilityRequest = (method: string, params: unknown) => Promise<unknown>;
 const PERMISSION_PROFILE_PAGE_SIZE = 100;
 const PERMISSION_PROFILE_MAX_PAGES = 10;
 const PERMISSION_PROFILE_MAX_TEXT_LENGTH = 500;
+const CAPABILITY_PAGE_SIZE = 100;
+const CAPABILITY_MAX_PAGES = 10;
 
 function record(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object"
@@ -64,6 +66,55 @@ function maturity(value: unknown): ProviderCapabilityMaturity {
 function issueMessage(method: string, error: unknown): string {
 	const detail = error instanceof Error ? error.message : String(error);
 	return `${method} unavailable${detail ? `: ${detail}` : ""}`;
+}
+
+async function readCodexCapabilityPages(input: {
+	method: string;
+	request: CapabilityRequest;
+	itemKeys: string[];
+	params?: Record<string, unknown>;
+}): Promise<{ data: unknown[] }> {
+	const values: unknown[] = [];
+	const seenCursors = new Set<string>();
+	let cursor: string | null = null;
+	for (let page = 0; page < CAPABILITY_MAX_PAGES; page++) {
+		const raw = record(
+			await input.request(input.method, {
+				...(input.params ?? {}),
+				limit: CAPABILITY_PAGE_SIZE,
+				...(cursor ? { cursor } : {}),
+			}),
+		);
+		const key = input.itemKeys.find((candidate) =>
+			Array.isArray(raw[candidate]),
+		);
+		if (!key) throw new Error(`${input.method} returned no item array`);
+		const pageValues = raw[key] as unknown[];
+		if (pageValues.length > CAPABILITY_PAGE_SIZE) {
+			throw new Error(
+				`${input.method} returned more than ${CAPABILITY_PAGE_SIZE} items in one page`,
+			);
+		}
+		values.push(...pageValues);
+		if (
+			raw.nextCursor !== undefined &&
+			raw.nextCursor !== null &&
+			typeof raw.nextCursor !== "string"
+		) {
+			throw new Error(`${input.method} returned a malformed nextCursor`);
+		}
+		const nextCursor =
+			typeof raw.nextCursor === "string" && raw.nextCursor
+				? raw.nextCursor
+				: null;
+		if (!nextCursor) return { data: values };
+		if (seenCursors.has(nextCursor)) {
+			throw new Error(`${input.method} repeated its pagination cursor`);
+		}
+		seenCursors.add(nextCursor);
+		cursor = nextCursor;
+	}
+	throw new Error(`${input.method} exceeded ${CAPABILITY_MAX_PAGES} pages`);
 }
 
 function experimentalEvidence(
@@ -322,12 +373,16 @@ export async function discoverCodexProviderCapabilities(input: {
 			providerId: string,
 			response: unknown,
 		) => ProviderCapabilityEvidence[];
-		allowNextCursor?: boolean;
 	};
 	const probes: Probe[] = [
 		{
 			method: "experimentalFeature/list",
-			load: () => input.request("experimentalFeature/list", { limit: 100 }),
+			load: () =>
+				readCodexCapabilityPages({
+					method: "experimentalFeature/list",
+					request: input.request,
+					itemKeys: ["data", "features"],
+				}),
 			map: experimentalEvidence,
 		},
 		{
@@ -353,9 +408,13 @@ export async function discoverCodexProviderCapabilities(input: {
 		{
 			method: "mcpServerStatus/list",
 			load: () =>
-				input.request("mcpServerStatus/list", { limit: 100, detail: "full" }),
+				readCodexCapabilityPages({
+					method: "mcpServerStatus/list",
+					request: input.request,
+					itemKeys: ["data", "servers"],
+					params: { detail: "full" },
+				}),
 			map: connectorHealthEvidence,
-			allowNextCursor: true,
 		},
 	] as const;
 	// Remote app inventory has its own bounded Apps/Connectors route. Keeping
@@ -382,7 +441,7 @@ export async function discoverCodexProviderCapabilities(input: {
 				}),
 			);
 		}
-		if (record(result.value).nextCursor && !("allowNextCursor" in probe)) {
+		if (record(result.value).nextCursor) {
 			issues.push(`${probe.method} returned a truncated first page.`);
 		}
 	}

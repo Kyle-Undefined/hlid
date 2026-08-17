@@ -6,7 +6,17 @@ import type { TtsModelInfo, TtsStatus } from "#/server/tts";
 
 const parseModelName = (raw: string) => z.string().min(1).parse(raw);
 
-export type TtsInfo = { status: TtsStatus; models: TtsModelInfo[] };
+export type TtsInfo = {
+	status: TtsStatus;
+	models: TtsModelInfo[];
+	runtime?: {
+		directml: {
+			supported: boolean;
+			installed: boolean;
+			runtimeId: string;
+		};
+	};
+};
 
 export const getTtsInfoFn = createServerFn({ method: "GET" }).handler(() =>
 	dbJson<TtsInfo>("/tts", {

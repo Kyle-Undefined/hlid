@@ -991,6 +991,10 @@ passed Hlið's qualification matrix. The current Piper packs and the curated
 MeloTTS English voices are qualified; `Kitten Nano` remains on `CPU`. A DirectML
 initialization or synthesis failure falls back to the separately qualified CPU
 runtime for that session. Choose **CPU** in Forge to disable GPU use explicitly.
+When the runtime is not installed, Forge accepts the reviewed runtime archive
+and its matching `runtime-manifest.json` together. Hlið checks the bounded
+archive, build provenance, exact entry list, and every file hash before an
+atomic install, then refreshes local neural speech without restarting Hlið.
 `Whisper` input continues to use its separate `Vulkan` or CPU runtime. The exact
 model/runtime test gates are recorded in
 [Local neural TTS qualification](tts-model-qualification.md).
@@ -1081,6 +1085,12 @@ instruction without waiting for the current turn to finish. If the provider is
 busy, that instruction enters the normal `Raven` queue. This is
 provider-neutral behavior designed first around `OpenCode`; it does not require
 the selected model or harness to accept audio.
+
+Local Conversation holds the microphone only while the Hlið page stays in the
+foreground. Switching away, freezing or closing the page, disconnecting the
+active microphone, or losing the browser audio runtime releases capture and
+shows the reason. Return to Raven and start Local Conversation again explicitly;
+Hlið never resumes background microphone capture on its own.
 
 Assistant speech can start before the full reply is done. `Hlið` waits for
 stable sentences or paragraphs instead of reading raw streaming chunks, and it

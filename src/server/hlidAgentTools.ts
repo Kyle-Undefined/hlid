@@ -1110,22 +1110,30 @@ const PROVIDER_CATALOG_HELP_TOPICS = new Set<HlidHelpTopic>([
 
 function mergeActiveProviderSnapshot(
 	captured: ProviderInfo | undefined,
-	live: ProviderInfo,
+	cached: ProviderInfo,
 ): ProviderInfo {
-	if (!captured || captured.id !== live.id) return live;
+	if (!captured || captured.id !== cached.id) return cached;
 	const hostCapabilities = {
-		...(live.hostCapabilities ?? {}),
+		...(cached.hostCapabilities ?? {}),
 		...(captured.hostCapabilities ?? {}),
 	};
 	return {
+		...cached,
 		...captured,
-		...live,
-		models: live.models ?? captured.models,
-		capabilities: live.capabilities ?? captured.capabilities,
-		forkCapability: live.forkCapability ?? captured.forkCapability,
+		// The catalog owns complete workspace-scoped option inventories. The
+		// captured provider owns active-session readiness and native semantics.
+		models: cached.models ?? captured.models,
+		capabilitySnapshot:
+			cached.capabilitySnapshot ?? captured.capabilitySnapshot,
+		permissionProfiles:
+			cached.permissionProfiles ?? captured.permissionProfiles,
+		capabilities: captured.capabilities ?? cached.capabilities,
+		forkCapability: captured.forkCapability ?? cached.forkCapability,
+		liveSessionConfig: captured.liveSessionConfig ?? cached.liveSessionConfig,
+		sessionPermissionModes:
+			captured.sessionPermissionModes ?? cached.sessionPermissionModes,
+		approvalReviewers: captured.approvalReviewers ?? cached.approvalReviewers,
 		...(Object.keys(hostCapabilities).length > 0 ? { hostCapabilities } : {}),
-		capabilitySnapshot: live.capabilitySnapshot ?? captured.capabilitySnapshot,
-		permissionProfiles: live.permissionProfiles ?? captured.permissionProfiles,
 	};
 }
 
@@ -1176,6 +1184,7 @@ async function liveHlidOperatingContext(
 		: undefined;
 	const {
 		providerSnapshot: contextProviderSnapshot,
+		activeProviderCapabilities: _contextActiveProviderCapabilities,
 		providerDiscovery: _contextProviderDiscovery,
 		...baseContext
 	} = context;
@@ -1222,6 +1231,7 @@ async function liveHlidOperatingContext(
 		live = {
 			...live,
 			providerSnapshot: capturedProviderSnapshot,
+			activeProviderCapabilities: capturedProviderSnapshot.capabilities,
 			providerDiscovery: {
 				status: "captured",
 				source: "active-provider-context",

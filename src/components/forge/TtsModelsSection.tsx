@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import {
 	cancelTtsDownloadFn,
 	deleteTtsModelFn,
@@ -16,6 +17,7 @@ function size(bytes: number): string {
 
 type TtsModel = TtsInfo["models"][number];
 type TtsDownload = NonNullable<TtsInfo["status"]["download"]>;
+const DIRECTML_BUSY_ID = "__directml-runtime";
 
 type TtsModelActionsProps = {
 	model: TtsModel;
@@ -184,6 +186,92 @@ function TtsModelRow(props: TtsModelActionsProps) {
 	);
 }
 
+function DirectMlRuntimeImport({
+	info,
+	onInfoChange,
+	busy,
+	onBusyChange,
+	onError,
+}: Pick<
+	TtsModelActionsProps,
+	"info" | "onInfoChange" | "busy" | "onBusyChange" | "onError"
+>) {
+	const inputRef = useRef<HTMLInputElement>(null);
+	const runtime = info.runtime?.directml;
+	if (!runtime?.supported) return null;
+	if (runtime.installed) {
+		return (
+			<div className="border-b border-border px-4 py-3 text-xs text-muted-foreground">
+				Reviewed DirectML runtime installed and verified.
+			</div>
+		);
+	}
+	const install = async () => {
+		const files = [...(inputRef.current?.files ?? [])];
+		const archiveName = `${runtime.runtimeId}.zip`;
+		const archive = files.find((file) => file.name === archiveName);
+		const manifest = files.find(
+			(file) => file.name === "runtime-manifest.json",
+		);
+		if (!archive || !manifest) {
+			onError(`Select ${archiveName} and runtime-manifest.json together.`);
+			return;
+		}
+		onBusyChange(DIRECTML_BUSY_ID);
+		onError(null);
+		try {
+			const form = new FormData();
+			form.append("archive", archive);
+			form.append("manifest", manifest);
+			const response = await fetch("/api/tts/runtime/install", {
+				method: "POST",
+				body: form,
+			});
+			if (!response.ok) {
+				const body = (await response.json().catch(() => null)) as {
+					error?: string;
+				} | null;
+				throw new Error(
+					body?.error ||
+						`DirectML runtime install failed (${response.status}).`,
+				);
+			}
+			onInfoChange((await response.json()) as TtsInfo);
+		} catch (cause) {
+			onError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			onBusyChange(null);
+		}
+	};
+	return (
+		<div className="space-y-2 border-b border-border px-4 py-3">
+			<div className="text-xs text-muted-foreground">
+				Import the reviewed DirectML runtime archive and its manifest to enable
+				qualified GPU acceleration. Hlid verifies every file before installing
+				it.
+			</div>
+			<div className="flex max-w-full flex-wrap items-center gap-2">
+				<input
+					ref={inputRef}
+					type="file"
+					multiple
+					accept=".zip,.json"
+					aria-label="Reviewed DirectML runtime files"
+					className="min-w-0 max-w-full text-xs text-muted-foreground file:mr-2 file:border file:border-border file:bg-transparent file:px-2.5 file:py-1.5 file:text-[10px] file:tracking-widest file:text-foreground file:uppercase"
+				/>
+				<button
+					type="button"
+					disabled={busy !== null}
+					onClick={() => void install()}
+					className="min-h-11 px-2.5 py-1.5 text-[10px] tracking-widest border border-border hover:bg-accent disabled:opacity-30 uppercase @lg:min-h-0"
+				>
+					{busy === DIRECTML_BUSY_ID ? "VERIFYING" : "INSTALL DIRECTML"}
+				</button>
+			</div>
+		</div>
+	);
+}
+
 export function TtsModelsSection({
 	voice,
 	onChange,
@@ -205,6 +293,13 @@ export function TtsModelsSection({
 }) {
 	return (
 		<Section title="Neural voice model" id="forge-section-voice-models">
+			<DirectMlRuntimeImport
+				info={info}
+				onInfoChange={onInfoChange}
+				busy={busy}
+				onBusyChange={onBusyChange}
+				onError={onError}
+			/>
 			{info.models.length === 0 && (
 				<div className="px-4 py-3 text-xs text-muted-foreground">
 					{info.status.error ||

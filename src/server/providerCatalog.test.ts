@@ -554,6 +554,26 @@ describe("createModelCatalog", () => {
 		);
 	});
 
+	it("treats an unavailable workspace metadata identity as a cache miss", async () => {
+		const provider = makeProvider({
+			providerId: "acp:opencode",
+			models: [{ value: "fallback", label: "Fallback" }],
+			metadataCacheIdentityFor: vi.fn(() => {
+				throw new Error("no WSL runtime configured");
+			}),
+			modelCatalogScope: "workspace",
+			listModels: vi.fn(),
+		});
+		const catalog = createModelCatalog(
+			new Map([[provider.providerId, provider]]),
+		);
+
+		await expect(
+			catalog.cachedModelsFor(provider, "/home/kyle/project"),
+		).resolves.toEqual([{ value: "fallback", label: "Fallback" }]);
+		expect(mockGetSetting).not.toHaveBeenCalled();
+	});
+
 	it("does not reuse a previous runtime's persisted models after restart", async () => {
 		let previousKey: string | undefined;
 		mockGetSetting.mockImplementation((key: string) => {
@@ -888,6 +908,54 @@ describe("createProviderCapabilityCatalog", () => {
 });
 
 describe("loadProviderCatalog", () => {
+	it("keeps a targeted live read isolated from an unrelated unavailable workspace cache", async () => {
+		const codex = makeProvider({ providerId: "codex" });
+		const openCode = makeProvider({
+			providerId: "acp:opencode",
+			models: [],
+			modelCatalogScope: "workspace",
+			metadataCacheIdentityFor: vi.fn(() => {
+				throw new Error("bare POSIX path on Windows");
+			}),
+			cachedAvailability: vi.fn(() => ({
+				available: false,
+				reason: "OpenCode has no WSL runtime configured",
+			})),
+			listModels: vi.fn(),
+		});
+		const providers = new Map([
+			[codex.providerId, codex],
+			[openCode.providerId, openCode],
+		]);
+		const models = createModelCatalog(providers);
+
+		const result = await loadProviderCatalog(
+			providers.values(),
+			{
+				modelsFor: models.modelsFor,
+				cachedModelsFor: models.cachedModelsFor,
+			},
+			{
+				includeProviderCapabilities: true,
+				preferCachedProviderCapabilities: false,
+				refreshProviderId: "codex",
+				discoveryCwd: "/home/kyle/development/repos/hlid",
+			},
+		);
+
+		expect(result.find((provider) => provider.id === "codex")).toMatchObject({
+			available: true,
+		});
+		expect(
+			result.find((provider) => provider.id === "acp:opencode"),
+		).toMatchObject({
+			available: false,
+			unavailableReason: "OpenCode has no WSL runtime configured",
+			models: [],
+		});
+		expect(openCode.listModels).not.toHaveBeenCalled();
+	});
+
 	it("preserves model-scoped effort semantics in the provider catalog", async () => {
 		const provider = makeProvider({
 			providerId: "acp:opencode",

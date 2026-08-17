@@ -46,6 +46,7 @@ import { Route as ApiVoiceTranscribeRouteImport } from './routes/api/voice/trans
 import { Route as ApiAttachmentsIdRawRouteImport } from './routes/api/attachments/$id.raw'
 import { Route as ApiMcpAgentToggleRouteImport } from './routes/api/mcp/agent.toggle'
 import { Route as ApiMcpVaultToggleRouteImport } from './routes/api/mcp/vault.toggle'
+import { Route as ApiTtsRuntimeInstallRouteImport } from './routes/api/tts/runtime/install'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -232,6 +233,11 @@ const ApiMcpVaultToggleRoute = ApiMcpVaultToggleRouteImport.update({
   path: '/toggle',
   getParentRoute: () => ApiMcpVaultRoute,
 } as any)
+const ApiTtsRuntimeInstallRoute = ApiTtsRuntimeInstallRouteImport.update({
+  id: '/api/tts/runtime/install',
+  path: '/api/tts/runtime/install',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -271,6 +277,7 @@ export interface FileRoutesByFullPath {
   '/api/attachments/$id/raw': typeof ApiAttachmentsIdRawRoute
   '/api/mcp/agent/toggle': typeof ApiMcpAgentToggleRoute
   '/api/mcp/vault/toggle': typeof ApiMcpVaultToggleRoute
+  '/api/tts/runtime/install': typeof ApiTtsRuntimeInstallRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -310,6 +317,7 @@ export interface FileRoutesByTo {
   '/api/attachments/$id/raw': typeof ApiAttachmentsIdRawRoute
   '/api/mcp/agent/toggle': typeof ApiMcpAgentToggleRoute
   '/api/mcp/vault/toggle': typeof ApiMcpVaultToggleRoute
+  '/api/tts/runtime/install': typeof ApiTtsRuntimeInstallRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -350,6 +358,7 @@ export interface FileRoutesById {
   '/api/attachments/$id/raw': typeof ApiAttachmentsIdRawRoute
   '/api/mcp/agent/toggle': typeof ApiMcpAgentToggleRoute
   '/api/mcp/vault/toggle': typeof ApiMcpVaultToggleRoute
+  '/api/tts/runtime/install': typeof ApiTtsRuntimeInstallRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -391,6 +400,7 @@ export interface FileRouteTypes {
     | '/api/attachments/$id/raw'
     | '/api/mcp/agent/toggle'
     | '/api/mcp/vault/toggle'
+    | '/api/tts/runtime/install'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -430,6 +440,7 @@ export interface FileRouteTypes {
     | '/api/attachments/$id/raw'
     | '/api/mcp/agent/toggle'
     | '/api/mcp/vault/toggle'
+    | '/api/tts/runtime/install'
   id:
     | '__root__'
     | '/'
@@ -469,6 +480,7 @@ export interface FileRouteTypes {
     | '/api/attachments/$id/raw'
     | '/api/mcp/agent/toggle'
     | '/api/mcp/vault/toggle'
+    | '/api/tts/runtime/install'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -506,6 +518,7 @@ export interface RootRouteChildren {
   ApiVaultSkillsRoute: typeof ApiVaultSkillsRoute
   ApiVoiceTranscribeRoute: typeof ApiVoiceTranscribeRoute
   ApiAgentsIndexRoute: typeof ApiAgentsIndexRoute
+  ApiTtsRuntimeInstallRoute: typeof ApiTtsRuntimeInstallRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -769,6 +782,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiMcpVaultToggleRouteImport
       parentRoute: typeof ApiMcpVaultRoute
     }
+    '/api/tts/runtime/install': {
+      id: '/api/tts/runtime/install'
+      path: '/api/tts/runtime/install'
+      fullPath: '/api/tts/runtime/install'
+      preLoaderRoute: typeof ApiTtsRuntimeInstallRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -842,6 +862,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiVaultSkillsRoute: ApiVaultSkillsRoute,
   ApiVoiceTranscribeRoute: ApiVoiceTranscribeRoute,
   ApiAgentsIndexRoute: ApiAgentsIndexRoute,
+  ApiTtsRuntimeInstallRoute: ApiTtsRuntimeInstallRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

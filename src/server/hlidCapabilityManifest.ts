@@ -37,6 +37,7 @@ type ManifestState = {
 	workspaceAvailable: boolean;
 	vaultConfigured: boolean;
 	provider: ProviderInfo | undefined;
+	activeProviderCapabilities: ProviderInfo["capabilities"] | undefined;
 	orchestrationTargets: HlidCapabilityManifest["orchestrationTargets"];
 	commandActions: CommandAction[];
 	commands: ReadonlySet<CommandAction>;
@@ -123,8 +124,18 @@ function providerFeatureKnownUnavailable(
 function activeCommandActions(
 	providerId: string,
 	provider: ProviderInfo | undefined,
+	activeProviderCapabilities?: ProviderInfo["capabilities"],
 ): CommandAction[] {
-	const providerCapabilities = provider?.capabilities;
+	const providerCapabilities =
+		activeProviderCapabilities ?? provider?.capabilities;
+	const capabilityEvidenceProvider =
+		activeProviderCapabilities && provider
+			? {
+					...provider,
+					capabilities: activeProviderCapabilities,
+					capabilitySnapshot: undefined,
+				}
+			: provider;
 	const hostCapabilities = provider?.hostCapabilities;
 	return Object.values(COMMAND_CAPABILITY_REGISTRY)
 		.filter((capability) => {
@@ -134,7 +145,7 @@ function activeCommandActions(
 					return (
 						provider?.available !== false &&
 						resolvedProviderCapability(
-							provider,
+							capabilityEvidenceProvider,
 							providerCapabilities?.workflowCatalog === true,
 							"workflow-catalog",
 						)
@@ -145,14 +156,14 @@ function activeCommandActions(
 			if (provider?.available === false) return false;
 			if (capability.name === "goal") {
 				return resolvedProviderCapability(
-					provider,
+					capabilityEvidenceProvider,
 					providerCapabilities?.goalControl === true,
 					"goal-control",
 				);
 			}
 			if (capability.name === "compact" || capability.name === "review") {
 				return resolvedProviderCapability(
-					provider,
+					capabilityEvidenceProvider,
 					providerCapabilities?.structuredActivities?.includes(
 						capability.name,
 					) ?? false,
@@ -249,7 +260,11 @@ function buildManifestState(
 		context.providerCatalog,
 		maxOrchestrationTargetCatalogChars,
 	);
-	const commandActions = activeCommandActions(providerId, provider);
+	const commandActions = activeCommandActions(
+		providerId,
+		provider,
+		context.activeProviderCapabilities,
+	);
 	const toolNames = context.registeredHlidTools
 		? [...new Set(context.registeredHlidTools)].sort()
 		: [];
@@ -267,6 +282,7 @@ function buildManifestState(
 		workspaceAvailable,
 		vaultConfigured: Boolean(context.vaultName?.trim()),
 		provider,
+		activeProviderCapabilities: context.activeProviderCapabilities,
 		orchestrationTargets,
 		commandActions,
 		commands: new Set(commandActions),

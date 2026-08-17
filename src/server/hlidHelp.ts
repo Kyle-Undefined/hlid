@@ -96,6 +96,12 @@ export type HlidOperatingContext = {
 		model?: string;
 	};
 	registeredHlidTools?: readonly string[];
+	/**
+	 * Capabilities captured from the active provider session. These remain
+	 * authoritative for that session even when the workspace catalog snapshot
+	 * used to enrich help is stale.
+	 */
+	activeProviderCapabilities?: ProviderInfo["capabilities"];
 	providerSnapshot?: ProviderInfo;
 	providerCatalog?: readonly ProviderInfo[];
 	providerDiscovery?: {

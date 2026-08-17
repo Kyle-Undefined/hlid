@@ -125,6 +125,7 @@ export function useLocalConversationMic({
 		() => {},
 	);
 	const recorderRotationTimerRef = useRef<number | null>(null);
+	const runtimeListenerCleanupRef = useRef<() => void>(() => {});
 	const captureRef = useRef<ActiveCapture | null>(null);
 	const closingSpeechStateRef = useRef<ClosingSpeechState>("none");
 	const promoteClosingSpeechRef = useRef<
@@ -541,6 +542,8 @@ export function useLocalConversationMic({
 			generationRef.current++;
 			startingRef.current = null;
 			activeRef.current = false;
+			runtimeListenerCleanupRef.current();
+			runtimeListenerCleanupRef.current = () => {};
 			stopAnalysisTimer();
 			if (recorderRotationTimerRef.current !== null) {
 				window.clearTimeout(recorderRotationTimerRef.current);
@@ -606,6 +609,19 @@ export function useLocalConversationMic({
 			}
 		},
 		[notifySpeechSettled, stopAnalysisTimer],
+	);
+
+	const terminateRuntime = useCallback(
+		(message: string) => {
+			if (!activeRef.current && !startingRef.current) return;
+			teardown(false);
+			if (!mountedRef.current) return;
+			setIsMuted(false);
+			setPendingTranscriptions(0);
+			setError(message);
+			setPhase("error");
+		},
+		[teardown],
 	);
 
 	const refreshInputSuppression = useCallback(() => {
@@ -693,6 +709,64 @@ export function useLocalConversationMic({
 				activeRef.current = true;
 				startContinuousRecorder(generation);
 				acquiredRecorder = recorderRef.current;
+				const tracks = stream.getTracks();
+				const handleTrackEnded = () => {
+					if (
+						generation === generationRef.current &&
+						streamRef.current === stream
+					) {
+						terminateRuntime(
+							"The microphone disconnected. Start Local Conversation again after reconnecting it.",
+						);
+					}
+				};
+				const handleDeviceChange = () => {
+					if (tracks.some((track) => track.readyState === "ended")) {
+						handleTrackEnded();
+					}
+				};
+				const handleContextStateChange = () => {
+					if (
+						generation !== generationRef.current ||
+						contextRef.current !== context
+					) {
+						return;
+					}
+					if (context.state === "closed") {
+						terminateRuntime(
+							"The microphone audio session ended. Start Local Conversation again.",
+						);
+						return;
+					}
+					if (
+						context.state === "suspended" &&
+						document.visibilityState === "visible"
+					) {
+						void context.resume().catch(() => {
+							terminateRuntime(
+								"The microphone audio session could not resume. Start Local Conversation again.",
+							);
+						});
+					}
+				};
+				for (const track of tracks) {
+					track.addEventListener("ended", handleTrackEnded);
+				}
+				navigator.mediaDevices.addEventListener?.(
+					"devicechange",
+					handleDeviceChange,
+				);
+				context.addEventListener("statechange", handleContextStateChange);
+				runtimeListenerCleanupRef.current = () => {
+					for (const track of tracks) {
+						track.removeEventListener("ended", handleTrackEnded);
+					}
+					navigator.mediaDevices?.removeEventListener?.(
+						"devicechange",
+						handleDeviceChange,
+					);
+					context.removeEventListener("statechange", handleContextStateChange);
+				};
 				for (const track of stream.getTracks()) {
 					track.enabled = !mutedRef.current;
 				}
@@ -807,6 +881,7 @@ export function useLocalConversationMic({
 		refreshInputSuppression,
 		reportRuntimeError,
 		startContinuousRecorder,
+		terminateRuntime,
 		vad,
 	]);
 
@@ -866,6 +941,25 @@ export function useLocalConversationMic({
 			teardown(false);
 		};
 	}, [teardown]);
+
+	useEffect(() => {
+		const stopForPageLifecycle = () => {
+			terminateRuntime(
+				"Local Conversation paused when Hlid left the foreground. Start it again when you are ready.",
+			);
+		};
+		const handleVisibility = () => {
+			if (document.visibilityState === "hidden") stopForPageLifecycle();
+		};
+		document.addEventListener("visibilitychange", handleVisibility);
+		document.addEventListener("freeze", stopForPageLifecycle);
+		window.addEventListener("pagehide", stopForPageLifecycle);
+		return () => {
+			document.removeEventListener("visibilitychange", handleVisibility);
+			document.removeEventListener("freeze", stopForPageLifecycle);
+			window.removeEventListener("pagehide", stopForPageLifecycle);
+		};
+	}, [terminateRuntime]);
 
 	const active =
 		phase === "starting" ||

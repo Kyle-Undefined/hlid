@@ -347,6 +347,12 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		desc: "Cancel the active local neural speech download.",
 	},
 	{
+		method: "POST",
+		path: "/tts/runtime/install",
+		server: "api",
+		desc: "Install an exact qualified DirectML runtime from its reviewed archive and manifest after bounded full-tree verification.",
+	},
+	{
 		method: "DELETE",
 		path: "/tts/model?model=",
 		server: "api",

@@ -322,7 +322,15 @@ export function createModelCatalog(
 			return modelReadFor(p, true, discoveryCwd);
 		},
 		async cachedModelsFor(p, discoveryCwd) {
-			const cache = cacheFor(p, discoveryCwd);
+			let cache: CachedList<ProviderModelInfo[]> | undefined;
+			try {
+				cache = cacheFor(p, discoveryCwd);
+			} catch {
+				// A workspace-routed provider can be intentionally unavailable for this
+				// exact cwd (for example, a Windows-only ACP runtime viewed from WSL).
+				// Its optional metadata cache must not fail the full provider catalog.
+				return staticModels(p);
+			}
 			if (!cache) return staticModels(p);
 			const { value } = await cache.getCached();
 			return value;

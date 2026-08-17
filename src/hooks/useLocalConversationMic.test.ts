@@ -24,6 +24,7 @@ class FakeAudioContext {
 		duration: 3 / 16_000,
 	}));
 	static resumePending = vi.fn(async () => {});
+	private stateListeners = new Set<EventListenerOrEventListenerObject>();
 	state: AudioContextState = FakeAudioContext.initialState;
 	currentTime = 0;
 	close = vi.fn(async () => {
@@ -44,6 +45,24 @@ class FakeAudioContext {
 	analyser = new FakeAnalyser();
 	createMediaStreamSource = vi.fn(() => this.source);
 	createAnalyser = vi.fn(() => this.analyser);
+	addEventListener = vi.fn(
+		(type: string, listener: EventListenerOrEventListenerObject) => {
+			if (type === "statechange") this.stateListeners.add(listener);
+		},
+	);
+	removeEventListener = vi.fn(
+		(type: string, listener: EventListenerOrEventListenerObject) => {
+			if (type === "statechange") this.stateListeners.delete(listener);
+		},
+	);
+	emitState(state: AudioContextState): void {
+		this.state = state;
+		const event = new Event("statechange");
+		for (const listener of this.stateListeners) {
+			if (typeof listener === "function") listener(event);
+			else listener.handleEvent(event);
+		}
+	}
 
 	constructor() {
 		FakeAudioContext.instances.push(this);
@@ -130,19 +149,60 @@ function runAnalysisInterval(nowMs: number): void {
 }
 
 function createMicrophone() {
+	const endedListeners = new Set<EventListenerOrEventListenerObject>();
 	const track = {
 		enabled: true,
+		readyState: "live" as MediaStreamTrackState,
 		stop: vi.fn(),
+		addEventListener: vi.fn(
+			(type: string, listener: EventListenerOrEventListenerObject) => {
+				if (type === "ended") endedListeners.add(listener);
+			},
+		),
+		removeEventListener: vi.fn(
+			(type: string, listener: EventListenerOrEventListenerObject) => {
+				if (type === "ended") endedListeners.delete(listener);
+			},
+		),
+		end: () => {
+			track.readyState = "ended";
+			const event = new Event("ended");
+			for (const listener of endedListeners) {
+				if (typeof listener === "function") listener(event);
+				else listener.handleEvent(event);
+			}
+		},
 	};
 	const stream = {
 		getTracks: vi.fn(() => [track]),
 	} as unknown as MediaStream;
 	const getUserMedia = vi.fn(async () => stream);
+	const deviceListeners = new Set<EventListenerOrEventListenerObject>();
+	const mediaDevices = {
+		getUserMedia,
+		addEventListener: vi.fn(
+			(type: string, listener: EventListenerOrEventListenerObject) => {
+				if (type === "devicechange") deviceListeners.add(listener);
+			},
+		),
+		removeEventListener: vi.fn(
+			(type: string, listener: EventListenerOrEventListenerObject) => {
+				if (type === "devicechange") deviceListeners.delete(listener);
+			},
+		),
+		emitDeviceChange: () => {
+			const event = new Event("devicechange");
+			for (const listener of deviceListeners) {
+				if (typeof listener === "function") listener(event);
+				else listener.handleEvent(event);
+			}
+		},
+	};
 	Object.defineProperty(navigator, "mediaDevices", {
-		value: { getUserMedia },
+		value: mediaDevices,
 		configurable: true,
 	});
-	return { track, stream, getUserMedia };
+	return { track, stream, getUserMedia, mediaDevices };
 }
 
 beforeEach(() => {
@@ -162,6 +222,10 @@ beforeEach(() => {
 	vi.stubGlobal("AudioContext", FakeAudioContext);
 	vi.stubGlobal("OfflineAudioContext", FakeOfflineAudioContext);
 	vi.stubGlobal("MediaRecorder", FakeMediaRecorder);
+	Object.defineProperty(document, "visibilityState", {
+		value: "visible",
+		configurable: true,
+	});
 	const nativeSetInterval = window.setInterval.bind(window);
 	const nativeClearInterval = window.clearInterval.bind(window);
 	vi.spyOn(window, "setInterval").mockImplementation(((
@@ -188,6 +252,64 @@ afterEach(() => {
 });
 
 describe("useLocalConversationMic", () => {
+	it("stops visibly when the active microphone disconnects", async () => {
+		const { track } = createMicrophone();
+		const { result } = renderHook(() =>
+			useLocalConversationMic({
+				language: "en",
+				onTranscription: vi.fn(),
+			}),
+		);
+
+		await act(() => result.current.start());
+		act(() => track.end());
+
+		expect(result.current.phase).toBe("error");
+		expect(result.current.active).toBe(false);
+		expect(result.current.error).toContain("microphone disconnected");
+		expect(track.stop).toHaveBeenCalledOnce();
+		expect(analysisIntervals.size).toBe(0);
+	});
+
+	it("stops capture instead of recording through page suspension", async () => {
+		const { track } = createMicrophone();
+		const { result } = renderHook(() =>
+			useLocalConversationMic({
+				language: "en",
+				onTranscription: vi.fn(),
+			}),
+		);
+
+		await act(() => result.current.start());
+		act(() => window.dispatchEvent(new Event("pagehide")));
+
+		expect(result.current.phase).toBe("error");
+		expect(result.current.error).toContain("left the foreground");
+		expect(track.stop).toHaveBeenCalledOnce();
+	});
+
+	it("recovers a visible suspended audio context or fails explicitly", async () => {
+		createMicrophone();
+		const { result } = renderHook(() =>
+			useLocalConversationMic({
+				language: "en",
+				onTranscription: vi.fn(),
+			}),
+		);
+
+		await act(() => result.current.start());
+		const context = FakeAudioContext.instances[0];
+		if (!context) throw new Error("expected audio context");
+		await act(async () => context.emitState("suspended"));
+		expect(context.resume).toHaveBeenCalledOnce();
+		expect(result.current.phase).toBe("listening");
+
+		FakeAudioContext.resumePending.mockRejectedValueOnce(new Error("blocked"));
+		await act(async () => context.emitState("suspended"));
+		await waitFor(() => expect(result.current.phase).toBe("error"));
+		expect(result.current.error).toContain("could not resume");
+	});
+
 	it("keeps one microphone stream and serializes consecutive utterances", async () => {
 		const { track, getUserMedia } = createMicrophone();
 		const firstResponse = deferred<Response>();

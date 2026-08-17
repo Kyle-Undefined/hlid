@@ -20,6 +20,7 @@
     "perf:install-browser": "playwright install chromium",
     "perf:gate": "bun scripts/perf/gate.ts",
     "perf:smoke": "bun scripts/perf/gate.ts --idle-ms=10000 --label=smoke",
+		"pwa:smoke": "bun run build && bun scripts/pwa-smoke.ts",
     "test": "node ./node_modules/vitest/vitest.mjs run",
     "test:coverage": "bun run test:coverage:vitest && bun run test:coverage:bun && bun run coverage:merge",
     "test:coverage:vitest": "node ./node_modules/vitest/vitest.mjs run --coverage",

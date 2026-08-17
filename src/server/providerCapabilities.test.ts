@@ -370,6 +370,84 @@ describe("Codex capability discovery", () => {
 		).toMatchObject({ label: "MCP connector health (1; 0 need auth)" });
 	});
 
+	it("reads every paginated experimental feature and MCP status page", async () => {
+		const request = vi.fn(async (method: string, rawParams: unknown) => {
+			const cursor = (rawParams as { cursor?: string }).cursor;
+			if (method === "experimentalFeature/list") {
+				return cursor
+					? {
+							data: [{ name: "second_feature", enabled: true }],
+							nextCursor: null,
+						}
+					: {
+							data: [{ name: "first_feature", enabled: true }],
+							nextCursor: "features-2",
+						};
+			}
+			if (method === "mcpServerStatus/list") {
+				return cursor
+					? {
+							data: [{ name: "second", authStatus: "notLoggedIn" }],
+							nextCursor: null,
+						}
+					: {
+							data: [{ name: "first", authStatus: "bearerToken" }],
+							nextCursor: "mcp-2",
+						};
+			}
+			return { data: [], nextCursor: null };
+		});
+
+		const discovery = await discoverCodexProviderCapabilities({
+			providerId: "codex",
+			cwd: "/work",
+			request,
+		});
+
+		expect(discovery.issues).toBeUndefined();
+		expect(
+			discovery.evidence.filter((item) =>
+				item.id.includes("experimental-feature"),
+			),
+		).toHaveLength(2);
+		expect(
+			discovery.evidence.find((item) => item.id.includes("connector-health")),
+		).toMatchObject({ label: "MCP connector health (2; 1 need auth)" });
+		expect(request).toHaveBeenCalledWith("experimentalFeature/list", {
+			limit: 100,
+			cursor: "features-2",
+		});
+		expect(request).toHaveBeenCalledWith("mcpServerStatus/list", {
+			detail: "full",
+			limit: 100,
+			cursor: "mcp-2",
+		});
+	});
+
+	it("reports a bounded pagination failure without discarding other evidence", async () => {
+		const discovery = await discoverCodexProviderCapabilities({
+			providerId: "codex",
+			cwd: "/work",
+			request: async (method) => {
+				if (method === "experimentalFeature/list") {
+					return { data: [], nextCursor: "same-page" };
+				}
+				return { data: [], nextCursor: null };
+			},
+		});
+
+		expect(discovery.issues).toContainEqual(
+			expect.stringContaining(
+				"experimentalFeature/list repeated its pagination cursor",
+			),
+		);
+		expect(discovery.evidence).toContainEqual(
+			expect.objectContaining({
+				label: "MCP connector health (0; 0 need auth)",
+			}),
+		);
+	});
+
 	it("keeps successful evidence when one optional endpoint is unavailable", async () => {
 		const discovery = await discoverCodexProviderCapabilities({
 			providerId: "codex",

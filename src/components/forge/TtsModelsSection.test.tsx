@@ -57,6 +57,7 @@ const info: TtsInfo = {
 afterEach(() => {
 	cleanup();
 	vi.clearAllMocks();
+	vi.unstubAllGlobals();
 });
 
 describe("TtsModelsSection", () => {
@@ -123,6 +124,63 @@ describe("TtsModelsSection", () => {
 			),
 		).toBeTruthy();
 		expect(screen.getByText("Model: 30 MiB / 1.5 GiB")).toBeTruthy();
+	});
+
+	it("installs the exact reviewed DirectML archive and manifest together", async () => {
+		const installed = {
+			...info,
+			runtime: {
+				directml: {
+					supported: true,
+					installed: true,
+					runtimeId:
+						"sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r1-win-x64",
+				},
+			},
+		};
+		const fetcher = vi.fn().mockResolvedValue(Response.json(installed));
+		vi.stubGlobal("fetch", fetcher);
+		const onInfoChange = vi.fn();
+		const onBusyChange = vi.fn();
+		render(
+			<TtsModelsSection
+				voice={DEFAULT_VOICE_CONFIG}
+				onChange={vi.fn()}
+				info={{
+					...info,
+					runtime: {
+						directml: {
+							supported: true,
+							installed: false,
+							runtimeId:
+								"sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r1-win-x64",
+						},
+					},
+				}}
+				onInfoChange={onInfoChange}
+				busy={null}
+				onBusyChange={onBusyChange}
+				error={null}
+				onError={vi.fn()}
+			/>,
+		);
+		const input = screen.getByLabelText(
+			"Reviewed DirectML runtime files",
+		) as HTMLInputElement;
+		const archive = new File(
+			["archive"],
+			"sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r1-win-x64.zip",
+		);
+		const manifest = new File(["{}"], "runtime-manifest.json");
+		fireEvent.change(input, { target: { files: [archive, manifest] } });
+		fireEvent.click(screen.getByRole("button", { name: "INSTALL DIRECTML" }));
+
+		await waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+		const form = fetcher.mock.calls[0]?.[1]?.body as FormData;
+		expect(form.get("archive")).toBe(archive);
+		expect(form.get("manifest")).toBe(manifest);
+		await waitFor(() => expect(onInfoChange).toHaveBeenCalledWith(installed));
+		expect(onBusyChange.mock.calls).toEqual([["__directml-runtime"], [null]]);
 	});
 
 	it("selects an installed model and protects a loaded model", () => {

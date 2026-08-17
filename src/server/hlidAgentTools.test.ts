@@ -1024,6 +1024,70 @@ describe("Hlid agent tools", () => {
 		expect(db.dbFetch).toHaveBeenCalledTimes(1);
 	});
 
+	it("keeps active session capabilities while adding cached catalog evidence", async () => {
+		db.dbFetch.mockImplementation((path: string) => {
+			if (path === "/db/session-row?id=session-1") {
+				return Promise.resolve(
+					Response.json({ provider_id: "codex", agent_cwd: "/work/project" }),
+				);
+			}
+			if (path.startsWith("/providers?")) {
+				return Promise.resolve(
+					Response.json({
+						providers: [
+							{
+								id: "codex",
+								label: "Cached Codex",
+								available: true,
+								models: [{ value: "cached-model", label: "Cached model" }],
+								capabilities: { realtime: true },
+								capabilitySnapshot: {
+									contractVersion: 1,
+									providerId: "codex",
+									status: "stale",
+									source: "persisted",
+									revision: "v1-cached",
+									observedAt: 1,
+									capabilities: [],
+								},
+							},
+						],
+					}),
+				);
+			}
+			return Promise.resolve(Response.json({}));
+		});
+
+		const result = JSON.parse(
+			await executeHlidAgentTool(
+				"hlid_help",
+				{ topic: "providers" },
+				{
+					providerId: "codex",
+					runtimeCwd: "/work/project",
+					sessionId: "session-1",
+					providerSnapshot: {
+						id: "codex",
+						label: "Active Codex",
+						available: true,
+						capabilities: {
+							goalControl: true,
+							structuredActivities: ["compact", "review"],
+						},
+					},
+				},
+			),
+		);
+
+		expect(result.registry.commandActions).toEqual(
+			expect.arrayContaining(["compact", "goal", "review"]),
+		);
+		expect(result.registry.providerCapabilities).toMatchObject({
+			status: "stale",
+			revision: "v1-cached",
+		});
+	});
+
 	it("does not wait on provider discovery for provider-independent help", async () => {
 		db.dbFetch.mockClear();
 

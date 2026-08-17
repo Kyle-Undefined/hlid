@@ -296,7 +296,7 @@ export class TtsModelManager {
 	private readonly fetcher: FetchLike;
 	private readonly spawn: typeof Bun.spawn;
 	private readonly runtimeCommand: (args: readonly string[]) => string[];
-	private readonly runtimeAssets: TtsRuntimeAssets | null;
+	private runtimeAssets: TtsRuntimeAssets | null;
 	private runtime: TtsRuntime | null = null;
 	private readonly directMlFailureReasons = new Map<string, string>();
 	private loadGeneration = 0;
@@ -321,6 +321,20 @@ export class TtsModelManager {
 
 	status(): TtsStatus {
 		return { ...this.statusValue };
+	}
+
+	hasRuntimeBackend(backend: TtsBackend): boolean {
+		return this.runtimeAssets?.backends.includes(backend) === true;
+	}
+
+	async setRuntimeAssets(assets: TtsRuntimeAssets): Promise<void> {
+		this.runtimeAssets = assets;
+		this.directMlFailureReasons.clear();
+		if (this.config.read_aloud_provider !== "neural") return;
+		const model = getTtsModelDefinition(this.config.tts_model);
+		if (!model || !this.installedModelDir(model)) return;
+		this.closeRuntime();
+		await this.load(model.id);
 	}
 
 	models(): TtsModelInfo[] {
