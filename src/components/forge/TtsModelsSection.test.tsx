@@ -26,7 +26,7 @@ vi.mock("#/lib/serverFns/tts", () => ({
 import type { TtsInfo } from "#/lib/serverFns/tts";
 import { TtsModelsSection } from "./TtsModelsSection";
 
-const model = {
+const model: TtsInfo["models"][number] = {
 	id: "kitten-nano-v0.8-int8",
 	label: "Kitten Nano v0.8 (Int8)",
 	description: "Fast English speech with eight expressive voices",
@@ -38,6 +38,7 @@ const model = {
 	quantized: true,
 	language: "English",
 	license: "Apache-2.0 model and sherpa-onnx · eSpeak-ng GPL-3.0-or-later",
+	backends: ["cpu"],
 	voices: [
 		{
 			id: "expr-voice-2-m",
@@ -117,7 +118,9 @@ describe("TtsModelsSection", () => {
 		);
 
 		expect(
-			screen.getByText("1.5 GiB model · 8 MiB runtime · English · quantized"),
+			screen.getByText(
+				"1.5 GiB model · 8 MiB runtime · English · quantized · CPU",
+			),
 		).toBeTruthy();
 		expect(screen.getByText("Model: 30 MiB / 1.5 GiB")).toBeTruthy();
 	});

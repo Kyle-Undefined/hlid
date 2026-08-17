@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	createOfflineTtsConfig,
 	createTtsRuntimeFetchHandler,
+	createVitsRuntimeConfig,
 	float32ToPcmWav,
 	parseTtsRuntimeOptions,
+	validateGeneratedAudio,
 } from "./tts-runtime";
 
 describe("TTS child runtime", () => {
@@ -23,11 +25,14 @@ describe("TTS child runtime", () => {
 			"kitten-nano-v0.8-int8",
 			"--threads",
 			"4",
+			"--backend",
+			"cpu",
 		]);
 		expect(options).toMatchObject({
 			port: 24567,
 			token: "a".repeat(64),
 			threads: 4,
+			backend: "cpu",
 		});
 		expect(() =>
 			parseTtsRuntimeOptions([
@@ -43,8 +48,48 @@ describe("TTS child runtime", () => {
 				"unknown",
 				"--threads",
 				"0",
+				"--backend",
+				"directml",
 			]),
 		).toThrow();
+	});
+
+	it("builds lexicon-only VITS configuration without inventing dataDir", () => {
+		const config = createVitsRuntimeConfig(
+			{
+				model: "model.onnx",
+				tokens: "tokens.txt",
+				lexicon: "lexicon.txt",
+				noiseScale: 0.6,
+				noiseScaleW: 0.8,
+			},
+			"/models/lexicon-vits",
+		);
+		expect(config).toMatchObject({
+			model: expect.stringContaining("model.onnx"),
+			tokens: expect.stringContaining("tokens.txt"),
+			lexicon: expect.stringContaining("lexicon.txt"),
+			noiseScale: 0.6,
+			noiseScaleW: 0.8,
+		});
+		expect(config).not.toHaveProperty("dataDir");
+		expect(() =>
+			createVitsRuntimeConfig(
+				{ model: "model.onnx", tokens: "tokens.txt" },
+				"/models/incomplete-vits",
+			),
+		).toThrow("requires dataDir or lexicon");
+		expect(() =>
+			createVitsRuntimeConfig(
+				{
+					model: "model.onnx",
+					tokens: "tokens.txt",
+					lexicon: "lexicon.txt",
+					noiseScale: 0,
+				},
+				"/models/invalid-vits",
+			),
+		).toThrow("invalid noiseScale");
 	});
 
 	it("builds family-specific sherpa-onnx configurations", () => {
@@ -57,6 +102,7 @@ describe("TTS child runtime", () => {
 					tokens: expect.stringContaining("tokens.txt"),
 				},
 				numThreads: 4,
+				provider: "cpu",
 			},
 		});
 		expect(
@@ -68,8 +114,95 @@ describe("TTS child runtime", () => {
 					voices: expect.stringContaining("voices.bin"),
 				},
 				numThreads: 8,
+				provider: "cpu",
 			},
 		});
+		expect(
+			createOfflineTtsConfig(
+				"piper-cori-medium-int8",
+				"/models/cori",
+				4,
+				"directml",
+			),
+		).toMatchObject({ model: { provider: "directml" } });
+		expect(
+			createOfflineTtsConfig(
+				"piper-norman-medium-int8",
+				"/models/norman",
+				4,
+				"directml",
+			),
+		).toMatchObject({
+			model: {
+				vits: {
+					model: expect.stringContaining("en_US-norman-medium.onnx"),
+					tokens: expect.stringContaining("tokens.txt"),
+					dataDir: expect.stringContaining("espeak-ng-data"),
+				},
+				provider: "directml",
+			},
+		});
+		expect(
+			createOfflineTtsConfig(
+				"piper-ljspeech-high-int8",
+				"/models/ljspeech",
+				4,
+				"directml",
+			),
+		).toMatchObject({
+			model: {
+				vits: {
+					model: expect.stringContaining("en_US-ljspeech-high.onnx"),
+				},
+				provider: "directml",
+			},
+		});
+		expect(
+			createOfflineTtsConfig(
+				"piper-libritts-high-int8",
+				"/models/libritts",
+				4,
+				"directml",
+			),
+		).toMatchObject({
+			model: {
+				vits: {
+					model: expect.stringContaining("en_US-libritts-high.onnx"),
+					tokens: expect.stringContaining("tokens.txt"),
+					dataDir: expect.stringContaining("espeak-ng-data"),
+				},
+				provider: "directml",
+			},
+		});
+		expect(
+			createOfflineTtsConfig("melo-english", "/models/melo", 4, "directml"),
+		).toMatchObject({
+			model: {
+				vits: {
+					model: expect.stringContaining("model.onnx"),
+					tokens: expect.stringContaining("tokens.txt"),
+					lexicon: expect.stringContaining("lexicon.txt"),
+					noiseScale: 0.6,
+					noiseScaleW: 0.8,
+				},
+				provider: "directml",
+			},
+		});
+		expect(
+			(
+				createOfflineTtsConfig("melo-english", "/models/melo", 4) as {
+					model: { vits: Record<string, unknown> };
+				}
+			).model.vits,
+		).not.toHaveProperty("dataDir");
+		expect(() =>
+			createOfflineTtsConfig(
+				"kitten-nano-v0.8-int8",
+				"/models/kitten",
+				4,
+				"directml",
+			),
+		).toThrow("unsupported TTS model backend");
 	});
 
 	it("encodes finite mono PCM WAV output", () => {
@@ -82,7 +215,7 @@ describe("TTS child runtime", () => {
 
 	it("authorizes requests and returns synthesis metrics", async () => {
 		const generate = vi.fn(() => ({
-			samples: new Float32Array(24_000),
+			samples: new Float32Array(24_000).fill(0.1),
 			sampleRate: 24_000,
 		}));
 		const handler = createTtsRuntimeFetchHandler(
@@ -107,6 +240,7 @@ describe("TTS child runtime", () => {
 		);
 		expect(await status.json()).toMatchObject({
 			model: "piper-kristin-medium-int8",
+			backend: "cpu",
 			speakers: 8,
 		});
 		const response = await handler(
@@ -133,5 +267,26 @@ describe("TTS child runtime", () => {
 				}),
 			}),
 		);
+	});
+
+	it("rejects corrupt model output before PCM conversion", () => {
+		expect(() =>
+			validateGeneratedAudio({
+				samples: new Float32Array([0.1, Number.NaN]),
+				sampleRate: 24_000,
+			}),
+		).toThrow("non-finite");
+		expect(() =>
+			validateGeneratedAudio({
+				samples: new Float32Array([0.1, 1e20]),
+				sampleRate: 24_000,
+			}),
+		).toThrow("numerically unstable");
+		expect(() =>
+			validateGeneratedAudio({
+				samples: new Float32Array(100),
+				sampleRate: 24_000,
+			}),
+		).not.toThrow();
 	});
 });

@@ -232,16 +232,22 @@ function NeuralVoiceField({
 
 function NeuralThreadsField({
 	threads,
+	directmlAvailable,
 	update,
 }: {
 	threads: number;
+	directmlAvailable: boolean;
 	update: ReadAloudUpdater;
 }) {
 	const threadOptions = [1, 2, 4, 8, 16, 32];
 	return (
 		<Field
 			label="Speech threads"
-			hint="CPU threads reserved for local neural speech"
+			hint={
+				directmlAvailable
+					? "controls CPU-only use and automatic CPU fallback"
+					: "CPU threads reserved for local neural speech"
+			}
 		>
 			<select
 				value={threads}
@@ -259,6 +265,56 @@ function NeuralThreadsField({
 						{value}
 					</option>
 				))}
+			</select>
+		</Field>
+	);
+}
+
+function NeuralAccelerationField({
+	acceleration,
+	model,
+	status,
+	update,
+}: {
+	acceleration: VoiceConfig["tts_acceleration"];
+	model: TtsInfo["models"][number] | undefined;
+	status: TtsInfo["status"] | undefined;
+	update: ReadAloudUpdater;
+}) {
+	const directmlAvailable = model?.backends.includes("directml") ?? false;
+	const loadedModel =
+		status?.loadedModel ??
+		(status?.state === "ready" ? status.model : undefined);
+	const activeBackend = loadedModel === model?.id ? status?.backend : undefined;
+	const recovery =
+		activeBackend === "cpu" && status?.fallbackReason
+			? status.fallbackReason.startsWith("DirectML ")
+				? "DirectML failed, so Hlid switched to CPU for this session. "
+				: "The local speech runtime recovered on CPU after an error. "
+			: "";
+	const active =
+		activeBackend === "directml"
+			? "Currently using DirectML. "
+			: activeBackend === "cpu"
+				? "Currently using CPU. "
+				: "";
+	const hint = directmlAvailable
+		? `${recovery}${active}Auto uses DirectML for this qualified model on a compatible Windows GPU and falls back to CPU.`
+		: `${active}The selected model currently has a CPU runtime only.`;
+	return (
+		<Field label="Speech acceleration" hint={hint}>
+			<select
+				value={acceleration}
+				onChange={(event) =>
+					update({
+						tts_acceleration: event.target.value as "auto" | "cpu",
+					})
+				}
+				aria-label="Neural speech acceleration"
+				className={selectClass}
+			>
+				<option value="auto">Auto · GPU when qualified</option>
+				<option value="cpu">CPU only</option>
 			</select>
 		</Field>
 	);
@@ -319,6 +375,7 @@ function NeuralVoiceFields({
 		ttsInfo?.status.state === "ready" &&
 		Boolean(model?.id) &&
 		model?.id === loadedModelId;
+	const directmlAvailable = model?.backends.includes("directml") ?? false;
 	return (
 		<>
 			<NeuralVoiceField
@@ -328,7 +385,17 @@ function NeuralVoiceFields({
 				error={ttsInfo?.status.error}
 				update={update}
 			/>
-			<NeuralThreadsField threads={voice.tts_threads} update={update} />
+			<NeuralAccelerationField
+				acceleration={voice.tts_acceleration}
+				model={model}
+				status={ttsInfo?.status}
+				update={update}
+			/>
+			<NeuralThreadsField
+				threads={voice.tts_threads}
+				directmlAvailable={directmlAvailable}
+				update={update}
+			/>
 			<NeuralPreviewField ready={ready} preview={preview} />
 		</>
 	);

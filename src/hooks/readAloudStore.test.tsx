@@ -54,6 +54,7 @@ class MockAudio {
 	onerror: (() => void) | null = null;
 	play = vi.fn(() => Promise.resolve());
 	pause = vi.fn();
+	load = vi.fn();
 
 	constructor(public src: string) {
 		MockAudio.instances.push(this);
@@ -381,7 +382,7 @@ describe("readAloudStore", () => {
 		);
 		act(() => startReadAloud("message-1", "Stored text", 42));
 
-		await waitFor(() => expect(MockAudio.instances).toHaveLength(1));
+		await waitFor(() => expect(MockAudio.instances).toHaveLength(2));
 		expect(fetch).toHaveBeenNthCalledWith(
 			1,
 			`/api/read-aloud/audio?message_id=42&provider=neural&chunk_index=0&reading_id=${readingId}`,
@@ -395,18 +396,163 @@ describe("readAloudStore", () => {
 		);
 		const first = MockAudio.instances[0];
 		expect(first?.src).toBe("blob:neural-0");
+		expect(first?.load).toHaveBeenCalledOnce();
+		expect(first?.play).toHaveBeenCalledOnce();
 		act(() => first?.onplaying?.());
 		expect(result.current.phase).toBe("speaking");
 
 		act(() => first?.onended?.());
-		await waitFor(() => expect(MockAudio.instances).toHaveLength(2));
 		const second = MockAudio.instances[1];
 		expect(second?.src).toBe("blob:neural-1");
+		expect(second?.load).toHaveBeenCalledOnce();
+		expect(second?.play).toHaveBeenCalledOnce();
+		expect(result.current.phase).toBe("speaking");
 		act(() => second?.onplaying?.());
 		expect(result.current.phase).toBe("speaking");
 		act(() => second?.onended?.());
 		expect(result.current.phase).toBe("idle");
 		expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
+	});
+
+	it("buffers startup and keeps two decoded neural chunks ahead without boundary loading", async () => {
+		const readingId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+		vi.spyOn(crypto, "randomUUID").mockReturnValue(readingId);
+		const deferredResponse = () => {
+			let resolve!: (response: Response) => void;
+			const promise = new Promise<Response>((next) => {
+				resolve = next;
+			});
+			return { promise, resolve };
+		};
+		const secondResponse = deferredResponse();
+		const thirdResponse = deferredResponse();
+		const fourthResponse = deferredResponse();
+		const chunkResponse = (body: string, index: number) =>
+			new Response(body, {
+				headers: {
+					"x-hlid-chunk-count": "4",
+					"x-hlid-has-next-chunk": index < 3 ? "1" : "0",
+				},
+			});
+		const fetch = vi
+			.fn()
+			.mockResolvedValueOnce(chunkResponse("first", 0))
+			.mockImplementationOnce(() => secondResponse.promise)
+			.mockImplementationOnce(() => thirdResponse.promise)
+			.mockImplementationOnce(() => fourthResponse.promise);
+		vi.stubGlobal("fetch", fetch);
+		const observedPhases: string[] = [];
+		const { result } = renderHook(() => {
+			const current = useReadAloudState();
+			observedPhases.push(current.phase);
+			return current;
+		});
+		act(() => setReadAloudPreferences({ provider: "neural" }));
+		act(() => startReadAloud("message-1", "Stored text", 42));
+
+		await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
+		expect(MockAudio.instances).toHaveLength(1);
+		const first = MockAudio.instances[0];
+		expect(first?.load).toHaveBeenCalledOnce();
+		expect(first?.play).not.toHaveBeenCalled();
+		expect(result.current.phase).toBe("loading");
+
+		secondResponse.resolve(chunkResponse("second", 1));
+		await waitFor(() => expect(MockAudio.instances).toHaveLength(2));
+		await waitFor(() => expect(first?.play).toHaveBeenCalledOnce());
+		const second = MockAudio.instances[1];
+		expect(second?.load).toHaveBeenCalledOnce();
+		act(() => first?.onplaying?.());
+		expect(result.current.phase).toBe("speaking");
+
+		thirdResponse.resolve(chunkResponse("third", 2));
+		await waitFor(() => expect(MockAudio.instances).toHaveLength(3));
+		const third = MockAudio.instances[2];
+		expect(third?.load).toHaveBeenCalledOnce();
+		expect(third?.play).not.toHaveBeenCalled();
+		const phasesBeforeBoundary = observedPhases.length;
+
+		act(() => first?.onended?.());
+		expect(second?.play).toHaveBeenCalledOnce();
+		expect(result.current.phase).toBe("speaking");
+		expect(observedPhases.slice(phasesBeforeBoundary)).not.toContain("loading");
+		await waitFor(() => expect(fetch).toHaveBeenCalledTimes(4));
+
+		fourthResponse.resolve(chunkResponse("fourth", 3));
+		await waitFor(() => expect(MockAudio.instances).toHaveLength(4));
+		act(stopReadAloud);
+		await waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalledTimes(4));
+		expect(result.current.phase).toBe("idle");
+		expect(third?.pause).toHaveBeenCalledOnce();
+		expect(third?.load).toHaveBeenCalledTimes(2);
+	});
+
+	it("releases prepared and late neural audio when startup is cancelled", async () => {
+		vi.spyOn(crypto, "randomUUID").mockReturnValue(
+			"99999999-aaaa-4bbb-8ccc-dddddddddddd",
+		);
+		let resolveSecond!: (response: Response) => void;
+		const secondResponse = new Promise<Response>((resolve) => {
+			resolveSecond = resolve;
+		});
+		const response = (body: string, index: number) =>
+			new Response(body, {
+				headers: {
+					"x-hlid-chunk-count": "3",
+					"x-hlid-has-next-chunk": index < 2 ? "1" : "0",
+				},
+			});
+		vi.stubGlobal(
+			"fetch",
+			vi
+				.fn()
+				.mockResolvedValueOnce(response("first", 0))
+				.mockImplementationOnce(() => secondResponse)
+				.mockResolvedValueOnce(response("third", 2)),
+		);
+		const { result } = renderHook(() => useReadAloudState());
+		act(() => setReadAloudPreferences({ provider: "neural" }));
+		act(() => startReadAloud("message-1", "Stored text", 42));
+
+		await waitFor(() => expect(MockAudio.instances).toHaveLength(2));
+		expect(MockAudio.instances[0]?.play).not.toHaveBeenCalled();
+		act(stopReadAloud);
+		await waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2));
+		expect(result.current.phase).toBe("idle");
+
+		resolveSecond(response("second", 1));
+		await waitFor(() => expect(MockAudio.instances).toHaveLength(3));
+		await waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalledTimes(3));
+		expect(MockAudio.instances[2]?.play).not.toHaveBeenCalled();
+		expect(MockAudio.instances.every((audio) => audio.src === "")).toBe(true);
+	});
+
+	it("reports a buffered neural failure and releases the unplayed opener", async () => {
+		vi.spyOn(crypto, "randomUUID").mockReturnValue(
+			"12121212-3434-4567-8901-121212121212",
+		);
+		vi.stubGlobal(
+			"fetch",
+			vi
+				.fn()
+				.mockResolvedValueOnce(
+					new Response("first", {
+						headers: { "x-hlid-has-next-chunk": "1" },
+					}),
+				)
+				.mockRejectedValueOnce(new Error("synthesis stopped")),
+		);
+		const { result } = renderHook(() => useReadAloudState());
+		act(() => setReadAloudPreferences({ provider: "neural" }));
+		act(() => startReadAloud("message-1", "Stored text", 42));
+
+		await waitFor(() => expect(result.current.phase).toBe("error"));
+		expect(result.current.error).toBe(
+			"Local neural speech failed: synthesis stopped",
+		);
+		expect(MockAudio.instances).toHaveLength(1);
+		expect(MockAudio.instances[0]?.play).not.toHaveBeenCalled();
+		expect(URL.revokeObjectURL).toHaveBeenCalledOnce();
 	});
 
 	it("only lists voices the browser reports as local", () => {

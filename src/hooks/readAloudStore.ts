@@ -72,7 +72,17 @@ type PreparedNeuralChunk = {
 	index: number;
 	url: string;
 	hasNext: boolean;
+	chunkCount: number | null;
+	audio: HTMLAudioElement;
 	used: boolean;
+	released: boolean;
+};
+
+type QueuedNeuralChunk = {
+	state: "loading" | "prepared" | "failed";
+	chunk: PreparedNeuralChunk | null;
+	error: unknown;
+	ready: Promise<void>;
 };
 
 type ActiveNeuralReading = {
@@ -81,10 +91,17 @@ type ActiveNeuralReading = {
 	readingId: string;
 	generation: number;
 	controller: AbortController;
-	prefetched: Promise<PreparedNeuralChunk> | null;
+	queue: QueuedNeuralChunk[];
+	nextChunkIndex: number;
+	confirmedLastChunkIndex: number;
+	startupChunk: PreparedNeuralChunk | null;
 };
 
 let activeNeuralReading: ActiveNeuralReading | null = null;
+
+// TtsModelManager accepts one running and one queued synthesis. Once the
+// current audio is already playing, both slots can safely prepare future audio.
+const MAX_NEURAL_FUTURE_CHUNKS = 2;
 
 function createNeuralReadingId(): string | null {
 	if (typeof crypto === "undefined") return null;
@@ -138,18 +155,32 @@ function releaseActiveAudio(): void {
 	activeAudioObjectUrl = null;
 }
 
+function releasePreparedNeuralChunk(chunk: PreparedNeuralChunk): void {
+	if (chunk.used || chunk.released) return;
+	chunk.released = true;
+	chunk.audio.onplaying = null;
+	chunk.audio.onended = null;
+	chunk.audio.onerror = null;
+	chunk.audio.pause();
+	if (chunk.audio.src) chunk.audio.removeAttribute("src");
+	chunk.audio.load();
+	URL.revokeObjectURL(chunk.url);
+}
+
 function releaseActiveNeuralReading(): void {
 	const reading = activeNeuralReading;
 	activeNeuralReading = null;
 	if (!reading) return;
 	reading.controller.abort();
-	const pending = reading.prefetched;
-	reading.prefetched = null;
-	void pending
-		?.then((chunk) => {
-			if (!chunk.used) URL.revokeObjectURL(chunk.url);
-		})
-		.catch(() => {});
+	const startupChunk = reading.startupChunk;
+	reading.startupChunk = null;
+	if (startupChunk) releasePreparedNeuralChunk(startupChunk);
+	const queued = reading.queue.splice(0);
+	for (const slot of queued) {
+		void slot.ready.then(() => {
+			if (slot.chunk) releasePreparedNeuralChunk(slot.chunk);
+		});
+	}
 }
 
 function releasePendingVoiceDiscovery(): void {
@@ -637,21 +668,85 @@ async function fetchNeuralChunk(
 		);
 	}
 	const url = URL.createObjectURL(await response.blob());
+	const audio = new Audio(url);
+	audio.preload = "auto";
+	// The response blob is local now. Start media loading immediately so the
+	// browser can parse and decode it while the preceding chunk is speaking.
+	audio.load();
+	const rawChunkCount = Number(
+		response.headers.get("x-hlid-chunk-count") ?? "",
+	);
 	return {
 		index,
 		url,
 		hasNext: response.headers.get("x-hlid-has-next-chunk") === "1",
+		chunkCount:
+			Number.isSafeInteger(rawChunkCount) && rawChunkCount > index
+				? rawChunkCount
+				: null,
+		audio,
 		used: false,
+		released: false,
 	};
 }
 
+function neuralReadingIsActive(reading: ActiveNeuralReading): boolean {
+	return (
+		activeNeuralReading === reading &&
+		reading.generation === generation &&
+		!reading.controller.signal.aborted
+	);
+}
+
+function noteNeuralChunk(
+	reading: ActiveNeuralReading,
+	chunk: PreparedNeuralChunk,
+): void {
+	const confirmedByCount =
+		chunk.chunkCount === null ? chunk.index : chunk.chunkCount - 1;
+	const confirmedByNext = chunk.hasNext ? chunk.index + 1 : chunk.index;
+	reading.confirmedLastChunkIndex = Math.max(
+		reading.confirmedLastChunkIndex,
+		confirmedByCount,
+		confirmedByNext,
+	);
+}
+
+function queueFutureNeuralChunks(reading: ActiveNeuralReading): void {
+	if (!neuralReadingIsActive(reading)) return;
+	while (
+		reading.queue.length < MAX_NEURAL_FUTURE_CHUNKS &&
+		reading.nextChunkIndex <= reading.confirmedLastChunkIndex
+	) {
+		const index = reading.nextChunkIndex++;
+		const slot: QueuedNeuralChunk = {
+			state: "loading",
+			chunk: null,
+			error: null,
+			ready: Promise.resolve(),
+		};
+		slot.ready = fetchNeuralChunk(reading, index).then(
+			(chunk) => {
+				slot.state = "prepared";
+				slot.chunk = chunk;
+				if (!neuralReadingIsActive(reading)) {
+					releasePreparedNeuralChunk(chunk);
+					return;
+				}
+				noteNeuralChunk(reading, chunk);
+				queueFutureNeuralChunks(reading);
+			},
+			(error: unknown) => {
+				slot.state = "failed";
+				slot.error = error;
+			},
+		);
+		reading.queue.push(slot);
+	}
+}
+
 function failNeuralReading(reading: ActiveNeuralReading, cause: unknown): void {
-	if (
-		activeNeuralReading !== reading ||
-		reading.generation !== generation ||
-		reading.controller.signal.aborted
-	)
-		return;
+	if (!neuralReadingIsActive(reading)) return;
 	generation++;
 	releaseActiveAudio();
 	releaseActiveNeuralReading();
@@ -669,22 +764,15 @@ function playNeuralChunk(
 	reading: ActiveNeuralReading,
 	chunk: PreparedNeuralChunk,
 ): void {
-	if (
-		activeNeuralReading !== reading ||
-		reading.generation !== generation ||
-		reading.controller.signal.aborted
-	) {
-		if (!chunk.used) URL.revokeObjectURL(chunk.url);
+	if (!neuralReadingIsActive(reading)) {
+		releasePreparedNeuralChunk(chunk);
 		return;
 	}
 	chunk.used = true;
-	const audio = new Audio(chunk.url);
+	const audio = chunk.audio;
 	activeAudioFailureLabel = "Local neural speech";
 	activeAudioObjectUrl = chunk.url;
 	activeAudio = audio;
-	audio.preload = "auto";
-	if (chunk.hasNext)
-		reading.prefetched = fetchNeuralChunk(reading, chunk.index + 1);
 	audio.onplaying = () => {
 		if (activeAudio !== audio || reading.generation !== generation) return;
 		updateState({
@@ -701,20 +789,86 @@ function playNeuralChunk(
 			updateState(IDLE_STATE);
 			return;
 		}
-		const next = reading.prefetched;
-		reading.prefetched = null;
+		playNextNeuralChunk(reading);
+	};
+	audio.onerror = () =>
+		failNeuralReading(reading, new Error("audio playback failed"));
+	void audio.play().catch((cause) => failNeuralReading(reading, cause));
+}
+
+function playNextNeuralChunk(reading: ActiveNeuralReading): void {
+	if (!neuralReadingIsActive(reading)) return;
+	const slot = reading.queue[0];
+	if (!slot) {
+		failNeuralReading(reading, new Error("next audio chunk is unavailable"));
+		return;
+	}
+	const continuePlayback = () => {
+		if (!neuralReadingIsActive(reading) || reading.queue[0] !== slot) return;
+		if (slot.state === "loading") return;
+		reading.queue.shift();
+		if (slot.state === "failed" || !slot.chunk) {
+			failNeuralReading(reading, slot.error);
+			return;
+		}
+		queueFutureNeuralChunks(reading);
+		playNeuralChunk(reading, slot.chunk);
+	};
+	if (slot.state === "loading") {
 		updateState({
 			messageId: reading.messageId,
 			phase: "loading",
 			error: null,
 		});
-		void next
-			?.then((prepared) => playNeuralChunk(reading, prepared))
-			.catch((cause) => failNeuralReading(reading, cause));
+		void slot.ready.then(continuePlayback);
+		return;
+	}
+	// A prepared media element can start at the boundary without exposing a
+	// loading phase or waiting for another promise turn.
+	continuePlayback();
+}
+
+function startPreparedNeuralReading(
+	reading: ActiveNeuralReading,
+	chunk: PreparedNeuralChunk,
+): void {
+	if (!neuralReadingIsActive(reading)) {
+		releasePreparedNeuralChunk(chunk);
+		return;
+	}
+	reading.startupChunk = chunk;
+	noteNeuralChunk(reading, chunk);
+	reading.nextChunkIndex = chunk.index + 1;
+	queueFutureNeuralChunks(reading);
+	if (!chunk.hasNext) {
+		reading.startupChunk = null;
+		playNeuralChunk(reading, chunk);
+		return;
+	}
+
+	// The server deliberately makes the opener very short. Do not spend that
+	// entire buffer while its much larger successor is still being synthesized.
+	// Waiting here trades a bounded startup delay for a continuous first join.
+	const buffered = reading.queue[0];
+	if (!buffered) {
+		failNeuralReading(reading, new Error("next audio chunk is unavailable"));
+		return;
+	}
+	const startPlayback = () => {
+		if (!neuralReadingIsActive(reading)) return;
+		if (buffered.state === "loading") return;
+		if (buffered.state === "failed" || !buffered.chunk) {
+			failNeuralReading(reading, buffered.error);
+			return;
+		}
+		reading.startupChunk = null;
+		playNeuralChunk(reading, chunk);
 	};
-	audio.onerror = () =>
-		failNeuralReading(reading, new Error("audio playback failed"));
-	void audio.play().catch((cause) => failNeuralReading(reading, cause));
+	if (buffered.state === "loading") {
+		void buffered.ready.then(startPlayback);
+		return;
+	}
+	startPlayback();
 }
 
 function startNeuralReadAloud(messageId: string, dbId?: number): void {
@@ -757,12 +911,15 @@ function startNeuralReadAloud(messageId: string, dbId?: number): void {
 		readingId,
 		generation: currentGeneration,
 		controller: new AbortController(),
-		prefetched: null,
+		queue: [],
+		nextChunkIndex: 0,
+		confirmedLastChunkIndex: 0,
+		startupChunk: null,
 	};
 	activeNeuralReading = reading;
 	updateState({ messageId, phase: "loading", error: null });
 	void fetchNeuralChunk(reading, 0)
-		.then((chunk) => playNeuralChunk(reading, chunk))
+		.then((chunk) => startPreparedNeuralReading(reading, chunk))
 		.catch((cause) => failNeuralReading(reading, cause));
 }
 

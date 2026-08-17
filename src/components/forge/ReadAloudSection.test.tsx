@@ -53,6 +53,7 @@ function readyPronunciationTtsInfo(): TtsInfo {
 				quantized: true,
 				language: "English",
 				license: "Apache-2.0",
+				backends: ["cpu"],
 				voices: [
 					{
 						id: "expr-voice-5-f",
@@ -79,6 +80,7 @@ function coriPronunciationModel(): TtsInfo["models"][number] {
 		quantized: true,
 		language: "English",
 		license: "MIT",
+		backends: ["cpu", "directml"],
 		voices: [
 			{
 				id: "piper-cori",
@@ -256,7 +258,7 @@ describe("ReadAloudSection", () => {
 		).toBeTruthy();
 	});
 
-	it("offers installed local neural voices and CPU thread control", async () => {
+	it("offers installed local neural voices, qualified acceleration, and CPU thread control", async () => {
 		const previewAudio = {
 			onended: null,
 			onerror: null,
@@ -290,6 +292,7 @@ describe("ReadAloudSection", () => {
 						state: "ready",
 						model: "kitten-nano-v0.8-int8",
 						loadedModel: "kitten-nano-v0.8-int8",
+						backend: "cpu",
 					},
 					models: [
 						{
@@ -304,6 +307,7 @@ describe("ReadAloudSection", () => {
 							quantized: true,
 							language: "English",
 							license: "Apache-2.0",
+							backends: ["cpu"],
 							voices: [
 								{
 									id: "expr-voice-2-f",
@@ -332,11 +336,16 @@ describe("ReadAloudSection", () => {
 		fireEvent.change(screen.getByLabelText("Neural speech threads"), {
 			target: { value: "8" },
 		});
+		fireEvent.change(screen.getByLabelText("Neural speech acceleration"), {
+			target: { value: "cpu" },
+		});
 		expect(onChange).toHaveBeenCalledWith({
 			read_aloud_provider: "neural",
 		});
 		expect(onChange).toHaveBeenCalledWith({ tts_voice: "expr-voice-5-f" });
+		expect(onChange).toHaveBeenCalledWith({ tts_acceleration: "cpu" });
 		expect(onChange).toHaveBeenCalledWith({ tts_threads: 8 });
+		expect(screen.getByText(/Currently using CPU/)).toBeTruthy();
 		const previewButton = screen.getByRole("button", {
 			name: "Play preview",
 		}) as HTMLButtonElement;
@@ -344,6 +353,107 @@ describe("ReadAloudSection", () => {
 		fireEvent.click(previewButton);
 		expect(Audio).toHaveBeenCalledWith("/api/read-aloud/preview");
 		expect(screen.getByRole("button", { name: "Loading…" })).toBeTruthy();
+	});
+
+	it("reports the active DirectML backend only for an available model runtime", () => {
+		vi.stubGlobal(
+			"fetch",
+			vi
+				.fn()
+				.mockResolvedValue(Response.json({ available: false, voices: [] })),
+		);
+		render(
+			<Harness
+				initialVoice={{
+					...DEFAULT_VOICE_CONFIG,
+					read_aloud_provider: "neural",
+					tts_model: "piper-cori-medium-int8",
+					tts_voice: "piper-cori",
+				}}
+				ttsInfo={{
+					status: {
+						state: "ready",
+						model: "piper-cori-medium-int8",
+						loadedModel: "piper-cori-medium-int8",
+						backend: "directml",
+					},
+					models: [coriPronunciationModel()],
+				}}
+			/>,
+		);
+
+		expect(screen.getByText(/Currently using DirectML/)).toBeTruthy();
+		expect(screen.getByText(/automatic CPU fallback/)).toBeTruthy();
+	});
+
+	it("surfaces an automatic DirectML fallback without marking speech unavailable", () => {
+		vi.stubGlobal(
+			"fetch",
+			vi
+				.fn()
+				.mockResolvedValue(Response.json({ available: false, voices: [] })),
+		);
+		render(
+			<Harness
+				initialVoice={{
+					...DEFAULT_VOICE_CONFIG,
+					read_aloud_provider: "neural",
+					tts_model: "piper-cori-medium-int8",
+					tts_voice: "piper-cori",
+				}}
+				ttsInfo={{
+					status: {
+						state: "ready",
+						model: "piper-cori-medium-int8",
+						loadedModel: "piper-cori-medium-int8",
+						backend: "cpu",
+						fallbackReason: "DirectML synthesis failed",
+					},
+					models: [coriPronunciationModel()],
+				}}
+			/>,
+		);
+
+		expect(screen.getByText(/switched to CPU for this session/)).toBeTruthy();
+		expect(
+			(
+				screen.getByRole("button", {
+					name: "Play preview",
+				}) as HTMLButtonElement
+			).disabled,
+		).toBe(false);
+	});
+
+	it("describes CPU runtime recovery without blaming DirectML", () => {
+		vi.stubGlobal(
+			"fetch",
+			vi
+				.fn()
+				.mockResolvedValue(Response.json({ available: false, voices: [] })),
+		);
+		render(
+			<Harness
+				initialVoice={{
+					...DEFAULT_VOICE_CONFIG,
+					read_aloud_provider: "neural",
+					tts_model: "piper-cori-medium-int8",
+					tts_voice: "piper-cori",
+				}}
+				ttsInfo={{
+					status: {
+						state: "ready",
+						model: "piper-cori-medium-int8",
+						loadedModel: "piper-cori-medium-int8",
+						backend: "cpu",
+						fallbackReason: "TTS runtime exited with code 1",
+					},
+					models: [coriPronunciationModel()],
+				}}
+			/>,
+		);
+
+		expect(screen.getByText(/runtime recovered on CPU/)).toBeTruthy();
+		expect(screen.queryByText(/DirectML failed/)).toBeNull();
 	});
 
 	it("keeps device voice local while saving shared reading speed", async () => {
@@ -448,6 +558,7 @@ describe("ReadAloudSection", () => {
 							quantized: true,
 							language: "English",
 							license: "Apache-2.0",
+							backends: ["cpu"],
 							voices: [],
 						},
 					],
@@ -560,6 +671,7 @@ describe("ReadAloudSection", () => {
 							quantized: true,
 							language: "English",
 							license: "Apache-2.0",
+							backends: ["cpu"],
 							voices: [
 								{
 									id: "expr-voice-5-f",
@@ -1090,6 +1202,7 @@ describe("ReadAloudSection", () => {
 							quantized: true,
 							language: "English",
 							license: "Apache-2.0",
+							backends: ["cpu"],
 							voices: [
 								{
 									id: "expr-voice-5-f",

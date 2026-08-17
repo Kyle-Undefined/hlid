@@ -64,6 +64,9 @@ function ModelDetails({
 				{size(model.sizeBytes)} model · {size(model.runtimeSizeBytes)} runtime ·{" "}
 				{model.language}
 				{model.quantized ? " · quantized" : ""}
+				{model.backends.includes("directml")
+					? " · DirectML qualified"
+					: " · CPU"}
 			</div>
 			<div className="text-xs text-muted-foreground mt-0.5">
 				{model.license}

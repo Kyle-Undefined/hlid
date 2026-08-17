@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, writeFileSync } from "node:fs";
+import { lstatSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
 	parseRuntimeArtifactManifest,
@@ -11,10 +10,10 @@ import {
 	WHISPER_VERSION,
 	WHISPER_VULKAN_SDK_VERSION,
 } from "./bundle-whisper-assets";
-
-function sha256(path: string): string {
-	return createHash("sha256").update(readFileSync(path)).digest("hex");
-}
+import {
+	fileSha256,
+	manifestEntriesFromTree,
+} from "./runtime-artifact-utils";
 
 const artifactDirectory = process.argv[2];
 const runtimeRoot = process.argv[3];
@@ -37,13 +36,8 @@ const manifest: RuntimeArtifactManifest = {
 	vulkanSdkVersion: WHISPER_VULKAN_SDK_VERSION,
 	buildFlags: [...WHISPER_BUILD_FLAGS],
 	archive: WHISPER_RUNTIME_ARTIFACT,
-	archiveSha256: sha256(archive),
-	files: WHISPER_RUNTIME_PATHS.map((path) => {
-		const file = join(runtime, path);
-		const stat = lstatSync(file);
-		if (!stat.isFile()) throw new Error(`runtime file not found: ${file}`);
-		return { path, sha256: sha256(file), size: stat.size };
-	}),
+	archiveSha256: fileSha256(archive),
+	files: manifestEntriesFromTree(runtime, WHISPER_RUNTIME_PATHS),
 };
 
 const validated = parseRuntimeArtifactManifest(manifest);

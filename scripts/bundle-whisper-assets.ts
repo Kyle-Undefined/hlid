@@ -14,6 +14,16 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { extractZipArchive, listZipEntries } from "./archive-utils";
+import {
+	createRuntimeManifestAssertion,
+	hasExactKeys,
+	isRecord,
+	isSha256,
+	parseStrictRuntimeManifestEntries,
+	type RuntimeManifestAssertion,
+	sha256Digest,
+} from "./runtime-artifact-utils";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const vendor = join(root, "vendor", "whisper");
@@ -116,32 +126,8 @@ export const WHISPER_RUNTIME_PATHS = WHISPER_RUNTIME_MANIFEST.map(
 	(entry) => entry.path,
 );
 
-function sha256(bytes: Uint8Array): string {
-	return createHash("sha256").update(bytes).digest("hex");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function hasExactKeys(value: Record<string, unknown>, expected: string[]): boolean {
-	const actual = Object.keys(value).sort();
-	return (
-		actual.length === expected.length &&
-		actual.every((key, index) => key === [...expected].sort()[index])
-	);
-}
-
-function isSha256(value: unknown): value is string {
-	return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
-}
-
-function assertManifest(
-	condition: unknown,
-	message: string,
-): asserts condition {
-	if (!condition) throw new Error(`invalid whisper runtime manifest: ${message}`);
-}
+const assertManifest: RuntimeManifestAssertion =
+	createRuntimeManifestAssertion("whisper");
 
 export function parseRuntimeArtifactManifest(
 	value: unknown,
@@ -186,43 +172,12 @@ export function parseRuntimeArtifactManifest(
 		"archive name mismatch",
 	);
 	assertManifest(isSha256(value.archiveSha256), "invalid archive SHA-256");
-	assertManifest(Array.isArray(value.files), "files must be an array");
-	assertManifest(
-		value.files.length === WHISPER_RUNTIME_PATHS.length,
-		"runtime file count mismatch",
-	);
-
-	let totalSize = 0;
-	const files = value.files.map((candidate, index) => {
-		assertManifest(isRecord(candidate), `file ${index} must be an object`);
-		assertManifest(
-			hasExactKeys(candidate, ["path", "sha256", "size"]),
-			`file ${index} has unexpected or missing fields`,
-		);
-		assertManifest(
-			candidate.path === WHISPER_RUNTIME_PATHS[index],
-			`file ${index} path mismatch`,
-		);
-		assertManifest(isSha256(candidate.sha256), `file ${index} SHA-256`);
-		assertManifest(
-			Number.isSafeInteger(candidate.size) &&
-				typeof candidate.size === "number" &&
-				candidate.size > 0 &&
-				candidate.size <= WHISPER_RUNTIME_MAX_FILE_BYTES,
-			`file ${index} size`,
-		);
-		totalSize += candidate.size;
-		return {
-			path: candidate.path,
-			sha256: candidate.sha256,
-			size: candidate.size,
-		};
+	const files = parseStrictRuntimeManifestEntries(value.files, {
+		expectedPaths: WHISPER_RUNTIME_PATHS,
+		maxFileBytes: WHISPER_RUNTIME_MAX_FILE_BYTES,
+		maxTotalBytes: WHISPER_RUNTIME_MAX_FILE_BYTES,
+		assertManifest,
 	});
-	assertManifest(
-		Number.isSafeInteger(totalSize) &&
-			totalSize <= WHISPER_RUNTIME_MAX_FILE_BYTES,
-		"runtime files exceed the size limit",
-	);
 	const license = files.at(-1);
 	assertManifest(
 		license?.path === "Release/LICENSE" &&
@@ -279,7 +234,7 @@ export function verifyRuntimeTree(
 			return (
 				stat.isFile() &&
 				(entry.size === undefined || stat.size === entry.size) &&
-				sha256(readFileSync(file)) === entry.sha256
+				sha256Digest(readFileSync(file)) === entry.sha256
 			);
 		} catch {
 			return false;
@@ -298,7 +253,7 @@ export function copyVerifiedArchive(
 	if (stat.size > maxBytes)
 		throw new Error(`runtime archive exceeds ${maxBytes} byte limit`);
 	const archive = readFileSync(source);
-	const actualSha256 = sha256(archive);
+	const actualSha256 = sha256Digest(archive);
 	if (actualSha256 !== expectedSha256) {
 		throw new Error(
 			`runtime archive SHA-256 mismatch: expected ${expectedSha256}, received ${actualSha256}`,
@@ -327,52 +282,6 @@ export function resolveLocalRuntimeArtifact(
 		: undefined;
 }
 
-async function extractArchive(archive: string, destination: string): Promise<void> {
-	const commands =
-		process.platform === "win32"
-			? [
-					["tar", "-xf", archive, "-C", destination],
-					["unzip", "-q", archive, "-d", destination],
-				]
-			: [
-					["unzip", "-q", archive, "-d", destination],
-					["tar", "-xf", archive, "-C", destination],
-				];
-	for (const command of commands) {
-		rmSync(destination, { recursive: true, force: true });
-		mkdirSync(destination, { recursive: true });
-		try {
-			const child = Bun.spawn(command, { stdout: "ignore", stderr: "ignore" });
-			if ((await child.exited) === 0) return;
-		} catch {
-			// Try the next platform extractor.
-		}
-	}
-	throw new Error("failed to extract whisper runtime with unzip or tar");
-}
-
-async function listArchiveEntries(archive: string): Promise<string[]> {
-	const commands = [
-		["unzip", "-Z1", archive],
-		["tar", "-tf", archive],
-	];
-	for (const command of commands) {
-		try {
-			const child = Bun.spawn(command, { stdout: "pipe", stderr: "ignore" });
-			const output = await new Response(child.stdout).text();
-			if ((await child.exited) === 0) {
-				return output
-					.replaceAll("\r", "")
-					.split("\n")
-					.filter((entry) => entry.length > 0);
-			}
-		} catch {
-			// Try the next platform archive reader.
-		}
-	}
-	throw new Error("failed to inspect whisper runtime with unzip or tar");
-}
-
 function verifyArchiveEntries(
 	entries: string[],
 	manifest: RuntimeArtifactManifest,
@@ -397,13 +306,16 @@ export async function verifyRuntimeArtifact(
 			`runtime archive exceeds ${WHISPER_ARCHIVE_MAX_BYTES} byte limit`,
 		);
 	}
-	const actualSha256 = sha256(readFileSync(archivePath));
+	const actualSha256 = sha256Digest(readFileSync(archivePath));
 	if (actualSha256 !== manifest.archiveSha256) {
 		throw new Error(
 			`runtime archive SHA-256 mismatch: expected ${manifest.archiveSha256}, received ${actualSha256}`,
 		);
 	}
-	const entries = await listArchiveEntries(archivePath);
+	const entries = await listZipEntries(
+		archivePath,
+		"failed to inspect whisper runtime with unzip or tar",
+	);
 	if (!verifyArchiveEntries(entries, manifest)) {
 		throw new Error("runtime archive entries do not match the reviewed manifest");
 	}
@@ -411,7 +323,11 @@ export async function verifyRuntimeArtifact(
 	const temp = mkdtempSync(join(tmpdir(), "hlid-whisper-verify-"));
 	try {
 		const extracted = join(temp, "extracted");
-		await extractArchive(archivePath, extracted);
+		await extractZipArchive(
+			archivePath,
+			extracted,
+			"failed to extract whisper runtime with unzip or tar",
+		);
 		if (!verifyRuntimeTree(extracted, manifest.files)) {
 			throw new Error("runtime archive contents do not match the reviewed manifest");
 		}
@@ -467,11 +383,18 @@ async function ensureRuntime(): Promise<readonly RuntimeManifestEntry[]> {
 			manifest.archiveSha256,
 		);
 		writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
-		const archiveEntries = await listArchiveEntries(archive);
+		const archiveEntries = await listZipEntries(
+			archive,
+			"failed to inspect whisper runtime with unzip or tar",
+		);
 		if (!verifyArchiveEntries(archiveEntries, manifest)) {
 			throw new Error("runtime archive entries do not match the reviewed manifest");
 		}
-		await extractArchive(archive, extracted);
+		await extractZipArchive(
+			archive,
+			extracted,
+			"failed to extract whisper runtime with unzip or tar",
+		);
 		if (!verifyRuntimeTree(extracted, manifest.files)) {
 			throw new Error("extracted whisper runtime does not match the reviewed manifest");
 		}

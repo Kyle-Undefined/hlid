@@ -78,16 +78,18 @@ async function handleVoicesRoute(
 	}
 }
 
-async function handlePreviewRoute({
-	neuralTts,
-	neuralSettings,
-}: ReadAloudRouteDependencies): Promise<Response> {
+async function handlePreviewRoute(
+	{ neuralTts, neuralSettings }: ReadAloudRouteDependencies,
+	signal?: AbortSignal,
+): Promise<Response> {
 	const settings = neuralSettings();
 	try {
 		const result = await neuralTts.synthesize(
 			NEURAL_READ_ALOUD_PREVIEW_TEXT,
 			settings.voiceId,
 			settings.rate,
+			undefined,
+			signal,
 		);
 		return wavResponse(result.audio);
 	} catch (error) {
@@ -204,6 +206,7 @@ async function synthesizeNeuralChunk(
 	settings: NeuralReadAloudSettings,
 	dependencies: ReadAloudRouteDependencies,
 	expectedModel?: string,
+	signal?: AbortSignal,
 ): Promise<Response> {
 	try {
 		const text = /[.!?]$/u.test(chunk) ? chunk : `${chunk}.`;
@@ -213,11 +216,14 @@ async function synthesizeNeuralChunk(
 					settings.voiceId,
 					settings.rate,
 					expectedModel,
+					signal,
 				)
 			: await dependencies.neuralTts.synthesize(
 					text,
 					settings.voiceId,
 					settings.rate,
+					undefined,
+					signal,
 				);
 		return wavResponse(result.audio, {
 			"x-hlid-chunk-count": String(chunkCount),
@@ -248,6 +254,7 @@ async function synthesizeNeuralChunk(
 
 async function handleNeuralSynthesisRoute(
 	url: URL,
+	signal: AbortSignal,
 	dependencies: ReadAloudRouteDependencies,
 	snapshots: Map<string, NeuralReadAloudSnapshot>,
 ): Promise<Response> {
@@ -333,6 +340,7 @@ async function handleNeuralSynthesisRoute(
 		snapshot.settings,
 		dependencies,
 		snapshot.modelId,
+		signal,
 	);
 }
 
@@ -396,7 +404,7 @@ export function createReadAloudRouteHandler({
 			return handleVoicesRoute(url, dependencies.speech);
 		}
 		if (url.pathname === "/read-aloud/preview" && request.method === "GET") {
-			return handlePreviewRoute(dependencies);
+			return handlePreviewRoute(dependencies, request.signal);
 		}
 		if (url.pathname !== "/read-aloud/audio" || request.method !== "GET")
 			return null;
@@ -404,6 +412,7 @@ export function createReadAloudRouteHandler({
 		if (url.searchParams.get("provider") === "neural") {
 			return handleNeuralSynthesisRoute(
 				url,
+				request.signal,
 				dependencies,
 				neuralReadAloudSnapshots,
 			);

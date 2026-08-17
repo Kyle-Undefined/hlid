@@ -19,7 +19,21 @@ export const STDIO_MODE_FLAGS = [
 	"--internal-hlid-mcp",
 ] as const;
 
+/**
+ * Every compiled-exe child mode that must bypass self-install and normal app
+ * startup work. This is broader than STDIO_MODE_FLAGS because some children,
+ * such as the private TTS HTTP runtime, do not communicate over stdio.
+ */
+export const INTERNAL_CHILD_MODE_FLAGS = [
+	...STDIO_MODE_FLAGS,
+	"--internal-tts-runtime",
+] as const;
+
 export function stdioModeRequested(argv: readonly string[]): boolean {
 	if (argv[2] === "auth" && argv[3] === "reset") return true;
 	return STDIO_MODE_FLAGS.some((flag) => argv.includes(flag));
+}
+
+export function internalChildModeRequested(argv: readonly string[]): boolean {
+	return INTERNAL_CHILD_MODE_FLAGS.some((flag) => argv.includes(flag));
 }

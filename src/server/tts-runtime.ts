@@ -1,12 +1,22 @@
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
-import { getTtsModelDefinition } from "./ttsModels";
+import {
+	getTtsModelDefinition,
+	type TtsBackend,
+	type TtsModelDefinition,
+} from "./ttsModels";
 
 export const INTERNAL_TTS_RUNTIME_FLAG = "--internal-tts-runtime";
 export const MAX_TTS_RUNTIME_TEXT_CHARS = 300;
 // Retain enough model-authored silence for commas and list boundaries to sound
 // distinct without restoring the unusually long pauses some voices generate.
 const LOCAL_NEURAL_SILENCE_SCALE = 0.75;
+const MIN_TTS_SAMPLE_RATE = 8_000;
+const MAX_TTS_SAMPLE_RATE = 192_000;
+const MAX_TTS_AUDIO_SECONDS = 5 * 60;
+// Normalized model output may exceed 1 slightly before PCM clipping. Values
+// beyond this generous ceiling indicate a corrupt or numerically unstable run.
+const MAX_ABSOLUTE_TTS_SAMPLE = 16;
 
 type GeneratedAudio = {
 	samples: Float32Array;
@@ -31,6 +41,7 @@ export type TtsRuntimeOptions = {
 	modelDir: string;
 	modelId: string;
 	threads: number;
+	backend: TtsBackend;
 };
 
 function option(args: readonly string[], name: string): string {
@@ -48,50 +59,114 @@ export function parseTtsRuntimeOptions(
 	const addonPath = resolve(option(args, "--addon"));
 	const modelDir = resolve(option(args, "--model-dir"));
 	const modelId = option(args, "--model-id");
+	const backend = option(args, "--backend") as TtsBackend;
 	if (!Number.isSafeInteger(port) || port < 1024 || port > 65_535)
 		throw new Error("invalid TTS runtime port");
 	if (!Number.isSafeInteger(threads) || threads < 1 || threads > 32)
 		throw new Error("invalid TTS runtime thread count");
 	if (!/^[a-f0-9]{64}$/i.test(token))
 		throw new Error("invalid TTS runtime token");
-	if (!getTtsModelDefinition(modelId)) throw new Error("unknown TTS model");
-	return { port, threads, token, addonPath, modelDir, modelId };
+	const model = getTtsModelDefinition(modelId);
+	if (!model) throw new Error("unknown TTS model");
+	if (!model.qualifiedBackends.includes(backend))
+		throw new Error("unsupported TTS model backend");
+	return { port, threads, token, addonPath, modelDir, modelId, backend };
 }
 
 export function createOfflineTtsConfig(
 	modelId: string,
 	modelDir: string,
 	threads: number,
+	backend: TtsBackend = "cpu",
 ): unknown {
 	const definition = getTtsModelDefinition(modelId);
 	if (!definition) throw new Error("unknown TTS model");
+	if (!definition.qualifiedBackends.includes(backend))
+		throw new Error("unsupported TTS model backend");
 	const model = (name: string) => resolve(modelDir, name);
 	const family =
 		definition.family === "kitten"
 			? {
 					kitten: {
 						model: model(definition.runtime.model),
-						voices: model(definition.runtime.voices ?? ""),
+						voices: model(
+							requiredRuntimePath(definition.runtime.voices, "Kitten voices"),
+						),
 						tokens: model(definition.runtime.tokens),
-						dataDir: model(definition.runtime.dataDir),
+						dataDir: model(
+							requiredRuntimePath(definition.runtime.dataDir, "Kitten dataDir"),
+						),
 					},
 				}
 			: {
-					vits: {
-						model: model(definition.runtime.model),
-						tokens: model(definition.runtime.tokens),
-						dataDir: model(definition.runtime.dataDir),
-					},
+					vits: createVitsRuntimeConfig(definition.runtime, modelDir),
 				};
 	return {
 		model: {
 			...family,
 			debug: false,
 			numThreads: threads,
-			provider: "cpu",
+			provider: backend,
 		},
 		maxNumSentences: 1,
 	};
+}
+
+function requiredRuntimePath(path: string | undefined, label: string): string {
+	if (!path)
+		throw new Error(`${label} is missing from the TTS model definition`);
+	return path;
+}
+
+export function createVitsRuntimeConfig(
+	runtime: TtsModelDefinition["runtime"],
+	modelDir: string,
+): Record<string, string | number> {
+	if (!runtime.dataDir && !runtime.lexicon)
+		throw new Error("VITS model definition requires dataDir or lexicon");
+	for (const [name, value] of [
+		["noiseScale", runtime.noiseScale],
+		["noiseScaleW", runtime.noiseScaleW],
+	] as const) {
+		if (value !== undefined && (!Number.isFinite(value) || value <= 0))
+			throw new Error(`VITS model definition has invalid ${name}`);
+	}
+	const model = (name: string) => resolve(modelDir, name);
+	return {
+		model: model(runtime.model),
+		tokens: model(runtime.tokens),
+		...(runtime.dataDir ? { dataDir: model(runtime.dataDir) } : {}),
+		...(runtime.lexicon ? { lexicon: model(runtime.lexicon) } : {}),
+		...(runtime.noiseScale !== undefined
+			? { noiseScale: runtime.noiseScale }
+			: {}),
+		...(runtime.noiseScaleW !== undefined
+			? { noiseScaleW: runtime.noiseScaleW }
+			: {}),
+	};
+}
+
+export function validateGeneratedAudio(audio: GeneratedAudio): void {
+	if (!(audio.samples instanceof Float32Array))
+		throw new Error("invalid TTS audio sample buffer");
+	if (
+		!Number.isSafeInteger(audio.sampleRate) ||
+		audio.sampleRate < MIN_TTS_SAMPLE_RATE ||
+		audio.sampleRate > MAX_TTS_SAMPLE_RATE
+	)
+		throw new Error("invalid TTS sample rate");
+	if (
+		audio.samples.length === 0 ||
+		audio.samples.length > audio.sampleRate * MAX_TTS_AUDIO_SECONDS
+	)
+		throw new Error("invalid TTS audio duration");
+	for (const sample of audio.samples) {
+		if (!Number.isFinite(sample))
+			throw new Error("TTS generated non-finite audio");
+		const magnitude = Math.abs(sample);
+		if (magnitude > MAX_ABSOLUTE_TTS_SAMPLE)
+			throw new Error("TTS generated numerically unstable audio");
+	}
 }
 
 export function float32ToPcmWav(
@@ -141,6 +216,7 @@ export function createTtsRuntimeFetchHandler(
 	handle: unknown,
 	token: string,
 	modelId: string,
+	backend: TtsBackend = "cpu",
 ): (request: Request) => Promise<Response> {
 	const speakers = addon.getOfflineTtsNumSpeakers(handle);
 	const sampleRate = addon.getOfflineTtsSampleRate(handle);
@@ -154,7 +230,7 @@ export function createTtsRuntimeFetchHandler(
 				runtime: "sherpa-onnx",
 				version: addon.version,
 				model: modelId,
-				backend: "cpu",
+				backend,
 				speakers,
 				sampleRate,
 			});
@@ -196,6 +272,7 @@ export function createTtsRuntimeFetchHandler(
 					silenceScale: LOCAL_NEURAL_SILENCE_SCALE,
 				},
 			});
+			validateGeneratedAudio(audio);
 			const wav = float32ToPcmWav(audio.samples, audio.sampleRate);
 			const body = new ArrayBuffer(wav.byteLength);
 			new Uint8Array(body).set(wav);
@@ -232,7 +309,12 @@ export async function runTtsRuntimeServer(
 	const options = parseTtsRuntimeOptions(args);
 	const addon = loadTtsAddon(options.addonPath);
 	const handle = addon.createOfflineTts(
-		createOfflineTtsConfig(options.modelId, options.modelDir, options.threads),
+		createOfflineTtsConfig(
+			options.modelId,
+			options.modelDir,
+			options.threads,
+			options.backend,
+		),
 	);
 	const server = Bun.serve({
 		hostname: "127.0.0.1",
@@ -242,6 +324,7 @@ export async function runTtsRuntimeServer(
 			handle,
 			options.token,
 			options.modelId,
+			options.backend,
 		),
 	});
 	const close = () => {

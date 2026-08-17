@@ -466,6 +466,7 @@ describe("writeConfig — voice section", () => {
 				read_aloud_rate: 1.25,
 				tts_model: "kitten-nano-v0.8-int8",
 				tts_voice: "expr-voice-5-f",
+				tts_acceleration: "cpu",
 				tts_threads: 8,
 				local_conversation_mode: true,
 			},
@@ -477,6 +478,7 @@ describe("writeConfig — voice section", () => {
 		expect(toml).toContain("read_aloud_rate = 1.25");
 		expect(toml).toContain('tts_model = "kitten-nano-v0.8-int8"');
 		expect(toml).toContain('tts_voice = "expr-voice-5-f"');
+		expect(toml).toContain('tts_acceleration = "cpu"');
 		expect(toml).toContain("tts_threads = 8");
 		expect(toml).toContain("local_conversation_mode = true");
 	});
@@ -529,6 +531,7 @@ describe("writeConfig — voice section", () => {
 					read_aloud_rate: 1,
 					tts_model: "",
 					tts_voice: "expr-voice-2-f",
+					tts_acceleration: "auto",
 					tts_threads: 4,
 					local_conversation_mode: false,
 					codex_voice: "marin",

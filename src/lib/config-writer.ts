@@ -106,6 +106,7 @@ function serializeVoice(config: HlidConfig["voice"]): string[] {
 		`read_aloud_rate = ${tomlVal(voice.read_aloud_rate)}`,
 		`tts_model = ${tomlVal(voice.tts_model)}`,
 		`tts_voice = ${tomlVal(voice.tts_voice)}`,
+		`tts_acceleration = ${tomlVal(voice.tts_acceleration)}`,
 		`tts_threads = ${tomlVal(voice.tts_threads)}`,
 		`local_conversation_mode = ${tomlVal(voice.local_conversation_mode)}`,
 		`codex_voice = ${tomlVal(voice.codex_voice)}`,

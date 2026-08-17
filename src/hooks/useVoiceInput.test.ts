@@ -29,6 +29,7 @@ const config = {
 	read_aloud_rate: 1,
 	tts_model: "",
 	tts_voice: "expr-voice-2-f",
+	tts_acceleration: "auto" as const,
 	tts_threads: 4,
 	local_conversation_mode: false,
 	codex_voice: "marin" as const,

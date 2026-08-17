@@ -167,13 +167,25 @@ describe("voice runtime polling", () => {
 
 		view.rerender({
 			voice: voiceConfig({
-				read_aloud_provider: "device",
+				read_aloud_provider: "neural",
 				tts_model: "neural-b",
+				tts_acceleration: "cpu",
 				tts_threads: 8,
 			}),
 		});
 		await act(() => vi.advanceTimersByTimeAsync(1_200));
 		expect(ttsServer.sync).toHaveBeenCalledTimes(3);
+
+		view.rerender({
+			voice: voiceConfig({
+				read_aloud_provider: "device",
+				tts_model: "neural-b",
+				tts_acceleration: "cpu",
+				tts_threads: 8,
+			}),
+		});
+		await act(() => vi.advanceTimersByTimeAsync(1_200));
+		expect(ttsServer.sync).toHaveBeenCalledTimes(4);
 	});
 
 	it("keeps a pending neural shutdown across rapid non-neural changes", async () => {
@@ -214,6 +226,48 @@ describe("voice runtime polling", () => {
 		expect(ttsServer.sync).toHaveBeenCalledOnce();
 		expect(ttsServer.getInfo).toHaveBeenCalledTimes(2);
 
+		view.unmount();
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("refreshes a ready neural backend so synthesis fallback stays truthful", async () => {
+		const directMl = {
+			status: {
+				state: "ready" as const,
+				model: "piper-cori-medium-int8",
+				loadedModel: "piper-cori-medium-int8",
+				backend: "directml" as const,
+			},
+			models: [],
+		};
+		const cpuFallback = {
+			...directMl,
+			status: {
+				...directMl.status,
+				backend: "cpu" as const,
+				fallbackReason: "DirectML synthesis failed",
+			},
+		};
+		ttsServer.getInfo.mockResolvedValue(directMl);
+		const view = renderHook(() =>
+			useTtsRuntimeState(
+				voiceConfig({
+					read_aloud_provider: "neural",
+					tts_model: "piper-cori-medium-int8",
+				}),
+			),
+		);
+		await act(async () => await Promise.resolve());
+		await act(() => vi.advanceTimersByTimeAsync(1_200));
+		ttsServer.getInfo.mockClear().mockResolvedValue(cpuFallback);
+
+		await act(() => vi.advanceTimersByTimeAsync(2_000));
+
+		expect(ttsServer.getInfo).toHaveBeenCalled();
+		expect(view.result.current.info.status).toMatchObject({
+			backend: "cpu",
+			fallbackReason: "DirectML synthesis failed",
+		});
 		view.unmount();
 		expect(vi.getTimerCount()).toBe(0);
 	});

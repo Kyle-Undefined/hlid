@@ -1,0 +1,297 @@
+name: Build TTS DirectML runtime candidate
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  BUN_VERSION: "1.3.14"
+  SHERPA_VERSION: "1.13.4"
+  SHERPA_SOURCE_COMMIT: "142807252687d81b40d6315f23470a1512a00de3"
+  SHERPA_NPM_SHA256: "c180199ee4ed16a25b8ed50e2706a2d3dbe1aaa8b0699ea7d249288290c7998e"
+  ONNXRUNTIME_VERSION: "1.24.4"
+  ONNXRUNTIME_NUGET_SHA256: "57e9f11b73437bef7a309496135d4c1f96b1a8e9ddba60013fa27bfc1d788681"
+  DIRECTML_VERSION: "1.15.4"
+  DIRECTML_NUGET_SHA256: "4e7cb7ddce8cf837a7a75dc029209b520ca0101470fcdf275c1f49736a3615b9"
+  CORI_MODEL_SHA256: "169ca8aff3adb271f009a4924c99928a811dbf2b52eaca2dbb460e8c34478c93"
+  RUNTIME_ID: "sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r1-win-x64"
+
+jobs:
+  build:
+    # A candidate is intentionally ephemeral and unqualified. The exact archive
+    # downloaded from this job must pass Hlid's real-GPU matrix before the same
+    # bytes may be published under an immutable runtime release tag.
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Hlid
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+        with:
+          clean: true
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Download and verify pinned binary inputs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $inputs = Join-Path $env:RUNNER_TEMP "hlid-tts-inputs"
+          New-Item -ItemType Directory -Force -Path $inputs | Out-Null
+          $sherpaNpm = Join-Path $inputs "sherpa-onnx-win-x64.tgz"
+          $ortPackage = Join-Path $inputs "onnxruntime-directml.nupkg"
+          $directMlPackage = Join-Path $inputs "directml.nupkg"
+          Invoke-WebRequest `
+            -Uri "https://registry.npmjs.org/sherpa-onnx-win-x64/-/sherpa-onnx-win-x64-$($env:SHERPA_VERSION).tgz" `
+            -OutFile $sherpaNpm
+          Invoke-WebRequest `
+            -Uri "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.DirectML/$($env:ONNXRUNTIME_VERSION)" `
+            -OutFile $ortPackage
+          Invoke-WebRequest `
+            -Uri "https://www.nuget.org/api/v2/package/Microsoft.AI.DirectML/$($env:DIRECTML_VERSION)" `
+            -OutFile $directMlPackage
+          $expected = @{
+            $sherpaNpm = $env:SHERPA_NPM_SHA256
+            $ortPackage = $env:ONNXRUNTIME_NUGET_SHA256
+            $directMlPackage = $env:DIRECTML_NUGET_SHA256
+          }
+          foreach ($entry in $expected.GetEnumerator()) {
+            $actual = (Get-FileHash $entry.Key -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $entry.Value) {
+              throw "Pinned input SHA-256 mismatch for $($entry.Key): $actual"
+            }
+          }
+          $npmRoot = Join-Path $inputs "sherpa-npm"
+          $ortRoot = Join-Path $inputs "onnxruntime"
+          $directMlRoot = Join-Path $inputs "directml"
+          New-Item -ItemType Directory -Force -Path $npmRoot,$ortRoot,$directMlRoot | Out-Null
+          tar -xzf $sherpaNpm -C $npmRoot
+          if ($LASTEXITCODE -ne 0) { throw "Failed to extract sherpa npm archive" }
+          Copy-Item $ortPackage "$ortPackage.zip"
+          Copy-Item $directMlPackage "$directMlPackage.zip"
+          Expand-Archive -LiteralPath "$ortPackage.zip" -DestinationPath $ortRoot
+          Expand-Archive -LiteralPath "$directMlPackage.zip" -DestinationPath $directMlRoot
+          "TTS_INPUTS=$inputs" >> $env:GITHUB_ENV
+          "TTS_NPM_ROOT=$npmRoot" >> $env:GITHUB_ENV
+          "TTS_ORT_ROOT=$ortRoot" >> $env:GITHUB_ENV
+          "TTS_DIRECTML_ROOT=$directMlRoot" >> $env:GITHUB_ENV
+
+      - name: Checkout and patch pinned sherpa source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $source = Join-Path $env:RUNNER_TEMP "sherpa-onnx"
+          git -c core.autocrlf=false clone --no-checkout --filter=blob:none https://github.com/k2-fsa/sherpa-onnx.git $source
+          if ($LASTEXITCODE -ne 0) { throw "Failed to clone pinned sherpa source" }
+          git -C $source -c core.autocrlf=false checkout --detach $env:SHERPA_SOURCE_COMMIT
+          if ($LASTEXITCODE -ne 0) { throw "Failed to check out pinned sherpa source" }
+          $actualCommit = git -C $source rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw "Failed to resolve the sherpa source commit" }
+          if ($actualCommit -ne $env:SHERPA_SOURCE_COMMIT) {
+            throw "sherpa source mismatch: $actualCommit"
+          }
+          # The repository has no global line-ending policy. Normalize the
+          # checked-out patch into a runner-temporary LF copy before hashing and
+          # applying it, so Windows checkout settings cannot change its identity.
+          $sourcePatch = (Resolve-Path "scripts/patches/sherpa-onnx-1.13.4-directml-preinstalled.patch").Path
+          $patch = Join-Path $env:RUNNER_TEMP "sherpa-directml-preinstalled.patch"
+          $patchText = [System.IO.File]::ReadAllText($sourcePatch).Replace("`r`n", "`n")
+          [System.IO.File]::WriteAllText(
+            $patch,
+            $patchText,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          $patchHash = (Get-FileHash $patch -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($patchHash -ne "d9d80e7b50571d9d2b59cc85aaf08b64af6005fdf28e4954071d4eec695ff41f") {
+            throw "Pinned sherpa patch SHA-256 mismatch: $patchHash"
+          }
+          git -C $source apply --check $patch
+          if ($LASTEXITCODE -ne 0) { throw "Pinned sherpa patch does not apply cleanly" }
+          git -C $source apply $patch
+          if ($LASTEXITCODE -ne 0) { throw "Failed to apply the pinned sherpa patch" }
+          git -C $source diff --check
+          if ($LASTEXITCODE -ne 0) { throw "Patched sherpa source failed git diff --check" }
+          $changedFiles = @(git -C $source diff --name-only)
+          if ($LASTEXITCODE -ne 0) { throw "Failed to inspect the patched sherpa source" }
+          if ($changedFiles.Count -ne 1 -or $changedFiles[0] -ne "cmake/onnxruntime.cmake") {
+            throw "Pinned sherpa patch changed an unexpected path: $($changedFiles -join ', ')"
+          }
+          "TTS_SOURCE=$source" >> $env:GITHUB_ENV
+          "TTS_BUILD=$($env:RUNNER_TEMP)\sherpa-tts-build" >> $env:GITHUB_ENV
+
+      - name: Configure the DirectML-capable C API
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:SHERPA_ONNXRUNTIME_INCLUDE_DIR = Join-Path $env:TTS_ORT_ROOT "build\native\include"
+          $env:SHERPA_ONNXRUNTIME_LIB_DIR = Join-Path $env:TTS_ORT_ROOT "runtimes\win-x64\native"
+          # Keep every CMake definition as an explicit string. PowerShell can
+          # otherwise parse a dotted SDK value as separate native arguments.
+          $configureArguments = @(
+            "-S"
+            $env:TTS_SOURCE
+            "-B"
+            $env:TTS_BUILD
+            "-G"
+            "Visual Studio 17 2022"
+            "-A"
+            "x64"
+            "-T"
+            "v143"
+            "-DCMAKE_SYSTEM_VERSION=10.0.26100.0"
+            "-DBUILD_SHARED_LIBS=ON"
+            "-DSHERPA_ONNX_USE_STATIC_CRT=ON"
+            "-DSHERPA_ONNX_USE_PRE_INSTALLED_ONNXRUNTIME_IF_AVAILABLE=ON"
+            "-DSHERPA_ONNX_ENABLE_DIRECTML=ON"
+            "-DSHERPA_ONNX_ENABLE_TTS=ON"
+            "-DSHERPA_ONNX_ENABLE_C_API=ON"
+            "-DSHERPA_ONNX_ENABLE_BINARY=OFF"
+            "-DSHERPA_ONNX_BUILD_C_API_EXAMPLES=OFF"
+            "-DSHERPA_ONNX_ENABLE_PORTAUDIO=OFF"
+            "-DSHERPA_ONNX_ENABLE_WEBSOCKET=OFF"
+            "-DSHERPA_ONNX_ENABLE_TESTS=OFF"
+            "-DSHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION=OFF"
+          )
+          cmake @configureArguments
+          if ($LASTEXITCODE -ne 0) { throw "TTS runtime configure failed" }
+
+      - name: Build only the sherpa C API
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cmake --build $env:TTS_BUILD --config Release --target sherpa-onnx-c-api --parallel
+          if ($LASTEXITCODE -ne 0) { throw "TTS C API build failed" }
+
+      - name: Stage binaries, licenses, and notices
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $runtime = Join-Path $env:RUNNER_TEMP "hlid-tts-runtime\package"
+          New-Item -ItemType Directory -Force -Path $runtime | Out-Null
+          Copy-Item (Join-Path $env:TTS_NPM_ROOT "package\sherpa-onnx.node") $runtime
+          Copy-Item (Join-Path $env:TTS_BUILD "bin\Release\sherpa-onnx-c-api.dll") $runtime
+          Copy-Item (Join-Path $env:TTS_ORT_ROOT "runtimes\win-x64\native\onnxruntime.dll") $runtime
+          Copy-Item (Join-Path $env:TTS_ORT_ROOT "runtimes\win-x64\native\onnxruntime_providers_shared.dll") $runtime
+          Copy-Item (Join-Path $env:TTS_DIRECTML_ROOT "bin\x64-win\DirectML.dll") $runtime
+
+          function Copy-Notice([string]$Source, [string]$Destination) {
+            if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+              throw "Required notice is missing: $Source"
+            }
+            $target = Join-Path $runtime $Destination
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+            Copy-Item -LiteralPath $Source -Destination $target
+          }
+          $deps = Join-Path $env:TTS_BUILD "_deps"
+          Copy-Notice (Join-Path $env:TTS_SOURCE "LICENSE") "licenses/sherpa-onnx/LICENSE"
+          Copy-Notice (Join-Path $deps "eigen-src\COPYING.APACHE") "licenses/eigen/COPYING.APACHE"
+          Copy-Notice (Join-Path $deps "eigen-src\COPYING.BSD") "licenses/eigen/COPYING.BSD"
+          Copy-Notice (Join-Path $deps "eigen-src\COPYING.MINPACK") "licenses/eigen/COPYING.MINPACK"
+          Copy-Notice (Join-Path $deps "eigen-src\COPYING.MPL2") "licenses/eigen/COPYING.MPL2"
+          Copy-Notice (Join-Path $deps "eigen-src\COPYING.README") "licenses/eigen/COPYING.README"
+          Copy-Notice (Join-Path $deps "eigen-src\LICENSE") "licenses/eigen/LICENSE"
+          Copy-Notice (Join-Path $deps "espeak_ng-src\COPYING") "licenses/espeak-ng/COPYING"
+          Copy-Notice (Join-Path $deps "espeak_ng-src\COPYING.APACHE") "licenses/espeak-ng/COPYING.APACHE"
+          Copy-Notice (Join-Path $deps "espeak_ng-src\COPYING.BSD2") "licenses/espeak-ng/COPYING.BSD2"
+          Copy-Notice (Join-Path $deps "espeak_ng-src\COPYING.UCD") "licenses/espeak-ng/COPYING.UCD"
+          Copy-Notice (Join-Path $deps "json-src\LICENSE.MIT") "licenses/json/LICENSE.MIT"
+          Copy-Notice (Join-Path $deps "kaldi_decoder-src\LICENSE") "licenses/kaldi-decoder/LICENSE"
+          Copy-Notice (Join-Path $deps "kaldi_native_fbank-src\LICENSE") "licenses/kaldi-native-fbank/LICENSE"
+          Copy-Notice (Join-Path $deps "kaldifst-src\LICENSE") "licenses/kaldifst/LICENSE"
+          Copy-Notice (Join-Path $deps "kissfft-src\COPYING") "licenses/kissfft/COPYING"
+          Copy-Notice (Join-Path $deps "openfst-src\COPYING") "licenses/openfst/COPYING"
+          Copy-Notice (Join-Path $deps "piper_phonemize-src\LICENSE.md") "licenses/piper-phonemize/LICENSE.md"
+          Copy-Notice (Join-Path $deps "piper_phonemize-src\licenses\uni-algo\LICENSE.md") "licenses/piper-phonemize/uni-algo-LICENSE.md"
+          Copy-Notice (Join-Path $deps "simple-sentencepiece-src\LICENSE") "licenses/simple-sentencepiece/LICENSE"
+          Copy-Notice (Join-Path $env:TTS_ORT_ROOT "LICENSE") "licenses/onnxruntime/LICENSE"
+          Copy-Notice (Join-Path $env:TTS_ORT_ROOT "ThirdPartyNotices.txt") "licenses/onnxruntime/ThirdPartyNotices.txt"
+          Copy-Notice (Join-Path $env:TTS_DIRECTML_ROOT "LICENSE.txt") "licenses/directml/LICENSE.txt"
+          Copy-Notice (Join-Path $env:TTS_DIRECTML_ROOT "LICENSE-CODE.txt") "licenses/directml/LICENSE-CODE.txt"
+          Copy-Notice (Join-Path $env:TTS_DIRECTML_ROOT "ThirdPartyNotices.txt") "licenses/directml/ThirdPartyNotices.txt"
+          "TTS_RUNTIME_ROOT=$runtime" >> $env:GITHUB_ENV
+
+      - name: Resolve the Visual Studio dependency auditor
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $programFilesX86 = [Environment]::GetFolderPath("ProgramFilesX86")
+          $vswhere = Join-Path $programFilesX86 "Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -version "[17.0,18.0)" -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $installation) { throw "Visual Studio 2022 C++ tools were not found" }
+          $toolset = Get-ChildItem (Join-Path $installation "VC\Tools\MSVC") -Directory |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+          $dumpbin = Join-Path $toolset.FullName "bin\Hostx64\x64\dumpbin.exe"
+          if (-not (Test-Path -LiteralPath $dumpbin -PathType Leaf)) {
+            throw "dumpbin.exe was not found"
+          }
+          "TTS_DUMPBIN=$dumpbin" >> $env:GITHUB_ENV
+
+      - name: Audit architecture and dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          foreach ($file in Get-ChildItem $env:TTS_RUNTIME_ROOT -File | Where-Object Extension -Match '^\.(?:dll|node)$') {
+            $headers = & $env:TTS_DUMPBIN /headers $file.FullName | Out-String
+            if ($LASTEXITCODE -ne 0 -or $headers -notmatch '(?i)machine \(x64\)') {
+              throw "$($file.Name) is not an x64 PE binary"
+            }
+            $dependencies = & $env:TTS_DUMPBIN /dependents $file.FullName | Out-String
+            if ($LASTEXITCODE -ne 0) { throw "dumpbin failed for $($file.Name)" }
+            if ($dependencies -match '(?i)amdvlk|amdxc|nvidia|nvapi|nvoglv|intel|igvk|shaderc|glslang|dxcompiler') {
+              throw "$($file.Name) links a vendor driver or build-time GPU tool"
+            }
+          }
+          $addon = & $env:TTS_DUMPBIN /dependents (Join-Path $env:TTS_RUNTIME_ROOT "sherpa-onnx.node") | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed for sherpa-onnx.node" }
+          if ($addon -notmatch '(?i)sherpa-onnx-c-api\.dll') { throw "Node addon is not linked to the staged sherpa C API" }
+          $capi = & $env:TTS_DUMPBIN /dependents (Join-Path $env:TTS_RUNTIME_ROOT "sherpa-onnx-c-api.dll") | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed for sherpa-onnx-c-api.dll" }
+          if ($capi -notmatch '(?i)onnxruntime\.dll') { throw "sherpa C API is not linked to the staged ONNX Runtime" }
+
+      - name: CPU-smoke the candidate on the generic runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = Join-Path $env:RUNNER_TEMP "cori-model.tar.bz2"
+          Invoke-WebRequest `
+            -Uri "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_GB-cori-medium-int8.tar.bz2" `
+            -OutFile $archive
+          $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:CORI_MODEL_SHA256) { throw "Cori model SHA-256 mismatch: $actual" }
+          $modelRoot = Join-Path $env:RUNNER_TEMP "cori-model"
+          New-Item -ItemType Directory -Force -Path $modelRoot | Out-Null
+          tar -xjf $archive -C $modelRoot
+          if ($LASTEXITCODE -ne 0) { throw "Failed to extract Cori smoke model" }
+          $model = Join-Path $modelRoot "vits-piper-en_GB-cori-medium-int8"
+          $env:PATH = "$($env:TTS_RUNTIME_ROOT);$($env:PATH)"
+          bun scripts/smoke-tts-runtime.ts $env:TTS_RUNTIME_ROOT $model cpu
+          if ($LASTEXITCODE -ne 0) { throw "Candidate CPU smoke failed" }
+
+      - name: Package and self-verify the unqualified candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $artifact = Join-Path $env:RUNNER_TEMP "hlid-tts-artifact"
+          New-Item -ItemType Directory -Force -Path $artifact | Out-Null
+          $archive = Join-Path $artifact "$($env:RUNTIME_ID).zip"
+          & ./scripts/package-tts-runtime.ps1 -RuntimeRoot $env:TTS_RUNTIME_ROOT -OutputArchive $archive
+          if (-not $?) { throw "Failed to package the TTS runtime" }
+          bun scripts/create-tts-runtime-manifest.ts $artifact $env:TTS_RUNTIME_ROOT
+          if ($LASTEXITCODE -ne 0) { throw "Failed to create the TTS runtime manifest" }
+          bun scripts/verify-tts-runtime.ts $artifact
+          if ($LASTEXITCODE -ne 0) { throw "Unqualified TTS runtime self-verification failed" }
+
+      - name: Upload the unqualified runtime candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: ${{ env.RUNTIME_ID }}-unqualified
+          path: ${{ runner.temp }}\hlid-tts-artifact
+          if-no-files-found: error
+          retention-days: 7

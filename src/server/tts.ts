@@ -19,11 +19,12 @@ import { INTERNAL_TTS_RUNTIME_FLAG } from "./tts-runtime";
 import {
 	getTtsModelDefinition,
 	TTS_MODEL_DEFINITIONS,
+	type TtsBackend,
 	type TtsModelDefinition,
 	type TtsVoiceInfo,
 } from "./ttsModels";
 
-export type { TtsVoiceInfo } from "./ttsModels";
+export type { TtsBackend, TtsVoiceInfo } from "./ttsModels";
 
 export type TtsModelInfo = {
 	id: string;
@@ -37,6 +38,7 @@ export type TtsModelInfo = {
 	quantized: boolean;
 	language: string;
 	license: string;
+	backends: TtsBackend[];
 	voices: TtsVoiceInfo[];
 };
 
@@ -52,9 +54,10 @@ export type TtsStatus = {
 	state: TtsRuntimeState;
 	model: string;
 	loadedModel?: string;
-	backend?: "cpu";
+	backend?: TtsBackend;
 	runtime?: string;
 	runtimeVersion?: string;
+	fallbackReason?: string;
 	error?: string;
 	download?: {
 		model: string;
@@ -93,6 +96,7 @@ type TtsRuntime = {
 	model: string;
 	threads: number;
 	version: string;
+	backend: TtsBackend;
 };
 
 type FetchLike = (
@@ -100,11 +104,30 @@ type FetchLike = (
 	init?: RequestInit,
 ) => Promise<Response>;
 
-type TtsManagerOptions = {
+function synthesisAbortError(signal: AbortSignal): Error {
+	return signal.reason instanceof Error
+		? signal.reason
+		: new DOMException("TTS synthesis cancelled", "AbortError");
+}
+
+type TtsRuntimeLocation = {
+	directory: string;
+	addonPath: string;
+};
+
+export type TtsRuntimeAssets = {
+	directory: string;
+	addonPath: string;
+	backends: readonly TtsBackend[];
+};
+
+export type TtsManagerOptions = {
 	dataDir?: string;
 	fetcher?: FetchLike;
 	spawn?: typeof Bun.spawn;
 	runtimeCommand?: (args: readonly string[]) => string[];
+	/** A bootstrap-verified runtime bundle, such as Hlid's DirectML build. */
+	runtimeAssets?: TtsRuntimeAssets | null;
 };
 
 const MIB = 1024 * 1024;
@@ -246,6 +269,7 @@ function runtimeEnvironment(directory: string): Record<string, string> {
 	);
 	const separator = process.platform === "win32" ? ";" : ":";
 	env.PATH = `${directory}${separator}${env.PATH ?? ""}`;
+	env.HLID_SKIP_SELF_INSTALL = "1";
 	if (process.platform === "linux")
 		env.LD_LIBRARY_PATH = `${directory}:${env.LD_LIBRARY_PATH ?? ""}`;
 	return env;
@@ -272,7 +296,9 @@ export class TtsModelManager {
 	private readonly fetcher: FetchLike;
 	private readonly spawn: typeof Bun.spawn;
 	private readonly runtimeCommand: (args: readonly string[]) => string[];
+	private readonly runtimeAssets: TtsRuntimeAssets | null;
 	private runtime: TtsRuntime | null = null;
+	private readonly directMlFailureReasons = new Map<string, string>();
 	private loadGeneration = 0;
 	private statusValue: TtsStatus;
 	private downloadAbort: AbortController | null = null;
@@ -285,6 +311,7 @@ export class TtsModelManager {
 		this.fetcher = options.fetcher ?? fetch;
 		this.spawn = options.spawn ?? Bun.spawn;
 		this.runtimeCommand = options.runtimeCommand ?? defaultRuntimeCommand;
+		this.runtimeAssets = options.runtimeAssets ?? null;
 		this.statusValue = {
 			state:
 				config.read_aloud_provider === "neural" ? "unconfigured" : "disabled",
@@ -308,6 +335,7 @@ export class TtsModelManager {
 			quantized: model.quantized,
 			language: model.language,
 			license: model.license,
+			backends: this.availableModelBackends(model),
 			voices: [...model.voices],
 			installed: this.installedModelDir(model) !== null,
 		}));
@@ -315,6 +343,32 @@ export class TtsModelManager {
 
 	private runtimeDir(): string {
 		return join(this.dataDir, "runtime", runtimeDefinition().id);
+	}
+
+	private suppliedRuntime(backend: TtsBackend): TtsRuntimeLocation | null {
+		if (!this.runtimeAssets?.backends.includes(backend)) return null;
+		return {
+			directory: this.runtimeAssets.directory,
+			addonPath: this.runtimeAssets.addonPath,
+		};
+	}
+
+	private availableModelBackends(model: TtsModelDefinition): TtsBackend[] {
+		return model.qualifiedBackends.filter(
+			(backend) => backend === "cpu" || this.suppliedRuntime(backend) !== null,
+		);
+	}
+
+	private preferredBackend(model: TtsModelDefinition): TtsBackend {
+		if (
+			this.config.tts_acceleration === "auto" &&
+			model.qualifiedBackends.includes("directml") &&
+			this.suppliedRuntime("directml") &&
+			this.installedRuntimeDir() &&
+			!this.directMlFailureReasons.has(model.id)
+		)
+			return "directml";
+		return "cpu";
 	}
 
 	private modelDir(model: TtsModelDefinition): string {
@@ -328,6 +382,18 @@ export class TtsModelManager {
 			definition.archiveSha256,
 			definition.files,
 		);
+	}
+
+	private runtimeLocation(backend: TtsBackend): TtsRuntimeLocation | null {
+		if (backend === "directml") return this.suppliedRuntime(backend);
+		const downloaded = this.installedRuntimeDir();
+		if (downloaded) {
+			return {
+				directory: downloaded,
+				addonPath: join(downloaded, runtimeDefinition().addon),
+			};
+		}
+		return null;
 	}
 
 	private installedModelDir(model: TtsModelDefinition): string | null {
@@ -344,7 +410,7 @@ export class TtsModelManager {
 		if (
 			!model ||
 			!this.installedModelDir(model) ||
-			!this.installedRuntimeDir()
+			!this.runtimeLocation(this.preferredBackend(model))
 		) {
 			this.statusValue = {
 				state: "unconfigured",
@@ -358,6 +424,11 @@ export class TtsModelManager {
 	async syncConfig(config: HlidConfig["voice"]): Promise<void> {
 		const prior = this.config;
 		this.config = config;
+		if (
+			prior.tts_acceleration !== config.tts_acceleration &&
+			config.tts_acceleration === "auto"
+		)
+			this.directMlFailureReasons.delete(config.tts_model);
 		if (config.read_aloud_provider !== "neural") {
 			this.closeRuntime();
 			this.statusValue = { state: "disabled", model: config.tts_model };
@@ -367,7 +438,7 @@ export class TtsModelManager {
 		if (
 			!model ||
 			!this.installedModelDir(model) ||
-			!this.installedRuntimeDir()
+			!this.runtimeLocation(this.preferredBackend(model))
 		) {
 			this.closeRuntime();
 			this.statusValue = {
@@ -379,6 +450,7 @@ export class TtsModelManager {
 		if (
 			!this.runtime ||
 			prior.tts_model !== config.tts_model ||
+			prior.tts_acceleration !== config.tts_acceleration ||
 			prior.tts_threads !== config.tts_threads
 		)
 			await this.load(config.tts_model);
@@ -393,14 +465,16 @@ export class TtsModelManager {
 	private async startRuntime(
 		model: string,
 		generation: number,
+		backend: TtsBackend,
 	): Promise<TtsRuntime> {
 		const modelDefinition = getTtsModelDefinition(model);
 		if (!modelDefinition) throw new Error("unknown TTS model");
-		const runtimeDir = this.installedRuntimeDir();
+		if (!modelDefinition.qualifiedBackends.includes(backend))
+			throw new Error("unsupported TTS model backend");
+		const runtime = this.runtimeLocation(backend);
 		const modelDir = this.installedModelDir(modelDefinition);
-		if (!runtimeDir || !modelDir)
+		if (!runtime || !modelDir)
 			throw new Error("local neural voice files are not installed");
-		const definition = runtimeDefinition();
 		const port = 24_000 + Math.floor(Math.random() * 8_000);
 		const token = randomBytes(32).toString("hex");
 		const childArgs = [
@@ -410,18 +484,20 @@ export class TtsModelManager {
 			"--token",
 			token,
 			"--addon",
-			join(runtimeDir, definition.addon),
+			runtime.addonPath,
 			"--model-dir",
 			modelDir,
 			"--model-id",
 			model,
 			"--threads",
 			String(this.config.tts_threads),
+			"--backend",
+			backend,
 		];
 		const command = this.runtimeCommand(childArgs);
 		const process = this.spawn(command, {
-			cwd: runtimeDir,
-			env: runtimeEnvironment(runtimeDir),
+			cwd: runtime.directory,
+			env: runtimeEnvironment(runtime.directory),
 			stdout: "ignore",
 			stderr: "pipe",
 			windowsHide: true,
@@ -445,7 +521,16 @@ export class TtsModelManager {
 					signal: AbortSignal.timeout(500),
 				});
 				if (response.ok) {
-					const status = (await response.json()) as { version?: string };
+					const status = (await response.json()) as {
+						version?: string;
+						backend?: string;
+					};
+					if (status.backend !== backend) {
+						process.kill();
+						throw new Error(
+							`TTS runtime backend mismatch: expected ${backend}, received ${status.backend ?? "unknown"}`,
+						);
+					}
 					return {
 						process,
 						port,
@@ -453,9 +538,15 @@ export class TtsModelManager {
 						model,
 						threads: this.config.tts_threads,
 						version: status.version ?? TTS_RUNTIME_VERSION,
+						backend,
 					};
 				}
-			} catch {
+			} catch (error) {
+				if (
+					error instanceof Error &&
+					error.message.startsWith("TTS runtime backend mismatch:")
+				)
+					throw error;
 				// The child has not bound its loopback port yet.
 			}
 			await Bun.sleep(100);
@@ -464,17 +555,37 @@ export class TtsModelManager {
 		throw new Error("TTS runtime load timed out");
 	}
 
-	async load(model: string): Promise<void> {
-		if (!getTtsModelDefinition(model)) throw new Error("unknown TTS model");
+	async load(model: string, backendOverride?: TtsBackend): Promise<void> {
+		const modelDefinition = getTtsModelDefinition(model);
+		if (!modelDefinition) throw new Error("unknown TTS model");
 		const generation = ++this.loadGeneration;
 		const previous = this.runtime;
+		const preferredBackend =
+			backendOverride ?? this.preferredBackend(modelDefinition);
+		if (!modelDefinition.qualifiedBackends.includes(preferredBackend))
+			throw new Error("unsupported TTS model backend");
 		this.statusValue = {
 			state: "loading",
 			model,
 			loadedModel: previous?.model,
 		};
+		let fallbackReason =
+			preferredBackend === "cpu" && this.config.tts_acceleration === "auto"
+				? this.directMlFailureReasons.get(model)
+				: undefined;
 		try {
-			const next = await this.startRuntime(model, generation);
+			let next: TtsRuntime;
+			try {
+				next = await this.startRuntime(model, generation, preferredBackend);
+			} catch (error) {
+				if (preferredBackend !== "directml") throw error;
+				if (generation !== this.loadGeneration) throw error;
+				fallbackReason = `DirectML initialization failed: ${
+					error instanceof Error ? error.message : String(error)
+				}`;
+				this.directMlFailureReasons.set(model, fallbackReason);
+				next = await this.startRuntime(model, generation, "cpu");
+			}
 			if (generation !== this.loadGeneration) {
 				next.process.kill();
 				return;
@@ -485,21 +596,29 @@ export class TtsModelManager {
 				state: "ready",
 				model,
 				loadedModel: model,
-				backend: "cpu",
+				backend: next.backend,
 				runtime: "sherpa-onnx",
 				runtimeVersion: next.version,
+				...(fallbackReason ? { fallbackReason } : {}),
 			};
 		} catch (error) {
 			if (generation !== this.loadGeneration) return;
-			this.runtime = previous;
-			this.statusValue = previous
+			const usablePrevious =
+				previous?.process.exitCode === null &&
+				(this.config.tts_acceleration !== "cpu" || previous.backend === "cpu")
+					? previous
+					: null;
+			if (previous && previous !== usablePrevious) previous.process.kill();
+			this.runtime = usablePrevious;
+			this.statusValue = usablePrevious
 				? {
 						state: "ready",
 						model,
-						loadedModel: previous.model,
-						backend: "cpu",
+						loadedModel: usablePrevious.model,
+						backend: usablePrevious.backend,
 						runtime: "sherpa-onnx",
-						runtimeVersion: previous.version,
+						runtimeVersion: usablePrevious.version,
+						...(fallbackReason ? { fallbackReason } : {}),
 						error: error instanceof Error ? error.message : String(error),
 					}
 				: {
@@ -715,6 +834,7 @@ export class TtsModelManager {
 		voiceId: string,
 		speed: number,
 		expectedModel?: string,
+		signal?: AbortSignal,
 	): Promise<TtsSynthesisResult> {
 		if (
 			expectedModel &&
@@ -739,7 +859,9 @@ export class TtsModelManager {
 					speaker: this.voice(runtime.model, voiceId).speaker,
 					speed,
 				}),
-				signal: AbortSignal.timeout(30_000),
+				signal: signal
+					? AbortSignal.any([signal, AbortSignal.timeout(30_000)])
+					: AbortSignal.timeout(30_000),
 			},
 		);
 		if (!response.ok) {
@@ -764,15 +886,19 @@ export class TtsModelManager {
 		voiceId: string,
 		speed: number,
 		expectedModel?: string,
+		signal?: AbortSignal,
 	): Promise<TtsSynthesisResult> {
 		if (!text.trim() || text.length > 300)
 			throw new Error("invalid local neural synthesis text");
 		if (!Number.isFinite(speed) || speed < 0.5 || speed > 2)
 			throw new Error("invalid local neural synthesis speed");
+		if (signal?.aborted) throw synthesisAbortError(signal);
 		if (this.pendingSynthesis >= 2)
 			throw new Error("local neural synthesis queue is full");
 		this.pendingSynthesis++;
 		const run = async () => {
+			if (signal?.aborted) throw synthesisAbortError(signal);
+			const synthesisGeneration = this.loadGeneration;
 			const attemptedRuntime = this.runtime;
 			try {
 				return await this.synthesizeOnce(
@@ -781,24 +907,56 @@ export class TtsModelManager {
 					voiceId,
 					speed,
 					expectedModel,
+					signal,
 				);
 			} catch (error) {
 				if (error instanceof TtsModelMismatchError) throw error;
+				if (signal?.aborted) throw synthesisAbortError(signal);
 				if (expectedModel && this.runtime?.model !== expectedModel) {
 					throw new TtsModelMismatchError();
 				}
-				if (!attemptedRuntime || attemptedRuntime.process.exitCode === null)
+				if (
+					!attemptedRuntime ||
+					(attemptedRuntime.backend !== "directml" &&
+						attemptedRuntime.process.exitCode === null)
+				)
 					throw error;
 				if (expectedModel && this.config.tts_model !== expectedModel) {
 					throw new TtsModelMismatchError();
 				}
-				await this.load(expectedModel ?? this.config.tts_model);
+				if (
+					synthesisGeneration !== this.loadGeneration ||
+					this.config.read_aloud_provider !== "neural"
+				)
+					throw error;
+				const recoveryModel = expectedModel ?? this.config.tts_model;
+				const fallbackReason = `${
+					attemptedRuntime.backend === "directml"
+						? "DirectML synthesis failed"
+						: "TTS runtime exited"
+				}: ${error instanceof Error ? error.message : String(error)}`;
+				if (attemptedRuntime.backend === "directml")
+					this.directMlFailureReasons.set(recoveryModel, fallbackReason);
+				if (
+					attemptedRuntime.backend === "directml" &&
+					this.runtime === attemptedRuntime
+				) {
+					attemptedRuntime.process.kill();
+					this.runtime = null;
+				}
+				await this.load(recoveryModel, "cpu");
+				if (
+					this.statusValue.state === "ready" &&
+					this.runtime?.backend === "cpu"
+				)
+					this.statusValue = { ...this.statusValue, fallbackReason };
 				return this.synthesizeOnce(
 					this.runtime,
 					text,
 					voiceId,
 					speed,
 					expectedModel,
+					signal,
 				);
 			}
 		};

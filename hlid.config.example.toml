@@ -39,9 +39,12 @@ auto_send = false
 read_aloud_provider = "device"
 read_aloud_voice = ""
 read_aloud_rate = 1
-# Local neural read aloud uses a selected, separately downloaded model and CPU runtime.
+# Local neural read aloud uses a selected, separately downloaded model.
 tts_model = ""
 tts_voice = "expr-voice-2-f"
+# "auto" uses DirectML only for qualified models on a compatible Windows GPU
+# and falls back to CPU. "cpu" always uses the CPU runtime.
+tts_acceleration = "auto"
 tts_threads = 4
 # Local Conversation composes Whisper input and local neural speech around Raven providers.
 local_conversation_mode = false

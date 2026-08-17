@@ -171,6 +171,7 @@ import { TerminalSessionPool } from "./terminalSessionPool";
 import { createTerminalUpgradeHandler } from "./terminalUpgrade";
 import { startTlsProxy } from "./tlsProxy";
 import { TtsModelManager } from "./tts";
+import { bootstrapTtsRuntimeAssets } from "./tts-bootstrap";
 import { INTERNAL_TTS_RUNTIME_FLAG, runTtsRuntimeServer } from "./tts-runtime";
 import { getTtsModelDefinition } from "./ttsModels";
 import { startUiServer } from "./uiServer";
@@ -567,7 +568,9 @@ const voice = new VoiceModelManager(
 );
 voice.warmCatalog();
 void voice.initialize();
-const tts = new TtsModelManager(config.voice);
+const tts = new TtsModelManager(config.voice, {
+	runtimeAssets: bootstrapTtsRuntimeAssets(),
+});
 void tts.initialize().catch((error) => {
 	console.error(
 		"[tts] failed to initialize:",
@@ -587,8 +590,8 @@ const getNeuralSpeechSettings = () => {
 const handleReadAloudRoute = createReadAloudRouteHandler({
 	speech: microsoftSpeech,
 	tts: {
-		synthesize: (text, voiceId, speed, expectedModel) =>
-			tts.synthesize(text, voiceId, speed, expectedModel),
+		synthesize: (text, voiceId, speed, expectedModel, signal) =>
+			tts.synthesize(text, voiceId, speed, expectedModel, signal),
 		status: () => tts.status(),
 	},
 	getAssistantMessageText: db.getAssistantMessageText,

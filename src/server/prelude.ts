@@ -11,7 +11,7 @@
 import { appendFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { normalizeWindowsPathEnvCasing } from "../lib/windowsEnv";
-import { STDIO_MODE_FLAGS, stdioModeRequested } from "./preludeStdio";
+import { internalChildModeRequested, stdioModeRequested } from "./preludeStdio";
 
 // Parents that launch us with an uppercase "PATH" env key (Claude Desktop's
 // MCP spawner) break Bun's spawning of *.com executables — including the
@@ -57,9 +57,7 @@ if (process.execPath.endsWith(".exe")) {
 		// Internal child-process modes never self-install: they run on behalf of
 		// an already-running canonical instance (or Claude Desktop, which also
 		// sets HLID_SKIP_SELF_INSTALL=1).
-		const internalChildMode = STDIO_MODE_FLAGS.some(
-			(flag) => flag.startsWith("--internal-") && process.argv.includes(flag),
-		);
+		const internalChildMode = internalChildModeRequested(process.argv);
 		if (!internalChildMode && process.env.HLID_SKIP_SELF_INSTALL !== "1") {
 			const [{ maybeSelfInstall }, { cleanupStagingDir }] = await Promise.all([
 				import("../lib/install"),

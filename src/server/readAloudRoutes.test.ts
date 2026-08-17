@@ -155,6 +155,8 @@ describe("read aloud internal routes", () => {
 			"hleeth works.",
 			"expr-voice-5-f",
 			1,
+			undefined,
+			expect.any(AbortSignal),
 		);
 		expect(microsoftSynthesize).toHaveBeenCalledWith(
 			"Hlið works.",
@@ -284,7 +286,47 @@ describe("read aloud internal routes", () => {
 			expect.stringMatching(/^Hlid reads.*\.$/),
 			"expr-voice-5-f",
 			1.25,
+			undefined,
+			expect.any(AbortSignal),
 		);
+	});
+
+	it("forwards client cancellation to buffered neural synthesis", async () => {
+		const synthesize = vi.fn(
+			(
+				_text: string,
+				_voiceId: string,
+				_rate: number,
+				_expectedModel?: string,
+				signal?: AbortSignal,
+			) =>
+				new Promise<never>((_resolve, reject) => {
+					if (!signal) {
+						reject(new Error("missing request signal"));
+						return;
+					}
+					signal.addEventListener("abort", () => reject(signal.reason), {
+						once: true,
+					});
+				}),
+		);
+		const handler = createReadAloudRouteHandler({
+			speech: { voices: vi.fn(), synthesize: vi.fn() },
+			tts: neuralTts(synthesize),
+			getAssistantMessageText: vi.fn().mockResolvedValue("Read this"),
+		});
+		const url = new URL(
+			"http://localhost/read-aloud/audio?message_id=42&provider=neural&chunk_index=0",
+		);
+		const controller = new AbortController();
+		const clientRequest = new Request(url, { signal: controller.signal });
+		const response = handler(url, clientRequest);
+		await vi.waitFor(() => expect(synthesize).toHaveBeenCalledOnce());
+		expect(synthesize.mock.calls[0]?.[4]).toBe(clientRequest.signal);
+
+		controller.abort();
+
+		expect((await response)?.status).toBe(503);
 	});
 
 	it("chunks neural speech after expanding pronunciation mappings", async () => {
@@ -322,6 +364,8 @@ describe("read aloud internal routes", () => {
 			"Hlid with an.",
 			"expr-voice-5-f",
 			1,
+			undefined,
+			expect.any(AbortSignal),
 		);
 	});
 
@@ -377,6 +421,7 @@ describe("read aloud internal routes", () => {
 			"expr-voice-5-f",
 			1,
 			DEFAULT_TTS_MODEL_ID,
+			expect.any(AbortSignal),
 		);
 	});
 
@@ -708,6 +753,8 @@ describe("read aloud internal routes", () => {
 			"Hlid is ready to read replies aloud.",
 			"expr-voice-2-f",
 			1,
+			undefined,
+			expect.any(AbortSignal),
 		);
 	});
 

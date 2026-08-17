@@ -43,9 +43,10 @@ from Forge.
 
 ## Piper voice models
 
-Hlið offers three curated English Piper voice archives from the sherpa-onnx
-TTS model release. Each archive includes a `MODEL_CARD` identifying its
-source voice and training data.
+Hlið offers six curated English Piper voice archives from the sherpa-onnx TTS
+model release. Five are single-voice packs. LibriTTS High is a multi-speaker
+model from which Hlið exposes five curated speaker IDs from the qualified
+model. Each archive includes a `MODEL_CARD` identifying its source data.
 
 Kristin, US English feminine:
 
@@ -61,6 +62,21 @@ Bryce, US English masculine:
 - Archive SHA-256:
   `89cd4f464c91579440565927bfca9d26555f577c4e37431167568c934fdb82f6`
 
+Norman, US English masculine:
+
+- Archive:
+  `https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-norman-medium-int8.tar.bz2`
+- Archive size: 20,987,233 bytes
+- Archive SHA-256:
+  `cb481a514bc213ccf3899391c0f27fdcc4e4b814ec30496f28089a027b5aa01b`
+- Model card:
+  `https://huggingface.co/rhasspy/piper-voices/raw/main/en/en_US/norman/medium/MODEL_CARD`
+- Training data: public-domain LibriVox recordings, as recorded in the model
+  card included in the downloaded archive
+- License scope: Hlið relies on the Piper model repository's MIT declaration;
+  the downloaded archive includes `MODEL_CARD` but no standalone model-license
+  file
+
 Cori, UK English feminine:
 
 - Archive:
@@ -68,15 +84,74 @@ Cori, UK English feminine:
 - Archive SHA-256:
   `169ca8aff3adb271f009a4924c99928a811dbf2b52eaca2dbb460e8c34478c93`
 
-For these three voice packs:
+LJSpeech High, larger US English feminine:
+
+- Archive:
+  `https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-ljspeech-high-int8.tar.bz2`
+- Archive SHA-256:
+  `916b2526d4ea191f9710bd2753698ac97926ec38eade867408d3f5fd422ca285`
+
+LibriTTS High, larger multi-speaker US English model:
+
+- Exposed speakers: `p3922` (`sid 0`, feminine), `p6701` (`sid 3`, masculine),
+  `p922` (`sid 5`, masculine), `p8152` (`sid 132`, masculine), and `p2085`
+  (`sid 903`, feminine), using only the source corpus's presentation metadata
+- Archive:
+  `https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-libritts-high-int8.tar.bz2`
+- Archive SHA-256:
+  `c35f249498fe9406c5ca3b6db1fc16749d7ee415ff2a09d5da9334206c2e0026`
+- Model card:
+  `https://huggingface.co/rhasspy/piper-voices/raw/main/en/en_US/libritts/high/MODEL_CARD`
+- Training data: LibriTTS `train-clean-360`, CC BY 4.0
+- Corpus: `https://www.openslr.org/60/`
+- Corpus paper: `https://arxiv.org/abs/1904.02882`
+- License terms: `https://creativecommons.org/licenses/by/4.0/`
+
+For these six voice packs:
 
 - Purpose: English text-to-speech
-- Model repository and license declaration:
+- Piper model repository and MIT license declaration:
   `https://huggingface.co/rhasspy/piper-voices`
-- Model license: MIT
-- Training data declaration: public domain, as recorded in each downloaded
-  archive's `MODEL_CARD`
+- The downloaded Piper archives include model cards but do not include a
+  separate standalone model-license file. Hlið attributes MIT to the publisher
+  repository rather than representing it as an in-archive license grant.
+- Kristin, Bryce, Cori, Norman, and LJSpeech High training data: public domain,
+  as recorded in each downloaded archive's `MODEL_CARD`; Norman uses LibriVox
+  recordings and LJSpeech High was trained from scratch
+- LibriTTS High was trained from scratch on the CC BY 4.0 LibriTTS corpus.
+  LibriTTS was prepared by Heiga Zen and contributors from LibriVox recordings
+  and Project Gutenberg texts. Hlið downloads the Piper archive unchanged,
+  uses numeric corpus IDs rather than source-reader names as voice labels, and
+  does not imply that a generated voice is the source reader or that the reader
+  endorses Hlið.
 - Piper source: `https://github.com/rhasspy/piper`
+
+## MeloTTS English
+
+- Purpose: English text-to-speech
+- Exposed voices: publisher labels `EN-US` (`sid 0`), `EN-BR` (`sid 1`),
+  `EN_INDIA` (`sid 2`), `EN-AU` (`sid 3`), and `EN-Default` (`sid 4`)
+- Hlið presents `EN-Default` as unspecified Default English and does not infer
+  an accent from that publisher label
+- Model archive:
+  `https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-melo-tts-en.tar.bz2`
+- Archive size: 162,758,237 bytes
+- Archive SHA-256:
+  `f87bc5752ea3ec34273a2cc0c5086854c18b6b89dfd0534b5248e86a14cedb5d`
+- Conversion source:
+  `https://github.com/myshell-ai/MeloTTS/tree/209145371cff8fc3bd60d7be902ea69cbdb7965a`
+- Publisher model repository and MIT declaration:
+  `https://huggingface.co/myshell-ai/MeloTTS-English/tree/bb4fb7346d566d277ba8c8c7dbfdf6786139b8ef`
+- License notice: the unchanged archive contains MyShell.ai's MIT notice,
+  copyright 2024 MyShell.ai; its ONNX metadata also declares the MIT license
+- Frontend: the unchanged archive's `lexicon.txt`; no eSpeak-ng data is used
+
+The publisher does not identify the published checkpoint's training datasets,
+audio provenance, source-speaker identity, or speaker consent. Hlið therefore
+makes no claim about those facts and does not infer speaker gender. The
+publisher's model repository is labeled MIT, but it does not include a separate
+weight-license file, dataset card, or provenance notice. Hlið retains the
+archive's own `LICENSE` and `README.md` files after download.
 
 ## sherpa-onnx 1.13.4 runtime
 
@@ -98,6 +173,42 @@ Linux x64 package, used for development and validation:
   `https://registry.npmjs.org/sherpa-onnx-linux-x64/-/sherpa-onnx-linux-x64-1.13.4.tgz`
 - Archive SHA-256:
   `a139f26eb19c30af9ef29a5390bd5f31baed8d93b20ee5eb63c6c4f339bbb059`
+
+## Windows DirectML TTS runtime
+
+On compatible Windows x64 systems, Hlið can use a separately staged and
+verified GPU runtime. Its immutable runtime identifier is
+`sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r1-win-x64`. The runtime
+artifact carries the complete license and third-party notice files for every
+component.
+
+sherpa-onnx 1.13.4:
+
+- Purpose: text-to-speech API and model frontends
+- License: Apache License 2.0
+- Source revision:
+  `https://github.com/k2-fsa/sherpa-onnx/tree/142807252687d81b40d6315f23470a1512a00de3`
+
+ONNX Runtime DirectML 1.24.4:
+
+- Purpose: ONNX inference and DirectML execution provider
+- License: MIT
+- Package:
+  `https://www.nuget.org/packages/Microsoft.ML.OnnxRuntime.DirectML/1.24.4`
+- Package SHA-256:
+  `57e9f11b73437bef7a309496135d4c1f96b1a8e9ddba60013fa27bfc1d788681`
+- Source revision:
+  `https://github.com/microsoft/onnxruntime/tree/2d924974ef147392ced8409d36bd6d2e7fcc8a74`
+
+Microsoft.AI.DirectML 1.15.4:
+
+- Purpose: redistributable DirectML runtime
+- License: Microsoft DirectML software license terms; included code components
+  are separately identified under the MIT license
+- Package and license:
+  `https://www.nuget.org/packages/Microsoft.AI.DirectML/1.15.4`
+- Package SHA-256:
+  `4e7cb7ddce8cf837a7a75dc029209b520ca0101470fcdf275c1f49736a3615b9`
 
 ## eSpeak-ng
 

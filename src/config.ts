@@ -359,6 +359,7 @@ export const DEFAULT_VOICE_CONFIG = {
 	read_aloud_rate: 1,
 	tts_model: "",
 	tts_voice: "expr-voice-2-f",
+	tts_acceleration: "auto" as const,
 	tts_threads: 4,
 	local_conversation_mode: false,
 	codex_voice: "marin" as const,
@@ -406,6 +407,9 @@ const VoiceSchema = z.object({
 		.default(DEFAULT_VOICE_CONFIG.read_aloud_rate),
 	tts_model: z.string().default(DEFAULT_VOICE_CONFIG.tts_model),
 	tts_voice: z.string().min(1).default(DEFAULT_VOICE_CONFIG.tts_voice),
+	tts_acceleration: z
+		.enum(["auto", "cpu"])
+		.default(DEFAULT_VOICE_CONFIG.tts_acceleration),
 	tts_threads: z
 		.number()
 		.int()

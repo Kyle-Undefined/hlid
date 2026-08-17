@@ -935,14 +935,27 @@ option works from a phone connected through `Tailscale` and gives the browser
 exact media pause and resume behavior.
 
 **Local neural** uses a downloaded speech model and the `sherpa-onnx` runtime on
-the `Hlið` host. `Forge` offers `Kitten Nano` and three single-voice `Piper` packs
-as optional downloads with different tones and accents. `Kitten` is the
-recommended default.
+the `Hlið` host. `Forge` offers `Kitten Nano`, five single-voice `Piper` packs,
+a curated five-voice `LibriTTS High` pack, and all five publisher-labeled
+speakers from `MeloTTS English` as optional downloads with different tones and
+quality tiers. `LJSpeech High` and `LibriTTS High` are intended for
+GPU-accelerated long-form reading because both were slower than playback on
+Hlið's qualification CPU. The single-voice choices include the US masculine
+Norman voice. One LibriTTS download supplies five curated corpus-ID choices,
+three masculine and two feminine in the source corpus metadata, and switching
+between them keeps the same model loaded. Hlið does not infer an individual
+reader's accent from the model's `en_US` frontend tag. The five MeloTTS choices
+are American, British, Indian, Australian, and the publisher's unspecified
+Default English speaker. `MeloTTS` uses its publisher's synthesis settings and
+pronunciation lexicon. The publisher labels the model repository MIT but does
+not identify its training data or source-voice lineage. `Kitten` remains the
+recommended CPU default.
 
-`Forge` shows each model's tier, download size, license, voice choices, `CPU`
-thread setting, download progress, and a fixed voice preview. You choose each
-download, and you can remove models separately. `Hlið` checks the runtime and
-model archives before installing them. They are not packed into the executable.
+`Forge` shows each model's tier, download size, license, voice choices,
+acceleration mode, `CPU` thread setting, download progress, and a fixed voice
+preview. You choose each download, and you can remove models separately. `Hlið`
+checks the runtime and model archives before installing them. They are not
+packed into the executable.
 
 **Pronunciations** teaches local neural read aloud how to say project names,
 acronyms, and other uncommon terms. Each entry pairs a literal whole word or
@@ -968,10 +981,19 @@ an agent remain unchanged. Pronunciation mappings do not apply to device,
 
 Local neural speech runs in a separate child process, keeping native inference
 off the main `Hlið` server. Replies start with a short opening chunk, then use
-sentence-sized chunks with one prepared ahead. Playback can begin while the
-rest of a long reply is still being generated. Only the selected model goes
-into memory. The current speech runtime is `CPU`-based, while `Whisper` input can
-use `Vulkan` on its own.
+sentence-sized chunks while up to two future chunks are prepared. Playback can
+begin while the rest of a long reply is still being generated. Only the
+selected model goes into memory.
+
+On supported Windows installations with the reviewed `DirectML` runtime,
+**Auto** acceleration uses the GPU only for model/runtime combinations that
+passed Hlið's qualification matrix. The current Piper packs and the curated
+MeloTTS English voices are qualified; `Kitten Nano` remains on `CPU`. A DirectML
+initialization or synthesis failure falls back to the separately qualified CPU
+runtime for that session. Choose **CPU** in Forge to disable GPU use explicitly.
+`Whisper` input continues to use its separate `Vulkan` or CPU runtime. The exact
+model/runtime test gates are recorded in
+[Local neural TTS qualification](tts-model-qualification.md).
 
 The speech engine, host voice, and reading speed live in the `Hlið` config and
 apply to every device. The selected device-browser voice stays on that device

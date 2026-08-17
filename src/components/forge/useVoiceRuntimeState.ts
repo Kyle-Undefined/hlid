@@ -21,6 +21,7 @@ const UNAVAILABLE_TTS_INFO: TtsInfo = {
 	},
 	models: [],
 };
+const READY_TTS_STATUS_POLL_MS = 2_000;
 
 type RuntimeInfo = {
 	status: {
@@ -83,13 +84,35 @@ export function useTtsRuntimeState(voice: HlidConfig["voice"]) {
 	const [error, setError] = useState<string | null>(null);
 	const neuralRuntimeKey =
 		voice.read_aloud_provider === "neural"
-			? `${voice.tts_model}\0${voice.tts_threads}`
+			? `${voice.tts_model}\0${voice.tts_acceleration}\0${voice.tts_threads}`
 			: null;
 	const priorNeuralRuntimeKey = useRef<string | null | undefined>(undefined);
 	useEffect(() => {
 		void getTtsInfoFn().then(setInfo);
 	}, []);
 	useRuntimePolling(info, busy, getTtsInfoFn, setInfo, setBusy);
+	useEffect(() => {
+		if (
+			voice.read_aloud_provider !== "neural" ||
+			busy ||
+			info.status.download ||
+			info.status.state !== "ready"
+		)
+			return;
+		const timer = setInterval(
+			() =>
+				void getTtsInfoFn()
+					.then(setInfo)
+					.catch(() => {}),
+			READY_TTS_STATUS_POLL_MS,
+		);
+		return () => clearInterval(timer);
+	}, [
+		busy,
+		info.status.download,
+		info.status.state,
+		voice.read_aloud_provider,
+	]);
 	// Sync only when local neural speech becomes effective, changes while active,
 	// or stops being effective. Other read-aloud engines do not own this runtime.
 	useEffect(() => {
