@@ -271,6 +271,7 @@ jobs:
 
       - name: CPU-smoke the candidate on the generic runner
         shell: pwsh
+        timeout-minutes: 10
         run: |
           $ErrorActionPreference = "Stop"
           $archive = Join-Path $env:RUNNER_TEMP "cori-model.tar.bz2"

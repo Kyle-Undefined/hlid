@@ -20,6 +20,7 @@ type WorkflowStep = {
 	name?: string;
 	uses?: string;
 	run?: string;
+	"timeout-minutes"?: number;
 	with?: Record<string, unknown>;
 };
 
@@ -174,10 +175,16 @@ describe("TTS DirectML runtime workflow", () => {
 		const { parsed: runtime } = readWorkflow("tts-runtime.yml");
 		const build = runtime.jobs.build;
 		const smoke = namedStep(build, "CPU-smoke the candidate on the generic runner");
+		expect(smoke["timeout-minutes"]).toBe(10);
 		expect(smoke.run).toContain("Get-FileHash $archive -Algorithm SHA256");
 		expect(smoke.run).toContain(
 			"bun scripts/smoke-tts-runtime.ts $env:TTS_RUNTIME_ROOT $model cpu",
 		);
+		const smokeScript = readFileSync(
+			resolve(import.meta.dirname, "smoke-tts-runtime.ts"),
+			"utf8",
+		);
+		expect(smokeScript).toContain("process.exit(0)");
 
 		const packageStep = namedStep(
 			build,

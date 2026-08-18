@@ -79,3 +79,7 @@ console.log(
 		peak: Number(peak.toFixed(6)),
 	}),
 );
+
+// sherpa and ONNX Runtime may retain native worker threads after inference.
+// A one-shot CI smoke has completed once its validated result is printed.
+process.exit(0);
