@@ -128,9 +128,12 @@ picker. The `Claude Code` and `Codex` routes appear when their `CLIs` are instal
 exact execution target first. On a Windows host, supported official checksummed
 binary releases can be installed either in `Windows` or in an exact configured
 `WSL` distro. `Hlið` verifies and probes the binary in that target, and only
-then offers **Enable**. Package-based, checksumless, and externally managed
-commands keep their own installer and never give `Hlið` removal control. `Hlið`
-injects runtime-only provider config for `Codex` and `OpenCode`. It does not rewrite
+then offers **Enable**. When a supported checksummed agent is already available
+on `PATH`, **Manage with Hlid** installs a verified `Hlið`-owned copy beside it
+and switches only `Hlið` to that copy. The original installation remains
+untouched. Package-based, checksumless, and custom executable overrides keep
+their own installer until the override is cleared. `Hlið` injects runtime-only
+provider config for `Codex` and `OpenCode`. It does not rewrite
 `~/.codex/config.toml`, `opencode.json`, or either harness's saved credentials.
 
 An `ACP` card can apply an optional `Hlið`-only model filter without changing the

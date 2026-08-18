@@ -1047,7 +1047,7 @@ export class AcpRegistry {
 										const canInstall =
 											!runtimeError &&
 											!targetOverride?.executable &&
-											provenance === "missing" &&
+											(provenance === "missing" || provenance === "external") &&
 											support.supported;
 										const canUpdate =
 											!runtimeError &&
@@ -1102,6 +1102,9 @@ export class AcpRegistry {
 												managedRecord?.error ??
 												(targetOverride?.executable && managedRecord
 													? "Remove this Hlid-managed installation before switching to a custom executable"
+													: undefined) ??
+												(targetOverride?.executable && support.supported
+													? "Clear the custom executable override before moving this target under Hlid management"
 													: undefined) ??
 												(provenance === "missing" && !support.supported
 													? support.blockedReason

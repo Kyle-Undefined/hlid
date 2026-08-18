@@ -1097,7 +1097,43 @@ describe("AcpRegistry", () => {
 		);
 	});
 
-	it("offers managed installation for a checksummed Windows host binary", async () => {
+	it.each([
+		{
+			case: "missing",
+			resolvedExecutable: null,
+			config: {},
+			provenance: "missing",
+			canInstall: true,
+			blockedReason: undefined,
+		},
+		{
+			case: "externally discovered",
+			resolvedExecutable: "C:\\Tools\\opencode.exe",
+			config: { acp_agents: [{ id: "opencode" }] },
+			provenance: "external",
+			canInstall: true,
+			blockedReason: undefined,
+		},
+		{
+			case: "configured with a custom executable",
+			resolvedExecutable: "C:\\Tools\\custom-opencode.exe",
+			config: {
+				acp_agents: [
+					{ id: "opencode", executable: "C:\\Tools\\custom-opencode.exe" },
+				],
+			},
+			provenance: "external",
+			canInstall: false,
+			blockedReason:
+				"Clear the custom executable override before moving this target under Hlid management",
+		},
+	])("derives managed installation availability for a $case Windows host binary", async ({
+		resolvedExecutable,
+		config,
+		provenance,
+		canInstall,
+		blockedReason,
+	}) => {
 		const instance = new AcpRegistry(
 			async () => ({
 				version: "1",
@@ -1124,7 +1160,7 @@ describe("AcpRegistry", () => {
 			{
 				platform: "win32",
 				architecture: "x64",
-				which: () => null,
+				which: () => resolvedExecutable,
 				managed: {
 					managedRecord: () => null,
 					resolveManagedInvocation: () => null,
@@ -1134,17 +1170,18 @@ describe("AcpRegistry", () => {
 			},
 		);
 
-		const [item] = await instance.catalog(HlidConfigSchema.parse({}), true);
+		const [item] = await instance.catalog(HlidConfigSchema.parse(config), true);
 		expect(
 			item?.targets.find((target) => target.targetId === "host"),
 		).toMatchObject({
 			target: { kind: "host" },
 			label: "Windows",
 			platformTarget: "windows-x86_64",
-			provenance: "missing",
-			canInstall: true,
+			provenance,
+			canInstall,
 			canUpdate: false,
 			canRemove: false,
+			blockedReason,
 		});
 	});
 

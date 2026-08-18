@@ -380,7 +380,7 @@ describe("AcpAgentCard", () => {
 		expect(onManagedMutation).toHaveBeenCalledWith("wsl-ubuntu", "remove");
 	});
 
-	it("never offers managed lifecycle actions for an external executable", () => {
+	it("keeps unsupported external executables outside managed lifecycle actions", () => {
 		renderCard();
 		expect(screen.getByText(/Externally managed · Windows/)).toBeTruthy();
 		expect(
@@ -388,8 +388,40 @@ describe("AcpAgentCard", () => {
 				"Hlid can use this executable but will not update or remove it.",
 			),
 		).toBeTruthy();
+		expect(
+			screen.queryByRole("button", { name: "Manage with Hlid" }),
+		).toBeNull();
 		expect(screen.queryByRole("button", { name: "Update" })).toBeNull();
 		expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+	});
+
+	it("moves a supported external executable under Hlid management after confirmation", () => {
+		const externalTarget = makeItem().targets[0];
+		if (!externalTarget) throw new Error("expected host target");
+		const onManagedMutation = vi.fn();
+		renderCard({
+			item: makeItem({
+				id: "opencode",
+				name: "OpenCode",
+				targets: [{ ...externalTarget, canInstall: true }],
+			}),
+			onManagedMutation,
+		});
+
+		expect(
+			screen.getByText(
+				"Hlid can use this executable now or switch to a verified Hlid-managed copy. The existing installation stays untouched.",
+			),
+		).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "Manage with Hlid" }));
+		expect(
+			screen.getByText(
+				"install a Hlid-managed OpenCode v1.2.0 in Windows and switch Hlid to it? The existing installation will remain unchanged.",
+			),
+		).toBeTruthy();
+		expect(onManagedMutation).not.toHaveBeenCalled();
+		fireEvent.click(screen.getByRole("button", { name: "manage" }));
+		expect(onManagedMutation).toHaveBeenCalledWith("host", "install");
 	});
 
 	it("renders background installation progress", () => {

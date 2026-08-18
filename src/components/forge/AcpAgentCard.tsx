@@ -654,6 +654,9 @@ function mutationConfirmation(
 				: "";
 		return `update ${item.name}${versions} in ${target.label}?`;
 	}
+	if (target.provenance === "external") {
+		return `install a Hlid-managed ${item.name} v${target.registryVersion} in ${target.label} and switch Hlid to it? The existing installation will remain unchanged.`;
+	}
 	return `install ${item.name} v${target.registryVersion} in ${target.label}?`;
 }
 
@@ -674,8 +677,16 @@ function TargetMutationAction({
 }) {
 	const destructive = action === "remove";
 	const active = target.operation?.action === action;
+	const externalHandoff =
+		action === "install" && target.provenance === "external";
 	const label =
-		action === "remove" ? "Remove" : action === "update" ? "Update" : "Install";
+		action === "remove"
+			? "Remove"
+			: action === "update"
+				? "Update"
+				: externalHandoff
+					? "Manage with Hlid"
+					: "Install";
 	const activeLabel =
 		action === "remove"
 			? "Removing…"
@@ -685,7 +696,7 @@ function TargetMutationAction({
 	return (
 		<ConfirmAction
 			label={mutationConfirmation(item, target, action)}
-			confirmText={action}
+			confirmText={externalHandoff ? "manage" : action}
 			variant={destructive ? "destructive" : "primary"}
 			onConfirm={() => onMutate(action)}
 			disabled={disabled}
@@ -810,7 +821,9 @@ function AcpTargetInstallation({
 			)}
 			{target?.provenance === "external" && (
 				<p className="text-[10px] text-muted-foreground">
-					Hlid can use this executable but will not update or remove it.
+					{target.canInstall
+						? "Hlid can use this executable now or switch to a verified Hlid-managed copy. The existing installation stays untouched."
+						: "Hlid can use this executable but will not update or remove it."}
 				</p>
 			)}
 			{target && (
