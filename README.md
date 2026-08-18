@@ -24,8 +24,10 @@ set up, `Hlið` is happy.
   resets. Supported `Claude` and `Codex` chats can be forked whole, and `Claude`
   can branch from a specific reply or preview a checkpoint before rewinding its
   tracked file edits. Native `Codex` chats keep their goals and token budgets
-  visible too. The provider, model, effort, and permission mode all stay with
-  the chat they belong to.
+  visible too. Live native subagents stay grouped while they work, then remain
+  expandable in the response that owns them. The provider, model, effort,
+  permission mode, provider-advertised mode, and supported approval reviewer
+  all stay with the chat they belong to.
 - When provider-native subagents are not enough, agents can create durable
   child sessions owned by `Hlið`. Each one is a normal `Raven` session with its
   own provider, workspace, transcript, permissions, usage, and `Ledger` row.
@@ -60,7 +62,10 @@ set up, `Hlið` is happy.
   manages attachments, and tracks usage and cost. It can pause sessions near a
   provider limit, then pick them back up when the window resets.
 - Puts `Claude`, `Codex`, and installed `ACP` providers behind the same session
-  interface.
+  interface. Direct `Claude` can expose its native **Auto** and **Pre-approved
+  only** modes, while `Codex` can expose native permission profiles and an
+  **Auto-review** approval reviewer. `Hlið` keeps those provider controls
+  separate from its own policy and usage gates.
 - Routes models from `CLIProxyAPI` `OAuth` accounts managed in `Forge` through
   `Claude Code`, `Codex`, and installed `OpenCode` `ACP`. `Ledger` keeps both the
   harness and the actual model identity for every route.
@@ -89,7 +94,9 @@ set up, `Hlið` is happy.
   Source repositories can stay in `WSL` where they belong.
 - Checks `Hlið`, `Claude`, `Codex`, and enabled `ACP` agents for updates. It
   shows the right command or in-app flow for each installation, but it does not
-  quietly run installers.
+  quietly run installers. An `OpenCode` `ACP` card can also show optional,
+  display-only `OpenCode Go` account windows without treating them as `Ledger`
+  usage or an automatic sleep signal.
 - Works as a responsive `PWA` with built-in or custom desktop and mobile
   themes, pull-to-refresh, optional background session notifications, and a
   privacy mode for paths, filenames, and `Ledger` totals.

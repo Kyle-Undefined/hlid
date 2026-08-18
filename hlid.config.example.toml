@@ -28,6 +28,17 @@ preset = "plain"
 # Optional per-item names override either preset without changing its URL.
 # einherjar = "Workspace"
 
+[claude]
+model = "claude-sonnet-4-6"
+effort = "high"
+permission_mode = "default"
+turn_recaps = true
+# Makes an extra model call about every 30 seconds for each running SDK
+# subagent. This is off by default because it adds token usage and cost.
+agent_progress_summaries = false
+# Holds inbound cross-session Claude messages for explicit review in Raven.
+peer_inbox = false
+
 [voice]
 enabled = false
 # "local" dictates with Whisper; "codex_dictation" uses Codex realtime;
@@ -102,6 +113,10 @@ effort = "medium"
 # Forge can manage this without editing OpenCode's own files. "hide" removes
 # listed models; "only" exposes only the listed full provider/model IDs to Hlid.
 # model_filter = { mode = "only", models = ["opencode/gpt-5.6-sol"] }
+# A dedicated OpenCode Go key can show display-only account windows. Hlid
+# redacts it from browser config responses, does not pass it to the ACP process,
+# and does not use those windows for auto-sleep or Ledger accounting.
+# opencode_go_usage = { api_key = "replace-with-your-opencode-go-key" }
 #
 # Set executable/args only for an externally managed command. Hlid will use it
 # but will not update or remove it.

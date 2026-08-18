@@ -133,6 +133,14 @@ commands keep their own installer and never give `Hlið` removal control. `Hlið
 injects runtime-only provider config for `Codex` and `OpenCode`. It does not rewrite
 `~/.codex/config.toml`, `opencode.json`, or either harness's saved credentials.
 
+An `ACP` card can apply an optional `Hlið`-only model filter without changing the
+agent's own config. **Hide** removes selected full provider/model IDs from
+`Hlið`; **Only** exposes just the selected IDs. The `OpenCode` card can also use
+a dedicated `OpenCode Go` API key to show its official five-hour, weekly, and
+monthly account windows. Those readings are display-only: the key is not passed
+to the `ACP` process, and the windows do not drive automatic sleep or `Ledger`
+accounting.
+
 For an existing, externally managed `CLIProxyAPI` process, configure advanced
 mode in `hlid.config.toml`:
 
@@ -179,6 +187,9 @@ While a run is active:
   progress rows. The card follows the live tail while open and collapses
   completed history by default. Long runs load earlier calls in bounded batches
   instead of mounting the whole tool transcript at once.
+- Active provider-native subagents stay together in one live group. When one
+  finishes, its card remains expandable inside the response that owns it, with
+  the provider's status and details intact.
 - Permission cards can approve once, approve for the session, save a permanent
   approval, or deny with feedback.
 - Another prompt gets queued instead of interrupting the current turn. Supported
@@ -292,6 +303,15 @@ mode for that chat. Those choices stick to the session. So do the selected
 agent, queued prompts, and unsent draft. Navigating away or refreshing the page
 does not reset the whole thing back to whatever the vault default happens to be.
 
+The same menu shows extra controls only when the live provider advertises them.
+Direct `Claude` can offer **Auto**, where Claude decides when to ask, and
+**Pre-approved only**, where unmatched actions are denied instead of prompting.
+`Codex` can offer **Auto-review**, where its native reviewer handles interactive
+approval requests. `Hlið` keeps those choices unavailable when `Umbod`,
+automatic usage-window sleep, Plan mode, or bypass permissions needs to retain
+the relevant gate. Provider-side classifier and reviewer usage is not reported
+to `Hlið`, so it is not added to `Ledger`.
+
 `Codex` skills can be composed with each other. `Claude` accepts up to six
 compatible selections. An `ACP` session accepts one provider-native prompt
 command at a time, but that command can still use vault skills. Switching the
@@ -344,9 +364,9 @@ without clearing the recorded conversation. When the session uses
 **Auto-approve all** and `Umbod` is not enforcing approvals, one server can
 inherit the session behavior, force **ask**, or use `Claude`'s native
 **auto-check** classifier. A per-server choice can only tighten native approval;
-it never bypasses `Hlið` policy. When a `Claude` `MCP` server needs structured
-input, `Raven` shows the question inline with its server provenance and keeps it
-there until you answer or decline it.
+it never bypasses `Hlið` policy. When a supported `Claude` or `Codex` `MCP`
+server needs structured input, `Raven` shows the question inline with its server
+provenance and keeps it there until you answer or decline it.
 
 An `ACP` agent that advertises structured image or embedded-context prompts gets
 native blocks for images you explicitly attach and references you explicitly
@@ -640,6 +660,9 @@ not configured for that entry stay hidden.
   current, stale, partial, or unavailable status and separates integrated,
   provider-native, and unavailable behavior with its supporting runtime evidence.
   Edits take effect when the matching provider conversation starts or reloads.
+  `Codex` can select one provider-native permission profile advertised for the
+  exact workspace. If that profile disappears or is not allowed there, `Hlið`
+  stops instead of quietly falling back to a different authority boundary.
 - **Access** has network, `TLS`, password, and trusted-device settings.
 - **Experience** has configurable navigation names, built-in or custom
 	desktop/mobile themes, input behavior, the provider-entry visibility toggle
@@ -663,6 +686,13 @@ Most edits save on their own. The header tells you whether the form is saving,
 dirty, saved, or waiting on a restart. Server, `ACP`, and `Umbod` changes are
 the main ones that set the restart marker. If a save or system inventory call
 fails, the retry action appears in that same header.
+
+Native `Claude` has two opt-in controls in **Agents**. **AI subagent progress
+summaries** makes an extra model call about every 30 seconds for each running
+SDK subagent, so it can improve the live status while adding token usage and
+cost. **Claude peer inbox** holds inbound cross-session messages for explicit
+review in `Raven`; the sender and provider provenance stay visible, and a peer
+message is never treated as human authority.
 
 On `Windows`, **Overview → Updates → Hlid MCP in Claude Desktop** can add or
 re-add `Hlið`'s agent and `Obsidian` vault servers to the standalone
@@ -709,7 +739,9 @@ which window filled up and when the session should wake. **RESUME NOW** wakes
 every sleeping session on that provider and lets them keep going until the
 current window resets. The sleeping turn and its queued follow-ups are stored in
 the database, so a normal `Hlið` restart does not lose them. Maximum sleep keeps
-a session from waiting past the configured cap.
+a session from waiting past the configured cap. When `Claude` or `Codex` reports
+an account spend-control window, that hard limit participates in the same gate.
+The optional `OpenCode Go` windows remain display-only and never do.
 
 **Developer → Pricing** shows the built-in model and alias timelines and edits
 `pricing-overrides.toml` for local rules. Rates and aliases can use UTC
