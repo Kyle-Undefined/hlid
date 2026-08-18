@@ -1027,6 +1027,8 @@ When the runtime is not installed, Forge accepts the reviewed runtime archive
 and its matching `runtime-manifest.json` together. Hlið checks the bounded
 archive, build provenance, exact entry list, and every file hash before an
 atomic install, then refreshes local neural speech without restarting Hlið.
+Both files are published with each Hlið release after CI rebuilds the runtime
+and proves that it matches the exact GPU-qualified bytes.
 `Whisper` input continues to use its separate `Vulkan` or CPU runtime. The exact
 model/runtime test gates are recorded in
 [Local neural TTS qualification](tts-model-qualification.md).

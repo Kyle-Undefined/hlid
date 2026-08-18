@@ -251,8 +251,8 @@ bun run build:win      # Windows executable build
 `build:win` uses the reviewed `Whisper` archive from
 `.cache/whisper/hlid-whisper-runtime-windows-x64-v1.9.1.zip` when it is
 available. `Git` ignores that cache. The `Release` workflow builds and audits
-the same runtime, passes it straight into the `Windows` build, and publishes it
-under the `whisper-runtime-v1.9.1` release tag for clean builds.
+the same runtime, then passes that exact artifact straight into the `Windows`
+build in the same run.
 
 `Ledger`'s **Import provider history** action finds `Claude CLI`, `SDK`, `Cowork`,
 and `Codex CLI`, `Desktop`, and editor sessions on `Windows` and any `WSL`
@@ -290,8 +290,9 @@ Under the hood, `Hlið` is `TanStack Start/Router`, `React`, a `Bun` server,
 and runtime assets are embedded into the executable, so there is no loose
 `dist` folder to drag around with a release.
 
-Tagged releases validate on `Linux`, build and smoke-test the executable on
-`Windows`, then publish it with a `SHA-256` checksum. The
+Tagged releases validate on `Linux`, build and smoke-test the executable and
+the GPU-qualified `DirectML` speech runtime on `Windows`, then publish the app,
+the runtime archive and manifest, and `SHA-256` checksums. The
 [release workflow](.github/workflows/release.yml) is the source of truth.
 
 ## License

@@ -82,7 +82,11 @@ describe("automatic Whisper release workflow", () => {
 
 		expect(runtime.uses).toBe("./.github/workflows/whisper-runtime.yml");
 		expect(runtime.permissions).toEqual({ contents: "read" });
-		expect(build.needs).toEqual(["validate", "whisper-runtime"]);
+		expect(build.needs).toEqual([
+			"validate",
+			"whisper-runtime",
+			"tts-runtime",
+		]);
 		expect(buildStep?.env?.HLID_WHISPER_RUNTIME_ARCHIVE).toContain(
 			"hlid-whisper-runtime-windows-x64-v1.9.1.zip",
 		);

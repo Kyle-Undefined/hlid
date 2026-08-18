@@ -1,8 +1,20 @@
-name: Build TTS DirectML runtime candidate
+name: Build TTS DirectML runtime
 
 on:
   workflow_call:
+    inputs:
+      require_qualified:
+        description: Require the rebuilt runtime to match the GPU-qualified bytes
+        required: false
+        type: boolean
+        default: false
   workflow_dispatch:
+    inputs:
+      require_qualified:
+        description: Require the rebuilt runtime to match the GPU-qualified bytes
+        required: false
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -20,12 +32,14 @@ env:
 
 jobs:
   build:
-    # A candidate is intentionally ephemeral and unqualified. The exact archive
-    # downloaded from this job must pass Hlid's real-GPU matrix before the same
-    # bytes may be published under an immutable runtime release tag.
+    # Manual candidate builds remain ephemeral. Release builds set
+    # require_qualified so only the exact bytes that passed Hlid's real-GPU
+    # matrix can become public release assets.
     runs-on: windows-2022
     permissions:
       contents: read
+    env:
+      REQUIRE_QUALIFIED: ${{ inputs.require_qualified }}
     steps:
       - name: Checkout Hlid
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
@@ -274,7 +288,7 @@ jobs:
           bun scripts/smoke-tts-runtime.ts $env:TTS_RUNTIME_ROOT $model cpu
           if ($LASTEXITCODE -ne 0) { throw "Candidate CPU smoke failed" }
 
-      - name: Package and self-verify the unqualified candidate
+      - name: Package and self-verify the runtime
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -285,13 +299,20 @@ jobs:
           if (-not $?) { throw "Failed to package the TTS runtime" }
           bun scripts/create-tts-runtime-manifest.ts $artifact $env:TTS_RUNTIME_ROOT
           if ($LASTEXITCODE -ne 0) { throw "Failed to create the TTS runtime manifest" }
-          bun scripts/verify-tts-runtime.ts $artifact
-          if ($LASTEXITCODE -ne 0) { throw "Unqualified TTS runtime self-verification failed" }
+          $verifyArguments = @("scripts/verify-tts-runtime.ts", $artifact)
+          if ($env:REQUIRE_QUALIFIED -eq "true") {
+            $verifyArguments += "--require-qualified"
+            "TTS_ARTIFACT_NAME=$($env:RUNTIME_ID)" >> $env:GITHUB_ENV
+          } else {
+            "TTS_ARTIFACT_NAME=$($env:RUNTIME_ID)-unqualified" >> $env:GITHUB_ENV
+          }
+          bun @verifyArguments
+          if ($LASTEXITCODE -ne 0) { throw "TTS runtime self-verification failed" }
 
-      - name: Upload the unqualified runtime candidate
+      - name: Upload the runtime artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
-          name: ${{ env.RUNTIME_ID }}-unqualified
+          name: ${{ env.TTS_ARTIFACT_NAME }}
           path: ${{ runner.temp }}\hlid-tts-artifact
           if-no-files-found: error
           retention-days: 7

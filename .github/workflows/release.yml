@@ -71,11 +71,20 @@ jobs:
     permissions:
       contents: read
 
+  tts-runtime:
+    needs: validate
+    uses: ./.github/workflows/tts-runtime.yml
+    with:
+      require_qualified: true
+    permissions:
+      contents: read
+
   build:
     runs-on: windows-latest
     needs:
       - validate
       - whisper-runtime
+      - tts-runtime
     permissions:
       contents: read
     steps:
@@ -203,10 +212,16 @@ jobs:
           name: hlid-windows-x64
           path: dist/
 
+      - name: Download qualified DirectML runtime
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          name: sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r1-win-x64
+          path: dist/
+
       - name: Generate checksums
         run: |
           cd dist
-          sha256sum *.exe > hlid-checksums.txt
+          sha256sum *.exe *.zip runtime-manifest.json > hlid-checksums.txt
           cat hlid-checksums.txt
 
       - name: Publish release
@@ -220,4 +235,6 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             dist/*.exe
+            dist/*.zip
+            dist/runtime-manifest.json
             dist/hlid-checksums.txt

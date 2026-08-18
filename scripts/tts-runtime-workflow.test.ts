@@ -26,6 +26,9 @@ type WorkflowStep = {
 type WorkflowJob = {
 	permissions?: Record<string, string>;
 	"runs-on"?: string;
+	uses?: string;
+	with?: Record<string, unknown>;
+	needs?: string | string[];
 	steps?: WorkflowStep[];
 };
 
@@ -51,14 +54,13 @@ function namedStep(job: WorkflowJob, name: string): WorkflowStep {
 	return step;
 }
 
-describe("TTS DirectML candidate workflow", () => {
-	it("is manual or reusable, read-only, ephemeral, and disconnected from release", () => {
+describe("TTS DirectML runtime workflow", () => {
+	it("keeps manual candidates ephemeral and gates releases on qualified bytes", () => {
 		const { parsed: runtime } = readWorkflow("tts-runtime.yml");
-		const { parsed: release, source: releaseSource } =
-			readWorkflow("release.yml");
+		const { parsed: release } = readWorkflow("release.yml");
 		const build = runtime.jobs.build;
 
-		expect(runtime.name).toContain("candidate");
+		expect(runtime.name).toBe("Build TTS DirectML runtime");
 		expect(Object.keys(runtime.on).sort()).toEqual([
 			"workflow_call",
 			"workflow_dispatch",
@@ -74,12 +76,17 @@ describe("TTS DirectML candidate workflow", () => {
 		for (const step of build.steps ?? []) {
 			if (step.uses) expect(step.uses).toMatch(/^[^@\s]+@[a-f0-9]{40}$/);
 		}
-		expect(release.jobs["tts-runtime"]).toBeUndefined();
-		expect(releaseSource).not.toContain("tts-runtime.yml");
+		expect(release.jobs["tts-runtime"]).toMatchObject({
+			needs: "validate",
+			uses: "./.github/workflows/tts-runtime.yml",
+			with: { require_qualified: true },
+			permissions: { contents: "read" },
+		});
+		expect(release.jobs.build.needs).toContain("tts-runtime");
 
-		const upload = namedStep(build, "Upload the unqualified runtime candidate");
+		const upload = namedStep(build, "Upload the runtime artifact");
 		expect(upload.uses).toMatch(/^actions\/upload-artifact@[a-f0-9]{40}$/);
-		expect(upload.with?.name).toBe("${{ env.RUNTIME_ID }}-unqualified");
+		expect(upload.with?.name).toBe("${{ env.TTS_ARTIFACT_NAME }}");
 		expect(upload.with?.path).toBe("${{ runner.temp }}\\hlid-tts-artifact");
 		expect(upload.with?.["retention-days"]).toBe(7);
 		expect(upload.with?.["if-no-files-found"]).toBe("error");
@@ -163,7 +170,7 @@ describe("TTS DirectML candidate workflow", () => {
 		expect(audit.run).toContain("links a vendor driver or build-time GPU tool");
 	});
 
-	it("CPU-smokes and verifies only an explicitly unqualified candidate", () => {
+	it("CPU-smokes every build and requires qualified bytes for a release", () => {
 		const { parsed: runtime } = readWorkflow("tts-runtime.yml");
 		const build = runtime.jobs.build;
 		const smoke = namedStep(build, "CPU-smoke the candidate on the generic runner");
@@ -174,21 +181,29 @@ describe("TTS DirectML candidate workflow", () => {
 
 		const packageStep = namedStep(
 			build,
-			"Package and self-verify the unqualified candidate",
+			"Package and self-verify the runtime",
 		);
 		expect(packageStep.run).toContain("package-tts-runtime.ps1");
 		expect(packageStep.run).toContain(
 			'if (-not $?) { throw "Failed to package the TTS runtime" }',
 		);
 		expect(packageStep.run).toContain("create-tts-runtime-manifest.ts");
-		expect(packageStep.run).toContain("bun scripts/verify-tts-runtime.ts $artifact");
+		expect(packageStep.run).toContain(
+			'$verifyArguments += "--require-qualified"',
+		);
+		expect(packageStep.run).toContain("bun @verifyArguments");
+		expect(packageStep.run).toContain(
+			'"TTS_ARTIFACT_NAME=$($env:RUNTIME_ID)"',
+		);
+		expect(packageStep.run).toContain(
+			'"TTS_ARTIFACT_NAME=$($env:RUNTIME_ID)-unqualified"',
+		);
 		expect(packageStep.run).toContain(
 			'if ($LASTEXITCODE -ne 0) { throw "Failed to create the TTS runtime manifest" }',
 		);
 		expect(packageStep.run).toContain(
-			'if ($LASTEXITCODE -ne 0) { throw "Unqualified TTS runtime self-verification failed" }',
+			'if ($LASTEXITCODE -ne 0) { throw "TTS runtime self-verification failed" }',
 		);
-		expect(packageStep.run).not.toContain("--require-qualified");
 		const verifier = readFileSync(
 			resolve(import.meta.dirname, "verify-tts-runtime.ts"),
 			"utf8",
@@ -197,6 +212,25 @@ describe("TTS DirectML candidate workflow", () => {
 		expect(verifier).toContain(
 			'cliArguments[1] !== undefined && cliArguments[1] !== "--require-qualified"',
 		);
+	});
+
+	it("publishes the qualified runtime beside the app with checksums", () => {
+		const { parsed: release } = readWorkflow("release.yml");
+		const releaseJob = release.jobs.release;
+		const download = namedStep(releaseJob, "Download qualified DirectML runtime");
+		expect(download.uses).toMatch(
+			/^actions\/download-artifact@[a-f0-9]{40}$/,
+		);
+		expect(download.with?.name).toBe(TTS_RUNTIME_ID);
+		expect(download.with?.path).toBe("dist/");
+
+		const checksums = namedStep(releaseJob, "Generate checksums");
+		expect(checksums.run).toContain(
+			"sha256sum *.exe *.zip runtime-manifest.json > hlid-checksums.txt",
+		);
+		const publish = namedStep(releaseJob, "Publish release");
+		expect(publish.with?.files).toContain("dist/*.zip");
+		expect(publish.with?.files).toContain("dist/runtime-manifest.json");
 	});
 
 	it("packages a strict deterministic archive outside the runtime tree", () => {
