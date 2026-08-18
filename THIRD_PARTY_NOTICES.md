@@ -178,7 +178,7 @@ Linux x64 package, used for development and validation:
 
 On compatible Windows x64 systems, Hlið can use a separately staged and
 verified GPU runtime. Its immutable runtime identifier is
-`sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r1-win-x64`. The runtime
+`sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r2-win-x64`. The runtime
 artifact carries the complete license and third-party notice files for every
 component.
 

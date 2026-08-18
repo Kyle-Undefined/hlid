@@ -5,7 +5,7 @@ import { isAbsolute, join, relative } from "node:path";
 import type { TtsRuntimeAssets } from "./tts";
 
 export const TTS_DIRECTML_RUNTIME_ID =
-	"sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r1-win-x64";
+	"sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r2-win-x64";
 
 export type TtsRuntimeFile = {
 	name: string;
@@ -22,8 +22,8 @@ export const TTS_DIRECTML_RUNTIME_FILES: readonly TtsRuntimeFile[] = [
 	},
 	{
 		name: "sherpa-onnx-c-api.dll",
-		size: 4_484_096,
-		sha256: "5fc33944ff3de0ac683d46793735062dd694ef7f4842619261975ed0eacdd505",
+		size: 4_188_672,
+		sha256: "0eccb0f445f0dfa81f26c9de2633da34fcf681b0513b9209bdc5dc14f5b9b1ac",
 	},
 	{
 		name: "onnxruntime.dll",

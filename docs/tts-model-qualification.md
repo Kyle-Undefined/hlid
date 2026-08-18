@@ -38,7 +38,7 @@ directory.
 The current matrix was measured on 2026-08-16 and 2026-08-17 with Windows 11
 Pro build 26200, an AMD Ryzen 9 5950X, an AMD Radeon RX 6700 XT, and AMD driver
 32.0.21045.1000. The CPU runtime is official sherpa-onnx 1.13.4. The GPU
-runtime is `sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r1-win-x64`.
+runtime is `sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r2-win-x64`.
 Release builds pin MSVC 14.44.35207 and reproducible compiler and linker flags
 so CI can rebuild and match the exact runtime bytes qualified on that GPU.
 
@@ -52,7 +52,7 @@ runtime harness, four threads, text, and warm-up policy.
 | Piper Kristin Medium INT8 | Qualified | Qualified | Long-text RTF 0.03363 | - |
 | Piper Bryce Medium INT8 | Qualified | Qualified | Long-text RTF 0.02638 | - |
 | Piper Norman Medium INT8 | Qualified, long-text RTF 0.23564 | Qualified | Long-text RTF 0.03400 | 6.93x long-text |
-| Piper Cori Medium INT8 | Qualified | Qualified | Warm RTF 0.01622 | 13.3x warm |
+| Piper Cori Medium INT8 | Qualified | Qualified | Warm RTF 0.02082 | - |
 | Piper LJSpeech High INT8 | Qualified, long-text RTF 1.49017 | Qualified | Long-text RTF 0.07669 | 19.43x long-text |
 | Piper LibriTTS High INT8 `p3922`, `sid 0` | Qualified, long-text RTF 1.47732 | Qualified | Long-text RTF 0.08107 | 18.22x long-text |
 | Piper LibriTTS High INT8 `p6701`, `sid 3` | Qualified, long-text RTF 1.51353 | Qualified | Long-text RTF 0.08034 | 18.84x long-text |
@@ -66,7 +66,7 @@ runtime harness, four threads, text, and warm-up policy.
 | MeloTTS Default English `sid 4` | Qualified, long-text RTF 0.33161 | Qualified | Long-text RTF 0.12143 | 2.73087x long-text |
 
 The DirectML runs reached process-scoped GPU Engine maxima of 50.40% for
-Kristin, 53.67% for Bryce, 48.00% for Norman, 68.99% for Cori Medium, and 83.73%
+Kristin, 53.67% for Bryce, 48.00% for Norman, 50.86% for Cori Medium, and 83.73%
 for LJSpeech High on the qualification GPU. The five LibriTTS voices reached
 83.90% for `p3922`, 83.33% for `p6701`, 88.02% for `p922`, 83.29% for `p8152`,
 and 82.64% for `p2085`. The five MeloTTS voices reached 48.51% for American,
@@ -82,6 +82,16 @@ number normalization reduced those first two rates to 0% and 1.22%. The
 Those figures rank candidate voices within one run and are not directly
 comparable to the earlier small.en results. Transcriptions are a regression
 signal rather than a substitute for judging voice preference.
+
+The reproducible `r2` release runtime was rebuilt independently in two CI jobs.
+Both produced archive SHA-256
+`72fda918fc7196b522a1c4f2cd29bfbfa5d31f7a4810c3c79b0bde63448e1057`
+and C API SHA-256
+`0eccb0f445f0dfa81f26c9de2633da34fcf681b0513b9209bdc5dc14f5b9b1ac`.
+That exact artifact then passed the full Cori DirectML harness on the
+qualification GPU: 11 syntheses through one persistent handle, 50.855244% peak
+GPU Engine activity, warm RTF 0.02082, production RTF 0.03109, no clipped
+samples, peak amplitude 0.395782, and maximum DC-to-RMS ratio 0.002728.
 
 LJSpeech High produces valid CPU audio, but its measured CPU RTF is above 1 on
 the qualification machine. It is intended for DirectML use when continuous

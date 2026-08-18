@@ -215,7 +215,7 @@ jobs:
       - name: Download qualified DirectML runtime
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
-          name: sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r1-win-x64
+          name: sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r2-win-x64
           path: dist/
 
       - name: Generate checksums

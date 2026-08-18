@@ -92,7 +92,7 @@ describe("TTS DirectML runtime bootstrap", () => {
 		expect(
 			defaultTtsDirectMlRuntimeDirectory({ LOCALAPPDATA: "C:/Local" }),
 		).toMatch(
-			/sherpa-tts-1\.13\.4-ort-dml-1\.24\.4-directml-1\.15\.4-r1-win-x64$/,
+			/sherpa-tts-1\.13\.4-ort-dml-1\.24\.4-directml-1\.15\.4-r2-win-x64$/,
 		);
 	});
 });

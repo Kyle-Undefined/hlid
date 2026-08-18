@@ -29,7 +29,7 @@ env:
   DIRECTML_NUGET_SHA256: "4e7cb7ddce8cf837a7a75dc029209b520ca0101470fcdf275c1f49736a3615b9"
   CORI_MODEL_SHA256: "169ca8aff3adb271f009a4924c99928a811dbf2b52eaca2dbb460e8c34478c93"
   MSVC_TOOLSET_VERSION: "14.44.35207"
-  RUNTIME_ID: "sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r1-win-x64"
+  RUNTIME_ID: "sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r2-win-x64"
 
 jobs:
   build:

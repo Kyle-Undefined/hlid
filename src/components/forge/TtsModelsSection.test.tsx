@@ -134,7 +134,7 @@ describe("TtsModelsSection", () => {
 					supported: true,
 					installed: true,
 					runtimeId:
-						"sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r1-win-x64",
+						"sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r2-win-x64",
 				},
 			},
 		};
@@ -153,7 +153,7 @@ describe("TtsModelsSection", () => {
 							supported: true,
 							installed: false,
 							runtimeId:
-								"sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r1-win-x64",
+								"sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r2-win-x64",
 						},
 					},
 				}}
@@ -169,7 +169,7 @@ describe("TtsModelsSection", () => {
 		) as HTMLInputElement;
 		const archive = new File(
 			["archive"],
-			"sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r1-win-x64.zip",
+			"sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r2-win-x64.zip",
 		);
 		const manifest = new File(["{}"], "runtime-manifest.json");
 		fireEvent.change(input, { target: { files: [archive, manifest] } });
