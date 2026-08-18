@@ -39,6 +39,8 @@ The current matrix was measured on 2026-08-16 and 2026-08-17 with Windows 11
 Pro build 26200, an AMD Ryzen 9 5950X, an AMD Radeon RX 6700 XT, and AMD driver
 32.0.21045.1000. The CPU runtime is official sherpa-onnx 1.13.4. The GPU
 runtime is `sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r1-win-x64`.
+Release builds pin MSVC 14.44.35207 and reproducible compiler and linker flags
+so CI can rebuild and match the exact runtime bytes qualified on that GPU.
 
 Real-time factor is synthesis time divided by generated audio duration. Values
 below 1 are faster than playback. Direct comparisons use the same model,

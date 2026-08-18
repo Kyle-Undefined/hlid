@@ -46,6 +46,7 @@ export const ONNXRUNTIME_NUGET_SHA256 =
 export const DIRECTML_VERSION = "1.15.4";
 export const DIRECTML_NUGET_SHA256 =
 	"4e7cb7ddce8cf837a7a75dc029209b520ca0101470fcdf275c1f49736a3615b9";
+export const MSVC_TOOLSET_VERSION = "14.44.35207";
 
 export const SHERPA_DIRECTML_PATCH_DESCRIPTION =
 	"scripts/patches/sherpa-onnx-1.13.4-directml-preinstalled.patch";
@@ -53,6 +54,9 @@ export const SHERPA_DIRECTML_PATCH_SHA256 =
 	"d9d80e7b50571d9d2b59cc85aaf08b64af6005fdf28e4954071d4eec695ff41f";
 
 export const TTS_RUNTIME_BUILD_FLAGS = [
+	"CMAKE_C_FLAGS=/Brepro",
+	"CMAKE_CXX_FLAGS=/Brepro",
+	"CMAKE_SHARED_LINKER_FLAGS=/Brepro",
 	"BUILD_SHARED_LIBS=ON",
 	"SHERPA_ONNX_USE_STATIC_CRT=ON",
 	"SHERPA_ONNX_USE_PRE_INSTALLED_ONNXRUNTIME_IF_AVAILABLE=ON",
@@ -131,6 +135,7 @@ export type TtsRuntimeArtifactManifest = {
 		architecture: "x64";
 		configuration: "Release";
 		toolset: "v143";
+		toolsetVersion: string;
 		windowsSdk: "10.0.26100.0";
 		patchDescription: string;
 		patchSha256: string;
@@ -226,6 +231,7 @@ function parseBuild(value: unknown): TtsRuntimeArtifactManifest["build"] {
 			"architecture",
 			"configuration",
 			"toolset",
+			"toolsetVersion",
 			"windowsSdk",
 			"patchDescription",
 			"patchSha256",
@@ -241,6 +247,10 @@ function parseBuild(value: unknown): TtsRuntimeArtifactManifest["build"] {
 	assertManifest(value.architecture === "x64", "build architecture mismatch");
 	assertManifest(value.configuration === "Release", "configuration mismatch");
 	assertManifest(value.toolset === "v143", "toolset mismatch");
+	assertManifest(
+		value.toolsetVersion === MSVC_TOOLSET_VERSION,
+		"toolset version mismatch",
+	);
 	assertManifest(value.windowsSdk === "10.0.26100.0", "Windows SDK mismatch");
 	assertManifest(
 		value.patchDescription === SHERPA_DIRECTML_PATCH_DESCRIPTION,
@@ -264,6 +274,7 @@ function parseBuild(value: unknown): TtsRuntimeArtifactManifest["build"] {
 		architecture: value.architecture,
 		configuration: value.configuration,
 		toolset: value.toolset,
+		toolsetVersion: value.toolsetVersion,
 		windowsSdk: value.windowsSdk,
 		patchDescription: value.patchDescription,
 		patchSha256: value.patchSha256,

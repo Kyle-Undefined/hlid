@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
 	DIRECTML_NUGET_SHA256,
 	DIRECTML_VERSION,
+	MSVC_TOOLSET_VERSION,
 	ONNXRUNTIME_NUGET_SHA256,
 	ONNXRUNTIME_VERSION,
 	SHERPA_DIRECTML_PATCH_SHA256,
@@ -152,7 +153,10 @@ describe("TTS DirectML runtime workflow", () => {
 		expect(configure.run).toContain("$configureArguments = @(");
 		expect(configure.run).toContain('"Visual Studio 17 2022"');
 		expect(configure.run).toContain('"x64"');
-		expect(configure.run).toContain('"v143"');
+		expect(runtime.env.MSVC_TOOLSET_VERSION).toBe(MSVC_TOOLSET_VERSION);
+		expect(configure.run).toContain(
+			'"v143,version=$($env:MSVC_TOOLSET_VERSION)"',
+		);
 		expect(configure.run).toContain(
 			'"-DCMAKE_SYSTEM_VERSION=10.0.26100.0"',
 		);

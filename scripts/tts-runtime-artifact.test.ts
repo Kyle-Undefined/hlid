@@ -14,6 +14,7 @@ import { TTS_DIRECTML_RUNTIME_FILES } from "../src/server/tts-bootstrap";
 import {
 	DIRECTML_NUGET_SHA256,
 	DIRECTML_VERSION,
+	MSVC_TOOLSET_VERSION,
 	ONNXRUNTIME_NUGET_SHA256,
 	ONNXRUNTIME_SOURCE_COMMIT,
 	ONNXRUNTIME_VERSION,
@@ -64,6 +65,7 @@ function candidateManifest(): TtsRuntimeArtifactManifest {
 			architecture: "x64",
 			configuration: "Release",
 			toolset: "v143",
+			toolsetVersion: MSVC_TOOLSET_VERSION,
 			windowsSdk: "10.0.26100.0",
 			patchDescription: SHERPA_DIRECTML_PATCH_DESCRIPTION,
 			patchSha256: SHERPA_DIRECTML_PATCH_SHA256,
