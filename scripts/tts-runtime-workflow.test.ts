@@ -174,11 +174,16 @@ describe("TTS DirectML runtime workflow", () => {
 	it("CPU-smokes every build and requires qualified bytes for a release", () => {
 		const { parsed: runtime } = readWorkflow("tts-runtime.yml");
 		const build = runtime.jobs.build;
+		const model = namedStep(build, "Download and verify the CPU smoke model");
+		expect(model["timeout-minutes"]).toBe(7);
+		expect(model.run).toContain("curl.exe --fail --location --retry 3");
+		expect(model.run).toContain("--connect-timeout 30 --max-time 300");
+		expect(model.run).toContain("Get-FileHash $archive -Algorithm SHA256");
+		expect(model.run).toContain('"TTS_SMOKE_MODEL=$model"');
 		const smoke = namedStep(build, "CPU-smoke the candidate on the generic runner");
 		expect(smoke["timeout-minutes"]).toBe(10);
-		expect(smoke.run).toContain("Get-FileHash $archive -Algorithm SHA256");
 		expect(smoke.run).toContain(
-			"bun scripts/smoke-tts-runtime.ts $env:TTS_RUNTIME_ROOT $model cpu",
+			"bun scripts/smoke-tts-runtime.ts $env:TTS_RUNTIME_ROOT $env:TTS_SMOKE_MODEL cpu",
 		);
 		const smokeScript = readFileSync(
 			resolve(import.meta.dirname, "smoke-tts-runtime.ts"),

@@ -28,10 +28,12 @@ const backend: TtsBackend = backendArgument;
 const runtimeDirectory = resolve(runtimeArgument);
 const modelDirectory = resolve(modelArgument);
 const require = createRequire(import.meta.url);
+console.log("Loading the staged sherpa addon");
 const addon = require(resolve(runtimeDirectory, "sherpa-onnx.node")) as TtsAddon;
 if (addon.version !== "1.13.4")
 	throw new Error(`unexpected sherpa-onnx version ${addon.version}`);
 
+console.log("Initializing the Cori CPU smoke model");
 const started = performance.now();
 const handle = addon.createOfflineTts(
 	createOfflineTtsConfig(
@@ -42,9 +44,10 @@ const handle = addon.createOfflineTts(
 	),
 );
 const initializedMs = performance.now() - started;
+console.log("Synthesizing the Cori CPU smoke sample");
 const synthesisStarted = performance.now();
 const audio = addon.offlineTtsGenerateWithConfig(handle, {
-	text: "Hlid verifies this exact local neural speech runtime before release.",
+	text: "Hlid DirectML runtime smoke test.",
 	enableExternalBuffer: true,
 	generationConfig: { sid: 0, speed: 1, silenceScale: 0.75 },
 });

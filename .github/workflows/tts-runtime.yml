@@ -269,15 +269,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "dumpbin failed for sherpa-onnx-c-api.dll" }
           if ($capi -notmatch '(?i)onnxruntime\.dll') { throw "sherpa C API is not linked to the staged ONNX Runtime" }
 
-      - name: CPU-smoke the candidate on the generic runner
+      - name: Download and verify the CPU smoke model
         shell: pwsh
-        timeout-minutes: 10
+        timeout-minutes: 7
         run: |
           $ErrorActionPreference = "Stop"
           $archive = Join-Path $env:RUNNER_TEMP "cori-model.tar.bz2"
-          Invoke-WebRequest `
-            -Uri "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_GB-cori-medium-int8.tar.bz2" `
-            -OutFile $archive
+          curl.exe --fail --location --retry 3 --retry-all-errors --connect-timeout 30 --max-time 300 `
+            --output $archive `
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_GB-cori-medium-int8.tar.bz2"
+          if ($LASTEXITCODE -ne 0) { throw "Failed to download the Cori smoke model" }
           $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne $env:CORI_MODEL_SHA256) { throw "Cori model SHA-256 mismatch: $actual" }
           $modelRoot = Join-Path $env:RUNNER_TEMP "cori-model"
@@ -285,8 +286,15 @@ jobs:
           tar -xjf $archive -C $modelRoot
           if ($LASTEXITCODE -ne 0) { throw "Failed to extract Cori smoke model" }
           $model = Join-Path $modelRoot "vits-piper-en_GB-cori-medium-int8"
+          "TTS_SMOKE_MODEL=$model" >> $env:GITHUB_ENV
+
+      - name: CPU-smoke the candidate on the generic runner
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference = "Stop"
           $env:PATH = "$($env:TTS_RUNTIME_ROOT);$($env:PATH)"
-          bun scripts/smoke-tts-runtime.ts $env:TTS_RUNTIME_ROOT $model cpu
+          bun scripts/smoke-tts-runtime.ts $env:TTS_RUNTIME_ROOT $env:TTS_SMOKE_MODEL cpu
           if ($LASTEXITCODE -ne 0) { throw "Candidate CPU smoke failed" }
 
       - name: Package and self-verify the runtime
