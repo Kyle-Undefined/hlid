@@ -283,8 +283,12 @@ jobs:
           if ($actual -ne $env:CORI_MODEL_SHA256) { throw "Cori model SHA-256 mismatch: $actual" }
           $modelRoot = Join-Path $env:RUNNER_TEMP "cori-model"
           New-Item -ItemType Directory -Force -Path $modelRoot | Out-Null
-          tar -xjf $archive -C $modelRoot
-          if ($LASTEXITCODE -ne 0) { throw "Failed to extract Cori smoke model" }
+          $sevenZip = (Get-Command 7z.exe -ErrorAction Stop).Source
+          & $sevenZip x -y "-o$modelRoot" $archive
+          if ($LASTEXITCODE -ne 0) { throw "Failed to decompress the Cori smoke model" }
+          $tarArchive = Join-Path $modelRoot "cori-model.tar"
+          & $sevenZip x -y "-o$modelRoot" $tarArchive
+          if ($LASTEXITCODE -ne 0) { throw "Failed to extract the Cori smoke model" }
           $model = Join-Path $modelRoot "vits-piper-en_GB-cori-medium-int8"
           "TTS_SMOKE_MODEL=$model" >> $env:GITHUB_ENV
 

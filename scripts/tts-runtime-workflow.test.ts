@@ -179,6 +179,11 @@ describe("TTS DirectML runtime workflow", () => {
 		expect(model.run).toContain("curl.exe --fail --location --retry 3");
 		expect(model.run).toContain("--connect-timeout 30 --max-time 300");
 		expect(model.run).toContain("Get-FileHash $archive -Algorithm SHA256");
+		expect(model.run).toContain("Get-Command 7z.exe -ErrorAction Stop");
+		expect(model.run).toContain('& $sevenZip x -y "-o$modelRoot" $archive');
+		expect(model.run).toContain(
+			'& $sevenZip x -y "-o$modelRoot" $tarArchive',
+		);
 		expect(model.run).toContain('"TTS_SMOKE_MODEL=$model"');
 		const smoke = namedStep(build, "CPU-smoke the candidate on the generic runner");
 		expect(smoke["timeout-minutes"]).toBe(10);
