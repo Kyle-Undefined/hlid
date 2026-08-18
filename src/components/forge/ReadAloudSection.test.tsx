@@ -114,6 +114,13 @@ function installPronunciationAudioMock(objectUrl: string) {
 	return { audio, Audio, createObjectURL, revokeObjectURL };
 }
 
+function pronunciationAudioResponse(): Response {
+	return new Response("RIFF0000WAVEaudio", {
+		status: 200,
+		headers: { "content-type": "audio/wav" },
+	});
+}
+
 afterEach(() => {
 	cleanup();
 	__resetReadAloudForTesting();
@@ -727,12 +734,7 @@ describe("ReadAloudSection", () => {
 			if (input === "/api/read-aloud/voices") {
 				return Promise.resolve(Response.json({ available: false, voices: [] }));
 			}
-			return Promise.resolve(
-				new Response(new Blob(["RIFF0000WAVEaudio"]), {
-					status: 200,
-					headers: { "content-type": "audio/wav" },
-				}),
-			);
+			return Promise.resolve(pronunciationAudioResponse());
 		});
 		vi.stubGlobal("fetch", fetch);
 		const preview = installPronunciationAudioMock(
@@ -855,9 +857,7 @@ describe("ReadAloudSection", () => {
 			screen.getByRole("button", { name: "Play pronunciation test" }),
 		).toBeTruthy();
 		await act(async () => {
-			synthesisRequest.resolve?.(
-				new Response(new Blob(["RIFF0000WAVEaudio"]), { status: 200 }),
-			);
+			synthesisRequest.resolve?.(pronunciationAudioResponse());
 		});
 		await waitFor(() =>
 			expect(preview.revokeObjectURL).toHaveBeenCalledWith(
@@ -872,9 +872,7 @@ describe("ReadAloudSection", () => {
 			if (input === "/api/read-aloud/voices") {
 				return Promise.resolve(Response.json({ available: false, voices: [] }));
 			}
-			return Promise.resolve(
-				new Response(new Blob(["RIFF0000WAVEaudio"]), { status: 200 }),
-			);
+			return Promise.resolve(pronunciationAudioResponse());
 		});
 		vi.stubGlobal("fetch", fetch);
 		const preview = installPronunciationAudioMock(
@@ -1069,11 +1067,7 @@ describe("ReadAloudSection", () => {
 		expect(screen.queryByText("Loading…")).toBeNull();
 
 		await act(async () => {
-			previewRequest.resolve?.(
-				new Response(new Blob(["RIFF0000WAVEaudio"]), {
-					status: 200,
-				}),
-			);
+			previewRequest.resolve?.(pronunciationAudioResponse());
 		});
 		await waitFor(() =>
 			expect(revokeObjectURL).toHaveBeenCalledWith(
@@ -1088,9 +1082,7 @@ describe("ReadAloudSection", () => {
 			if (input === "/api/read-aloud/voices") {
 				return Promise.resolve(Response.json({ available: false, voices: [] }));
 			}
-			return Promise.resolve(
-				new Response(new Blob(["RIFF0000WAVEaudio"]), { status: 200 }),
-			);
+			return Promise.resolve(pronunciationAudioResponse());
 		});
 		vi.stubGlobal("fetch", fetch);
 		const previewAudio = {
@@ -1151,12 +1143,7 @@ describe("ReadAloudSection", () => {
 			if (input === "/api/read-aloud/voices") {
 				return Promise.resolve(Response.json({ available: false, voices: [] }));
 			}
-			return Promise.resolve(
-				new Response(new Blob(["RIFF0000WAVEaudio"]), {
-					status: 200,
-					headers: { "content-type": "audio/wav" },
-				}),
-			);
+			return Promise.resolve(pronunciationAudioResponse());
 		});
 		vi.stubGlobal("fetch", fetch);
 		const previewAudio = {
