@@ -863,8 +863,16 @@ describe("NotificationsSection", () => {
 
 		const name = await screen.findByLabelText("Name for Phone");
 		fireEvent.change(name, { target: { value: "Renamed phone" } });
-		fireEvent.click(
-			screen.getByRole("button", { name: "Save name for Phone" }),
+		const saveName = screen.getByRole("button", {
+			name: "Save name for Phone",
+		}) as HTMLButtonElement;
+		await waitFor(() => expect(saveName.disabled).toBe(false));
+		fireEvent.click(saveName);
+		await waitFor(() =>
+			expect(renamePushNotificationDevice).toHaveBeenCalledWith(
+				phone.id,
+				"Renamed phone",
+			),
 		);
 		await waitFor(() =>
 			expect(getPushNotificationDevices).toHaveBeenCalledTimes(2),
