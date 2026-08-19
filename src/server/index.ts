@@ -177,6 +177,7 @@ import { bootstrapTtsRuntimeAssets } from "./tts-bootstrap";
 import { INTERNAL_TTS_RUNTIME_FLAG, runTtsRuntimeServer } from "./tts-runtime";
 import { getTtsModelDefinition } from "./ttsModels";
 import {
+	downloadAndInstallQualifiedTtsRuntime,
 	installQualifiedTtsRuntime,
 	MAX_TTS_RUNTIME_INSTALL_BODY_BYTES,
 	runtimeInstallFilenames,
@@ -1263,6 +1264,18 @@ async function deleteTtsModel(url: URL): Promise<Response> {
 
 let ttsRuntimeInstallActive = false;
 
+function ttsInfoResponse(): Response {
+	return Response.json({
+		status: tts.status(),
+		models: tts.models(),
+		runtime: {
+			directml: ttsRuntimeInstallStatus({
+				installed: tts.hasRuntimeBackend("directml"),
+			}),
+		},
+	});
+}
+
 async function installTtsRuntime(req: Request): Promise<Response> {
 	if (ttsRuntimeInstallActive) {
 		return Response.json(
@@ -1315,15 +1328,33 @@ async function installTtsRuntime(req: Request): Promise<Response> {
 			new Uint8Array(await manifest.arrayBuffer()),
 		);
 		await tts.setRuntimeAssets(assets);
-		return Response.json({
-			status: tts.status(),
-			models: tts.models(),
-			runtime: {
-				directml: ttsRuntimeInstallStatus({
-					installed: tts.hasRuntimeBackend("directml"),
-				}),
-			},
+		return ttsInfoResponse();
+	} finally {
+		ttsRuntimeInstallActive = false;
+	}
+}
+
+async function downloadTtsRuntime(req: Request): Promise<Response> {
+	if (ttsRuntimeInstallActive) {
+		return Response.json(
+			{ error: "A DirectML runtime install is already in progress." },
+			{ status: 409 },
+		);
+	}
+	ttsRuntimeInstallActive = true;
+	try {
+		const assets = await downloadAndInstallQualifiedTtsRuntime({
+			signal: req.signal,
 		});
+		await tts.setRuntimeAssets(assets);
+		return ttsInfoResponse();
+	} catch (error) {
+		return Response.json(
+			{
+				error: error instanceof Error ? error.message : String(error),
+			},
+			{ status: 502 },
+		);
 	} finally {
 		ttsRuntimeInstallActive = false;
 	}
@@ -1776,16 +1807,7 @@ async function handleVoiceRoute(url: URL, req: Request) {
 }
 
 const TTS_ROUTE_HANDLERS: Record<string, ServerRouteHandler> = {
-	"GET /tts": async () =>
-		Response.json({
-			status: tts.status(),
-			models: tts.models(),
-			runtime: {
-				directml: ttsRuntimeInstallStatus({
-					installed: tts.hasRuntimeBackend("directml"),
-				}),
-			},
-		}),
+	"GET /tts": async () => ttsInfoResponse(),
 	"POST /tts/sync": async () => {
 		await tts.syncConfig(loadConfig().voice);
 		return Response.json({ status: tts.status() });
@@ -1795,6 +1817,7 @@ const TTS_ROUTE_HANDLERS: Record<string, ServerRouteHandler> = {
 		tts.cancelDownload();
 		return Response.json({ ok: true });
 	},
+	"POST /tts/runtime/download": (_url, request) => downloadTtsRuntime(request),
 	"POST /tts/runtime/install": (_url, request) => installTtsRuntime(request),
 	"DELETE /tts/model": (url) => deleteTtsModel(url),
 };

@@ -18,6 +18,21 @@ export type TtsInfo = {
 	};
 };
 
+export async function readTtsRuntimeMutationResponse(
+	response: Response,
+): Promise<TtsInfo> {
+	if (!response.ok) {
+		const body = (await response.json().catch(() => null)) as {
+			error?: string;
+		} | null;
+		throw new Error(
+			body?.error ||
+				`DirectML runtime installation failed with HTTP ${response.status}.`,
+		);
+	}
+	return (await response.json()) as TtsInfo;
+}
+
 export const getTtsInfoFn = createServerFn({ method: "GET" }).handler(() =>
 	dbJson<TtsInfo>("/tts", {
 		status: {
@@ -52,6 +67,13 @@ export const startTtsDownloadFn = createServerFn({ method: "POST" })
 		);
 		return { ok: true };
 	});
+
+export const installTtsDirectMlRuntimeFn = createServerFn({
+	method: "POST",
+}).handler(async () => {
+	const response = await dbFetch("/tts/runtime/download", { method: "POST" });
+	return readTtsRuntimeMutationResponse(response);
+});
 
 export const cancelTtsDownloadFn = createServerFn({ method: "POST" }).handler(
 	async () => {

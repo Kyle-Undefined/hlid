@@ -12,6 +12,7 @@ import { DEFAULT_VOICE_CONFIG } from "#/config";
 const server = vi.hoisted(() => ({
 	getInfo: vi.fn(),
 	startDownload: vi.fn(),
+	installRuntime: vi.fn(),
 	cancelDownload: vi.fn(),
 	deleteModel: vi.fn(),
 }));
@@ -19,6 +20,8 @@ const server = vi.hoisted(() => ({
 vi.mock("#/lib/serverFns/tts", () => ({
 	getTtsInfoFn: server.getInfo,
 	startTtsDownloadFn: server.startDownload,
+	installTtsDirectMlRuntimeFn: server.installRuntime,
+	readTtsRuntimeMutationResponse: (response: Response) => response.json(),
 	cancelTtsDownloadFn: server.cancelDownload,
 	deleteTtsModelFn: server.deleteModel,
 }));
@@ -126,7 +129,53 @@ describe("TtsModelsSection", () => {
 		expect(screen.getByText("Model: 30 MiB / 1.5 GiB")).toBeTruthy();
 	});
 
-	it("installs the exact reviewed DirectML archive and manifest together", async () => {
+	it("downloads and installs the reviewed DirectML runtime from the Hlid release", async () => {
+		const installed = {
+			...info,
+			runtime: {
+				directml: {
+					supported: true,
+					installed: true,
+					runtimeId:
+						"sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r2-win-x64",
+				},
+			},
+		};
+		server.installRuntime.mockResolvedValue(installed);
+		const onInfoChange = vi.fn();
+		const onBusyChange = vi.fn();
+		render(
+			<TtsModelsSection
+				voice={DEFAULT_VOICE_CONFIG}
+				onChange={vi.fn()}
+				info={{
+					...info,
+					runtime: {
+						directml: {
+							supported: true,
+							installed: false,
+							runtimeId:
+								"sherpa-tts-1.13.4-ort-dml-1.24.4-directml-1.15.4-r2-win-x64",
+						},
+					},
+				}}
+				onInfoChange={onInfoChange}
+				busy={null}
+				onBusyChange={onBusyChange}
+				error={null}
+				onError={vi.fn()}
+			/>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "DOWNLOAD AND INSTALL" }),
+		);
+		await waitFor(() => expect(server.installRuntime).toHaveBeenCalledOnce());
+		await waitFor(() => expect(onInfoChange).toHaveBeenCalledWith(installed));
+		expect(onBusyChange.mock.calls).toEqual([["__directml-runtime"], [null]]);
+	});
+
+	it("keeps exact archive and manifest import as a manual fallback", async () => {
 		const installed = {
 			...info,
 			runtime: {
@@ -164,6 +213,7 @@ describe("TtsModelsSection", () => {
 				onError={vi.fn()}
 			/>,
 		);
+		fireEvent.click(screen.getByText("Manual import"));
 		const input = screen.getByLabelText(
 			"Reviewed DirectML runtime files",
 		) as HTMLInputElement;
@@ -173,7 +223,7 @@ describe("TtsModelsSection", () => {
 		);
 		const manifest = new File(["{}"], "runtime-manifest.json");
 		fireEvent.change(input, { target: { files: [archive, manifest] } });
-		fireEvent.click(screen.getByRole("button", { name: "INSTALL DIRECTML" }));
+		fireEvent.click(screen.getByRole("button", { name: "INSTALL FILES" }));
 
 		await waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
 		const form = fetcher.mock.calls[0]?.[1]?.body as FormData;

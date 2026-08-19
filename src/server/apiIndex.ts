@@ -348,6 +348,12 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 	},
 	{
 		method: "POST",
+		path: "/tts/runtime/download",
+		server: "api",
+		desc: "Download the exact qualified DirectML runtime and manifest published with this Hlid release, then perform the same bounded full-tree verification and atomic install.",
+	},
+	{
+		method: "POST",
 		path: "/tts/runtime/install",
 		server: "api",
 		desc: "Install an exact qualified DirectML runtime from its reviewed archive and manifest after bounded full-tree verification.",

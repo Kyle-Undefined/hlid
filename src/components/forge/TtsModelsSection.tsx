@@ -3,6 +3,8 @@ import {
 	cancelTtsDownloadFn,
 	deleteTtsModelFn,
 	getTtsInfoFn,
+	installTtsDirectMlRuntimeFn,
+	readTtsRuntimeMutationResponse,
 	startTtsDownloadFn,
 	type TtsInfo,
 } from "#/lib/serverFns/tts";
@@ -206,6 +208,17 @@ function DirectMlRuntimeImport({
 			</div>
 		);
 	}
+	const downloadAndInstall = async () => {
+		onBusyChange(DIRECTML_BUSY_ID);
+		onError(null);
+		try {
+			onInfoChange(await installTtsDirectMlRuntimeFn());
+		} catch (cause) {
+			onError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			onBusyChange(null);
+		}
+	};
 	const install = async () => {
 		const files = [...(inputRef.current?.files ?? [])];
 		const archiveName = `${runtime.runtimeId}.zip`;
@@ -227,16 +240,7 @@ function DirectMlRuntimeImport({
 				method: "POST",
 				body: form,
 			});
-			if (!response.ok) {
-				const body = (await response.json().catch(() => null)) as {
-					error?: string;
-				} | null;
-				throw new Error(
-					body?.error ||
-						`DirectML runtime install failed (${response.status}).`,
-				);
-			}
-			onInfoChange((await response.json()) as TtsInfo);
+			onInfoChange(await readTtsRuntimeMutationResponse(response));
 		} catch (cause) {
 			onError(cause instanceof Error ? cause.message : String(cause));
 		} finally {
@@ -246,28 +250,43 @@ function DirectMlRuntimeImport({
 	return (
 		<div className="space-y-2 border-b border-border px-4 py-3">
 			<div className="text-xs text-muted-foreground">
-				Import the reviewed DirectML runtime archive and its manifest to enable
-				qualified GPU acceleration. Hlid verifies every file before installing
-				it.
+				Download the reviewed DirectML runtime published with this Hlid release
+				to enable qualified GPU acceleration. Hlid verifies every file before
+				installing it.
 			</div>
-			<div className="flex max-w-full flex-wrap items-center gap-2">
-				<input
-					ref={inputRef}
-					type="file"
-					multiple
-					accept=".zip,.json"
-					aria-label="Reviewed DirectML runtime files"
-					className="min-w-0 max-w-full text-xs text-muted-foreground file:mr-2 file:border file:border-border file:bg-transparent file:px-2.5 file:py-1.5 file:text-[10px] file:tracking-widest file:text-foreground file:uppercase"
-				/>
-				<button
-					type="button"
-					disabled={busy !== null}
-					onClick={() => void install()}
-					className="min-h-11 px-2.5 py-1.5 text-[10px] tracking-widest border border-border hover:bg-accent disabled:opacity-30 uppercase @lg:min-h-0"
-				>
-					{busy === DIRECTML_BUSY_ID ? "VERIFYING" : "INSTALL DIRECTML"}
-				</button>
-			</div>
+			<button
+				type="button"
+				disabled={busy !== null}
+				onClick={() => void downloadAndInstall()}
+				className="min-h-11 px-2.5 py-1.5 text-[10px] tracking-widest border border-border hover:bg-accent disabled:opacity-30 uppercase @lg:min-h-0"
+			>
+				{busy === DIRECTML_BUSY_ID
+					? "DOWNLOADING AND VERIFYING…"
+					: "DOWNLOAD AND INSTALL"}
+			</button>
+			<details>
+				<summary className="w-fit cursor-pointer text-[10px] tracking-widest text-muted-foreground hover:text-foreground uppercase">
+					Manual import
+				</summary>
+				<div className="mt-2 flex max-w-full flex-wrap items-center gap-2">
+					<input
+						ref={inputRef}
+						type="file"
+						multiple
+						accept=".zip,.json"
+						aria-label="Reviewed DirectML runtime files"
+						className="min-w-0 max-w-full text-xs text-muted-foreground file:mr-2 file:border file:border-border file:bg-transparent file:px-2.5 file:py-1.5 file:text-[10px] file:tracking-widest file:text-foreground file:uppercase"
+					/>
+					<button
+						type="button"
+						disabled={busy !== null}
+						onClick={() => void install()}
+						className="min-h-11 px-2.5 py-1.5 text-[10px] tracking-widest border border-border hover:bg-accent disabled:opacity-30 uppercase @lg:min-h-0"
+					>
+						{busy === DIRECTML_BUSY_ID ? "VERIFYING" : "INSTALL FILES"}
+					</button>
+				</div>
+			</details>
 		</div>
 	);
 }
