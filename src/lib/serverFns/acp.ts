@@ -112,7 +112,7 @@ export const getAcpRegistryFn = createServerFn({ method: "GET" })
 	.validator((raw) => optionalRefreshSchema.parse(raw))
 	.handler(({ data }) => loadAcpRegistry(data?.refresh));
 
-/** Live model inspection without Hlid's OpenCode visibility overlay. */
+/** Live model inspection with integrations applied but without the visibility filter. */
 export async function discoverAcpModels(
 	id: string,
 	cwd?: string,

@@ -581,10 +581,12 @@ export async function loadProviderCatalog(
 			const cachedAvailability = provider.cachedAvailability?.({
 				cwd: discoveryCwd,
 			});
-			const modelDiscoveryValidatesAvailability =
+			const liveModelDiscoveryValidatesAvailability =
 				liveRefresh &&
 				provider.liveModelDiscoveryValidatesAvailability === true &&
-				provider.listModels !== undefined &&
+				provider.listModels !== undefined;
+			const cachedAvailabilityCanSkipCheck =
+				liveModelDiscoveryValidatesAvailability &&
 				cachedAvailability?.available === true;
 			const declaredForkCapability =
 				options.providerCapabilityForkOverrides?.get(provider.providerId) ??
@@ -592,7 +594,7 @@ export async function loadProviderCatalog(
 			const check: { available: boolean; reason?: string } | null =
 				(liveRefresh || liveProviderCapabilityRead) &&
 				provider.check &&
-				!modelDiscoveryValidatesAvailability
+				!cachedAvailabilityCanSkipCheck
 					? await boundedProviderDiscovery(
 							`check:${provider.providerId}`,
 							`${provider.providerId} availability check`,
@@ -715,10 +717,10 @@ export async function loadProviderCatalog(
 							)
 						: undefined,
 				]);
-			const latestAvailability = modelDiscoveryValidatesAvailability
+			const latestAvailability = liveModelDiscoveryValidatesAvailability
 				? provider.cachedAvailability?.({ cwd: discoveryCwd })
 				: undefined;
-			const discoveryAvailability = modelDiscoveryValidatesAvailability
+			const discoveryAvailability = liveModelDiscoveryValidatesAvailability
 				? modelRead.source === "live"
 					? { available: true }
 					: latestAvailability?.available === false

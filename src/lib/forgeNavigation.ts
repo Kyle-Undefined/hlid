@@ -19,6 +19,7 @@ export type ForgeView =
 	| "api"
 	| "pricing"
 	| "apps"
+	| "ollama"
 	| "umbod"
 	| "acp"
 	| "theme";
@@ -292,9 +293,18 @@ export const FORGE_CATEGORIES: readonly ForgeCategoryDefinition[] = [
 	{
 		id: "integrations",
 		label: "Integrations",
-		description: "OpenCode, MCP servers, apps, and external agents",
+		description: "Ollama, OpenCode, MCP servers, apps, and external agents",
 		group: "secondary",
-		keywords: ["opencode", "acp", "mcp", "apps", "connectors", "umbod"],
+		keywords: [
+			"ollama",
+			"local models",
+			"opencode",
+			"acp",
+			"mcp",
+			"apps",
+			"connectors",
+			"umbod",
+		],
 		sections: [
 			{
 				id: "apps-connectors",
@@ -319,6 +329,13 @@ export const FORGE_CATEGORIES: readonly ForgeCategoryDefinition[] = [
 				label: "Umbod policy and activity",
 				description: "Approval policy, generated hooks, activity, and calls.",
 				keywords: ["policy", "approval", "hooks", "activity", "calls"],
+			},
+			{
+				id: "ollama",
+				label: "Ollama",
+				description:
+					"Manage Windows Ollama and connect selected local models to OpenCode.",
+				keywords: ["local models", "windows", "wsl", "opencode", "inference"],
 			},
 			{
 				id: "opencode-acp",
@@ -403,6 +420,7 @@ const VIEW_SET = new Set<ForgeView>([
 	"api",
 	"pricing",
 	"apps",
+	"ollama",
 	"umbod",
 	"acp",
 	"theme",
@@ -414,7 +432,7 @@ const ALLOWED_VIEWS: Record<ForgeCategoryId, readonly ForgeView[]> = {
 	agents: [],
 	access: [],
 	experience: ["theme"],
-	integrations: ["apps", "umbod", "acp"],
+	integrations: ["apps", "ollama", "umbod", "acp"],
 	extensions: [],
 	developer: ["events", "api", "pricing"],
 	advanced: [],
@@ -424,6 +442,7 @@ const SECTION_BY_VIEW: Record<ForgeView, string> = {
 	api: "api-reference",
 	pricing: "pricing",
 	apps: "apps-connectors",
+	ollama: "ollama",
 	umbod: "umbod",
 	acp: "opencode-acp",
 	theme: "custom-theme",
@@ -737,6 +756,16 @@ const SETTING_DESTINATIONS: readonly SettingDefinition[] = [
 		section: "umbod",
 		view: "umbod",
 		keywords: ["policy", "approval", "hooks"],
+	},
+	{
+		id: "ollama",
+		label: "Ollama integration",
+		description:
+			"Manage Windows Ollama and configure its connection to OpenCode.",
+		category: "integrations",
+		section: "ollama",
+		view: "ollama",
+		keywords: ["local models", "windows", "wsl", "inference"],
 	},
 	{
 		id: "opencode-acp",

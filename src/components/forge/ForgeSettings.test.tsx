@@ -25,12 +25,23 @@ vi.mock("#/components/forge/UpdatesSection", () => ({
 vi.mock("#/components/forge/AcpSection", () => ({
 	AcpSection: ({
 		workspaceConfigurationCurrent,
+		ollamaModelCount,
+		onOpenOllama,
 	}: {
 		workspaceConfigurationCurrent?: boolean;
+		ollamaModelCount?: number;
+		onOpenOllama?: () => void;
 	}) => (
 		<div>
 			ACP catalog content ·{" "}
 			{workspaceConfigurationCurrent ? "runtime current" : "runtime pending"}
+			{" · "}
+			{ollamaModelCount ?? 0} Ollama models
+			{onOpenOllama && (
+				<button type="button" onClick={onOpenOllama}>
+					Manage Ollama from OpenCode
+				</button>
+			)}
 		</div>
 	),
 }));
@@ -83,6 +94,23 @@ vi.mock("#/components/forge/NotificationsSection", () => ({
 	NotificationsSection: () => (
 		<div id="forge-section-notifications" tabIndex={-1}>
 			Notifications content
+		</div>
+	),
+}));
+vi.mock("#/components/forge/OllamaSection", () => ({
+	OllamaSection: ({
+		openCode,
+		onOpenCodeSetup,
+	}: {
+		openCode?: { id: string };
+		onOpenCodeSetup: () => void;
+	}) => (
+		<div>
+			Ollama content ·{" "}
+			{openCode ? "OpenCode configured" : "OpenCode not configured"}
+			<button type="button" onClick={onOpenCodeSetup}>
+				{openCode ? "Configure OpenCode" : "Set up OpenCode"}
+			</button>
 		</div>
 	),
 }));
@@ -577,6 +605,7 @@ function renderSettings(
 					voice: {},
 					acpAgents: [],
 					persistedAcpAgents: [],
+					ollama: undefined,
 					umbod: {},
 					changeClaude: vi.fn(),
 					setVault: vi.fn(),
@@ -588,6 +617,7 @@ function renderSettings(
 					setUi: vi.fn(),
 					setVoice: vi.fn(),
 					setAcpAgents: vi.fn(),
+					setOllama: vi.fn(),
 					setUmbod: vi.fn(),
 					...stateOverrides,
 				} as never
@@ -680,11 +710,16 @@ describe("ForgeSettings category navigation", () => {
 		}
 	});
 
-	it("opens and returns from the ACP and Umbod integration pages", () => {
+	it("opens and returns from the Ollama, ACP, and Umbod integration pages", () => {
 		renderSettings();
 		fireEvent.change(screen.getByRole("combobox", { name: "Forge category" }), {
 			target: { value: "integrations" },
 		});
+
+		fireEvent.click(screen.getByRole("button", { name: "Open Ollama" }));
+		expect(screen.getByRole("heading", { name: "Ollama" })).toBeTruthy();
+		expect(screen.getByText(/Ollama content/)).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "← Integrations" }));
 
 		fireEvent.click(screen.getByRole("button", { name: "Open integrations" }));
 		expect(
@@ -696,6 +731,24 @@ describe("ForgeSettings category navigation", () => {
 		expect(screen.getByRole("heading", { name: "Umbod" })).toBeTruthy();
 		fireEvent.click(screen.getByRole("button", { name: "← Integrations" }));
 		expect(screen.getByRole("heading", { name: "Integrations" })).toBeTruthy();
+	});
+
+	it("moves directly between Ollama and OpenCode setup", () => {
+		renderSettings();
+		fireEvent.change(screen.getByRole("combobox", { name: "Forge category" }), {
+			target: { value: "integrations" },
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "Open Ollama" }));
+		fireEvent.click(screen.getByRole("button", { name: "Set up OpenCode" }));
+		expect(
+			screen.getByRole("heading", { name: "OpenCode and ACP integrations" }),
+		).toBeTruthy();
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Manage Ollama from OpenCode" }),
+		);
+		expect(screen.getByRole("heading", { name: "Ollama" })).toBeTruthy();
 	});
 
 	it("keeps Custom theme and ACP section chips on their category landings", async () => {
@@ -747,6 +800,7 @@ describe("ForgeSettings category navigation", () => {
 
 	it.each([
 		["Apps and Connectors", "forge-section-apps-connectors", "Open Apps"],
+		["Ollama", "forge-section-ollama", "Open Ollama"],
 		["Umbod policy and activity", "forge-section-umbod", "Open Umbod"],
 	])("keeps the %s section chip on its on-page landing", async (chipLabel, landingId, openLabel) => {
 		renderSettings();
@@ -773,6 +827,17 @@ describe("ForgeSettings category navigation", () => {
 			"Integrations",
 			"Apps and Connectors",
 			"Apps and Connectors",
+		],
+		[
+			"Ollama",
+			{
+				category: "integrations" as const,
+				section: "ollama",
+				view: "ollama" as const,
+			},
+			"Integrations",
+			"Ollama",
+			"Ollama",
 		],
 		[
 			"Umbod",
@@ -1047,7 +1112,12 @@ describe("ForgeSettings category navigation", () => {
 		renderSettings();
 		const selector = screen.getByRole("combobox", { name: "Forge category" });
 		fireEvent.change(selector, { target: { value: "integrations" } });
-		for (const name of ["Open Apps", "Open Umbod", "Open integrations"]) {
+		for (const name of [
+			"Open Apps",
+			"Open Ollama",
+			"Open Umbod",
+			"Open integrations",
+		]) {
 			const button = screen.getByRole("button", { name });
 			expect(button.className).toContain("min-h-11");
 			expect(button.className).toContain("lg:min-h-0");

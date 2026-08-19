@@ -198,6 +198,26 @@ describe("buildApiIndex", () => {
 		expect(acpInstall?.desc).toContain("receipt-backed cleanup target");
 		expect(acpInstall?.desc).toContain("authenticated Tailscale");
 
+		const ollamaSetup = endpoint("POST", "/ollama/setup/download");
+		expect(ollamaSetup?.desc).toContain("official Ollama Windows installer");
+		expect(ollamaSetup?.desc).toContain("Authenticode");
+		expect(ollamaSetup?.desc).toContain("resume");
+		expect(ollamaSetup?.desc).toContain("digest already matched");
+		expect(endpoint("GET", "/ollama/setup")?.desc).toContain(
+			"without repeating",
+		);
+		expect(endpoint("DELETE", "/ollama/setup/download")?.desc).toContain(
+			"partial staged artifact",
+		);
+		expect(endpoint("POST", "/ollama/setup/launch")?.desc).toContain(
+			"vendor installer retains",
+		);
+		expect(
+			API_ENDPOINTS.some(
+				(entry) => entry.method === "POST" && entry.path === "/ollama/download",
+			),
+		).toBe(false);
+
 		const configRead = endpoint("GET", "/api/config");
 		expect(configRead?.desc).toContain("__HLID_SECRET_SET__");
 		const configWrite = endpoint("POST", "/api/config");

@@ -109,6 +109,7 @@ import {
 	INTERNAL_OBSIDIAN_MCP_FLAG,
 	runObsidianMcpServer,
 } from "./obsidianMcpServer";
+import { OllamaIntegration } from "./ollamaIntegration";
 import { projectPreviewManager } from "./projectPreview";
 import {
 	createProjectPreviewRelayWsHandlers,
@@ -383,6 +384,7 @@ acpRegistry.attachManagedCatalog(acpManagedInstaller);
 const handleAcpRoute = createAcpRouteHandler({
 	registry: acpRegistry,
 	loadConfig,
+	resolveEnvironment: (input) => ollama.resolveOpenCodeEnvironment(input),
 	importSession: async (input) => {
 		const result = await db.createProviderNativeSessionImport({
 			id: uid(),
@@ -440,6 +442,18 @@ const acpCatalog = await acpRegistry.catalog(config, false, false, {
 	agentIds: (config.acp_agents ?? []).map((agent) => agent.id),
 });
 const cliProxy = new CliProxyManager(config.cliproxy);
+const ollama = new OllamaIntegration({
+	onOpenCodeRuntimeInvalidated: () =>
+		pool.retireProviderSessions(["acp:opencode"], {
+			preserveSelection: true,
+		}),
+});
+void ollama.reconcileManagedVariants(config).catch((error) => {
+	console.warn(
+		"[ollama] startup variant cleanup failed:",
+		error instanceof Error ? error.message : String(error),
+	);
+});
 const providers = new Map<string, AgentProvider>([
 	["claude", new ClaudeProvider()],
 	[
@@ -479,8 +493,15 @@ if (initialCliProxyConnection) {
 	}
 }
 const managedAcpFingerprints = new Map<string, string>();
+const createHlidConfiguredAcpProvider = (
+	item: AcpCatalogItem,
+	runtimeConfig: HlidConfig,
+) =>
+	createConfiguredAcpProvider(item, runtimeConfig, {
+		resolveEnvironment: ollama.resolveOpenCodeEnvironment,
+	});
 for (const item of acpCatalog.filter((candidate) => candidate.enabled)) {
-	providers.set(item.providerId, createConfiguredAcpProvider(item, config));
+	providers.set(item.providerId, createHlidConfiguredAcpProvider(item, config));
 	managedAcpFingerprints.set(
 		item.providerId,
 		acpRuntimeFingerprint(item, config),
@@ -901,7 +922,9 @@ async function cleanupForShutdown(): Promise<void> {
 	cliProxy.close();
 	voice.close();
 	tts.close();
+	ollama.cancelPull();
 	await pool.closeAllAndWait();
+	await ollama.close();
 	terminalPool.closeAll();
 	shellPool.closeAll();
 	closeAllCodexAppServers();
@@ -1387,10 +1410,19 @@ async function applyAcpRuntimeConfig(
 		catalog,
 		providers,
 		fingerprints: managedAcpFingerprints,
-		retireProviderSessions: (providerIds, options) =>
-			pool.retireProviderSessions(providerIds, options),
-		retireProviderTargetSessions: (providerId, target) =>
-			pool.retireProviderTargetSessions(providerId, target),
+		retireProviderSessions: async (providerIds, options) => {
+			const retiredProviderIds = [...providerIds];
+			await pool.retireProviderSessions(retiredProviderIds, options);
+			if (retiredProviderIds.includes("acp:opencode")) {
+				await ollama.retireInferenceRuntime();
+			}
+		},
+		retireProviderTargetSessions: async (providerId, target) => {
+			await pool.retireProviderTargetSessions(providerId, target);
+			if (providerId === "acp:opencode") {
+				await ollama.retireInferenceRuntime(target);
+			}
+		},
 		registerProvider: (provider, replaced) => {
 			modelCatalog.register(provider, { refreshIdentity: replaced });
 			providerCapabilityCatalog.register(provider, {
@@ -1402,8 +1434,17 @@ async function applyAcpRuntimeConfig(
 				provider.usageWindows ? [...provider.usageWindows] : [],
 			);
 		},
+		providerFactory: createHlidConfiguredAcpProvider,
 	});
 	pool.syncConfig(latest);
+	try {
+		await ollama.reconcileManagedVariants(latest);
+	} catch (error) {
+		console.warn(
+			"[ollama] configuration variant cleanup failed:",
+			error instanceof Error ? error.message : String(error),
+		);
+	}
 	if (
 		result.added.length > 0 ||
 		result.removed.length > 0 ||
@@ -1616,6 +1657,97 @@ async function handleCliProxyRoute(url: URL, req: Request) {
 	return handleConflictRoute(CLIPROXY_ROUTE_HANDLERS, url, req);
 }
 
+const MAX_OLLAMA_ACTION_BODY_BYTES = 2_048;
+
+function validOllamaModelName(value: string): string | null {
+	const model = value.trim();
+	if (!model || model.length > 256) return null;
+	for (const character of model) {
+		const code = character.codePointAt(0) ?? 0;
+		if (/\s/.test(character) || code < 0x20 || code === 0x7f) return null;
+	}
+	return model;
+}
+
+async function ollamaActionModel(request: Request): Promise<string | Response> {
+	const limited = await readRequestBodyLimited(
+		request,
+		MAX_OLLAMA_ACTION_BODY_BYTES,
+	);
+	if (!limited.ok) return limited.response;
+	let body: unknown;
+	try {
+		body = JSON.parse(
+			new TextDecoder("utf-8", { fatal: true }).decode(limited.body),
+		);
+	} catch {
+		return Response.json(
+			{ error: "A valid JSON body is required" },
+			{ status: 400 },
+		);
+	}
+	const model =
+		typeof body === "object" &&
+		body !== null &&
+		!Array.isArray(body) &&
+		"model" in body &&
+		typeof body.model === "string"
+			? body.model
+			: "";
+	const validated = validOllamaModelName(model);
+	if (!validated) {
+		return Response.json({ error: "model is invalid" }, { status: 400 });
+	}
+	return validated;
+}
+
+const OLLAMA_ROUTE_HANDLERS: Record<string, ServerRouteHandler> = {
+	"GET /ollama": async () => Response.json(await ollama.info(loadConfig())),
+	"GET /ollama/setup": async () =>
+		Response.json(await ollama.windowsSetupInfo()),
+	"POST /ollama/setup/download": async () =>
+		Response.json(await ollama.startWindowsSetupDownload(), { status: 202 }),
+	"DELETE /ollama/setup/download": async () =>
+		Response.json(await ollama.cancelWindowsSetupDownload(), { status: 202 }),
+	"POST /ollama/setup/launch": async () =>
+		Response.json(await ollama.launchWindowsSetup()),
+	"POST /ollama/pull": async (_url, request) => {
+		const model = await ollamaActionModel(request);
+		if (model instanceof Response) return model;
+		return Response.json(ollama.startPull(model), { status: 202 });
+	},
+	"POST /ollama/pull/cancel": () =>
+		Response.json(ollama.cancelPull(), { status: 202 }),
+	"POST /ollama/firewall": async () =>
+		Response.json(await ollama.installWslFirewallRule()),
+	"DELETE /ollama/firewall": async () =>
+		Response.json(await ollama.removeWslFirewallRule()),
+	"POST /ollama/load": async (_url, request) => {
+		const model = await ollamaActionModel(request);
+		if (model instanceof Response) return model;
+		await ollama.loadModel(model);
+		return Response.json({ ok: true });
+	},
+	"POST /ollama/unload": async (_url, request) => {
+		const model = await ollamaActionModel(request);
+		if (model instanceof Response) return model;
+		await ollama.unloadModel(model);
+		return Response.json({ ok: true });
+	},
+	"DELETE /ollama/model": async (url) => {
+		const model = validOllamaModelName(url.searchParams.get("model") ?? "");
+		if (!model) {
+			return Response.json({ error: "model is invalid" }, { status: 400 });
+		}
+		await ollama.deleteModel(model, loadConfig());
+		return Response.json({ ok: true });
+	},
+};
+
+async function handleOllamaRoute(url: URL, req: Request) {
+	return handleConflictRoute(OLLAMA_ROUTE_HANDLERS, url, req);
+}
+
 const VOICE_ROUTE_HANDLERS: Record<string, ServerRouteHandler> = {
 	"GET /voice": async (url) => {
 		const refresh = url.searchParams.get("refresh") === "1";
@@ -1714,6 +1846,7 @@ const handleAuthenticatedRoute = createAuthenticatedRouteHandler({
 		handleAcpRoute,
 		handleExtensionRoute,
 		handleCliProxyRoute,
+		handleOllamaRoute,
 		handleVoiceRoute,
 		handleTtsRoute,
 		handleSpeechRoute,

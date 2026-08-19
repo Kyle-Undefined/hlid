@@ -3076,10 +3076,18 @@ describe("Raven composed submission behavior", () => {
 		);
 		const pendingBadge = screen.getByRole("button", { name: /OpenCode.*Ask/i });
 		fireEvent.click(pendingBadge);
-		expect(
-			screen.getByRole("button", { name: "Provider default" }),
-		).toBeTruthy();
-		expect(screen.getByRole("button", { name: /^Stale/ })).toBeTruthy();
+		const providerDefault = screen.getByRole("button", {
+			name: "Provider default",
+		}) as HTMLButtonElement;
+		const staleModel = screen.getByRole("button", {
+			name: /^Stale/,
+		}) as HTMLButtonElement;
+		expect(providerDefault.disabled).toBe(false);
+		expect(staleModel.disabled).toBe(true);
+		fireEvent.click(staleModel);
+		expect(state.send).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "set_model", model: "stale" }),
+		);
 		fireEvent.change(screen.getByRole("combobox"), {
 			target: { value: "use the provider default" },
 		});
@@ -3097,8 +3105,82 @@ describe("Raven composed submission behavior", () => {
 		if (!screen.queryByRole("button", { name: /Allowed/ })) {
 			fireEvent.click(badge);
 		}
-		expect(screen.getByRole("button", { name: /Allowed/ })).toBeTruthy();
+		expect(
+			(screen.getByRole("button", { name: /Allowed/ }) as HTMLButtonElement)
+				.disabled,
+		).toBe(false);
 		expect(screen.queryByRole("button", { name: /^Stale/ })).toBeNull();
+	});
+
+	it("submits Provider default for a persisted ACP session until its exact catalog is current", async () => {
+		state.model = "stale";
+		state.effort = "";
+		const staleProviders = [
+			{
+				id: "acp:opencode",
+				label: "OpenCode",
+				available: true,
+				models: [{ value: "stale", label: "Stale", isDefault: true }],
+				modelCatalogRefresh: { status: "stale", source: "persisted" },
+				permissionModes: [{ value: "default", label: "Ask" }],
+			},
+		];
+		vi.mocked(getProvidersFn).mockResolvedValue(staleProviders as never);
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				vault_provider: "acp:opencode",
+				acp_agents: [{ id: "opencode", model: "stale" }],
+			},
+			existingSessionId: "saved-opencode-session",
+			isExplicitSession: true,
+			sessionPersisted: true,
+			sessionModel: "stale",
+			sessionProviderId: "acp:opencode",
+			providers: staleProviders,
+		};
+
+		render(<ChatPage />);
+
+		await waitFor(() =>
+			expect(getProvidersFn).toHaveBeenCalledWith({
+				data: {
+					refresh: true,
+					refreshProviderId: "acp:opencode",
+					discoveryCwd: "/vault",
+				},
+			}),
+		);
+		await act(async () => {});
+		const badge = screen.getByRole("button", { name: /OpenCode.*Ask/i });
+		expect(badge.getAttribute("aria-label")).not.toContain("Stale");
+		fireEvent.click(badge);
+		expect(
+			(screen.getByRole("button", { name: /^Stale/ }) as HTMLButtonElement)
+				.disabled,
+		).toBe(true);
+		const cachedStatus = screen.getByRole("status", {
+			name: "Showing cached models",
+		});
+		expect(
+			(
+				within(cachedStatus).getByRole("button", {
+					name: "Retry",
+				}) as HTMLButtonElement
+			).disabled,
+		).toBe(false);
+
+		fireEvent.change(screen.getByRole("combobox"), {
+			target: { value: "use the provider default" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+		const chat = state.send.mock.calls
+			.map(([message]) => message as { type?: string; model?: string })
+			.find((message) => message.type === "chat");
+		expect(chat).toBeTruthy();
+		expect(chat).not.toHaveProperty("model");
 	});
 
 	it("switches to ACP immediately on provider default while models refresh", async () => {
@@ -3500,7 +3582,7 @@ describe("Raven composed submission behavior", () => {
 		expect(getProvidersFn).toHaveBeenCalledTimes(2);
 	});
 
-	it("preserves a restored ACP model while dropping an unadvertised effort", async () => {
+	it("restores an ACP model only after its exact catalog is current", async () => {
 		state.model = "fake-smart";
 		state.effort = "medium";
 		const refresh = deferred<Array<Record<string, unknown>>>();
@@ -3537,15 +3619,22 @@ describe("Raven composed submission behavior", () => {
 
 		render(<ChatPage />);
 		const badge = screen.getByRole("button", {
-			name: /OpenCode.*Smart.*Ask/i,
+			name: /OpenCode.*Ask/i,
 		});
+		expect(badge.getAttribute("aria-label")).not.toContain("Smart");
 		expect(badge.getAttribute("aria-label")).not.toContain("Medium");
 		fireEvent.click(badge);
 		expect(
 			screen.getByRole("button", { name: "Provider default" }),
 		).toBeTruthy();
-		expect(screen.getByRole("button", { name: "Smart" })).toBeTruthy();
-		expect(screen.getByRole("button", { name: "Fast" })).toBeTruthy();
+		expect(
+			(screen.getByRole("button", { name: "Smart" }) as HTMLButtonElement)
+				.disabled,
+		).toBe(true);
+		expect(
+			(screen.getByRole("button", { name: "Fast" }) as HTMLButtonElement)
+				.disabled,
+		).toBe(true);
 
 		await act(async () =>
 			refresh.resolve([
@@ -3555,7 +3644,10 @@ describe("Raven composed submission behavior", () => {
 				},
 			]),
 		);
-		expect(await screen.findByRole("button", { name: "Smart" })).toBeTruthy();
+		const currentBadge = await screen.findByRole("button", {
+			name: /OpenCode.*Smart.*Ask/i,
+		});
+		expect(currentBadge.getAttribute("aria-label")).not.toContain("Medium");
 	});
 
 	it("does not let a late ACP refresh undo a newer provider selection", async () => {
@@ -3683,15 +3775,26 @@ describe("Raven composed submission behavior", () => {
 			session_id: expect.any(String),
 		});
 		expect(
-			screen.getByRole("button", { name: "Provider default" }),
-		).toBeTruthy();
-		expect(screen.getByRole("button", { name: /^Stale/ })).toBeTruthy();
+			(
+				screen.getByRole("button", {
+					name: "Provider default",
+				}) as HTMLButtonElement
+			).disabled,
+		).toBe(false);
+		expect(
+			(screen.getByRole("button", { name: /^Stale/ }) as HTMLButtonElement)
+				.disabled,
+		).toBe(true);
 		const cachedStatus = screen.getByRole("status", {
 			name: "Showing cached models",
 		});
 		expect(
-			within(cachedStatus).getByRole("button", { name: "Retry" }),
-		).toBeTruthy();
+			(
+				within(cachedStatus).getByRole("button", {
+					name: "Retry",
+				}) as HTMLButtonElement
+			).disabled,
+		).toBe(false);
 	});
 
 	it("keeps ACP selected on provider default when live refresh fails", async () => {

@@ -252,6 +252,16 @@ async function startAcpProcess(options: {
 	}
 }
 
+export type AcpProcessEnvironment = Readonly<{
+	environment: Record<string, string>;
+	release: () => void | Promise<void>;
+}>;
+
+export type AcpProcessEnvironmentResolver = (input: {
+	environment: Readonly<Record<string, string>>;
+	signal?: AbortSignal;
+}) => AcpProcessEnvironment | Promise<AcpProcessEnvironment>;
+
 export type AcpProviderOptions = {
 	id: string;
 	label: string;
@@ -263,6 +273,8 @@ export type AcpProviderOptions = {
 	env?:
 		| Record<string, string>
 		| (() => Record<string, string> | Promise<Record<string, string>>);
+	/** Resolve secrets/capabilities for one exact child spawn, with its cleanup. */
+	processEnvironment?: AcpProcessEnvironmentResolver;
 	/** Translate Hlid's persisted model id into the ACP agent's config value. */
 	requestModel?: (model: string) => string;
 	/** Hlid-owned visibility enforced after the ACP agent advertises models. */
@@ -287,6 +299,64 @@ async function resolveAcpEnv(
 	env: AcpProviderOptions["env"],
 ): Promise<Record<string, string>> {
 	return typeof env === "function" ? await env() : (env ?? {});
+}
+
+function onceProcessEnvironmentRelease(
+	release: () => void | Promise<void>,
+): () => Promise<void> {
+	let pending: Promise<void> | null = null;
+	return () => {
+		pending ??= Promise.resolve().then(release);
+		return pending;
+	};
+}
+
+async function resolveAcpProcessEnvironment(
+	options: AcpProviderOptions,
+	environment: Record<string, string>,
+	signal?: AbortSignal,
+): Promise<{
+	environment: Record<string, string>;
+	release: () => Promise<void>;
+}> {
+	const resolved = options.processEnvironment
+		? await options.processEnvironment({
+				environment: { ...environment },
+				signal,
+			})
+		: { environment, release: () => {} };
+	return {
+		environment: { ...resolved.environment },
+		release: onceProcessEnvironmentRelease(resolved.release),
+	};
+}
+
+async function acquireAcpProcessEnvironment(options: {
+	provider: AcpProviderOptions;
+	environment: Record<string, string>;
+	phase: string;
+	timeoutMs: number;
+	signal?: AbortSignal;
+}): Promise<{
+	environment: Record<string, string>;
+	release: () => Promise<void>;
+}> {
+	const acquiring = resolveAcpProcessEnvironment(
+		options.provider,
+		options.environment,
+		options.signal,
+	);
+	try {
+		return await runAcpPhase({
+			phase: options.phase,
+			timeoutMs: options.timeoutMs,
+			signal: options.signal,
+			run: () => acquiring,
+		});
+	} catch (error) {
+		void acquiring.then(({ release }) => release()).catch(() => {});
+		throw error;
+	}
 }
 
 type QueueResult<T> = IteratorResult<T>;
@@ -944,16 +1014,7 @@ function sessionConfigSnapshot(
 	const activeModel = acpModelVisible(advertisedActiveModel, modelFilter)
 		? advertisedActiveModel
 		: undefined;
-	const effortLevels = thought
-		? selectOptions(thought).map((effort) => ({
-				value: effort.value,
-				label: effort.label,
-				...(effort.description ? { desc: effort.description } : {}),
-				...(effort.isDefault !== undefined
-					? { isDefault: effort.isDefault }
-					: {}),
-			}))
-		: undefined;
+	const effortLevels = thought ? effortLevelsForOptions(options) : undefined;
 	const models = model
 		? selectOptions(model)
 				.filter((entry) => acpModelVisible(entry.value, modelFilter))
@@ -1132,6 +1193,7 @@ class AcpSession implements AgentSession {
 	private cleanupPromise: Promise<void> | null = null;
 	private cleanupProcess: AcpStartedProcess | null = null;
 	private ownedProcess: AcpStartedProcess | null = null;
+	private ownedProcessEnvironmentRelease: (() => Promise<void>) | null = null;
 	private activePrompt: ActiveAcpPrompt | null = null;
 	private cancelled = false;
 	private turns = 0;
@@ -1936,14 +1998,22 @@ class AcpSession implements AgentSession {
 		}
 		const owned = this.ownedProcess;
 		const child = owned?.child;
-		if (!owned || !child) return;
+		const releaseEnvironment = this.ownedProcessEnvironmentRelease;
+		this.ownedProcessEnvironmentRelease = null;
+		if (!owned || !child) {
+			await releaseEnvironment?.();
+			return;
+		}
 		this.expectedProcessExits.add(child);
 		this.process = null;
 		this.ownedProcess = null;
 		this.connection = null;
 		this.cleanupProcess = owned;
-		const pending = owned
-			.terminate(this.timeouts.terminateGraceMs, immediate)
+		const pending = Promise.allSettled([
+			releaseEnvironment?.(),
+			owned.terminate(this.timeouts.terminateGraceMs, immediate),
+		])
+			.then(() => undefined)
 			.finally(() => {
 				if (this.cleanupPromise === pending) {
 					this.cleanupPromise = null;
@@ -1960,6 +2030,7 @@ class AcpSession implements AgentSession {
 		this.connection = null;
 		this.process = null;
 		this.ownedProcess = null;
+		this.ownedProcessEnvironmentRelease = null;
 		this.sessionId = null;
 		this.initPromise = null;
 		this.canDeleteSession = false;
@@ -2073,21 +2144,40 @@ class AcpSession implements AgentSession {
 			});
 		}
 		this.resetObservableMcpStatuses();
-		const started = await observeAcpStartup(
-			`spawn:${this.options.id}:${adapter.key}`,
-			`${this.options.label} ${adapter.key} executable resolution and process spawn`,
-			() =>
-				startAcpProcess({
-					provider: this.options,
-					cwd: this.params.cwd,
-					env: providerEnv,
-					signal: this.runtimeAbortController.signal,
-				}),
-		);
+		const processEnvironment = await acquireAcpProcessEnvironment({
+			provider: this.options,
+			environment: providerEnv,
+			phase: "process environment preparation",
+			timeoutMs: this.timeouts.preparationMs,
+			signal: this.runtimeSignal(),
+		});
+		let started: AcpStartedProcess;
+		try {
+			started = await observeAcpStartup(
+				`spawn:${this.options.id}:${adapter.key}`,
+				`${this.options.label} ${adapter.key} executable resolution and process spawn`,
+				() =>
+					startAcpProcess({
+						provider: this.options,
+						cwd: this.params.cwd,
+						env: processEnvironment.environment,
+						signal: this.runtimeAbortController.signal,
+					}),
+			);
+		} catch (error) {
+			await processEnvironment.release();
+			throw error;
+		}
 		const { child } = started;
 		this.ownedProcess = started;
+		this.ownedProcessEnvironmentRelease = processEnvironment.release;
 		this.process = child;
 		this.stderr = started.stderr;
+		const releaseProcessEnvironment = () => {
+			void processEnvironment.release().catch(() => {});
+		};
+		child.once("error", releaseProcessEnvironment);
+		child.once("exit", releaseProcessEnvironment);
 		child.once("error", (error) => {
 			if (
 				this.process === child &&
@@ -2116,6 +2206,9 @@ class AcpSession implements AgentSession {
 				);
 			}
 		});
+		if (child.exitCode !== null || child.signalCode !== null) {
+			releaseProcessEnvironment();
+		}
 
 		const client: Client = {
 			requestPermission: async ({ toolCall, options }) => {
@@ -3536,13 +3629,34 @@ async function createInspectionConnection(
 		signal,
 		run: () => resolveAcpEnv(options.env),
 	});
-	const started = await startAcpProcess({
+	const processEnvironment = await acquireAcpProcessEnvironment({
 		provider: options,
-		cwd,
-		env: providerEnv,
+		environment: providerEnv,
+		phase: "inspection process environment preparation",
+		timeoutMs: timeouts.preparationMs,
 		signal,
 	});
+	let started: AcpStartedProcess;
+	try {
+		started = await startAcpProcess({
+			provider: options,
+			cwd,
+			env: processEnvironment.environment,
+			signal,
+		});
+	} catch (error) {
+		await processEnvironment.release();
+		throw error;
+	}
 	const { child } = started;
+	const releaseProcessEnvironment = () => {
+		void processEnvironment.release().catch(() => {});
+	};
+	child.once("error", releaseProcessEnvironment);
+	child.once("exit", releaseProcessEnvironment);
+	if (child.exitCode !== null || child.signalCode !== null) {
+		releaseProcessEnvironment();
+	}
 	try {
 		const stream = ndJsonStream(
 			Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
@@ -3562,15 +3676,18 @@ async function createInspectionConnection(
 			stderr: started.stderr,
 			signal,
 			cleanup: (immediate = signal?.aborted ?? false) => {
-				cleanupPromise ??= started.terminate(
-					timeouts.terminateGraceMs,
-					immediate,
-				);
+				cleanupPromise ??= Promise.allSettled([
+					processEnvironment.release(),
+					started.terminate(timeouts.terminateGraceMs, immediate),
+				]).then(() => undefined);
 				return cleanupPromise;
 			},
 		};
 	} catch (error) {
-		await started.terminate(timeouts.terminateGraceMs, true);
+		await Promise.allSettled([
+			processEnvironment.release(),
+			started.terminate(timeouts.terminateGraceMs, true),
+		]);
 		throw appendAcpStderr(error, started.stderr());
 	}
 }

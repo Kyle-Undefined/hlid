@@ -3,6 +3,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type HlidConfig, HlidConfigSchema } from "../config";
+import {
+	OLLAMA_OPENCODE_ACP_INSPECTION_TIMEOUT_MS,
+	OLLAMA_OPENCODE_ACP_PREPARATION_TIMEOUT_MS,
+} from "../lib/ollama";
 import { AcpProvider } from "./acpProvider";
 import type { AcpCatalogItem } from "./acpRegistry";
 import {
@@ -10,10 +14,13 @@ import {
 	acpRuntimeFingerprint,
 	createConfiguredAcpProvider,
 	effectiveAcpEnvironment,
+	HLID_OLLAMA_OPEN_CODE_PROVIDER_ID,
+	HLID_OLLAMA_RELAY_TOKEN_ENV,
 	OpenCodeConfigOverlayError,
-	preflightOpenCodeModelFilter,
+	preflightOpenCodeConfiguration,
 	resolveAcpWorkspaceRuntime,
 	syncAcpRuntimeProviders,
+	withOpenCodeOllamaProvider,
 } from "./acpRuntime";
 import type { AgentProvider } from "./agentProvider";
 
@@ -147,6 +154,7 @@ describe("ACP runtime synchronization", () => {
 	it("selects the exact target invocation and keys continuity to that runtime", () => {
 		const runtimeConfig = HlidConfigSchema.parse({
 			vault: { name: "Vault", path: "C:\\Users\\kyle\\Vault" },
+			ollama: { models: ["qwen3-coder:30b"] },
 			agents: [
 				{
 					name: "Hlid",
@@ -250,6 +258,69 @@ describe("ACP runtime synchronization", () => {
 		expect(JSON.parse(wsl.env.OPENCODE_CONFIG_CONTENT).instructions).toEqual([
 			"wsl.md",
 		]);
+	});
+
+	it("carries only inherited host inline config into an Ollama spawn runtime", () => {
+		vi.stubEnv(
+			"OPENCODE_CONFIG_CONTENT",
+			'{"instructions":["windows-inherited.md"],"theme":"system"}',
+		);
+		vi.stubEnv("HOST_ONLY_SECRET", "must-not-be-forwarded-by-the-resolver");
+		const runtimeConfig = HlidConfigSchema.parse({
+			vault: { name: "Vault", path: "C:\\Users\\kyle\\Vault" },
+			ollama: { models: ["qwen3-coder:30b"] },
+			agents: [
+				{
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\workspace",
+				},
+			],
+			acp_agents: [{ id: "opencode" }],
+		});
+		const catalogItem = item("opencode", {
+			targets: [
+				target("host", { selected: true }),
+				target("wsl", { selected: false }),
+			],
+		});
+
+		const windows = resolveAcpWorkspaceRuntime(
+			catalogItem,
+			runtimeConfig,
+			"C:\\Users\\kyle\\Vault",
+			"win32",
+		);
+		const wsl = resolveAcpWorkspaceRuntime(
+			catalogItem,
+			runtimeConfig,
+			"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\workspace",
+			"win32",
+		);
+
+		expect(JSON.parse(windows.env.OPENCODE_CONFIG_CONTENT)).toMatchObject({
+			instructions: ["windows-inherited.md"],
+			theme: "system",
+		});
+		expect(windows.env).not.toHaveProperty("HOST_ONLY_SECRET");
+		expect(wsl.env).not.toHaveProperty("OPENCODE_CONFIG_CONTENT");
+		expect(wsl.env).not.toHaveProperty("HOST_ONLY_SECRET");
+	});
+
+	it("does not apply the top-level Ollama overlay without configured OpenCode", () => {
+		const runtimeConfig = HlidConfigSchema.parse({
+			ollama: { models: ["qwen3-coder:30b"] },
+		});
+
+		expect(
+			effectiveAcpEnvironment(
+				item("opencode", { env: { BASE: "registry" } }),
+				runtimeConfig,
+				{},
+				"win32",
+			),
+		).toEqual({ BASE: "registry" });
+		expect(() =>
+			preflightOpenCodeConfiguration(runtimeConfig, {}, "win32"),
+		).not.toThrow();
 	});
 
 	it("keeps the OpenCode Go usage key out of runtime identity and subprocess env", () => {
@@ -660,7 +731,7 @@ describe("ACP runtime synchronization", () => {
 
 		let thrown: unknown;
 		try {
-			preflightOpenCodeModelFilter(runtimeConfig, {}, "linux");
+			preflightOpenCodeConfiguration(runtimeConfig, {}, "linux");
 		} catch (error) {
 			thrown = error;
 		}
@@ -682,8 +753,394 @@ describe("ACP runtime synchronization", () => {
 		]);
 
 		expect(() =>
-			preflightOpenCodeModelFilter(runtimeConfig, {}, "win32"),
+			preflightOpenCodeConfiguration(runtimeConfig, {}, "win32"),
 		).toThrow("at or below 24,000 characters");
+	});
+
+	it("preflights the conservative Ollama launch payload size", () => {
+		const models = Array.from(
+			{ length: 64 },
+			(_, index) => `model-${String(index).padStart(2, "0")}:latest`,
+		);
+		const inline = JSON.stringify({ instructions: ["x".repeat(20_200)] });
+		const runtimeConfig = HlidConfigSchema.parse({
+			ollama: { models },
+			acp_agents: [
+				{
+					id: "opencode",
+					env: { OPENCODE_CONFIG_CONTENT: inline },
+				},
+			],
+		});
+
+		expect(() =>
+			preflightOpenCodeConfiguration(runtimeConfig, {}, "win32"),
+		).toThrow("at or below 24,000 characters");
+		expect(() =>
+			withOpenCodeOllamaProvider(
+				{ OPENCODE_CONFIG_CONTENT: inline },
+				{
+					baseUrl: "http://127.0.0.1:11435/v1",
+					apiKeyEnvironmentVariable: HLID_OLLAMA_RELAY_TOKEN_ENV,
+					models: models.map((id) => ({ id, contextLength: 65_536 })),
+				},
+				"win32",
+			),
+		).toThrow("at or below 24,000 characters");
+	});
+
+	it("adds explicit Windows Ollama models without replacing the OpenCode overlay", () => {
+		const environment = withOpenCodeOllamaProvider(
+			{
+				KEEP: "yes",
+				OPENCODE_CONFIG_CONTENT: JSON.stringify({
+					instructions: ["AGENTS.md"],
+					provider: {
+						[HLID_OLLAMA_OPEN_CODE_PROVIDER_ID]: {
+							whitelist: ["qwen3-coder:30b", "deepseek-r1:14b"],
+						},
+					},
+				}),
+			},
+			{
+				baseUrl: "http://172.29.176.1:11435/v1",
+				apiKeyEnvironmentVariable: HLID_OLLAMA_RELAY_TOKEN_ENV,
+				models: [
+					{ id: "qwen3-coder:30b", contextLength: 65_536 },
+					{ id: "deepseek-r1:14b", name: "DeepSeek R1" },
+				],
+			},
+			"linux",
+		);
+		const content = JSON.parse(environment.OPENCODE_CONFIG_CONTENT);
+
+		expect(environment.KEEP).toBe("yes");
+		expect(content.instructions).toEqual(["AGENTS.md"]);
+		expect(content.provider[HLID_OLLAMA_OPEN_CODE_PROVIDER_ID]).toEqual({
+			whitelist: ["deepseek-r1:14b", "qwen3-coder:30b"],
+			npm: "@ai-sdk/openai-compatible",
+			name: "Ollama on Windows",
+			options: {
+				baseURL: "http://172.29.176.1:11435/v1",
+				apiKey: `{env:${HLID_OLLAMA_RELAY_TOKEN_ENV}}`,
+			},
+			models: {
+				"deepseek-r1:14b": { name: "DeepSeek R1" },
+				"qwen3-coder:30b": {
+					name: "qwen3-coder:30b",
+					limit: { context: 65_536, output: 8_192 },
+				},
+			},
+		});
+	});
+
+	it("emits a complete OpenCode limit when only context is supplied", () => {
+		const environment = withOpenCodeOllamaProvider(
+			{},
+			{
+				baseUrl: "http://127.0.0.1:11434/v1",
+				models: [{ id: "llama3.2:1b", contextLength: 65_536 }],
+			},
+			"win32",
+		);
+		const content = JSON.parse(environment.OPENCODE_CONFIG_CONTENT);
+
+		expect(
+			content.provider[HLID_OLLAMA_OPEN_CODE_PROVIDER_ID].models["llama3.2:1b"]
+				.limit,
+		).toEqual({ context: 65_536, output: 8_192 });
+	});
+
+	it("rejects an OpenCode output limit without a context limit", () => {
+		expect(() =>
+			withOpenCodeOllamaProvider(
+				{},
+				{
+					baseUrl: "http://127.0.0.1:11434/v1",
+					models: [{ id: "llama3.2:1b", outputLength: 8_192 }],
+				},
+				"win32",
+			),
+		).toThrow(
+			"cannot declare an OpenCode output limit without a context limit",
+		);
+	});
+
+	it("uses direct Windows Ollama without putting a credential in config", () => {
+		const environment = withOpenCodeOllamaProvider(
+			{ opencode_config_content: '{"theme":"system"}' },
+			{
+				baseUrl: "http://127.0.0.1:11434/v1",
+				models: [{ id: "qwen3:8b" }],
+			},
+			"win32",
+		);
+		const matchingKeys = Object.keys(environment).filter(
+			(key) => key.toUpperCase() === "OPENCODE_CONFIG_CONTENT",
+		);
+		const content = JSON.parse(environment.OPENCODE_CONFIG_CONTENT);
+
+		expect(matchingKeys).toEqual(["OPENCODE_CONFIG_CONTENT"]);
+		expect(content.theme).toBe("system");
+		expect(content.provider[HLID_OLLAMA_OPEN_CODE_PROVIDER_ID].options).toEqual(
+			{ baseURL: "http://127.0.0.1:11434/v1" },
+		);
+		expect(environment).not.toHaveProperty(HLID_OLLAMA_RELAY_TOKEN_ENV);
+	});
+
+	it.each([
+		[
+			"disabled provider",
+			{ disabled_providers: [HLID_OLLAMA_OPEN_CODE_PROVIDER_ID] },
+		],
+		["provider allowlist", { enabled_providers: ["opencode"] }],
+		[
+			"model blacklist",
+			{
+				provider: {
+					[HLID_OLLAMA_OPEN_CODE_PROVIDER_ID]: {
+						blacklist: ["qwen3:8b"],
+					},
+				},
+			},
+		],
+		[
+			"model allowlist",
+			{
+				provider: {
+					[HLID_OLLAMA_OPEN_CODE_PROVIDER_ID]: {
+						whitelist: ["another:latest"],
+					},
+				},
+			},
+		],
+	] as const)("rejects an Ollama-only overlay blocked by %s", (_label, content) => {
+		expect(() =>
+			withOpenCodeOllamaProvider(
+				{ OPENCODE_CONFIG_CONTENT: JSON.stringify(content) },
+				{
+					baseUrl: "http://127.0.0.1:11434/v1",
+					models: [{ id: "qwen3:8b" }],
+				},
+				"win32",
+			),
+		).toThrow(/restrictions (?:disable|exclude)/);
+	});
+
+	it.each([
+		["an exact deny", "hlid-ollama"],
+		["a star wildcard deny", "hlid-*"],
+		["a question-mark wildcard deny", "hlid-ollam?"],
+		["a global deny", "*"],
+	] as const)("rejects an Ollama provider policy with %s", (_label, resource) => {
+		expect(() =>
+			withOpenCodeOllamaProvider(
+				{
+					OPENCODE_CONFIG_CONTENT: JSON.stringify({
+						experimental: {
+							policies: [
+								{
+									effect: "deny",
+									action: "provider.use",
+									resource,
+								},
+							],
+						},
+					}),
+				},
+				{
+					baseUrl: "http://127.0.0.1:11434/v1",
+					models: [{ id: "qwen3:8b" }],
+				},
+				"win32",
+			),
+		).toThrow("inline provider restrictions disable Hlid's Ollama provider");
+	});
+
+	it("uses the last matching provider policy and preserves the policy array", () => {
+		const policies = [
+			{ effect: "deny", action: "provider.use", resource: "*" },
+			{
+				effect: "allow",
+				action: "provider.use",
+				resource: "hlid-ollam?",
+			},
+		] as const;
+		const environment = withOpenCodeOllamaProvider(
+			{
+				OPENCODE_CONFIG_CONTENT: JSON.stringify({
+					experimental: { policies },
+				}),
+			},
+			{
+				baseUrl: "http://127.0.0.1:11434/v1",
+				models: [{ id: "qwen3:8b" }],
+			},
+			"win32",
+		);
+
+		expect(
+			JSON.parse(environment.OPENCODE_CONFIG_CONTENT).experimental.policies,
+		).toEqual(policies);
+	});
+
+	it("allows the Ollama provider by default when no policy matches", () => {
+		expect(() =>
+			withOpenCodeOllamaProvider(
+				{
+					OPENCODE_CONFIG_CONTENT: JSON.stringify({
+						experimental: {
+							policies: [
+								{
+									effect: "deny",
+									action: "provider.use",
+									resource: "company-*",
+								},
+							],
+						},
+					}),
+				},
+				{
+					baseUrl: "http://127.0.0.1:11434/v1",
+					models: [{ id: "qwen3:8b" }],
+				},
+				"win32",
+			),
+		).not.toThrow();
+	});
+
+	it.each([
+		[
+			"experimental",
+			{ experimental: [] },
+			"OPENCODE_CONFIG_CONTENT.experimental must be a JSON object",
+		],
+		[
+			"policies",
+			{ experimental: { policies: {} } },
+			"OPENCODE_CONFIG_CONTENT.experimental.policies must be an array",
+		],
+		[
+			"policy statement",
+			{ experimental: { policies: ["deny"] } },
+			"OPENCODE_CONFIG_CONTENT.experimental.policies[0] must be a JSON object",
+		],
+		[
+			"policy action",
+			{
+				experimental: {
+					policies: [
+						{
+							effect: "deny",
+							action: "provider.read",
+							resource: "*",
+						},
+					],
+				},
+			},
+			'OPENCODE_CONFIG_CONTENT.experimental.policies[0].action must be "provider.use"',
+		],
+	] as const)("rejects an invalid inline %s schema", (_label, content, message) => {
+		expect(() =>
+			withOpenCodeOllamaProvider(
+				{ OPENCODE_CONFIG_CONTENT: JSON.stringify(content) },
+				{
+					baseUrl: "http://127.0.0.1:11434/v1",
+					models: [{ id: "qwen3:8b" }],
+				},
+				"win32",
+			),
+		).toThrow(message);
+	});
+
+	it("rejects a partial only-filter overlay that excludes connected Ollama", () => {
+		const runtimeConfig = HlidConfigSchema.parse({
+			ollama: { models: ["qwen3:8b"] },
+			acp_agents: [
+				{
+					id: "opencode",
+					model_filter: {
+						mode: "only",
+						models: ["hlid-ollama/qwen3:8b", "opencode/other"],
+					},
+				},
+			],
+		});
+
+		expect(() =>
+			preflightOpenCodeConfiguration(
+				runtimeConfig,
+				{
+					OPENCODE_CONFIG_CONTENT: JSON.stringify({
+						disabled_providers: [HLID_OLLAMA_OPEN_CODE_PROVIDER_ID],
+					}),
+				},
+				"win32",
+			),
+		).toThrow("disable Hlid's Ollama provider");
+	});
+
+	it("rejects a manually configured reserved Ollama provider without leaking it", () => {
+		const secret = "must-not-leak";
+		let thrown: unknown;
+		try {
+			withOpenCodeOllamaProvider(
+				{
+					OPENCODE_CONFIG_CONTENT: JSON.stringify({
+						secret,
+						provider: {
+							[HLID_OLLAMA_OPEN_CODE_PROVIDER_ID]: {
+								options: { apiKey: secret },
+							},
+						},
+					}),
+				},
+				{
+					baseUrl: "http://127.0.0.1:11434/v1",
+					models: [{ id: "qwen3:8b" }],
+				},
+				"linux",
+			);
+		} catch (error) {
+			thrown = error;
+		}
+		expect(thrown).toBeInstanceOf(OpenCodeConfigOverlayError);
+		expect((thrown as Error).message).not.toContain(secret);
+	});
+
+	it("extends lifecycle budgets only for Ollama-connected OpenCode children", () => {
+		const wslCwd = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\workspace";
+		const query = vi
+			.spyOn(AcpProvider.prototype, "query")
+			.mockImplementation(() => ({}) as never);
+		const ollamaConfig = HlidConfigSchema.parse({
+			vault: { name: "Vault", path: wslCwd },
+			ollama: { models: ["qwen3:8b"] },
+			acp_agents: [
+				{ id: "opencode", target: { kind: "wsl", distro: "Ubuntu-24.04" } },
+			],
+		});
+		const openCode = createConfiguredAcpProvider(
+			item("opencode", {
+				targets: [target("wsl", { selected: true })],
+			}),
+			ollamaConfig,
+		);
+
+		openCode.query({ cwd: wslCwd } as never);
+		expect((query.mock.instances[0] as AcpProvider).options.timeouts).toEqual({
+			preparationMs: OLLAMA_OPENCODE_ACP_PREPARATION_TIMEOUT_MS,
+			inspectionMs: OLLAMA_OPENCODE_ACP_INSPECTION_TIMEOUT_MS,
+		});
+
+		const generic = createConfiguredAcpProvider(
+			item("pi", { targets: [target("host", { selected: true })] }),
+			config([{ id: "pi" }]),
+		);
+		generic.query({ cwd: "/workspace" } as never);
+		expect(
+			(query.mock.instances[1] as AcpProvider).options.timeouts,
+		).toBeUndefined();
 	});
 
 	it("creates a provider from the resolved catalog invocation", () => {
@@ -802,6 +1259,77 @@ describe("ACP runtime synchronization", () => {
 		expect(() =>
 			provider.metadataCacheIdentityFor("\\\\wsl.localhost\\Ubuntu-24.04"),
 		).toThrow("not a valid WSL UNC path");
+	});
+
+	it("keys only configured OpenCode runtimes to the top-level Ollama models", () => {
+		const openCode = item("opencode");
+		const first = HlidConfigSchema.parse({
+			acp_agents: [{ id: "opencode" }],
+			ollama: { models: ["qwen3-coder:30b", "devstral:24b"] },
+		});
+		const reordered = HlidConfigSchema.parse({
+			acp_agents: [{ id: "opencode" }],
+			ollama: { models: ["devstral:24b", "qwen3-coder:30b"] },
+		});
+		const changed = HlidConfigSchema.parse({
+			acp_agents: [{ id: "opencode" }],
+			ollama: { models: ["qwen3-coder:30b"] },
+		});
+		const changedWarmPeriod = HlidConfigSchema.parse({
+			acp_agents: [{ id: "opencode" }],
+			ollama: {
+				models: ["qwen3-coder:30b", "devstral:24b"],
+				keep_warm: "30m",
+			},
+		});
+
+		expect(acpRuntimeFingerprint(openCode, first)).toBe(
+			acpRuntimeFingerprint(openCode, reordered),
+		);
+		expect(acpRuntimeFingerprint(openCode, first)).not.toBe(
+			acpRuntimeFingerprint(openCode, changed),
+		);
+		expect(acpRuntimeFingerprint(openCode, first)).not.toBe(
+			acpRuntimeFingerprint(openCode, changedWarmPeriod),
+		);
+
+		const other = item("other");
+		const otherConfigured = HlidConfigSchema.parse({
+			acp_agents: [{ id: "other" }],
+			ollama: { models: ["qwen3-coder:30b"] },
+		});
+		const otherWithoutOllama = HlidConfigSchema.parse({
+			acp_agents: [{ id: "other" }],
+		});
+		expect(acpRuntimeFingerprint(other, otherConfigured)).toBe(
+			acpRuntimeFingerprint(other, otherWithoutOllama),
+		);
+	});
+
+	it("does not resolve or include a launch receipt in continuity identity", () => {
+		const runtimeConfig = HlidConfigSchema.parse({
+			vault: {
+				name: "Vault",
+				path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\workspace",
+			},
+		});
+		const catalogItem = item("opencode", { targets: [target("wsl")] });
+		const token = "launch-secret-that-must-not-be-persisted";
+		const resolveEnvironment = vi.fn(async ({ environment }) => ({
+			environment: { ...environment, [HLID_OLLAMA_RELAY_TOKEN_ENV]: token },
+			release: () => {},
+		}));
+		const provider = createConfiguredAcpProvider(catalogItem, runtimeConfig, {
+			resolveEnvironment,
+		});
+
+		const identity = provider.sessionContinuityIdentityFor(
+			"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\workspace",
+		);
+
+		expect(identity).toMatch(/^[a-f0-9]{64}$/);
+		expect(identity).not.toContain(token);
+		expect(resolveEnvironment).not.toHaveBeenCalled();
 	});
 
 	it("keeps the active workspace identity stable when only another target updates", () => {

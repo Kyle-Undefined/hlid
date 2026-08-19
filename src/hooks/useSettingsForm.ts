@@ -69,6 +69,7 @@ export function useSettingsForm(
 	const [codex, setCodex] = useState(initialForms.codex);
 	const [cliproxy, setCliProxy] = useState(initialForms.cliproxy);
 	const [voice, setVoice] = useState(initialForms.voice);
+	const [ollama, setOllama] = useState(initialForms.ollama);
 	const [acpAgents, setAcpAgents] = useState(initialForms.acpAgents);
 	const [persistedAcpAgents, setPersistedAcpAgents] = useState(
 		initialForms.acpAgents,
@@ -115,6 +116,7 @@ export function useSettingsForm(
 		server,
 		ui,
 		vocab,
+		ollama,
 		acpAgents,
 		umbod,
 		autoSleep,
@@ -202,6 +204,7 @@ export function useSettingsForm(
 			voice === initialForms.voice &&
 			ui === initialForms.ui &&
 			vocab === initialForms.vocab &&
+			ollama === initialForms.ollama &&
 			acpAgents === initialForms.acpAgents &&
 			umbod === initialForms.umbod &&
 			autoSleep === initialForms.autoSleep &&
@@ -233,6 +236,7 @@ export function useSettingsForm(
 		voice,
 		ui,
 		vocab,
+		ollama,
 		acpAgents,
 		umbod,
 		autoSleep,
@@ -286,6 +290,8 @@ export function useSettingsForm(
 		changeClaude,
 		voice,
 		setVoice,
+		ollama,
+		setOllama,
 		acpAgents,
 		persistedAcpAgents,
 		setAcpAgents,

@@ -13,8 +13,16 @@ import {
 	acpExecutionTargetLabel,
 	HOST_ACP_EXECUTION_TARGET,
 } from "../lib/acpExecutionTarget";
+import {
+	OLLAMA_INFERENCE_RELAY_PORT,
+	OLLAMA_MAX_CONTEXT_LENGTH,
+	OLLAMA_OPENCODE_ACP_INSPECTION_TIMEOUT_MS,
+	OLLAMA_OPENCODE_ACP_PREPARATION_TIMEOUT_MS,
+	OPENCODE_LOCAL_MODEL_OUTPUT_LIMIT,
+	ollamaModelNameHasWhitespaceOrControl,
+} from "../lib/ollama";
 import { declaredPathKey, parseWslUncSyntax } from "../lib/paths";
-import { AcpProvider } from "./acpProvider";
+import { type AcpProcessEnvironment, AcpProvider } from "./acpProvider";
 import type { AcpCatalogItem, AcpCatalogTargetStatus } from "./acpRegistry";
 import type {
 	AgentProvider,
@@ -33,6 +41,8 @@ import {
 } from "./openCodeGoUsage";
 
 const OPENCODE_CONFIG_CONTENT = "OPENCODE_CONFIG_CONTENT";
+export const HLID_OLLAMA_OPEN_CODE_PROVIDER_ID = "hlid-ollama";
+export const HLID_OLLAMA_RELAY_TOKEN_ENV = "HLID_OLLAMA_RELAY_TOKEN";
 const MAX_OPENCODE_CONFIG_CONTENT_LENGTH = 24_000;
 const RUNTIME_ROOT_ENVIRONMENT_KEYS = [
 	"HOME",
@@ -61,6 +71,19 @@ const PROTOTYPE_SPECIAL_PROVIDER_IDS = new Set([
 type JsonObject = Record<string, unknown>;
 
 type ConfiguredAcpAgent = NonNullable<HlidConfig["acp_agents"]>[number];
+
+export type AcpWorkspaceEnvironmentResolver = (input: {
+	item: AcpCatalogItem;
+	config: HlidConfig;
+	target: AcpExecutionTarget;
+	cwd: string;
+	environment: Record<string, string>;
+	signal?: AbortSignal;
+}) => AcpProcessEnvironment | Promise<AcpProcessEnvironment>;
+
+export type ConfiguredAcpProviderOptions = {
+	resolveEnvironment?: AcpWorkspaceEnvironmentResolver;
+};
 
 type AcpRuntimeTarget = Pick<
 	AcpCatalogTargetStatus,
@@ -105,10 +128,24 @@ function isJsonObject(value: unknown): value is JsonObject {
 
 export class OpenCodeConfigOverlayError extends Error {
 	constructor(detail: string) {
-		super(`Cannot apply Hlid's OpenCode model filter: ${detail}`);
+		super(`Cannot apply Hlid's OpenCode configuration overlay: ${detail}`);
 		this.name = "OpenCodeConfigOverlayError";
 	}
 }
+
+export type OpenCodeOllamaModel = {
+	id: string;
+	name?: string;
+	contextLength?: number | null;
+	outputLength?: number | null;
+};
+
+export type OpenCodeOllamaProviderInput = {
+	baseUrl: string;
+	models: readonly OpenCodeOllamaModel[];
+	/** Name only. The credential value remains launch-scoped subprocess state. */
+	apiKeyEnvironmentVariable?: string;
+};
 
 function parseOpenCodeConfig(content: string | undefined): JsonObject {
 	if (!content?.trim()) return {};
@@ -129,6 +166,26 @@ function parseOpenCodeConfig(content: string | undefined): JsonObject {
 		);
 	}
 	return parsed;
+}
+
+function openCodeProviderConfig(content: string | undefined): {
+	base: JsonObject;
+	provider: JsonObject;
+} {
+	const base = parseOpenCodeConfig(content);
+	const existingProvider = base.provider;
+	if (existingProvider !== undefined && !isJsonObject(existingProvider)) {
+		throw new OpenCodeConfigOverlayError(
+			`${OPENCODE_CONFIG_CONTENT}.provider must be a JSON object. Fix or remove that ACP environment override.`,
+		);
+	}
+	return {
+		base,
+		provider: Object.assign(
+			Object.create(null) as JsonObject,
+			existingProvider ?? {},
+		),
+	};
 }
 
 function groupedOpenCodeModels(models: string[]): Map<string, string[]> {
@@ -174,6 +231,88 @@ function configuredStringList(
 	return [...new Set(value)].sort((a, b) => a.localeCompare(b));
 }
 
+function openCodeWildcardMatches(pattern: string, value: string): boolean {
+	let patternIndex = 0;
+	let valueIndex = 0;
+	let starIndex = -1;
+	let starValueIndex = -1;
+	while (valueIndex < value.length) {
+		const patternCharacter = pattern[patternIndex];
+		if (
+			patternCharacter === "?" ||
+			(patternCharacter !== undefined && patternCharacter === value[valueIndex])
+		) {
+			patternIndex += 1;
+			valueIndex += 1;
+			continue;
+		}
+		if (patternCharacter === "*") {
+			starIndex = patternIndex;
+			starValueIndex = valueIndex;
+			patternIndex += 1;
+			continue;
+		}
+		if (starIndex >= 0) {
+			patternIndex = starIndex + 1;
+			starValueIndex += 1;
+			valueIndex = starValueIndex;
+			continue;
+		}
+		return false;
+	}
+	while (pattern[patternIndex] === "*") patternIndex += 1;
+	return patternIndex === pattern.length;
+}
+
+function openCodeInlinePolicyAllowsProvider(
+	base: JsonObject,
+	providerId: string,
+): boolean {
+	const experimental = base.experimental;
+	if (experimental === undefined) return true;
+	if (!isJsonObject(experimental)) {
+		throw new OpenCodeConfigOverlayError(
+			`${OPENCODE_CONFIG_CONTENT}.experimental must be a JSON object. Fix or remove that ACP environment override.`,
+		);
+	}
+	const policies = experimental.policies;
+	if (policies === undefined) return true;
+	if (!Array.isArray(policies)) {
+		throw new OpenCodeConfigOverlayError(
+			`${OPENCODE_CONFIG_CONTENT}.experimental.policies must be an array. Fix or remove that ACP environment override.`,
+		);
+	}
+
+	let allowed = true;
+	for (const [index, value] of policies.entries()) {
+		const path = `${OPENCODE_CONFIG_CONTENT}.experimental.policies[${index}]`;
+		if (!isJsonObject(value)) {
+			throw new OpenCodeConfigOverlayError(
+				`${path} must be a JSON object. Fix or remove that ACP environment override.`,
+			);
+		}
+		if (value.effect !== "allow" && value.effect !== "deny") {
+			throw new OpenCodeConfigOverlayError(
+				`${path}.effect must be "allow" or "deny". Fix or remove that ACP environment override.`,
+			);
+		}
+		if (value.action !== "provider.use") {
+			throw new OpenCodeConfigOverlayError(
+				`${path}.action must be "provider.use". Fix or remove that ACP environment override.`,
+			);
+		}
+		if (typeof value.resource !== "string") {
+			throw new OpenCodeConfigOverlayError(
+				`${path}.resource must be a string. Fix or remove that ACP environment override.`,
+			);
+		}
+		if (openCodeWildcardMatches(value.resource, providerId)) {
+			allowed = value.effect === "allow";
+		}
+	}
+	return allowed;
+}
+
 function intersectLists(left: string[], right: string[]): string[] {
 	const allowed = new Set(right);
 	return left.filter((item) => allowed.has(item));
@@ -181,6 +320,10 @@ function intersectLists(left: string[], right: string[]): string[] {
 
 function unionLists(left: string[], right: string[]): string[] {
 	return [...new Set([...left, ...right])].sort((a, b) => a.localeCompare(b));
+}
+
+function configuredAcpAgent(config: HlidConfig, id: string) {
+	return (config.acp_agents ?? []).find((agent) => agent.id === id);
 }
 
 function openCodeModelFilterContent(
@@ -197,17 +340,7 @@ function openCodeModelFilterContent(
 	}
 	if (grouped.size === 0) return content ?? "";
 
-	const base = parseOpenCodeConfig(content);
-	const existingProvider = base.provider;
-	if (existingProvider !== undefined && !isJsonObject(existingProvider)) {
-		throw new OpenCodeConfigOverlayError(
-			`${OPENCODE_CONFIG_CONTENT}.provider must be a JSON object. Fix or remove that ACP environment override.`,
-		);
-	}
-	const provider = Object.assign(
-		Object.create(null) as JsonObject,
-		existingProvider ?? {},
-	);
+	const { base, provider } = openCodeProviderConfig(content);
 	const desiredProviders = [...grouped.keys()];
 	const existingEnabled =
 		filter.mode === "only"
@@ -285,6 +418,191 @@ function openCodeModelFilterContent(
 	return serialized;
 }
 
+function openCodeModelLimit(
+	value: number | null | undefined,
+): number | undefined {
+	return Number.isSafeInteger(value) && Number(value) > 0
+		? Number(value)
+		: undefined;
+}
+
+/**
+ * Add Hlid's reserved Windows Ollama provider to a launch-scoped OpenCode
+ * overlay. This never edits OpenCode's native configuration and never embeds a
+ * relay credential in the JSON payload.
+ */
+export function withOpenCodeOllamaProvider(
+	environment: Readonly<Record<string, string>>,
+	input: OpenCodeOllamaProviderInput,
+	platform: NodeJS.Platform,
+): Record<string, string> {
+	let baseUrl: URL;
+	try {
+		baseUrl = new URL(input.baseUrl);
+	} catch {
+		throw new OpenCodeConfigOverlayError(
+			"the Hlid Ollama endpoint is not a valid URL.",
+		);
+	}
+	if (
+		baseUrl.protocol !== "http:" ||
+		baseUrl.username ||
+		baseUrl.password ||
+		baseUrl.search ||
+		baseUrl.hash ||
+		!baseUrl.hostname ||
+		baseUrl.pathname.replace(/\/$/, "") !== "/v1"
+	) {
+		throw new OpenCodeConfigOverlayError(
+			"the Hlid Ollama endpoint must be an HTTP /v1 base URL without credentials, query parameters, or a fragment.",
+		);
+	}
+	if (input.models.length === 0) {
+		throw new OpenCodeConfigOverlayError(
+			"at least one Windows Ollama model must be selected.",
+		);
+	}
+	if (
+		input.apiKeyEnvironmentVariable !== undefined &&
+		!/^[A-Z_][A-Z0-9_]*$/.test(input.apiKeyEnvironmentVariable)
+	) {
+		throw new OpenCodeConfigOverlayError(
+			"the Hlid Ollama relay credential environment name is invalid.",
+		);
+	}
+
+	const { environment: normalizedEnvironment, content } =
+		openCodeBaseEnvironment(environment, undefined, {}, platform);
+	const { base, provider } = openCodeProviderConfig(content);
+	const existingReserved = provider[HLID_OLLAMA_OPEN_CODE_PROVIDER_ID];
+	if (existingReserved !== undefined && !isJsonObject(existingReserved)) {
+		throw new OpenCodeConfigOverlayError(
+			`${OPENCODE_CONFIG_CONTENT}.provider.${HLID_OLLAMA_OPEN_CODE_PROVIDER_ID} is reserved by Hlid and must not be configured manually.`,
+		);
+	}
+	const preservedRestrictions = Object.create(null) as JsonObject;
+	if (existingReserved) {
+		for (const [key, value] of Object.entries(existingReserved)) {
+			if (key !== "whitelist" && key !== "blacklist") {
+				throw new OpenCodeConfigOverlayError(
+					`${OPENCODE_CONFIG_CONTENT}.provider.${HLID_OLLAMA_OPEN_CODE_PROVIDER_ID} is reserved by Hlid; remove its manually configured ${JSON.stringify(key)} field.`,
+				);
+			}
+			preservedRestrictions[key] = configuredStringList(
+				value,
+				`${OPENCODE_CONFIG_CONTENT}.provider.${HLID_OLLAMA_OPEN_CODE_PROVIDER_ID}.${key}`,
+			);
+		}
+	}
+
+	const modelEntries = Object.create(null) as JsonObject;
+	for (const model of [...input.models].sort((a, b) =>
+		a.id.localeCompare(b.id),
+	)) {
+		if (
+			!model.id ||
+			model.id !== model.id.trim() ||
+			model.id.length > 256 ||
+			ollamaModelNameHasWhitespaceOrControl(model.id)
+		) {
+			throw new OpenCodeConfigOverlayError(
+				"a selected Windows Ollama model name is invalid.",
+			);
+		}
+		if (Object.hasOwn(modelEntries, model.id)) {
+			throw new OpenCodeConfigOverlayError(
+				`Windows Ollama model ${JSON.stringify(model.id)} was selected more than once.`,
+			);
+		}
+		const context = openCodeModelLimit(model.contextLength);
+		const output =
+			openCodeModelLimit(model.outputLength) ??
+			(context ? OPENCODE_LOCAL_MODEL_OUTPUT_LIMIT : undefined);
+		if (output && !context) {
+			throw new OpenCodeConfigOverlayError(
+				`Windows Ollama model ${JSON.stringify(model.id)} cannot declare an OpenCode output limit without a context limit.`,
+			);
+		}
+		modelEntries[model.id] = {
+			name: model.name?.trim() || model.id,
+			...(context || output
+				? {
+						limit: {
+							...(context ? { context } : {}),
+							...(output ? { output } : {}),
+						},
+					}
+				: {}),
+		};
+	}
+	const enabledProviders = configuredStringList(
+		base.enabled_providers,
+		`${OPENCODE_CONFIG_CONTENT}.enabled_providers`,
+	);
+	const disabledProviders =
+		configuredStringList(
+			base.disabled_providers,
+			`${OPENCODE_CONFIG_CONTENT}.disabled_providers`,
+		) ?? [];
+	const inlinePolicyAllowsProvider = openCodeInlinePolicyAllowsProvider(
+		base,
+		HLID_OLLAMA_OPEN_CODE_PROVIDER_ID,
+	);
+	if (
+		(enabledProviders &&
+			!enabledProviders.includes(HLID_OLLAMA_OPEN_CODE_PROVIDER_ID)) ||
+		disabledProviders.includes(HLID_OLLAMA_OPEN_CODE_PROVIDER_ID) ||
+		!inlinePolicyAllowsProvider
+	) {
+		throw new OpenCodeConfigOverlayError(
+			"existing inline provider restrictions disable Hlid's Ollama provider. Change the OpenCode configuration before connecting Ollama models.",
+		);
+	}
+	const reservedWhitelist = configuredStringList(
+		preservedRestrictions.whitelist,
+		`${OPENCODE_CONFIG_CONTENT}.provider.${HLID_OLLAMA_OPEN_CODE_PROVIDER_ID}.whitelist`,
+	);
+	const reservedBlacklist =
+		configuredStringList(
+			preservedRestrictions.blacklist,
+			`${OPENCODE_CONFIG_CONTENT}.provider.${HLID_OLLAMA_OPEN_CODE_PROVIDER_ID}.blacklist`,
+		) ?? [];
+	if (
+		Object.keys(modelEntries).some(
+			(model) =>
+				(reservedWhitelist && !reservedWhitelist.includes(model)) ||
+				reservedBlacklist.includes(model),
+		)
+	) {
+		throw new OpenCodeConfigOverlayError(
+			"existing inline model restrictions exclude one or more connected Ollama models. Change the OpenCode configuration or disconnect those models.",
+		);
+	}
+
+	provider[HLID_OLLAMA_OPEN_CODE_PROVIDER_ID] = {
+		...preservedRestrictions,
+		npm: "@ai-sdk/openai-compatible",
+		name: "Ollama on Windows",
+		options: {
+			baseURL: baseUrl.toString().replace(/\/$/, ""),
+			...(input.apiKeyEnvironmentVariable
+				? { apiKey: `{env:${input.apiKeyEnvironmentVariable}}` }
+				: {}),
+		},
+		models: modelEntries,
+	};
+	const serialized = JSON.stringify({ ...base, provider });
+	if (serialized.length > MAX_OPENCODE_CONFIG_CONTENT_LENGTH) {
+		throw new OpenCodeConfigOverlayError(
+			`the merged ${OPENCODE_CONFIG_CONTENT} is ${serialized.length.toLocaleString()} characters; reduce the selected Ollama models so it stays at or below ${MAX_OPENCODE_CONFIG_CONTENT_LENGTH.toLocaleString()} characters.`,
+		);
+	}
+	return {
+		...normalizedEnvironment,
+		[OPENCODE_CONFIG_CONTENT]: serialized,
+	};
+}
+
 /**
  * Compose the registry invocation, Hlid's explicit environment overrides, and
  * the Hlid-only OpenCode model visibility overlay without touching native
@@ -301,15 +619,20 @@ export function effectiveAcpEnvironment(
 	applyConfiguredEnvironment = true,
 	useInheritedEnvironment = true,
 ): Record<string, string> {
-	const configured = (config.acp_agents ?? []).find(
-		(agent) => agent.id === item.id,
-	);
+	const configured = configuredAcpAgent(config, item.id);
+	const ollama =
+		item.id === "opencode" && configured ? config.ollama : undefined;
 	const targetPlatform = platform ?? acpTargetPlatform(configured?.target);
 	const configuredEnvironment = applyConfiguredEnvironment
 		? configured?.env
 		: undefined;
 	const environment = { ...item.env, ...configuredEnvironment };
-	if (!applyModelFilter || item.id !== "opencode" || !configured?.model_filter)
+	if (
+		!applyModelFilter ||
+		item.id !== "opencode" ||
+		!configured ||
+		(!configured?.model_filter && !ollama)
+	)
 		return environment;
 	const { environment: normalizedEnvironment, content: existingContent } =
 		openCodeBaseEnvironment(
@@ -320,10 +643,16 @@ export function effectiveAcpEnvironment(
 		);
 	return {
 		...normalizedEnvironment,
-		[OPENCODE_CONFIG_CONTENT]: openCodeModelFilterContent(
-			existingContent,
-			configured.model_filter,
-		),
+		...(configured.model_filter
+			? {
+					[OPENCODE_CONFIG_CONTENT]: openCodeModelFilterContent(
+						existingContent,
+						configured.model_filter,
+					),
+				}
+			: existingContent !== undefined
+				? { [OPENCODE_CONFIG_CONTENT]: existingContent }
+				: {}),
 	};
 }
 
@@ -501,26 +830,62 @@ function digestRuntimeValue(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
 }
 
+export function preflightOpenCodeOllamaProvider(
+	environment: Readonly<Record<string, string>>,
+	config: HlidConfig,
+	platform: NodeJS.Platform,
+): void {
+	const configured = configuredAcpAgent(config, "opencode");
+	const ollama = configured ? config.ollama : undefined;
+	if (!ollama) return;
+	withOpenCodeOllamaProvider(
+		environment,
+		{
+			baseUrl: `http://127.0.0.1:${OLLAMA_INFERENCE_RELAY_PORT}/v1`,
+			models: ollama.models.map((id) => ({
+				id,
+				contextLength: OLLAMA_MAX_CONTEXT_LENGTH,
+				outputLength: OPENCODE_LOCAL_MODEL_OUTPUT_LIMIT,
+			})),
+			apiKeyEnvironmentVariable: HLID_OLLAMA_RELAY_TOKEN_ENV,
+		},
+		platform,
+	);
+}
+
 /** Validate the user-controlled/inherited OpenCode overlay before persistence. */
-export function preflightOpenCodeModelFilter(
+export function preflightOpenCodeConfiguration(
 	config: HlidConfig,
 	inheritedEnvironment: Readonly<
 		Record<string, string | undefined>
 	> = process.env,
 	platform?: NodeJS.Platform,
 ): void {
-	const configured = (config.acp_agents ?? []).find(
-		(agent) => agent.id === "opencode",
-	);
-	if (!configured?.model_filter) return;
+	const configured = configuredAcpAgent(config, "opencode");
+	if (!configured) return;
+	const ollama = config.ollama;
+	if (!configured?.model_filter && !ollama) return;
 	const targetPlatform = platform ?? acpTargetPlatform(configured?.target);
-	const { content } = openCodeBaseEnvironment(
+	const { environment, content } = openCodeBaseEnvironment(
 		{},
 		configured.env,
 		configured.target?.kind === "wsl" ? {} : inheritedEnvironment,
 		targetPlatform,
 	);
-	openCodeModelFilterContent(content, configured.model_filter);
+	const filteredContent = configured.model_filter
+		? openCodeModelFilterContent(content, configured.model_filter)
+		: content;
+	if (!ollama) return;
+	preflightOpenCodeOllamaProvider(
+		{
+			...environment,
+			...(filteredContent !== undefined
+				? { [OPENCODE_CONFIG_CONTENT]: filteredContent }
+				: {}),
+		},
+		config,
+		targetPlatform,
+	);
 }
 
 function validateSelectedAcpEnvironment(
@@ -584,9 +949,9 @@ function runtimeTargetFingerprint(
 	target: AcpRuntimeTarget,
 	discoveryCwd: string,
 ): string {
-	const configured = (config.acp_agents ?? []).find(
-		(agent) => agent.id === item.id,
-	);
+	const configured = configuredAcpAgent(config, item.id);
+	const ollama =
+		item.id === "opencode" && configured ? config.ollama : undefined;
 	const targetPlatform = acpTargetPlatform(target.target);
 	const applyConfiguredEnvironment = target.selected;
 	const configuredEnvironment = applyConfiguredEnvironment
@@ -594,15 +959,16 @@ function runtimeTargetFingerprint(
 		: undefined;
 	const inheritedEnvironment = target.target.kind === "wsl" ? {} : process.env;
 	const rawEnvironment = { ...target.env, ...configuredEnvironment };
-	const environment = configured?.model_filter
-		? openCodeBaseEnvironment(
-				target.env,
-				configuredEnvironment,
-				inheritedEnvironment,
-				targetPlatform,
-			).environment
-		: rawEnvironment;
-	if (configured?.model_filter) {
+	const environment =
+		configured?.model_filter || ollama
+			? openCodeBaseEnvironment(
+					target.env,
+					configuredEnvironment,
+					inheritedEnvironment,
+					targetPlatform,
+				).environment
+			: rawEnvironment;
+	if (configured?.model_filter || ollama) {
 		const content =
 			openCodeEnvironmentValue(configuredEnvironment, targetPlatform) ??
 			openCodeEnvironmentValue(target.env, targetPlatform) ??
@@ -653,6 +1019,10 @@ function runtimeTargetFingerprint(
 					),
 				}
 			: undefined,
+		ollamaModels: ollama
+			? [...new Set(ollama.models)].sort((a, b) => a.localeCompare(b))
+			: undefined,
+		ollamaKeepWarm: ollama?.keep_warm,
 		discoveryCwd: declaredPathKey(discoveryCwd),
 	});
 }
@@ -779,6 +1149,7 @@ export class WorkspaceRoutedAcpProvider implements AgentProvider {
 	constructor(
 		item: AcpCatalogItem,
 		private config: HlidConfig,
+		private readonly providerOptions: ConfiguredAcpProviderOptions = {},
 	) {
 		this.catalogItem = item;
 		this.providerId = item.providerId;
@@ -795,9 +1166,7 @@ export class WorkspaceRoutedAcpProvider implements AgentProvider {
 	}
 
 	updateOpenCodeGoUsage(config: HlidConfig): boolean {
-		const configured = (config.acp_agents ?? []).find(
-			(agent) => agent.id === this.catalogItem.id,
-		);
+		const configured = configuredAcpAgent(config, this.catalogItem.id);
 		const nextKey =
 			this.catalogItem.id === "opencode"
 				? (configured?.opencode_go_usage?.api_key.trim() ?? null)
@@ -960,6 +1329,14 @@ export class WorkspaceRoutedAcpProvider implements AgentProvider {
 		if (existing?.fingerprint === runtime.metadataCacheIdentity) {
 			return existing.provider;
 		}
+		const configured = configuredAcpAgent(this.config, this.catalogItem.id);
+		const ollamaOpenCodeTimeouts =
+			this.catalogItem.id === "opencode" && configured && this.config.ollama
+				? {
+						preparationMs: OLLAMA_OPENCODE_ACP_PREPARATION_TIMEOUT_MS,
+						inspectionMs: OLLAMA_OPENCODE_ACP_INSPECTION_TIMEOUT_MS,
+					}
+				: undefined;
 		const provider = new AcpProvider({
 			id: this.providerId,
 			label: this.label,
@@ -967,11 +1344,26 @@ export class WorkspaceRoutedAcpProvider implements AgentProvider {
 			args: runtime.args,
 			target: runtime.target,
 			env: runtime.env,
-			modelFilter: (this.config.acp_agents ?? []).find(
-				(agent) => agent.id === this.catalogItem.id,
-			)?.model_filter,
+			...(this.providerOptions.resolveEnvironment
+				? {
+						processEnvironment: ({ environment, signal }) =>
+							this.providerOptions.resolveEnvironment?.({
+								item: this.catalogItem,
+								config: this.config,
+								target: runtime.target,
+								cwd,
+								environment: { ...environment },
+								signal,
+							}) ?? {
+								environment: { ...environment },
+								release: () => {},
+							},
+					}
+				: {}),
+			modelFilter: configured?.model_filter,
 			discoveryCwd: cwd,
 			metadataCacheIdentity: runtime.metadataCacheIdentity,
+			...(ollamaOpenCodeTimeouts ? { timeouts: ollamaOpenCodeTimeouts } : {}),
 			initialAvailability: {
 				available: runtime.available,
 				...(runtime.reason ? { reason: runtime.reason } : {}),
@@ -1069,8 +1461,9 @@ export class WorkspaceRoutedAcpProvider implements AgentProvider {
 export function createConfiguredAcpProvider(
 	item: AcpCatalogItem,
 	config: HlidConfig,
+	options: ConfiguredAcpProviderOptions = {},
 ): WorkspaceRoutedAcpProvider {
-	return new WorkspaceRoutedAcpProvider(item, config);
+	return new WorkspaceRoutedAcpProvider(item, config, options);
 }
 
 export type AcpRuntimeSyncResult = {
@@ -1095,7 +1488,15 @@ export async function syncAcpRuntimeProviders(options: {
 		target: AcpExecutionTarget,
 	) => void | Promise<void>;
 	registerProvider: (provider: AgentProvider, replaced: boolean) => void;
+	providerFactory?: (
+		item: AcpCatalogItem,
+		config: HlidConfig,
+	) => WorkspaceRoutedAcpProvider;
 }): Promise<AcpRuntimeSyncResult> {
+	const providerFactory =
+		options.providerFactory ??
+		((item: AcpCatalogItem, config: HlidConfig) =>
+			createConfiguredAcpProvider(item, config));
 	const desired = new Map(
 		options.catalog
 			.filter((item) => item.enabled)
@@ -1184,12 +1585,7 @@ export async function syncAcpRuntimeProviders(options: {
 		replaced.flatMap((providerId) => {
 			const next = desired.get(providerId);
 			return next
-				? ([
-						[
-							providerId,
-							createConfiguredAcpProvider(next.item, options.config),
-						],
-					] as const)
+				? ([[providerId, providerFactory(next.item, options.config)]] as const)
 				: [];
 		}),
 	);
@@ -1247,7 +1643,7 @@ export async function syncAcpRuntimeProviders(options: {
 	const added: string[] = [];
 	for (const [providerId, next] of desired) {
 		if (options.fingerprints.has(providerId)) continue;
-		const provider = createConfiguredAcpProvider(next.item, options.config);
+		const provider = providerFactory(next.item, options.config);
 		options.providers.set(providerId, provider);
 		options.fingerprints.set(providerId, next.fingerprint);
 		options.registerProvider(provider, false);

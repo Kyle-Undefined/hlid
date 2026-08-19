@@ -126,6 +126,7 @@ describe("writeConfig — persistence invariants", () => {
 					labels: { einherjar: "Team Space", raven: "Conversation Hub" },
 				},
 			},
+			ollama: { models: ["qwen3.5:27b", "devstral:24b"] },
 			agents: [{ path: "/agent", interactive_mode: false }],
 			acp_agents: [
 				{
@@ -139,7 +140,12 @@ describe("writeConfig — persistence invariants", () => {
 					opencode_go_usage: { api_key: "go-secret" },
 					model_filter: {
 						mode: "only",
-						models: ["anthropic/claude-sonnet-4-6", "openai/gpt-5.6-luna"],
+						models: [
+							"anthropic/claude-sonnet-4-6",
+							"hlid-ollama/devstral:24b",
+							"hlid-ollama/qwen3.5:27b",
+							"openai/gpt-5.6-luna",
+						],
 					},
 					model: "anthropic/claude-sonnet-4-6",
 					effort: "high",
@@ -152,6 +158,28 @@ describe("writeConfig — persistence invariants", () => {
 
 		const reparsed = HlidConfigSchema.parse(parse(serializeConfig(config)));
 		expect(reparsed).toEqual(config);
+		expect(serializeConfig(config)).toContain(
+			'[ollama]\nmodels = ["qwen3.5:27b", "devstral:24b"]\nkeep_warm = "5m"',
+		);
+		expect(serializeConfig(config)).not.toContain("ollama = { models =");
+	});
+
+	it("writes legacy nested Ollama input only as the canonical top-level section", () => {
+		const config = HlidConfigSchema.parse({
+			acp_agents: [
+				{
+					id: "opencode",
+					ollama: { models: ["qwen3.5:27b"] },
+				},
+			],
+		});
+		const serialized = serializeConfig(config);
+
+		expect(serialized).toContain(
+			'[ollama]\nmodels = ["qwen3.5:27b"]\nkeep_warm = "5m"',
+		);
+		expect(serialized).not.toContain("ollama = { models =");
+		expect(HlidConfigSchema.parse(parse(serialized))).toEqual(config);
 	});
 
 	it("keeps Event Log persistence on by default and serializes an explicit opt-out", () => {

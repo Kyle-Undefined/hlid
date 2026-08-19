@@ -156,6 +156,27 @@ describe("useSettingsForm autosave", () => {
 		).toEqual({ event_log: false });
 	});
 
+	it("saves the top-level Ollama integration without requiring restart", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(Response.json({ ok: true }));
+		vi.stubGlobal("fetch", fetchMock);
+		const { result } = renderHook(() =>
+			useSettingsForm(initialSettings(), vi.fn().mockResolvedValue(undefined)),
+		);
+
+		act(() =>
+			result.current.setOllama({
+				models: ["qwen3.5:27b"],
+				keep_warm: "5m",
+			}),
+		);
+		await advance(800);
+
+		expect(result.current.savedMsg).toBe("saved");
+		expect(
+			JSON.parse(fetchMock.mock.calls[0][1].body as string).ollama,
+		).toEqual({ models: ["qwen3.5:27b"], keep_warm: "5m" });
+	});
+
 	it("saves ACP defaults without requiring a restart", async () => {
 		const fetchMock = vi.fn().mockResolvedValue(Response.json({ ok: true }));
 		vi.stubGlobal("fetch", fetchMock);

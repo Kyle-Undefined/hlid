@@ -11,7 +11,7 @@ import { publicConfig, restoreConfigSecrets } from "#/lib/publicConfig";
 import {
 	acpDiscoveryCwd,
 	OpenCodeConfigOverlayError,
-	preflightOpenCodeModelFilter,
+	preflightOpenCodeConfiguration,
 } from "#/server/acpRuntime";
 import { loadConfig } from "#/server/config";
 
@@ -23,10 +23,22 @@ function acpRuntimeTarget(
 	const discoveryCwds = (config.acp_agents ?? [])
 		.map((agent) => [agent.id, acpDiscoveryCwd(config, agent)] as const)
 		.sort(([left], [right]) => left.localeCompare(right));
+	const openCodeOllama = config.acp_agents?.some(
+		(agent) => agent.id === "opencode",
+	)
+		? {
+				models: [...new Set(config.ollama?.models ?? [])].sort((left, right) =>
+					left.localeCompare(right),
+				),
+				keepWarm: config.ollama?.keep_warm,
+			}
+		: { models: [], keepWarm: undefined };
 	return createHash("sha256")
 		.update(config.vault.path)
 		.update("\0")
 		.update(acpRuntimeIdentity(config.acp_agents ?? []))
+		.update("\0")
+		.update(JSON.stringify(openCodeOllama))
 		.update("\0")
 		.update(JSON.stringify(discoveryCwds))
 		.digest("base64url");
@@ -89,14 +101,19 @@ export async function handlePostConfig(request: Request): Promise<Response> {
 		}
 	}
 	try {
-		preflightOpenCodeModelFilter(config);
+		preflightOpenCodeConfiguration(config);
 	} catch (error) {
 		if (error instanceof OpenCodeConfigOverlayError) {
 			return Response.json({ error: error.message }, { status: 400 });
 		}
 		throw error;
 	}
-	if (config.acp_agents?.some((agent) => agent.model_filter)) {
+	if (
+		config.acp_agents?.some(
+			(agent) =>
+				agent.model_filter || (agent.id === "opencode" && config.ollama),
+		)
+	) {
 		let response: Response;
 		try {
 			response = await dbFetch("/acp/preflight", {

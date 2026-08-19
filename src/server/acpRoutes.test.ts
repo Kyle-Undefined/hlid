@@ -119,6 +119,7 @@ const catalog = vi.fn();
 const loadConfig = vi.fn();
 const inspectAgent = vi.fn();
 const inspectModels = vi.fn();
+const resolveEnvironment = vi.fn();
 const listSessions = vi.fn();
 const findSession = vi.fn();
 const importSession = vi.fn();
@@ -131,6 +132,7 @@ const handle = createAcpRouteHandler({
 	loadConfig,
 	inspectAgent,
 	inspectModels,
+	resolveEnvironment,
 	listSessions,
 	findSession,
 	importSession,
@@ -166,6 +168,10 @@ beforeEach(() => {
 		{ value: "opencode/model-a", label: "Model A", isDefault: true },
 		{ value: "opencode/model-b", label: "Model B" },
 	]);
+	resolveEnvironment.mockImplementation(async ({ environment }) => ({
+		environment: { ...environment },
+		release: () => {},
+	}));
 	listSessions.mockResolvedValue({
 		sessions: [
 			{
@@ -244,6 +250,77 @@ describe("ACP internal HTTP routes", () => {
 		});
 	});
 
+	it("preflights an Ollama-only overlay against the resolved target environment", async () => {
+		const ollamaConfig = HlidConfigSchema.parse({
+			ollama: { models: ["qwen3-coder:30b"] },
+			acp_agents: [{ id: "opencode" }],
+		});
+		catalog.mockResolvedValueOnce([
+			{
+				...enabledAgent,
+				targets: [
+					{
+						...hostTarget,
+						env: {
+							OPENCODE_CONFIG_CONTENT: JSON.stringify({
+								provider: {
+									"hlid-ollama": { npm: "@manual/provider" },
+								},
+							}),
+						},
+					},
+				],
+			},
+		]);
+
+		const conflict = await handle(
+			new URL("http://localhost/acp/preflight"),
+			request("/acp/preflight", "POST", ollamaConfig),
+		);
+
+		expect(conflict?.status).toBe(409);
+		expect(await conflict?.json()).toEqual({
+			error: expect.stringContaining("hlid-ollama is reserved by Hlid"),
+		});
+		expect(catalog).toHaveBeenLastCalledWith(ollamaConfig, false, false, {
+			agentIds: ["opencode"],
+		});
+	});
+
+	it("preflights Ollama against every runnable Windows and WSL target", async () => {
+		const ollamaConfig = HlidConfigSchema.parse({
+			ollama: { models: ["qwen3-coder:30b"] },
+			acp_agents: [{ id: "opencode" }],
+		});
+		catalog.mockResolvedValueOnce([
+			{
+				...enabledAgent,
+				targets: [
+					hostTarget,
+					{
+						...wslTarget,
+						available: true,
+						env: {
+							OPENCODE_CONFIG_CONTENT: JSON.stringify({
+								disabled_providers: ["hlid-ollama"],
+							}),
+						},
+					},
+				],
+			},
+		]);
+
+		const conflict = await handle(
+			new URL("http://localhost/acp/preflight"),
+			request("/acp/preflight", "POST", ollamaConfig),
+		);
+
+		expect(conflict?.status).toBe(409);
+		expect(await conflict?.json()).toEqual({
+			error: expect.stringContaining("disable Hlid's Ollama provider"),
+		});
+	});
+
 	it("discovers the exact target's raw models without Hlid's visibility overlay", async () => {
 		const inlineConfig = '{"instructions":["existing.md"]}';
 		loadConfig.mockReturnValue(
@@ -305,6 +382,75 @@ describe("ACP internal HTTP routes", () => {
 					isDefault: true,
 				},
 				{ value: "opencode/model-b", label: "Model B" },
+			],
+		});
+	});
+
+	it("applies the Ollama integration while leaving Forge model discovery unfiltered", async () => {
+		const config = HlidConfigSchema.parse({
+			vault: { name: "Vault", path: "/vault" },
+			ollama: { models: ["qwen3.5:4b"] },
+			acp_agents: [
+				{
+					id: "opencode",
+					model_filter: {
+						mode: "only",
+						models: ["hlid-ollama/qwen3.5:4b"],
+					},
+				},
+			],
+		});
+		loadConfig.mockReturnValue(config);
+		const release = vi.fn();
+		resolveEnvironment.mockImplementationOnce(async (input) => ({
+			environment: {
+				...input.environment,
+				OPENCODE_CONFIG_CONTENT: JSON.stringify({
+					provider: { "hlid-ollama": { models: { "qwen3.5:4b": {} } } },
+				}),
+			},
+			release,
+		}));
+		inspectModels.mockImplementationOnce(async (options, cwd) => {
+			const receipt = await options.processEnvironment?.({
+				environment: { ...(options.env as Record<string, string>) },
+			});
+			expect(cwd).toBe("/vault");
+			expect(receipt?.environment.OPENCODE_CONFIG_CONTENT).toContain(
+				'"hlid-ollama"',
+			);
+			await receipt?.release();
+			return [
+				{ value: "opencode/model-a", label: "Model A", isDefault: true },
+				{
+					value: "hlid-ollama/qwen3.5:4b",
+					label: "Ollama on Windows/qwen3.5:4b",
+				},
+			];
+		});
+
+		const response = await handle(
+			new URL("http://localhost/acp/models?id=opencode"),
+			request("/acp/models?id=opencode"),
+		);
+
+		expect(response?.status).toBe(200);
+		expect(resolveEnvironment).toHaveBeenCalledWith(
+			expect.objectContaining({
+				item: enabledAgent,
+				config,
+				target: { kind: "host" },
+				cwd: "/vault",
+			}),
+		);
+		expect(release).toHaveBeenCalledOnce();
+		expect(await response?.json()).toEqual({
+			models: [
+				{ value: "opencode/model-a", label: "Model A", isDefault: true },
+				{
+					value: "hlid-ollama/qwen3.5:4b",
+					label: "Ollama on Windows/qwen3.5:4b",
+				},
 			],
 		});
 	});
@@ -1454,7 +1600,7 @@ describe("ACP internal HTTP routes", () => {
 		expect(response?.status).toBe(409);
 		expect(await response?.json()).toEqual({
 			error:
-				"Cannot apply Hlid's OpenCode model filter: the inline filter conflicts",
+				"Cannot apply Hlid's OpenCode configuration overlay: the inline filter conflicts",
 		});
 	});
 

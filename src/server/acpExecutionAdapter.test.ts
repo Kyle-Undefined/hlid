@@ -194,6 +194,22 @@ describe("ACP execution adapter", () => {
 		expect(single.env.WSLENV).toBe("Path/u");
 	});
 
+	it("does not forward a PATH case collision or let it suppress WSL path filtering", () => {
+		const collision = wslExecutableProbeLaunch(
+			"Ubuntu-24.04",
+			"agent",
+			"/home/kyle/repo",
+			{
+				PATH: "/linux/override",
+				Path: "C:\\Windows\\System32",
+			},
+			["PATH", "Path"],
+		);
+
+		expect(collision.args.at(-3)).toContain("/mnt/[A-Za-z]/*");
+		expect(collision.env.WSLENV).toBe("");
+	});
+
 	it("launches a managed /mnt executable from a Windows cwd in the exact distro", () => {
 		const launch = wslLaunch(
 			"Ubuntu-24.04",

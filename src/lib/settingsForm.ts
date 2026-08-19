@@ -54,6 +54,7 @@ export type SettingsForms = {
 	server: ServerForm;
 	ui: UiForm;
 	vocab: VocabForm;
+	ollama: HlidConfig["ollama"];
 	acpAgents: NonNullable<HlidConfig["acp_agents"]>;
 	umbod: HlidConfig["umbod"];
 	autoSleep: AutoSleepForm;
@@ -303,6 +304,7 @@ export function createSettingsForms(initial: HlidConfig): SettingsForms {
 		codex: createCodexForm(initial),
 		cliproxy: createCliProxyForm(initial),
 		voice: initial.voice,
+		ollama: initial.ollama,
 		acpAgents: initial.acp_agents ?? [],
 		umbod: initial.umbod,
 		autoSleep: createAutoSleepForm(initial),
@@ -394,19 +396,27 @@ function modelExcludedByFilter(
 function reconcileOpenCodeAgentDefaults(
 	agents: HlidConfig["agents"],
 	acpAgents: NonNullable<HlidConfig["acp_agents"]>,
+	ollama: HlidConfig["ollama"],
 ): HlidConfig["agents"] {
 	const filter = acpAgents.find(
 		(agent) => agent.id === "opencode",
 	)?.model_filter;
-	if (!filter) return agents;
+	const selectedOllamaModels = new Set(ollama?.models ?? []);
+	const unavailableOllamaModel = (model: string | undefined) =>
+		model?.startsWith("hlid-ollama/") === true &&
+		!selectedOllamaModels.has(model.slice("hlid-ollama/".length));
 	return agents.map((agent) => {
 		if (agent.provider !== "acp:opencode") return agent;
-		const model = modelExcludedByFilter(agent.model, filter)
-			? undefined
-			: agent.model;
-		const recapModel = modelExcludedByFilter(agent.recap_model, filter)
-			? undefined
-			: agent.recap_model;
+		const model =
+			unavailableOllamaModel(agent.model) ||
+			(filter ? modelExcludedByFilter(agent.model, filter) : false)
+				? undefined
+				: agent.model;
+		const recapModel =
+			unavailableOllamaModel(agent.recap_model) ||
+			(filter ? modelExcludedByFilter(agent.recap_model, filter) : false)
+				? undefined
+				: agent.recap_model;
 		if (model === agent.model && recapModel === agent.recap_model) return agent;
 		return { ...agent, model, recap_model: recapModel };
 	});
@@ -479,6 +489,7 @@ export function buildSettingsConfig(
 		attachments: initial.attachments ?? DEFAULT_ATTACHMENTS_CONFIG,
 		diagnostics: forms.diagnostics,
 		voice: forms.voice,
+		ollama: forms.ollama,
 		umbod: forms.umbod,
 		auto_sleep: autoSleepConfig(forms.autoSleep),
 		project_preview: {
@@ -487,6 +498,7 @@ export function buildSettingsConfig(
 		agents: reconcileOpenCodeAgentDefaults(
 			initial.agents ?? [],
 			forms.acpAgents,
+			forms.ollama,
 		),
 		acp_agents: forms.acpAgents,
 	};

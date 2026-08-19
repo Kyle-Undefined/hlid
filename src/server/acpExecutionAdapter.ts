@@ -171,11 +171,7 @@ function withWslEnvironment(
 	forwardedNames: Iterable<string>,
 	flag: "u" | "w",
 ): AcpTargetEnvironment {
-	const forwarded = new Map(
-		[...forwardedNames]
-			.filter((name) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
-			.map((name) => [name.toUpperCase(), name] as const),
-	);
+	const forwarded = unambiguousWslEnvironmentNames(forwardedNames);
 	const sanitizedEnvironment = Object.fromEntries(
 		Object.entries(environment).filter(
 			([name]) => name.toUpperCase() !== "WSLENV",
@@ -183,11 +179,25 @@ function withWslEnvironment(
 	);
 	return {
 		...sanitizedEnvironment,
-		WSLENV: [...forwarded.values()]
+		WSLENV: forwarded
 			.sort((a, b) => a.localeCompare(b))
 			.map((name) => `${name}/${flag}`)
 			.join(":"),
 	};
+}
+
+function unambiguousWslEnvironmentNames(names: Iterable<string>): string[] {
+	const variants = new Map<string, Set<string>>();
+	for (const name of names) {
+		if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) continue;
+		const normalized = name.toUpperCase();
+		const exactNames = variants.get(normalized) ?? new Set<string>();
+		exactNames.add(name);
+		variants.set(normalized, exactNames);
+	}
+	return [...variants.values()].flatMap((exactNames) =>
+		exactNames.size === 1 ? [...exactNames] : [],
+	);
 }
 
 export function windowsPathToWsl(value: string): string | null {
@@ -513,7 +523,9 @@ const WSL_ACP_FILTER_INHERITED_WINDOWS_PATH =
 function wslExecutableSearchPathScript(forwardedEnvNames: string[]): string {
 	// Linux environment names are case-sensitive. Only an exact PATH override
 	// replaces the inherited WSL search path; `Path` remains a distinct variable.
-	return forwardedEnvNames.some((name) => name === "PATH")
+	// A case-colliding pair is ambiguous in the Windows launch environment, so it
+	// is not forwarded and cannot suppress filtering of WSL's inherited PATH.
+	return unambiguousWslEnvironmentNames(forwardedEnvNames).includes("PATH")
 		? ""
 		: WSL_ACP_FILTER_INHERITED_WINDOWS_PATH;
 }

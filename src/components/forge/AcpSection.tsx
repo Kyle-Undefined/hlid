@@ -76,6 +76,8 @@ export function AcpSection({
 	onCatalogChange,
 	onRefreshProviders,
 	onDiscoverModels,
+	ollamaModelCount = 0,
+	onOpenOllama,
 }: {
 	initialCatalog: AcpCatalogItem[];
 	value: NonNullable<HlidConfig["acp_agents"]>;
@@ -86,6 +88,8 @@ export function AcpSection({
 	onCatalogChange?: (catalog: AcpCatalogItem[]) => void;
 	onRefreshProviders?: (providerId: string) => void | Promise<void>;
 	onDiscoverModels?: (item: AcpCatalogItem) => Promise<ProviderInfo["models"]>;
+	ollamaModelCount?: number;
+	onOpenOllama?: () => void;
 }) {
 	const [catalog, setCatalog] = useState(initialCatalog);
 	const [search, setSearch] = useState("");
@@ -568,6 +572,8 @@ export function AcpSection({
 							onImportProviderSession={(providerSessionId) =>
 								void importProviderSession(item, providerSessionId)
 							}
+							ollamaModelCount={ollamaModelCount}
+							onOpenOllama={onOpenOllama}
 						/>
 					</div>
 				);

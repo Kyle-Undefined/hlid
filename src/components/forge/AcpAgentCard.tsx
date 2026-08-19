@@ -950,6 +950,8 @@ export function AcpAgentCard({
 	onBrowseProviderSessions,
 	onCloseProviderSessions,
 	onImportProviderSession,
+	ollamaModelCount = 0,
+	onOpenOllama,
 }: {
 	item: AcpCatalogItem;
 	configured: AcpAgentConfig | undefined;
@@ -979,6 +981,8 @@ export function AcpAgentCard({
 	onBrowseProviderSessions?: (cursor?: string) => void;
 	onCloseProviderSessions?: () => void;
 	onImportProviderSession?: (providerSessionId: string) => void;
+	ollamaModelCount?: number;
+	onOpenOllama?: () => void;
 }) {
 	const enabled = Boolean(configured);
 	const openCode = item.id === "opencode";
@@ -1130,6 +1134,31 @@ export function AcpAgentCard({
 						workspace. Model visibility configures what OpenCode exposes to Hlid
 						sessions; Hlid does not infer account-level hidden models.
 					</p>
+				</div>
+			)}
+			{openCode && (
+				<div className="flex min-w-0 flex-col gap-3 border border-primary/25 bg-background/50 px-3 py-3 @2xl:flex-row @2xl:items-center @2xl:justify-between">
+					<div className="min-w-0">
+						<div className="text-[9px] tracking-widest text-foreground/70 uppercase">
+							Ollama local models
+						</div>
+						<p className="break-words text-[10px] text-muted-foreground">
+							{ollamaModelCount > 0
+								? configured
+									? `${ollamaModelCount} Ollama model${ollamaModelCount === 1 ? "" : "s"} configured for Hlid-managed OpenCode.`
+									: `${ollamaModelCount} Ollama model${ollamaModelCount === 1 ? " is" : "s are"} selected. Enable OpenCode to connect ${ollamaModelCount === 1 ? "it" : "them"}.`
+								: "No Ollama models are configured for OpenCode. Ollama is managed as its own Forge integration."}
+						</p>
+					</div>
+					{onOpenOllama && (
+						<button
+							type="button"
+							onClick={onOpenOllama}
+							className="min-h-11 shrink-0 border border-primary/40 px-3 py-1.5 text-[10px] tracking-widest text-primary uppercase hover:bg-primary/10 lg:min-h-0"
+						>
+							{ollamaModelCount > 0 ? "Manage Ollama" : "Set up Ollama"}
+						</button>
+					)}
 				</div>
 			)}
 			{openCode && configured && (

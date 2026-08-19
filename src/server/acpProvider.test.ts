@@ -240,6 +240,73 @@ describe("AcpProvider — interface compliance", () => {
 		await expect(makeProvider().check()).resolves.toEqual({ available: true });
 	});
 
+	it("acquires process environment receipts only for exact child spawns", async () => {
+		const release = vi.fn();
+		const processEnvironment = vi.fn(
+			async ({
+				environment,
+			}: {
+				environment: Readonly<Record<string, string>>;
+			}) => ({
+				environment: { ...environment, CHILD_INSTANCE: "one" },
+				release,
+			}),
+		);
+		const provider = makeProvider({ processEnvironment });
+
+		await expect(provider.check()).resolves.toEqual({ available: true });
+		expect(processEnvironment).not.toHaveBeenCalled();
+
+		const session = provider.query(params());
+		await session.send("test");
+		for await (const event of session) {
+			if (event.type === "done") break;
+		}
+		expect(processEnvironment).toHaveBeenCalledOnce();
+		expect(release).not.toHaveBeenCalled();
+
+		await session.cancelAndWait?.();
+		expect(release).toHaveBeenCalledOnce();
+	});
+
+	it("releases a process environment receipt when spawning fails", async () => {
+		const release = vi.fn();
+		const base = createAcpExecutionAdapter({ kind: "host" });
+		const provider = makeProvider({
+			executionAdapter: () => ({
+				...base,
+				start: vi.fn(async () => {
+					throw new Error("synthetic spawn failure");
+				}),
+			}),
+			processEnvironment: async ({ environment }) => ({
+				environment: { ...environment },
+				release,
+			}),
+		});
+		const session = provider.query(params());
+
+		await expect(session.send("test")).rejects.toThrow(
+			"synthetic spawn failure",
+		);
+		expect(release).toHaveBeenCalledOnce();
+	});
+
+	it("releases a separate receipt after each metadata child exits", async () => {
+		const releases: Array<ReturnType<typeof vi.fn>> = [];
+		const processEnvironment = vi.fn(async ({ environment }) => {
+			const release = vi.fn();
+			releases.push(release);
+			return { environment: { ...environment }, release };
+		});
+		const provider = makeProvider({ processEnvironment });
+
+		await expect(provider.listModels()).resolves.not.toHaveLength(0);
+
+		expect(processEnvironment).toHaveBeenCalledOnce();
+		expect(releases[0]).toHaveBeenCalledOnce();
+	});
+
 	it("serves and refreshes a cached availability snapshot", async () => {
 		const provider = makeProvider({
 			initialAvailability: {
@@ -3333,7 +3400,13 @@ describe("AcpProvider — error handling", () => {
 	});
 
 	it("propagates ACP transport errors from send", async () => {
-		const session = makeProvider().query(params());
+		const release = vi.fn();
+		const session = makeProvider({
+			processEnvironment: async ({ environment }) => ({
+				environment: { ...environment },
+				release,
+			}),
+		}).query(params());
 		await session.send("transport-error");
 		const iterator = session[Symbol.asyncIterator]();
 		await expect(
@@ -3341,7 +3414,9 @@ describe("AcpProvider — error handling", () => {
 				while (!(await iterator.next()).done) {}
 			})(),
 		).rejects.toThrow();
-		session.cancel();
+		await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
+		await session.cancelAndWait?.();
+		expect(release).toHaveBeenCalledOnce();
 	});
 
 	it("respects AbortSignal and cancels in-flight request", async () => {

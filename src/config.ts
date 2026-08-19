@@ -12,6 +12,11 @@ import {
 	normalizeNavigationLabel,
 } from "./lib/navigationNames";
 import {
+	DEFAULT_OLLAMA_KEEP_WARM_POLICY,
+	OLLAMA_KEEP_WARM_POLICIES,
+	ollamaModelNameHasWhitespaceOrControl,
+} from "./lib/ollama";
+import {
 	MAX_SPEECH_PRONUNCIATION_FIELD_CHARS,
 	MAX_SPEECH_PRONUNCIATIONS,
 	normalizeSpeechPronunciations,
@@ -557,6 +562,35 @@ const AcpModelIdSchema = z
 		},
 	);
 
+const OllamaModelNameSchema = z
+	.string()
+	.trim()
+	.min(1)
+	.max(256)
+	.refine((value) => !ollamaModelNameHasWhitespaceOrControl(value), {
+		message:
+			"Ollama model names cannot contain whitespace or control characters",
+	});
+
+const OllamaSchema = z
+	.object({
+		/** Exact Windows-hosted Ollama models Hlid publishes to configured consumers. */
+		models: z.array(OllamaModelNameSchema).min(1).max(64),
+		/** How long Hlid keeps an OpenCode model resident after inference. */
+		keep_warm: z
+			.enum(OLLAMA_KEEP_WARM_POLICIES)
+			.default(DEFAULT_OLLAMA_KEEP_WARM_POLICY),
+	})
+	.superRefine((value, context) => {
+		if (new Set(value.models).size !== value.models.length) {
+			context.addIssue({
+				code: "custom",
+				path: ["models"],
+				message: "Ollama models cannot contain duplicates",
+			});
+		}
+	});
+
 export const AcpModelFilterSchema = z
 	.discriminatedUnion("mode", [
 		z.object({
@@ -589,6 +623,8 @@ const AcpAgentSchema = z
 		opencode_go_usage: z
 			.object({ api_key: z.string().trim().min(1).max(4_096) })
 			.optional(),
+		/** Legacy input only. Canonical config stores this at top-level `ollama`. */
+		ollama: OllamaSchema.optional(),
 		/** Hlid-only OpenCode model visibility. Absence leaves native config alone. */
 		model_filter: AcpModelFilterSchema.optional(),
 		/** Vault-chat defaults for this ACP provider. Empty/absent values defer to the agent. */
@@ -614,6 +650,13 @@ const AcpAgentSchema = z
 				code: "custom",
 				path: ["model_filter"],
 				message: "model_filter is supported only for the OpenCode ACP agent",
+			});
+		}
+		if (agent.ollama && agent.id !== "opencode") {
+			context.addIssue({
+				code: "custom",
+				path: ["ollama"],
+				message: "ollama is supported only for the OpenCode ACP agent",
 			});
 		}
 		if (agent.model_filter) {
@@ -692,6 +735,8 @@ const HlidConfigBaseSchema = z.object({
 	})),
 	attachments: AttachmentsSchema.default(DEFAULT_ATTACHMENTS_CONFIG),
 	voice: VoiceSchema.default(DEFAULT_VOICE_CONFIG),
+	/** Windows-hosted Ollama integration shared by configured consumers. */
+	ollama: OllamaSchema.optional(),
 	umbod: UmbodSchema.default(() => ({
 		enabled: false,
 		manifest_path: "umbod.toml",
@@ -702,7 +747,22 @@ const HlidConfigBaseSchema = z.object({
 	vault_provider: z.string().default("claude"),
 });
 
-export const HlidConfigSchema = HlidConfigBaseSchema.superRefine(
+function sameOllamaModelSet(
+	left: NonNullable<z.input<typeof OllamaSchema>>,
+	right: NonNullable<z.input<typeof OllamaSchema>>,
+): boolean {
+	if (
+		(left.keep_warm ?? DEFAULT_OLLAMA_KEEP_WARM_POLICY) !==
+		(right.keep_warm ?? DEFAULT_OLLAMA_KEEP_WARM_POLICY)
+	) {
+		return false;
+	}
+	if (left.models.length !== right.models.length) return false;
+	const rightModels = new Set(right.models);
+	return left.models.every((model) => rightModels.has(model));
+}
+
+const HlidConfigInputSchema = HlidConfigBaseSchema.superRefine(
 	(config, context) => {
 		const configuredWslDistros = new Set(
 			[config.vault.path, ...config.agents.map((agent) => agent.path)]
@@ -730,10 +790,67 @@ export const HlidConfigSchema = HlidConfigBaseSchema.superRefine(
 			}
 			seenAcpAgents.add(agent.id);
 		});
-		const filter = config.acp_agents?.find(
-			(agent) => agent.id === "opencode",
-		)?.model_filter;
-		if (!filter) return;
+		const openCodeIndex =
+			config.acp_agents?.findIndex((agent) => agent.id === "opencode") ?? -1;
+		const openCode =
+			openCodeIndex >= 0 ? config.acp_agents?.[openCodeIndex] : undefined;
+		const legacyOllama = openCode?.ollama;
+		if (
+			config.ollama &&
+			legacyOllama &&
+			!sameOllamaModelSet(config.ollama, legacyOllama)
+		) {
+			context.addIssue({
+				code: "custom",
+				path: ["ollama", "models"],
+				message:
+					"Top-level Ollama models conflict with the legacy OpenCode Ollama selection",
+			});
+		}
+		const ollama = config.ollama ?? legacyOllama;
+		const selectedOllamaModels = new Set(ollama?.models ?? []);
+		for (const [key, label] of [
+			["model", "default model"],
+			["recap_model", "recap model"],
+		] as const) {
+			const model = openCode?.[key];
+			if (!model?.startsWith("hlid-ollama/")) continue;
+			if (!selectedOllamaModels.has(model.slice("hlid-ollama/".length))) {
+				context.addIssue({
+					code: "custom",
+					path: ["acp_agents", openCodeIndex, key],
+					message: `The configured ${label} must be selected in Windows Ollama models`,
+				});
+			}
+		}
+		const filter = openCode?.model_filter;
+		if (filter) {
+			for (const [index, modelId] of filter.models.entries()) {
+				if (!modelId.startsWith("hlid-ollama/")) continue;
+				if (selectedOllamaModels.has(modelId.slice("hlid-ollama/".length)))
+					continue;
+				context.addIssue({
+					code: "custom",
+					path: ["acp_agents", openCodeIndex, "model_filter", "models", index],
+					message:
+						"An Ollama model in the OpenCode model filter must be selected in the Ollama integration",
+				});
+			}
+			for (const [index, model] of (ollama?.models ?? []).entries()) {
+				const modelId = `hlid-ollama/${model}`;
+				const included = filter.models.includes(modelId);
+				if (filter.mode === "hide" ? included : !included) {
+					context.addIssue({
+						code: "custom",
+						path: ["ollama", "models", index],
+						message:
+							filter.mode === "hide"
+								? "A selected Ollama model cannot be hidden from OpenCode"
+								: "A selected Ollama model must be included in the OpenCode model filter",
+					});
+				}
+			}
+		}
 		config.agents.forEach((agent, index) => {
 			if (agent.provider !== "acp:opencode") return;
 			for (const [key, label] of [
@@ -742,6 +859,17 @@ export const HlidConfigSchema = HlidConfigBaseSchema.superRefine(
 			] as const) {
 				const model = agent[key];
 				if (!model) continue;
+				if (
+					model.startsWith("hlid-ollama/") &&
+					!selectedOllamaModels.has(model.slice("hlid-ollama/".length))
+				) {
+					context.addIssue({
+						code: "custom",
+						path: ["agents", index, key],
+						message: `The OpenCode agent ${label} must be selected in Windows Ollama models`,
+					});
+				}
+				if (!filter) continue;
 				const included = filter.models.includes(model);
 				if (filter.mode === "hide" ? included : !included) {
 					context.addIssue({
@@ -757,5 +885,25 @@ export const HlidConfigSchema = HlidConfigBaseSchema.superRefine(
 		});
 	},
 );
+
+/**
+ * Accept the short-lived nested development shape once, then expose only the
+ * canonical top-level Ollama integration to every runtime and writer.
+ */
+export const HlidConfigSchema = HlidConfigInputSchema.transform((config) => {
+	const legacyOllama = config.acp_agents?.find(
+		(agent) => agent.id === "opencode",
+	)?.ollama;
+	const canonicalOllama = config.ollama ?? legacyOllama;
+	const canonicalAcpAgents = config.acp_agents?.map(
+		({ ollama: _legacyOllama, ...agent }) => agent,
+	);
+	const { ollama: _inputOllama, acp_agents: _inputAcpAgents, ...base } = config;
+	return {
+		...base,
+		...(canonicalOllama ? { ollama: canonicalOllama } : {}),
+		...(canonicalAcpAgents ? { acp_agents: canonicalAcpAgents } : {}),
+	};
+});
 
 export type HlidConfig = z.infer<typeof HlidConfigSchema>;

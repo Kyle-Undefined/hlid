@@ -128,6 +128,15 @@ function serializeUmbod(config: HlidConfig["umbod"]): string[] {
 	]);
 }
 
+function serializeOllama(config: HlidConfig["ollama"]): string[] {
+	return config
+		? section("ollama", [
+				`models = ${tomlVal(config.models)}`,
+				`keep_warm = ${tomlVal(config.keep_warm)}`,
+			])
+		: [];
+}
+
 function serializeAutoSleep(config: HlidConfig["auto_sleep"]): string[] {
 	const value = config ?? DEFAULT_AUTO_SLEEP_CONFIG;
 	return section("auto_sleep", [
@@ -331,6 +340,7 @@ export function serializeConfig(config: HlidConfig): string {
 		...serializeDiagnostics(config.diagnostics),
 		"",
 		...serializeVoice(config.voice),
+		...(config.ollama ? ["", ...serializeOllama(config.ollama)] : []),
 		"",
 		...serializeUmbod(config.umbod),
 		"",

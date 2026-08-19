@@ -657,6 +657,9 @@ function RavenRoutePage() {
 type RavenNavigate = ReturnType<typeof useNavigate>;
 type RavenAgentList = Awaited<ReturnType<typeof getAgentListFn>>;
 type RavenProviders = Awaited<ReturnType<typeof getProvidersFn>>;
+type RavenModelPickerOption = ReturnType<typeof modelOptions>[number] & {
+	disabled?: boolean;
+};
 type ActiveRavenSkill = CommandDescriptor;
 type RavenSessionSelection = {
 	providerId?: string;
@@ -3138,6 +3141,7 @@ function deriveRavenComposerState({
 	const provider = providers.find(
 		(candidate) => candidate.id === activeProviderId,
 	);
+	const isAcpProvider = activeProviderId.startsWith("acp:");
 	const advertisedModels = modelOptions(provider);
 	const desiredModelAdvertised =
 		desiredModel !== undefined &&
@@ -3149,17 +3153,16 @@ function deriveRavenComposerState({
 					modelComparisonKey(candidate.resolvedModel) ===
 						modelComparisonKey(desiredModel)),
 		);
-	const currentAcpCatalog =
-		provider?.id.startsWith("acp:") && acpModelCatalogCurrent;
-	const acceptedLiveAcpModel = provider?.id.startsWith("acp:")
-		? provider.liveSessionConfig?.activeModel
+	const currentAcpCatalog = isAcpProvider && acpModelCatalogCurrent;
+	const acceptedLiveAcpModel = isAcpProvider
+		? provider?.liveSessionConfig?.activeModel
 		: undefined;
 	const selectedModel =
 		acceptedLiveAcpModel !== undefined
 			? acceptedLiveAcpModel
-			: provider?.id.startsWith("acp:") && forceAcpProviderDefaults
+			: isAcpProvider && (!currentAcpCatalog || forceAcpProviderDefaults)
 				? ""
-				: desiredModel === "" && provider?.id.startsWith("acp:")
+				: desiredModel === "" && isAcpProvider
 					? ""
 					: !currentAcpCatalog ||
 							advertisedModels.length === 0 ||
@@ -3254,7 +3257,9 @@ function deriveRavenComposerState({
 	const configuredProvider = providers.find(
 		(candidate) => candidate.id === configuredProviderId,
 	);
-	const modelPickerOptions = provider?.id.startsWith("acp:")
+	const modelPickerOptions: RavenModelPickerOption[] = provider?.id.startsWith(
+		"acp:",
+	)
 		? [
 				{
 					value: "",
@@ -3268,7 +3273,10 @@ function deriveRavenComposerState({
 									? "Live model discovery is unavailable; Provider default remains usable."
 									: "This ACP agent has not advertised model choices.",
 				},
-				...advertisedModels,
+				...advertisedModels.map((candidate) => ({
+					...candidate,
+					disabled: !acpModelCatalogCurrent,
+				})),
 			]
 		: advertisedModels;
 	return {
@@ -3711,6 +3719,7 @@ export function ChatPage() {
 			!refreshAlreadyStartedForContext &&
 			hasFreshRavenProviderModels(activeProviderId, activeProviderDiscoveryCwd)
 		) {
+			setCurrentAcpModelCatalogContext(context);
 			setAcpModelCatalogRefresh(null);
 			return;
 		}
@@ -5345,6 +5354,7 @@ interface BadgeOption {
 	label: string;
 	title?: string;
 	isDefault?: boolean;
+	disabled?: boolean;
 }
 
 /**
@@ -5384,7 +5394,7 @@ function OptionGroup({
 					key={o.value}
 					type="button"
 					title={o.title}
-					disabled={disabled}
+					disabled={disabled || o.disabled}
 					onClick={() => onSelect(o.value)}
 					className={`block w-full text-left normal-case tracking-normal px-1.5 py-1 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
 						o.value === selectedValue
@@ -5657,6 +5667,7 @@ function ChatModelBadge({
 								options={modelPickerOptions.map((m) => ({
 									value: m.value,
 									label: m.label,
+									...(m.disabled !== undefined ? { disabled: m.disabled } : {}),
 									...(m.description !== undefined
 										? { title: m.description }
 										: {}),
@@ -6960,7 +6971,7 @@ interface ChatComposerProps {
 	configuredModelShort: string | null;
 	configuredSelection: RavenSessionSelection;
 	providers: RavenProviders;
-	modelPickerOptions: ReturnType<typeof modelOptions>;
+	modelPickerOptions: RavenModelPickerOption[];
 	permissionOptions: ReturnType<typeof sessionPermissionOptionsFor>;
 	approvalsReviewerOptions: NonNullable<
 		RavenProviders[number]["approvalReviewers"]

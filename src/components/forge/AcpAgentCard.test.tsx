@@ -111,6 +111,8 @@ function renderCard(
 		onUpdateOverride: (patch: Partial<AcpAgentConfig>) => void;
 		onInspect: (methodId?: string) => void;
 		onRefreshOptions: () => void;
+		ollamaModelCount: number;
+		onOpenOllama: (() => void) | undefined;
 		onDiscoverModels:
 			| (() => Promise<Array<{ value: string; label: string }> | undefined>)
 			| undefined;
@@ -128,6 +130,8 @@ function renderCard(
 		models: undefined,
 		optionsRefreshed: false,
 		configurationCurrent: true,
+		ollamaModelCount: 0,
+		onOpenOllama: undefined,
 		onToggle: vi.fn(),
 		onSelectTarget: vi.fn(),
 		onManagedMutation: vi.fn(),
@@ -575,6 +579,7 @@ describe("AcpAgentCard", () => {
 	});
 
 	it("presents OpenCode as a featured CLI-backed ACP integration", () => {
+		const onOpenOllama = vi.fn();
 		renderCard({
 			item: makeItem({
 				id: "opencode",
@@ -587,6 +592,8 @@ describe("AcpAgentCard", () => {
 			configured: { id: "opencode" } as AcpAgentConfig,
 			agentInfo: { name: "OpenCode", version: "1.18.15" },
 			optionsRefreshed: true,
+			ollamaModelCount: 2,
+			onOpenOllama,
 		});
 
 		expect(screen.getByText("Featured integration")).toBeTruthy();
@@ -605,6 +612,12 @@ describe("AcpAgentCard", () => {
 		).toBeTruthy();
 		expect(screen.getByText("Available through ACP")).toBeTruthy();
 		expect(screen.getByText("Connection boundary")).toBeTruthy();
+		expect(
+			screen.getByText("2 Ollama models configured for Hlid-managed OpenCode."),
+		).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "Manage Ollama" }));
+		expect(onOpenOllama).toHaveBeenCalledOnce();
+		expect(screen.queryByText("Windows Ollama models")).toBeNull();
 		expect(screen.getByText("Model visibility")).toBeTruthy();
 		expect(
 			screen.getByText(

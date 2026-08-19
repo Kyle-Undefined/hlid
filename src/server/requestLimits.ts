@@ -43,9 +43,14 @@ export function payloadTooLarge(maxBytes: number): Response {
 	);
 }
 
+export type RequestBodyChunkReader = (
+	reader: ReadableStreamDefaultReader<Uint8Array>,
+) => ReturnType<ReadableStreamDefaultReader<Uint8Array>["read"]>;
+
 export async function readRequestBodyLimited(
 	request: Request,
 	maxBytes: number,
+	options: Readonly<{ readChunk?: RequestBodyChunkReader }> = {},
 ): Promise<
 	{ ok: true; body: ArrayBuffer } | { ok: false; response: Response }
 > {
@@ -59,7 +64,8 @@ export async function readRequestBodyLimited(
 	let total = 0;
 	try {
 		while (true) {
-			const { done, value } = await reader.read();
+			const { done, value } = await (options.readChunk?.(reader) ??
+				reader.read());
 			if (done) break;
 			total += value.byteLength;
 			if (total > maxBytes) {
@@ -68,6 +74,9 @@ export async function readRequestBodyLimited(
 			}
 			chunks.push(value);
 		}
+	} catch (error) {
+		await reader.cancel(error).catch(() => {});
+		throw error;
 	} finally {
 		reader.releaseLock();
 	}

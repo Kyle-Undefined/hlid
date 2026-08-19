@@ -23,6 +23,7 @@ import { NavigationNamesSection } from "#/components/forge/NavigationNamesSectio
 import { NetworkSection } from "#/components/forge/NetworkSection";
 import { NotificationsSection } from "#/components/forge/NotificationsSection";
 import { ObsidianSection } from "#/components/forge/ObsidianSection";
+import { OllamaSection } from "#/components/forge/OllamaSection";
 import { PricingSection } from "#/components/forge/PricingSection";
 import { SecuritySection } from "#/components/forge/SecuritySection";
 import { SessionSection } from "#/components/forge/SessionSection";
@@ -372,6 +373,7 @@ function AcpCatalogPage({
 	state,
 	initial,
 	onBack,
+	onOpenOllama,
 	onRefreshProviders,
 	onDiscoverAcpModels,
 	onCatalogChange,
@@ -379,6 +381,7 @@ function AcpCatalogPage({
 	state: SettingsFormState;
 	initial: SettingsInitial;
 	onBack: () => void;
+	onOpenOllama: () => void;
 	onRefreshProviders: (providerId: string) => void | Promise<void>;
 	onDiscoverAcpModels?: (id: string) => Promise<ProviderInfo["models"]>;
 	onCatalogChange?: (catalog: SettingsInitial["acpCatalog"]) => void;
@@ -401,6 +404,8 @@ function AcpCatalogPage({
 					state.vault.path === state.persistedVaultPath
 				}
 				providers={initial.providers}
+				ollamaModelCount={state.ollama?.models.length ?? 0}
+				onOpenOllama={onOpenOllama}
 				onChange={state.setAcpAgents}
 				onCatalogChange={onCatalogChange}
 				onRefreshProviders={onRefreshProviders}
@@ -409,6 +414,44 @@ function AcpCatalogPage({
 						? (item) => onDiscoverAcpModels(item.id)
 						: undefined
 				}
+			/>
+		</>
+	);
+}
+
+function OllamaPage({
+	state,
+	onBack,
+	onOpenCodeSetup,
+}: {
+	state: SettingsFormState;
+	onBack: () => void;
+	onOpenCodeSetup: () => void;
+}) {
+	const openCode = state.acpAgents.find((agent) => agent.id === "opencode");
+	return (
+		<>
+			<NestedBackButton label="Integrations" onClick={onBack} />
+			<PageIntro
+				id="forge-view-ollama"
+				headingLevel={2}
+				title="Ollama"
+				description="Manage the Windows-hosted Ollama runtime and choose which local models Hlid connects to OpenCode."
+			/>
+			<OllamaSection
+				openCode={openCode}
+				ollama={state.ollama}
+				disabled={state.saving}
+				onChange={(nextOllama, openCodePatch) => {
+					state.setOllama(nextOllama);
+					if (!openCodePatch) return;
+					state.setAcpAgents((current) =>
+						current.map((agent) =>
+							agent.id === "opencode" ? { ...agent, ...openCodePatch } : agent,
+						),
+					);
+				}}
+				onOpenCodeSetup={onOpenCodeSetup}
 			/>
 		</>
 	);
@@ -689,6 +732,7 @@ function IntegrationsCategory({
 	state,
 	initial,
 	onShowApps,
+	onShowOllama,
 	onShowUmbod,
 	onShowCatalog,
 	navigation,
@@ -697,6 +741,7 @@ function IntegrationsCategory({
 	state: SettingsFormState;
 	initial: SettingsInitial;
 	onShowApps: () => void;
+	onShowOllama: () => void;
 	onShowUmbod: () => void;
 	onShowCatalog: () => void;
 	navigation: ForgeNavigationState;
@@ -738,6 +783,30 @@ function IntegrationsCategory({
 				config={initial.cliproxy}
 				initialInfo={initial.cliProxyInfo}
 			/>
+			<section
+				id="forge-section-ollama"
+				aria-labelledby="forge-section-ollama-title"
+				tabIndex={-1}
+				data-forge-section="forge-section-ollama"
+				className="scroll-mt-20 flex min-w-0 flex-col items-start gap-3 border border-border bg-card p-4 focus:outline-none focus-visible:ring-1 focus-visible:ring-primary/50 @2xl:flex-row @2xl:items-center @2xl:justify-between"
+			>
+				<div className="min-w-0">
+					<h2 id="forge-section-ollama-title" className="text-sm">
+						Ollama
+					</h2>
+					<p className="mt-0.5 break-words text-xs text-muted-foreground">
+						Manage Windows-hosted local models and connect selected models to
+						OpenCode on Windows or an exact WSL target.
+					</p>
+				</div>
+				<button
+					type="button"
+					onClick={onShowOllama}
+					className="min-h-11 max-w-full shrink-0 whitespace-normal border border-border px-3 py-1.5 text-center text-[10px] tracking-widest uppercase hover:bg-accent lg:min-h-0"
+				>
+					Open Ollama
+				</button>
+			</section>
 			<section
 				id="forge-section-umbod"
 				aria-labelledby="forge-section-umbod-title"
@@ -998,6 +1067,8 @@ function CategoryContent({
 	onShowCatalog,
 	showApps,
 	onShowApps,
+	showOllama,
+	onShowOllama,
 	showUmbod,
 	onShowUmbod,
 	showTheme,
@@ -1019,6 +1090,8 @@ function CategoryContent({
 	onShowCatalog: (show: boolean) => void;
 	showApps: boolean;
 	onShowApps: (show: boolean) => void;
+	showOllama: boolean;
+	onShowOllama: (show: boolean) => void;
 	showUmbod: boolean;
 	onShowUmbod: (show: boolean) => void;
 	showTheme: boolean;
@@ -1058,9 +1131,25 @@ function CategoryContent({
 					state={state}
 					initial={initial}
 					onBack={() => onShowCatalog(false)}
+					onOpenOllama={() => onShowOllama(true)}
 					onRefreshProviders={onRefreshProviders}
 					onDiscoverAcpModels={onDiscoverAcpModels}
 					onCatalogChange={onAcpCatalogChange}
+				/>
+			</>
+		);
+	if (category === "integrations" && showOllama)
+		return (
+			<>
+				<CategoryIntro
+					category="integrations"
+					navigation={navigation}
+					onNavigate={onNavigate}
+				/>
+				<OllamaPage
+					state={state}
+					onBack={() => onShowOllama(false)}
+					onOpenCodeSetup={() => onShowCatalog(true)}
 				/>
 			</>
 		);
@@ -1138,6 +1227,7 @@ function CategoryContent({
 					state={state}
 					initial={initial}
 					onShowApps={() => onShowApps(true)}
+					onShowOllama={() => onShowOllama(true)}
 					onShowUmbod={() => onShowUmbod(true)}
 					onShowCatalog={() => onShowCatalog(true)}
 					navigation={navigation}
@@ -1311,6 +1401,8 @@ export function ForgeSettings({
 	const category = navigation.category;
 	const showCatalog = category === "integrations" && navigation.view === "acp";
 	const showApps = category === "integrations" && navigation.view === "apps";
+	const showOllama =
+		category === "integrations" && navigation.view === "ollama";
 	const showUmbod = category === "integrations" && navigation.view === "umbod";
 	const showTheme = category === "experience" && navigation.view === "theme";
 	const themeTarget: ThemeTarget = navigation.target ?? "desktop";
@@ -1422,7 +1514,7 @@ export function ForgeSettings({
 	}
 
 	function setNestedView(
-		view: Extract<ForgeView, "apps" | "umbod" | "acp" | "theme">,
+		view: Extract<ForgeView, "apps" | "ollama" | "umbod" | "acp" | "theme">,
 		show: boolean,
 	) {
 		if (!show) {
@@ -1432,11 +1524,13 @@ export function ForgeSettings({
 					? "custom-theme"
 					: view === "apps"
 						? "apps-connectors"
-						: view === "umbod"
-							? "umbod"
-							: view === "acp"
-								? "opencode-acp"
-								: undefined;
+						: view === "ollama"
+							? "ollama"
+							: view === "umbod"
+								? "umbod"
+								: view === "acp"
+									? "opencode-acp"
+									: undefined;
 			navigate(
 				{
 					category,
@@ -1449,11 +1543,13 @@ export function ForgeSettings({
 		const section =
 			view === "apps"
 				? "apps-connectors"
-				: view === "acp"
-					? "opencode-acp"
-					: view === "theme"
-						? "custom-theme"
-						: "umbod";
+				: view === "ollama"
+					? "ollama"
+					: view === "acp"
+						? "opencode-acp"
+						: view === "theme"
+							? "custom-theme"
+							: "umbod";
 		const nestedCategory = view === "theme" ? "experience" : "integrations";
 		navigate(
 			{
@@ -1592,6 +1688,8 @@ export function ForgeSettings({
 								onShowCatalog={(show) => setNestedView("acp", show)}
 								showApps={showApps}
 								onShowApps={(show) => setNestedView("apps", show)}
+								showOllama={showOllama}
+								onShowOllama={(show) => setNestedView("ollama", show)}
 								showUmbod={showUmbod}
 								onShowUmbod={(show) => setNestedView("umbod", show)}
 								showTheme={showTheme}

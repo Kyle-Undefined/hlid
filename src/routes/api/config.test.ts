@@ -346,6 +346,65 @@ describe("POST /api/config — handlePostConfig", () => {
 		});
 	});
 
+	it("synchronizes configured OpenCode when top-level Ollama models change", async () => {
+		const current = HlidConfigSchema.parse({
+			acp_agents: [{ id: "opencode" }],
+			ollama: { models: ["qwen3-coder:30b"] },
+		});
+		mockLoadConfig.mockReturnValue(current);
+		const next = HlidConfigSchema.parse({
+			acp_agents: [{ id: "opencode" }],
+			ollama: { models: ["devstral:24b"] },
+		});
+
+		const response = await handlePostConfig(post(next));
+
+		expect(response.status).toBe(200);
+		expect(dbFetch).toHaveBeenCalledWith("/acp/sync", { method: "POST" });
+		expect(await response.json()).toMatchObject({
+			ok: true,
+			acp_runtime_synced: true,
+		});
+	});
+
+	it("does not synchronize ACP when standalone Ollama models change", async () => {
+		const current = HlidConfigSchema.parse({
+			ollama: { models: ["qwen3-coder:30b"] },
+		});
+		mockLoadConfig.mockReturnValue(current);
+		const next = HlidConfigSchema.parse({
+			ollama: { models: ["devstral:24b"] },
+		});
+
+		const response = await handlePostConfig(post(next));
+
+		expect(response.status).toBe(200);
+		expect(dbFetch).not.toHaveBeenCalledWith("/acp/sync", {
+			method: "POST",
+		});
+	});
+
+	it("synchronizes configured OpenCode when the Ollama warm period changes", async () => {
+		const current = HlidConfigSchema.parse({
+			acp_agents: [{ id: "opencode" }],
+			ollama: { models: ["qwen3-coder:30b"], keep_warm: "5m" },
+		});
+		mockLoadConfig.mockReturnValue(current);
+		const next = HlidConfigSchema.parse({
+			acp_agents: [{ id: "opencode" }],
+			ollama: { models: ["qwen3-coder:30b"], keep_warm: "session" },
+		});
+
+		const response = await handlePostConfig(post(next));
+
+		expect(response.status).toBe(200);
+		expect(dbFetch).toHaveBeenCalledWith("/acp/sync", { method: "POST" });
+		expect(await response.json()).toMatchObject({
+			ok: true,
+			acp_runtime_synced: true,
+		});
+	});
+
 	it("synchronizes an enabled ACP runtime when its discovery workspace changes", async () => {
 		const current = HlidConfigSchema.parse({
 			vault: { path: "/old-vault" },
@@ -470,7 +529,7 @@ describe("POST /api/config — handlePostConfig", () => {
 						Response.json(
 							{
 								error:
-									"Cannot apply Hlid's OpenCode model filter: inline config conflict",
+									"Cannot apply Hlid's OpenCode configuration overlay: inline config conflict",
 							},
 							{ status: 409 },
 						),
@@ -493,7 +552,7 @@ describe("POST /api/config — handlePostConfig", () => {
 			runtime_synced: false,
 			acp_runtime_synced: false,
 			warning:
-				"ACP runtime synchronization returned 409: Cannot apply Hlid's OpenCode model filter: inline config conflict.",
+				"ACP runtime synchronization returned 409: Cannot apply Hlid's OpenCode configuration overlay: inline config conflict.",
 		});
 		expect(writeConfig).toHaveBeenCalledWith(next);
 		warn.mockRestore();
@@ -529,7 +588,7 @@ describe("POST /api/config — handlePostConfig", () => {
 						Response.json(
 							{
 								error:
-									"Cannot apply Hlid's OpenCode model filter: registry inline config is invalid.",
+									"Cannot apply Hlid's OpenCode configuration overlay: registry inline config is invalid.",
 							},
 							{ status: 409 },
 						),
@@ -550,7 +609,41 @@ describe("POST /api/config — handlePostConfig", () => {
 		expect(response.status).toBe(400);
 		expect(await response.json()).toEqual({
 			error:
-				"Cannot apply Hlid's OpenCode model filter: registry inline config is invalid.",
+				"Cannot apply Hlid's OpenCode configuration overlay: registry inline config is invalid.",
+		});
+		expect(writeConfig).not.toHaveBeenCalled();
+		expect(dbFetch).toHaveBeenCalledWith("/acp/preflight", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(next),
+		});
+	});
+
+	it("preflights an Ollama-only OpenCode overlay before writing config", async () => {
+		vi.mocked(dbFetch).mockImplementation((path) =>
+			path === "/acp/preflight"
+				? Promise.resolve(
+						Response.json(
+							{
+								error:
+									"Cannot apply Hlid's OpenCode configuration overlay: the reserved provider conflicts with the resolved target environment.",
+							},
+							{ status: 409 },
+						),
+					)
+				: Promise.resolve(new Response()),
+		);
+		const next = HlidConfigSchema.parse({
+			ollama: { models: ["qwen3-coder:30b"] },
+			acp_agents: [{ id: "opencode" }],
+		});
+
+		const response = await handlePostConfig(post(next));
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({
+			error:
+				"Cannot apply Hlid's OpenCode configuration overlay: the reserved provider conflicts with the resolved target environment.",
 		});
 		expect(writeConfig).not.toHaveBeenCalled();
 		expect(dbFetch).toHaveBeenCalledWith("/acp/preflight", {

@@ -3,6 +3,10 @@ import { acpExecutionTargetLabel } from "../lib/acpExecutionTarget";
 import { parseAcpManagedMutationRequest } from "../lib/acpManagedTypes";
 import { AcpModelCatalogSchema } from "../lib/acpModelCatalog";
 import { acpRuntimeIdentity } from "../lib/acpRuntimeIdentity";
+import {
+	OLLAMA_OPENCODE_ACP_INSPECTION_TIMEOUT_MS,
+	OLLAMA_OPENCODE_ACP_PREPARATION_TIMEOUT_MS,
+} from "../lib/ollama";
 import { declaredPathKey } from "../lib/paths";
 import type { AcpManagedInstaller } from "./acpManagedInstall";
 import {
@@ -17,10 +21,12 @@ import {
 } from "./acpProvider";
 import type { AcpCatalogItem, AcpCatalogOptions } from "./acpRegistry";
 import {
+	type AcpWorkspaceEnvironmentResolver,
 	AcpWorkspaceRuntimeError,
 	acpDiscoveryCwd,
 	effectiveAcpEnvironment,
 	OpenCodeConfigOverlayError,
+	preflightOpenCodeOllamaProvider,
 	resolveAcpWorkspaceRuntime,
 } from "./acpRuntime";
 import {
@@ -54,6 +60,7 @@ type AcpRouteDependencies = {
 		options: AcpProviderOptions,
 		cwd: string,
 	) => Promise<ProviderModelInfo[]>;
+	resolveEnvironment?: AcpWorkspaceEnvironmentResolver;
 	listSessions?: typeof listAcpProviderSessions;
 	findSession?: typeof findAcpProviderSession;
 	importSession?: (
@@ -208,6 +215,13 @@ async function resolveEnabledAcpRuntime(
 				),
 			};
 		}
+		const ollamaOpenCodeTimeouts =
+			item.id === "opencode" && configured && config.ollama
+				? {
+						preparationMs: OLLAMA_OPENCODE_ACP_PREPARATION_TIMEOUT_MS,
+						inspectionMs: OLLAMA_OPENCODE_ACP_INSPECTION_TIMEOUT_MS,
+					}
+				: undefined;
 		return {
 			config,
 			item,
@@ -219,8 +233,25 @@ async function resolveEnabledAcpRuntime(
 				args: runtime.args,
 				env: runtime.env,
 				target: runtime.target,
+				...(dependencies.resolveEnvironment
+					? {
+							processEnvironment: ({ environment, signal }) =>
+								dependencies.resolveEnvironment?.({
+									item,
+									config,
+									target: runtime.target,
+									cwd: workspace.cwd,
+									environment: { ...environment },
+									signal,
+								}) ?? {
+									environment: { ...environment },
+									release: () => {},
+								},
+						}
+					: {}),
 				discoveryCwd: runtime.discoveryCwd,
 				metadataCacheIdentity: runtime.metadataCacheIdentity,
+				...(ollamaOpenCodeTimeouts ? { timeouts: ollamaOpenCodeTimeouts } : {}),
 				initialAvailability: { available: true },
 			},
 			providerRuntimeIdentity: runtime.sessionContinuityIdentity,
@@ -673,15 +704,15 @@ async function preflightAcpConfig(
 		);
 	}
 	const config = parsed.data;
-	const filteredAgents = (config.acp_agents ?? []).filter(
-		(agent) => agent.model_filter,
+	const preflightAgents = (config.acp_agents ?? []).filter(
+		(agent) => agent.model_filter || (agent.id === "opencode" && config.ollama),
 	);
-	if (filteredAgents.length === 0) return Response.json({ ok: true });
+	if (preflightAgents.length === 0) return Response.json({ ok: true });
 
 	const catalog = await dependencies.registry.catalog(config, false, false, {
-		agentIds: filteredAgents.map((agent) => agent.id),
+		agentIds: preflightAgents.map((agent) => agent.id),
 	});
-	for (const configured of filteredAgents) {
+	for (const configured of preflightAgents) {
 		const item = catalog.find(
 			(candidate) => candidate.id === configured.id && candidate.enabled,
 		);
@@ -692,9 +723,10 @@ async function preflightAcpConfig(
 			);
 		}
 		try {
-			const selectedTarget =
-				item.targets.find((target) => target.selected) ?? item.targets[0];
-			if (!selectedTarget) {
+			const runnableTargets = item.targets.filter(
+				(target) => target.available && !target.cleanupOnly,
+			);
+			if (runnableTargets.length === 0) {
 				return Response.json(
 					{
 						error: `ACP agent ${JSON.stringify(configured.id)} has no execution target`,
@@ -702,15 +734,20 @@ async function preflightAcpConfig(
 					{ status: 409 },
 				);
 			}
-			effectiveAcpEnvironment(
-				{ ...item, env: selectedTarget.env },
-				config,
-				process.env,
-				selectedTarget.target.kind === "wsl" ? "linux" : process.platform,
-				true,
-				selectedTarget.selected,
-				selectedTarget.target.kind !== "wsl",
-			);
+			for (const target of runnableTargets) {
+				const platform =
+					target.target.kind === "wsl" ? "linux" : process.platform;
+				const environment = effectiveAcpEnvironment(
+					{ ...item, env: target.env },
+					config,
+					process.env,
+					platform,
+					true,
+					target.selected,
+					target.target.kind !== "wsl",
+				);
+				preflightOpenCodeOllamaProvider(environment, config, platform);
+			}
 		} catch (error) {
 			if (error instanceof OpenCodeConfigOverlayError) {
 				return Response.json({ error: error.message }, { status: 409 });

@@ -1146,6 +1146,48 @@ describe("loadProviderCatalog", () => {
 		expect(result[0]).toMatchObject({ available: true });
 	});
 
+	it.each([
+		"memory",
+		"fallback",
+	] as const)("keeps recovered ACP unavailable when validating model discovery falls back to %s", async (source) => {
+		const check = vi.fn().mockResolvedValue({ available: true });
+		const provider = makeProvider({
+			providerId: "acp:opencode",
+			check,
+			cachedAvailability: () => ({
+				available: false,
+				reason: "opencode has not completed live initialization",
+			}),
+			liveModelDiscoveryValidatesAvailability: true,
+			listModels: vi.fn(),
+		});
+
+		const result = await loadProviderCatalog(
+			[provider],
+			{
+				modelsFor: vi.fn(),
+				refreshModelsFor: vi.fn().mockResolvedValue({
+					models: [{ value: "cached", label: "Cached" }],
+					source,
+					reason: "Live model discovery did not return current options",
+				}),
+			},
+			{ refresh: true, refreshProviderId: provider.providerId },
+		);
+
+		expect(check).toHaveBeenCalledOnce();
+		expect(result[0]).toMatchObject({
+			available: false,
+			unavailableReason: "opencode has not completed live initialization",
+			models: [{ value: "cached", label: "Cached" }],
+			modelCatalogRefresh: {
+				status: "unavailable",
+				source: "fallback",
+				reason: "opencode has not completed live initialization",
+			},
+		});
+	});
+
 	it("lets an explicit refresh populate an empty ACP cache", async () => {
 		const listModels = vi
 			.fn()

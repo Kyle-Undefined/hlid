@@ -19,6 +19,46 @@ describe("settings form conversion", () => {
 		});
 	});
 
+	it("round-trips the optional top-level Ollama integration", () => {
+		const initial = HlidConfigSchema.parse({
+			ollama: { models: ["qwen3.5:27b"] },
+		});
+		const forms = createSettingsForms(initial);
+
+		expect(forms.ollama).toEqual({
+			models: ["qwen3.5:27b"],
+			keep_warm: "5m",
+		});
+		forms.ollama = { models: ["devstral:24b"], keep_warm: "30m" };
+		expect(buildSettingsConfig(initial, forms, false).ollama).toEqual({
+			models: ["devstral:24b"],
+			keep_warm: "30m",
+		});
+		forms.ollama = undefined;
+		expect(buildSettingsConfig(initial, forms, false).ollama).toBeUndefined();
+	});
+
+	it("clears per-workspace OpenCode defaults removed from Ollama", () => {
+		const initial = HlidConfigSchema.parse({
+			ollama: { models: ["qwen3.5:27b"] },
+			agents: [
+				{
+					path: "/workspace",
+					provider: "acp:opencode",
+					model: "hlid-ollama/qwen3.5:27b",
+					recap_model: "hlid-ollama/qwen3.5:27b",
+				},
+			],
+		});
+		const forms = createSettingsForms(initial);
+		forms.ollama = undefined;
+
+		expect(buildSettingsConfig(initial, forms, false).agents[0]).toMatchObject({
+			model: undefined,
+			recap_model: undefined,
+		});
+	});
+
 	it("creates editable string forms from persisted config", () => {
 		const initial = HlidConfigSchema.parse({
 			vault_provider: "codex",

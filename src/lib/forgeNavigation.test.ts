@@ -36,6 +36,9 @@ describe("Forge navigation metadata", () => {
 		expect(
 			getForgeCategory("developer").sections.map((section) => section.label),
 		).toEqual(["Event Log", "API Reference", "Pricing"]);
+		expect(
+			getForgeCategory("integrations").sections.map((section) => section.id),
+		).toContain("ollama");
 	});
 });
 
@@ -90,7 +93,7 @@ describe("Forge route search", () => {
 				section: "opencode-acp",
 			}),
 		).toEqual({ category: "integrations", section: "opencode-acp" });
-		for (const section of ["apps-connectors", "umbod"] as const) {
+		for (const section of ["apps-connectors", "ollama", "umbod"] as const) {
 			expect(parseForgeSearch({ category: "integrations", section })).toEqual({
 				category: "integrations",
 				section,
@@ -124,6 +127,17 @@ describe("Forge route search", () => {
 			section: "apps-connectors",
 			view: "apps",
 		});
+		expect(
+			parseForgeSearch({
+				category: "integrations",
+				section: "mcp",
+				view: "ollama",
+			}),
+		).toEqual({
+			category: "integrations",
+			section: "ollama",
+			view: "ollama",
+		});
 	});
 
 	it("normalizes to Overview and serializes compact defaults", () => {
@@ -156,6 +170,16 @@ describe("Forge route search", () => {
 			category: "experience",
 			section: "custom-theme",
 			view: "theme",
+		});
+		expect(
+			serializeForgeNavigation({
+				category: "integrations",
+				view: "ollama",
+			}),
+		).toEqual({
+			category: "integrations",
+			section: "ollama",
+			view: "ollama",
 		});
 	});
 
@@ -231,6 +255,13 @@ describe("Forge route search", () => {
 		).toBe("forge-view-acp");
 		expect(
 			getForgeNavigationFocusId({
+				category: "integrations",
+				section: "ollama",
+				view: "ollama",
+			}),
+		).toBe("forge-view-ollama");
+		expect(
+			getForgeNavigationFocusId({
 				category: "agents",
 				setting: "interactive-mode",
 			}),
@@ -303,6 +334,7 @@ describe("Forge setting search", () => {
 		["API Reference", "setting:api-reference", "developer", "api-reference"],
 		["MCP", "setting:mcp", "integrations", "mcp"],
 		["Apps", "setting:apps-connectors", "integrations", "apps-connectors"],
+		["Ollama", "setting:ollama", "integrations", "ollama"],
 		["Umbod", "setting:umbod", "integrations", "umbod"],
 		["ACP", "setting:opencode-acp", "integrations", "opencode-acp"],
 		["Custom Theme", "setting:custom-theme", "experience", "custom-theme"],
@@ -391,6 +423,7 @@ describe("Forge setting search", () => {
 			"Custom theme",
 			"setting:custom-theme",
 			"Custom theme editor",
+			"theme",
 		],
 		[
 			"OpenCode and ACP agents",
@@ -398,6 +431,7 @@ describe("Forge setting search", () => {
 			"OpenCode and ACP agents",
 			"setting:opencode-acp",
 			"OpenCode and ACP catalog",
+			"acp",
 		],
 		[
 			"Apps and Connectors",
@@ -405,8 +439,17 @@ describe("Forge setting search", () => {
 			"Apps and Connectors",
 			"setting:apps-connectors",
 			"Apps and Connectors catalog",
+			"apps",
 		],
-	])("distinguishes the %s landing from its nested editor", (query, landingId, landingLabel, editorId, editorLabel) => {
+		[
+			"Ollama",
+			"section:integrations:ollama",
+			"Ollama",
+			"setting:ollama",
+			"Ollama integration",
+			"ollama",
+		],
+	])("distinguishes the %s landing from its nested editor", (query, landingId, landingLabel, editorId, editorLabel, view) => {
 		const results = searchForgeDestinations(query);
 		expect(results.find((result) => result.id === landingId)).toMatchObject({
 			label: landingLabel,
@@ -415,12 +458,7 @@ describe("Forge setting search", () => {
 		expect(results.find((result) => result.id === editorId)).toMatchObject({
 			label: editorLabel,
 			navigation: expect.objectContaining({
-				view:
-					editorId === "setting:custom-theme"
-						? "theme"
-						: editorId === "setting:apps-connectors"
-							? "apps"
-							: "acp",
+				view,
 			}),
 		});
 		expect(new Set(results.map((result) => result.label)).size).toBe(
@@ -515,6 +553,10 @@ describe("Forge setting search", () => {
 					id: "setting:mcp",
 					anchorId: "forge-section-mcp",
 				}),
+				expect.objectContaining({
+					id: "setting:ollama",
+					anchorId: "forge-view-ollama",
+				}),
 			]),
 		);
 	});
@@ -523,6 +565,7 @@ describe("Forge setting search", () => {
 		const expected = new Map([
 			["section:experience:custom-theme", "forge-section-custom-theme"],
 			["section:integrations:apps-connectors", "forge-section-apps-connectors"],
+			["section:integrations:ollama", "forge-section-ollama"],
 			["section:integrations:umbod", "forge-section-umbod"],
 			["section:integrations:opencode-acp", "forge-section-opencode-acp"],
 			["section:developer:event-log", "forge-view-events"],

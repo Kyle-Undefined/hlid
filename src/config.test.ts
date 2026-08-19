@@ -94,6 +94,217 @@ describe("HlidConfigSchema OpenCode Go usage", () => {
 	});
 });
 
+describe("HlidConfigSchema Windows Ollama models", () => {
+	it("accepts a top-level integration independently from OpenCode", () => {
+		const defaults = HlidConfigSchema.parse({
+			ollama: { models: ["qwen3.5:27b", "library/coder:latest"] },
+		}).ollama;
+		expect(defaults).toEqual({
+			models: ["qwen3.5:27b", "library/coder:latest"],
+			keep_warm: "5m",
+		});
+		expect(
+			HlidConfigSchema.parse({
+				ollama: { models: ["qwen3.5:27b"], keep_warm: "session" },
+			}).ollama?.keep_warm,
+		).toBe("session");
+		expect(
+			HlidConfigSchema.safeParse({
+				ollama: { models: ["qwen3.5:27b"], keep_warm: "forever" },
+			}).success,
+		).toBe(false);
+	});
+
+	it("rejects empty, duplicate, or unsafe model selections", () => {
+		for (const models of [
+			[],
+			["qwen3.5:27b", "qwen3.5:27b"],
+			["model with spaces"],
+		] as string[][]) {
+			expect(
+				HlidConfigSchema.safeParse({
+					ollama: { models },
+				}).success,
+			).toBe(false);
+		}
+	});
+
+	it("hoists and strips the short-lived nested OpenCode shape", () => {
+		const parsed = HlidConfigSchema.parse({
+			acp_agents: [
+				{
+					id: "opencode",
+					ollama: { models: ["qwen3.5:27b", "devstral:24b"] },
+				},
+			],
+		});
+
+		expect(parsed.ollama).toEqual({
+			models: ["qwen3.5:27b", "devstral:24b"],
+			keep_warm: "5m",
+		});
+		expect(parsed.acp_agents?.[0]).toEqual({ id: "opencode" });
+		expect(parsed.acp_agents?.[0]).not.toHaveProperty("ollama");
+	});
+
+	it("accepts matching canonical and legacy sets but rejects conflicts", () => {
+		const matching = HlidConfigSchema.parse({
+			ollama: { models: ["qwen3.5:27b", "devstral:24b"] },
+			acp_agents: [
+				{
+					id: "opencode",
+					ollama: { models: ["devstral:24b", "qwen3.5:27b"] },
+				},
+			],
+		});
+		expect(matching.ollama?.models).toEqual(["qwen3.5:27b", "devstral:24b"]);
+		expect(matching.acp_agents?.[0]).not.toHaveProperty("ollama");
+
+		expect(
+			HlidConfigSchema.safeParse({
+				ollama: { models: ["qwen3.5:27b"] },
+				acp_agents: [
+					{
+						id: "opencode",
+						ollama: { models: ["devstral:24b"] },
+					},
+				],
+			}).success,
+		).toBe(false);
+	});
+
+	it("rejects legacy nested Ollama config on non-OpenCode ACP agents", () => {
+		expect(
+			HlidConfigSchema.safeParse({
+				acp_agents: [{ id: "other", ollama: { models: ["qwen3.5:27b"] } }],
+			}).success,
+		).toBe(false);
+	});
+
+	it("keeps selected Ollama models consistent with OpenCode visibility", () => {
+		expect(
+			HlidConfigSchema.safeParse({
+				ollama: { models: ["qwen3.5:27b"] },
+				acp_agents: [
+					{
+						id: "opencode",
+						model_filter: {
+							mode: "only",
+							models: ["opencode/free"],
+						},
+					},
+				],
+			}).success,
+		).toBe(false);
+		expect(
+			HlidConfigSchema.safeParse({
+				ollama: { models: ["qwen3.5:27b"] },
+				acp_agents: [
+					{
+						id: "opencode",
+						model_filter: {
+							mode: "only",
+							models: ["hlid-ollama/qwen3.5:27b"],
+						},
+					},
+				],
+			}).success,
+		).toBe(true);
+		expect(
+			HlidConfigSchema.safeParse({
+				ollama: { models: ["qwen3.5:27b"] },
+				acp_agents: [
+					{
+						id: "opencode",
+						model_filter: {
+							mode: "hide",
+							models: ["hlid-ollama/qwen3.5:27b"],
+						},
+					},
+				],
+			}).success,
+		).toBe(false);
+	});
+
+	it("rejects unselected reserved Ollama IDs in OpenCode visibility", () => {
+		for (const mode of ["only", "hide"] as const) {
+			expect(
+				HlidConfigSchema.safeParse({
+					acp_agents: [
+						{
+							id: "opencode",
+							model_filter: {
+								mode,
+								models: ["hlid-ollama/unselected:latest"],
+							},
+						},
+					],
+				}).success,
+			).toBe(false);
+			expect(
+				HlidConfigSchema.safeParse({
+					ollama: { models: ["selected:latest"] },
+					acp_agents: [
+						{
+							id: "opencode",
+							model_filter: {
+								mode,
+								models: ["hlid-ollama/unselected:latest"],
+							},
+						},
+					],
+				}).success,
+			).toBe(false);
+		}
+	});
+
+	it("requires Ollama defaults to remain in the selected Windows models", () => {
+		for (const configured of [
+			{ model: "hlid-ollama/missing:latest" },
+			{ recap_model: "hlid-ollama/missing:latest" },
+		]) {
+			expect(
+				HlidConfigSchema.safeParse({
+					ollama: { models: ["selected:latest"] },
+					acp_agents: [
+						{
+							id: "opencode",
+							...configured,
+						},
+					],
+				}).success,
+			).toBe(false);
+		}
+		expect(
+			HlidConfigSchema.safeParse({
+				ollama: { models: ["selected:latest"] },
+				acp_agents: [
+					{
+						id: "opencode",
+						model: "hlid-ollama/selected:latest",
+						recap_model: "hlid-ollama/selected:latest",
+					},
+				],
+			}).success,
+		).toBe(true);
+	});
+
+	it("requires per-workspace OpenCode defaults to remain selected", () => {
+		expect(
+			HlidConfigSchema.safeParse({
+				ollama: { models: ["selected:latest"] },
+				agents: [
+					{
+						path: "C:\\workspace",
+						provider: "acp:opencode",
+						model: "hlid-ollama/missing:latest",
+					},
+				],
+			}).success,
+		).toBe(false);
+	});
+});
+
 describe("HlidConfigSchema Local Conversation", () => {
 	it("is opt-in and preserves an explicit enabled value", () => {
 		expect(HlidConfigSchema.parse({}).voice.local_conversation_mode).toBe(
