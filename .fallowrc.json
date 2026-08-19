@@ -67,6 +67,7 @@
 		]
 	},
 	"duplicates": {
+		"threshold": 0.2,
 		"ignore": ["src/db/schema.ts", "src/server/session.test-utils.ts"]
 	},
 	"production": true,
