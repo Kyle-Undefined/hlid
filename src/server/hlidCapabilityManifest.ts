@@ -204,6 +204,7 @@ function orchestrationAvailability(
 		"wait_hlid_agent",
 		"steer_hlid_agent",
 		"cancel_hlid_agent",
+		"cleanup_hlid_worktree",
 		"resume_hlid_agent",
 	]);
 	if (availability !== "available") return availability;
@@ -745,6 +746,13 @@ function projectPreviewCapability(state: ManifestState): Capability {
 		availability:
 			state.sessionScoped && state.workspaceAvailable
 				? toolAvailability(state.tools, [
+						"open_web_browser",
+						"inspect_web_browser",
+						"capture_web_browser",
+						"control_web_browser",
+						"start_web_browser_recording",
+						"stop_web_browser_recording",
+						"stop_web_browser",
 						"start_project_preview",
 						"inspect_project_preview",
 						"capture_project_preview",
@@ -755,7 +763,7 @@ function projectPreviewCapability(state: ManifestState): Capability {
 					])
 				: "conditional",
 		summary:
-			"Project Preview can run, present, inspect, capture, export, interact with, restart, and stop a session-scoped web project.",
+			"Project Preview can run a session-scoped web project, while Browser can open public URLs; both share Hlid's managed presentation, exact capture, and bounded interaction surface.",
 	};
 }
 

@@ -33,6 +33,8 @@ import type { ToolEventMessage } from "#/server/protocol";
 type ProjectPreviewCaptureMetadata = {
 	preview_id: string;
 	session_id?: string;
+	target_kind?: "project" | "browser";
+	recording?: boolean;
 	path: string;
 	viewport: "desktop" | "tablet" | "mobile";
 	width: number;
@@ -118,7 +120,24 @@ function captureMetadata(
 function isCaptureActivity(event: ToolEventMessage): boolean {
 	return (
 		event.name.endsWith("capture_project_preview") ||
-		event.name.endsWith("control_project_preview")
+		event.name.endsWith("control_project_preview") ||
+		event.name.endsWith("capture_web_browser") ||
+		event.name.endsWith("control_web_browser") ||
+		event.name.endsWith("start_web_browser_recording")
+	);
+}
+
+function isBrowserActivity(event: ToolEventMessage): boolean {
+	return (
+		event.name.endsWith("web_browser") ||
+		event.name.endsWith("web_browser_recording")
+	);
+}
+
+function isPreviewStartActivity(event: ToolEventMessage): boolean {
+	return (
+		event.name.endsWith("start_project_preview") ||
+		event.name.endsWith("open_web_browser")
 	);
 }
 
@@ -165,6 +184,10 @@ function ProjectPreviewCaptureOpener({
 	const canOpen =
 		Boolean(capture?.frame_id && capture.session_id && capture.preview_id) ||
 		canHydrateCapture;
+	const targetLabel =
+		capture?.target_kind === "browser" || isBrowserActivity(event)
+			? "Browser"
+			: "Preview";
 
 	const open = async () => {
 		if (!canOpen) return;
@@ -190,7 +213,7 @@ function ProjectPreviewCaptureOpener({
 				!resolvedCapture.session_id ||
 				!resolvedCapture.preview_id
 			) {
-				throw new Error("This Preview action has no retained capture.");
+				throw new Error(`This ${targetLabel} action has no retained capture.`);
 			}
 			setTarget({
 				frameId: resolvedCapture.frame_id,
@@ -214,8 +237,8 @@ function ProjectPreviewCaptureOpener({
 					className={`${className} disabled:cursor-wait`}
 					aria-label={
 						capture?.path
-							? `View Preview capture at ${capture.path}`
-							: "View Preview capture"
+							? `View ${targetLabel} capture at ${capture.path}`
+							: `View ${targetLabel} capture`
 					}
 				>
 					{children}
@@ -241,15 +264,15 @@ function ProjectPreviewCaptureOpener({
 					<ImageViewerModal
 						key={frame.frame_id}
 						src={`data:${frame.mime};base64,${frame.image_base64}`}
-						alt={`Preview capture at ${frame.path}`}
+						alt={`${targetLabel} capture at ${frame.path}`}
 						onClose={() => setTarget(null)}
 						navigation={{
 							position: navigation.position,
 							total: navigation.total,
 							onPrevious: navigation.previous,
 							onNext: navigation.next,
-							previousLabel: "Previous Preview capture",
-							nextLabel: "Next Preview capture",
+							previousLabel: `Previous ${targetLabel} capture`,
+							nextLabel: `Next ${targetLabel} capture`,
 						}}
 					/>,
 					document.body,
@@ -299,7 +322,14 @@ export function ProjectPreviewCaptureToolBlock({
 	permissionLabel?: string;
 }) {
 	const capture = captureMetadata(event);
-	const isControl = event.name.endsWith("control_project_preview");
+	const isControl =
+		event.name.endsWith("control_project_preview") ||
+		event.name.endsWith("control_web_browser");
+	const isRecordingStart = event.name.endsWith("start_web_browser_recording");
+	const targetLabel =
+		capture?.target_kind === "browser" || isBrowserActivity(event)
+			? "Browser"
+			: "Project Preview";
 	const failed = Boolean(event.isError);
 	const pending = !event.result && !failed;
 	const complete = !pending && !failed;
@@ -317,16 +347,22 @@ export function ProjectPreviewCaptureToolBlock({
 			<div className="min-w-0 flex-1">
 				<div className="truncate text-[11px] tracking-wide text-foreground/80">
 					{pending
-						? isControl
-							? "Controlling Project Preview"
-							: "Capturing Project Preview"
-						: failed
-							? isControl
-								? "Project Preview control failed"
-								: "Project Preview capture failed"
+						? isRecordingStart
+							? "Starting Browser recording"
 							: isControl
-								? "Project Preview controlled by agent"
-								: "Project Preview captured for agent"}
+								? `Controlling ${targetLabel}`
+								: `Capturing ${targetLabel}`
+						: failed
+							? isRecordingStart
+								? "Browser recording failed to start"
+								: isControl
+									? `${targetLabel} control failed`
+									: `${targetLabel} capture failed`
+							: isRecordingStart
+								? "Browser recording started"
+								: isControl
+									? `${targetLabel} controlled by agent`
+									: `${targetLabel} captured for agent`}
 				</div>
 				<div className="truncate text-[9px] uppercase tracking-widest text-muted-foreground">
 					{capture
@@ -400,7 +436,7 @@ export function selectActiveProjectPreviewEvents(
 	livePreview: ProjectPreviewSnapshot | null,
 ): ToolEventMessage[] {
 	const latestStartIndex = events.findLastIndex((event) =>
-		event.name.endsWith("start_project_preview"),
+		isPreviewStartActivity(event),
 	);
 	if (latestStartIndex >= 0) {
 		const latestStart = events[latestStartIndex];
@@ -417,7 +453,7 @@ export function selectActiveProjectPreviewEvents(
 	if (!livePreview || !isActivePreviewState(livePreview.state)) return [];
 	const matchingStartIndex = events.findLastIndex(
 		(event) =>
-			event.name.endsWith("start_project_preview") &&
+			isPreviewStartActivity(event) &&
 			projectPreviewEventId(event) === livePreview.id,
 	);
 	const firstMatchingIndex = events.findIndex(
@@ -438,7 +474,7 @@ export function groupProjectPreviewEventLifecycles(
 	const groups: ToolEventMessage[][] = [];
 	let current: ToolEventMessage[] = [];
 	for (const event of events) {
-		if (event.name.endsWith("start_project_preview") && current.length > 0) {
+		if (isPreviewStartActivity(event) && current.length > 0) {
 			groups.push(current);
 			current = [];
 		}
@@ -450,10 +486,17 @@ export function groupProjectPreviewEventLifecycles(
 
 function previewActivityLabel(event: ToolEventMessage): string {
 	if (event.name.endsWith("start_project_preview")) return "Start";
+	if (event.name.endsWith("open_web_browser")) return "Open";
 	if (event.name.endsWith("inspect_project_preview")) return "Inspect";
+	if (event.name.endsWith("inspect_web_browser")) return "Inspect";
 	if (event.name.endsWith("capture_project_preview")) return "Capture";
+	if (event.name.endsWith("capture_web_browser")) return "Capture";
 	if (event.name.endsWith("control_project_preview")) return "Control";
+	if (event.name.endsWith("control_web_browser")) return "Control";
+	if (event.name.endsWith("start_web_browser_recording")) return "Record";
+	if (event.name.endsWith("stop_web_browser_recording")) return "Save replay";
 	if (event.name.endsWith("stop_project_preview")) return "Stop";
+	if (event.name.endsWith("stop_web_browser")) return "Stop";
 	return "Preview";
 }
 
@@ -669,6 +712,10 @@ export function ProjectPreviewActivityCard({
 							: ("stopped" as const),
 				}
 			: resolvedPreview;
+	const targetLabel =
+		preview?.target_kind === "browser" || events.some(isBrowserActivity)
+			? "Browser"
+			: "Project Preview";
 	const previewId = preview?.id ?? eventPreviewId ?? "";
 	const stateKey = `${sessionId}:${previewId}`;
 	const [openOverride, setOpenOverride] = useState<boolean | null>(
@@ -721,7 +768,7 @@ export function ProjectPreviewActivityCard({
 					type="button"
 					onClick={toggleOpen}
 					aria-expanded={open}
-					aria-label={`${preview?.label ?? "Project Preview"} ${state}`}
+					aria-label={`${preview?.label ?? targetLabel} ${state}`}
 					className="flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:text-primary"
 				>
 					<ChevronRight
@@ -735,7 +782,7 @@ export function ProjectPreviewActivityCard({
 						<Monitor className="h-3.5 w-3.5 shrink-0 text-primary/60" />
 					)}
 					<span className="min-w-0 shrink truncate text-[11px] font-medium tracking-wider text-primary/75">
-						{preview?.label ?? "Project Preview"}
+						{preview?.label ?? targetLabel}
 					</span>
 					<span
 						className={`shrink-0 text-[9px] font-medium uppercase tracking-widest ${statusTone}`}
@@ -821,7 +868,11 @@ export function ProjectPreviewToolBlock({
 		pendingAction: pending,
 		runAction: act,
 	} = useProjectPreviewActions(preview);
-	const isStart = event.name.endsWith("start_project_preview");
+	const isStart = isPreviewStartActivity(event);
+	const targetLabel =
+		preview?.target_kind === "browser" || isBrowserActivity(event)
+			? "Browser"
+			: "Project Preview";
 
 	const state = preview?.state ?? (event.isError ? "failed" : "starting");
 	const statusTone =
@@ -843,7 +894,7 @@ export function ProjectPreviewToolBlock({
 				<div className="min-w-0 flex-1">
 					<div className="truncate text-[11px] tracking-wide text-foreground/80">
 						{preview?.label ??
-							(isStart ? "Starting Project Preview" : "Project Preview")}
+							(isStart ? `Starting ${targetLabel}` : targetLabel)}
 					</div>
 					<div
 						className={`truncate text-[9px] uppercase tracking-widest ${statusTone}`}

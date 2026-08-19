@@ -2,10 +2,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	start: vi.fn(),
+	startBrowser: vi.fn(),
 	stop: vi.fn(),
 	restart: vi.fn(),
 	inspect: vi.fn(),
 	relayTarget: vi.fn(),
+	browserTarget: vi.fn(),
+	syncBrowserLocation: vi.fn(),
+	captureWeb: vi.fn(),
+	controlWeb: vi.fn(),
+	startWebRecording: vi.fn(),
+	stopWebRecording: vi.fn(),
+	publishGeneratedRelic: vi.fn(),
+	broadcast: vi.fn(),
 	selectionRedirect: vi.fn().mockReturnValue(null),
 	handleRelayRequest: vi.fn().mockResolvedValue(null),
 	getProjectPreview: vi.fn(),
@@ -24,13 +33,24 @@ vi.mock("./dataRevision", () => ({
 	bumpDataRevision: mocks.bumpDataRevision,
 }));
 
+vi.mock("./attachments", () => ({
+	handleGeneratedRelicPublish: mocks.publishGeneratedRelic,
+}));
+
+vi.mock("./config", () => ({ loadConfig: vi.fn(() => ({})) }));
+
+vi.mock("./runState", () => ({ broadcast: mocks.broadcast }));
+
 vi.mock("./projectPreview", () => ({
 	projectPreviewManager: {
 		start: mocks.start,
+		startBrowser: mocks.startBrowser,
 		stop: mocks.stop,
 		restart: mocks.restart,
 		inspect: mocks.inspect,
 		relayTarget: mocks.relayTarget,
+		browserTarget: mocks.browserTarget,
+		syncBrowserLocation: mocks.syncBrowserLocation,
 	},
 }));
 
@@ -43,6 +63,10 @@ vi.mock("./projectPreviewBrowser", () => ({
 	projectPreviewBrowserManager: {
 		capture: vi.fn(),
 		control: vi.fn(),
+		captureWeb: mocks.captureWeb,
+		controlWeb: mocks.controlWeb,
+		startWebRecording: mocks.startWebRecording,
+		stopWebRecording: mocks.stopWebRecording,
 		getFrame: mocks.getFrame,
 		getFrameWindow: mocks.getFrameWindow,
 	},
@@ -503,7 +527,19 @@ describe("Project Preview capture route", () => {
 			image_base64: "AQID",
 			frame_id: crypto.randomUUID(),
 			title: "App",
-			elements: [],
+			elements: [
+				{
+					ref: "e1",
+					role: "button",
+					name: "Save",
+					tag: "button",
+					type: "submit",
+					x: 12,
+					y: 24,
+					width: 80,
+					height: 32,
+				},
+			],
 			console_messages: [],
 			failed_requests: [],
 		});
@@ -721,6 +757,169 @@ describe("Project Preview capture route", () => {
 		});
 	});
 
+	it("routes arbitrary URL capture, control, and recording through the Browser target", async () => {
+		const browserPreview = {
+			...failedPreview,
+			target_kind: "browser" as const,
+			label: "Example",
+			command: "",
+			cwd: "",
+			port: 0,
+			path: "https://example.com/",
+			url: "https://example.com/",
+			relay_url: "",
+			state: "ready" as const,
+		};
+		const browserFrame = {
+			preview_id: browserPreview.id,
+			session_id: "session-1",
+			target_kind: "browser" as const,
+			path: "https://example.com/docs",
+			viewport: "desktop" as const,
+			width: 1440,
+			height: 1000,
+			full_page: false,
+			captured_at: Date.now(),
+			mime: "image/png" as const,
+			size_bytes: 3,
+			image_base64: "AQID",
+			frame_id: crypto.randomUUID(),
+			title: "Example",
+			elements: [],
+			console_messages: [],
+			failed_requests: [],
+		};
+		mocks.startBrowser.mockResolvedValue(browserPreview);
+		mocks.inspect.mockReturnValue(browserPreview);
+		mocks.browserTarget.mockReturnValue({
+			url: "https://example.com/",
+			allowPrivateNetwork: false,
+		});
+		mocks.captureWeb.mockResolvedValue(browserFrame);
+		mocks.controlWeb.mockResolvedValue({
+			...browserFrame,
+			last_action: "navigate",
+		});
+		mocks.startWebRecording.mockResolvedValue({
+			...browserFrame,
+			recording: true,
+		});
+		mocks.stopWebRecording.mockResolvedValue({
+			previewId: browserPreview.id,
+			sessionId: "session-1",
+			startedAt: 1_753_400_000_000,
+			endedAt: 1_753_400_001_500,
+			truncated: false,
+			frames: [],
+		});
+		mocks.publishGeneratedRelic.mockResolvedValue(
+			Response.json({
+				id: "recording-relic",
+				filename: "browser-interaction.html",
+				open_url: "/api/attachments/recording-relic/raw",
+			}),
+		);
+
+		const opened = await handleProjectPreviewRoute(
+			new URL("http://localhost/api/project-previews/browser/start"),
+			new Request("http://localhost/api/project-previews/browser/start", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					session_id: "session-1",
+					url: "https://example.com/",
+				}),
+			}),
+		);
+		expect(opened?.status).toBe(201);
+		expect(mocks.startBrowser).toHaveBeenCalledWith(
+			expect.objectContaining({ url: "https://example.com/" }),
+		);
+
+		const captured = await handleProjectPreviewRoute(
+			new URL("http://localhost/api/project-previews/session/capture"),
+			new Request("http://localhost/api/project-previews/session/capture", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					session_id: "session-1",
+				}),
+			}),
+		);
+		expect(captured?.status).toBe(200);
+		expect(mocks.captureWeb).toHaveBeenCalledWith(
+			expect.objectContaining({
+				initialUrl: "https://example.com/",
+			}),
+		);
+		expect(mocks.syncBrowserLocation).toHaveBeenCalledWith(
+			"session-1",
+			browserPreview.id,
+			"https://example.com/docs",
+		);
+
+		await handleProjectPreviewRoute(
+			new URL("http://localhost/api/project-previews/session/control"),
+			new Request("http://localhost/api/project-previews/session/control", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					session_id: "session-1",
+					action: "navigate",
+					url: "https://example.com/docs",
+				}),
+			}),
+		);
+		expect(mocks.controlWeb).toHaveBeenCalledWith(
+			expect.objectContaining({
+				action: "navigate",
+				url: "https://example.com/docs",
+			}),
+		);
+		expect(mocks.syncBrowserLocation).toHaveBeenLastCalledWith(
+			"session-1",
+			browserPreview.id,
+			"https://example.com/docs",
+		);
+
+		const recording = await handleProjectPreviewRoute(
+			new URL("http://localhost/api/project-previews/session/recording/start"),
+			new Request(
+				"http://localhost/api/project-previews/session/recording/start",
+				{
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ session_id: "session-1" }),
+				},
+			),
+		);
+		expect(recording?.status).toBe(200);
+		expect(mocks.startWebRecording).toHaveBeenCalledOnce();
+		expect(mocks.syncBrowserLocation).toHaveBeenLastCalledWith(
+			"session-1",
+			browserPreview.id,
+			"https://example.com/docs",
+		);
+
+		const saved = await handleProjectPreviewRoute(
+			new URL("http://localhost/api/project-previews/session/recording/stop"),
+			new Request(
+				"http://localhost/api/project-previews/session/recording/stop",
+				{
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ session_id: "session-1" }),
+				},
+			),
+		);
+		expect(await saved?.json()).toMatchObject({
+			id: "recording-relic",
+			frame_count: 0,
+			duration_seconds: 1.5,
+		});
+		expect(mocks.publishGeneratedRelic).toHaveBeenCalledOnce();
+	});
+
 	it("retains annotated feedback against the exact source frame", async () => {
 		const frameId = "e16b1643-591f-4d67-8c22-9df105659385";
 		mocks.getFrame.mockReturnValue({
@@ -737,7 +936,19 @@ describe("Project Preview capture route", () => {
 			image_base64: "AQID",
 			frame_id: frameId,
 			title: "Settings",
-			elements: [],
+			elements: [
+				{
+					ref: "e1",
+					role: "button",
+					name: "Save",
+					tag: "button",
+					type: "submit",
+					x: 12,
+					y: 24,
+					width: 80,
+					height: 32,
+				},
+			],
 			console_messages: [],
 			failed_requests: [],
 		});
@@ -763,6 +974,18 @@ describe("Project Preview capture route", () => {
 						frame_id: frameId,
 						attachment_id: "0591f46e-b4b3-4bfb-9aa2-14f65d625209",
 						comment: "Check this alignment.",
+						annotations: [
+							{
+								mark_index: 0,
+								mark_kind: "rectangle",
+								ref: "e1",
+								role: "button",
+								name: "Save",
+								tag: "button",
+								type: "submit",
+								bounds: { x: 12, y: 24, width: 80, height: 32 },
+							},
+						],
 					}),
 				},
 			),
@@ -782,6 +1005,18 @@ describe("Project Preview capture route", () => {
 				"039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81",
 			capturedAt: 1_753_400_000_000,
 			comment: "Check this alignment.",
+			annotations: [
+				{
+					mark_index: 0,
+					mark_kind: "rectangle",
+					ref: "e1",
+					role: "button",
+					name: "Save",
+					tag: "button",
+					type: "submit",
+					bounds: { x: 12, y: 24, width: 80, height: 32 },
+				},
+			],
 		});
 		expect(mocks.bumpDataRevision).toHaveBeenCalledWith("relics", "storage");
 		expect(await response?.json()).toMatchObject({

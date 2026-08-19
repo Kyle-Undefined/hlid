@@ -1003,6 +1003,7 @@ export type ProjectPreviewState = "starting" | "ready" | "failed" | "stopped";
 
 export type ProjectPreviewSnapshot = {
 	id: string;
+	target_kind?: "project" | "browser";
 	session_id: string;
 	label: string;
 	command: string;
@@ -1056,6 +1057,8 @@ export type ProjectPreviewAgentFrame = {
 	elements: ProjectPreviewAgentElement[];
 	console_messages: string[];
 	failed_requests: string[];
+	target_kind?: "project" | "browser";
+	recording?: boolean;
 	last_action?:
 		| "click"
 		| "type"
@@ -1088,6 +1091,18 @@ export type ProjectPreviewAgentFrameWindow = {
 export type ProjectPreviewFeedbackResult = {
 	attachment: ChatAttachment;
 	open_url: string;
+};
+
+export type ProjectPreviewFeedbackAnnotation = {
+	mark_index: number;
+	mark_kind: "highlight" | "rectangle" | "arrow" | "text";
+	ref: string;
+	role: string;
+	name: string;
+	tag: string;
+	type?: string;
+	disabled?: boolean;
+	bounds: { x: number; y: number; width: number; height: number };
 };
 
 export type ProjectPreviewStatusMessage = {

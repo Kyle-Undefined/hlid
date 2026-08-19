@@ -5,7 +5,9 @@ import {
 } from "./projectPreviewAgentRelay";
 import {
 	isAllowedProjectPreviewBrowserOrigin,
+	isPrivateWebBrowserHostname,
 	normalizeProjectPreviewCapturePath,
+	normalizeWebBrowserUrl,
 	PROJECT_PREVIEW_CAPTURE_VIEWPORTS,
 	type ProjectPreviewCaptureInput,
 	type ProjectPreviewCaptureViewport,
@@ -29,6 +31,9 @@ const MAX_QUEUED_ACTIONS = 8;
 const AGENT_BROWSER_IDLE_MS = 30 * 60 * 1_000;
 const MAX_RETAINED_FRAMES_PER_PREVIEW = 8;
 const MAX_RETAINED_FRAME_BYTES = 32 * 1024 * 1024;
+const MAX_WEB_RECORDING_DURATION_MS = 2 * 60 * 1_000;
+const MAX_WEB_RECORDING_FRAMES = 12;
+const MAX_WEB_RECORDING_BYTES = 12 * 1024 * 1024;
 
 type ProjectPreviewControlBase = {
 	previewId: string;
@@ -37,6 +42,17 @@ type ProjectPreviewControlBase = {
 	capability: ProjectPreviewCapability;
 	initialPath: string;
 };
+
+type WebBrowserControlBase = {
+	previewId: string;
+	sessionId: string;
+	initialUrl: string;
+	allowPrivateNetwork: boolean;
+};
+
+type BrowserTarget =
+	| ({ kind: "project" } & ProjectPreviewControlBase)
+	| ({ kind: "web" } & WebBrowserControlBase);
 
 export type ProjectPreviewControlAction =
 	| (ProjectPreviewControlBase & {
@@ -73,12 +89,43 @@ export type ProjectPreviewControlAction =
 			viewport: ProjectPreviewCaptureViewport;
 	  });
 
+export type WebBrowserControlAction =
+	| (WebBrowserControlBase & {
+			action: "click";
+			frameId: string;
+			ref?: string;
+			x?: number;
+			y?: number;
+	  })
+	| (WebBrowserControlBase & {
+			action: "type";
+			frameId: string;
+			ref: string;
+			text: string;
+	  })
+	| (WebBrowserControlBase & { action: "key"; key: string })
+	| (WebBrowserControlBase & {
+			action: "scroll";
+			deltaX: number;
+			deltaY: number;
+	  })
+	| (WebBrowserControlBase & { action: "navigate"; url: string })
+	| (WebBrowserControlBase & { action: "reload" })
+	| (WebBrowserControlBase & {
+			action: "viewport";
+			viewport: ProjectPreviewCaptureViewport;
+	  });
+
+export type WebBrowserCaptureInput = WebBrowserControlBase & {
+	viewport: ProjectPreviewCaptureViewport;
+	fullPage: boolean;
+};
+
 type BrowserEntry = {
 	previewId: string;
 	sessionId: string;
-	port: number;
-	capability: ProjectPreviewCapability;
-	relay: ProjectPreviewAgentRelay;
+	target: BrowserTarget;
+	relay: ProjectPreviewAgentRelay | null;
 	browser: ProjectPreviewBrowserSession;
 	viewport: ProjectPreviewCaptureViewport;
 	width: number;
@@ -92,6 +139,30 @@ type BrowserManagerOptions = {
 	relayFactory?: ProjectPreviewAgentRelayFactory;
 	idleMs?: number;
 };
+
+export type WebBrowserRecordingFrame = {
+	capturedAt: number;
+	url: string;
+	title: string;
+	width: number;
+	height: number;
+	mime: "image/png";
+	imageBase64: string;
+	action?: ProjectPreviewControlAction["action"];
+};
+
+export type WebBrowserRecordingResult = {
+	previewId: string;
+	sessionId: string;
+	startedAt: number;
+	endedAt: number;
+	truncated: boolean;
+	frames: WebBrowserRecordingFrame[];
+};
+
+type WebBrowserRecordingState = Omit<WebBrowserRecordingResult, "endedAt"> & {
+	bytes: number;
+};
 async function currentPath(
 	browser: ProjectPreviewBrowserSession,
 	origin: string,
@@ -104,6 +175,16 @@ async function currentPath(
 		return `${url.pathname}${url.search}${url.hash}`;
 	} catch {
 		return "/";
+	}
+}
+
+async function currentWebUrl(
+	browser: ProjectPreviewBrowserSession,
+): Promise<string> {
+	try {
+		return normalizeWebBrowserUrl(await browser.currentUrl());
+	} catch {
+		return "about:blank";
 	}
 }
 
@@ -144,6 +225,7 @@ export class ProjectPreviewBrowserManager {
 	private readonly generations = new Map<string, number>();
 	private readonly launches = new Map<string, AbortController>();
 	private readonly frameHistory = new Map<string, ProjectPreviewAgentFrame[]>();
+	private readonly recordings = new Map<string, WebBrowserRecordingState>();
 	private retainedFrameBytes = 0;
 	private readonly browserFactory: ProjectPreviewBrowserSessionFactory;
 	private readonly relayFactory: ProjectPreviewAgentRelayFactory;
@@ -211,7 +293,7 @@ export class ProjectPreviewBrowserManager {
 	}
 
 	private async createEntry(
-		input: ProjectPreviewControlBase,
+		input: BrowserTarget,
 		generation: number,
 	): Promise<BrowserEntry> {
 		const launch = new AbortController();
@@ -219,19 +301,42 @@ export class ProjectPreviewBrowserManager {
 		let relay: ProjectPreviewAgentRelay | null = null;
 		let browser: ProjectPreviewBrowserSession | null = null;
 		try {
-			relay = await this.relayFactory({
-				targetPort: input.port,
-				capability: input.capability,
-			});
-			browser = await this.browserFactory(relay.browserAccess, launch.signal);
-			await browser.navigate(
-				`${relay.browserAccess.origin}${normalizeProjectPreviewCapturePath(input.initialPath)}`,
-			);
+			let initialUrl: string;
+			if (input.kind === "project") {
+				relay = await this.relayFactory({
+					targetPort: input.port,
+					capability: input.capability,
+				});
+				browser = await this.browserFactory(
+					{ kind: "project", ...relay.browserAccess },
+					launch.signal,
+				);
+				initialUrl = `${relay.browserAccess.origin}${normalizeProjectPreviewCapturePath(input.initialPath)}`;
+			} else {
+				initialUrl = normalizeWebBrowserUrl(input.initialUrl);
+				const parsed = new URL(initialUrl);
+				const privateOrigin = isPrivateWebBrowserHostname(parsed.hostname)
+					? parsed.origin
+					: null;
+				if (privateOrigin && !input.allowPrivateNetwork) {
+					throw new Error(
+						"This Browser target is on a private or local network. Reopen it with allow_private_network=true after reviewing the exact URL.",
+					);
+				}
+				browser = await this.browserFactory(
+					{
+						kind: "web",
+						initialUrl,
+						approvedPrivateOrigin: privateOrigin,
+					},
+					launch.signal,
+				);
+			}
+			await browser.navigate(initialUrl);
 			const entry: BrowserEntry = {
 				previewId: input.previewId,
 				sessionId: input.sessionId,
-				port: input.port,
-				capability: input.capability,
+				target: input,
 				relay,
 				browser,
 				viewport: "desktop",
@@ -259,15 +364,20 @@ export class ProjectPreviewBrowserManager {
 	}
 
 	private async entry(
-		input: ProjectPreviewControlBase,
+		input: BrowserTarget,
 		generation: number,
 	): Promise<BrowserEntry> {
 		const current = this.entries.get(input.previewId);
 		if (
 			current &&
 			current.sessionId === input.sessionId &&
-			current.port === input.port &&
-			current.capability.token === input.capability.token &&
+			current.target.kind === input.kind &&
+			(input.kind === "web"
+				? current.target.kind === "web" &&
+					current.target.allowPrivateNetwork === input.allowPrivateNetwork
+				: current.target.kind === "project" &&
+					current.target.port === input.port &&
+					current.target.capability.token === input.capability.token) &&
 			current.browser.isConnected()
 		) {
 			this.resetIdle(current);
@@ -284,10 +394,21 @@ export class ProjectPreviewBrowserManager {
 	): Promise<ProjectPreviewAgentFrame> {
 		const capture = await entry.browser.capture(fullPage);
 		const diagnostics = entry.browser.diagnostics();
+		const recording = this.recordings.get(entry.previewId);
+		const recordingActive = Boolean(
+			recording &&
+				recording.sessionId === entry.sessionId &&
+				Date.now() - recording.startedAt <= MAX_WEB_RECORDING_DURATION_MS,
+		);
+		if (recording && !recordingActive) recording.truncated = true;
 		const frame: ProjectPreviewAgentFrame = {
 			preview_id: entry.previewId,
 			session_id: entry.sessionId,
-			path: await currentPath(entry.browser, entry.relay.browserAccess.origin),
+			target_kind: entry.target.kind === "web" ? "browser" : "project",
+			path:
+				entry.target.kind === "project" && entry.relay
+					? await currentPath(entry.browser, entry.relay.browserAccess.origin)
+					: await currentWebUrl(entry.browser),
 			viewport: entry.viewport,
 			width: entry.width,
 			height: entry.height,
@@ -305,8 +426,29 @@ export class ProjectPreviewBrowserManager {
 			elements: await entry.browser.semanticSnapshot(MAX_ELEMENTS),
 			console_messages: diagnostics.consoleMessages,
 			failed_requests: diagnostics.failedRequests,
+			...(recordingActive ? { recording: true } : {}),
 			...(lastAction ? { last_action: lastAction } : {}),
 		};
+		if (recording && recordingActive) {
+			if (
+				recording.frames.length < MAX_WEB_RECORDING_FRAMES &&
+				recording.bytes + frame.size_bytes <= MAX_WEB_RECORDING_BYTES
+			) {
+				recording.frames.push({
+					capturedAt: frame.captured_at,
+					url: frame.path,
+					title: frame.title,
+					width: frame.width,
+					height: frame.height,
+					mime: frame.mime,
+					imageBase64: frame.image_base64,
+					...(lastAction ? { action: lastAction } : {}),
+				});
+				recording.bytes += frame.size_bytes;
+			} else {
+				recording.truncated = true;
+			}
+		}
 		entry.lastFrame = frame;
 		this.retainFrame(frame);
 		this.resetIdle(entry);
@@ -348,6 +490,7 @@ export class ProjectPreviewBrowserManager {
 		return this.serialized(input.previewId, async (generation) => {
 			const entry = await this.entry(
 				{
+					kind: "project",
 					previewId: input.previewId,
 					sessionId: input.sessionId,
 					port: input.port,
@@ -373,6 +516,8 @@ export class ProjectPreviewBrowserManager {
 				entry.height = size.height;
 			}
 			const path = normalizeProjectPreviewCapturePath(input.path);
+			if (!entry.relay)
+				throw new Error("Project Preview relay is unavailable.");
 			if (
 				(await currentPath(entry.browser, entry.relay.browserAccess.origin)) !==
 				path
@@ -394,7 +539,7 @@ export class ProjectPreviewBrowserManager {
 		input: ProjectPreviewControlAction,
 	): Promise<ProjectPreviewAgentFrame> {
 		return this.serialized(input.previewId, async (generation) => {
-			const entry = await this.entry(input, generation);
+			const entry = await this.entry({ kind: "project", ...input }, generation);
 			if (
 				(input.action === "click" || input.action === "type") &&
 				entry.lastFrame?.frame_id !== input.frameId
@@ -429,6 +574,8 @@ export class ProjectPreviewBrowserManager {
 				await entry.browser.scroll(input.deltaX, input.deltaY);
 			} else if (input.action === "navigate") {
 				const path = normalizeProjectPreviewCapturePath(input.path);
+				if (!entry.relay)
+					throw new Error("Project Preview relay is unavailable.");
 				await entry.browser.navigate(
 					`${entry.relay.browserAccess.origin}${path}`,
 				);
@@ -443,6 +590,134 @@ export class ProjectPreviewBrowserManager {
 			await entry.browser.settle();
 			this.assertGeneration(input.previewId, generation);
 			return this.frame(entry, false, input.action);
+		});
+	}
+
+	async captureWeb(
+		input: WebBrowserCaptureInput,
+	): Promise<ProjectPreviewAgentFrame> {
+		return this.serialized(input.previewId, async (generation) => {
+			const entry = await this.entry({ kind: "web", ...input }, generation);
+			const size = PROJECT_PREVIEW_CAPTURE_VIEWPORTS[input.viewport];
+			if (
+				entry.viewport !== input.viewport ||
+				entry.width !== size.width ||
+				entry.height !== size.height
+			) {
+				await entry.browser.setViewport(input.viewport);
+				entry.viewport = input.viewport;
+				entry.width = size.width;
+				entry.height = size.height;
+			}
+			this.assertGeneration(input.previewId, generation);
+			return this.frame(entry, input.fullPage);
+		});
+	}
+
+	async controlWeb(
+		input: WebBrowserControlAction,
+	): Promise<ProjectPreviewAgentFrame> {
+		return this.serialized(input.previewId, async (generation) => {
+			const entry = await this.entry({ kind: "web", ...input }, generation);
+			if (
+				(input.action === "click" || input.action === "type") &&
+				entry.lastFrame?.frame_id !== input.frameId
+			) {
+				throw new Error(
+					"Browser frame is stale. Capture the Browser again before interacting.",
+				);
+			}
+			if (input.action === "click") {
+				if (input.ref) await entry.browser.clickRef(input.ref);
+				else {
+					if (
+						input.x === undefined ||
+						input.y === undefined ||
+						input.x < 0 ||
+						input.y < 0 ||
+						input.x > entry.width ||
+						input.y > entry.height
+					) {
+						throw new Error(
+							"Browser click coordinates are outside the viewport.",
+						);
+					}
+					await entry.browser.clickAt(input.x, input.y);
+				}
+			} else if (input.action === "type") {
+				await entry.browser.fillRef(input.ref, input.text);
+			} else if (input.action === "key") {
+				await entry.browser.pressKey(validateKey(input.key));
+			} else if (input.action === "scroll") {
+				await entry.browser.scroll(input.deltaX, input.deltaY);
+			} else if (input.action === "navigate") {
+				const url = normalizeWebBrowserUrl(input.url);
+				const target = new URL(url);
+				if (isPrivateWebBrowserHostname(target.hostname)) {
+					const initial = new URL(normalizeWebBrowserUrl(input.initialUrl));
+					if (!input.allowPrivateNetwork || target.origin !== initial.origin) {
+						throw new Error(
+							"Private-network navigation is limited to the exact approved origin.",
+						);
+					}
+				}
+				await entry.browser.navigate(url);
+			} else if (input.action === "reload") {
+				await entry.browser.reload();
+			} else {
+				await entry.browser.setViewport(input.viewport);
+				entry.viewport = input.viewport;
+				entry.width = PROJECT_PREVIEW_CAPTURE_VIEWPORTS[input.viewport].width;
+				entry.height = PROJECT_PREVIEW_CAPTURE_VIEWPORTS[input.viewport].height;
+			}
+			await entry.browser.settle();
+			this.assertGeneration(input.previewId, generation);
+			return this.frame(entry, false, input.action);
+		});
+	}
+
+	async startWebRecording(
+		input: WebBrowserControlBase,
+	): Promise<ProjectPreviewAgentFrame> {
+		return this.serialized(input.previewId, async (generation) => {
+			const entry = await this.entry({ kind: "web", ...input }, generation);
+			if (this.recordings.has(input.previewId)) {
+				throw new Error("This Browser already has a recording in progress.");
+			}
+			this.recordings.set(input.previewId, {
+				previewId: input.previewId,
+				sessionId: input.sessionId,
+				startedAt: Date.now(),
+				truncated: false,
+				frames: [],
+				bytes: 0,
+			});
+			return this.frame(entry, false);
+		});
+	}
+
+	async stopWebRecording(
+		previewId: string,
+		sessionId: string,
+	): Promise<WebBrowserRecordingResult> {
+		return this.serialized(previewId, async () => {
+			const recording = this.recordings.get(previewId);
+			if (!recording || recording.sessionId !== sessionId) {
+				throw new Error("No active Browser recording was found.");
+			}
+			this.recordings.delete(previewId);
+			const entry = this.entries.get(previewId);
+			if (entry?.sessionId === sessionId && entry.browser.isConnected()) {
+				await this.frame(entry, false);
+			}
+			return {
+				previewId,
+				sessionId,
+				startedAt: recording.startedAt,
+				endedAt: Date.now(),
+				truncated: recording.truncated,
+				frames: recording.frames,
+			};
 		});
 	}
 
@@ -499,8 +774,9 @@ export class ProjectPreviewBrowserManager {
 		if (this.entries.get(entry.previewId) === entry) {
 			this.entries.delete(entry.previewId);
 		}
+		this.recordings.delete(entry.previewId);
 		await entry.browser.close().catch(() => {});
-		await entry.relay.close().catch(() => {});
+		await entry.relay?.close().catch(() => {});
 	}
 
 	async close(previewId: string): Promise<void> {

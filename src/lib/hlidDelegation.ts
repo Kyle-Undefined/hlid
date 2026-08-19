@@ -34,6 +34,19 @@ export const HLID_DELEGATION_CONTINUATION_MODES = [
 export type HlidDelegationContinuationMode =
 	(typeof HLID_DELEGATION_CONTINUATION_MODES)[number];
 
+export const HLID_DELEGATION_WORKSPACE_MODES = ["shared", "worktree"] as const;
+export type HlidDelegationWorkspaceMode =
+	(typeof HLID_DELEGATION_WORKSPACE_MODES)[number];
+
+export const HLID_DELEGATION_WORKTREE_STATES = [
+	"none",
+	"active",
+	"retained",
+	"cleaned",
+] as const;
+export type HlidDelegationWorktreeState =
+	(typeof HLID_DELEGATION_WORKTREE_STATES)[number];
+
 export type HlidDelegationHandoffSummary = {
 	visible_transcript_chars: number;
 	selected_skills: number;
@@ -57,6 +70,11 @@ export type HlidDelegationSnapshot = {
 	effort: string | null;
 	service_tier: string | null;
 	workspace: string;
+	workspace_mode: HlidDelegationWorkspaceMode;
+	execution_workspace: string;
+	worktree_branch: string | null;
+	worktree_base_commit: string | null;
+	worktree_state: HlidDelegationWorktreeState;
 	permission_mode: string;
 	/** Historical inert field retained for existing database and API snapshots. */
 	timeout_seconds: number;

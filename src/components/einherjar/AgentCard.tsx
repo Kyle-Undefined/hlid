@@ -26,6 +26,7 @@ export type AgentEntry = {
 	permissionMode?: string;
 	recapModel?: string;
 	interactiveMode?: boolean;
+	delegationWorktreePolicy?: "shared" | "when_available" | "required";
 };
 
 export type AgentProviderSettings = {
@@ -35,6 +36,7 @@ export type AgentProviderSettings = {
 	permissionMode?: string;
 	recapModel?: string;
 	interactiveMode?: boolean;
+	delegationWorktreePolicy?: "shared" | "when_available" | "required";
 };
 
 export function AgentCard({
@@ -95,6 +97,7 @@ export function AgentCard({
 						editing.provider === "claude"
 							? editing.interactiveMode || undefined
 							: undefined,
+					delegationWorktreePolicy: editing.delegationWorktreePolicy,
 				},
 			);
 			setEditing(null);

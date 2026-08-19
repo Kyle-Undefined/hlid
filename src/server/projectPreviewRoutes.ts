@@ -1,12 +1,15 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { getProjectPreview, retainProjectPreviewFeedback } from "../db";
+import { handleGeneratedRelicPublish } from "./attachments";
+import { loadConfig } from "./config";
 import { bumpDataRevision } from "./dataRevision";
 import { projectPreviewManager } from "./projectPreview";
 import {
 	type ProjectPreviewAgentFrame,
 	type ProjectPreviewControlAction,
 	projectPreviewBrowserManager,
+	type WebBrowserControlAction,
 } from "./projectPreviewBrowser";
 import {
 	MAX_PROJECT_PREVIEW_SCROLL_OFFSET,
@@ -21,6 +24,8 @@ import {
 	projectPreviewSelectionRedirect,
 } from "./projectPreviewRelay";
 import type { ProjectPreviewCapability } from "./projectPreviewTrust";
+import { broadcast } from "./runState";
+import { buildWebBrowserRecordingHtml } from "./webBrowserRecording";
 
 const startSchema = z.object({
 	session_id: z.string().trim().min(1),
@@ -33,6 +38,15 @@ const startSchema = z.object({
 	present: z.boolean().optional(),
 	replace_existing: z.boolean().optional(),
 	readiness_timeout_seconds: z.number().int().min(1).max(120).optional(),
+});
+
+const browserStartSchema = z.object({
+	session_id: z.string().trim().min(1),
+	url: z.string().trim().min(1).max(4_096),
+	label: z.string().trim().min(1).max(100).optional(),
+	present: z.boolean().optional(),
+	replace_existing: z.boolean().optional(),
+	allow_private_network: z.boolean().optional(),
 });
 
 const actionSchema = z.object({
@@ -79,6 +93,27 @@ const feedbackSchema = actionSchema.extend({
 	frame_id: z.string().uuid(),
 	attachment_id: z.string().uuid(),
 	comment: z.string().max(10_000).optional(),
+	annotations: z
+		.array(
+			z.object({
+				mark_index: z.number().int().min(0).max(99),
+				mark_kind: z.enum(["highlight", "rectangle", "arrow", "text"]),
+				ref: z.string().regex(/^e[1-9][0-9]{0,2}$/),
+				role: z.string().max(120),
+				name: z.string().max(500),
+				tag: z.string().max(80),
+				type: z.string().max(120).optional(),
+				disabled: z.boolean().optional(),
+				bounds: z.object({
+					x: z.number().finite(),
+					y: z.number().finite(),
+					width: z.number().finite().min(0),
+					height: z.number().finite().min(0),
+				}),
+			}),
+		)
+		.max(50)
+		.default([]),
 });
 
 const controlSchema = actionSchema.extend({
@@ -103,6 +138,7 @@ const controlSchema = actionSchema.extend({
 	delta_x: z.number().finite().min(-5_000).max(5_000).optional(),
 	delta_y: z.number().finite().min(-5_000).max(5_000).optional(),
 	path: z.string().trim().max(2_048).optional(),
+	url: z.string().trim().max(4_096).optional(),
 	viewport: z.enum(["desktop", "tablet", "mobile"]).optional(),
 });
 
@@ -227,6 +263,77 @@ export function parseControlInput(
 	}
 }
 
+type WebControlBase = Omit<
+	WebBrowserControlAction,
+	| "action"
+	| "frameId"
+	| "ref"
+	| "x"
+	| "y"
+	| "text"
+	| "key"
+	| "deltaX"
+	| "deltaY"
+	| "url"
+	| "viewport"
+>;
+
+function parseWebControlInput(
+	body: ControlInput,
+	base: WebControlBase,
+): WebBrowserControlAction {
+	switch (body.action) {
+		case "click":
+			if (!body.frame_id || (!body.ref && (body.x == null || body.y == null))) {
+				throw new Error(
+					"click requires frame_id and either ref or x and y coordinates.",
+				);
+			}
+			return body.ref
+				? { ...base, action: "click", frameId: body.frame_id, ref: body.ref }
+				: {
+						...base,
+						action: "click",
+						frameId: body.frame_id,
+						x: body.x,
+						y: body.y,
+					};
+		case "type":
+			if (!body.frame_id || !body.ref || body.text === undefined) {
+				throw new Error("type requires frame_id, ref, and text.");
+			}
+			return {
+				...base,
+				action: "type",
+				frameId: body.frame_id,
+				ref: body.ref,
+				text: body.text,
+			};
+		case "key":
+			if (!body.key) throw new Error("key requires a key value.");
+			return { ...base, action: "key", key: body.key };
+		case "scroll":
+			if (body.delta_x === undefined && body.delta_y === undefined) {
+				throw new Error("scroll requires delta_x or delta_y.");
+			}
+			return {
+				...base,
+				action: "scroll",
+				deltaX: body.delta_x ?? 0,
+				deltaY: body.delta_y ?? 0,
+			};
+		case "navigate":
+			if (!body.url) throw new Error("navigate requires a Browser URL.");
+			return { ...base, action: "navigate", url: body.url };
+		case "reload":
+			return { ...base, action: "reload" };
+		case "viewport":
+			if (!body.viewport)
+				throw new Error("viewport requires a named viewport.");
+			return { ...base, action: "viewport", viewport: body.viewport };
+	}
+}
+
 function errorResponse(error: unknown): Response {
 	const message = error instanceof Error ? error.message : String(error);
 	const status = message.includes("not found") ? 404 : 409;
@@ -259,8 +366,14 @@ async function resolveBrowserPreview(rawPreviewId: string, sessionId: string) {
 	const preview = previewId
 		? await inspectPreview(sessionId, previewId)
 		: projectPreviewManager.inspect(sessionId);
+	if (preview.target_kind === "browser") {
+		return {
+			preview,
+			browser: projectPreviewManager.browserTarget(preview.id),
+		};
+	}
 	const target = projectPreviewManager.relayTarget(preview.id);
-	return { preview, ...target };
+	return { preview, ...target, browser: null };
 }
 
 type ProjectPreviewRouteContext = {
@@ -293,6 +406,30 @@ async function handleStartRoute({
 		present: body.present,
 		replaceExisting: body.replace_existing,
 		readinessTimeoutSeconds: body.readiness_timeout_seconds,
+	});
+	return Response.json(preview, {
+		status: preview.state === "ready" ? 201 : 409,
+	});
+}
+
+async function handleBrowserStartRoute({
+	url,
+	req,
+}: ProjectPreviewRouteContext): Promise<Response | null> {
+	if (
+		url.pathname !== "/api/project-previews/browser/start" ||
+		req.method !== "POST"
+	) {
+		return null;
+	}
+	const body = browserStartSchema.parse(await req.json());
+	const preview = await projectPreviewManager.startBrowser({
+		sessionId: body.session_id,
+		url: body.url,
+		label: body.label,
+		present: body.present,
+		replaceExisting: body.replace_existing,
+		allowPrivateNetwork: body.allow_private_network,
 	});
 	return Response.json(preview, {
 		status: preview.state === "ready" ? 201 : 409,
@@ -335,15 +472,31 @@ async function handleCaptureRoute({
 	);
 	if (!match || req.method !== "POST") return null;
 	const body = captureSchema.parse(await req.json());
-	const { preview, port, capability } = await resolveBrowserPreview(
-		match[1],
-		body.session_id,
-	);
+	const resolved = await resolveBrowserPreview(match[1], body.session_id);
+	const { preview } = resolved;
+	if (resolved.browser) {
+		const result = await projectPreviewBrowserManager.captureWeb({
+			previewId: preview.id,
+			sessionId: preview.session_id,
+			initialUrl: resolved.browser.url,
+			allowPrivateNetwork: resolved.browser.allowPrivateNetwork,
+			viewport: body.viewport,
+			fullPage: body.full_page,
+		});
+		projectPreviewManager.syncBrowserLocation(
+			preview.session_id,
+			preview.id,
+			result.path,
+		);
+		return Response.json(result, {
+			headers: { "cache-control": "no-store" },
+		});
+	}
 	const result: ProjectPreviewCaptureResult = await capture({
 		previewId: preview.id,
 		sessionId: preview.session_id,
-		port,
-		capability,
+		port: resolved.port,
+		capability: resolved.capability,
 		path: body.path ?? preview.path,
 		viewport: body.viewport,
 		...(body.width !== undefined && body.height !== undefined
@@ -368,22 +521,107 @@ async function handleControlRoute({
 	);
 	if (!match || req.method !== "POST") return null;
 	const body = controlSchema.parse(await req.json());
-	const { preview, port, capability } = await resolveBrowserPreview(
-		match[1],
-		body.session_id,
-	);
+	const resolved = await resolveBrowserPreview(match[1], body.session_id);
+	const { preview } = resolved;
+	if (resolved.browser) {
+		const base = {
+			previewId: preview.id,
+			sessionId: preview.session_id,
+			initialUrl: resolved.browser.url,
+			allowPrivateNetwork: resolved.browser.allowPrivateNetwork,
+		};
+		const action = parseWebControlInput(body, base);
+		const result = await projectPreviewBrowserManager.controlWeb(action);
+		projectPreviewManager.syncBrowserLocation(
+			preview.session_id,
+			preview.id,
+			result.path,
+		);
+		return Response.json(result, {
+			headers: { "cache-control": "no-store" },
+		});
+	}
 	const result = await control(
 		parseControlInput(body, {
 			previewId: preview.id,
 			sessionId: preview.session_id,
-			port,
-			capability,
+			port: resolved.port,
+			capability: resolved.capability,
 			initialPath: preview.path,
 		}),
 	);
 	return Response.json(result, {
 		headers: { "cache-control": "no-store" },
 	});
+}
+
+async function handleBrowserRecordingRoute({
+	url,
+	req,
+}: ProjectPreviewRouteContext): Promise<Response | null> {
+	const match = url.pathname.match(
+		/^\/api\/project-previews\/([^/]+)\/recording\/(start|stop)$/,
+	);
+	if (!match || req.method !== "POST") return null;
+	const body = actionSchema.parse(await req.json());
+	const resolved = await resolveBrowserPreview(match[1], body.session_id);
+	if (!resolved.browser) {
+		throw new Error("Interaction recording is available for Browser targets.");
+	}
+	if (match[2] === "start") {
+		const frame = await projectPreviewBrowserManager.startWebRecording({
+			previewId: resolved.preview.id,
+			sessionId: resolved.preview.session_id,
+			initialUrl: resolved.browser.url,
+			allowPrivateNetwork: resolved.browser.allowPrivateNetwork,
+		});
+		projectPreviewManager.syncBrowserLocation(
+			resolved.preview.session_id,
+			resolved.preview.id,
+			frame.path,
+		);
+		return Response.json(frame, {
+			headers: { "cache-control": "no-store" },
+		});
+	}
+	const recording = await projectPreviewBrowserManager.stopWebRecording(
+		resolved.preview.id,
+		resolved.preview.session_id,
+	);
+	const timestamp = new Date(recording.startedAt)
+		.toISOString()
+		.replace(/[:.]/g, "-");
+	const published = await handleGeneratedRelicPublish(
+		new Request("http://hlid.local/api/relics/publish", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				filename: `browser-interaction-${timestamp}.html`,
+				content: buildWebBrowserRecordingHtml(recording),
+				mime: "text/html",
+				category: "report",
+				session_id: resolved.preview.session_id,
+			}),
+		}),
+		loadConfig(),
+		async (id) => {
+			bumpDataRevision("relics", "storage");
+			try {
+				broadcast({ type: "attachment_created", id, kind: "ephemeral" });
+			} catch {}
+		},
+	);
+	if (!published.ok) return published;
+	return Response.json(
+		{
+			...(await published.json()),
+			frame_count: recording.frames.length,
+			duration_seconds:
+				Math.round((recording.endedAt - recording.startedAt) / 100) / 10,
+			truncated: recording.truncated,
+		},
+		{ headers: { "cache-control": "no-store" } },
+	);
 }
 
 async function handleFeedbackRoute({
@@ -408,6 +646,33 @@ async function handleFeedbackRoute({
 			{ status: 410 },
 		);
 	}
+	const seenAnnotationMarks = new Set<number>();
+	for (const annotation of body.annotations) {
+		const element = frame.elements.find(
+			(candidate) => candidate.ref === annotation.ref,
+		);
+		const exact =
+			element &&
+			element.role === annotation.role &&
+			element.name === annotation.name &&
+			element.tag === annotation.tag &&
+			element.type === annotation.type &&
+			element.disabled === annotation.disabled &&
+			element.x === annotation.bounds.x &&
+			element.y === annotation.bounds.y &&
+			element.width === annotation.bounds.width &&
+			element.height === annotation.bounds.height;
+		if (!exact || seenAnnotationMarks.has(annotation.mark_index)) {
+			return Response.json(
+				{
+					error:
+						"Preview feedback annotations must match unique elements from the exact source frame.",
+				},
+				{ status: 409 },
+			);
+		}
+		seenAnnotationMarks.add(annotation.mark_index);
+	}
 	const sourceSha256 = createHash("sha256")
 		.update(Buffer.from(frame.image_base64, "base64"))
 		.digest("hex");
@@ -423,6 +688,7 @@ async function handleFeedbackRoute({
 		sourceSha256,
 		capturedAt: frame.captured_at,
 		comment: body.comment,
+		annotations: body.annotations,
 	});
 	if (!attachment) {
 		return Response.json(
@@ -521,10 +787,12 @@ async function handleByIdRoute({
 }
 
 const projectPreviewApiRouteHandlers = [
+	handleBrowserStartRoute,
 	handleStartRoute,
 	handleSessionRoute,
 	handleCaptureRoute,
 	handleControlRoute,
+	handleBrowserRecordingRoute,
 	handleFeedbackRoute,
 	handleAgentFrameRoute,
 ] satisfies ProjectPreviewApiRouteHandler[];

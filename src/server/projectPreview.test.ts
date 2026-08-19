@@ -72,6 +72,89 @@ describe("ProjectPreviewManager", () => {
 		expect(browserManager.close).toHaveBeenCalledWith(preview.id);
 	});
 
+	it("owns an arbitrary URL as a session Browser target without a child process", async () => {
+		const browserManager = {
+			close: vi.fn(async () => {}),
+			closeAll: vi.fn(async () => {}),
+			captureWeb: vi.fn(
+				async (input: {
+					previewId: string;
+					sessionId: string;
+					initialUrl: string;
+				}) => ({
+					preview_id: input.previewId,
+					session_id: input.sessionId,
+					target_kind: "browser" as const,
+					path: input.initialUrl,
+					viewport: "desktop" as const,
+					width: 1440,
+					height: 1000,
+					full_page: false,
+					captured_at: Date.now(),
+					mime: "image/png" as const,
+					size_bytes: 3,
+					image_base64: "AQID",
+					frame_id: crypto.randomUUID(),
+					title: "Example",
+					elements: [],
+					console_messages: [],
+					failed_requests: [],
+				}),
+			),
+		};
+		const manager = new ProjectPreviewManager({ persist, browserManager });
+		managers.push(manager);
+		const browser = await manager.startBrowser({
+			sessionId: "browser-session",
+			url: "https://example.com/docs",
+			label: "Docs",
+			allowPrivateNetwork: false,
+		});
+
+		expect(browser).toMatchObject({
+			target_kind: "browser",
+			state: "ready",
+			url: "https://example.com/docs",
+			path: "https://example.com/docs",
+			command: "",
+			port: 0,
+		});
+		expect(browserManager.captureWeb).toHaveBeenCalledWith(
+			expect.objectContaining({
+				previewId: browser.id,
+				initialUrl: "https://example.com/docs",
+			}),
+		);
+		expect(manager.browserTarget(browser.id)).toEqual({
+			url: "https://example.com/docs",
+			allowPrivateNetwork: false,
+		});
+		manager.syncBrowserLocation(
+			"browser-session",
+			browser.id,
+			"https://example.org/account",
+		);
+		expect(manager.inspect("browser-session", browser.id)).toMatchObject({
+			url: "https://example.org/account",
+			path: "https://example.org/account",
+			state: "ready",
+		});
+		manager.syncBrowserLocation("browser-session", browser.id, "about:blank");
+		expect(manager.inspect("browser-session", browser.id)).toMatchObject({
+			url: "https://example.org/account",
+			path: "https://example.org/account",
+		});
+		// Keep the original URL as the immutable private-network trust anchor.
+		expect(manager.browserTarget(browser.id)).toEqual({
+			url: "https://example.com/docs",
+			allowPrivateNetwork: false,
+		});
+		expect(() => manager.relayTarget(browser.id)).toThrow();
+		expect(await manager.stop("browser-session")).toMatchObject({
+			state: "stopped",
+		});
+	});
+
 	it("shares concurrent stops and bounds stalled browser cleanup", async () => {
 		let finishBrowserClose: (() => void) | undefined;
 		const browserClose = new Promise<void>((resolve) => {

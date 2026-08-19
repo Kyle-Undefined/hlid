@@ -19,6 +19,7 @@ export const delegateHlidAgentSchema = z.object({
 	effort: z.string().trim().min(1).max(80).optional(),
 	service_tier: z.string().trim().min(1).max(120).optional(),
 	cwd: z.string().trim().min(1).max(4_096).optional(),
+	workspace_mode: z.enum(["default", "shared", "worktree"]).optional(),
 	permission_mode: z
 		.enum([
 			"default",
@@ -51,6 +52,10 @@ export const steerHlidAgentSchema = z.object({
 });
 
 export const cancelHlidAgentSchema = z.object({
+	id: z.string().uuid(),
+});
+
+export const cleanupHlidWorktreeSchema = z.object({
 	id: z.string().uuid(),
 });
 

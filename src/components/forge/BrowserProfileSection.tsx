@@ -12,11 +12,11 @@ export function BrowserProfileSection({
 		<Section
 			title="Browser profile"
 			id="forge-section-browser-profile"
-			description="Choose whether agent-controlled Project Preview tabs use an isolated browser or your running Chromium profile."
+			description="Choose whether agent-controlled Project Preview and Browser targets use an isolated browser or your running Chromium profile."
 		>
 			<Field
 				label="Use real browser profile"
-				hint="Off by default. Applies when Hlid opens the next agent-controlled Preview browser session."
+				hint="Off by default. Applies when Hlid opens the next agent-controlled Preview or Browser session."
 			>
 				<label className="flex items-center gap-2 cursor-pointer">
 					<input
@@ -41,9 +41,9 @@ export function BrowserProfileSection({
 				>
 					<div className="font-medium text-destructive">Sensitive access</div>
 					<div className="mt-1 text-muted-foreground">
-						Agent-controlled Preview tabs may access cookies, local and session
-						storage, saved sign-ins, and other site data in your browser
-						profile. Use this only with agents and projects you trust.
+						Agent-controlled Preview and Browser tabs may access cookies, local
+						and session storage, saved sign-ins, and other site data in your
+						browser profile. Use this only with agents and projects you trust.
 					</div>
 					<div className="mt-2 text-muted-foreground">
 						Your running Chromium browser must support consented remote

@@ -170,6 +170,56 @@ describe("ProjectPreviewCaptureToolBlock", () => {
 		expect(screen.getByText(/click · desktop · 1440×1000/i)).toBeTruthy();
 	});
 
+	it("labels Browser captures and recording starts as Browser activity", () => {
+		const { unmount } = render(
+			<ProjectPreviewCaptureToolBlock
+				event={{
+					type: "tool_event",
+					id: "browser-capture",
+					name: "mcp__hlid__capture_web_browser",
+					input: {},
+					result: JSON.stringify({
+						preview_id: "browser-1",
+						target_kind: "browser",
+						path: "https://example.com/account",
+						viewport: "desktop",
+						width: 1440,
+						height: 1000,
+						full_page: false,
+						size_bytes: 2048,
+					}),
+				}}
+			/>,
+		);
+
+		expect(screen.getByText("Browser captured for agent")).toBeTruthy();
+		unmount();
+
+		render(
+			<ProjectPreviewCaptureToolBlock
+				event={{
+					type: "tool_event",
+					id: "browser-recording",
+					name: "mcp__hlid__start_web_browser_recording",
+					input: {},
+					result: JSON.stringify({
+						preview_id: "browser-1",
+						target_kind: "browser",
+						recording: true,
+						path: "https://example.com/account",
+						viewport: "desktop",
+						width: 1440,
+						height: 1000,
+						full_page: false,
+						size_bytes: 2048,
+					}),
+				}}
+			/>,
+		);
+
+		expect(screen.getByText("Browser recording started")).toBeTruthy();
+	});
+
 	it("reopens a historical capture from its tool-call action", async () => {
 		const frameId = "323e4567-e89b-12d3-a456-426614174001";
 		const frame: ProjectPreviewAgentFrame = {
@@ -920,5 +970,25 @@ describe("selectActiveProjectPreviewEvents", () => {
 				group.map((event) => event.id),
 			),
 		).toEqual([["first-start", "first-stop"], ["second-start"]]);
+	});
+
+	it("treats opening a Browser as a new Preview lifecycle boundary", () => {
+		const preview = snapshotEvent("preview-start", "preview", "ready");
+		const browser = {
+			...snapshotEvent("browser-open", "browser", "ready"),
+			name: "mcp__hlid__open_web_browser",
+			result: JSON.stringify({
+				...JSON.parse(snapshotEvent("browser-open", "browser", "ready").result),
+				target_kind: "browser",
+				label: "Browser",
+				url: "https://example.com/",
+			}),
+		};
+
+		expect(
+			groupProjectPreviewEventLifecycles([preview, browser]).map((group) =>
+				group.map((event) => event.id),
+			),
+		).toEqual([["preview-start"], ["browser-open"]]);
 	});
 });

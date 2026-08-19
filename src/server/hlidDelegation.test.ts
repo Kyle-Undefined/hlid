@@ -61,6 +61,11 @@ function snapshot(
 		effort: "high",
 		service_tier: null,
 		workspace: "/work/project",
+		workspace_mode: "shared",
+		execution_workspace: "/work/project",
+		worktree_branch: null,
+		worktree_base_commit: null,
+		worktree_state: "none",
 		permission_mode: "acceptEdits",
 		timeout_seconds: 600,
 		token_budget: null,
@@ -153,6 +158,10 @@ describe("Hlid delegation manager", () => {
 		getProvider: ReturnType<typeof vi.fn>;
 		providerRuntimeCwd: ReturnType<typeof vi.fn>;
 		resolveDelegationWorkspace: ReturnType<typeof vi.fn>;
+		delegationWorktreePolicy: ReturnType<typeof vi.fn>;
+		delegationWorktreeAvailable: ReturnType<typeof vi.fn>;
+		registerManagedDelegationWorkspace: ReturnType<typeof vi.fn>;
+		unregisterManagedDelegationWorkspace: ReturnType<typeof vi.fn>;
 		create: ReturnType<typeof vi.fn>;
 		claimDbSessionId: ReturnType<typeof vi.fn>;
 		close: ReturnType<typeof vi.fn>;
@@ -287,6 +296,10 @@ describe("Hlid delegation manager", () => {
 			getProvider: vi.fn((id: keyof typeof providers) => providers[id]),
 			providerRuntimeCwd: vi.fn((cwd: string) => cwd),
 			resolveDelegationWorkspace: vi.fn((cwd: string) => cwd),
+			delegationWorktreePolicy: vi.fn().mockReturnValue("shared"),
+			delegationWorktreeAvailable: vi.fn().mockReturnValue(true),
+			registerManagedDelegationWorkspace: vi.fn(),
+			unregisterManagedDelegationWorkspace: vi.fn(),
 			create: vi.fn((cwd: string) => {
 				childEntryCwd = cwd;
 				return child;

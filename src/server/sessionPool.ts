@@ -68,6 +68,10 @@ export class SessionPool {
 	private draining = false;
 	private drainPromise: Promise<void> | null = null;
 	private cliUpdateLease: { id: string; expiresAt: number } | null = null;
+	private managedDelegationWorkspaces = new Map<
+		string,
+		{ executionWorkspace: string; sourceWorkspace: string }
+	>();
 	/** Session ID of the vault's lazy singleton entry, or null if not yet created. */
 	private _vaultSessionId: string | null = null;
 
@@ -109,8 +113,9 @@ export class SessionPool {
 		}
 
 		const sessionId = randomUUID();
+		const managerConfig = this.managerConfigFor(agentCwd);
 		const manager = new SessionManager(
-			this.config,
+			managerConfig,
 			this.providers,
 			useAgentDefaults ? agentCwd : undefined,
 		);
@@ -128,6 +133,42 @@ export class SessionPool {
 			this.statusChangeHandler?.();
 		});
 		return entry;
+	}
+
+	private managerConfigFor(agentCwd: string): HlidConfig {
+		let managed:
+			| { executionWorkspace: string; sourceWorkspace: string }
+			| undefined;
+		try {
+			managed = this.managedDelegationWorkspaces.get(declaredPathKey(agentCwd));
+		} catch {
+			return this.config;
+		}
+		if (!managed) return this.config;
+		const sourceKey = declaredPathKey(managed.sourceWorkspace);
+		const sourceAgent = (this.config.agents ?? []).find((agent) => {
+			try {
+				return declaredPathKey(agent.path) === sourceKey;
+			} catch {
+				return false;
+			}
+		});
+		const alias = sourceAgent
+			? {
+					...sourceAgent,
+					path: managed.executionWorkspace,
+					mode: "cwd" as const,
+				}
+			: {
+					path: managed.executionWorkspace,
+					name: "Delegated worktree",
+					mode: "cwd" as const,
+					provider: this.config.vault_provider ?? "claude",
+				};
+		return {
+			...this.config,
+			agents: [...(this.config.agents ?? []), alias],
+		};
 	}
 
 	private activeCliUpdateLease(): { id: string; expiresAt: number } | null {
@@ -208,6 +249,8 @@ export class SessionPool {
 		let agentKey: string;
 		try {
 			agentKey = declaredPathKey(agentCwd);
+			const managed = this.managedDelegationWorkspaces.get(agentKey);
+			if (managed) return managed.executionWorkspace;
 			if (vaultCwd && declaredPathKey(vaultCwd) === agentKey) return vaultCwd;
 		} catch {
 			return null;
@@ -221,6 +264,51 @@ export class SessionPool {
 		});
 		if (!configured) return null;
 		return configured.mode === "context" ? vaultCwd || null : agentCwd;
+	}
+
+	registerManagedDelegationWorkspace(
+		executionWorkspace: string,
+		sourceWorkspace: string,
+	): void {
+		this.managedDelegationWorkspaces.set(declaredPathKey(executionWorkspace), {
+			executionWorkspace,
+			sourceWorkspace,
+		});
+	}
+
+	unregisterManagedDelegationWorkspace(executionWorkspace: string): void {
+		this.managedDelegationWorkspaces.delete(
+			declaredPathKey(executionWorkspace),
+		);
+	}
+
+	delegationWorktreePolicy(
+		workspace: string,
+	): "shared" | "when_available" | "required" {
+		let key: string;
+		try {
+			key = declaredPathKey(workspace);
+		} catch {
+			return "shared";
+		}
+		try {
+			if (declaredPathKey(this.config.vault.path) === key) {
+				return this.config.vault.delegation_worktree_policy ?? "shared";
+			}
+		} catch {}
+		const agent = (this.config.agents ?? []).find((candidate) => {
+			try {
+				return declaredPathKey(candidate.path) === key;
+			} catch {
+				return false;
+			}
+		});
+		return agent?.delegation_worktree_policy ?? "shared";
+	}
+
+	delegationWorktreeAvailable(workspace: string): boolean {
+		const runtimeCwd = this.providerRuntimeCwd(workspace);
+		return Boolean(runtimeCwd && samePath(runtimeCwd, workspace));
 	}
 
 	/** Validate an archived Raven selection without reviving a provider session. */
@@ -660,7 +748,7 @@ export class SessionPool {
 		}
 		this.config = config;
 		for (const entry of this.entries.values()) {
-			entry.manager.syncConfig(config);
+			entry.manager.syncConfig(this.managerConfigFor(entry.agentCwd));
 		}
 	}
 

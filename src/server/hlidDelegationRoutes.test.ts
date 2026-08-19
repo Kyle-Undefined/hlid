@@ -23,6 +23,11 @@ function snapshot(
 		effort: "high",
 		service_tier: null,
 		workspace: "/workspace",
+		workspace_mode: "shared",
+		execution_workspace: "/workspace",
+		worktree_branch: null,
+		worktree_base_commit: null,
+		worktree_state: "none",
 		permission_mode: "plan",
 		timeout_seconds: 600,
 		token_budget: null,
@@ -59,6 +64,7 @@ describe("Hlid delegation routes", () => {
 	const wait = vi.fn();
 	const steer = vi.fn();
 	const cancel = vi.fn();
+	const cleanupWorktree = vi.fn();
 	const resume = vi.fn();
 	const handler = createHlidDelegationRouteHandler({
 		delegate,
@@ -67,6 +73,7 @@ describe("Hlid delegation routes", () => {
 		wait,
 		steer,
 		cancel,
+		cleanupWorktree,
 		resume,
 	} as unknown as HlidDelegationManager);
 

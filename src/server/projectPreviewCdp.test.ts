@@ -71,6 +71,7 @@ describe("Project Preview browser selection", () => {
 		};
 
 		await configureProjectPreviewNetwork(sender, {
+			kind: "project",
 			origin: "http://hlid-test.localhost:6173",
 			cookieName: "__hlid_agent_preview_test",
 			cookieToken: "agent-relay-test-token",

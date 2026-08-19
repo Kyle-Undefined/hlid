@@ -7,6 +7,7 @@ import { loadConfig } from "./config";
 import type { ProjectPreviewAgentRelayBrowserAccess } from "./projectPreviewAgentRelay";
 import {
 	isAllowedProjectPreviewBrowserOrigin,
+	isAllowedWebBrowserRequest,
 	MAX_PROJECT_PREVIEW_CAPTURE_ATTEMPTS,
 	MAX_PROJECT_PREVIEW_CAPTURE_BYTES,
 	MAX_PROJECT_PREVIEW_FULL_PAGE_HEIGHT,
@@ -319,8 +320,16 @@ export interface ProjectPreviewBrowserSession {
 	close(): Promise<void>;
 }
 
+export type ProjectPreviewBrowserAccess =
+	| ({ kind: "project" } & ProjectPreviewAgentRelayBrowserAccess)
+	| {
+			kind: "web";
+			initialUrl: string;
+			approvedPrivateOrigin: string | null;
+	  };
+
 export type ProjectPreviewBrowserSessionFactory = (
-	relay: ProjectPreviewAgentRelayBrowserAccess,
+	access: ProjectPreviewBrowserAccess,
 	signal: AbortSignal,
 ) => Promise<ProjectPreviewBrowserSession>;
 
@@ -334,14 +343,15 @@ type ProjectPreviewCdpSender = {
 
 export async function configureProjectPreviewNetwork(
 	sender: ProjectPreviewCdpSender,
-	relay: ProjectPreviewAgentRelayBrowserAccess,
+	access: ProjectPreviewBrowserAccess,
 ): Promise<void> {
 	await sender.send("Network.enable");
 	await sender.send("Network.setBypassServiceWorker", { bypass: true });
+	if (access.kind === "web") return;
 	const cookie = await sender.send("Network.setCookie", {
-		name: relay.cookieName,
-		value: relay.cookieToken,
-		url: relay.origin,
+		name: access.cookieName,
+		value: access.cookieToken,
+		url: access.origin,
 		httpOnly: true,
 		sameSite: "Strict",
 	});
@@ -1025,7 +1035,7 @@ class CdpBrowserSession implements ProjectPreviewBrowserSession {
 	private closed = false;
 
 	constructor(
-		private readonly relay: ProjectPreviewAgentRelayBrowserAccess,
+		private readonly access: ProjectPreviewBrowserAccess,
 		private readonly page: CdpClient,
 		private readonly browser: CdpClient,
 		private readonly mainTargetId: string,
@@ -1039,13 +1049,21 @@ class CdpBrowserSession implements ProjectPreviewBrowserSession {
 			this.page.send("Log.enable"),
 			this.browser.send("Target.setDiscoverTargets", { discover: true }),
 		]);
-		await configureProjectPreviewNetwork(this.page, this.relay);
+		await configureProjectPreviewNetwork(this.page, this.access);
 		this.page.on("Fetch.requestPaused", (params) => {
 			const requestId = String(params.requestId ?? "");
 			const request = params.request as { url?: string } | undefined;
 			const allowed =
 				request?.url &&
-				isAllowedProjectPreviewBrowserOrigin(request.url, this.relay.origin);
+				(this.access.kind === "project"
+					? isAllowedProjectPreviewBrowserOrigin(
+							request.url,
+							this.access.origin,
+						)
+					: isAllowedWebBrowserRequest(
+							request.url,
+							this.access.approvedPrivateOrigin,
+						));
 			void this.page
 				.send(
 					allowed ? "Fetch.continueRequest" : "Fetch.failRequest",
@@ -1118,6 +1136,9 @@ class CdpBrowserSession implements ProjectPreviewBrowserSession {
 			patterns: [{ urlPattern: "*", requestStage: "Request" }],
 			handleAuthRequests: false,
 		});
+		await this.page
+			.send("Page.setDownloadBehavior", { behavior: "deny" })
+			.catch(() => ({}));
 		if (this.ownedProcess) {
 			await this.page.send("Page.bringToFront");
 		}
@@ -1450,16 +1471,18 @@ class CdpBrowserSession implements ProjectPreviewBrowserSession {
 	async close(): Promise<void> {
 		if (this.closed) return;
 		this.closed = true;
-		await this.page
-			.send(
-				"Network.deleteCookies",
-				{
-					name: this.relay.cookieName,
-					url: this.relay.origin,
-				},
-				1_000,
-			)
-			.catch(() => {});
+		if (this.access.kind === "project") {
+			await this.page
+				.send(
+					"Network.deleteCookies",
+					{
+						name: this.access.cookieName,
+						url: this.access.origin,
+					},
+					1_000,
+				)
+				.catch(() => {});
+		}
 		await this.browser
 			.send("Target.closeTarget", { targetId: this.mainTargetId }, 1_000)
 			.catch(() => {});
@@ -1593,7 +1616,7 @@ async function fetchPageTarget(
 
 async function launchCandidate(
 	candidate: BrowserCandidate,
-	relay: ProjectPreviewAgentRelayBrowserAccess,
+	access: ProjectPreviewBrowserAccess,
 	signal: AbortSignal,
 	deadline: number,
 ): Promise<ProjectPreviewBrowserSession> {
@@ -1650,7 +1673,7 @@ async function launchCandidate(
 				remaining,
 			),
 		]);
-		const session = new CdpBrowserSession(relay, page, browser, target.id, {
+		const session = new CdpBrowserSession(access, page, browser, target.id, {
 			child,
 			userDataDir,
 		});
@@ -1673,7 +1696,7 @@ async function launchCandidate(
 async function attachCandidate(
 	candidate: BrowserCandidate,
 	userDataDir: string,
-	relay: ProjectPreviewAgentRelayBrowserAccess,
+	access: ProjectPreviewBrowserAccess,
 	signal: AbortSignal,
 	deadline: number,
 ): Promise<ProjectPreviewBrowserSession> {
@@ -1694,7 +1717,7 @@ async function attachCandidate(
 			Math.max(1, deadline - Date.now()),
 		);
 		const session = new CdpBrowserSession(
-			relay,
+			access,
 			page,
 			browser,
 			target.id,
@@ -1715,7 +1738,7 @@ async function attachCandidate(
 }
 
 async function attachRealProjectPreviewBrowserProfile(
-	relay: ProjectPreviewAgentRelayBrowserAccess,
+	access: ProjectPreviewBrowserAccess,
 	signal: AbortSignal,
 ): Promise<ProjectPreviewBrowserSession> {
 	const connectSignal = withTimeoutSignal(
@@ -1737,7 +1760,7 @@ async function attachRealProjectPreviewBrowserProfile(
 			return await attachCandidate(
 				candidate,
 				userDataDir,
-				relay,
+				access,
 				connectSignal,
 				deadline,
 			);
@@ -1751,9 +1774,9 @@ async function attachRealProjectPreviewBrowserProfile(
 }
 
 export const createProjectPreviewBrowserSession: ProjectPreviewBrowserSessionFactory =
-	async (relay, signal) => {
+	async (access, signal) => {
 		if (loadConfig().project_preview.use_real_browser_profile) {
-			return attachRealProjectPreviewBrowserProfile(relay, signal);
+			return attachRealProjectPreviewBrowserProfile(access, signal);
 		}
 		const launchSignal = withTimeoutSignal(
 			signal,
@@ -1770,7 +1793,7 @@ export const createProjectPreviewBrowserSession: ProjectPreviewBrowserSessionFac
 		for (const candidate of candidates) {
 			if (launchSignal.aborted || Date.now() >= deadline) break;
 			try {
-				return await launchCandidate(candidate, relay, launchSignal, deadline);
+				return await launchCandidate(candidate, access, launchSignal, deadline);
 			} catch (error) {
 				failures.push(errorMessage(error));
 			}

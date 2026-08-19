@@ -10,6 +10,19 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ProjectPreviewFeedbackContext } from "../db/projectPreviewFeedback";
+
+const feedbackMocks = vi.hoisted(() => ({
+	getProjectPreviewFeedbackContexts: vi.fn<
+		() => Promise<ProjectPreviewFeedbackContext[]>
+	>(async () => []),
+}));
+
+vi.mock("../db/projectPreviewFeedback", () => ({
+	getProjectPreviewFeedbackContexts:
+		feedbackMocks.getProjectPreviewFeedbackContexts,
+}));
+
 import type { BuildPromptOptions } from "./promptBuilder";
 import { buildPlanHtmlInstructions, buildPromptAsync } from "./promptBuilder";
 
@@ -17,6 +30,7 @@ let tmp: string;
 
 beforeEach(() => {
 	tmp = mkdtempSync(join(tmpdir(), "hlid-prompt-test-"));
+	feedbackMocks.getProjectPreviewFeedbackContexts.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -712,6 +726,55 @@ describe("buildPrompt — skillContext", async () => {
 // ── attachments ───────────────────────────────────────────────────────────────
 
 describe("buildPrompt — attachments", async () => {
+	it("injects only exact DOM bindings stored for the selected feedback attachment", async () => {
+		const attPath = join(tmp, "feedback.png");
+		writeFileSync(attPath, "fake-png");
+		feedbackMocks.getProjectPreviewFeedbackContexts.mockResolvedValue([
+			{
+				attachmentId: "feedback-1",
+				previewId: "preview-1",
+				sourceFrameId: "frame-1",
+				path: "https://example.com/settings",
+				viewport: "desktop",
+				capturedAt: 1_753_400_000_000,
+				comment: "Fix this button",
+				annotations: [
+					{
+						mark_index: 0,
+						mark_kind: "rectangle",
+						ref: "e1",
+						role: "button",
+						name: "Save",
+						tag: "button",
+						bounds: { x: 12, y: 24, width: 80, height: 32 },
+					},
+				],
+			},
+		]);
+
+		const { prompt } = await buildPromptAsync(
+			base({
+				attachments: [
+					{
+						id: "feedback-1",
+						path: attPath,
+						filename: "feedback.png",
+						mime: "image/png",
+						kind: "ephemeral",
+					},
+				],
+			}),
+		);
+
+		expect(
+			feedbackMocks.getProjectPreviewFeedbackContexts,
+		).toHaveBeenCalledWith(["feedback-1"]);
+		expect(prompt).toContain("Exact DOM element context");
+		expect(prompt).toContain('"ref":"e1"');
+		expect(prompt).toContain('"name":"Save"');
+		expect(prompt).not.toContain("e2");
+	});
+
 	it("includes attachment inside vault", async () => {
 		const attPath = join(tmp, "image.png");
 		writeFileSync(attPath, "fake-png");

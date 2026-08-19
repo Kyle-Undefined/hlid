@@ -34,10 +34,27 @@ const captureFeedbackSchema = previewActionSchema.extend({
 	scrollX: z.number().int().min(0).max(100_000).optional(),
 	scrollY: z.number().int().min(0).max(100_000).optional(),
 });
+const feedbackAnnotationSchema = z.object({
+	mark_index: z.number().int().min(0).max(99),
+	mark_kind: z.enum(["highlight", "rectangle", "arrow", "text"]),
+	ref: z.string().regex(/^e[1-9][0-9]{0,2}$/),
+	role: z.string().max(120),
+	name: z.string().max(500),
+	tag: z.string().max(80),
+	type: z.string().max(120).optional(),
+	disabled: z.boolean().optional(),
+	bounds: z.object({
+		x: z.number().finite(),
+		y: z.number().finite(),
+		width: z.number().finite().min(0),
+		height: z.number().finite().min(0),
+	}),
+});
 const saveFeedbackSchema = previewActionSchema.extend({
 	frameId: z.string().uuid(),
 	attachmentId: z.string().uuid(),
 	comment: z.string().max(10_000).optional(),
+	annotations: z.array(feedbackAnnotationSchema).max(50).default([]),
 });
 
 function projectPreviewAgentFramePath(
@@ -65,6 +82,25 @@ async function postProjectPreviewJson<T>(
 		},
 	);
 	await requireDbOk(response, operation);
+	return (await response.json()) as T;
+}
+
+async function postProjectPreviewRecording<T>(
+	data: z.infer<typeof previewActionSchema>,
+	action: "start" | "stop",
+): Promise<T> {
+	const response = await dbFetch(
+		`/api/project-previews/${encodeURIComponent(data.previewId)}/recording/${action}`,
+		{
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ session_id: data.sessionId }),
+		},
+	);
+	await requireDbOk(
+		response,
+		action === "start" ? "Start Browser recording" : "Save Browser recording",
+	);
 	return (await response.json()) as T;
 }
 
@@ -132,9 +168,29 @@ export const saveProjectPreviewFeedbackFn = createServerFn({ method: "POST" })
 				frame_id: data.frameId,
 				attachment_id: data.attachmentId,
 				comment: data.comment,
+				annotations: data.annotations,
 			},
 			"Save Project Preview feedback",
 		),
+	);
+
+export const startWebBrowserRecordingFn = createServerFn({ method: "POST" })
+	.validator((raw) => previewActionSchema.parse(raw))
+	.handler(({ data }) =>
+		postProjectPreviewRecording<ProjectPreviewAgentFrame>(data, "start"),
+	);
+
+export const stopWebBrowserRecordingFn = createServerFn({ method: "POST" })
+	.validator((raw) => previewActionSchema.parse(raw))
+	.handler(({ data }) =>
+		postProjectPreviewRecording<{
+			id: string;
+			filename: string;
+			open_url: string;
+			frame_count: number;
+			duration_seconds: number;
+			truncated: boolean;
+		}>(data, "stop"),
 	);
 
 export const stopProjectPreviewFn = createServerFn({ method: "POST" })

@@ -379,6 +379,7 @@ describe("Hlid operating guidance", () => {
 				"wait_hlid_agent",
 				"steer_hlid_agent",
 				"cancel_hlid_agent",
+				"cleanup_hlid_worktree",
 				"resume_hlid_agent",
 			],
 		});
@@ -400,6 +401,7 @@ describe("Hlid operating guidance", () => {
 				"wait_hlid_agent",
 				"steer_hlid_agent",
 				"cancel_hlid_agent",
+				"cleanup_hlid_worktree",
 				"resume_hlid_agent",
 			],
 		});
@@ -419,6 +421,7 @@ describe("Hlid operating guidance", () => {
 				"wait_hlid_agent",
 				"steer_hlid_agent",
 				"cancel_hlid_agent",
+				"cleanup_hlid_worktree",
 				"resume_hlid_agent",
 			],
 		});
@@ -437,6 +440,7 @@ describe("Hlid operating guidance", () => {
 				"wait_hlid_agent",
 				"steer_hlid_agent",
 				"cancel_hlid_agent",
+				"cleanup_hlid_worktree",
 				"resume_hlid_agent",
 			],
 		});
@@ -497,6 +501,7 @@ describe("Hlid operating guidance", () => {
 					"wait_hlid_agent",
 					"steer_hlid_agent",
 					"cancel_hlid_agent",
+					"cleanup_hlid_worktree",
 					"resume_hlid_agent",
 				],
 			}),
@@ -634,6 +639,7 @@ describe("Hlid operating guidance", () => {
 				"wait_hlid_agent",
 				"steer_hlid_agent",
 				"cancel_hlid_agent",
+				"cleanup_hlid_worktree",
 				"resume_hlid_agent",
 			],
 		});
@@ -726,6 +732,7 @@ describe("Hlid operating guidance", () => {
 				"wait_hlid_agent",
 				"steer_hlid_agent",
 				"cancel_hlid_agent",
+				"cleanup_hlid_worktree",
 				"resume_hlid_agent",
 				"publish_relic",
 				"start_project_preview",
@@ -1660,6 +1667,7 @@ describe("Hlid operating guidance", () => {
 				"wait_hlid_agent",
 				"steer_hlid_agent",
 				"cancel_hlid_agent",
+				"cleanup_hlid_worktree",
 				"resume_hlid_agent",
 				"publish_relic",
 				"start_project_preview",

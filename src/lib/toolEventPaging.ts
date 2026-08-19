@@ -10,6 +10,13 @@ const VISUALIZATION_TOOL_NAMES = new Set([
 ]);
 
 const PROJECT_PREVIEW_TOOL_SUFFIXES = [
+	"open_web_browser",
+	"inspect_web_browser",
+	"capture_web_browser",
+	"control_web_browser",
+	"start_web_browser_recording",
+	"stop_web_browser_recording",
+	"stop_web_browser",
 	"start_project_preview",
 	"inspect_project_preview",
 	"capture_project_preview",
@@ -41,6 +48,7 @@ const HLID_DELEGATION_TOOL_SUFFIXES = [
 	"wait_hlid_agent",
 	"steer_hlid_agent",
 	"cancel_hlid_agent",
+	"cleanup_hlid_worktree",
 	"resume_hlid_agent",
 ] as const;
 

@@ -12,6 +12,7 @@ export type EditState = {
 	permissionMode: string;
 	recapModel: string;
 	interactiveMode: boolean;
+	delegationWorktreePolicy: "shared" | "when_available" | "required";
 };
 
 export function editStateFromAgent(agent: AgentEntry): EditState {
@@ -25,6 +26,7 @@ export function editStateFromAgent(agent: AgentEntry): EditState {
 		permissionMode: agent.permissionMode ?? "",
 		recapModel: agent.recapModel ?? "",
 		interactiveMode: agent.interactiveMode ?? false,
+		delegationWorktreePolicy: agent.delegationWorktreePolicy ?? "shared",
 	};
 }
 
@@ -60,6 +62,23 @@ export function AgentCardEditForm({
 				includeInteractive
 				onChange={onChange}
 			/>
+			<label className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+				<span>Delegated child worktrees</span>
+				<select
+					value={editing.delegationWorktreePolicy}
+					onChange={(event) =>
+						onChange({
+							delegationWorktreePolicy: event.target
+								.value as EditState["delegationWorktreePolicy"],
+						})
+					}
+					className="bg-input border border-border px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:border-primary/50"
+				>
+					<option value="shared">Shared workspace</option>
+					<option value="when_available">Worktree when available</option>
+					<option value="required">Require worktree</option>
+				</select>
+			</label>
 			<div className="flex items-center gap-2 pt-1">
 				<button
 					type="button"

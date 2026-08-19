@@ -222,11 +222,49 @@ describe("SessionPool provider runtime workspaces", () => {
 		expect(pool.providerRuntimeCwd(vault.toLowerCase())).toBe(vault);
 		expect(pool.providerRuntimeCwd(persistedCwdAlias)).toBe(persistedCwdAlias);
 		expect(pool.providerRuntimeCwd(contextAgent)).toBe(vault);
+		expect(pool.delegationWorktreeAvailable(cwdAgent)).toBe(true);
+		expect(pool.delegationWorktreeAvailable(contextAgent)).toBe(false);
 		expect(
 			pool.providerRuntimeCwd(
 				"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\removed-agent",
 			),
 		).toBeNull();
+	});
+
+	it("aliases managed worktrees to their source agent settings", () => {
+		const source = "/work/source";
+		const execution = "/work/.hlid-worktrees/source/child";
+		const config = makeConfig("/vault");
+		config.agents = [
+			{
+				path: source,
+				name: "Source",
+				mode: "cwd",
+				provider: "claude",
+				model: "source-model",
+				max_turns: 12,
+			},
+		];
+		const providers = makeProviders();
+		const pool = new SessionPool(config, providers);
+		pool.registerManagedDelegationWorkspace(execution, source);
+
+		pool.create(execution, "Managed child");
+		const constructorArgs = vi.mocked(SessionManager).mock.calls.at(-1);
+		const managerConfig = constructorArgs?.[0] as HlidConfig;
+		expect(constructorArgs?.[2]).toBe(execution);
+		expect(managerConfig.agents).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					path: execution,
+					mode: "cwd",
+					provider: "claude",
+					model: "source-model",
+					max_turns: 12,
+				}),
+			]),
+		);
+		expect(pool.providerRuntimeCwd(execution)).toBe(execution);
 	});
 });
 
@@ -329,6 +367,11 @@ describe("SessionPool durable delegation attention", () => {
 				effort: "high",
 				service_tier: null,
 				workspace: "/code/proj",
+				workspace_mode: "shared",
+				execution_workspace: "/code/proj",
+				worktree_branch: null,
+				worktree_base_commit: null,
+				worktree_state: "none",
 				permission_mode: "default",
 				timeout_seconds: 600,
 				token_budget: null,
@@ -425,6 +468,11 @@ describe("SessionPool durable delegation attention", () => {
 				effort: "high",
 				service_tier: null,
 				workspace: "/code/proj",
+				workspace_mode: "shared",
+				execution_workspace: "/code/proj",
+				worktree_branch: null,
+				worktree_base_commit: null,
+				worktree_state: "none",
 				permission_mode: "default",
 				timeout_seconds: 600,
 				token_budget: null,

@@ -1521,6 +1521,26 @@ function applyMigrations(db: Db): void {
 		);
 	});
 
+	runMigration(
+		db,
+		"_migrated_project_preview_feedback_annotations_v2",
+		(db) => {
+			db.run(
+				`ALTER TABLE project_preview_feedback
+			 ADD COLUMN annotations_json TEXT NOT NULL DEFAULT '[]'`,
+			);
+		},
+	);
+
+	runMigration(db, "_migrated_project_previews_target_kind_v2", (db) => {
+		db.run(
+			`ALTER TABLE project_previews
+			 ADD COLUMN target_kind TEXT NOT NULL DEFAULT 'project' CHECK(
+			   target_kind IN ('project', 'browser')
+			 )`,
+		);
+	});
+
 	// Hlid-owned cross-harness delegation creates an ordinary child Raven
 	// session while retaining lifecycle and bounded-result provenance outside
 	// either provider transcript. Parent IDs intentionally have no foreign key:
@@ -1700,6 +1720,40 @@ function applyMigrations(db: Db): void {
 		db.run(
 			`CREATE INDEX idx_session_delegations_routine_run
 			 ON session_delegations(routine_run_id, status)`,
+		);
+	});
+
+	// Durable delegated children may execute in a Hlid-owned Git worktree while
+	// the selected_workspace remains the exact configured source workspace.
+	runMigration(db, "_migrated_session_delegations_v6", (db) => {
+		db.run(
+			`ALTER TABLE session_delegations
+			 ADD COLUMN workspace_mode TEXT NOT NULL DEFAULT 'shared' CHECK(
+			   workspace_mode IN ('shared', 'worktree')
+			 )`,
+		);
+		db.run(
+			`ALTER TABLE session_delegations
+			 ADD COLUMN execution_workspace TEXT NOT NULL DEFAULT ''`,
+		);
+		db.run(
+			`UPDATE session_delegations
+			 SET execution_workspace = selected_workspace
+			 WHERE execution_workspace = ''`,
+		);
+		db.run(`ALTER TABLE session_delegations ADD COLUMN worktree_branch TEXT`);
+		db.run(
+			`ALTER TABLE session_delegations ADD COLUMN worktree_base_commit TEXT`,
+		);
+		db.run(
+			`ALTER TABLE session_delegations
+			 ADD COLUMN worktree_state TEXT NOT NULL DEFAULT 'none' CHECK(
+			   worktree_state IN ('none', 'active', 'retained', 'cleaned')
+			 )`,
+		);
+		db.run(
+			`CREATE INDEX idx_session_delegations_worktree_state
+			 ON session_delegations(worktree_state)`,
 		);
 	});
 

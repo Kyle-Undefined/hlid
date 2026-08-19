@@ -671,6 +671,41 @@ describe("ToolBlock — specialized event dispatch", () => {
 		expect(screen.queryByText("mcp__hlid__start_project_preview")).toBeNull();
 	});
 
+	it("routes Browser captures and lifecycle events through Browser rows", () => {
+		const capture = render(
+			<ToolBlock
+				event={makeEvent({
+					name: "mcp__hlid__capture_web_browser",
+					result: JSON.stringify({
+						preview_id: "browser-1",
+						target_kind: "browser",
+						path: "https://example.com/",
+						viewport: "desktop",
+						width: 1440,
+						height: 1000,
+						full_page: false,
+						size_bytes: 1024,
+					}),
+				})}
+			/>,
+		);
+
+		expect(screen.getByText("Browser captured for agent")).not.toBeNull();
+		capture.unmount();
+
+		render(
+			<ToolBlock
+				event={makeEvent({
+					name: "mcp__hlid__open_web_browser",
+					input: { url: "https://example.com/" },
+				})}
+			/>,
+		);
+
+		expect(screen.getByText("Starting Browser")).not.toBeNull();
+		expect(screen.queryByText("mcp__hlid__open_web_browser")).toBeNull();
+	});
+
 	it.each([
 		["control_project_preview", "Controlling Project Preview"],
 		["inspect_project_preview", "Project Preview"],

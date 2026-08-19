@@ -3,6 +3,7 @@ import { escapeRegExp } from "../lib/utils";
 import type { HlidDelegationManager } from "./hlidDelegation";
 import {
 	cancelHlidAgentSchema,
+	cleanupHlidWorktreeSchema,
 	delegateHlidAgentSchema,
 	inspectHlidAgentSchema,
 	listHlidAgentsSchema,
@@ -117,6 +118,18 @@ export function createHlidDelegationRouteHandler(
 				return Response.json(
 					await manager.resume(body.parent_session_id, input.id, input),
 					{ status: 202 },
+				);
+			}
+
+			const cleanupWorktreeId = delegationId(url.pathname, "/worktree/cleanup");
+			if (cleanupWorktreeId && request.method === "POST") {
+				const body = await bodyWithParentSession(request);
+				const input = cleanupHlidWorktreeSchema.parse({
+					...body,
+					id: cleanupWorktreeId,
+				});
+				return Response.json(
+					await manager.cleanupWorktree(body.parent_session_id, input.id),
 				);
 			}
 

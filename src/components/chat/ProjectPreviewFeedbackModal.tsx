@@ -19,15 +19,20 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useDialogFocus } from "#/hooks/useDialogFocus";
-import type { ProjectPreviewAgentFrame } from "#/server/protocol";
+import type {
+	ProjectPreviewAgentElement,
+	ProjectPreviewAgentFrame,
+	ProjectPreviewFeedbackAnnotation,
+} from "#/server/protocol";
 
 type Point = { x: number; y: number };
-type Mark =
+type Mark = { id: string } & (
 	| { kind: "pen"; points: Point[] }
 	| { kind: "highlight"; start: Point; end: Point }
 	| { kind: "rectangle"; start: Point; end: Point }
 	| { kind: "arrow"; start: Point; end: Point }
-	| { kind: "text"; point: Point; text: string };
+	| { kind: "text"; point: Point; text: string }
+);
 type Tool = Mark["kind"] | "pan";
 
 const RED = "#ef4444";
@@ -108,6 +113,87 @@ function drawMark(
 	context.restore();
 }
 
+function pointCandidates(
+	point: Point,
+	elements: ProjectPreviewAgentElement[],
+): ProjectPreviewAgentElement[] {
+	return elements
+		.filter(
+			(element) =>
+				point.x >= element.x &&
+				point.y >= element.y &&
+				point.x <= element.x + element.width &&
+				point.y <= element.y + element.height,
+		)
+		.sort(
+			(left, right) => left.width * left.height - right.width * right.height,
+		);
+}
+
+function markBindingCandidates(
+	mark: Mark,
+	elements: ProjectPreviewAgentElement[],
+	rasterScale: number,
+): ProjectPreviewAgentElement[] {
+	if (mark.kind === "pen") return [];
+	if (mark.kind === "arrow" || mark.kind === "text") {
+		const point = mark.kind === "arrow" ? mark.end : mark.point;
+		return pointCandidates(
+			{ x: point.x / rasterScale, y: point.y / rasterScale },
+			elements,
+		);
+	}
+	const [x, y, width, height] = markBounds(mark.start, mark.end).map(
+		(value) => value / rasterScale,
+	) as [number, number, number, number];
+	const markArea = Math.max(1, width * height);
+	return elements
+		.map((element) => {
+			const overlapWidth = Math.max(
+				0,
+				Math.min(x + width, element.x + element.width) - Math.max(x, element.x),
+			);
+			const overlapHeight = Math.max(
+				0,
+				Math.min(y + height, element.y + element.height) -
+					Math.max(y, element.y),
+			);
+			return { element, overlap: overlapWidth * overlapHeight };
+		})
+		.filter(({ overlap }) => overlap > 0)
+		.sort(
+			(left, right) =>
+				right.overlap / markArea - left.overlap / markArea ||
+				left.element.width * left.element.height -
+					right.element.width * right.element.height,
+		)
+		.map(({ element }) => element);
+}
+
+function exactAnnotation(
+	mark: Mark,
+	markIndex: number,
+	element: ProjectPreviewAgentElement,
+): ProjectPreviewFeedbackAnnotation | null {
+	if (mark.kind === "pen") return null;
+	return {
+		mark_index: markIndex,
+		mark_kind: mark.kind,
+		ref: element.ref,
+		role: element.role,
+		name: element.name,
+		tag: element.tag,
+		...(element.type ? { type: element.type } : {}),
+		...(element.disabled !== undefined ? { disabled: element.disabled } : {}),
+		bounds: {
+			x: element.x,
+			y: element.y,
+			width: element.width,
+			height: element.height,
+		},
+	};
+}
+
 export function ProjectPreviewFeedbackModal({
 	frame,
 	saving,
@@ -119,7 +205,11 @@ export function ProjectPreviewFeedbackModal({
 	saving: boolean;
 	error: string | null;
 	onClose: () => void;
-	onSave: (blob: Blob, comment: string) => Promise<void>;
+	onSave: (
+		blob: Blob,
+		comment: string,
+		annotations: ProjectPreviewFeedbackAnnotation[],
+	) => Promise<void>;
 }) {
 	const close = useCallback(() => {
 		if (!saving) onClose();
@@ -134,6 +224,18 @@ export function ProjectPreviewFeedbackModal({
 	const [draft, setDraft] = useState<Mark | null>(null);
 	const [text, setText] = useState("");
 	const [comment, setComment] = useState("");
+	const [bindingOverrides, setBindingOverrides] = useState<
+		Record<number, string | null>
+	>({});
+	const targetLabel =
+		frame.target_kind === "browser" ? "Browser" : "Project Preview";
+	const rasterScale =
+		frame.width > 0 && (imageRef.current?.naturalWidth ?? 0) > 0
+			? (imageRef.current?.naturalWidth ?? frame.width) / frame.width
+			: 1;
+	const bindingChoices = marks.map((mark) =>
+		markBindingCandidates(mark, frame.elements, rasterScale),
+	);
 
 	useEffect(() => {
 		if (window.matchMedia?.("(pointer: coarse)").matches) {
@@ -191,7 +293,7 @@ export function ProjectPreviewFeedbackModal({
 			if (value) {
 				setMarks((current) => [
 					...current,
-					{ kind: "text", point, text: value },
+					{ id: crypto.randomUUID(), kind: "text", point, text: value },
 				]);
 				setText("");
 			}
@@ -200,8 +302,8 @@ export function ProjectPreviewFeedbackModal({
 		event.currentTarget.setPointerCapture(event.pointerId);
 		setDraft(
 			tool === "pen"
-				? { kind: "pen", points: [point] }
-				: { kind: tool, start: point, end: point },
+				? { id: crypto.randomUUID(), kind: "pen", points: [point] }
+				: { id: crypto.randomUUID(), kind: tool, start: point, end: point },
 		);
 	};
 
@@ -235,7 +337,20 @@ export function ProjectPreviewFeedbackModal({
 			canvas.toBlob(resolve, "image/png"),
 		);
 		if (!blob) return;
-		await onSave(blob, comment.trim());
+		const annotations = marks.flatMap((mark, index) => {
+			const candidates = bindingChoices[index] ?? [];
+			const selectedRef = Object.hasOwn(bindingOverrides, index)
+				? bindingOverrides[index]
+				: candidates[0]?.ref;
+			const selected = candidates.find(
+				(candidate) => candidate.ref === selectedRef,
+			);
+			const annotation = selected
+				? exactAnnotation(mark, index, selected)
+				: null;
+			return annotation ? [annotation] : [];
+		});
+		await onSave(blob, comment.trim(), annotations);
 	};
 
 	const tools: Array<{ tool: Tool; label: string; icon: typeof Pencil }> = [
@@ -259,14 +374,14 @@ export function ProjectPreviewFeedbackModal({
 				tabIndex={-1}
 				role="dialog"
 				aria-modal="true"
-				aria-label="Annotate Project Preview"
+				aria-label={`Annotate ${targetLabel}`}
 				className="flex max-h-[96vh] w-full max-w-6xl flex-col border border-border bg-card shadow-2xl focus:outline-none"
 				onKeyDown={onDialogKeyDown}
 			>
 				<header className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
 					<div className="min-w-0 flex-1">
 						<p className="truncate text-xs font-medium">
-							Annotate Project Preview
+							Annotate {targetLabel}
 						</p>
 						<p className="truncate text-[9px] uppercase tracking-widest text-muted-foreground/60">
 							{frame.viewport} · {frame.width}×{frame.height} · {frame.path}
@@ -356,6 +471,45 @@ export function ProjectPreviewFeedbackModal({
 						</div>
 					</div>
 					<aside className="flex w-full shrink-0 flex-col gap-3 border-t border-border p-3 lg:w-72 lg:border-t-0 lg:border-l">
+						{bindingChoices.some((choices) => choices.length > 0) && (
+							<div className="flex flex-col gap-2 border border-border/60 bg-muted/20 p-2">
+								<p className="text-[10px] uppercase tracking-widest text-muted-foreground">
+									Exact element context
+								</p>
+								{bindingChoices.map((choices, index) => {
+									if (choices.length === 0) return null;
+									const value = Object.hasOwn(bindingOverrides, index)
+										? (bindingOverrides[index] ?? "")
+										: (choices[0]?.ref ?? "");
+									return (
+										<label
+											key={marks[index]?.id}
+											className="flex flex-col gap-1 text-[10px] text-muted-foreground"
+										>
+											Mark {index + 1} · {marks[index]?.kind}
+											<select
+												value={value}
+												onChange={(event) =>
+													setBindingOverrides((current) => ({
+														...current,
+														[index]: event.target.value || null,
+													}))
+												}
+												className="h-8 border border-border bg-background px-2 text-[11px] text-foreground"
+											>
+												<option value="">No element binding</option>
+												{choices.map((choice) => (
+													<option key={choice.ref} value={choice.ref}>
+														{choice.ref} · {choice.role} ·{" "}
+														{choice.name || choice.tag}
+													</option>
+												))}
+											</select>
+										</label>
+									);
+								})}
+							</div>
+						)}
 						<label className="flex min-h-0 flex-1 flex-col gap-2 text-[10px] uppercase tracking-widest text-muted-foreground">
 							Message to agent
 							<textarea

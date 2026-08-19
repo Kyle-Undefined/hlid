@@ -52,6 +52,7 @@ function agentEntryToConfig(a: AgentEntry): Agent {
 				: undefined,
 		recap_model: a.recapModel || undefined,
 		interactive_mode: a.interactiveMode || undefined,
+		delegation_worktree_policy: a.delegationWorktreePolicy ?? "shared",
 	};
 }
 

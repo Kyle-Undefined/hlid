@@ -19,6 +19,7 @@ export type VaultForm = {
 	memory: string;
 	saveToObsidianTemplate: string;
 	obsidianCommandAllowlist: string[];
+	delegationWorktreePolicy?: "shared" | "when_available" | "required";
 };
 
 const selectClass =
@@ -122,6 +123,25 @@ export function VaultSection({
 			</Field>
 			<Field label="Path">
 				<PathField value={vault.path} onChange={(v) => onChange({ path: v })} />
+			</Field>
+			<Field
+				label="Delegated child worktrees"
+				hint="Default workspace isolation for durable Hlid child sessions. Provider-native subagents are unchanged."
+			>
+				<select
+					value={vault.delegationWorktreePolicy ?? "shared"}
+					onChange={(event) =>
+						onChange({
+							delegationWorktreePolicy: event.target
+								.value as VaultForm["delegationWorktreePolicy"],
+						})
+					}
+					className={selectClass}
+				>
+					<option value="shared">Shared workspace</option>
+					<option value="when_available">Worktree when available</option>
+					<option value="required">Require worktree</option>
+				</select>
 			</Field>
 			<Field
 				id="forge-setting-save-to-obsidian-template"

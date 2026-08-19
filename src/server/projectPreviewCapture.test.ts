@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
 	isAllowedProjectPreviewBrowserOrigin,
+	isAllowedWebBrowserRequest,
 	MAX_PROJECT_PREVIEW_CAPTURE_BYTES,
 	MAX_PROJECT_PREVIEW_CAPTURE_PIXEL_DIMENSION,
 	MAX_PROJECT_PREVIEW_CAPTURE_PIXELS,
 	nextProjectPreviewCaptureScale,
 	normalizeProjectPreviewCapturePath,
+	normalizeWebBrowserUrl,
 	PROJECT_PREVIEW_CAPTURE_DEVICE_SCALE_FACTOR,
 	projectPreviewCaptureScale,
 	readProjectPreviewPngDimensions,
@@ -66,6 +68,38 @@ describe("Project Preview capture boundaries", () => {
 				origin,
 			),
 		).toBe(false);
+	});
+
+	it("allows public Browser URLs while keeping private access on one approved origin", () => {
+		expect(normalizeWebBrowserUrl("https://example.com/docs")).toBe(
+			"https://example.com/docs",
+		);
+		expect(() => normalizeWebBrowserUrl("ftp://example.com/file")).toThrow(
+			/HTTP or HTTPS/,
+		);
+		expect(() =>
+			normalizeWebBrowserUrl("https://user:pass@example.com/"),
+		).toThrow(/credentials/);
+		expect(
+			isAllowedWebBrowserRequest("https://cdn.example.net/app.js", null),
+		).toBe(true);
+		expect(isAllowedWebBrowserRequest("http://127.0.0.1:8080/app", null)).toBe(
+			false,
+		);
+		expect(
+			isAllowedWebBrowserRequest(
+				"http://127.0.0.1:8080/app",
+				"http://127.0.0.1:8080",
+			),
+		).toBe(true);
+		expect(
+			isAllowedWebBrowserRequest(
+				"http://127.0.0.1:8081/app",
+				"http://127.0.0.1:8080",
+			),
+		).toBe(false);
+		expect(isAllowedWebBrowserRequest("file:///tmp/secret", null)).toBe(false);
+		expect(isAllowedWebBrowserRequest("data:text/plain,ok", null)).toBe(true);
 	});
 
 	it("keeps named viewport captures at 2x and bounds tall full-page output", () => {

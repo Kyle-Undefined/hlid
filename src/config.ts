@@ -97,6 +97,10 @@ const VaultSchema = z.object({
 	// When true, deleting a vault attachment from Relics also removes the file
 	// from disk. Default false — vault files are owned by the vault, not hlid.
 	delete_vault_attachments: z.boolean().default(false),
+	/** Default isolation policy for durable Hlid child sessions in this workspace. */
+	delegation_worktree_policy: z
+		.enum(["shared", "when_available", "required"])
+		.optional(),
 });
 
 const ServerSchema = z.object({
@@ -529,6 +533,10 @@ export const AgentSchema = z.object({
 	recap_model: z.string().optional(),
 	/** Override vault-level interactive_mode for this specific agent. */
 	interactive_mode: z.boolean().optional(),
+	/** Default isolation policy for durable Hlid child sessions in this workspace. */
+	delegation_worktree_policy: z
+		.enum(["shared", "when_available", "required"])
+		.optional(),
 });
 
 const PROTOTYPE_SPECIAL_ACP_MODEL_PROVIDER_IDS = new Set([

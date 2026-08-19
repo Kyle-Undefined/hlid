@@ -69,4 +69,39 @@ describe("project preview provenance", () => {
 			stop_reason: "hlid_restart",
 		});
 	});
+
+	it("updates a Browser lifecycle's live URL without replacing its identity", async () => {
+		await saveProjectPreview({
+			id: "browser-1",
+			target_kind: "browser",
+			session_id: "session-1",
+			label: "Browser",
+			command: "",
+			cwd: "",
+			port: 0,
+			path: "https://httpbin.org/",
+			url: "https://httpbin.org/",
+			relay_url: "",
+			state: "ready",
+			present: true,
+			started_at: "2026-07-24T10:00:00.000Z",
+			expires_at: "2026-07-24T14:00:00.000Z",
+			logs: [],
+		});
+		const original = await getProjectPreview("browser-1");
+		if (!original) throw new Error("Expected persisted Browser");
+		await saveProjectPreview({
+			...original,
+			path: "https://example.com/",
+			url: "https://example.com/",
+		});
+
+		expect(await getProjectPreview("browser-1")).toMatchObject({
+			id: "browser-1",
+			target_kind: "browser",
+			state: "ready",
+			path: "https://example.com/",
+			url: "https://example.com/",
+		});
+	});
 });

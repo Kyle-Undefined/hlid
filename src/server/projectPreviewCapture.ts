@@ -165,3 +165,76 @@ export function isAllowedProjectPreviewBrowserOrigin(
 			(allowed.port || (allowed.protocol === "https:" ? "443" : "80"))
 	);
 }
+
+const PRIVATE_IPV4 = [
+	/^127\./,
+	/^10\./,
+	/^192\.168\./,
+	/^169\.254\./,
+	/^172\.(1[6-9]|2\d|3[01])\./,
+];
+
+export function isPrivateWebBrowserHostname(hostname: string): boolean {
+	const value = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+	return (
+		value === "localhost" ||
+		value.endsWith(".localhost") ||
+		value.endsWith(".local") ||
+		value === "::1" ||
+		value.startsWith("fe80:") ||
+		value.startsWith("fc") ||
+		value.startsWith("fd") ||
+		PRIVATE_IPV4.some((pattern) => pattern.test(value))
+	);
+}
+
+export function normalizeWebBrowserUrl(value: string): string {
+	let url: URL;
+	try {
+		url = new URL(value.trim());
+	} catch {
+		throw new Error("Browser URL must be an absolute HTTP or HTTPS URL.");
+	}
+	if (url.protocol !== "http:" && url.protocol !== "https:") {
+		throw new Error("Browser URL must use HTTP or HTTPS.");
+	}
+	if (url.username || url.password) {
+		throw new Error("Browser URLs cannot contain embedded credentials.");
+	}
+	return url.toString();
+}
+
+export function isAllowedWebBrowserRequest(
+	value: string,
+	approvedPrivateOrigin: string | null,
+): boolean {
+	let url: URL;
+	try {
+		url = new URL(value);
+	} catch {
+		return false;
+	}
+	if (["data:", "blob:", "about:"].includes(url.protocol)) return true;
+	if (!["http:", "https:", "ws:", "wss:"].includes(url.protocol)) {
+		return false;
+	}
+	if (!isPrivateWebBrowserHostname(url.hostname)) return true;
+	if (!approvedPrivateOrigin) return false;
+	try {
+		const approved = new URL(approvedPrivateOrigin);
+		const normalizedProtocol =
+			url.protocol === "ws:"
+				? "http:"
+				: url.protocol === "wss:"
+					? "https:"
+					: url.protocol;
+		return (
+			normalizedProtocol === approved.protocol &&
+			url.hostname === approved.hostname &&
+			(url.port || (normalizedProtocol === "https:" ? "443" : "80")) ===
+				(approved.port || (approved.protocol === "https:" ? "443" : "80"))
+		);
+	} catch {
+		return false;
+	}
+}

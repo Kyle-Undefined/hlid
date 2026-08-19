@@ -41,6 +41,7 @@ export {
 	listHlidDelegationsByParentDelegation,
 	listHlidDelegationsForParent,
 	listHlidDelegationsForRoutineRun,
+	listManagedDelegationWorkspaces,
 	listResumableInterruptedHlidDelegations,
 	markHlidDelegationRunning,
 	reconcileOrphanedHlidDelegationsAfterRestart,
@@ -50,6 +51,7 @@ export {
 	updateHlidDelegationCost,
 	updateHlidDelegationProgress,
 	updateHlidDelegationTokens,
+	updateHlidDelegationWorktreeState,
 } from "./delegations";
 export {
 	completePendingFileDeletion,

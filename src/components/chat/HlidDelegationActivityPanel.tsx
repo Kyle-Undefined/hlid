@@ -4,6 +4,7 @@ import {
 	CheckCircle2,
 	CirclePause,
 	ExternalLink,
+	GitBranch,
 	LoaderCircle,
 	XCircle,
 } from "lucide-react";
@@ -31,7 +32,10 @@ import {
 	liveSessionReasonLabel,
 } from "#/lib/liveSessionSwitcher";
 import type { HlidDelegationListItem } from "#/lib/serverFns/hlidDelegations";
-import { getHlidDelegationsFn } from "#/lib/serverFns/hlidDelegations";
+import {
+	cleanupHlidWorktreeFn,
+	getHlidDelegationsFn,
+} from "#/lib/serverFns/hlidDelegations";
 import type { SessionStatusEntry } from "#/server/protocol";
 import {
 	activitySummary,
@@ -208,10 +212,12 @@ function useLiveNow(enabled: boolean): number {
 
 function ChildRow({
 	child,
+	parentSessionId,
 	sessionStatus,
 	now,
 }: {
 	child: HlidDelegationListItem;
+	parentSessionId: string;
 	sessionStatus?: SessionStatusEntry;
 	now: number;
 }) {
@@ -222,6 +228,34 @@ function ChildRow({
 			: null;
 	const duration = compactDelegationDuration(childDurationSeconds(child, now));
 	const openUrl = `/raven?session=${encodeURIComponent(child.child_session_id)}`;
+	const [cleanupPending, setCleanupPending] = useState(false);
+	const [cleanupMessage, setCleanupMessage] = useState<string | null>(null);
+	const canCleanWorktree =
+		child.workspace_mode === "worktree" &&
+		child.complete &&
+		child.worktree_state !== "cleaned";
+	const cleanWorktree = async () => {
+		setCleanupPending(true);
+		setCleanupMessage(null);
+		try {
+			const result = await cleanupHlidWorktreeFn({
+				data: { sessionId: parentSessionId, id: child.id },
+			});
+			setCleanupMessage(
+				result.cleaned
+					? "Worktree cleaned"
+					: result.dirty
+						? "Retained: uncommitted changes"
+						: `Retained: ${result.unique_commits} unique commit${result.unique_commits === 1 ? "" : "s"}`,
+			);
+		} catch (error) {
+			setCleanupMessage(
+				error instanceof Error ? error.message : "Worktree cleanup failed",
+			);
+		} finally {
+			setCleanupPending(false);
+		}
+	};
 
 	return (
 		<li
@@ -245,6 +279,15 @@ function ChildRow({
 					{child.effort && (
 						<span className="shrink-0 border border-primary/15 px-1 py-0.5 font-mono text-[8px] text-primary/45">
 							{child.effort} effort
+						</span>
+					)}
+					{child.workspace_mode === "worktree" && (
+						<span
+							title={child.worktree_branch ?? "Managed worktree"}
+							className="flex shrink-0 items-center gap-1 border border-primary/15 px-1 py-0.5 font-mono text-[8px] text-primary/45"
+						>
+							<GitBranch className="h-2.5 w-2.5" />
+							{child.worktree_state}
 						</span>
 					)}
 					{attentionLabel && (
@@ -297,6 +340,17 @@ function ChildRow({
 							: ""}
 					</span>
 				)}
+				{canCleanWorktree && (
+					<button
+						type="button"
+						disabled={cleanupPending}
+						onClick={() => void cleanWorktree()}
+						className="text-primary/55 hover:text-primary disabled:opacity-40"
+					>
+						{cleanupPending ? "Checking worktree…" : "Clean up worktree"}
+					</button>
+				)}
+				{cleanupMessage && <span>{cleanupMessage}</span>}
 			</div>
 		</li>
 	);
@@ -461,6 +515,7 @@ export function HlidDelegationActivityPanel({
 					<ChildRow
 						key={child.id}
 						child={child}
+						parentSessionId={sessionId}
 						sessionStatus={statusByChildSession.get(child.child_session_id)}
 						now={now}
 					/>

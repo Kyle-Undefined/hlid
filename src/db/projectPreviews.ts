@@ -6,6 +6,7 @@ import { getDb } from "./schema";
 
 type ProjectPreviewDbRow = {
 	id: string;
+	target_kind: "project" | "browser";
 	session_id: string;
 	label: string;
 	command: string;
@@ -39,6 +40,7 @@ function parseLogs(value: string): string[] {
 function snapshot(row: ProjectPreviewDbRow): ProjectPreviewSnapshot {
 	return {
 		id: row.id,
+		target_kind: row.target_kind,
 		session_id: row.session_id,
 		label: row.label,
 		command: row.command,
@@ -65,11 +67,13 @@ export async function saveProjectPreview(
 	const db = await getDb();
 	db.run(
 		`INSERT INTO project_previews (
-			id, session_id, label, command, cwd, port, path, url, relay_url,
+			id, target_kind, session_id, label, command, cwd, port, path, url, relay_url,
 			state, present, started_at, expires_at, ended_at, exit_code, error,
 			stop_reason, logs_json, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
 		ON CONFLICT(id) DO UPDATE SET
+			path = excluded.path,
+			url = excluded.url,
 			state = excluded.state,
 			ended_at = excluded.ended_at,
 			exit_code = excluded.exit_code,
@@ -79,6 +83,7 @@ export async function saveProjectPreview(
 			updated_at = unixepoch()`,
 		[
 			preview.id,
+			preview.target_kind ?? "project",
 			preview.session_id,
 			preview.label,
 			preview.command,
@@ -106,7 +111,7 @@ export async function getProjectPreview(
 	const db = await getDb();
 	const row = db
 		.query<ProjectPreviewDbRow, [string]>(
-			`SELECT id, session_id, label, command, cwd, port, path, url, relay_url,
+			`SELECT id, target_kind, session_id, label, command, cwd, port, path, url, relay_url,
 			        state, present, started_at, expires_at, ended_at, exit_code,
 			        error, stop_reason, logs_json
 			 FROM project_previews WHERE id = ?`,

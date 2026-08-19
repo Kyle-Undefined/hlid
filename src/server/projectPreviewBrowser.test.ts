@@ -131,7 +131,7 @@ describe("ProjectPreviewBrowserManager", () => {
 
 		expect(fake.factory).toHaveBeenCalledOnce();
 		expect(fake.factory).toHaveBeenCalledWith(
-			fake.relay.browserAccess,
+			{ kind: "project", ...fake.relay.browserAccess },
 			expect.any(AbortSignal),
 		);
 		expect(fake.relayFactory).toHaveBeenCalledWith({
@@ -500,5 +500,117 @@ describe("ProjectPreviewBrowserManager", () => {
 		await manager.closeAll();
 		expect(second.browser.close).toHaveBeenCalledOnce();
 		expect(second.relay.close).toHaveBeenCalledOnce();
+	});
+
+	it("opens a public web target without a project relay", async () => {
+		const fake = fakeBrowserSession();
+		const manager = new ProjectPreviewBrowserManager({
+			browserFactory: fake.factory,
+			relayFactory: fake.relayFactory,
+		});
+
+		const frame = await manager.captureWeb({
+			previewId: base.previewId,
+			sessionId: base.sessionId,
+			initialUrl: "https://example.com/docs",
+			allowPrivateNetwork: false,
+			viewport: "desktop",
+			fullPage: false,
+		});
+
+		expect(fake.factory).toHaveBeenCalledWith(
+			{
+				kind: "web",
+				initialUrl: "https://example.com/docs",
+				approvedPrivateOrigin: null,
+			},
+			expect.any(AbortSignal),
+		);
+		expect(fake.relayFactory).not.toHaveBeenCalled();
+		expect(frame).toMatchObject({
+			target_kind: "browser",
+			path: "https://example.com/docs",
+		});
+		await manager.closeAll();
+	});
+
+	it("requires an exact-origin grant for private Browser targets", async () => {
+		const denied = fakeBrowserSession();
+		const deniedManager = new ProjectPreviewBrowserManager({
+			browserFactory: denied.factory,
+			relayFactory: denied.relayFactory,
+		});
+		await expect(
+			deniedManager.captureWeb({
+				previewId: base.previewId,
+				sessionId: base.sessionId,
+				initialUrl: "http://127.0.0.1:8080/",
+				allowPrivateNetwork: false,
+				viewport: "desktop",
+				fullPage: false,
+			}),
+		).rejects.toThrow(/allow_private_network/);
+
+		const allowed = fakeBrowserSession();
+		const manager = new ProjectPreviewBrowserManager({
+			browserFactory: allowed.factory,
+			relayFactory: allowed.relayFactory,
+		});
+		const frame = await manager.captureWeb({
+			previewId: base.previewId,
+			sessionId: base.sessionId,
+			initialUrl: "http://127.0.0.1:8080/",
+			allowPrivateNetwork: true,
+			viewport: "desktop",
+			fullPage: false,
+		});
+		await expect(
+			manager.controlWeb({
+				previewId: base.previewId,
+				sessionId: base.sessionId,
+				initialUrl: "http://127.0.0.1:8080/",
+				allowPrivateNetwork: true,
+				action: "navigate",
+				url: "http://localhost:8080/elsewhere",
+			}),
+		).rejects.toThrow(/exact approved origin/);
+		expect(frame.path).toBe("http://127.0.0.1:8080/");
+		await manager.closeAll();
+	});
+
+	it("records bounded Browser capture states and clears the live indicator on stop", async () => {
+		const fake = fakeBrowserSession();
+		const manager = new ProjectPreviewBrowserManager({
+			browserFactory: fake.factory,
+			relayFactory: fake.relayFactory,
+		});
+		const recordingFrame = await manager.startWebRecording({
+			previewId: base.previewId,
+			sessionId: base.sessionId,
+			initialUrl: "https://example.com/",
+			allowPrivateNetwork: false,
+		});
+		expect(recordingFrame.recording).toBe(true);
+		const clicked = await manager.controlWeb({
+			previewId: base.previewId,
+			sessionId: base.sessionId,
+			initialUrl: "https://example.com/",
+			allowPrivateNetwork: false,
+			action: "click",
+			frameId: recordingFrame.frame_id,
+			ref: "e1",
+		});
+		expect(clicked.recording).toBe(true);
+		const recording = await manager.stopWebRecording(
+			base.previewId,
+			base.sessionId,
+		);
+		expect(recording.frames).toHaveLength(2);
+		expect(recording.frames[0]?.action).toBeUndefined();
+		expect(recording.frames[1]?.action).toBe("click");
+		expect(
+			manager.getLatestFrame(base.previewId, base.sessionId)?.recording,
+		).toBeUndefined();
+		await manager.closeAll();
 	});
 });

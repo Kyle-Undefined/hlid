@@ -486,6 +486,9 @@ describe("durable Hlid delegation provenance", () => {
 			`DELETE FROM settings WHERE key = '_migrated_session_delegations_v5'`,
 		);
 		database.run(
+			`DELETE FROM settings WHERE key = '_migrated_session_delegations_v6'`,
+		);
+		database.run(
 			`INSERT INTO session_delegations (
 				id, parent_session_id, parent_turn_id, parent_label,
 				child_session_id, depth, task, target_provider_id,

@@ -38,6 +38,8 @@ const DELEGATION_SELECT = `
 	       selected_model AS model, selected_effort AS effort,
 	       selected_service_tier AS service_tier,
 	       selected_workspace AS workspace,
+	       workspace_mode, execution_workspace, worktree_branch,
+	       worktree_base_commit, worktree_state,
 	       selected_permission_mode AS permission_mode,
 		       timeout_seconds, token_budget, tokens_used,
 		       cost_budget, cost_used, attempt_count,
@@ -122,6 +124,11 @@ export async function createHlidDelegation(input: {
 	effort: string | null;
 	serviceTier: string | null;
 	workspace: string;
+	workspaceMode?: "shared" | "worktree";
+	executionWorkspace?: string;
+	worktreeBranch?: string | null;
+	worktreeBaseCommit?: string | null;
+	worktreeState?: "none" | "active" | "retained" | "cleaned";
 	permissionMode: string;
 	timeoutSeconds: number;
 	handoff?: HlidDelegationHandoffSummary;
@@ -132,10 +139,12 @@ export async function createHlidDelegation(input: {
 		 (id, parent_session_id, parent_turn_id, parent_label,
 		  parent_delegation_id, routine_run_id, child_session_id, depth, task,
 		  target_provider_id, selected_model, selected_effort,
-		  selected_service_tier, selected_workspace,
+		  selected_service_tier, selected_workspace, workspace_mode,
+		  execution_workspace, worktree_branch, worktree_base_commit,
+		  worktree_state,
 		  selected_permission_mode, timeout_seconds, token_budget, cost_budget,
 		  handoff_json, status, started_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, 'pending',
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, 'pending',
 		         unixepoch(), unixepoch())`,
 		[
 			input.id,
@@ -152,6 +161,11 @@ export async function createHlidDelegation(input: {
 			input.effort,
 			input.serviceTier,
 			input.workspace,
+			input.workspaceMode ?? "shared",
+			input.executionWorkspace ?? input.workspace,
+			input.worktreeBranch ?? null,
+			input.worktreeBaseCommit ?? null,
+			input.worktreeState ?? "none",
 			input.permissionMode,
 			input.timeoutSeconds,
 			JSON.stringify(input.handoff ?? EMPTY_HANDOFF),
@@ -412,6 +426,49 @@ export async function getHlidDelegationByChildSession(
 	return row ? snapshot(row) : null;
 }
 
+export async function listManagedDelegationWorkspaces(): Promise<
+	Array<{
+		delegation_id: string;
+		source_workspace: string;
+		execution_workspace: string;
+		state: "active" | "retained";
+	}>
+> {
+	const db = await getDb();
+	return db
+		.query<
+			{
+				delegation_id: string;
+				source_workspace: string;
+				execution_workspace: string;
+				state: "active" | "retained";
+			},
+			[]
+		>(
+			`SELECT id AS delegation_id, selected_workspace AS source_workspace,
+			        execution_workspace, worktree_state AS state
+			 FROM session_delegations
+			 WHERE workspace_mode = 'worktree'
+			   AND worktree_state IN ('active', 'retained')
+			   AND execution_workspace <> ''`,
+		)
+		.all();
+}
+
+export async function updateHlidDelegationWorktreeState(
+	id: string,
+	state: "active" | "retained" | "cleaned",
+): Promise<HlidDelegationSnapshot | null> {
+	const db = await getDb();
+	db.run(
+		`UPDATE session_delegations
+		 SET worktree_state = ?, updated_at = unixepoch()
+		 WHERE id = ? AND workspace_mode = 'worktree'`,
+		[state, id],
+	);
+	return getHlidDelegation(id);
+}
+
 export async function markHlidDelegationRunning(
 	id: string,
 ): Promise<HlidDelegationSnapshot | null> {
@@ -437,7 +494,11 @@ export async function markHlidDelegationRunning(
 				`UPDATE session_delegations
 				 SET status = 'cancelled', ended_at = unixepoch(),
 				     updated_at = unixepoch(),
-				     error = 'The delegated child was removed or archived before it could start.'
+				     error = 'The delegated child was removed or archived before it could start.',
+				     worktree_state = CASE
+				       WHEN worktree_state = 'active' THEN 'retained'
+				       ELSE worktree_state
+				     END
 				 WHERE id = ?
 				   AND status = 'pending'
 				   AND NOT EXISTS (
@@ -703,7 +764,11 @@ export async function finishHlidDelegation(
 	db.run(
 		`UPDATE session_delegations
 		 SET status = ?, ended_at = unixepoch(), updated_at = unixepoch(),
-		     result_text = ?, error = ?, progress_text = NULL
+		     result_text = ?, error = ?, progress_text = NULL,
+		     worktree_state = CASE
+		       WHEN worktree_state = 'active' THEN 'retained'
+		       ELSE worktree_state
+		     END
 		 WHERE id = ? AND status IN ('pending', 'running')`,
 		[
 			input.status,
@@ -728,7 +793,11 @@ export async function abandonInterruptedHlidDelegation(
 	db.run(
 		`UPDATE session_delegations
 		 SET status = 'cancelled', ended_at = unixepoch(),
-		     updated_at = unixepoch(), error = ?, progress_text = NULL
+		     updated_at = unixepoch(), error = ?, progress_text = NULL,
+		     worktree_state = CASE
+		       WHEN worktree_state = 'active' THEN 'retained'
+		       ELSE worktree_state
+		     END
 		 WHERE id = ?
 		   AND status = 'interrupted'
 		   AND routine_run_id IS NULL

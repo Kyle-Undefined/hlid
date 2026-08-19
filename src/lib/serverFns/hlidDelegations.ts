@@ -13,6 +13,11 @@ const listInputSchema = z.object({
 	limit: z.number().int().min(1).max(100).optional(),
 });
 
+const cleanupWorktreeInputSchema = z.object({
+	sessionId: z.string().trim().min(1),
+	id: z.string().uuid(),
+});
+
 export function hlidDelegationsPath(input: {
 	sessionId: string;
 	limit?: number;
@@ -30,4 +35,24 @@ export const getHlidDelegationsFn = createServerFn({ method: "GET" })
 		const response = await dbFetch(hlidDelegationsPath(data));
 		await requireDbOk(response, "Load Hlid delegated children");
 		return (await response.json()) as HlidDelegationListItem[];
+	});
+
+export const cleanupHlidWorktreeFn = createServerFn({ method: "POST" })
+	.validator((raw) => cleanupWorktreeInputSchema.parse(raw))
+	.handler(async ({ data }) => {
+		const response = await dbFetch(
+			`/hlid-agents/${encodeURIComponent(data.id)}/worktree/cleanup`,
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ parent_session_id: data.sessionId }),
+			},
+		);
+		await requireDbOk(response, "Clean up Hlid child worktree");
+		return (await response.json()) as {
+			cleaned: boolean;
+			retained: boolean;
+			dirty: boolean;
+			unique_commits: number;
+		};
 	});

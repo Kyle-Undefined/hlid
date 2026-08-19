@@ -10,6 +10,7 @@ import { isAbsolute, posix, resolve, win32 } from "node:path";
 import { parseWslUncSyntax } from "#/lib/paths";
 import { childIsRunning, waitForChildExit } from "./childProcessLifecycle";
 import { projectPreviewBrowserManager } from "./projectPreviewBrowser";
+import { normalizeWebBrowserUrl } from "./projectPreviewCapture";
 import { disposeProjectPreviewRelay } from "./projectPreviewRelay";
 import {
 	createProjectPreviewCapability,
@@ -32,11 +33,22 @@ export type StartProjectPreviewInput = {
 	readinessTimeoutSeconds?: number;
 };
 
+export type StartWebBrowserInput = {
+	sessionId: string;
+	url: string;
+	label?: string;
+	present?: boolean;
+	replaceExisting?: boolean;
+	allowPrivateNetwork?: boolean;
+};
+
 type PreviewEntry = {
 	snapshot: ProjectPreviewSnapshot;
-	child: ChildProcess;
+	child: ChildProcess | null;
 	wslTermination: ProjectPreviewWslTermination | null;
-	input: StartProjectPreviewInput;
+	input:
+		| ({ targetKind: "project" } & StartProjectPreviewInput)
+		| ({ targetKind: "browser" } & StartWebBrowserInput);
 	bridge: LoopbackBridge | null;
 	capability: ProjectPreviewCapability | null;
 	stopping: boolean;
@@ -63,7 +75,8 @@ type ProjectPreviewManagerOptions = {
 	browserManager?: Pick<
 		typeof projectPreviewBrowserManager,
 		"close" | "closeAll"
-	>;
+	> &
+		Partial<Pick<typeof projectPreviewBrowserManager, "captureWeb">>;
 	capabilityFactory?: () => ProjectPreviewCapability;
 };
 
@@ -487,7 +500,8 @@ export class ProjectPreviewManager {
 	private readonly browserManager: Pick<
 		typeof projectPreviewBrowserManager,
 		"close" | "closeAll"
-	>;
+	> &
+		Partial<Pick<typeof projectPreviewBrowserManager, "captureWeb">>;
 	private readonly browserCloseTimeoutMs: number;
 	private readonly capabilityFactory: () => ProjectPreviewCapability;
 
@@ -604,6 +618,7 @@ export class ProjectPreviewManager {
 		const startedAt = new Date();
 		const snapshot: ProjectPreviewSnapshot = {
 			id,
+			target_kind: "project",
 			session_id: input.sessionId,
 			label: input.label?.trim() || "Project Preview",
 			command: input.command,
@@ -626,7 +641,12 @@ export class ProjectPreviewManager {
 			snapshot,
 			child,
 			wslTermination: spawned.wslTermination,
-			input: { ...input, path, workingDirectory: input.workingDirectory },
+			input: {
+				targetKind: "project",
+				...input,
+				path,
+				workingDirectory: input.workingDirectory,
+			},
 			bridge: null,
 			capability,
 			stopping: false,
@@ -717,9 +737,118 @@ export class ProjectPreviewManager {
 		return this.inspect(input.sessionId, snapshot.id);
 	}
 
+	async startBrowser(
+		input: StartWebBrowserInput,
+	): Promise<ProjectPreviewSnapshot> {
+		const currentId = this.bySession.get(input.sessionId);
+		if (currentId) {
+			if (!input.replaceExisting) {
+				throw new Error(
+					"This session already owns a Preview or Browser target. Stop it or set replace_existing.",
+				);
+			}
+			await this.stop(input.sessionId, currentId, "replaced");
+		}
+		const url = normalizeWebBrowserUrl(input.url);
+		const id = crypto.randomUUID();
+		const startedAt = new Date();
+		const snapshot: ProjectPreviewSnapshot = {
+			id,
+			target_kind: "browser",
+			session_id: input.sessionId,
+			label: input.label?.trim() || new URL(url).hostname || "Browser",
+			command: "",
+			cwd: "",
+			port: 0,
+			path: url,
+			url,
+			relay_url: "",
+			state: "starting",
+			present: input.present ?? true,
+			started_at: startedAt.toISOString(),
+			expires_at: new Date(startedAt.getTime() + this.lifetimeMs).toISOString(),
+			logs: [],
+		};
+		const lifetimeTimer = setTimeout(() => {
+			void this.stop(input.sessionId, id, "lifetime_expired");
+		}, this.lifetimeMs);
+		lifetimeTimer.unref?.();
+		const entry: PreviewEntry = {
+			snapshot,
+			child: null,
+			wslTermination: null,
+			input: { targetKind: "browser", ...input, url },
+			bridge: null,
+			capability: null,
+			stopping: false,
+			stopPromise: null,
+			lifetimeTimer,
+			persistTimer: null,
+		};
+		this.entries.set(id, entry);
+		this.bySession.set(input.sessionId, id);
+		this.publish(entry);
+		await this.persist(entry);
+		try {
+			const captureWeb =
+				this.browserManager.captureWeb?.bind(this.browserManager) ??
+				projectPreviewBrowserManager.captureWeb.bind(
+					projectPreviewBrowserManager,
+				);
+			await captureWeb({
+				previewId: id,
+				sessionId: input.sessionId,
+				initialUrl: url,
+				allowPrivateNetwork: input.allowPrivateNetwork ?? false,
+				viewport: "desktop",
+				fullPage: false,
+			});
+			entry.snapshot.state = "ready";
+		} catch (error) {
+			await this.browserManager.close(id).catch(() => {});
+			entry.snapshot.state = "failed";
+			entry.snapshot.error =
+				error instanceof Error ? error.message : String(error);
+			entry.snapshot.stop_reason = "browser_launch_error";
+			entry.snapshot.ended_at = new Date().toISOString();
+			clearTimeout(entry.lifetimeTimer);
+		}
+		this.publish(entry);
+		await this.persist(entry);
+		return this.inspect(input.sessionId, id);
+	}
+
 	inspect(sessionId: string, previewId?: string): ProjectPreviewSnapshot {
 		const entry = this.requireSessionEntry(sessionId, previewId);
 		return { ...entry.snapshot, logs: [...entry.snapshot.logs] };
+	}
+
+	syncBrowserLocation(
+		sessionId: string,
+		previewId: string,
+		currentUrl: string,
+	): ProjectPreviewSnapshot {
+		const entry = this.requireSessionEntry(sessionId, previewId);
+		if (entry.input.targetKind !== "browser") {
+			throw new Error("Project preview is not a Browser target.");
+		}
+		let normalized: string;
+		try {
+			normalized = normalizeWebBrowserUrl(currentUrl);
+		} catch {
+			// A transient blank or browser-internal page remains visible in the exact
+			// capture without replacing the last inspectable HTTP(S) lifecycle URL.
+			return this.inspect(sessionId, previewId);
+		}
+		if (
+			entry.snapshot.url !== normalized ||
+			entry.snapshot.path !== normalized
+		) {
+			entry.snapshot.url = normalized;
+			entry.snapshot.path = normalized;
+			this.publish(entry, true);
+		}
+		return this.inspect(sessionId, previewId);
 	}
 
 	relayTarget(previewId: string): {
@@ -733,6 +862,24 @@ export class ProjectPreviewManager {
 		return {
 			port: entry.snapshot.port,
 			capability: entry.capability,
+		};
+	}
+
+	browserTarget(previewId: string): {
+		url: string;
+		allowPrivateNetwork: boolean;
+	} {
+		const entry = this.entries.get(previewId);
+		if (
+			!entry ||
+			entry.snapshot.state !== "ready" ||
+			entry.input.targetKind !== "browser"
+		) {
+			throw new Error("Browser target is not running.");
+		}
+		return {
+			url: entry.input.url,
+			allowPrivateNetwork: entry.input.allowPrivateNetwork ?? false,
 		};
 	}
 
@@ -782,7 +929,9 @@ export class ProjectPreviewManager {
 		}
 		await entry.bridge?.close();
 		entry.bridge = null;
-		await terminateProcess(entry.child, entry.wslTermination);
+		if (entry.child) {
+			await terminateProcess(entry.child, entry.wslTermination);
+		}
 		entry.capability = null;
 		entry.snapshot.state = "stopped";
 		entry.snapshot.ended_at ??= new Date().toISOString();
@@ -800,7 +949,9 @@ export class ProjectPreviewManager {
 		const entry = this.entries.get(previous.id);
 		if (!entry) throw new Error("Project preview not found.");
 		const input = { ...entry.input, replaceExisting: true };
-		return this.start(input);
+		return input.targetKind === "browser"
+			? this.startBrowser(input)
+			: this.start(input);
 	}
 
 	async closeSession(

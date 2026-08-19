@@ -55,6 +55,7 @@ export function agentConfigToEntry(agent: Agent) {
 		permissionMode: agent.permission_mode,
 		recapModel: agent.recap_model,
 		interactiveMode: agent.interactive_mode,
+		delegationWorktreePolicy: agent.delegation_worktree_policy ?? "shared",
 	};
 }
 

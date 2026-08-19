@@ -17,6 +17,7 @@ type HlidDelegationAction =
 	| "wait"
 	| "steer"
 	| "cancel"
+	| "cleanup"
 	| "resume";
 
 const ACTION_PRESENTATION: Record<
@@ -29,6 +30,7 @@ const ACTION_PRESENTATION: Record<
 	wait: { label: "Wait for child", completeLabel: "CHECKED" },
 	steer: { label: "Steer child", completeLabel: "SENT" },
 	cancel: { label: "Cancel child", completeLabel: "REQUESTED" },
+	cleanup: { label: "Clean up worktree", completeLabel: "CHECKED" },
 	resume: { label: "Resume child", completeLabel: "STARTED" },
 };
 
@@ -38,6 +40,7 @@ function actionFor(name: string): HlidDelegationAction | null {
 	) as HlidDelegationAction[]) {
 		if (name.endsWith(`${action}_hlid_agent`)) return action;
 	}
+	if (name.endsWith("cleanup_hlid_worktree")) return "cleanup";
 	return name.endsWith("list_hlid_agents") ? "list" : null;
 }
 

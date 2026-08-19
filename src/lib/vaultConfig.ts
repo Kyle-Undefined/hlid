@@ -18,6 +18,7 @@ export type VaultFields = {
 	memory?: string;
 	saveToObsidianTemplate?: string;
 	obsidianCommandAllowlist?: string[];
+	delegationWorktreePolicy?: HlidConfig["vault"]["delegation_worktree_policy"];
 };
 
 /**
@@ -47,5 +48,6 @@ export function buildVaultSection(f: VaultFields): HlidConfig["vault"] {
 				? f.obsidianCommandAllowlist
 				: undefined,
 		delete_vault_attachments: false,
+		delegation_worktree_policy: f.delegationWorktreePolicy ?? "shared",
 	};
 }

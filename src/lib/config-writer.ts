@@ -68,6 +68,12 @@ function serializeVault(config: HlidConfig["vault"]): string[] {
 			(config.obsidian_command_allowlist?.length ?? 0) > 0,
 		),
 		`delete_vault_attachments = ${tomlVal(config.delete_vault_attachments)}`,
+		...optionalEntry(
+			"delegation_worktree_policy",
+			config.delegation_worktree_policy,
+			config.delegation_worktree_policy !== undefined &&
+				config.delegation_worktree_policy !== "shared",
+		),
 	]);
 }
 
@@ -292,6 +298,12 @@ function serializeAgent(
 			"interactive_mode",
 			agent.interactive_mode,
 			agent.interactive_mode !== undefined,
+		),
+		...optionalEntry(
+			"delegation_worktree_policy",
+			agent.delegation_worktree_policy,
+			agent.delegation_worktree_policy !== undefined &&
+				agent.delegation_worktree_policy !== "shared",
 		),
 	];
 }

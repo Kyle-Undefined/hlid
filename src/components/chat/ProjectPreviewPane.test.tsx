@@ -15,7 +15,9 @@ import {
 	getProjectPreviewAgentFramesFn,
 	type ProjectPreviewAgentFrame,
 	restartProjectPreviewFn,
+	startWebBrowserRecordingFn,
 	stopProjectPreviewFn,
+	stopWebBrowserRecordingFn,
 } from "#/lib/serverFns/projectPreviews";
 import type { ProjectPreviewSnapshot } from "#/server/protocol";
 import { ProjectPreviewPane } from "./ProjectPreviewPane";
@@ -33,7 +35,9 @@ vi.mock("#/lib/serverFns/projectPreviews", async (importOriginal) => {
 		getProjectPreviewAgentFramesFn: vi.fn(),
 		restartProjectPreviewFn: vi.fn(),
 		saveProjectPreviewFeedbackFn: vi.fn(),
+		startWebBrowserRecordingFn: vi.fn(),
 		stopProjectPreviewFn: vi.fn(),
+		stopWebBrowserRecordingFn: vi.fn(),
 	};
 });
 
@@ -73,6 +77,8 @@ beforeEach(() => {
 				latest_frame: latest,
 			};
 		});
+	vi.mocked(startWebBrowserRecordingFn).mockReset();
+	vi.mocked(stopWebBrowserRecordingFn).mockReset();
 });
 
 afterEach(() => {
@@ -115,6 +121,67 @@ describe("ProjectPreviewPane", () => {
 		fireEvent.change(viewport, { target: { value: "mobile" } });
 		expect(frame.parentElement?.style.width).toBe("390px");
 		expect(screen.getByLabelText("Show agent view")).not.toBeNull();
+	});
+
+	it("presents an arbitrary URL as the exact managed Browser frame", async () => {
+		const browser = {
+			...preview(),
+			target_kind: "browser" as const,
+			label: "Example docs",
+			command: "",
+			cwd: "",
+			port: 0,
+			path: "https://example.com/docs",
+			url: "https://example.com/docs",
+			relay_url: "",
+		};
+		vi.mocked(getProjectPreviewAgentFrameFn).mockResolvedValue({
+			preview_id: browser.id,
+			session_id: browser.session_id,
+			target_kind: "browser",
+			recording: true,
+			path: browser.url,
+			viewport: "desktop",
+			width: 1440,
+			height: 1000,
+			full_page: false,
+			captured_at: Date.now(),
+			mime: "image/png",
+			size_bytes: 3,
+			image_base64: "AQID",
+			frame_id: crypto.randomUUID(),
+			title: "Example",
+			elements: [],
+			console_messages: [],
+			failed_requests: [],
+		});
+
+		render(<ProjectPreviewPane preview={browser} />);
+		expect(screen.getByRole("region", { name: "Browser" })).not.toBeNull();
+		expect(screen.queryByTitle("Example docs")).toBeNull();
+		expect(screen.queryByLabelText("Show agent view")).toBeNull();
+		expect(screen.queryByLabelText("Reload preview")).toBeNull();
+		expect(screen.getByLabelText("Capture Browser feedback")).not.toBeNull();
+		expect(await screen.findByText("Recording")).not.toBeNull();
+		expect(
+			screen.getAllByText(/https:\/\/example\.com\/docs/).length,
+		).toBeGreaterThan(0);
+
+		vi.mocked(stopWebBrowserRecordingFn).mockResolvedValue({
+			id: "recording-relic",
+			filename: "browser-interaction.html",
+			open_url: "/api/attachments/recording-relic/raw",
+			frame_count: 2,
+			duration_seconds: 1.5,
+			truncated: false,
+		});
+		fireEvent.click(screen.getByLabelText("Stop and save Browser recording"));
+		await waitFor(() =>
+			expect(stopWebBrowserRecordingFn).toHaveBeenCalledWith({
+				data: { sessionId: browser.session_id, previewId: browser.id },
+			}),
+		);
+		expect(await screen.findByText("browser-interaction.html")).not.toBeNull();
 	});
 
 	it("remounts the user iframe when a replacement preview becomes active", () => {

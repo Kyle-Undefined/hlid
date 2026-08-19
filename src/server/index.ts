@@ -717,6 +717,12 @@ const refreshDurableDelegationAttention = (): Promise<void> => {
 	return durableDelegationRefresh;
 };
 await refreshDurableDelegationAttention();
+for (const managed of await db.listManagedDelegationWorkspaces()) {
+	pool.registerManagedDelegationWorkspace(
+		managed.execution_workspace,
+		managed.source_workspace,
+	);
+}
 const hlidDelegationManager = new HlidDelegationManager(
 	pool,
 	(cwd) =>

@@ -16,6 +16,12 @@ import {
 	isTerminalHlidDelegationStatus,
 	type ResumeHlidAgentInput,
 } from "./hlidDelegationSchemas";
+import {
+	createManagedWorktree,
+	type ManagedWorktreeReceipt,
+	ManagedWorktreeUnavailableError,
+	removeManagedWorktree,
+} from "./managedWorktrees";
 import type { ChatAttachment, ServerMessage } from "./protocol";
 import type { CurrentDelegationHandoff } from "./session";
 import type { PoolEntry, SessionPool } from "./sessionPool";
@@ -572,7 +578,10 @@ export class HlidDelegationManager {
 		const parent = this.requireRunningParent(parentSessionId, "delegation");
 		const routineContext = parent.manager.getCurrentRoutinePermissionContext();
 		const parentTurnId = parent.manager.getCurrentTurnId();
-		const parentWorkspace = this.activeParentWorkspace(parent);
+		const parentDelegation =
+			await db.getHlidDelegationByChildSession(parentSessionId);
+		const parentWorkspace =
+			parentDelegation?.workspace ?? this.activeParentWorkspace(parent);
 		const workspace = this.pool.resolveDelegationWorkspace(
 			input.cwd ?? parentWorkspace,
 		);
@@ -593,8 +602,6 @@ export class HlidDelegationManager {
 			);
 		}
 		const parentStatus = parent.manager.getStatus();
-		const parentDelegation =
-			await db.getHlidDelegationByChildSession(parentSessionId);
 		const depth = (parentDelegation?.depth ?? 0) + 1;
 		if (depth > HLID_DELEGATION_MAX_DEPTH) {
 			throw new Error(
@@ -689,11 +696,70 @@ export class HlidDelegationManager {
 				"delegation",
 			);
 
-			const child = this.pool.create(
-				workspace,
-				`${provider.label ?? provider.providerId} delegate`,
-				true,
-			);
+			const requestedWorkspaceMode = input.workspace_mode ?? "default";
+			if (routineContext && requestedWorkspaceMode === "worktree") {
+				throw new Error(
+					"Routine delegation does not yet support managed worktrees. Use workspace_mode=shared.",
+				);
+			}
+			const policy = routineContext
+				? "shared"
+				: requestedWorkspaceMode === "default"
+					? this.pool.delegationWorktreePolicy(workspace)
+					: requestedWorkspaceMode === "worktree"
+						? "required"
+						: "shared";
+			let worktree: ManagedWorktreeReceipt | null = null;
+			if (policy !== "shared") {
+				if (!this.pool.delegationWorktreeAvailable(workspace)) {
+					if (policy === "required") {
+						throw new Error(
+							"Managed worktrees require a cwd-mode workspace whose provider runs in that exact workspace. Use workspace_mode=shared for context-mode agents.",
+						);
+					}
+				} else {
+					try {
+						worktree = await createManagedWorktree(workspace, delegationId, {
+							explicit: requestedWorkspaceMode === "worktree",
+						});
+					} catch (error) {
+						if (
+							policy === "when_available" &&
+							error instanceof ManagedWorktreeUnavailableError
+						) {
+							worktree = null;
+						} else {
+							throw error;
+						}
+					}
+				}
+			}
+			const executionWorkspace = worktree?.executionWorkspace ?? workspace;
+			if (worktree) {
+				this.pool.registerManagedDelegationWorkspace(
+					executionWorkspace,
+					workspace,
+				);
+			}
+			let child: PoolEntry;
+			try {
+				child = this.pool.create(
+					executionWorkspace,
+					`${provider.label ?? provider.providerId} delegate`,
+					true,
+				);
+			} catch (error) {
+				if (worktree) {
+					this.pool.unregisterManagedDelegationWorkspace(executionWorkspace);
+					await removeManagedWorktree({
+						sourceWorkspace: workspace,
+						executionWorkspace,
+						branch: worktree.branch,
+						baseCommit: worktree.baseCommit,
+					}).catch(() => {});
+				}
+				throw error;
+			}
 			try {
 				// This child has no durable session yet, so the provider transaction can
 				// perform the one exact Auto readiness check and commit only in memory.
@@ -718,6 +784,11 @@ export class HlidDelegationManager {
 					effort: effort ?? null,
 					serviceTier: input.service_tier ?? null,
 					workspace,
+					workspaceMode: worktree ? "worktree" : "shared",
+					executionWorkspace,
+					worktreeBranch: worktree?.branch ?? null,
+					worktreeBaseCommit: worktree?.baseCommit ?? null,
+					worktreeState: worktree ? "active" : "none",
 					permissionMode,
 					timeoutSeconds,
 					handoff: handoff.summary,
@@ -730,7 +801,7 @@ export class HlidDelegationManager {
 					{
 						effort,
 						permissionMode,
-						agentCwd: workspace,
+						agentCwd: executionWorkspace,
 						providerId: input.provider,
 					},
 				);
@@ -749,6 +820,15 @@ export class HlidDelegationManager {
 				return delegation;
 			} catch (error) {
 				this.pool.close(child.sessionId);
+				if (worktree) {
+					this.pool.unregisterManagedDelegationWorkspace(executionWorkspace);
+					await removeManagedWorktree({
+						sourceWorkspace: workspace,
+						executionWorkspace,
+						branch: worktree.branch,
+						baseCommit: worktree.baseCommit,
+					}).catch(() => {});
+				}
 				try {
 					await db.rollbackHlidDelegationSetup(delegationId, child.sessionId);
 				} catch (rollbackError) {
@@ -1060,6 +1140,66 @@ export class HlidDelegationManager {
 		}
 	}
 
+	async cleanupWorktree(
+		parentSessionId: string,
+		id: string,
+	): Promise<{
+		id: string;
+		cleaned: boolean;
+		retained: boolean;
+		dirty: boolean;
+		unique_commits: number;
+		workspace_mode: "worktree";
+		worktree_state: string;
+	}> {
+		const current = await this.inspect(parentSessionId, id);
+		if (current.workspace_mode !== "worktree") {
+			throw new Error("This delegated child does not own a managed worktree.");
+		}
+		if (!isTerminalHlidDelegationStatus(current.status)) {
+			throw new Error(
+				"A running delegated child's worktree cannot be cleaned up.",
+			);
+		}
+		if (current.worktree_state === "cleaned") {
+			return {
+				id,
+				cleaned: true,
+				retained: false,
+				dirty: false,
+				unique_commits: 0,
+				workspace_mode: "worktree",
+				worktree_state: "cleaned",
+			};
+		}
+		if (!current.worktree_branch || !current.worktree_base_commit) {
+			throw new Error("The managed worktree receipt is incomplete.");
+		}
+		const inspection = await removeManagedWorktree({
+			sourceWorkspace: current.workspace,
+			executionWorkspace: current.execution_workspace,
+			branch: current.worktree_branch,
+			baseCommit: current.worktree_base_commit,
+		});
+		const retained = inspection.dirty || inspection.uniqueCommits > 0;
+		if (!retained) {
+			this.pool.unregisterManagedDelegationWorkspace(
+				current.execution_workspace,
+			);
+			await db.updateHlidDelegationWorktreeState(id, "cleaned");
+		}
+		this.notifyStatusChange();
+		return {
+			id,
+			cleaned: !retained,
+			retained,
+			dirty: inspection.dirty,
+			unique_commits: inspection.uniqueCommits,
+			workspace_mode: "worktree",
+			worktree_state: retained ? "retained" : "cleaned",
+		};
+	}
+
 	async resume(
 		parentSessionId: string,
 		id: string,
@@ -1110,15 +1250,32 @@ export class HlidDelegationManager {
 		}
 		const childCwd = await db.getSessionAgentCwd(current.child_session_id);
 		const workspace = this.pool.resolveDelegationWorkspace(current.workspace);
-		const childWorkspace = childCwd
-			? this.pool.resolveDelegationWorkspace(childCwd)
-			: null;
-		if (!workspace || childWorkspace !== workspace) {
+		const childWorkspace =
+			current.workspace_mode === "worktree"
+				? childCwd === current.execution_workspace
+					? current.execution_workspace
+					: null
+				: childCwd
+					? this.pool.resolveDelegationWorkspace(childCwd)
+					: null;
+		if (
+			!workspace ||
+			!childWorkspace ||
+			(current.workspace_mode === "shared" && childWorkspace !== workspace)
+		) {
 			throw new Error(
 				"The delegated child no longer resolves to its recorded configured workspace.",
 			);
 		}
-		const runtimeCwd = this.providerRuntimeCwd(workspace);
+		if (current.workspace_mode === "worktree") {
+			if (current.worktree_state === "cleaned") {
+				throw new Error(
+					"The delegated child's managed worktree was cleaned up.",
+				);
+			}
+			this.pool.registerManagedDelegationWorkspace(childWorkspace, workspace);
+		}
+		const runtimeCwd = this.providerRuntimeCwd(childWorkspace);
 		await assertProviderAvailable(provider, runtimeCwd);
 		const providerInfo = (await this.providerCatalog(runtimeCwd)).find(
 			(candidate) => candidate.id === current.provider_id,
@@ -1162,7 +1319,7 @@ export class HlidDelegationManager {
 		let createdEntry: PoolEntry | null = null;
 		if (!entry) {
 			const candidate = this.pool.create(
-				workspace,
+				childWorkspace,
 				`${current.provider_id} delegate`,
 				true,
 			);

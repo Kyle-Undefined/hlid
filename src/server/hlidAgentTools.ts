@@ -37,6 +37,7 @@ import {
 import { buildHlidApiDiscoveryResponse } from "./hlidApiDiscovery";
 import {
 	cancelHlidAgentSchema,
+	cleanupHlidWorktreeSchema,
 	delegateHlidAgentSchema,
 	inspectHlidAgentSchema,
 	listHlidAgentsSchema,
@@ -56,7 +57,7 @@ import {
 
 export const HLID_AGENT_NAMESPACE = "hlid";
 export const HLID_AGENT_NAMESPACE_DESCRIPTION =
-	"Curated Hlid host capabilities. Discover the active operating contract and HTTP API; inspect sessions, Ledger, context, diagnostics, Routines, and Relics; maintain Hlid storage; create durable Raven child sessions; publish deliverables; or run and inspect a session-scoped Project Preview.";
+	"Curated Hlid host capabilities. Discover the active operating contract and HTTP API; inspect sessions, Ledger, context, diagnostics, Routines, and Relics; maintain Hlid storage; create durable Raven child sessions; publish deliverables; or run a session-scoped Project Preview or managed Browser.";
 export const MAX_HLID_INLINE_RELIC_CHARS = 2_000_000;
 const STORAGE_CLEANUP_PREVIEW_TTL_MS = 10 * 60 * 1_000;
 const MAX_STORAGE_CLEANUP_PREVIEWS = 256;
@@ -134,6 +135,7 @@ export const hlidAgentSchemas = {
 	wait_hlid_agent: waitHlidAgentSchema,
 	steer_hlid_agent: steerHlidAgentSchema,
 	cancel_hlid_agent: cancelHlidAgentSchema,
+	cleanup_hlid_worktree: cleanupHlidWorktreeSchema,
 	resume_hlid_agent: resumeHlidAgentSchema,
 	...hlidInspectionSchemas,
 	publish_relic: z.object({
@@ -153,6 +155,45 @@ export const hlidAgentSchemas = {
 		replace_existing: z.boolean().optional(),
 		readiness_timeout_seconds: z.number().int().min(1).max(120).optional(),
 	}),
+	open_web_browser: z.object({
+		url: z.string().trim().min(1).max(4_096),
+		label: z.string().trim().min(1).max(100).optional(),
+		present: z.boolean().optional(),
+		replace_existing: z.boolean().optional(),
+		allow_private_network: z.boolean().optional(),
+	}),
+	inspect_web_browser: previewTarget,
+	capture_web_browser: previewTarget.extend({
+		viewport: previewViewport,
+		full_page: z.boolean().optional(),
+	}),
+	control_web_browser: previewTarget.extend({
+		action: z.enum([
+			"click",
+			"type",
+			"key",
+			"scroll",
+			"navigate",
+			"reload",
+			"viewport",
+		]),
+		frame_id: z.string().uuid().optional(),
+		ref: z
+			.string()
+			.regex(/^e[1-9][0-9]{0,2}$/)
+			.optional(),
+		x: z.number().finite().min(0).max(10_000).optional(),
+		y: z.number().finite().min(0).max(10_000).optional(),
+		text: z.string().max(100_000).optional(),
+		key: z.string().trim().min(1).max(100).optional(),
+		delta_x: z.number().finite().min(-5_000).max(5_000).optional(),
+		delta_y: z.number().finite().min(-5_000).max(5_000).optional(),
+		url: z.string().trim().min(1).max(4_096).optional(),
+		viewport: previewViewport,
+	}),
+	start_web_browser_recording: previewTarget,
+	stop_web_browser_recording: previewTarget,
+	stop_web_browser: previewTarget,
 	inspect_project_preview: previewTarget,
 	capture_project_preview: previewCapture,
 	export_project_preview_capture: previewCapture.extend({
@@ -372,7 +413,7 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 	{
 		name: "delegate_hlid_agent",
 		description:
-			"Create a durable Raven child session in the current workspace or an exact configured workspace using an explicitly selected provider, model, effort, and optional model service tier. Delegation is bounded to three levels, four active direct children per parent, and twelve active delegated children across Hlid. The child uses inherited or narrower permissions, appears independently in Raven and Ledger, and keeps its own provider-native transcript and passively recorded usage. Claude Auto is available only to a direct native Claude child whose exact selected or inherited model passes live readiness validation in the child workspace. Cross-provider delegation from an Auto parent must explicitly narrow the child permission mode. Hlid imposes no elapsed-time or inactivity cap because cross-provider silence is not proof of failure. New runs do not accept a timeout input or transition automatically to timed_out. Provider availability is checked before launch, and native launch, transport, or process failures settle the child naturally. Use cancel_hlid_agent when the work should stop. Token and cost usage are observations rather than lifecycle caps. This returns immediately with a delegation ID and child-session link; call wait_hlid_agent or inspect_hlid_agent for its bounded result. Context, exact references, and Relics remain empty unless their handoff switches are explicitly selected. Scheduled Routines may delegate only in their approved workspace when the call is allowed by the Routine grant envelope and Umbod; every descendant shares the same per-run grant-use limits.",
+			"Create a durable Raven child session in the current workspace or an exact configured workspace using an explicitly selected provider, model, effort, and optional model service tier. The configured workspace may isolate durable children in a managed Git worktree, and workspace_mode can override that policy for this delegation. Worktrees start from exact HEAD without checkpoints and never include dirty or untracked source changes. Delegation is bounded to three levels, four active direct children per parent, and twelve active delegated children across Hlid. The child uses inherited or narrower permissions, appears independently in Raven and Ledger, and keeps its own provider-native transcript and passively recorded usage. Claude Auto is available only to a direct native Claude child whose exact selected or inherited model passes live readiness validation in the child workspace. Cross-provider delegation from an Auto parent must explicitly narrow the child permission mode. Hlid imposes no elapsed-time or inactivity cap because cross-provider silence is not proof of failure. New runs do not accept a timeout input or transition automatically to timed_out. Provider availability is checked before launch, and native launch, transport, or process failures settle the child naturally. Use cancel_hlid_agent when the work should stop. Token and cost usage are observations rather than lifecycle caps. This returns immediately with a delegation ID and child-session link; call wait_hlid_agent or inspect_hlid_agent for its bounded result. Context, exact references, and Relics remain empty unless their handoff switches are explicitly selected. Scheduled Routines may delegate, but remain in the shared approved workspace and every descendant shares the same per-run grant-use limits.",
 		readOnly: false,
 		deferLoading: true,
 		searchHint:
@@ -410,6 +451,12 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 					type: "string",
 					description:
 						"Optional exact configured vault or registered workspace path. Defaults to the parent workspace. Routine children must stay in the Routine's approved workspace.",
+				},
+				workspace_mode: {
+					type: "string",
+					enum: ["default", "shared", "worktree"],
+					description:
+						"Optional per-delegation override. default uses the configured workspace policy; shared uses the source directory; worktree explicitly starts from exact HEAD and acknowledges that dirty or untracked source changes are excluded.",
 				},
 				permission_mode: {
 					type: "string",
@@ -555,6 +602,27 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 		searchHint:
 			"cancel stop delegated Hlid child orchestration nested descendants",
 		approvalTitle: "Hlid cancel child agent",
+		inputSchema: {
+			type: "object",
+			properties: {
+				id: {
+					type: "string",
+					description: "Delegation ID returned by delegate_hlid_agent.",
+				},
+			},
+			required: ["id"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "cleanup_hlid_worktree",
+		description:
+			"Clean up a terminal durable child's managed Git worktree. Hlid removes it only when it is clean and has no commits beyond its recorded base. Dirty worktrees or worktrees with unique commits are retained and reported; Hlid never merges or discards them automatically.",
+		readOnly: false,
+		deferLoading: true,
+		searchHint:
+			"cleanup remove retained managed Git worktree delegated Hlid child",
+		approvalTitle: "Hlid clean up child worktree",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -825,6 +893,180 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 					description: "Relics category. Defaults to report.",
 				},
 			},
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "open_web_browser",
+		description:
+			"Open an arbitrary HTTP or HTTPS URL in the session-scoped Hlid Browser. It uses the same managed capture and control surface as Project Preview and reuses the Project Preview real-browser-profile setting. Public web origins are allowed by default. Private-network origins require allow_private_network=true and remain limited to the exact approved origin. Hlid blocks downloads and file URLs and does not expose clipboard, raw CDP, or device-permission controls.",
+		readOnly: false,
+		deferLoading: true,
+		searchHint: "open browse website URL managed browser screenshot web",
+		approvalTitle: "Hlid open Browser",
+		inputSchema: {
+			type: "object",
+			properties: {
+				url: {
+					type: "string",
+					description: "Exact HTTP or HTTPS URL to open.",
+				},
+				label: {
+					type: "string",
+					description: "Short user-facing Browser label.",
+				},
+				present: {
+					type: "boolean",
+					description: "Open the Browser surface. Defaults to true.",
+				},
+				replace_existing: {
+					type: "boolean",
+					description:
+						"Replace this session's current Browser or Preview. Defaults to false.",
+				},
+				allow_private_network: {
+					type: "boolean",
+					description:
+						"Explicitly allow a private or loopback URL and navigation on that exact origin. Defaults to false.",
+				},
+			},
+			required: ["url"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "inspect_web_browser",
+		description:
+			"Inspect the current session's Hlid Browser target and lifecycle state.",
+		readOnly: true,
+		deferLoading: true,
+		searchHint: "inspect Browser URL website status",
+		inputSchema: {
+			type: "object",
+			properties: {
+				preview_id: {
+					type: "string",
+					description: "Optional Browser target ID.",
+				},
+			},
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "capture_web_browser",
+		description:
+			"Capture exactly what Hlid's managed Browser currently renders and return the lossless PNG, current URL, title, semantic element refs, console errors, and failed requests. This is read-only and does not navigate, save a workspace file, or publish a Relic.",
+		readOnly: true,
+		deferLoading: true,
+		searchHint: "capture screenshot website browser visual semantic elements",
+		inputSchema: {
+			type: "object",
+			properties: {
+				preview_id: {
+					type: "string",
+					description: "Optional Browser target ID.",
+				},
+				viewport: {
+					type: "string",
+					enum: ["desktop", "tablet", "mobile"],
+					description: "Named capture viewport. Defaults to desktop.",
+				},
+				full_page: {
+					type: "boolean",
+					description: "Capture the bounded full page. Defaults to false.",
+				},
+			},
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "control_web_browser",
+		description:
+			"Interact with the session-scoped Hlid Browser, then receive an updated screenshot and semantic snapshot. Supports click, type, key, scroll, navigate, reload, and viewport. Click and type require the latest frame_id and should use semantic refs. Public HTTP and HTTPS navigation is allowed; an approved private target stays on its exact origin.",
+		readOnly: false,
+		deferLoading: true,
+		searchHint: "control interact click type scroll navigate website browser",
+		approvalTitle: "Hlid control Browser",
+		inputSchema: {
+			type: "object",
+			properties: {
+				preview_id: { type: "string" },
+				action: {
+					type: "string",
+					enum: [
+						"click",
+						"type",
+						"key",
+						"scroll",
+						"navigate",
+						"reload",
+						"viewport",
+					],
+				},
+				frame_id: {
+					type: "string",
+					description: "Latest frame ID, required for click and type.",
+				},
+				ref: {
+					type: "string",
+					description:
+						"Semantic element ref. Preferred for click and required for type.",
+				},
+				x: { type: "number" },
+				y: { type: "number" },
+				text: { type: "string" },
+				key: { type: "string" },
+				delta_x: { type: "number" },
+				delta_y: { type: "number" },
+				url: {
+					type: "string",
+					description: "Exact HTTP or HTTPS URL for navigate.",
+				},
+				viewport: { type: "string", enum: ["desktop", "tablet", "mobile"] },
+			},
+			required: ["action"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "start_web_browser_recording",
+		description:
+			"Start an optional bounded interaction replay for the current Hlid Browser. Hlid records the exact screenshots produced by subsequent Browser captures and controls, with action type, URL, title, and timestamps. Typed text is not copied into timeline metadata, but rendered screenshots can contain visible form values. Recording is limited to two minutes, 12 frames, and 12 MB of image data.",
+		readOnly: false,
+		deferLoading: true,
+		searchHint: "start record browser interactions replay screenshots",
+		approvalTitle: "Hlid start Browser recording",
+		inputSchema: {
+			type: "object",
+			properties: { preview_id: { type: "string" } },
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "stop_web_browser_recording",
+		description:
+			"Stop the current Browser interaction recording and publish its bounded, self-contained HTML replay as a retained Hlid Relic. The replay contains only frames captured while recording was active and their sanitized action metadata.",
+		readOnly: false,
+		deferLoading: true,
+		searchHint: "stop save browser interaction recording replay Relic",
+		approvalTitle: "Hlid save Browser recording",
+		inputSchema: {
+			type: "object",
+			properties: { preview_id: { type: "string" } },
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "stop_web_browser",
+		description:
+			"Close the current session's Hlid Browser and discard its transient browser process state.",
+		readOnly: false,
+		deferLoading: true,
+		searchHint: "stop close website browser",
+		approvalTitle: "Hlid stop Browser",
+		inputSchema: {
+			type: "object",
+			properties: { preview_id: { type: "string" } },
 			additionalProperties: false,
 		},
 	},
@@ -1428,6 +1670,8 @@ const captureResultSchema = z.object({
 		.optional(),
 	console_messages: z.array(z.string()).optional(),
 	failed_requests: z.array(z.string()).optional(),
+	target_kind: z.enum(["project", "browser"]).optional(),
+	recording: z.boolean().optional(),
 	last_action: z
 		.enum(["click", "type", "key", "scroll", "navigate", "reload", "viewport"])
 		.optional(),
@@ -1469,6 +1713,28 @@ async function requestProjectPreviewCapture(
 		parsed.preview_id,
 		{
 			...(parsed.path ? { path: parsed.path } : {}),
+			...(parsed.viewport ? { viewport: parsed.viewport } : {}),
+			...(parsed.full_page !== undefined
+				? { full_page: parsed.full_page }
+				: {}),
+		},
+	);
+}
+
+async function requestWebBrowserCapture(
+	input: unknown,
+	context: HlidAgentToolContext,
+): Promise<CaptureResult> {
+	if (!context.sessionId) {
+		throw new Error("Hlid could not resolve the active session.");
+	}
+	const parsed = hlidAgentSchemas.capture_web_browser.parse(input);
+	return requestProjectPreviewAction(
+		"capture",
+		"Capture Browser",
+		context.sessionId,
+		parsed.preview_id,
+		{
 			...(parsed.viewport ? { viewport: parsed.viewport } : {}),
 			...(parsed.full_page !== undefined
 				? { full_page: parsed.full_page }
@@ -1596,6 +1862,64 @@ async function requestProjectPreviewControl(
 	);
 }
 
+async function requestWebBrowserControl(
+	input: unknown,
+	context: HlidAgentToolContext,
+): Promise<CaptureResult> {
+	if (!context.sessionId) {
+		throw new Error("Hlid could not resolve the active session.");
+	}
+	const parsed = hlidAgentSchemas.control_web_browser.parse(input);
+	const { preview_id: previewId, ...body } = parsed;
+	return requestProjectPreviewAction(
+		"control",
+		"Control Browser",
+		context.sessionId,
+		previewId,
+		body,
+	);
+}
+
+async function requestStartWebBrowserRecording(
+	input: unknown,
+	context: HlidAgentToolContext,
+): Promise<CaptureResult> {
+	if (!context.sessionId) {
+		throw new Error("Hlid could not resolve the active session.");
+	}
+	const parsed = hlidAgentSchemas.start_web_browser_recording.parse(input);
+	const path = parsed.preview_id
+		? `/api/project-previews/${encodeURIComponent(parsed.preview_id)}`
+		: "/api/project-previews/session";
+	const response = await dbFetch(`${path}/recording/start`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ session_id: context.sessionId }),
+	});
+	await requireDbOk(response, "Start Browser recording");
+	return captureResultSchema.parse(await response.json());
+}
+
+async function executeStopWebBrowserRecording(
+	input: unknown,
+	context: HlidAgentToolContext,
+): Promise<string> {
+	if (!context.sessionId) {
+		throw new Error("Hlid could not resolve the active session.");
+	}
+	const parsed = hlidAgentSchemas.stop_web_browser_recording.parse(input);
+	const path = parsed.preview_id
+		? `/api/project-previews/${encodeURIComponent(parsed.preview_id)}`
+		: "/api/project-previews/session";
+	const response = await dbFetch(`${path}/recording/stop`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ session_id: context.sessionId }),
+	});
+	await requireDbOk(response, "Stop Browser recording");
+	return JSON.stringify(await response.json());
+}
+
 function captureMetadata(
 	result: CaptureResult,
 ): Omit<CaptureResult, "image_base64"> {
@@ -1615,6 +1939,7 @@ type DelegationToolName =
 	| "wait_hlid_agent"
 	| "steer_hlid_agent"
 	| "cancel_hlid_agent"
+	| "cleanup_hlid_worktree"
 	| "resume_hlid_agent";
 
 async function executeDelegationTool(
@@ -1674,6 +1999,19 @@ async function executeDelegationTool(
 		await requireDbOk(response, "Wait for Hlid child agent");
 		return JSON.stringify(await response.json());
 	}
+	if (toolName === "cleanup_hlid_worktree") {
+		const parsed = hlidAgentSchemas.cleanup_hlid_worktree.parse(input);
+		const response = await dbFetch(
+			`/hlid-agents/${encodeURIComponent(parsed.id)}/worktree/cleanup`,
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ parent_session_id: context.sessionId }),
+			},
+		);
+		await requireDbOk(response, "Clean up Hlid child worktree");
+		return JSON.stringify(await response.json());
+	}
 	const parsed =
 		toolName === "steer_hlid_agent"
 			? hlidAgentSchemas.steer_hlid_agent.parse(input)
@@ -1730,6 +2068,58 @@ async function executeStartProjectPreview(
 	});
 	await requireDbOk(response, "Start Project Preview");
 	return JSON.stringify(await response.json());
+}
+
+async function executeOpenWebBrowser(
+	input: unknown,
+	context: HlidAgentToolContext,
+): Promise<string> {
+	const parsed = hlidAgentSchemas.open_web_browser.parse(input);
+	if (!context.sessionId) {
+		throw new Error("Hlid could not resolve the active session.");
+	}
+	const response = await dbFetch("/api/project-previews/browser/start", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ ...parsed, session_id: context.sessionId }),
+	});
+	await requireDbOk(response, "Open Browser");
+	return JSON.stringify(await response.json());
+}
+
+async function executeWebBrowserReadOrStop(
+	toolName: "inspect_web_browser" | "stop_web_browser",
+	input: unknown,
+	context: HlidAgentToolContext,
+): Promise<string> {
+	if (!context.sessionId) {
+		throw new Error("Hlid could not resolve the active session.");
+	}
+	const parsed =
+		toolName === "inspect_web_browser"
+			? hlidAgentSchemas.inspect_web_browser.parse(input)
+			: hlidAgentSchemas.stop_web_browser.parse(input);
+	const path = parsed.preview_id
+		? `/api/project-previews/${encodeURIComponent(parsed.preview_id)}`
+		: "/api/project-previews/session";
+	const inspected = await dbFetch(
+		`${path}?session_id=${encodeURIComponent(context.sessionId)}`,
+	);
+	await requireDbOk(inspected, "Inspect Browser");
+	const target = (await inspected.json()) as { target_kind?: string };
+	if (target.target_kind !== "browser") {
+		throw new Error(
+			"The addressed target is a Project Preview, not a Browser.",
+		);
+	}
+	if (toolName === "inspect_web_browser") return JSON.stringify(target);
+	const stopped = await dbFetch(`${path}/stop`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ session_id: context.sessionId }),
+	});
+	await requireDbOk(stopped, "Stop Browser");
+	return JSON.stringify(await stopped.json());
 }
 
 async function executeProjectPreviewReadOrStop(
@@ -1978,6 +2368,8 @@ const hlidAgentToolHandlers = {
 		executeDelegationTool("steer_hlid_agent", input, context),
 	cancel_hlid_agent: (input, context) =>
 		executeDelegationTool("cancel_hlid_agent", input, context),
+	cleanup_hlid_worktree: (input, context) =>
+		executeDelegationTool("cleanup_hlid_worktree", input, context),
 	resume_hlid_agent: (input, context) =>
 		executeDelegationTool("resume_hlid_agent", input, context),
 	search_relics: executeSearchRelics,
@@ -1993,6 +2385,24 @@ const hlidAgentToolHandlers = {
 	preview_hlid_routine_schedule: async (input) =>
 		executePreviewHlidRoutineSchedule(input),
 	publish_relic: executePublishRelic,
+	open_web_browser: executeOpenWebBrowser,
+	inspect_web_browser: (input, context) =>
+		executeWebBrowserReadOrStop("inspect_web_browser", input, context),
+	capture_web_browser: async (input, context) =>
+		JSON.stringify(
+			captureMetadata(await requestWebBrowserCapture(input, context)),
+		),
+	control_web_browser: async (input, context) =>
+		JSON.stringify(
+			captureMetadata(await requestWebBrowserControl(input, context)),
+		),
+	start_web_browser_recording: async (input, context) =>
+		JSON.stringify(
+			captureMetadata(await requestStartWebBrowserRecording(input, context)),
+		),
+	stop_web_browser_recording: executeStopWebBrowserRecording,
+	stop_web_browser: (input, context) =>
+		executeWebBrowserReadOrStop("stop_web_browser", input, context),
 	start_project_preview: executeStartProjectPreview,
 	inspect_project_preview: (input, context) =>
 		executeProjectPreviewReadOrStop("inspect_project_preview", input, context),
@@ -2042,7 +2452,10 @@ export async function executeHlidAgentToolRich(
 	if (
 		name !== "capture_project_preview" &&
 		name !== "export_project_preview_capture" &&
-		name !== "control_project_preview"
+		name !== "control_project_preview" &&
+		name !== "capture_web_browser" &&
+		name !== "control_web_browser" &&
+		name !== "start_web_browser_recording"
 	) {
 		return { text: await executeHlidAgentTool(name, input, context) };
 	}
@@ -2062,7 +2475,13 @@ export async function executeHlidAgentToolRich(
 	const result =
 		name === "capture_project_preview"
 			? await requestProjectPreviewCapture(input, context)
-			: await requestProjectPreviewControl(input, context);
+			: name === "control_project_preview"
+				? await requestProjectPreviewControl(input, context)
+				: name === "capture_web_browser"
+					? await requestWebBrowserCapture(input, context)
+					: name === "control_web_browser"
+						? await requestWebBrowserControl(input, context)
+						: await requestStartWebBrowserRecording(input, context);
 	return {
 		text: JSON.stringify(captureMetadata(result)),
 		images: [{ data: result.image_base64, mimeType: result.mime }],

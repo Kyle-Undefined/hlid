@@ -3616,6 +3616,17 @@ describe("Project Preview feedback", () => {
 			sourceSha256: "source",
 			capturedAt: 1_753_400_000_000,
 			comment: "The save button overlaps.",
+			annotations: [
+				{
+					mark_index: 0,
+					mark_kind: "rectangle",
+					ref: "e1",
+					role: "button",
+					name: "Save",
+					tag: "button",
+					bounds: { x: 12, y: 24, width: 80, height: 32 },
+				},
+			],
 		});
 
 		expect(retained).toMatchObject({
@@ -3633,6 +3644,7 @@ describe("Project Preview feedback", () => {
 						viewport: string;
 						source_sha256: string;
 						comment: string;
+						annotations_json: string;
 					},
 					[string]
 				>(`SELECT * FROM project_preview_feedback WHERE attachment_id = ?`)
@@ -3643,6 +3655,7 @@ describe("Project Preview feedback", () => {
 			viewport: "tablet",
 			source_sha256: "source",
 			comment: "The save button overlaps.",
+			annotations_json: expect.stringContaining('"ref":"e1"'),
 		});
 	});
 

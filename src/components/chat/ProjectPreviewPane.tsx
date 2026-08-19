@@ -3,6 +3,7 @@ import {
 	Camera,
 	ChevronLeft,
 	ChevronRight,
+	Circle,
 	ExternalLink,
 	LoaderCircle,
 	Maximize2,
@@ -24,8 +25,11 @@ import {
 	type ProjectPreviewAgentFrame,
 	type ProjectPreviewSnapshot,
 	saveProjectPreviewFeedbackFn,
+	startWebBrowserRecordingFn,
+	stopWebBrowserRecordingFn,
 } from "#/lib/serverFns/projectPreviews";
 import { uid } from "#/lib/utils";
+import type { ProjectPreviewFeedbackAnnotation } from "#/server/protocol";
 
 type PreviewViewState = {
 	path: string;
@@ -133,7 +137,10 @@ export function ProjectPreviewPane({
 		previewId: preview.id,
 		path: preview.path,
 	}));
-	const [surface, setSurface] = useState<"user" | "agent" | "logs">("user");
+	const isBrowserTarget = preview.target_kind === "browser";
+	const [surface, setSurface] = useState<"user" | "agent" | "logs">(
+		isBrowserTarget ? "agent" : "user",
+	);
 	const isReady = preview.state === "ready";
 	const {
 		frame: agentFrame,
@@ -159,13 +166,25 @@ export function ProjectPreviewPane({
 	const [feedbackCapturing, setFeedbackCapturing] = useState(false);
 	const [feedbackSaving, setFeedbackSaving] = useState(false);
 	const [feedbackError, setFeedbackError] = useState<string | null>(null);
+	const [recordingPending, setRecordingPending] = useState(false);
+	const [recordingOverride, setRecordingOverride] = useState<{
+		active: boolean;
+		afterCapturedAt: number;
+	} | null>(null);
+	const [recordingRelic, setRecordingRelic] = useState<{
+		filename: string;
+		openUrl: string;
+	} | null>(null);
 	const iframeRef = useRef<HTMLIFrameElement>(null);
 	const previewViewStateRef = useRef<PreviewViewState | null>(null);
 	const agentFrameRatio = agentFrame ? framePixelRatio(agentFrame) : null;
 	const agentFrameCaptureSize = agentFrame
 		? frameCaptureSize(agentFrame)
 		: null;
+	const recordingActive =
+		recordingOverride?.active ?? Boolean(agentFrame?.recording);
 	const previewUrl = (() => {
+		if (isBrowserTarget) return preview.url;
 		if (typeof window === "undefined") return preview.url;
 		try {
 			const url = new URL(preview.relay_url, window.location.origin);
@@ -243,6 +262,57 @@ export function ProjectPreviewPane({
 		return () => window.removeEventListener("message", receiveState);
 	}, [preview.id, previewUrl]);
 
+	useEffect(() => {
+		if (isBrowserTarget) setSurface("agent");
+	}, [isBrowserTarget]);
+
+	useEffect(() => {
+		if (
+			recordingOverride &&
+			agentFrame &&
+			agentFrame.captured_at >= recordingOverride.afterCapturedAt
+		) {
+			setRecordingOverride(null);
+		}
+	}, [agentFrame, recordingOverride]);
+
+	useEffect(() => {
+		if (!preview.id) return;
+		setRecordingOverride(null);
+		setRecordingRelic(null);
+	}, [preview.id]);
+
+	const toggleBrowserRecording = async () => {
+		setRecordingPending(true);
+		setRecordingRelic(null);
+		clearError();
+		try {
+			if (recordingActive) {
+				const requestedAt = Date.now();
+				const result = await stopWebBrowserRecordingFn({
+					data: { sessionId: preview.session_id, previewId: preview.id },
+				});
+				setRecordingOverride({ active: false, afterCapturedAt: requestedAt });
+				setRecordingRelic({
+					filename: result.filename,
+					openUrl: result.open_url,
+				});
+			} else {
+				const frame = await startWebBrowserRecordingFn({
+					data: { sessionId: preview.session_id, previewId: preview.id },
+				});
+				setRecordingOverride({
+					active: true,
+					afterCapturedAt: frame.captured_at,
+				});
+			}
+		} catch (cause) {
+			reportError(cause);
+		} finally {
+			setRecordingPending(false);
+		}
+	};
+
 	const captureFeedback = async () => {
 		setFeedbackCapturing(true);
 		setFeedbackError(null);
@@ -294,7 +364,11 @@ export function ProjectPreviewPane({
 		}
 	};
 
-	const saveFeedback = async (blob: Blob, comment: string) => {
+	const saveFeedback = async (
+		blob: Blob,
+		comment: string,
+		annotations: ProjectPreviewFeedbackAnnotation[],
+	) => {
 		setFeedbackSaving(true);
 		setFeedbackError(null);
 		try {
@@ -329,13 +403,15 @@ export function ProjectPreviewPane({
 					frameId: feedbackFrame?.frame_id ?? "",
 					attachmentId: upload.id,
 					comment,
+					annotations,
 				},
 			});
 			enqueueChat({
 				id: uid(),
 				session_id: preview.session_id,
 				text:
-					comment || "Please review this annotated Project Preview capture.",
+					comment ||
+					`Please review this annotated ${isBrowserTarget ? "Browser" : "Project Preview"} capture.`,
 				attachments: [saved.attachment],
 			});
 			setFeedbackFrame(null);
@@ -348,7 +424,7 @@ export function ProjectPreviewPane({
 
 	return (
 		<section
-			aria-label="Project Preview"
+			aria-label={isBrowserTarget ? "Browser" : "Project Preview"}
 			className={`min-h-0 min-w-0 bg-background flex flex-col ${className}`}
 			style={style}
 		>
@@ -359,18 +435,54 @@ export function ProjectPreviewPane({
 					</div>
 					<div className="text-[9px] text-muted-foreground/45 truncate">
 						{preview.state === "ready"
-							? `${previewUrl} · expires ${new Date(preview.expires_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+							? `${isBrowserTarget ? preview.url : previewUrl} · expires ${new Date(preview.expires_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
 							: preview.state}
 					</div>
 				</div>
+				{isBrowserTarget && recordingActive && (
+					<span className="inline-flex items-center gap-1 text-[9px] font-medium uppercase tracking-wider text-red-500">
+						<span className="h-1.5 w-1.5 rounded-full bg-red-500" />
+						Recording
+					</span>
+				)}
 				{isReady && (
 					<>
+						{isBrowserTarget && (
+							<button
+								type="button"
+								onClick={() => void toggleBrowserRecording()}
+								disabled={recordingPending}
+								aria-label={
+									recordingActive
+										? "Stop and save Browser recording"
+										: "Start Browser recording"
+								}
+								title={
+									recordingActive
+										? "Stop and save recording to Relics"
+										: "Record Browser interactions"
+								}
+								className={`p-1.5 disabled:opacity-30 ${
+									recordingActive
+										? "text-red-500 hover:text-red-400"
+										: "text-muted-foreground/55 hover:text-foreground"
+								}`}
+							>
+								{recordingPending ? (
+									<LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+								) : recordingActive ? (
+									<Square className="h-3.5 w-3.5 fill-current" />
+								) : (
+									<Circle className="h-3.5 w-3.5 fill-current" />
+								)}
+							</button>
+						)}
 						<button
 							type="button"
 							onClick={() => void captureFeedback()}
 							disabled={feedbackCapturing}
-							aria-label="Capture Preview feedback"
-							title="Capture feedback at the current Preview size"
+							aria-label={`Capture ${isBrowserTarget ? "Browser" : "Preview"} feedback`}
+							title={`Capture feedback from the current ${isBrowserTarget ? "Browser" : "Preview"}`}
 							className="p-1.5 text-muted-foreground/55 hover:text-foreground disabled:opacity-30"
 						>
 							{feedbackCapturing ? (
@@ -379,61 +491,72 @@ export function ProjectPreviewPane({
 								<Camera className="h-3.5 w-3.5" />
 							)}
 						</button>
-						<button
-							type="button"
-							onClick={() => {
-								const path = previewViewStateRef.current?.path ?? preview.path;
-								previewViewStateRef.current = null;
-								setFrameTarget({ previewId: preview.id, path });
-								setFrameKey((key) => key + 1);
-							}}
-							aria-label="Reload preview"
-							title="Reload preview"
-							className="p-1.5 text-muted-foreground/55 hover:text-foreground"
-						>
-							<RefreshCw className="h-3.5 w-3.5" />
-						</button>
-						<button
-							type="button"
-							onClick={() =>
-								window.open(previewUrl, "_blank", "noopener,noreferrer")
-							}
-							aria-label="Open preview in browser"
-							title="Open in browser"
-							className="p-1.5 text-muted-foreground/55 hover:text-foreground"
-						>
-							<ExternalLink className="h-3.5 w-3.5" />
-						</button>
+						{!isBrowserTarget && (
+							<button
+								type="button"
+								onClick={() => {
+									const path =
+										previewViewStateRef.current?.path ?? preview.path;
+									previewViewStateRef.current = null;
+									setFrameTarget({ previewId: preview.id, path });
+									setFrameKey((key) => key + 1);
+								}}
+								aria-label="Reload preview"
+								title="Reload preview"
+								className="p-1.5 text-muted-foreground/55 hover:text-foreground"
+							>
+								<RefreshCw className="h-3.5 w-3.5" />
+							</button>
+						)}
+						{!isBrowserTarget && (
+							<button
+								type="button"
+								onClick={() =>
+									window.open(previewUrl, "_blank", "noopener,noreferrer")
+								}
+								aria-label="Open preview in browser"
+								title="Open in browser"
+								className="p-1.5 text-muted-foreground/55 hover:text-foreground"
+							>
+								<ExternalLink className="h-3.5 w-3.5" />
+							</button>
+						)}
 					</>
 				)}
-				<button
-					type="button"
-					onClick={() =>
-						setSurface((current) => (current === "agent" ? "user" : "agent"))
-					}
-					aria-label={
-						surface === "agent" ? "Show user preview" : "Show agent view"
-					}
-					title={surface === "agent" ? "User view" : "Agent view"}
-					className={`p-1.5 hover:text-foreground ${
-						surface === "agent" ? "text-primary" : "text-muted-foreground/55"
-					}`}
-				>
-					<Bot className="h-3.5 w-3.5" />
-				</button>
-				<button
-					type="button"
-					onClick={() =>
-						setSurface((current) => (current === "logs" ? "user" : "logs"))
-					}
-					aria-label={surface === "logs" ? "Show preview" : "Show preview logs"}
-					title={surface === "logs" ? "Show preview" : "Logs"}
-					className={`p-1.5 hover:text-foreground ${
-						surface === "logs" ? "text-primary" : "text-muted-foreground/55"
-					}`}
-				>
-					<ScrollText className="h-3.5 w-3.5" />
-				</button>
+				{!isBrowserTarget && (
+					<button
+						type="button"
+						onClick={() =>
+							setSurface((current) => (current === "agent" ? "user" : "agent"))
+						}
+						aria-label={
+							surface === "agent" ? "Show user preview" : "Show agent view"
+						}
+						title={surface === "agent" ? "User view" : "Agent view"}
+						className={`p-1.5 hover:text-foreground ${
+							surface === "agent" ? "text-primary" : "text-muted-foreground/55"
+						}`}
+					>
+						<Bot className="h-3.5 w-3.5" />
+					</button>
+				)}
+				{!isBrowserTarget && (
+					<button
+						type="button"
+						onClick={() =>
+							setSurface((current) => (current === "logs" ? "user" : "logs"))
+						}
+						aria-label={
+							surface === "logs" ? "Show preview" : "Show preview logs"
+						}
+						title={surface === "logs" ? "Show preview" : "Logs"}
+						className={`p-1.5 hover:text-foreground ${
+							surface === "logs" ? "text-primary" : "text-muted-foreground/55"
+						}`}
+					>
+						<ScrollText className="h-3.5 w-3.5" />
+					</button>
+				)}
 				<select
 					value={viewport}
 					onChange={(event) =>
@@ -469,8 +592,8 @@ export function ProjectPreviewPane({
 					type="button"
 					onClick={() => void act("restart")}
 					disabled={pendingAction !== null}
-					aria-label="Restart preview"
-					title="Restart preview"
+					aria-label={`Restart ${isBrowserTarget ? "Browser" : "preview"}`}
+					title={`Restart ${isBrowserTarget ? "Browser" : "preview"}`}
 					className="p-1.5 text-muted-foreground/55 hover:text-foreground disabled:opacity-30"
 				>
 					{pendingAction === "restart" ? (
@@ -512,8 +635,21 @@ export function ProjectPreviewPane({
 					{error}
 				</div>
 			)}
+			{recordingRelic && (
+				<div className="shrink-0 border-b border-border/50 bg-muted/20 px-3 py-1.5 text-[10px] text-muted-foreground">
+					Saved recording:{" "}
+					<a
+						href={recordingRelic.openUrl}
+						target="_blank"
+						rel="noreferrer"
+						className="text-primary hover:underline"
+					>
+						{recordingRelic.filename}
+					</a>
+				</div>
+			)}
 			<div className="relative min-h-0 flex-1 overflow-auto bg-muted/20">
-				{isReady && (
+				{isReady && !isBrowserTarget && (
 					<div
 						className={`mx-auto h-full bg-white ${
 							surface === "user" ? "block" : "hidden"

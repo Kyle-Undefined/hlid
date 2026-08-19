@@ -7,7 +7,10 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ProjectPreviewAgentFrame } from "#/server/protocol";
+import type {
+	ProjectPreviewAgentFrame,
+	ProjectPreviewFeedbackAnnotation,
+} from "#/server/protocol";
 import { ProjectPreviewFeedbackModal } from "./ProjectPreviewFeedbackModal";
 
 afterEach(() => {
@@ -156,5 +159,97 @@ describe("ProjectPreviewFeedbackModal", () => {
 		);
 		expect(context.font).toBe("600 48px sans-serif");
 		expect(context.lineWidth).toBe(10);
+	});
+
+	it("binds a drawn mark to exact semantic element context on save", async () => {
+		class RasterImage {
+			onload: (() => void) | null = null;
+			naturalWidth = 780;
+			naturalHeight = 1688;
+			set src(_value: string) {
+				queueMicrotask(() => this.onload?.());
+			}
+		}
+		vi.stubGlobal("Image", RasterImage);
+		vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+			clearRect: vi.fn(),
+			drawImage: vi.fn(),
+			save: vi.fn(),
+			restore: vi.fn(),
+			strokeRect: vi.fn(),
+		} as unknown as CanvasRenderingContext2D);
+		vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation(
+			(callback) => callback(new Blob(["png"], { type: "image/png" })),
+		);
+		const exactFrame = frame();
+		exactFrame.elements = [
+			{
+				ref: "e1",
+				role: "button",
+				name: "Save",
+				tag: "button",
+				type: "submit",
+				x: 100,
+				y: 100,
+				width: 100,
+				height: 50,
+			},
+		];
+		const onSave = vi.fn(
+			async (
+				_blob: Blob,
+				_comment: string,
+				_annotations: ProjectPreviewFeedbackAnnotation[],
+			) => {},
+		);
+		render(
+			<ProjectPreviewFeedbackModal
+				frame={exactFrame}
+				saving={false}
+				error={null}
+				onClose={vi.fn()}
+				onSave={onSave}
+			/>,
+		);
+		await waitFor(() =>
+			expect(screen.getByText("Save and send").hasAttribute("disabled")).toBe(
+				false,
+			),
+		);
+		const canvas = screen.getByLabelText(
+			"Preview annotation canvas",
+		) as HTMLCanvasElement;
+		vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({
+			bottom: 844,
+			height: 844,
+			left: 0,
+			right: 390,
+			toJSON: () => ({}),
+			top: 0,
+			width: 390,
+			x: 0,
+			y: 0,
+		});
+		canvas.setPointerCapture = vi.fn();
+		canvas.hasPointerCapture = vi.fn(() => true);
+		canvas.releasePointerCapture = vi.fn();
+		fireEvent.click(screen.getByLabelText("Rectangle"));
+		fireEvent.pointerDown(canvas, { pointerId: 1, clientX: 100, clientY: 100 });
+		fireEvent.pointerMove(canvas, { pointerId: 1, clientX: 200, clientY: 150 });
+		fireEvent.pointerUp(canvas, { pointerId: 1, clientX: 200, clientY: 150 });
+
+		await screen.findByText("Mark 1 · rectangle");
+		fireEvent.click(screen.getByText("Save and send"));
+		await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+		expect(onSave.mock.calls[0]?.[2]).toEqual([
+			expect.objectContaining({
+				mark_index: 0,
+				mark_kind: "rectangle",
+				ref: "e1",
+				role: "button",
+				name: "Save",
+				bounds: { x: 100, y: 100, width: 100, height: 50 },
+			}),
+		]);
 	});
 });

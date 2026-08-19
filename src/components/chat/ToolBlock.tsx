@@ -334,14 +334,21 @@ function specializedToolEventKind(
 	if (event.subagent) return "subagent";
 	if (
 		event.name.endsWith("capture_project_preview") ||
-		event.name.endsWith("control_project_preview")
+		event.name.endsWith("control_project_preview") ||
+		event.name.endsWith("capture_web_browser") ||
+		event.name.endsWith("control_web_browser") ||
+		event.name.endsWith("start_web_browser_recording")
 	) {
 		return "project-preview-capture";
 	}
 	if (
 		event.name.endsWith("start_project_preview") ||
 		event.name.endsWith("inspect_project_preview") ||
-		event.name.endsWith("stop_project_preview")
+		event.name.endsWith("stop_project_preview") ||
+		event.name.endsWith("open_web_browser") ||
+		event.name.endsWith("inspect_web_browser") ||
+		event.name.endsWith("stop_web_browser_recording") ||
+		event.name.endsWith("stop_web_browser")
 	) {
 		return "project-preview-lifecycle";
 	}
