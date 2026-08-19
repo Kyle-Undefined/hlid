@@ -450,6 +450,12 @@ silence is not a timeout, so stop work with an explicit cancellation. Only an
 eligible restart-interrupted non-`Routine` child with an attempt left can be
 continued. That continuation is an explicit new turn from a running parent.
 
+When the workspace is a `Git` repository, a delegated child can also start in a
+managed worktree. It begins at the parent's exact `HEAD`, gets its own branch and
+directory, and never inherits uncommitted files from the parent. `Hlið` only
+removes that worktree when it is clean and has no commits beyond its recorded
+base. Anything with work in it stays put for an explicit review or merge.
+
 When an agent starts a `Project Preview`, `Raven` adds **Preview** beside **Chat**
 and **Terminal**. A session gets one preview at a time. Starting another replaces
 the current one. `Hlið` owns the process, readiness checks, logs, four-hour safety
@@ -470,7 +476,10 @@ Agent-controlled preview tabs use an isolated `Chromium` profile by default. If 
 preview truly needs signed-in state, **FORGE → Agents → Browser profile** can
 connect a running `Chromium` profile with your consent. That gives the preview
 access to the profile's session state, so only do it with agents and projects
-you trust.
+you trust. Agents can also open a session-scoped normal browser target for a
+public `HTTP` or `HTTPS` page. It keeps the same bounded capture and interaction
+surface, but it is not a project process and does not turn a random site into a
+workspace preview.
 
 An idle supported `Claude` or `Codex` chat gets a fork control beside the new-chat
 button. It asks the provider for an exact copy of the whole conversation,
@@ -673,7 +682,7 @@ not configured for that entry stay hidden.
 	voice, and browser-local privacy mode. `Hlið` and vault entries always remain
 	visible; the toggle controls every provider-badged skill, command, or plugin.
 - **Integrations** manages provider Apps and connectors, `CLIProxyAPI`, `MCP`,
-  `Umbod`, and the `ACP` catalog.
+  `Umbod`, the `ACP` catalog, and local `Ollama`.
 - **Extensions** manages installed `Claude` and `Codex` plugins and their
   marketplaces.
 - **Developer** switches between the event log, local `API` reference, and pricing
@@ -725,6 +734,14 @@ conversation or copy its messages. **Import into Hlid** creates or reopens a
 by the provider and is not copied into `Hlið`. This is an explicit import, never
 a `Hlið` fork. Import is offered only when the same agent also advertises native
 session loading or resumption. List-only agents remain a metadata browser.
+
+`Ollama` stays on the `Windows` host. Forge can install it, pull or remove local
+models, load the selected model with the required context, and keep only the
+models you choose available to `OpenCode`. A `WSL` agent reaches it through a
+narrow authenticated relay that `Hlið` probes from the exact distro. The vendor
+server remains on Windows loopback, so there is no second model runtime or loose
+LAN endpoint to babysit. `Hlið` checks tool calling, context length, and the
+loaded model digest before it lets `OpenCode` use a selected local model.
 
 **Extensions** keeps the `Claude` and `Codex` inventories separate. Browse an
 installed package or marketplace, filter by environment or category, and

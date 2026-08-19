@@ -85,7 +85,12 @@ set up, `Hlið` is happy.
   the structured chat `UI`. Agents can start a session-scoped `Project Preview`,
   inspect, restart, and control it at desktop, tablet, or mobile sizes, catch browser
   errors, move through retained captures, save an approved capture, and work
-  from annotated visual feedback.
+  from annotated visual feedback. Public browser targets use that same bounded
+  surface without pretending the site is a local project.
+- Keeps `Ollama` on the Windows host where its runtime belongs, then gives an
+  exact `WSL` agent a narrow authenticated relay instead of a second model
+  server. Forge handles the install, model inventory, downloads, loading, and
+  the checks `OpenCode` needs before it uses a local model.
 - Keeps linked vaults and workspaces, provider commands, permissions, scoped
   `MCP` servers, provider Apps and connectors, `ACP` agents, provider
   extensions, `Umbod`, networking, updates, and lifecycle controls together.
