@@ -8,6 +8,7 @@ import type { UiForm } from "./UiSection";
 afterEach(cleanup);
 
 const ui: UiForm = {
+	viewMode: "full",
 	theme: "tan",
 	mobileTheme: "same",
 	customTheme: builtInThemePalette("tan"),

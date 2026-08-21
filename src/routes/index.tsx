@@ -1150,7 +1150,19 @@ function CockpitPage() {
 	);
 
 	if (!config.vault.path) {
-		return <FirstRunWizard onComplete={() => router.invalidate()} />;
+		return (
+			<FirstRunWizard
+				onComplete={() => router.invalidate()}
+				onTestChat={() => {
+					void router.invalidate().then(() =>
+						navigate({
+							to: "/raven",
+							search: { session: undefined, agent: undefined },
+						}),
+					);
+				}}
+			/>
+		);
 	}
 
 	const modelShort = vaultModel ? fmtModel(vaultModel) : null;

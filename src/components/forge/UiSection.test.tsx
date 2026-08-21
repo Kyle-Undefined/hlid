@@ -8,6 +8,7 @@ afterEach(cleanup);
 
 function uiForm(showProviderEntries: boolean): UiForm {
 	return {
+		viewMode: "full",
 		theme: "tan",
 		mobileTheme: "same",
 		customTheme: builtInThemePalette("tan"),

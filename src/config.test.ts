@@ -16,6 +16,21 @@ function wslOpenCodeTarget() {
 	};
 }
 
+describe("HlidConfigSchema interface view", () => {
+	it("keeps existing configurations in Full view by default", () => {
+		expect(HlidConfigSchema.parse({}).ui.view_mode).toBe("full");
+	});
+
+	it("accepts Simple view and rejects unknown presentation modes", () => {
+		expect(
+			HlidConfigSchema.parse({ ui: { view_mode: "simple" } }).ui.view_mode,
+		).toBe("simple");
+		expect(
+			HlidConfigSchema.safeParse({ ui: { view_mode: "expert" } }).success,
+		).toBe(false);
+	});
+});
+
 describe("HlidConfigSchema ACP WSL workspace targets", () => {
 	it("lets an ACP-backed vault select its own WSL distro independently of the Forge target", () => {
 		const result = HlidConfigSchema.safeParse({

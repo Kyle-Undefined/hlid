@@ -47,6 +47,24 @@ export const NAV_ITEMS = [
 	{ id: "forge", to: "/forge", label: "FORGE", icon: Hammer, exact: false },
 ] as const;
 
+export const SIMPLE_NAV_IDS = ["watch", "raven", "relics", "forge"] as const;
+
+export function navItemsForMode(mode: "full" | "simple") {
+	if (mode === "full") return NAV_ITEMS;
+	return SIMPLE_NAV_IDS.map((id) => {
+		const item = NAV_ITEMS.find((candidate) => candidate.id === id);
+		if (!item) throw new Error(`Unknown Simple navigation item: ${id}`);
+		return item;
+	});
+}
+
+export function moreNavItems() {
+	return NAV_ITEMS.filter(
+		(item) =>
+			!SIMPLE_NAV_IDS.includes(item.id as (typeof SIMPLE_NAV_IDS)[number]),
+	);
+}
+
 export function navDisplayMetadata(
 	id: NavigationId,
 	canonicalLabel: string,

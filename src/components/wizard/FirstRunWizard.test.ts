@@ -72,12 +72,20 @@ describe("first-run configuration policy", () => {
 				agent_progress_summaries: false,
 			},
 			ui: {
+				view_mode: "full",
 				theme: "dark",
 				navigation_names: { preset: "plain", labels: {} },
 			},
 			attachments: { max_bytes: 25 * 1024 * 1024 },
 			voice: { enabled: false },
 		});
+	});
+
+	it("uses the focused interface only for guided setup", () => {
+		expect(buildFirstRunConfig(structure, "guided").ui.view_mode).toBe(
+			"simple",
+		);
+		expect(buildFirstRunConfig(structure, "custom").ui.view_mode).toBe("full");
 	});
 
 	it("applies first-run authority to the selected Codex provider", () => {

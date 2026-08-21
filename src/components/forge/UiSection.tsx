@@ -5,6 +5,7 @@ import { displayHotkey, hotkeyFromEvent } from "#/lib/voiceHotkey";
 import { Field, Section } from "./fields";
 
 export type UiForm = {
+	viewMode: "full" | "simple";
 	theme: ThemeName;
 	mobileTheme: ThemeName | "same";
 	customTheme: CustomThemePalette;
@@ -41,6 +42,43 @@ export function UiSection({
 		Boolean(ui.liveSessionsHotkey) && ui.liveSessionsHotkey === voiceHotkey;
 	return (
 		<Section title="UI" id="forge-section-ui">
+			<div className="px-4 py-3 space-y-2">
+				<div className="text-sm text-foreground">Interface view</div>
+				<div className="text-xs text-muted-foreground mb-2">
+					Simple keeps advanced tools available under More and All settings.
+				</div>
+				<div className="grid grid-cols-2 gap-2">
+					{(
+						[
+							{
+								value: "simple",
+								label: "Simple",
+								desc: "everyday choices first",
+							},
+							{ value: "full", label: "Full", desc: "everything visible" },
+						] as const
+					).map((option) => (
+						<button
+							key={option.value}
+							type="button"
+							onClick={() => onChange({ viewMode: option.value })}
+							aria-pressed={ui.viewMode === option.value}
+							className={`flex flex-col gap-1 p-3 border text-left transition-colors ${
+								ui.viewMode === option.value
+									? "border-primary bg-primary/5"
+									: "border-border hover:bg-accent"
+							}`}
+						>
+							<span className="text-sm font-medium text-foreground">
+								{option.label}
+							</span>
+							<span className="text-xs text-muted-foreground">
+								{option.desc}
+							</span>
+						</button>
+					))}
+				</div>
+			</div>
 			<div className="px-4 py-3 space-y-2">
 				<div className="text-sm text-foreground">Theme</div>
 				<div className="grid grid-cols-1 sm:grid-cols-3 gap-2">

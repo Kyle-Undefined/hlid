@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+	moreNavItems,
 	NAV_ITEMS,
 	navActiveOptions,
 	navDisplayMetadata,
+	navItemsForMode,
 	navSearch,
 } from "./items";
 
@@ -23,6 +25,26 @@ describe("NAV_ITEMS", () => {
 			},
 			{ id: "ledger", to: "/ledger", label: "LEDGER", exact: false },
 			{ id: "forge", to: "/forge", label: "FORGE", exact: false },
+		]);
+	});
+
+	it("keeps the Simple destinations in presentation order", () => {
+		expect(
+			navItemsForMode("simple").map(({ id, to, label }) => ({ id, to, label })),
+		).toEqual([
+			{ id: "watch", to: "/", label: "WATCH" },
+			{ id: "raven", to: "/raven", label: "RAVEN" },
+			{ id: "relics", to: "/relics", label: "RELICS" },
+			{ id: "forge", to: "/forge", label: "FORGE" },
+		]);
+	});
+
+	it("keeps Full unchanged and exposes every omitted destination in More", () => {
+		expect(navItemsForMode("full")).toBe(NAV_ITEMS);
+		expect(moreNavItems().map(({ to }) => to)).toEqual([
+			"/vault",
+			"/einherjar",
+			"/ledger",
 		]);
 	});
 });

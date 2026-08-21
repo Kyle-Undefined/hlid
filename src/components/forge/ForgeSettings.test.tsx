@@ -9,6 +9,8 @@ import {
 } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { NavigationNamesProvider } from "#/components/nav/NavigationNamesContext";
+import { resolveNavigationLabels } from "#/lib/navigationNames";
 import { TAN_THEME } from "#/lib/theme";
 import { ForgeSettings } from "./ForgeSettings";
 
@@ -565,67 +567,111 @@ describe("ForgeSettings search", () => {
 function renderSettings(
 	stateOverrides: Record<string, unknown> = {},
 	propsOverrides: Partial<ComponentProps<typeof ForgeSettings>> = {},
+	viewMode: "full" | "simple" = "full",
 ) {
 	return render(
-		<ForgeSettings
-			initial={
-				{
-					providers: [],
-					accountInfo: null,
-					acpCatalog: [],
-					cwd: "/tmp/vault",
-					voiceInfo: null,
-					vault_provider: "claude",
-				} as never
-			}
-			state={
-				{
-					saving: false,
-					dirty: false,
-					error: null,
-					warning: null,
-					acpRuntimePending: false,
-					savedMsg: null,
-					save: vi.fn(),
-					claude: { vaultProvider: "claude" },
-					codex: {},
-					vault: { path: "/tmp/vault" },
-					persistedVaultPath: "/tmp/vault",
-					vocab: {},
-					autoSleep: {},
-					projectPreview: {},
-					diagnostics: { event_log: true },
-					server: {},
-					ui: {
-						theme: "tan",
-						mobileTheme: "same",
-						customTheme: TAN_THEME,
-						mobileCustomTheme: TAN_THEME,
-					},
-					voice: {},
-					acpAgents: [],
-					persistedAcpAgents: [],
-					ollama: undefined,
-					umbod: {},
-					changeClaude: vi.fn(),
-					setVault: vi.fn(),
-					setVocab: vi.fn(),
-					setAutoSleep: vi.fn(),
-					setProjectPreview: vi.fn(),
-					setDiagnostics: vi.fn(),
-					setServer: vi.fn(),
-					setUi: vi.fn(),
-					setVoice: vi.fn(),
-					setAcpAgents: vi.fn(),
-					setOllama: vi.fn(),
-					setUmbod: vi.fn(),
-					...stateOverrides,
-				} as never
-			}
-			{...propsOverrides}
-		/>,
+		<NavigationNamesProvider
+			initialLabels={resolveNavigationLabels()}
+			initialViewMode={viewMode}
+		>
+			<ForgeSettings
+				initial={
+					{
+						providers: [],
+						accountInfo: null,
+						acpCatalog: [],
+						cwd: "/tmp/vault",
+						voiceInfo: null,
+						vault_provider: "claude",
+					} as never
+				}
+				state={
+					{
+						saving: false,
+						dirty: false,
+						error: null,
+						warning: null,
+						acpRuntimePending: false,
+						savedMsg: null,
+						save: vi.fn(),
+						claude: { vaultProvider: "claude" },
+						codex: {},
+						vault: { path: "/tmp/vault" },
+						persistedVaultPath: "/tmp/vault",
+						vocab: {},
+						autoSleep: {},
+						projectPreview: {},
+						diagnostics: { event_log: true },
+						server: {},
+						ui: {
+							theme: "tan",
+							mobileTheme: "same",
+							customTheme: TAN_THEME,
+							mobileCustomTheme: TAN_THEME,
+						},
+						voice: {},
+						acpAgents: [],
+						persistedAcpAgents: [],
+						ollama: undefined,
+						umbod: {},
+						changeClaude: vi.fn(),
+						setVault: vi.fn(),
+						setVocab: vi.fn(),
+						setAutoSleep: vi.fn(),
+						setProjectPreview: vi.fn(),
+						setDiagnostics: vi.fn(),
+						setServer: vi.fn(),
+						setUi: vi.fn(),
+						setVoice: vi.fn(),
+						setAcpAgents: vi.fn(),
+						setOllama: vi.fn(),
+						setUmbod: vi.fn(),
+						...stateOverrides,
+					} as never
+				}
+				{...propsOverrides}
+			/>
+		</NavigationNamesProvider>,
 	);
 }
+
+describe("ForgeSettings Simple view", () => {
+	it("shows readiness and common settings instead of the full category browser", () => {
+		renderSettings({}, {}, "simple");
+
+		expect(screen.getByRole("heading", { name: "Settings" })).toBeTruthy();
+		expect(screen.getByRole("heading", { name: "Ready to use" })).toBeTruthy();
+		expect(
+			screen.getByRole("heading", { name: "Common settings" }),
+		).toBeTruthy();
+		expect(screen.getByRole("button", { name: "All settings" })).toBeTruthy();
+		expect(
+			screen.queryByRole("combobox", { name: "Forge category" }),
+		).toBeNull();
+		expect(screen.queryByText("Browse settings")).toBeNull();
+	});
+
+	it("reveals the existing Forge interface from All settings", () => {
+		renderSettings({}, {}, "simple");
+		fireEvent.click(screen.getByRole("button", { name: "All settings" }));
+
+		expect(
+			screen.getByRole("combobox", { name: "Forge category" }),
+		).toBeTruthy();
+		expect(screen.getByText("Browse settings")).toBeTruthy();
+	});
+
+	it("bypasses the Simple landing for a direct advanced destination", () => {
+		renderSettings(
+			{},
+			{ navigation: { category: "advanced", section: "danger-zone" } },
+			"simple",
+		);
+
+		expect(screen.getByRole("heading", { name: "Advanced" })).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "All settings" })).toBeNull();
+	});
+});
 
 describe("ForgeSettings category navigation", () => {
 	it("passes reload-safe marketplace destinations to Extensions", () => {

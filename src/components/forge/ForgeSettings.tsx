@@ -18,6 +18,7 @@ import { CustomThemeSection } from "#/components/forge/CustomThemeSection";
 import { EventLogSection } from "#/components/forge/EventLogSection";
 import { ExtensionsSection } from "#/components/forge/ExtensionsSection";
 import { InstructionFilesSection } from "#/components/forge/InstructionFilesSection";
+import { LocalAiSetup } from "#/components/forge/LocalAiSetup";
 import { McpSection } from "#/components/forge/McpSection";
 import { NavigationNamesSection } from "#/components/forge/NavigationNamesSection";
 import { NetworkSection } from "#/components/forge/NetworkSection";
@@ -34,6 +35,7 @@ import { UpdatesSection } from "#/components/forge/UpdatesSection";
 import { VaultSection } from "#/components/forge/VaultSection";
 import { VocabSection } from "#/components/forge/VocabSection";
 import { VoiceSection } from "#/components/forge/VoiceSection";
+import { useViewMode } from "#/components/nav/NavigationNamesContext";
 import { ProviderAppsCatalog } from "#/components/ProviderAppsCatalog";
 import { PageHeader, PageIntro } from "#/components/shell/PageHeader";
 import { SectionRail } from "#/components/shell/SectionRail";
@@ -563,6 +565,150 @@ function OverviewCategory({
 	);
 }
 
+function SimpleSettingsHome({
+	initial,
+	state,
+	inventoryStatus,
+	onNavigate,
+	onShowAll,
+}: {
+	initial: SettingsInitial;
+	state: SettingsFormState;
+	inventoryStatus: "loading" | "slow" | "ready" | "unavailable";
+	onNavigate: (navigation: ForgeNavigationState) => void;
+	onShowAll: () => void;
+}) {
+	const selectedProvider =
+		state.claude?.vaultProvider ?? initial.vault_provider;
+	const provider = initial.providers.find(
+		(item) => item.id === selectedProvider,
+	);
+	const checks = [
+		{
+			label: "Workspace",
+			ready: Boolean(state.vault.path),
+			detail: state.vault.path || "Choose a workspace folder",
+			navigation: { category: "workspace" as const },
+		},
+		{
+			label: "AI connection",
+			ready: inventoryStatus === "ready" && provider?.available === true,
+			detail:
+				inventoryStatus === "loading" || inventoryStatus === "slow"
+					? "Checking your AI connection"
+					: provider?.available
+						? `${provider.label} is available`
+						: "Choose or finish setting up an AI provider",
+			navigation: { category: "agents" as const },
+		},
+		{
+			label: "Safety",
+			ready: true,
+			detail:
+				initial.claude?.permission_mode === "default"
+					? "Hlid asks before making changes"
+					: "Review your provider permission settings",
+			navigation: { category: "access" as const },
+		},
+	] as const;
+	const common = [
+		{
+			label: "Chat and models",
+			description: "Choose your AI provider, model, and local AI setup.",
+			navigation: { category: "agents" as const },
+		},
+		{
+			label: "Workspace",
+			description: "Change your vault and folder layout.",
+			navigation: { category: "workspace" as const },
+		},
+		{
+			label: "Appearance",
+			description: "Change the theme, interface view, and navigation names.",
+			navigation: { category: "experience" as const },
+		},
+		{
+			label: "Connections",
+			description: "Set up OpenCode, Ollama, apps, and integrations.",
+			navigation: { category: "integrations" as const },
+		},
+	] as const;
+	return (
+		<>
+			<PageIntro
+				id="forge-simple-settings"
+				headingLevel={1}
+				title="Settings"
+				description="The essentials are up front. Every Hlid setting is still available when you need it."
+			/>
+			<section aria-labelledby="forge-simple-readiness" className="space-y-2">
+				<h2
+					id="forge-simple-readiness"
+					className="text-[10px] uppercase tracking-widest text-muted-foreground"
+				>
+					Ready to use
+				</h2>
+				<div className="grid gap-2 @2xl:grid-cols-3">
+					{checks.map((check) => (
+						<button
+							key={check.label}
+							type="button"
+							onClick={() => onNavigate(check.navigation)}
+							className="min-h-24 border border-border bg-card p-3 text-left hover:border-primary/40 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						>
+							<span
+								className={
+									check.ready ? "text-status-success" : "text-status-warning"
+								}
+							>
+								{check.ready ? "Ready" : "Needs attention"}
+							</span>
+							<span className="mt-1 block text-sm text-foreground">
+								{check.label}
+							</span>
+							<span className="mt-1 block break-words text-xs text-muted-foreground">
+								{check.detail}
+							</span>
+						</button>
+					))}
+				</div>
+			</section>
+			<section aria-labelledby="forge-simple-common" className="space-y-2">
+				<h2
+					id="forge-simple-common"
+					className="text-[10px] uppercase tracking-widest text-muted-foreground"
+				>
+					Common settings
+				</h2>
+				<div className="grid grid-cols-1 gap-2 @2xl:grid-cols-2">
+					{common.map((item) => (
+						<button
+							key={item.label}
+							type="button"
+							onClick={() => onNavigate(item.navigation)}
+							className="min-h-20 border border-border bg-card p-3 text-left hover:border-primary/40 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						>
+							<span className="block text-sm text-foreground">
+								{item.label}
+							</span>
+							<span className="mt-1 block text-xs text-muted-foreground">
+								{item.description}
+							</span>
+						</button>
+					))}
+				</div>
+			</section>
+			<button
+				type="button"
+				onClick={onShowAll}
+				className="min-h-11 w-full border border-primary/50 px-4 py-2 text-sm text-primary hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+			>
+				All settings
+			</button>
+		</>
+	);
+}
+
 function WorkspaceCategory({
 	state,
 	navigation,
@@ -782,6 +928,10 @@ function IntegrationsCategory({
 			<CliProxySection
 				config={initial.cliproxy}
 				initialInfo={initial.cliProxyInfo}
+			/>
+			<LocalAiSetup
+				onOpenOllama={onShowOllama}
+				onOpenOpenCode={onShowCatalog}
 			/>
 			<section
 				id="forge-section-ollama"
@@ -1388,6 +1538,8 @@ export function ForgeSettings({
 		options?: ForgeNavigationOptions,
 	) => void;
 }) {
+	const viewMode = useViewMode();
+	const [allSettingsVisible, setAllSettingsVisible] = useState(false);
 	const [localNavigation, setLocalNavigation] = useState<ForgeNavigationState>({
 		category: "overview",
 	});
@@ -1468,6 +1620,8 @@ export function ForgeSettings({
 		!navigation.section &&
 		!navigation.setting &&
 		!navigation.view;
+	const showSimpleLanding =
+		viewMode === "simple" && isDefaultOverview && !allSettingsVisible;
 	const focusRequestKey = `${navigationFocusId ?? ""}:${navigation.setting ?? ""}:${focusRequest}`;
 	useEffect(() => {
 		// A repeated selection of the same destination still needs a fresh alignment.
@@ -1605,54 +1759,60 @@ export function ForgeSettings({
 	}
 	return (
 		<div className="flex h-full min-h-0">
-			<SectionRail
-				items={FORGE_CATEGORIES.map((item) => ({
-					id: item.id,
-					label: item.label,
-					group: item.group,
-				}))}
-				activeId={category}
-				onSelect={(id) => choose(id as Category)}
-				label="Forge categories"
-				useAriaCurrent
-				visibleFrom="lg"
-			/>
+			{!showSimpleLanding && (
+				<SectionRail
+					items={FORGE_CATEGORIES.map((item) => ({
+						id: item.id,
+						label: item.label,
+						group: item.group,
+					}))}
+					activeId={category}
+					onSelect={(id) => choose(id as Category)}
+					label="Forge categories"
+					useAriaCurrent
+					visibleFrom="lg"
+				/>
+			)}
 			<div className="flex-1 min-w-0 flex flex-col">
-				<PageHeader eyebrow="Forge">
-					<select
-						value={category}
-						onChange={(e) => choose(e.target.value as Category)}
-						aria-label="Forge category"
-						className="min-h-11 min-w-0 flex-1 border border-border bg-input px-2 py-2 text-xs lg:hidden"
-					>
-						{FORGE_CATEGORIES.map((item) => (
-							<option key={item.id} value={item.id}>
-								{item.label}
-							</option>
-						))}
-					</select>
-					<div className="relative order-last w-full min-w-0 lg:order-none lg:ml-auto lg:w-auto lg:max-w-sm lg:flex-[1_1_16rem]">
-						<input
-							value={search}
-							onChange={(e) => setSearch(e.target.value)}
-							onKeyDown={(event) => {
-								if (event.key === "Escape") setSearch("");
-							}}
-							placeholder="Search settings"
-							aria-label="Search settings"
-							className="min-h-11 w-full min-w-0 border border-border bg-input px-3 py-2 pr-10 text-xs focus:border-primary/50 focus:outline-none lg:min-h-0 lg:py-1.5"
-						/>
-						{searchQuery && (
-							<button
-								type="button"
-								onClick={() => setSearch("")}
-								aria-label="Clear setting search"
-								className="absolute inset-y-0 right-0 min-w-10 px-2 text-sm text-muted-foreground hover:text-foreground"
+				<PageHeader eyebrow={showSimpleLanding ? "Simple view" : "Forge"}>
+					{!showSimpleLanding && (
+						<>
+							<select
+								value={category}
+								onChange={(e) => choose(e.target.value as Category)}
+								aria-label="Forge category"
+								className="min-h-11 min-w-0 flex-1 border border-border bg-input px-2 py-2 text-xs lg:hidden"
 							>
-								×
-							</button>
-						)}
-					</div>
+								{FORGE_CATEGORIES.map((item) => (
+									<option key={item.id} value={item.id}>
+										{item.label}
+									</option>
+								))}
+							</select>
+							<div className="relative order-last w-full min-w-0 lg:order-none lg:ml-auto lg:w-auto lg:max-w-sm lg:flex-[1_1_16rem]">
+								<input
+									value={search}
+									onChange={(e) => setSearch(e.target.value)}
+									onKeyDown={(event) => {
+										if (event.key === "Escape") setSearch("");
+									}}
+									placeholder="Search settings"
+									aria-label="Search settings"
+									className="min-h-11 w-full min-w-0 border border-border bg-input px-3 py-2 pr-10 text-xs focus:border-primary/50 focus:outline-none lg:min-h-0 lg:py-1.5"
+								/>
+								{searchQuery && (
+									<button
+										type="button"
+										onClick={() => setSearch("")}
+										aria-label="Clear setting search"
+										className="absolute inset-y-0 right-0 min-w-10 px-2 text-sm text-muted-foreground hover:text-foreground"
+									>
+										×
+									</button>
+								)}
+							</div>
+						</>
+					)}
 					<InventoryStatus
 						status={inventoryStatus}
 						onRetry={onRetryInventory}
@@ -1669,7 +1829,15 @@ export function ForgeSettings({
 					className="flex-1 overflow-auto"
 				>
 					<div className="@container mx-auto max-w-[1000px] min-w-0 space-y-6 px-4 pt-4 pb-20 sm:px-6 sm:pt-6 md:pb-6">
-						{searchQuery ? (
+						{showSimpleLanding ? (
+							<SimpleSettingsHome
+								initial={initial}
+								state={state}
+								inventoryStatus={inventoryStatus}
+								onNavigate={navigate}
+								onShowAll={() => setAllSettingsVisible(true)}
+							/>
+						) : searchQuery ? (
 							<SettingsSearchResults
 								query={searchQuery}
 								results={searchResults}

@@ -6,9 +6,17 @@ type Props = {
 	initialPath?: string;
 	onSelect: (path: string) => void;
 	external?: boolean;
+	selectLabel?: string;
+	disabled?: boolean;
 };
 
-export function FolderBrowser({ initialPath, onSelect, external }: Props) {
+export function FolderBrowser({
+	initialPath,
+	onSelect,
+	external,
+	selectLabel = "Select",
+	disabled = false,
+}: Props) {
 	const [currentPath, setCurrentPath] = useState(initialPath ?? "");
 	// Server-canonicalized path of the directory currently shown. Only this is safe
 	// to pass to onSelect, since `currentPath` may be a tilde or a path that failed to load.
@@ -115,11 +123,11 @@ export function FolderBrowser({ initialPath, onSelect, external }: Props) {
 				)}
 				<button
 					type="button"
-					disabled={!selectablePath}
+					disabled={!selectablePath || disabled}
 					onClick={() => selectablePath && onSelect(selectablePath)}
 					className="text-xs px-3 py-1.5 rounded-md bg-primary text-primary-foreground font-medium hover:opacity-90 transition-opacity shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
 				>
-					Select
+					{selectLabel}
 				</button>
 			</div>
 

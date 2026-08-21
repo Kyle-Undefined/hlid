@@ -255,6 +255,7 @@ function createUiForm(initial: HlidConfig): UiForm {
 	const customTheme =
 		initial.ui.custom_theme ?? builtInThemePalette(desktopBase);
 	return {
+		viewMode: initial.ui.view_mode,
 		theme: initial.ui.theme,
 		mobileTheme: initial.ui.mobile_theme ?? "same",
 		customTheme,
@@ -468,6 +469,7 @@ export function buildSettingsConfig(
 			recap_model: forms.cliproxy.recapModel || undefined,
 		},
 		ui: {
+			view_mode: forms.ui.viewMode,
 			enter_to_submit: forms.ui.enterToSubmit,
 			live_sessions_hotkey: forms.ui.liveSessionsHotkey,
 			hide_skills_index: forms.ui.hideSkillsIndex,

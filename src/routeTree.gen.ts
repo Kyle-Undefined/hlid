@@ -21,7 +21,9 @@ import { Route as ApiBrowseRouteImport } from './routes/api/browse'
 import { Route as ApiConfigRouteImport } from './routes/api/config'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as ApiLifecycleRouteImport } from './routes/api/lifecycle'
+import { Route as ApiLocalAiSetupRouteImport } from './routes/api/local-ai-setup'
 import { Route as ApiPricingRouteImport } from './routes/api/pricing'
+import { Route as ApiStarterWorkspaceRouteImport } from './routes/api/starter-workspace'
 import { Route as ApiTailscaleRouteImport } from './routes/api/tailscale'
 import { Route as ApiUmbodRouteImport } from './routes/api/umbod'
 import { Route as ApiUpdatesRouteImport } from './routes/api/updates'
@@ -108,9 +110,19 @@ const ApiLifecycleRoute = ApiLifecycleRouteImport.update({
   path: '/api/lifecycle',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiLocalAiSetupRoute = ApiLocalAiSetupRouteImport.update({
+  id: '/api/local-ai-setup',
+  path: '/api/local-ai-setup',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiPricingRoute = ApiPricingRouteImport.update({
   id: '/api/pricing',
   path: '/api/pricing',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiStarterWorkspaceRoute = ApiStarterWorkspaceRouteImport.update({
+  id: '/api/starter-workspace',
+  path: '/api/starter-workspace',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiTailscaleRoute = ApiTailscaleRouteImport.update({
@@ -252,7 +264,9 @@ export interface FileRoutesByFullPath {
   '/api/config': typeof ApiConfigRoute
   '/api/health': typeof ApiHealthRoute
   '/api/lifecycle': typeof ApiLifecycleRoute
+  '/api/local-ai-setup': typeof ApiLocalAiSetupRoute
   '/api/pricing': typeof ApiPricingRoute
+  '/api/starter-workspace': typeof ApiStarterWorkspaceRoute
   '/api/tailscale': typeof ApiTailscaleRoute
   '/api/umbod': typeof ApiUmbodRoute
   '/api/updates': typeof ApiUpdatesRoute
@@ -292,7 +306,9 @@ export interface FileRoutesByTo {
   '/api/config': typeof ApiConfigRoute
   '/api/health': typeof ApiHealthRoute
   '/api/lifecycle': typeof ApiLifecycleRoute
+  '/api/local-ai-setup': typeof ApiLocalAiSetupRoute
   '/api/pricing': typeof ApiPricingRoute
+  '/api/starter-workspace': typeof ApiStarterWorkspaceRoute
   '/api/tailscale': typeof ApiTailscaleRoute
   '/api/umbod': typeof ApiUmbodRoute
   '/api/updates': typeof ApiUpdatesRoute
@@ -333,7 +349,9 @@ export interface FileRoutesById {
   '/api/config': typeof ApiConfigRoute
   '/api/health': typeof ApiHealthRoute
   '/api/lifecycle': typeof ApiLifecycleRoute
+  '/api/local-ai-setup': typeof ApiLocalAiSetupRoute
   '/api/pricing': typeof ApiPricingRoute
+  '/api/starter-workspace': typeof ApiStarterWorkspaceRoute
   '/api/tailscale': typeof ApiTailscaleRoute
   '/api/umbod': typeof ApiUmbodRoute
   '/api/updates': typeof ApiUpdatesRoute
@@ -375,7 +393,9 @@ export interface FileRouteTypes {
     | '/api/config'
     | '/api/health'
     | '/api/lifecycle'
+    | '/api/local-ai-setup'
     | '/api/pricing'
+    | '/api/starter-workspace'
     | '/api/tailscale'
     | '/api/umbod'
     | '/api/updates'
@@ -415,7 +435,9 @@ export interface FileRouteTypes {
     | '/api/config'
     | '/api/health'
     | '/api/lifecycle'
+    | '/api/local-ai-setup'
     | '/api/pricing'
+    | '/api/starter-workspace'
     | '/api/tailscale'
     | '/api/umbod'
     | '/api/updates'
@@ -455,7 +477,9 @@ export interface FileRouteTypes {
     | '/api/config'
     | '/api/health'
     | '/api/lifecycle'
+    | '/api/local-ai-setup'
     | '/api/pricing'
+    | '/api/starter-workspace'
     | '/api/tailscale'
     | '/api/umbod'
     | '/api/updates'
@@ -496,7 +520,9 @@ export interface RootRouteChildren {
   ApiConfigRoute: typeof ApiConfigRoute
   ApiHealthRoute: typeof ApiHealthRoute
   ApiLifecycleRoute: typeof ApiLifecycleRoute
+  ApiLocalAiSetupRoute: typeof ApiLocalAiSetupRoute
   ApiPricingRoute: typeof ApiPricingRoute
+  ApiStarterWorkspaceRoute: typeof ApiStarterWorkspaceRoute
   ApiTailscaleRoute: typeof ApiTailscaleRoute
   ApiUmbodRoute: typeof ApiUmbodRoute
   ApiUpdatesRoute: typeof ApiUpdatesRoute
@@ -607,11 +633,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiLifecycleRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/local-ai-setup': {
+      id: '/api/local-ai-setup'
+      path: '/api/local-ai-setup'
+      fullPath: '/api/local-ai-setup'
+      preLoaderRoute: typeof ApiLocalAiSetupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/pricing': {
       id: '/api/pricing'
       path: '/api/pricing'
       fullPath: '/api/pricing'
       preLoaderRoute: typeof ApiPricingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/starter-workspace': {
+      id: '/api/starter-workspace'
+      path: '/api/starter-workspace'
+      fullPath: '/api/starter-workspace'
+      preLoaderRoute: typeof ApiStarterWorkspaceRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/tailscale': {
@@ -840,7 +880,9 @@ const rootRouteChildren: RootRouteChildren = {
   ApiConfigRoute: ApiConfigRoute,
   ApiHealthRoute: ApiHealthRoute,
   ApiLifecycleRoute: ApiLifecycleRoute,
+  ApiLocalAiSetupRoute: ApiLocalAiSetupRoute,
   ApiPricingRoute: ApiPricingRoute,
+  ApiStarterWorkspaceRoute: ApiStarterWorkspaceRoute,
   ApiTailscaleRoute: ApiTailscaleRoute,
   ApiUmbodRoute: ApiUmbodRoute,
   ApiUpdatesRoute: ApiUpdatesRoute,

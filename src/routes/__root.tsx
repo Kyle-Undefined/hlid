@@ -58,6 +58,7 @@ export const Route = createRootRoute({
 		return {
 			...themeBootstrapConfig(ui),
 			navigationLabels: resolveNavigationLabels(ui.navigation_names),
+			viewMode: ui.view_mode,
 		};
 	},
 	head: () => ({
@@ -342,6 +343,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 		customTheme,
 		mobileCustomTheme,
 		navigationLabels,
+		viewMode,
 	} = Route.useLoaderData();
 	const pathname = useRouterState({
 		select: (state) => state.location.pathname,
@@ -381,7 +383,10 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 			</head>
 			<body>
 				<RegisterPwaLifecycleDiagnostics />
-				<NavigationNamesProvider initialLabels={navigationLabels}>
+				<NavigationNamesProvider
+					initialLabels={navigationLabels}
+					initialViewMode={viewMode}
+				>
 					{pathname === "/login" || pathname === "/login/" ? (
 						children
 					) : (

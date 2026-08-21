@@ -1,5 +1,11 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, within } from "@testing-library/react";
+import {
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	within,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tanstack/react-router", () => ({
@@ -14,10 +20,12 @@ vi.mock("@tanstack/react-router", () => ({
 		children: React.ReactNode;
 		"aria-label"?: string;
 		title?: string;
+		role?: string;
 	}) => (
 		<a
 			aria-label={props["aria-label"]}
 			title={props.title}
+			role={props.role}
 			href={
 				search?.session
 					? `${to}?session=${search.session}${search.agent ? `&agent=${search.agent}` : ""}`
@@ -88,5 +96,32 @@ describe("BottomNav", () => {
 			name: "Workspace, Hlið name: EINHERJAR",
 		});
 		expect(workspace.getAttribute("href")).toBe("/einherjar");
+	});
+
+	it("renders Simple mobile destinations in order and keeps deep links ordinary links", () => {
+		render(
+			<NavigationNamesProvider
+				initialLabels={resolveNavigationLabels()}
+				initialViewMode="simple"
+			>
+				<BottomNav />
+			</NavigationNamesProvider>,
+		);
+		const nav = screen.getByRole("navigation", { name: "Primary navigation" });
+		expect(
+			within(nav)
+				.getAllByRole("link")
+				.map((link) => link.textContent),
+		).toEqual(["HOME", "CHAT", "LIBRARY", "SETTINGS"]);
+		fireEvent.click(
+			within(nav).getByRole("button", { name: "More navigation" }),
+		);
+		expect(
+			within(nav)
+				.getByRole("menuitem", {
+					name: "KNOWLEDGE, Hlið name: VAULT",
+				})
+				.getAttribute("href"),
+		).toBe("/vault");
 	});
 });

@@ -292,6 +292,8 @@ const NavigationNamesSchema = z
 	});
 
 const UiSchema = z.object({
+	/** Presentation density only. It never gates routes or provider capabilities. */
+	view_mode: z.enum(["full", "simple"]).default("full"),
 	enter_to_submit: z.boolean().default(true),
 	live_sessions_hotkey: z.string().default("Alt+Shift+KeyS"),
 	hide_skills_index: z.boolean().default(true),
@@ -725,6 +727,7 @@ const HlidConfigBaseSchema = z.object({
 		use_real_browser_profile: false,
 	})),
 	ui: UiSchema.default(() => ({
+		view_mode: "full" as const,
 		enter_to_submit: true,
 		live_sessions_hotkey: "Alt+Shift+KeyS",
 		hide_skills_index: true,

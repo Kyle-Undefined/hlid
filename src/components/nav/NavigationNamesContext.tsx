@@ -15,6 +15,7 @@ import {
 } from "#/lib/navigationNames";
 
 type NavigationLabels = Record<NavigationId, string>;
+export type ViewMode = "full" | "simple";
 
 const DEFAULT_NAVIGATION_LABELS = resolveNavigationLabels(
 	DEFAULT_NAVIGATION_NAMES_CONFIG,
@@ -22,14 +23,17 @@ const DEFAULT_NAVIGATION_LABELS = resolveNavigationLabels(
 
 const NavigationNamesContext = createContext<{
 	labels: NavigationLabels;
+	viewMode: ViewMode;
 	publish: (config: NavigationNamesConfig) => void;
-}>({ labels: DEFAULT_NAVIGATION_LABELS, publish: () => {} });
+}>({ labels: DEFAULT_NAVIGATION_LABELS, viewMode: "full", publish: () => {} });
 
 export function NavigationNamesProvider({
 	initialLabels,
+	initialViewMode = "full",
 	children,
 }: {
 	initialLabels: NavigationLabels;
+	initialViewMode?: ViewMode;
 	children: ReactNode;
 }) {
 	const [labels, setLabels] = useState(initialLabels);
@@ -43,7 +47,10 @@ export function NavigationNamesProvider({
 			setLabels(resolveNavigationLabels(config)),
 		[],
 	);
-	const value = useMemo(() => ({ labels, publish }), [labels, publish]);
+	const value = useMemo(
+		() => ({ labels, viewMode: initialViewMode, publish }),
+		[labels, initialViewMode, publish],
+	);
 	return (
 		<NavigationNamesContext.Provider value={value}>
 			{children}
@@ -53,6 +60,10 @@ export function NavigationNamesProvider({
 
 export function useNavigationLabels(): NavigationLabels {
 	return useContext(NavigationNamesContext).labels;
+}
+
+export function useViewMode(): ViewMode {
+	return useContext(NavigationNamesContext).viewMode;
 }
 
 export function usePublishNavigationNames(): (

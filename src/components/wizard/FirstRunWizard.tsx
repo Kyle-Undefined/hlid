@@ -11,18 +11,40 @@ import { getProvidersFn } from "#/lib/serverFns/providers";
 import { buildVaultSection } from "#/lib/vaultConfig";
 import type { StructureState } from "./WizardSteps";
 import {
+	ConnectionStep,
 	DoneStep,
-	PrimerStep,
+	SafetyStep,
+	StarterWorkspaceStep,
 	StructureStep,
 	VaultPickerStep,
 	WelcomeStep,
+	WorkspaceChoiceStep,
 } from "./WizardSteps";
 
 type Entry = { name: string; isDirectory: boolean };
 
-type Step = "welcome" | "vault" | "structure" | "primer" | "done";
+export type SetupMode = "guided" | "custom";
 
-const STEPS: Step[] = ["welcome", "vault", "structure", "primer", "done"];
+type Step =
+	| "welcome"
+	| "workspace"
+	| "starter"
+	| "vault"
+	| "structure"
+	| "connection"
+	| "safety"
+	| "done";
+
+const STEPS: Step[] = [
+	"welcome",
+	"workspace",
+	"starter",
+	"vault",
+	"structure",
+	"connection",
+	"safety",
+	"done",
+];
 
 export function detectVaultStructure(
 	entries: Entry[],
@@ -55,7 +77,10 @@ export function detectVaultStructure(
 	};
 }
 
-export function buildFirstRunConfig(s: StructureState): HlidConfig {
+export function buildFirstRunConfig(
+	s: StructureState,
+	setupMode: SetupMode = "custom",
+): HlidConfig {
 	const selectedPermissionMode = s.permissionMode;
 	return {
 		vault: buildVaultSection({
@@ -110,6 +135,7 @@ export function buildFirstRunConfig(s: StructureState): HlidConfig {
 		},
 		project_preview: { use_real_browser_profile: false },
 		ui: {
+			view_mode: setupMode === "guided" ? "simple" : "full",
 			enter_to_submit: true,
 			live_sessions_hotkey: "Alt+Shift+KeyS",
 			hide_skills_index: true,
@@ -142,10 +168,12 @@ export function vaultNameFromPath(path: string): string | null {
 
 type Props = {
 	onComplete: () => void;
+	onTestChat?: () => void;
 };
 
-export function FirstRunWizard({ onComplete }: Props) {
+export function FirstRunWizard({ onComplete, onTestChat }: Props) {
 	const [step, setStep] = useState<Step>("welcome");
+	const [setupMode, setSetupMode] = useState<SetupMode>("guided");
 	const [saving, setSaving] = useState(false);
 	const [saveError, setSaveError] = useState<string | null>(null);
 	const [providers, setProviders] = useState<ProviderInfo[]>([]);
@@ -212,11 +240,60 @@ export function FirstRunWizard({ onComplete }: Props) {
 			.catch(() => {});
 	}, [structure.vaultPath]);
 
+	function selectVault(path: string) {
+		setStructure((s) => ({ ...s, vaultPath: path }));
+		setStep(setupMode === "custom" ? "structure" : "connection");
+	}
+
+	async function createStarterWorkspace(parentPath: string) {
+		setSaving(true);
+		setSaveError(null);
+		try {
+			const res = await fetch("/api/starter-workspace", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ parent_path: parentPath }),
+			});
+			const body = (await res.json().catch(() => null)) as {
+				path?: string;
+				error?: string;
+			} | null;
+			if (!res.ok || !body?.path) {
+				throw new Error(
+					body?.error || `Could not create starter workspace (${res.status})`,
+				);
+			}
+			const workspacePath = body.path;
+			setStructure((s) => ({
+				...s,
+				vaultName: vaultNameFromPath(workspacePath) ?? s.vaultName,
+				vaultPath: workspacePath,
+				vaultStyle: "para",
+				inbox: "00 Inbox",
+				projects: "10 Projects",
+				areas: "20 Areas",
+				resources: "30 Resources",
+				archive: "40 Archive",
+				skills: "_munin/skills",
+				memory: "_munin/memory",
+			}));
+			setStep(setupMode === "custom" ? "structure" : "connection");
+		} catch (error) {
+			setSaveError(
+				error instanceof Error
+					? error.message
+					: "Could not create starter workspace",
+			);
+		} finally {
+			setSaving(false);
+		}
+	}
+
 	async function save() {
 		setSaving(true);
 		setSaveError(null);
 		try {
-			const config = buildFirstRunConfig(structure);
+			const config = buildFirstRunConfig(structure, setupMode);
 
 			const res = await fetch("/api/config", {
 				method: "POST",
@@ -228,7 +305,7 @@ export function FirstRunWizard({ onComplete }: Props) {
 				const detail = await res.text().catch(() => "");
 				throw new Error(detail || `Save failed (${res.status})`);
 			}
-			setStep("primer");
+			setStep("done");
 		} catch (error) {
 			setSaveError(error instanceof Error ? error.message : "Save failed");
 			setSaving(false);
@@ -260,14 +337,31 @@ export function FirstRunWizard({ onComplete }: Props) {
 						</div>
 					)}
 					{step === "welcome" && (
-						<WelcomeStep onNext={() => setStep("vault")} />
+						<WelcomeStep
+							onChoose={(mode) => {
+								setSetupMode(mode);
+								setStep("workspace");
+							}}
+						/>
+					)}
+					{step === "workspace" && (
+						<WorkspaceChoiceStep
+							onStarter={() => setStep("starter")}
+							onExisting={() => setStep("vault")}
+							onBack={() => setStep("welcome")}
+						/>
+					)}
+					{step === "starter" && (
+						<StarterWorkspaceStep
+							creating={saving}
+							onCreate={createStarterWorkspace}
+							onBack={() => setStep("workspace")}
+						/>
 					)}
 					{step === "vault" && (
 						<VaultPickerStep
-							onSelect={(path) => {
-								setStructure((s) => ({ ...s, vaultPath: path }));
-								setStep("structure");
-							}}
+							onSelect={selectVault}
+							onBack={() => setStep("workspace")}
 						/>
 					)}
 					{step === "structure" && (
@@ -276,7 +370,7 @@ export function FirstRunWizard({ onComplete }: Props) {
 							saving={saving}
 							onChange={(p) => setStructure((s) => ({ ...s, ...p }))}
 							onBack={() => setStep("vault")}
-							onSave={save}
+							onSave={() => setStep("connection")}
 							permissionOptions={
 								providers.find((p) => p.id === structure.vaultProvider)
 									?.permissionModes
@@ -298,8 +392,32 @@ export function FirstRunWizard({ onComplete }: Props) {
 								}))}
 						/>
 					)}
-					{step === "primer" && <PrimerStep onNext={() => setStep("done")} />}
-					{step === "done" && <DoneStep onComplete={onComplete} />}
+					{step === "connection" && (
+						<ConnectionStep
+							providers={providers}
+							saving={saving}
+							onBack={() =>
+								setStep(setupMode === "custom" ? "structure" : "workspace")
+							}
+							onContinue={() =>
+								setupMode === "guided" ? setStep("safety") : void save()
+							}
+						/>
+					)}
+					{step === "safety" && (
+						<SafetyStep
+							value={structure.permissionMode}
+							saving={saving}
+							onChange={(permissionMode) =>
+								setStructure((current) => ({ ...current, permissionMode }))
+							}
+							onBack={() => setStep("connection")}
+							onContinue={save}
+						/>
+					)}
+					{step === "done" && (
+						<DoneStep onComplete={onComplete} onTestChat={onTestChat} />
+					)}
 				</div>
 			</div>
 		</div>

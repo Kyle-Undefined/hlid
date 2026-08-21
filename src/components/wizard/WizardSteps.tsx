@@ -2,8 +2,12 @@
  * Step components for FirstRunWizard. Each is a self-contained screen;
  * the wizard owns all shared state and passes slices as props.
  */
+
 import { Check } from "lucide-react";
+import { useState } from "react";
 import { THEME_OPTIONS } from "#/lib/agentOptions";
+import type { ProviderInfo } from "#/lib/providerTypes";
+import type { SetupMode } from "./FirstRunWizard";
 import { FolderBrowser } from "./FolderBrowser";
 import { RelativeFolderField } from "./RelativeFolderField";
 
@@ -23,38 +27,6 @@ const VAULT_STYLE_OPTIONS: {
 		value: "wiki",
 		label: "LLM Wiki (Karpathy)",
 		desc: "raw/ · wiki/ · outputs/, three-layer architecture, LLM owns wiki",
-	},
-];
-
-const PRIMER_ITEMS: { name: string; meaning: string }[] = [
-	{
-		name: "Watch",
-		meaning:
-			"your cockpit. Inbox count, what's running, what owes you attention.",
-	},
-	{
-		name: "Vault",
-		meaning: "projects, skills, memory. The shape of your hall.",
-	},
-	{
-		name: "Relics",
-		meaning: "attachments. PDFs, images, files Claude has touched.",
-	},
-	{
-		name: "Raven",
-		meaning: "chat. Huginn and Muninn carry your messages to Claude and back.",
-	},
-	{
-		name: "Einherjar",
-		meaning: "agents. Óðinn's chosen warriors, summoned for specific tasks.",
-	},
-	{
-		name: "Ledger",
-		meaning: "sessions, tokens, cost. What you've spent, what you've used.",
-	},
-	{
-		name: "Forge",
-		meaning: "settings. Where you reshape the thing.",
 	},
 ];
 
@@ -114,35 +86,140 @@ function FolderRow({
 
 // ─── WelcomeStep ─────────────────────────────────────────────────────────────
 
-export function WelcomeStep({ onNext }: { onNext: () => void }) {
+export function WelcomeStep({
+	onChoose,
+}: {
+	onChoose: (mode: SetupMode) => void;
+}) {
+	return (
+		<div className="space-y-4">
+			<div>
+				<h2 className="text-lg font-semibold text-foreground">Set up Hlid</h2>
+				<p className="text-sm text-muted-foreground mt-1">
+					Choose the amount of setup you want today. You can change settings
+					later.
+				</p>
+			</div>
+			<div className="space-y-2">
+				<button
+					type="button"
+					onClick={() => onChoose("guided")}
+					className="w-full rounded-lg border border-primary bg-primary/5 p-4 text-left hover:bg-primary/10"
+				>
+					<div className="text-sm font-semibold text-foreground">
+						Guided setup
+					</div>
+					<div className="mt-1 text-xs text-muted-foreground">
+						A short, safe path with the essentials visible first.
+					</div>
+				</button>
+				<button
+					type="button"
+					onClick={() => onChoose("custom")}
+					className="w-full rounded-lg border border-border p-4 text-left hover:bg-accent"
+				>
+					<div className="text-sm font-semibold text-foreground">
+						Custom setup
+					</div>
+					<div className="mt-1 text-xs text-muted-foreground">
+						Choose your vault structure, provider settings, and full interface.
+					</div>
+				</button>
+			</div>
+		</div>
+	);
+}
+
+export function WorkspaceChoiceStep({
+	onStarter,
+	onExisting,
+	onBack,
+}: {
+	onStarter: () => void;
+	onExisting: () => void;
+	onBack: () => void;
+}) {
 	return (
 		<div className="space-y-4">
 			<div>
 				<h2 className="text-lg font-semibold text-foreground">
-					The gate awaits
+					Choose your workspace
 				</h2>
-				<p className="text-sm text-muted-foreground mt-1">
-					Hlið stands watch over your vault. One minute to open the gate.
+				<p className="mt-1 text-sm text-muted-foreground">
+					A starter workspace is new and separate. Hlid never changes an
+					existing vault during setup.
 				</p>
 			</div>
-			<ul className="space-y-2 text-sm text-muted-foreground">
-				{[
-					"Bind your Obsidian vault",
-					"Review what Hlið has mapped",
-					"Set the bounds of Claude's reach",
-				].map((item) => (
-					<li key={item} className="flex items-center gap-2">
-						<Check className="w-3.5 h-3.5 text-primary shrink-0" />
-						{item}
-					</li>
-				))}
-			</ul>
 			<button
 				type="button"
-				onClick={onNext}
-				className="w-full py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity"
+				onClick={onStarter}
+				className="w-full rounded-lg border border-primary bg-primary/5 p-4 text-left hover:bg-primary/10"
 			>
-				Open the gate
+				<div className="text-sm font-semibold text-foreground">
+					Create a starter workspace
+				</div>
+				<div className="mt-1 text-xs text-muted-foreground">
+					Creates a new “Hlid Starter” folder with empty PARA folders and one
+					welcome note.
+				</div>
+			</button>
+			<button
+				type="button"
+				onClick={onExisting}
+				className="w-full rounded-lg border border-border p-4 text-left hover:bg-accent"
+			>
+				<div className="text-sm font-semibold text-foreground">
+					Use an existing vault
+				</div>
+				<div className="mt-1 text-xs text-muted-foreground">
+					Connect a folder you already own. Nothing inside it is created or
+					replaced.
+				</div>
+			</button>
+			<button
+				type="button"
+				onClick={onBack}
+				className="w-full py-2 text-sm text-muted-foreground hover:text-foreground"
+			>
+				Back
+			</button>
+		</div>
+	);
+}
+
+export function StarterWorkspaceStep({
+	creating,
+	onCreate,
+	onBack,
+}: {
+	creating: boolean;
+	onCreate: (parentPath: string) => void;
+	onBack: () => void;
+}) {
+	return (
+		<div className="space-y-4">
+			<div>
+				<h2 className="text-lg font-semibold text-foreground">
+					Where should it go?
+				</h2>
+				<p className="mt-1 text-sm text-muted-foreground">
+					Select a folder in your home directory. Hlid will only create a new
+					folder named “Hlid Starter” inside it; existing files are never
+					overwritten.
+				</p>
+			</div>
+			<FolderBrowser
+				onSelect={onCreate}
+				selectLabel={creating ? "Creating…" : "Create Hlid Starter"}
+				disabled={creating}
+			/>
+			<button
+				type="button"
+				onClick={onBack}
+				disabled={creating}
+				className="w-full py-2 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50"
+			>
+				Back
 			</button>
 		</div>
 	);
@@ -152,8 +229,10 @@ export function WelcomeStep({ onNext }: { onNext: () => void }) {
 
 export function VaultPickerStep({
 	onSelect,
+	onBack,
 }: {
 	onSelect: (path: string) => void;
+	onBack: () => void;
 }) {
 	return (
 		<div className="space-y-4">
@@ -166,6 +245,190 @@ export function VaultPickerStep({
 				</p>
 			</div>
 			<FolderBrowser onSelect={onSelect} />
+			<button
+				type="button"
+				onClick={onBack}
+				className="w-full py-2 text-sm text-muted-foreground hover:text-foreground"
+			>
+				Back
+			</button>
+		</div>
+	);
+}
+
+export function ConnectionStep({
+	providers,
+	saving,
+	onBack,
+	onContinue,
+}: {
+	providers: ProviderInfo[];
+	saving: boolean;
+	onBack: () => void;
+	onContinue: () => void;
+}) {
+	const [choice, setChoice] = useState<"local" | "account" | "later">("later");
+	const localAvailable = providers.filter(
+		(provider) =>
+			provider.available && provider.id !== "claude" && provider.id !== "codex",
+	);
+	const accountAvailable = providers.filter(
+		(provider) =>
+			provider.available &&
+			(provider.id === "claude" || provider.id === "codex"),
+	);
+	const choices = [
+		[
+			"local",
+			"Local",
+			`Use a local provider you have already configured.${localAvailable.length ? ` Detected: ${localAvailable.map((provider) => provider.label).join(", ")}.` : " No local provider is being assumed."}`,
+		],
+		[
+			"account",
+			"Account",
+			`Connect an account later in provider settings.${accountAvailable.length ? ` Available now: ${accountAvailable.map((provider) => provider.label).join(", ")}.` : " Availability will be checked when you configure it."}`,
+		],
+		["later", "Later", "Finish now and set up a provider when you are ready."],
+	] as const;
+	return (
+		<div className="space-y-4">
+			<div>
+				<h2 className="text-lg font-semibold text-foreground">
+					How would you like to connect?
+				</h2>
+				<p className="mt-1 text-sm text-muted-foreground">
+					This only saves your workspace choice. Hlid does not install software,
+					sign in, or claim that a provider is ready.
+				</p>
+			</div>
+			<div className="space-y-2 text-sm">
+				{choices.map(([value, label, description]) => (
+					<label
+						key={value}
+						className={`block cursor-pointer rounded-lg border p-3 ${choice === value ? "border-primary bg-primary/5" : "border-border hover:bg-accent"}`}
+					>
+						<input
+							className="sr-only"
+							type="radio"
+							name="connection"
+							value={value}
+							checked={choice === value}
+							onChange={() => setChoice(value)}
+						/>
+						<div className="font-medium text-foreground">{label}</div>
+						<div className="mt-1 text-xs text-muted-foreground">
+							{description}
+						</div>
+					</label>
+				))}
+			</div>
+			<div className="flex gap-2">
+				<button
+					type="button"
+					onClick={onBack}
+					disabled={saving}
+					className="flex-1 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent disabled:opacity-50"
+				>
+					Back
+				</button>
+				<button
+					type="button"
+					onClick={onContinue}
+					disabled={saving}
+					className="flex-1 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50"
+				>
+					{saving ? "Saving…" : "Finish setup"}
+				</button>
+			</div>
+		</div>
+	);
+}
+
+export function SafetyStep({
+	value,
+	saving,
+	onChange,
+	onBack,
+	onContinue,
+}: {
+	value: StructureState["permissionMode"];
+	saving: boolean;
+	onChange: (value: StructureState["permissionMode"]) => void;
+	onBack: () => void;
+	onContinue: () => void;
+}) {
+	const choices = [
+		{
+			value: "default",
+			label: "Ask before making changes",
+			description:
+				"Recommended. Hlid can read and explain, then asks before edits.",
+		},
+		{
+			value: "acceptEdits",
+			label: "Allow normal workspace edits",
+			description:
+				"Routine edits can proceed while sensitive actions still ask.",
+		},
+		{
+			value: "bypassPermissions",
+			label: "Allow all supported actions",
+			description:
+				"Advanced. Use only when you understand the provider's permissions.",
+		},
+	] as const;
+	return (
+		<div className="space-y-4">
+			<div>
+				<h2 className="text-lg font-semibold text-foreground">
+					Choose your safety level
+				</h2>
+				<p className="mt-1 text-sm text-muted-foreground">
+					This keeps each provider's real permission behavior. You can change it
+					later.
+				</p>
+			</div>
+			<div className="space-y-2">
+				{choices.map((choice) => (
+					<label
+						key={choice.value}
+						className={`block cursor-pointer rounded-lg border p-3 ${value === choice.value ? "border-primary bg-primary/5" : "border-border hover:bg-accent"}`}
+					>
+						<input
+							className="sr-only"
+							type="radio"
+							name="safety"
+							value={choice.value}
+							checked={value === choice.value}
+							onChange={() => onChange(choice.value)}
+						/>
+						<div className="text-sm font-medium text-foreground">
+							{choice.label}
+						</div>
+						<div className="mt-1 text-xs text-muted-foreground">
+							{choice.description}
+						</div>
+					</label>
+				))}
+			</div>
+			<div className="flex gap-2">
+				<button
+					type="button"
+					onClick={onBack}
+					disabled={saving}
+					className="flex-1 rounded-lg border border-border py-2 text-sm text-muted-foreground hover:bg-accent disabled:opacity-50"
+				>
+					Back
+				</button>
+				<button
+					type="button"
+					onClick={onContinue}
+					disabled={saving}
+					className="flex-1 rounded-lg bg-primary py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+				>
+					{saving ? "Saving…" : "Finish setup"}
+				</button>
+			</div>
 		</div>
 	);
 }
@@ -483,59 +746,15 @@ export function StructureStep({
 	);
 }
 
-// ─── PrimerStep ───────────────────────────────────────────────────────────────
-
-export function PrimerStep({ onNext }: { onNext: () => void }) {
-	return (
-		<div className="space-y-4">
-			<div>
-				<h2 className="text-lg font-semibold text-foreground">
-					The lay of the land
-				</h2>
-				<p className="text-sm text-muted-foreground mt-1">
-					The menu speaks Norse. Half the fun of a project is a name that{" "}
-					<em>hits</em>. The other half is telling you what it actually does.
-				</p>
-			</div>
-			<div className="rounded-lg border border-border bg-secondary/30 p-3 space-y-1.5">
-				<div className="text-xs">
-					<span className="font-semibold text-foreground">
-						Hlið / Hliðskjálf
-					</span>
-					<span className="text-muted-foreground">
-						{" "}
-						— the app itself. Óðinn's high seat, where he watched all nine
-						realms.
-					</span>
-				</div>
-			</div>
-			<ul className="space-y-2">
-				{PRIMER_ITEMS.map((item) => (
-					<li key={item.name} className="text-xs leading-relaxed flex gap-2">
-						<span className="font-semibold text-foreground tracking-widest uppercase shrink-0 w-20">
-							{item.name}
-						</span>
-						<span className="text-muted-foreground">{item.meaning}</span>
-					</li>
-				))}
-			</ul>
-			<p className="text-xs text-muted-foreground/70 italic">
-				You'll get the hang of it. The icons help.
-			</p>
-			<button
-				type="button"
-				onClick={onNext}
-				className="w-full py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity"
-			>
-				Got it
-			</button>
-		</div>
-	);
-}
-
 // ─── DoneStep ────────────────────────────────────────────────────────────────
 
-export function DoneStep({ onComplete }: { onComplete: () => void }) {
+export function DoneStep({
+	onComplete,
+	onTestChat,
+}: {
+	onComplete: () => void;
+	onTestChat?: () => void;
+}) {
 	return (
 		<div className="space-y-4 text-center">
 			<div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mx-auto">
@@ -549,12 +768,21 @@ export function DoneStep({ onComplete }: { onComplete: () => void }) {
 					Hlið is ready. Your hall awaits.
 				</p>
 			</div>
+			{onTestChat && (
+				<button
+					type="button"
+					onClick={onTestChat}
+					className="w-full rounded-lg bg-primary py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+				>
+					Try a test chat
+				</button>
+			)}
 			<button
 				type="button"
 				onClick={onComplete}
-				className="w-full py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity"
+				className="w-full rounded-lg border border-border py-2 text-sm font-medium text-foreground hover:bg-accent"
 			>
-				Take the Watch
+				Go to Home
 			</button>
 		</div>
 	);
