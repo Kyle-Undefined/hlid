@@ -533,10 +533,6 @@ describe("standalone Windows Ollama integration", () => {
 			.mockResolvedValueOnce(info());
 		renderSection();
 
-		fireEvent.click(
-			screen.getByRole("button", { name: "Check Windows Ollama" }),
-		);
-
 		expect((await screen.findByRole("alert")).textContent).toContain(
 			"Try again",
 		);
