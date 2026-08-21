@@ -5,7 +5,6 @@ import {
 	fireEvent,
 	render,
 	screen,
-	waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -20,8 +19,14 @@ const serverFns = vi.hoisted(() => ({
 vi.mock("#/lib/serverFns/obsidian", () => serverFns);
 vi.mock("#/lib/transientFeedback", () => ({ TRANSIENT_FEEDBACK_MS: 10 }));
 
-beforeEach(() => serverFns.getActiveObsidianNoteFn.mockReset());
-afterEach(cleanup);
+beforeEach(() => {
+	vi.useFakeTimers();
+	serverFns.getActiveObsidianNoteFn.mockReset();
+});
+afterEach(() => {
+	cleanup();
+	vi.useRealTimers();
+});
 
 describe("ObsidianActiveNoteButton", () => {
 	it("adds the active Obsidian note as an exact vault reference", async () => {
@@ -40,17 +45,16 @@ describe("ObsidianActiveNoteButton", () => {
 			);
 		});
 
-		await waitFor(() => expect(onAdd).toHaveBeenCalledWith(reference));
+		expect(onAdd).toHaveBeenCalledWith(reference);
 		expect(
 			screen.getByRole("button", {
 				name: "Active Obsidian note attached",
 			}),
 		).toBeTruthy();
-		await waitFor(() =>
-			expect(
-				screen.getByRole("button", { name: "Attach active Obsidian note" }),
-			).toBeTruthy(),
-		);
+		act(() => vi.advanceTimersByTime(10));
+		expect(
+			screen.getByRole("button", { name: "Attach active Obsidian note" }),
+		).toBeTruthy();
 	});
 
 	it("shows a dismissible error message on touch-sized controls", async () => {
