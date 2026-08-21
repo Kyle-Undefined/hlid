@@ -119,8 +119,10 @@ set up, `Hlið` is happy.
    Menu shortcut, starts the local service, and opens the app in a browser.
 4. Create the app password on the machine running `Hlið`. It needs 12 to 256
    characters, with no uppercase, number, or symbol ceremony.
-5. Pick the `Obsidian` vault, check the detected folders, choose the default
-   provider and permissions, then pick a theme.
+5. Choose **Guided setup** for the short path or **Custom setup** for the full
+   set of choices. Guided setup can create a fresh starter workspace or connect
+   an existing `Obsidian` vault, then walks through the AI connection and
+   permission level before opening a test chat.
 
 The default address is `http://127.0.0.1:3000`. It stays on the local machine
 until network access is turned on. The [user guide](docs/user-guide.md) covers
@@ -145,7 +147,8 @@ the vault directly when the `CLI` is not around.
 - **FORGE** is where all the setup lives: providers, permissions, networking,
   voice, provider extensions, provider `Apps` and connectors, `Obsidian CLI`,
   `CLIProxyAPI`, `MCP`, `ACP`, `Umbod`, updates, storage maintenance, and
-  lifecycle controls.
+  lifecycle controls. Simple view starts with readiness and the common settings.
+  **All settings** brings the full category browser back whenever you need it.
 
 The [user guide](docs/user-guide.md) gets into the meat and potatoes of each
 page and the workflows that connect them.
@@ -162,10 +165,12 @@ page and the workflows that connect them.
 | **HISTORY** / **LEDGER** (`/ledger`) | Live-session controls, pinned and archived sessions, parent/child provenance, provider-history import, and analytics for tokens, cost, cache behavior, tools, stop reasons, context, and provider limits. |
 | **SETTINGS** / **FORGE** (`/forge`) | Settings, provider extensions, integrations, access, updates, maintenance, and developer tools. |
 
-The plain-language menu names are selected by default. **SETTINGS → Experience
-→ Navigation names** can switch the menu to Hlið's canonical names or set each
-name individually. It only changes the desktop and mobile menu labels: the Hlið
-wordmark, routes, icons, page names, and underlying concepts stay the same.
+Simple view keeps **Home**, **Chat**, **Library**, and **Settings** up front, with
+**More** holding Knowledge, Agents, and History. Full view shows all seven
+destinations at once. **SETTINGS → Experience → UI** switches between them, and
+**Navigation names** can use Hlið's canonical names or set each label
+individually. Neither choice changes routes, provider behavior, or what the app
+can do.
 
 ## Configuration and data
 
@@ -173,8 +178,8 @@ The packaged app keeps its executable, config, database, downloaded voice
 models, and runtime data together under `%LOCALAPPDATA%\Hlid`.
 
 `hlid.config.toml` holds the vault layout, providers, server and `TLS` ports,
-network access, attachments, diagnostics, voice, `UI` preferences, navigation
-names, and registered agents.
+network access, attachments, diagnostics, voice, `UI` preferences, Simple or
+Full view, navigation names, and registered agents.
 Most of it can be changed in `Forge`. A setting with a restart marker does not
 kick in until `Hlið` restarts. Server, `ACP`, and `Umbod` changes are the main
 ones that need it.

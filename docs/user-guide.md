@@ -34,24 +34,28 @@ devices can sign in over the `HTTPS` endpoint. A browser stays trusted for 30
 days unless you lock `Hlið`, change the password, or revoke every device in
 `Forge`.
 
-![First-run Structure step with detected vault folders](images/first-run-vault-setup.png)
+![First-run Custom setup structure step](images/first-run-vault-setup.png)
 
-*Pick the local `Obsidian` vault, then make sure the detected structure actually matches it.*
+*Custom setup keeps the full vault structure editor when you want every choice.*
 
 ## Connect a vault
 
-The first-run wizard is five small steps:
+The first screen gives you two paths:
 
-1. **Welcome** introduces the setup.
-2. **Vault** picks an existing local `Obsidian` vault. Hidden folders stay out
-   of the folder picker.
-3. **Structure** detects a `PARA` or wiki-style layout and fills in the folders
-   it recognizes. Check the vault name, folder mappings, available default
-   provider, that provider's permission mode, and the theme. Empty optional
-   mappings are fine.
-4. **Primer** explains the page names and how `Hlið`, the vault, and its skills
-   fit together.
-5. **Done** opens the app.
+- **Guided setup** keeps the everyday choices up front and starts the app in
+  Simple view. Create a new **Hlid Starter** workspace or connect an existing
+  local `Obsidian` vault, choose whether you are using local AI, an existing
+  account, or setting that up later, then pick a plain-language safety level.
+  The final screen can take you straight into `Raven` for a test chat.
+- **Custom setup** keeps the full structure editor. It detects a `PARA` or
+  wiki-style layout and fills in the folders it recognizes, then lets you check
+  the vault name, mappings, default provider, provider-native permission mode,
+  and theme. It starts in Full view.
+
+The starter path creates a new `Hlid Starter` folder under the parent you pick.
+It adds empty `PARA` folders, `_munin` skill and memory folders, and one welcome
+note. Existing folders and files are never replaced. If setup stops halfway
+through, `Hlið` can resume only a starter folder carrying its own marker.
 
 The wizard writes `hlid.config.toml` beside the installed executable. You can
 change the same settings later under **FORGE → Workspace**. If the vault gets
@@ -231,17 +235,17 @@ Uploads can stay temporary for one session or become managed vault attachments.
 
 ## The pages
 
-The main navigation defaults to **Home**, **Knowledge**, **Library**, **Chat**,
-**Agents**, **History**, and **Settings**. Hlið's canonical page names remain
-**Watch**, **Vault**, **Relics**, **Raven**, **Einherjar**, **Ledger**, and
-**Forge**. I'll start with the two places that launch and supervise work, then
-get into the browsers and settings around them.
+Simple view keeps **Home**, **Chat**, **Library**, and **Settings** visible, with
+**More** holding Knowledge, Agents, and History. Full view puts all seven
+destinations in the navigation. Hlið's canonical page names remain **Watch**,
+**Vault**, **Relics**, **Raven**, **Einherjar**, **Ledger**, and **Forge**. No
+route or tool disappears in Simple view, it is just less stuff staring at you.
 
-**Settings → Experience → Navigation names** can switch the menu to Hlið's
-canonical names or set a custom name for any menu item. This changes only the
-visible desktop and mobile navigation labels. Routes, icons, page headings, and
-Hlið's underlying terminology do not change, and an aliased link keeps its Hlið
-name in its tooltip and accessible label.
+**Settings → Experience → UI** switches between Simple and Full view.
+**Navigation names** can use Hlið's canonical names or set a custom name for any
+menu item. These are presentation choices only. Routes, icons, page headings,
+provider permissions, and Hlið's underlying terminology do not change, and an
+aliased link keeps its Hlið name in its tooltip and accessible label.
 
 ### Watch
 
@@ -650,11 +654,17 @@ not configured for that entry stay hidden.
 
 ### Forge
 
-![Forge overview and category navigation](images/forge-overview.png)
+![Forge Simple view readiness and common settings](images/forge-overview.png)
 
-*`Forge` groups settings by what you are trying to change, not by whichever config object owns it.*
+*Simple view puts readiness and the common stuff first. The full category browser is one click away.*
 
-**FORGE** keeps the settings in these categories:
+In Simple view, **Forge** opens with workspace, AI connection, and safety
+readiness, followed by shortcuts for chat and models, workspace, appearance,
+and connections. **All settings** opens the existing category browser. A direct
+link to an advanced category still goes straight there, because Simple view
+does not gate routes.
+
+Full view, or **All settings**, keeps the settings in these categories:
 
 - **Overview** shows `Hlið` and provider `CLI` updates, installation and startup
   state, storage use, and the latest published release notes. The global update
@@ -682,7 +692,11 @@ not configured for that entry stay hidden.
 	voice, and browser-local privacy mode. `Hlið` and vault entries always remain
 	visible; the toggle controls every provider-badged skill, command, or plugin.
 - **Integrations** manages provider Apps and connectors, `CLIProxyAPI`, `MCP`,
-  `Umbod`, the `ACP` catalog, and local `Ollama`.
+  `Umbod`, the `ACP` catalog, and local `Ollama`. Its guided local AI checklist
+  remembers only setup intent and reviewed steps, then rechecks live OpenCode,
+  Ollama, model, and `WSL` relay state whenever you return. It sends every
+  install, download, firewall, and model action through the existing confirmed
+  controls instead of doing any of that behind your back.
 - **Extensions** manages installed `Claude` and `Codex` plugins and their
   marketplaces.
 - **Developer** switches between the event log, local `API` reference, and pricing
@@ -711,7 +725,7 @@ re-add `Hlið`'s agent and `Obsidian` vault servers to the standalone
 `Claude Desktop` config. **Remove** clears only the entries managed by `Hlið`.
 Restart `Claude Desktop` after either action so it loads the new config.
 
-The search box filters whole setting categories. Vault `MCP` config stays scoped
+The search box jumps to exact setting destinations. Vault `MCP` config stays scoped
 to the vault, and each `Einherjar` entry keeps its own `MCP` config on that agent's
 page. `Hlið` combines those compatibility files with provider-native and live
 runtime discovery into one scoped inventory. It does not dump servers from
